@@ -272,6 +272,7 @@ parse_wt_args() {
   WT_WORKTREE_NAME=""
   WT_PASSTHROUGH_ARGS=()
   WT_YOLO=0
+  WT_CWD=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -w|--worktree)
@@ -289,6 +290,10 @@ parse_wt_args() {
         ;;
       --check-guard)
         WT_CHECK_GUARD=1
+        shift
+        ;;
+      --cwd)
+        WT_CWD=1
         shift
         ;;
       *)
@@ -493,6 +498,13 @@ wt_main() {
     git rev-parse --git-dir >/dev/null 2>&1 \
       || die "-w/--worktree requires a git repository"
     handle_create_or_use_worktree "$WT_WORKTREE_NAME" "$@"
+  fi
+
+  # --cwd: run in current directory, skip the picker.
+  if [[ "${WT_CWD:-0}" -eq 1 ]]; then
+    git rev-parse --git-dir >/dev/null 2>&1 \
+      || die "--cwd requires a git repository"
+    handle_worktree_selection "$(git rev-parse --show-toplevel)" "$@"
   fi
 
   # Outside a git repo: pure passthrough.

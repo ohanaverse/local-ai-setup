@@ -32,10 +32,27 @@ All `*-wt` launchers support:
 | `--yolo` | Skip permission prompts (agent-specific) |
 | `--code` | Use code model rotation (default if neither flag given) |
 | `--design` | Use design model rotation |
+| `--native` | Use the agent's configured native model (requires `NATIVE_<AGENT>` in models.conf) |
 | `--no-guard` | Remove the main-branch commit guard |
 | `--check-guard` | Report whether the guard is installed |
 
 With no flags, launchers present an fzf picker showing available worktrees and branches.
+
+## Native model flag
+
+The `--native` flag bypasses model rotation and uses the agent's dedicated native model:
+
+| Command | Config variable | Example value |
+|---------|-----------------|---------------|
+| `claude-wt --native` | `NATIVE_CLAUDE` | `claude-sonnet-4-5` |
+| `pi-wt --native` | `NATIVE_PI` | `claude-sonnet-4-5` |
+| `copilot-wt --native` | `NATIVE_COPILOT` | `claude-sonnet-4-5` |
+| `codex-wt --native` | `NATIVE_CODEX` | `claude-sonnet-4-5` |
+
+The native model is read from `~/.config/ai-shell/models.conf`. If the variable is not configured, the launcher errors:
+```bash
+claude-wt: --native requires NATIVE_CLAUDE to be configured in models.conf
+```
 
 ## Model rotation
 

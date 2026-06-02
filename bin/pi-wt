@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pi-wt — launch Pi coding agent in a chosen worktree or branch.
-# Usage: pi-wt [-w/--worktree <name>] [--yolo] [--code] [--design] [pi-args...]
+# Usage: pi-wt [-w/--worktree <name>] [--cwd] [--yolo] [--code] [--design] [--native] [pi-args...]
 #
 # Install: copy to ~/.local/bin/pi-wt alongside wt-core.sh.
 
@@ -20,6 +20,7 @@ WT_NAME="$(basename "$0")"
 
 # Model selection mode: "" for none, "code" or "design" for internal model selection
 WT_MODEL_MODE=""
+WT_NATIVE=0
 
 # Parse pi-wt specific arguments
 PI_WT_ARGS=()  # Arguments to pass to wt_main
@@ -31,6 +32,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --design)
       WT_MODEL_MODE="design"
+      shift
+      ;;
+    --native)
+      WT_NATIVE=1
       shift
       ;;
     *)
@@ -186,7 +191,20 @@ pi_launcher() {
 wt_exec() {
   local model_to_use=""
   
-  if [[ -n "$WT_MODEL_MODE" ]]; then
+  # --native flag: use agent's native model, error if not configured
+  if [[ "${WT_NATIVE:-0}" -eq 1 ]]; then
+    local config_file="${HOME}/.config/ai-shell/models.conf"
+    if [[ -f "$config_file" ]]; then
+      source "$config_file"
+      if [[ -n "${NATIVE_PI:-}" ]]; then
+        model_to_use="$NATIVE_PI"
+      else
+        die "--native requires NATIVE_PI to be configured in models.conf"
+      fi
+    else
+      die "--native requires models.conf with NATIVE_PI configured"
+    fi
+  elif [[ -n "$WT_MODEL_MODE" ]]; then
     # Use internal model selection with --code/--design
     model_to_use=$(get_model_from_rotation "$WT_MODEL_MODE") || exit 1
   fi

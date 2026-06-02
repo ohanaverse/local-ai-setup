@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # claude-wt — launch Claude Code in a chosen worktree or branch.
-# Usage: claude-wt [-w/--worktree <name>] [--yolo] [--code] [--design] [claude-args...]
+# Usage: claude-wt [-w/--worktree <name>] [--cwd] [--yolo] [--code] [--design] [--native] [claude-args...]
 #
 # Install: copy to ~/.local/bin/claude-wt alongside wt-core.sh.
 
@@ -21,6 +21,7 @@ WT_NAME="$(basename "$0")"
 
 # Model selection mode: "" for none, "code" or "design" for internal model selection
 WT_MODEL_MODE=""
+WT_NATIVE=0
 
 # Parse claude-wt specific arguments
 CLAUDE_WT_ARGS=()  # Arguments to pass to wt_main
@@ -32,6 +33,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --design)
       WT_MODEL_MODE="design"
+      shift
+      ;;
+    --native)
+      WT_NATIVE=1
       shift
       ;;
     *)
@@ -177,7 +182,20 @@ get_model_from_rotation() {
 wt_exec() {
   local model_to_use=""
   
-  if [[ -n "$WT_MODEL_MODE" ]]; then
+  # --native flag: use agent's native model, error if not configured
+  if [[ "${WT_NATIVE:-0}" -eq 1 ]]; then
+    local config_file="${HOME}/.config/ai-shell/models.conf"
+    if [[ -f "$config_file" ]]; then
+      source "$config_file"
+      if [[ -n "${NATIVE_CLAUDE:-}" ]]; then
+        model_to_use="$NATIVE_CLAUDE"
+      else
+        die "--native requires NATIVE_CLAUDE to be configured in models.conf"
+      fi
+    else
+      die "--native requires models.conf with NATIVE_CLAUDE configured"
+    fi
+  elif [[ -n "$WT_MODEL_MODE" ]]; then
     # Use internal model selection with --code/--design
     model_to_use=$(get_model_from_rotation "$WT_MODEL_MODE") || exit 1
   fi
@@ -199,8 +217,12 @@ wt_exec() {
 }
 
 # Session resume hook: detects ~/.claude/projects/<slug>/*.jsonl sessions
+# Skips prompt when WT_CWD=1 (--cwd flag)
 wt_pre_exec() {
   local path="$1"; shift
+
+  # Skip session resume prompt when --cwd is used
+  [[ "${WT_CWD:-0}" -eq 1 ]] && return
 
   local session_info
   session_info="$(find_latest_session "$path")"
@@ -211,7 +233,21 @@ wt_pre_exec() {
     choice="$(session_resume_prompt "$branch" "$session_id" "$mtime")"
     if [[ -n "$choice" ]]; then
       local model_to_use=""
-      if [[ -n "$WT_MODEL_MODE" ]]; then
+      
+      # --native flag: use agent's native model, error if not configured
+      if [[ "${WT_NATIVE:-0}" -eq 1 ]]; then
+        local config_file="${HOME}/.config/ai-shell/models.conf"
+        if [[ -f "$config_file" ]]; then
+          source "$config_file"
+          if [[ -n "${NATIVE_CLAUDE:-}" ]]; then
+            model_to_use="$NATIVE_CLAUDE"
+          else
+            die "--native requires NATIVE_CLAUDE to be configured in models.conf"
+          fi
+        else
+          die "--native requires models.conf with NATIVE_CLAUDE configured"
+        fi
+      elif [[ -n "$WT_MODEL_MODE" ]]; then
         model_to_use=$(get_model_from_rotation "$WT_MODEL_MODE") || exit 1
       fi
       
