@@ -3,12 +3,15 @@
 # Not executable on its own. Source from a wrapper and call wt_main.
 #
 # Wrapper contract (define these before calling wt_main):
-#   WT_NAME=<name>     — launcher name (set by wrapper, e.g. "claude-wt")
-#   SCRIPT_DIR=<path>  — absolute path to directory containing wrapper + wt-core.sh
-#   wt_check_deps()    — verify binary exists, die with install hint
-#   wt_yolo_flag()     — echo the tool's skip-permissions flag, or empty
-#   wt_exec "$@"       — construct and exec the final launch command
-#   wt_pre_exec()      — OPTIONAL: session resume hook called after cd
+#   WT_NAME=<name>        — launcher name (set by wrapper, e.g. "claude-wt")
+#   SCRIPT_DIR=<path>     — absolute path to directory containing wrapper + wt-core.sh
+#   WT_DEFAULT_CODE       — fallback model for code mode (e.g. "native:claude")
+#   WT_DEFAULT_DESIGN     — fallback model for design mode
+#   WT_AGENT_NAME          — agent identifier for model-usability checks (e.g. "claude")
+#   wt_check_deps()        — verify binary exists, die with install hint
+#   wt_yolo_flag()         — echo the tool's skip-permissions flag, or empty
+#   wt_exec "$@"           — construct and exec the final launch command
+#   wt_pre_exec()          — OPTIONAL: session resume hook called after cd
 #
 # Install with wrapper scripts in the same directory.
 
@@ -19,7 +22,18 @@ die() {
   exit 1
 }
 
-# Converts an absolute path to Claude Code's project directory slug.
+# Config directory for rotation state and model configs.
+wt_config_dir() {
+  printf '%s' "${XDG_CONFIG_HOME:-${HOME}/.config}/ai-shell"
+}
+
+# Returns the path to the rotation state file for a mode (code/design).
+wt_rotation_state() {
+  local mode="$1"
+  printf '%s/rotation-%s.state' "$(wt_config_dir)" "$mode"
+}
+
+# Converts an absolute path to a slug for session directories.
 # Replaces every character not in [a-zA-Z0-9-] with -.
 compute_project_slug() {
   printf '%s' "$1" | sed 's/[^a-zA-Z0-9-]/-/g'
@@ -259,22 +273,50 @@ format_entries() {
   '
 }
 
-# Consumes -w <name> / --worktree <name>, --yolo, --no-guard,
-# and --check-guard from "$@".
-# Sets globals:
-#   WT_WORKTREE_NAME     — the name (empty if flag was not given)
-#   WT_PASSTHROUGH_ARGS  — array of remaining args, in original order
-#   WT_YOLO              — 1 if --yolo was given, 0 otherwise
-#   WT_NO_GUARD          — 1 if --no-guard was given, 0 otherwise
-#   WT_CHECK_GUARD       — 1 if --check-guard was given, 0 otherwise
-# Dies if -w / --worktree is given without a value.
+# Consumes --code/--design/--native and -w/--worktree/--yolo/--cwd/--no-guard/--check-guard
+# from "$@".  Sets globals:
+#   WT_MODEL_MODE   — "code", "design", or "" (default "code" if model rotation is active)
+#   WT_NATIVE       — 1 if --native was given, 0 otherwise
+#   WT_WORKTREE_NAME
+#   WT_PASSTHROUGH_ARGS
+#   WT_YOLO / WT_CWD / WT_NO_GUARD / WT_CHECK_GUARD
+# Dies if -w/--worktree is given without a value.
 parse_wt_args() {
+  WT_MODEL_MODE=""
+  WT_NATIVE=0
   WT_WORKTREE_NAME=""
   WT_PASSTHROUGH_ARGS=()
   WT_YOLO=0
   WT_CWD=0
+  WT_NO_GUARD=0
+  WT_CHECK_GUARD=0
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --code)
+        if [[ -n "${WT_DEFAULT_CODE:-}" ]]; then
+          WT_MODEL_MODE="code"
+        else
+          WT_PASSTHROUGH_ARGS+=("$1")
+        fi
+        shift
+        ;;
+      --design)
+        if [[ -n "${WT_DEFAULT_CODE:-}" ]]; then
+          WT_MODEL_MODE="design"
+        else
+          WT_PASSTHROUGH_ARGS+=("$1")
+        fi
+        shift
+        ;;
+      --native)
+        if [[ -n "${WT_DEFAULT_CODE:-}" ]]; then
+          WT_NATIVE=1
+        else
+          WT_PASSTHROUGH_ARGS+=("$1")
+        fi
+        shift
+        ;;
       -w|--worktree)
         [[ $# -lt 2 ]] && die "$1 requires a worktree name"
         WT_WORKTREE_NAME="$2"
@@ -302,6 +344,12 @@ parse_wt_args() {
         ;;
     esac
   done
+
+  # Default to code mode when model rotation is active but neither --code nor --design given.
+  # Only applies if the wrapper sets WT_DEFAULT_CODE (i.e. model rotation is enabled).
+  if [[ -z "$WT_MODEL_MODE" && -n "${WT_DEFAULT_CODE:-}" ]]; then
+    WT_MODEL_MODE="code"
+  fi
 }
 
 # Ensures a worktree exists for branch <name>.
@@ -342,7 +390,128 @@ ensure_worktree_for_name() {
   printf '%s\n' "$path"
 }
 
-# $1 = worktree name. Remaining args forwarded to wt_exec via handle_worktree_selection.
+# Returns the resolved model name on stdout, or "" if no model selection applies.
+# Exits with 1 if model rotation was requested but no usable model found.
+# Uses globals: WT_MODEL_MODE, WT_NATIVE, WT_DEFAULT_CODE, WT_DEFAULT_DESIGN, WT_AGENT_NAME, WT_NAME.
+get_model_from_rotation() {
+  local mode="$WT_MODEL_MODE"
+
+  # Nothing to do if no model mode is set (wrapper does not support rotation, or --cwd was used)
+  [[ -z "$mode" ]] && return 1
+
+  local config_file="$(wt_config_dir)/models.conf"
+  local state_file="$(wt_rotation_state "$mode")"
+  local other_mode; other_mode=$( [[ "$mode" == "code" ]] && echo "design" || echo "code" )
+  local other_state_file="$(wt_rotation_state "$other_mode")"
+
+  # Agent-specific default fallback.
+  local default_model
+  if [[ "$mode" == "design" ]]; then
+    default_model="${WT_DEFAULT_DESIGN:-native:${WT_AGENT_NAME:-wt}}"
+  else
+    default_model="${WT_DEFAULT_CODE:-native:${WT_AGENT_NAME:-wt}}"
+  fi
+
+  # Handle missing config file — use agent defaults.
+  if [[ ! -f "$config_file" ]]; then
+    echo "$default_model"
+    return
+  fi
+
+  source "$config_file"
+
+  local model_var
+  if [[ "$mode" == "code" ]]; then
+    model_var="CODE_MODELS[@]"
+  else
+    model_var="DESIGN_MODELS[@]"
+  fi
+
+  local models=("${!model_var}")
+  local num_models=${#models[@]}
+
+  # Empty rotation array — fall back to agent defaults.
+  if [[ "$num_models" -eq 0 ]]; then
+    echo "$default_model"
+    return
+  fi
+
+  # Read current index for this mode.
+  local current_index=0
+  if [[ -f "$state_file" ]]; then
+    current_index=$(sed -n '1p' "$state_file" 2>/dev/null || echo 0)
+    if ! [[ "$current_index" =~ ^[0-9]+$ ]] || [[ "$current_index" -ge "$num_models" ]]; then
+      current_index=0
+    fi
+  fi
+
+  # Read other mode's last selected model for cross-rotation skip.
+  local other_last=""
+  if [[ -f "$other_state_file" ]]; then
+    other_last=$(sed -n '2p' "$other_state_file" 2>/dev/null || echo "")
+  fi
+
+  # Cache ollama models list once.
+  local ollama_models
+  ollama_models=$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+
+  local selected=""
+  local attempts=0
+  local fallback_selected=""
+  local fallback_index=-1
+
+  while [[ $attempts -lt $num_models ]]; do
+    selected="${models[$current_index]}"
+
+    # Skip models not usable by this agent (e.g. native:claude when agent is pi).
+    if [[ "$selected" == native:* && "$selected" != "native:${WT_AGENT_NAME:-wt}" ]]; then
+      current_index=$(( (current_index + 1) % num_models ))
+      attempts=$((attempts + 1))
+      continue
+    fi
+
+    # Cloud model — verify it is available in ollama.
+    if [[ "$selected" != native:* ]]; then
+      if ! echo "$ollama_models" | grep -qFx "$selected"; then
+        printf '%s: model "%s" not in ollama — skipping\n' "${WT_NAME:-wt}" "$selected" >&2
+        current_index=$(( (current_index + 1) % num_models ))
+        attempts=$((attempts + 1))
+        continue
+      fi
+    fi
+
+    # Record first usable model as cross-rotation fallback.
+    if [[ -z "$fallback_selected" ]]; then
+      fallback_selected="$selected"
+      fallback_index=$current_index
+    fi
+
+    # Cross-rotation skip: prefer a model the other mode didn't just use.
+    if [[ -n "$other_last" && "$selected" == "$other_last" ]]; then
+      current_index=$(( (current_index + 1) % num_models ))
+      attempts=$((attempts + 1))
+      continue
+    fi
+
+    break
+  done
+
+  if [[ $attempts -ge $num_models ]]; then
+    if [[ -n "$fallback_selected" ]]; then
+      selected="$fallback_selected"
+      current_index=$fallback_index
+    else
+      printf '%s: no usable model found in %s rotation\n' "${WT_NAME:-wt}" "$mode" >&2
+      return 1
+    fi
+  fi
+
+  # Advance index for next invocation.
+  local next_index=$(( (current_index + 1) % num_models ))
+  printf '%s\n%s\n' "$next_index" "$selected" > "$state_file"
+
+  echo "$selected"
+}
 handle_create_or_use_worktree() {
   local name="$1"; shift
   local path

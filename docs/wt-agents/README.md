@@ -56,4 +56,18 @@ claude-wt: --native requires NATIVE_CLAUDE to be configured in models.conf
 
 ## Model rotation
 
-Launchers read model lists from `~/.config/ai-shell/models.conf` and rotate through them per invocation, tracking state in `~/.config/ai-shell/rotation-{code,design}.state`. The code and design rotations coordinate to avoid picking the same model that the other mode last used.
+All model-rotating launchers share a single `get_model_from_rotation()` function implemented in `wt-core.sh`. The wrapper sets three globals before sourcing `wt-core.sh` to configure behavior:
+
+| Wrapper | `WT_DEFAULT_CODE` | `WT_DEFAULT_DESIGN` | `WT_AGENT_NAME` |
+|---|---|---|---|
+| `claude-wt` | `native:claude` | `native:claude` | `claude` |
+| `pi-wt` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `pi` |
+| `codex-wt` | `native:codex` | `native:codex` | `codex` |
+| `copilot-wt` | `native:copilot` | `native:copilot` | `copilot` |
+
+The function handles:
+- Missing config file → use agent-specific defaults
+- Empty rotation array → use agent-specific defaults
+- Cloud models → verify they are available in ollama; skip and retry if not
+- `native:X` where X ≠ `WT_AGENT_NAME` → skip (model not usable by this agent)
+- Cross-rotation skip → avoid picking the same model the other mode last used
