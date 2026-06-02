@@ -10,6 +10,17 @@ Shell scripts that wrap AI coding agent CLIs (claude, codex, copilot, pi, agy) w
 
 Copy everything in `bin/` to a single directory on `$PATH` (e.g., `~/.local/bin/`). All scripts must remain co-located — wrappers find `wt-core.sh` and `wt-install-guard` via `SCRIPT_DIR`. If `wt-install-guard` is missing, launchers print a warning and skip auto-installing the main-branch commit guard.
 
+### Using the Makefile
+
+```bash
+make install      # Install to ~/.local/bin/
+make uninstall    # Remove from ~/.local/bin/
+make help         # List all available targets
+make check        # Run lint + format-check
+make test         # Run smoke tests (requires make install first)
+make clean        # Remove build artifacts
+```
+
 ## Architecture
 
 ### Plugin pattern
@@ -87,9 +98,25 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, whi
 
 `copilot-wt` does not pass `--model` for Ollama models. Instead it sets four environment variables (`COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, `COPILOT_MODEL`) before `exec copilot`. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `models.conf`, defaulting to `http://localhost:11434`.
 
+## Docs
+
+- `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)
+- `docs/wt-agents/` — per-agent reference docs (one file per launcher)
+
 ## No test suite
 
-These are bash scripts; there is no automated test runner. Validate changes by running the launcher manually. Representative invocations:
+These are bash scripts. Quality gates:
+
+```bash
+make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
+                  # Suppressed: SC1090,SC1091 (dynamic source), SC2034 (unused vars), SC2155 (declare+assign)
+make format       # shfmt -w -i 2 -ci
+make format-check # shfmt -d (CI check)
+make check        # lint + format-check
+make test         # smoke test invocations
+```
+
+Validate changes by running the launcher manually. Representative invocations:
 
 ```bash
 # Basic flow — fzf picker inside a git repo

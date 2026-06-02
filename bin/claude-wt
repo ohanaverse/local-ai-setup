@@ -70,7 +70,8 @@ wt_exec() {
 # Session resume hook: detects ~/.claude/projects/<slug>/*.jsonl sessions.
 # Skips prompt when WT_CWD=1 (--cwd flag).
 wt_pre_exec() {
-  local path="$1"; shift
+  local path="$1"
+  shift
 
   # Skip session resume prompt when --cwd is used.
   [[ "${WT_CWD:-0}" -eq 1 ]] && return

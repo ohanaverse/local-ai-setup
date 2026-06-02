@@ -55,9 +55,9 @@ find_latest_session() {
   # Use stat to get mtime (macOS/BSD format).
   # Find all .jsonl files, stat each, sort by mtime descending, take the newest.
   local newest
-  newest="$(find "$dir" -maxdepth 1 -name '*.jsonl' -exec stat -f '%m%t%N' {} + 2>/dev/null \
-    | sort -rn \
-    | head -1)" || true
+  newest="$(find "$dir" -maxdepth 1 -name '*.jsonl' -exec stat -f '%m%t%N' {} + 2>/dev/null |
+    sort -rn |
+    head -1)" || true
 
   [[ -z "$newest" ]] && return
 
@@ -99,14 +99,14 @@ session_resume_prompt() {
 
   local choice
   choice="$(printf 'Resume session on %s (last active %s)\nStart fresh on %s\n' \
-    "$branch" "$rel" "$branch" \
-    | fzf --no-multi \
-          --prompt='wt> ' \
-          --header='Previous session found')" || return 0
+    "$branch" "$rel" "$branch" |
+    fzf --no-multi \
+      --prompt='wt> ' \
+      --header='Previous session found')" || return 0
 
   case "$choice" in
     Resume*) printf '%s\n' "$session_id" ;;
-    *)       return 0 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -153,9 +153,9 @@ compute_bare_branches() {
 # Returns the repo's default branch (e.g. main, master) from origin/HEAD.
 # Falls back to empty string if no remote or origin/HEAD is not set.
 default_branch() {
-  git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-    | sed 's@^refs/remotes/origin/@@' \
-    || echo ""
+  git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null |
+    sed 's@^refs/remotes/origin/@@' ||
+    echo ""
 }
 
 # Returns 0 if the block-main-commit guard is installed in this repo, 1 otherwise.
@@ -216,20 +216,20 @@ gather_entries() {
 
   # Collect remote-tracking branches, filter out */HEAD symbolic refs and remote names without branches
   local remote_branches
-  remote_branches="$(git for-each-ref --format='%(refname:short)' refs/remotes/ \
-    | grep '/' | grep -v '/HEAD$' || true)"
+  remote_branches="$(git for-each-ref --format='%(refname:short)' refs/remotes/ |
+    grep '/' | grep -v '/HEAD$' || true)"
 
   # Build list of all branches (local + remote), excluding collisions
   # A remote branch is excluded if a local branch with the same name exists
   local all_branches=""
   local b short_name
-  
+
   # Add all local branches
   while IFS= read -r b; do
     [[ -z "$b" ]] && continue
     all_branches+="$b"$'\n'
   done <<<"$local_branches"
-  
+
   # Add remote branches whose short name doesn't match any local branch
   while IFS= read -r b; do
     [[ -z "$b" ]] && continue
@@ -317,7 +317,7 @@ parse_wt_args() {
         fi
         shift
         ;;
-      -w|--worktree)
+      -w | --worktree)
         [[ $# -lt 2 ]] && die "$1 requires a worktree name"
         WT_WORKTREE_NAME="$2"
         shift 2
@@ -366,9 +366,9 @@ ensure_worktree_for_name() {
 
   # If the branch is already checked out in any worktree, use that worktree.
   local existing_path
-  existing_path="$(git worktree list --porcelain \
-    | parse_worktree_porcelain \
-    | awk -F'\t' -v branch="$name" '$2 == branch {print $3; exit}')"
+  existing_path="$(git worktree list --porcelain |
+    parse_worktree_porcelain |
+    awk -F'\t' -v branch="$name" '$2 == branch {print $3; exit}')"
   if [[ -n "$existing_path" ]]; then
     printf '%s\n' "$existing_path"
     return
@@ -401,7 +401,8 @@ get_model_from_rotation() {
 
   local config_file="$(wt_config_dir)/models.conf"
   local state_file="$(wt_rotation_state "$mode")"
-  local other_mode; other_mode=$( [[ "$mode" == "code" ]] && echo "design" || echo "code" )
+  local other_mode
+  other_mode=$([[ "$mode" == "code" ]] && echo "design" || echo "code")
   local other_state_file="$(wt_rotation_state "$other_mode")"
 
   # Agent-specific default fallback.
@@ -465,7 +466,7 @@ get_model_from_rotation() {
 
     # Skip models not usable by this agent (e.g. native:claude when agent is pi).
     if [[ "$selected" == native:* && "$selected" != "native:${WT_AGENT_NAME:-wt}" ]]; then
-      current_index=$(( (current_index + 1) % num_models ))
+      current_index=$(((current_index + 1) % num_models))
       attempts=$((attempts + 1))
       continue
     fi
@@ -474,7 +475,7 @@ get_model_from_rotation() {
     if [[ "$selected" != native:* ]]; then
       if ! echo "$ollama_models" | grep -qFx "$selected"; then
         printf '%s: model "%s" not in ollama — skipping\n' "${WT_NAME:-wt}" "$selected" >&2
-        current_index=$(( (current_index + 1) % num_models ))
+        current_index=$(((current_index + 1) % num_models))
         attempts=$((attempts + 1))
         continue
       fi
@@ -488,7 +489,7 @@ get_model_from_rotation() {
 
     # Cross-rotation skip: prefer a model the other mode didn't just use.
     if [[ -n "$other_last" && "$selected" == "$other_last" ]]; then
-      current_index=$(( (current_index + 1) % num_models ))
+      current_index=$(((current_index + 1) % num_models))
       attempts=$((attempts + 1))
       continue
     fi
@@ -507,13 +508,14 @@ get_model_from_rotation() {
   fi
 
   # Advance index for next invocation.
-  local next_index=$(( (current_index + 1) % num_models ))
-  printf '%s\n%s\n' "$next_index" "$selected" > "$state_file"
+  local next_index=$(((current_index + 1) % num_models))
+  printf '%s\n%s\n' "$next_index" "$selected" >"$state_file"
 
   echo "$selected"
 }
 handle_create_or_use_worktree() {
-  local name="$1"; shift
+  local name="$1"
+  shift
   local path
   path="$(ensure_worktree_for_name "$name")"
   handle_worktree_selection "$path" "$@"
@@ -524,11 +526,11 @@ handle_create_or_use_worktree() {
 # Exits with fzf's exit code (130 on Esc/Ctrl-C).
 select_entry() {
   fzf --ansi \
-      --delimiter=$'\t' \
-      --with-nth=4 \
-      --no-multi \
-      --header="${1:-Pick a worktree or branch (Enter to select, Esc to cancel)}" \
-      --prompt='wt> '
+    --delimiter=$'\t' \
+    --with-nth=4 \
+    --no-multi \
+    --header="${1:-Pick a worktree or branch (Enter to select, Esc to cancel)}" \
+    --prompt='wt> '
 }
 
 # $1 = branch name. Prompts via fzf with two options.
@@ -536,11 +538,11 @@ select_entry() {
 confirm_create_worktree() {
   local branch="$1"
   local choice
-  choice="$(printf 'Create worktree for %s\nCancel\n' "$branch" \
-    | fzf --no-multi --prompt='wt> ' --header="Branch '$branch' has no worktree.")" || return 0
+  choice="$(printf 'Create worktree for %s\nCancel\n' "$branch" |
+    fzf --no-multi --prompt='wt> ' --header="Branch '$branch' has no worktree.")" || return 0
   case "$choice" in
     Create*) printf 'yes\n' ;;
-    *)       printf 'no\n' ;;
+    *) printf 'no\n' ;;
   esac
 }
 
@@ -560,7 +562,8 @@ _wt_exec_with_yolo() {
 # $1 = path. cd's into it, calls optional wt_pre_exec hook, then wt_exec.
 # Remaining args forwarded to wt_exec (with yolo flag prepended if --yolo was given).
 handle_worktree_selection() {
-  local path="$1"; shift
+  local path="$1"
+  shift
   [[ -d "$path" ]] || die "worktree path is not a directory: $path"
   cd "$path"
 
@@ -578,14 +581,15 @@ handle_worktree_selection() {
 # If branch contains a / (e.g. origin/feature), it's a remote branch — create
 # a local tracking branch with the short name.
 handle_branch_selection() {
-  local branch="$1"; shift
+  local branch="$1"
+  shift
   local choice
   choice="$(confirm_create_worktree "$branch")"
   [[ "$choice" != "yes" ]] && exit 0
 
   local root path short_name
   root="$(git rev-parse --show-toplevel)"
-  
+
   # Check if this is a remote branch (e.g. origin/feature)
   if [[ "$branch" == */* ]]; then
     # Extract short name (e.g. origin/feature → feature)
@@ -664,15 +668,15 @@ wt_main() {
 
   # -w/--worktree was given: must be in a repo, skip the picker entirely.
   if [[ -n "${WT_WORKTREE_NAME:-}" ]]; then
-    git rev-parse --git-dir >/dev/null 2>&1 \
-      || die "-w/--worktree requires a git repository"
+    git rev-parse --git-dir >/dev/null 2>&1 ||
+      die "-w/--worktree requires a git repository"
     handle_create_or_use_worktree "$WT_WORKTREE_NAME" "$@"
   fi
 
   # --cwd: run in current directory, skip the picker.
   if [[ "${WT_CWD:-0}" -eq 1 ]]; then
-    git rev-parse --git-dir >/dev/null 2>&1 \
-      || die "--cwd requires a git repository"
+    git rev-parse --git-dir >/dev/null 2>&1 ||
+      die "--cwd requires a git repository"
     handle_worktree_selection "$(git rev-parse --show-toplevel)" "$@"
   fi
 
@@ -750,8 +754,8 @@ wt_main() {
   fi
 
   case "$type" in
-    current|worktree) handle_worktree_selection "$path" "$@" ;;
-    branch)           handle_branch_selection   "$branch" "$@" ;;
-    *)                die "unknown selection type: $type" ;;
+    current | worktree) handle_worktree_selection "$path" "$@" ;;
+    branch) handle_branch_selection "$branch" "$@" ;;
+    *) die "unknown selection type: $type" ;;
   esac
 }

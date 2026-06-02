@@ -23,6 +23,13 @@ cp -r bin/* ~/.local/bin/
 chmod +x ~/.local/bin/*-wt
 ```
 
+Or use the Makefile:
+
+```bash
+make install      # Install to ~/.local/bin/
+make uninstall    # Remove from ~/.local/bin/
+```
+
 All scripts must remain co-located — wrappers find `wt-core.sh` via `SCRIPT_DIR`.
 
 ## Quick start
@@ -130,6 +137,18 @@ Launchers auto-install a `block-main-commit v1` pre-commit hook on every invocat
 ## Session resume (claude-wt only)
 
 When a prior Claude Code session exists for the worktree path, `claude-wt` prompts whether to resume it. Skipped when `--cwd` is used.
+
+## Development
+
+```bash
+make help         # Show available targets
+make install      # Install to ~/.local/bin/
+make lint         # Run shellcheck
+make format       # Format with shfmt
+make check        # Run lint + format-check
+make test         # Run smoke tests
+make clean        # Remove build artifacts
+```
 
 ## Architecture
 

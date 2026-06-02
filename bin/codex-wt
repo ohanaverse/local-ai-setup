@@ -51,14 +51,14 @@ fix_codex_ollama_profile() {
 
   [[ -z "$section_lines" ]] && return 0
 
-  printf '%s\n' "$section_lines" > "$profile"
+  printf '%s\n' "$section_lines" >"$profile"
 
   local tmp="${config}.tmp.$$"
   awk '
     /^\[profiles\.ollama-launch\]/ { skip=1; next }
     skip && /^\[/                    { skip=0 }
     !skip                            { print }
-  ' "$config" > "$tmp" && mv "$tmp" "$config"
+  ' "$config" >"$tmp" && mv "$tmp" "$config"
 
   printf '%s: migrated [profiles.ollama-launch] from config.toml to %s\n' \
     "$WT_NAME" "$profile" >&2
