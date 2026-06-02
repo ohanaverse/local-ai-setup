@@ -1,0 +1,53 @@
+#!/usr/bin/env sh
+# block-main-commit v1
+# Blocks commits to protected branches (main, master by default).
+# This hook is installed per-repo by wt-install-guard.
+
+# Detect current branch name.
+BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+if [ -z "$BRANCH" ]; then
+  cat >&2 <<'EOF'
+[block-main-commit] WARNING: Could not determine current branch (detached HEAD?).
+Proceed with caution — you may be committing to a protected branch.
+EOF
+fi
+
+# Allow CI/automation to bypass via env var.
+if [ -n "$WT_SKIP_MAIN_BLOCK" ]; then
+  exit 0
+fi
+
+# Determine protected branches.
+if [ -n "$BLOCK_MAIN_BRANCHES" ]; then
+  _protected="$BLOCK_MAIN_BRANCHES"
+else
+  _protected="main,master"
+fi
+
+_old_ifs="$IFS"
+IFS=','
+set -f
+for _b in $_protected; do
+  [ -n "$_b" ] || continue
+  if [ "$BRANCH" = "$_b" ]; then
+    IFS="$_old_ifs"
+    set +f
+    cat >&2 <<'EOF'
+[block-main-commit] Commits to protected branches are blocked.
+
+Work on a feature branch instead:
+  git checkout -b my-feature
+  git commit -m "..."
+
+Or create a worktree:
+  claude-wt --worktree my-feature
+
+To bypass in an emergency: git commit --no-verify
+EOF
+    exit 1
+  fi
+done
+IFS="$_old_ifs"
+set +f
+
+exit 0

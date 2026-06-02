@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# copilot-wt — launch GitHub Copilot CLI in a chosen worktree or branch.
+# Usage: copilot-wt [-w/--worktree <name>] [--yolo] [--code] [--design] [copilot-args...]
+#
+# Install: copy to ~/.local/bin/copilot-wt alongside wt-core.sh.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ ! -f "$SCRIPT_DIR/wt-core.sh" ]]; then
+  printf '%s: wt-core.sh not found at %s/wt-core.sh\n' "$(basename "$0")" "$SCRIPT_DIR" >&2
+  printf '%s: Ensure both wt-core.sh and %s are copied to the same directory.\n' "$(basename "$0")" "$(basename "$0")" >&2
+  exit 1
+fi
+
+source "$SCRIPT_DIR/wt-core.sh"
+
+WT_NAME="$(basename "$0")"
+
+# Model selection mode: "" for none, "code" or "design" for internal model selection
+WT_MODEL_MODE=""
+
+# Parse copilot-wt specific arguments
+COPILOT_WT_ARGS=()  # Arguments to pass to wt_main
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --code)
+      WT_MODEL_MODE="code"
+      shift
+      ;;
+    --design)
+      WT_MODEL_MODE="design"
+      shift
+      ;;
+    *)
+      COPILOT_WT_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# Default to --code when neither --code nor --design was specified
+[[ -z "$WT_MODEL_MODE" ]] && WT_MODEL_MODE="code"
+
+wt_check_deps() {
+  command -v copilot >/dev/null 2>&1 || die "copilot not found. Install: npm install -g @github/copilot"
+}
+
+wt_yolo_flag() {
+  echo "--yolo"
+}
+
+# Get model from rotation based on mode
+# Returns model name on stdout, exits with 1 if no usable model found
+get_model_from_rotation() {
+  local mode="$1"  # "code" or "design"
+  local config_file="${HOME}/.config/ai-shell/models.conf"
+  local state_file="${HOME}/.config/ai-shell/rotation-${mode}.state"
+  local other_state_file="${HOME}/.config/ai-shell/rotation-$( [[ "$mode" == "code" ]] && echo "design" || echo "code" ).state"
+  
+  # Agent-specific defaults — defined BEFORE config check
+  local default_code="native:copilot"
+  local default_design="native:copilot"
+  
+  local DEFAULT_MODEL
+  if [[ "$mode" == "design" ]]; then
+    DEFAULT_MODEL="$default_design"
+  else
+    DEFAULT_MODEL="$default_code"
+  fi
+
+  # Handle missing config file - use agent-specific defaults
+  if [[ ! -f "$config_file" ]]; then
+    echo "$DEFAULT_MODEL"
+    return
+  fi
+  
+  source "$config_file"
+
+  local model_var
+  if [[ "$mode" == "code" ]]; then
+    model_var="CODE_MODELS[@]"
+  else
+    model_var="DESIGN_MODELS[@]"
+  fi
+
+  local models=("${!model_var}")
+  local num_models=${#models[@]}
+
+  # Handle empty rotation array - fall back to agent-specific default
+  if [[ "$num_models" -eq 0 ]]; then
+    echo "$DEFAULT_MODEL"
+    return
+  fi
+
+  # Read current index for this mode (default 0 if missing/invalid)
+  local current_index=0
+  if [[ -f "$state_file" ]]; then
+    current_index=$(sed -n '1p' "$state_file" 2>/dev/null || echo 0)
+    if ! [[ "$current_index" =~ ^[0-9]+$ ]] || [[ "$current_index" -ge "$num_models" ]]; then
+      current_index=0
+    fi
+  fi
+
+  # Read other mode's last selected model for cross-rotation skip
+  local other_last=""
+  if [[ -f "$other_state_file" ]]; then
+    other_last=$(sed -n '2p' "$other_state_file" 2>/dev/null || echo "")
+  fi
+
+  # Cache ollama models list for performance (avoid repeated calls)
+  local ollama_models
+  ollama_models=$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+
+  local selected=""
+  local attempts=0
+  local fallback_selected=""
+  local fallback_index=-1
+  while [[ $attempts -lt $num_models ]]; do
+    selected="${models[$current_index]}"
+
+    # Agent-specific usability check for copilot-wt
+    if [[ "$selected" == native:* && "$selected" != "native:copilot" ]]; then
+      # Not usable by copilot, skip to next
+      current_index=$(( (current_index + 1) % num_models ))
+      attempts=$((attempts + 1))
+      continue
+    fi
+
+    if [[ "$selected" != native:* ]]; then
+      # Cloud model - check if available in ollama (using cached list)
+      if ! echo "$ollama_models" | grep -qFx "$selected"; then
+        printf 'copilot-wt: model "%s" not in ollama — skipping\n' "$selected" >&2
+        current_index=$(( (current_index + 1) % num_models ))
+        attempts=$((attempts + 1))
+        continue
+      fi
+    fi
+
+    # Record first usable model as cross-rotation fallback
+    if [[ -z "$fallback_selected" ]]; then
+      fallback_selected="$selected"
+      fallback_index=$current_index
+    fi
+
+    # Cross-rotation skip: prefer a model the other mode didn't just use
+    if [[ -n "$other_last" ]] && [[ "$selected" == "$other_last" ]]; then
+      current_index=$(( (current_index + 1) % num_models ))
+      attempts=$((attempts + 1))
+      continue
+    fi
+
+    # Found a usable model
+    break
+  done
+
+  if [[ $attempts -ge $num_models ]]; then
+    if [[ -n "$fallback_selected" ]]; then
+      # All usable models conflict with cross-rotation; reuse first usable model
+      selected="$fallback_selected"
+      current_index=$fallback_index
+    else
+      printf 'copilot-wt: no usable model found in %s rotation\n' "$mode" >&2
+      return 1  # No usable model found
+    fi
+  fi
+
+  # Advance index for next invocation (only called when model will be used)
+  local next_index=$(( (current_index + 1) % num_models ))
+  printf '%s\n%s\n' "$next_index" "$selected" > "$state_file"
+  
+  echo "$selected"
+}
+
+wt_exec() {
+  # Copilot CLI connects to Ollama via the OpenAI-compatible API using env
+  # vars (NOT the --model flag, which only accepts Copilot-native names).
+  # See: https://docs.ollama.com/integrations/copilot-cli
+  #
+  # Required env vars for Ollama:
+  #   COPILOT_PROVIDER_BASE_URL   — Ollama's OpenAI-compatible endpoint
+  #   COPILOT_PROVIDER_API_KEY     — empty (no auth with Ollama)
+  #   COPILOT_PROVIDER_WIRE_API    — must be "responses" for Ollama
+  #   COPILOT_MODEL                — the Ollama model name
+  #
+  local model_to_use=""
+  
+  if [[ -n "$WT_MODEL_MODE" ]]; then
+    # Use internal model selection with --code/--design
+    model_to_use=$(get_model_from_rotation "$WT_MODEL_MODE") || exit 1
+  fi
+  
+  if [[ -n "$model_to_use" ]]; then
+    if [[ "$model_to_use" == native:* && "$model_to_use" != "native:copilot" ]]; then
+      printf '%s: skipping "%s" (not a copilot model)\n' "$WT_NAME" "$model_to_use" >&2
+      exec copilot "$@"
+    fi
+    if [[ "$model_to_use" == "native:copilot" ]]; then
+      exec copilot --model auto "$@"
+    fi
+    # Cloud model - set env vars and launch
+    if ! ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qFx "$model_to_use"; then
+      printf '%s: model "%s" not in ollama — trying --model passthrough\n' \
+        "$WT_NAME" "$model_to_use" >&2
+      exec copilot --model "$model_to_use" "$@"
+    fi
+    # Read Ollama base URL from models.conf, fall back to localhost.
+    local ollama_base_url="http://localhost:11434"
+    if [[ -f "$HOME/.config/ai-shell/models.conf" ]]; then
+      local configured_url
+      configured_url="$(source "$HOME/.config/ai-shell/models.conf" && printf '%s' "$PROVIDER_OLLAMA_BASE_URL")"
+      [[ -n "$configured_url" ]] && ollama_base_url="$configured_url"
+    fi
+    # Strip any trailing /v1 to avoid doubling, then append /v1
+    local stripped="${ollama_base_url%/v1}"
+    exec env \
+      COPILOT_PROVIDER_BASE_URL="${stripped%/}/v1" \
+      COPILOT_PROVIDER_API_KEY="" \
+      COPILOT_PROVIDER_WIRE_API="responses" \
+      COPILOT_MODEL="$model_to_use" \
+      copilot "$@"
+  fi
+  exec copilot "$@"
+}
+
+wt_main "${COPILOT_WT_ARGS[@]}"
