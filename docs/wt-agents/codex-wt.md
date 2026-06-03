@@ -34,6 +34,14 @@ Codex picks a model from a `--profile <name>` and `-m <model>` flag combination.
 
 The launcher's `native:codex` sentinel maps to codex's own default model for that profile.
 
+## Agent init
+
+`codex-wt --init` seeds project-level instruction files:
+
+- `AGENTS.md` — shared instruction template (if missing)
+
+Codex reads `AGENTS.md` natively, so no pointer file is needed.
+
 ## Verified on this machine
 
 **Convention only; codex is used on other machines, not this one.** Statements above are sourced from the upstream Codex CLI repository and docs. Re-verify against the local machine before relying on details for credentials or profile syntax.

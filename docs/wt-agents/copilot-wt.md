@@ -24,6 +24,15 @@ Native auth: `gh auth login` plus a Copilot subscription. Provider override: set
 
 Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; instead it sets the `COPILOT_PROVIDER_*` env vars when the rotation selects an Ollama-style local model, and maps `native:copilot` to `--model auto` so Copilot uses its own model selection logic. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/ai-shell/models.conf`, falling back to `http://localhost:11434`.
 
+## Agent init
+
+`copilot-wt --init` seeds project-level instruction files:
+
+- `AGENTS.md` — shared instruction template (if missing)
+- `.github/copilot-instructions.md` — pointer containing `Read AGENTS.md and follow all instructions in it.` (if missing)
+
+Copilot doesn't support file imports, so the pointer file uses a plain-text instruction.
+
 ## Verified on this machine
 
 **Not installed on this machine.** Statements above are sourced from the upstream GitHub Copilot CLI docs and the linked Ollama integration page. Re-verify before relying on details for env-var names or auth flow.

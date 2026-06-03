@@ -38,6 +38,14 @@ pi picks a model from `~/.pi/agent/models.json` based on `--model <id>` and `--p
 
 For `native:pi` (the launcher's "use pi's own default" sentinel), `pi-wt` execs `pi` with no `--model` flag and lets pi (or the LiteLLM wrapper, if present) choose.
 
+## Agent init
+
+`pi-wt --init` seeds project-level instruction files:
+
+- `AGENTS.md` — shared instruction template (if missing)
+
+Pi has no project-level instruction file convention, so no pointer file is created.
+
 ## Verified on this machine
 
 **Verified on this machine, 2026-06-01.**

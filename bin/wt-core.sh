@@ -279,7 +279,7 @@ format_entries() {
 #   WT_NATIVE       — 1 if --native was given, 0 otherwise
 #   WT_WORKTREE_NAME
 #   WT_PASSTHROUGH_ARGS
-#   WT_YOLO / WT_CWD / WT_NO_GUARD / WT_CHECK_GUARD
+#   WT_YOLO / WT_CWD / WT_NO_GUARD / WT_CHECK_GUARD / WT_INIT
 # Dies if -w/--worktree is given without a value.
 parse_wt_args() {
   WT_MODEL_MODE=""
@@ -290,6 +290,7 @@ parse_wt_args() {
   WT_CWD=0
   WT_NO_GUARD=0
   WT_CHECK_GUARD=0
+  WT_INIT=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -338,6 +339,10 @@ parse_wt_args() {
         WT_CWD=1
         shift
         ;;
+      --init)
+        WT_INIT=1
+        shift
+        ;;
       *)
         WT_PASSTHROUGH_ARGS+=("$1")
         shift
@@ -349,6 +354,82 @@ parse_wt_args() {
   # Only applies if the wrapper sets WT_DEFAULT_CODE (i.e. model rotation is enabled).
   if [[ -z "$WT_MODEL_MODE" && -n "${WT_DEFAULT_CODE:-}" ]]; then
     WT_MODEL_MODE="code"
+  fi
+}
+
+# Seeds project-level agent instruction files if they don't already exist.
+# Creates AGENTS.md (seed template) and an agent-specific pointer file
+# determined by WT_AGENT_NAME. Requires a git repository.
+# Skips any file that already exists (skip-if-exists).
+seed_agent_instructions() {
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel)" || die "not in a git working tree"
+  local created=0
+
+  # Seed AGENTS.md if missing
+  local agents_md="$repo_root/AGENTS.md"
+  if [[ ! -f "$agents_md" ]]; then
+    cat >"$agents_md" <<'SEED'
+# Agent Instructions
+
+> **Uninitialized.** If this is your first time reading this file in a new project, ask the user about the project and fill in the sections below. Remove this notice once the file has been customized.
+
+## Project
+
+<!-- What does this project do? -->
+
+## Stack
+
+<!-- Language, framework, key dependencies -->
+
+## Commands
+
+<!-- Build, test, lint, deploy -->
+
+## Conventions
+
+<!-- Code style, naming patterns, important rules -->
+
+## Architecture
+
+<!-- Key directories, modules, data flow -->
+SEED
+    created=1
+  fi
+
+  # Seed agent-specific pointer file if applicable
+  local pointer_file pointer_content
+  case "${WT_AGENT_NAME:-}" in
+    claude)
+      pointer_file="CLAUDE.md"
+      pointer_content="@AGENTS.md"
+      ;;
+    copilot)
+      pointer_file=".github/copilot-instructions.md"
+      pointer_content="Read AGENTS.md and follow all instructions in it."
+      ;;
+    *)
+      # Codex, Pi, Agy: no pointer file needed
+      if [[ "$created" -eq 1 ]]; then
+        printf '%s: instruction files seeded in %s\n' "$WT_NAME" "$repo_root"
+      else
+        printf '%s: instruction files already exist in %s\n' "$WT_NAME" "$repo_root"
+      fi
+      return 0
+      ;;
+  esac
+
+  local pointer_path="$repo_root/$pointer_file"
+  if [[ ! -f "$pointer_path" ]]; then
+    mkdir -p "$(dirname "$pointer_path")"
+    printf '%s\n' "$pointer_content" >"$pointer_path"
+    created=1
+  fi
+
+  if [[ "$created" -eq 1 ]]; then
+    printf '%s: instruction files seeded in %s\n' "$WT_NAME" "$repo_root"
+  else
+    printf '%s: instruction files already exist in %s\n' "$WT_NAME" "$repo_root"
   fi
 }
 
@@ -619,12 +700,35 @@ wt_main() {
   #   WT_NAME="$(basename "$0")"
   [[ -z "${WT_NAME:-}" ]] && die "WT_NAME must be set by wrapper"
 
-  # Check tool binary exists.
-  wt_check_deps
-
-  # Consume wt-core flags.
+  # Consume wt-core flags before checking deps so --init can run without
+  # the agent binary being installed.
   parse_wt_args "$@"
   set -- ${WT_PASSTHROUGH_ARGS[@]+"${WT_PASSTHROUGH_ARGS[@]}"}
+
+  # --init: seed instruction files and exit (no agent binary needed).
+  if [[ "${WT_INIT:-0}" -eq 1 ]]; then
+    [[ -n "${WT_WORKTREE_NAME:-}" ]] &&
+      printf '%s: -w is ignored with --init\n' "$WT_NAME" >&2
+    if ! command -v git >/dev/null 2>&1; then
+      die "git is required"
+    fi
+    if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+      die "--init requires a git working tree"
+    fi
+    seed_agent_instructions
+    # Auto-install the main guard, same as a normal launch would.
+    if ! guard_status; then
+      local installer="${SCRIPT_DIR:-}/wt-install-guard"
+      if [[ -x "$installer" ]]; then
+        bash "$installer" >/dev/null 2>&1 ||
+          printf '%s: failed to auto-install main guard\n' "$WT_NAME" >&2
+      fi
+    fi
+    exit 0
+  fi
+
+  # Check tool binary exists.
+  wt_check_deps
 
   # --no-guard: remove guard and exit.
   if [[ "${WT_NO_GUARD:-0}" -eq 1 ]]; then

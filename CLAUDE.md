@@ -39,13 +39,14 @@ make clean        # Remove build artifacts
 
 ### Core flow (`wt_main`)
 
-1. Call `wt_check_deps`
-2. Parse flags (`--code`, `--design`, `--native`, `-w`, `--yolo`, `--cwd`, `--no-guard`, `--check-guard`) — all flag parsing is shared in `wt-core.sh`
-3. Auto-install `block-main-commit` pre-commit hook via `wt-install-guard`
-4. If `-w <name>` given: `ensure_worktree_for_name` then launch — skip fzf
-5. If `--cwd` given: launch in current repo root — skip fzf
-6. If outside a git repo: pure passthrough to agent — skip fzf
-7. Otherwise: `gather_entries` → fzf → `handle_worktree_selection` or `handle_branch_selection`
+1. Parse flags (`--code`, `--design`, `--native`, `-w`, `--yolo`, `--cwd`, `--no-guard`, `--check-guard`, `--init`) — all flag parsing is shared in `wt-core.sh`
+2. If `--init` was given: call `seed_agent_instructions`, auto-install guard, and exit — no agent binary required
+3. Call `wt_check_deps`
+4. Auto-install `block-main-commit` pre-commit hook via `wt-install-guard`
+5. If `-w <name>` given: `ensure_worktree_for_name` then launch — skip fzf
+6. If `--cwd` given: launch in current repo root — skip fzf
+7. If outside a git repo: pure passthrough to agent — skip fzf
+8. Otherwise: `gather_entries` → fzf → `handle_worktree_selection` or `handle_branch_selection`
 
 ### Model rotation
 
@@ -66,6 +67,10 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, whi
 - `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
 - `<launcher> --no-guard` (removes the hook via `wt-install-guard --uninstall`)
 
+### Agent init
+
+`seed_agent_instructions` in `wt-core.sh` seeds project-level instruction files when `--init` is passed. It creates `AGENTS.md` with a seed template if missing, plus an agent-specific pointer file if the agent supports one (`CLAUDE.md` for Claude, `.github/copilot-instructions.md` for Copilot). Files that already exist are never overwritten. Requires a git working tree (bare repos are rejected); exits with an error if not in one. After seeding, the main guard is auto-installed just as a normal launch would. If `-w` is also given, it is ignored with a warning — seeding always targets the current working tree root.
+
 ### Session resume (claude-wt only)
 
 `wt_pre_exec` checks `~/.claude/projects/<slug>/*.jsonl` for prior sessions. The slug is the worktree path with non-alphanumeric chars replaced by `-`. When a session is found, fzf offers "Resume" or "Start fresh." Skipped when `--cwd` is used.
@@ -77,6 +82,7 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, whi
 | `-w <name>`, `--worktree <name>` | Use/create worktree for branch `<name>`; skip fzf |
 | `--cwd` | Launch in current repo root; skip fzf and session resume |
 | `--yolo` | Prepend the agent's skip-permissions flag |
+| `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--code` | Use code model rotation (default) — rotation-supporting launchers only |
 | `--design` | Use design model rotation — rotation-supporting launchers only |
 | `--native` | Use `NATIVE_<AGENT>` from `models.conf`; error if not configured — rotation-supporting launchers only |
@@ -132,6 +138,9 @@ claude-wt --cwd
 claude-wt --code
 claude-wt --design
 claude-wt --native          # requires NATIVE_CLAUDE in models.conf
+
+# Seed agent instruction files in a new repo (no agent binary required)
+claude-wt --init
 
 # Guard management
 claude-wt --check-guard

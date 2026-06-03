@@ -34,6 +34,15 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` passes the rotation-selected model directly through with `--model`. The model name format is whatever Claude Code accepts (e.g., `claude-opus-4-7`).
 
+## Agent init
+
+`claude-wt --init` seeds project-level instruction files:
+
+- `AGENTS.md` — shared instruction template (if missing)
+- `CLAUDE.md` — pointer containing `@AGENTS.md` (if missing)
+
+Claude natively supports `@path` imports in `CLAUDE.md`. When Claude reads `CLAUDE.md`, it automatically expands the `@AGENTS.md` import. Users can add Claude-specific instructions below the import.
+
 ## Verified on this machine
 
 **Verified on this machine, 2026-06-01.**

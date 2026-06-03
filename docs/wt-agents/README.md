@@ -30,6 +30,7 @@ All `*-wt` launchers support:
 |------|-------------|
 | `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch name |
 | `--yolo` | Skip permission prompts (agent-specific) |
+| `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--code` | Use code model rotation (default if neither flag given) |
 | `--design` | Use design model rotation |
 | `--native` | Use the agent's configured native model (requires `NATIVE_<AGENT>` in models.conf) |

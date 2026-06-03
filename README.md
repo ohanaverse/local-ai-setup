@@ -44,6 +44,9 @@ claude-wt -w my-feature
 # Run in the current directory (no worktree picker)
 claude-wt --cwd
 
+# Seed agent instruction files in a new repo
+claude-wt --init
+
 # Skip permission prompts
 claude-wt --yolo
 
@@ -61,6 +64,7 @@ All launchers support:
 | `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip fzf |
 | `--cwd` | Launch in the current repo root; skip fzf and session resume |
 | `--yolo` | Prepend the agent's skip-permissions flag |
+| `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--no-guard` | Remove the main-branch commit guard and exit |
 | `--check-guard` | Report whether the guard is installed |
 
