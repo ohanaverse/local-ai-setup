@@ -34,7 +34,14 @@ In the NYT LiteLLM deployment on this machine, the wrapper is `~/.pi/agent/activ
 
 pi picks a model from `~/.pi/agent/models.json` based on `--model <id>` and `--provider <name>` arguments. With no flags, pi prompts the user (or, in the LiteLLM wrapper, falls back to the injected default).
 
-`pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model name from `~/.config/ai-shell/models.conf`; if that name also exists as a model ID in `~/.pi/agent/models.json`, `pi-wt` execs `pi --model <id>`. **If the model ID is not present in `models.json`, `pi-wt` silently falls back to pi's default** — this is intentional, not a bug. Add the model to `models.json` to enable rotation for it.
+`pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model name from `~/.config/ai-shell/models.conf`; if that name also exists as a model ID in `~/.pi/agent/models.json`, `pi-wt` execs `pi --model <id>`.
+
+**Auto-sync on launch:** `pi-wt` automatically syncs cloud models (`*:cloud` suffix) from `models.conf` into `~/.pi/agent/models.json` if they are missing. This happens on every launch, is idempotent (only adds, never removes), and ensures rotation models are always available to pi. The sync runs silently unless models are added, in which case it logs:
+```bash
+pi-wt: synced N cloud model(s) to pi models.json
+```
+
+**If the model ID is not present in `models.json` and sync fails**, `pi-wt` prints a warning and falls back to pi's default model — this is intentional, not a bug. The sync function requires `jq` to be installed.
 
 For `native:pi` (the launcher's "use pi's own default" sentinel), `pi-wt` execs `pi` with no `--model` flag and lets pi (or the LiteLLM wrapper, if present) choose.
 

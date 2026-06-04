@@ -72,3 +72,17 @@ The function handles:
 - Cloud models → verify they are available in ollama; skip and retry if not
 - `native:X` where X ≠ `WT_AGENT_NAME` → skip (model not usable by this agent)
 - Cross-rotation skip → avoid picking the same model the other mode last used
+
+## Model list synchronization
+
+Agents differ in how they validate models against their internal configuration:
+
+| Agent | Model validation | Sync needed? |
+|---|---|---|
+| **pi** | Checks `~/.pi/agent/models.json` before passing `--model` | ✅ Yes — auto-sync on launch |
+| **claude** | No local config — passes `--model` through to cloud API | ❌ No |
+| **copilot** | Checks Ollama for local models (`ollama list`) | ⚠️ Partial — cloud models pass through |
+| **codex** | Uses profile config (`~/.codex/ollama-launch.config.toml`) | ⚠️ Partial — profile must exist |
+| **agy** | No model rotation support | ❌ No |
+
+**pi-wt auto-sync:** On every launch, `pi-wt` compares cloud models (`*:cloud` suffix) from `~/.config/ai-shell/models.conf` against `~/.pi/agent/models.json`. Missing models are added automatically with default settings (262K context, text+image input, reasoning enabled). The sync is idempotent and requires `jq` to be installed.

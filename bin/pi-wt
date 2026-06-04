@@ -40,7 +40,84 @@ pi_launcher() {
   fi
 }
 
+# Syncs models.conf cloud models into ~/.pi/agent/models.json if missing.
+# Idempotent — safe to run on every launch. Only adds, never removes.
+_sync_pi_models() {
+  local config_file="$(wt_config_dir)/models.conf"
+  local pi_models="$HOME/.pi/agent/models.json"
+
+  [[ -f "$config_file" ]] || return 0
+  [[ -f "$pi_models" ]] || return 0
+
+  source "$config_file"
+
+  # Collect all cloud models from both rotation lists.
+  local all_cloud_models=()
+  local m
+  for m in "${CODE_MODELS[@]:-}" "${DESIGN_MODELS[@]:-}"; do
+    [[ -z "$m" ]] && continue
+    # Skip native: entries and non-cloud models (ollama local models have no :cloud suffix).
+    [[ "$m" == native:* ]] && continue
+    [[ "$m" != *:cloud ]] && continue
+    all_cloud_models+=("$m")
+  done
+
+  [[ ${#all_cloud_models[@]} -eq 0 ]] && return 0
+
+  # Read existing model IDs from pi's models.json.
+  local existing_ids
+  existing_ids=$(jq -r '.providers.ollama.models[].id' "$pi_models" 2>/dev/null || echo "")
+
+  # Build a set of models to add.
+  local to_add=()
+  for m in "${all_cloud_models[@]}"; do
+    if ! printf '%s\n' "$existing_ids" | grep -qFx "$m"; then
+      to_add+=("$m")
+    fi
+  done
+
+  [[ ${#to_add[@]} -eq 0 ]] && return 0
+
+  # Add missing models to pi's models.json.
+  # Each model gets a minimal config with large context window and text+image input.
+  local tmp="$pi_models.tmp.$$"
+  local added=0
+
+  # Start with the original file.
+  cp "$pi_models" "$tmp" || return 0
+
+  for m in "${to_add[@]}"; do
+    # Insert the new model into the models array.
+    # Using jq to append to the array.
+    if jq --arg model "$m" '
+      .providers.ollama.models += [{
+        "_launch": true,
+        "contextWindow": 262144,
+        "id": $model,
+        "input": ["text", "image"],
+        "reasoning": true
+      }]
+    ' "$tmp" >"$tmp.new" 2>/dev/null; then
+      mv "$tmp.new" "$tmp"
+      added=$((added + 1))
+    else
+      printf '%s: failed to add model %s to pi models.json\n' "$WT_NAME" "$m" >&2
+      rm -f "$tmp.new"
+    fi
+  done
+
+  if [[ $added -gt 0 ]]; then
+    mv "$tmp" "$pi_models"
+    printf '%s: synced %d cloud model(s) to pi models.json\n' "$WT_NAME" "$added" >&2
+  else
+    rm -f "$tmp"
+  fi
+}
+
 wt_exec() {
+  # Sync models before attempting to use them.
+  _sync_pi_models
+
   local model_to_use=""
 
   if [[ "${WT_NATIVE:-0}" -eq 1 ]]; then
