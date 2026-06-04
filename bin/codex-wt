@@ -31,9 +31,25 @@ wt_yolo_flag() {
   echo "--dangerously-bypass-approvals-and-sandbox"
 }
 
-# Auto-migrate legacy [profiles.ollama-launch] from config.toml to a separate
-# profile file. Codex >=0.134.0 requires profiles in their own files.
-fix_codex_ollama_profile() {
+# Config helper: read PROVIDER_OLLAMA_BASE_URL from models.conf.
+# Falls back to http://localhost:11434. Trailing slashes and any /v1 suffix
+# are stripped so the profile always has a single canonical /v1.
+_ollama_base_url() {
+  local base="http://localhost:11434"
+  if [[ -f "$(wt_config_dir)/models.conf" ]]; then
+    local configured
+    configured=$(source "$(wt_config_dir)/models.conf" && printf '%s' "${PROVIDER_OLLAMA_BASE_URL:-}")
+    [[ -n "$configured" ]] && base="$configured"
+  fi
+  base="${base%/}"
+  base="${base%/v1}"
+  printf '%s/v1\n' "$base"
+}
+
+# Auto-migrate a legacy [profiles.ollama-launch] block from config.toml to
+# a separate profile file. Codex >=0.134.0 requires profiles in their own
+# files; this only runs the first time it is needed.
+_migrate_legacy_ollama_profile() {
   local config="$HOME/.codex/config.toml"
   local profile="$HOME/.codex/ollama-launch.config.toml"
 
@@ -64,6 +80,49 @@ fix_codex_ollama_profile() {
     "$WT_NAME" "$profile" >&2
 }
 
+# Idempotently write ~/.codex/ollama-launch.config.toml with a correct shape.
+# The profile needs both a top-level `model` and `model_provider` setting —
+# without those, codex falls back to its default provider (openai), which
+# shows a login prompt when no auth is configured.
+#
+# Always overwrites: a malformed profile (model_provider nested inside the
+# provider table, missing model line, etc.) silently sends traffic to
+# api.openai.com and 401s. Writing a known-good profile is safer than
+# trying to surgically repair unknown shapes.
+#
+# Args: $1 = model name to embed in the profile.
+_ensure_ollama_profile() {
+  local model="$1"
+  local dir="$HOME/.codex"
+  local profile="$dir/ollama-launch.config.toml"
+  local base_url
+  base_url="$(_ollama_base_url)"
+
+  mkdir -p "$dir"
+
+  _migrate_legacy_ollama_profile
+
+  local tmp="${profile}.tmp.$$"
+  cat >"$tmp" <<EOF
+model = "$model"
+model_provider = "ollama-launch"
+
+[model_providers.ollama-launch]
+name = "Ollama"
+base_url = "$base_url"
+wire_api = "responses"
+EOF
+
+  if [[ -f "$profile" ]] && cmp -s "$tmp" "$profile"; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  mv "$tmp" "$profile"
+  printf '%s: wrote Ollama profile (model=%s, base_url=%s)\n' \
+    "$WT_NAME" "$model" "$base_url" >&2
+}
+
 wt_exec() {
   local model_to_use=""
 
@@ -91,7 +150,7 @@ wt_exec() {
     if [[ "$model_to_use" == "native" || "$model_to_use" == "native:codex" ]]; then
       exec codex "$@"
     fi
-    fix_codex_ollama_profile
+    _ensure_ollama_profile "$model_to_use"
     exec codex --profile ollama-launch -m "$model_to_use" "$@"
   fi
   exec codex "$@"
