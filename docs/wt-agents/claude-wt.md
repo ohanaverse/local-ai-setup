@@ -34,6 +34,18 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` passes the rotation-selected model directly through with `--model`. The model name format is whatever Claude Code accepts (e.g., `claude-opus-4-7`).
 
+### Cloud models via Ollama
+
+When a cloud model (e.g., `minimax-m3:cloud`) is selected from rotation and is available in Ollama, `claude-wt` sets Anthropic-compatible environment variables:
+
+```bash
+ANTHROPIC_AUTH_TOKEN=ollama
+ANTHROPIC_API_KEY=""
+ANTHROPIC_BASE_URL="http://localhost:11434/v1"
+```
+
+The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/ai-shell/models.conf`, falling back to `http://localhost:11434`. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+
 ## Agent init
 
 `claude-wt --init` seeds project-level instruction files:

@@ -32,6 +32,18 @@ wt_yolo_flag() {
   echo "--dangerously-skip-permissions"
 }
 
+# Config helper: read PROVIDER_OLLAMA_BASE_URL from models.conf.
+# Falls back to localhost:11434. Trailing /v1 is stripped and re-added.
+_ollama_base_url() {
+  local base="http://localhost:11434"
+  if [[ -f "$(wt_config_dir)/models.conf" ]]; then
+    local configured
+    configured=$(source "$(wt_config_dir)/models.conf" && printf '%s' "${PROVIDER_OLLAMA_BASE_URL:-}")
+    [[ -n "$configured" ]] && base="$configured"
+  fi
+  printf '%s' "${base%/v1}"
+}
+
 wt_exec() {
   local model_to_use=""
 
@@ -61,8 +73,12 @@ wt_exec() {
     if [[ "$model_to_use" == "native" || "$model_to_use" == "native:claude" ]]; then
       exec claude "$@"
     fi
-    # Cloud model — pass through to claude.
-    exec claude --model "$model_to_use" "$@"
+    # Cloud model — set Ollama env vars for Anthropic-compatible API.
+    exec env \
+      ANTHROPIC_AUTH_TOKEN=ollama \
+      ANTHROPIC_API_KEY="" \
+      ANTHROPIC_BASE_URL="$(_ollama_base_url)" \
+      claude --model "$model_to_use" "$@"
   fi
   exec claude "$@"
 }
@@ -114,7 +130,15 @@ wt_pre_exec() {
     fi
   fi
 
-  exec claude --resume "$choice" "${model_args[@]}" "$@"
+  # Set Ollama env vars for cloud models.
+  if [[ ${#model_args[@]} -gt 0 ]]; then
+    exec env \
+      ANTHROPIC_AUTH_TOKEN=ollama \
+      ANTHROPIC_API_KEY="" \
+      ANTHROPIC_BASE_URL="$(_ollama_base_url)" \
+      claude --resume "$choice" "${model_args[@]}" "$@"
+  fi
+  exec claude --resume "$choice" "$@"
 }
 
 wt_main "$@"

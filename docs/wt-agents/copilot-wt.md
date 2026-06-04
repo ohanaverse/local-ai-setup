@@ -24,6 +24,20 @@ Native auth: `gh auth login` plus a Copilot subscription. Provider override: set
 
 Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; instead it sets the `COPILOT_PROVIDER_*` env vars when the rotation selects an Ollama-style local model, and maps `native:copilot` to `--model auto` so Copilot uses its own model selection logic. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/ai-shell/models.conf`, falling back to `http://localhost:11434`.
 
+### Cloud models via Ollama
+
+When a cloud model (e.g., `minimax-m2.7:cloud`) is selected from rotation and is available in Ollama, `copilot-wt` sets:
+
+```bash
+COPILOT_PROVIDER_BASE_URL="http://localhost:11434/v1"
+COPILOT_PROVIDER_API_KEY=""
+COPILOT_PROVIDER_WIRE_API="responses"
+COPILOT_PROVIDER_MODEL_ID="gpt-4"  # Suppresses "not in catalog" warning
+COPILOT_MODEL="<selected-model>"
+```
+
+The `COPILOT_PROVIDER_MODEL_ID` tells Copilot to use a well-known model's configuration (token limits, agent behavior) while still sending the actual model name to Ollama. This suppresses the warning: `! Model "<name>" is not in the built-in catalog.`
+
 ## Agent init
 
 `copilot-wt --init` seeds project-level instruction files:

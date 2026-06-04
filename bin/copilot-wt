@@ -76,10 +76,13 @@ wt_exec() {
         "$WT_NAME" "$model_to_use" >&2
       exec copilot --model "$model_to_use" "$@"
     fi
+    # Cloud models via Ollama — set provider env vars.
+    # Use a well-known model ID to suppress "not in catalog" warning.
     exec env \
       COPILOT_PROVIDER_BASE_URL="$(_ollama_base_url)" \
       COPILOT_PROVIDER_API_KEY="" \
       COPILOT_PROVIDER_WIRE_API="responses" \
+      COPILOT_PROVIDER_MODEL_ID="gpt-4" \
       COPILOT_MODEL="$model_to_use" \
       copilot "$@"
   fi
