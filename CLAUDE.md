@@ -48,6 +48,8 @@ make clean        # Remove build artifacts
 7. If outside a git repo: pure passthrough to agent — skip fzf
 8. Otherwise: `gather_entries` → fzf → `handle_worktree_selection` or `handle_branch_selection`
 
+Branch names with slashes (e.g. `feature/my-branch`, `origin/feature`) are supported: the last path component is used for the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`) while the full branch name is passed to `git worktree add`. Remote tracking branches are checked out as new local branches.
+
 ### Model rotation
 
 Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, which has no CLI `--model` flag).

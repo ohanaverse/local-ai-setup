@@ -442,7 +442,7 @@ SEED
 ensure_worktree_for_name() {
   local name="$1"
   [[ -z "$name" ]] && die "worktree name cannot be empty"
-  local root path
+  local root path safe_name
   root="$(git rev-parse --show-toplevel)" || die "not in a git repo"
 
   # If the branch is already checked out in any worktree, use that worktree.
@@ -455,10 +455,18 @@ ensure_worktree_for_name() {
     return
   fi
 
-  # Safety: reject names that contain path separators or traversal
-  [[ "$name" =~ / ]] && die "worktree name must not contain path separators: $name"
+  # Handle branch names with slashes (e.g., origin/feature, feature/my-branch)
+  # by extracting the last component for the worktree directory name.
+  if [[ "$name" == */* ]]; then
+    safe_name="${name##*/}"
+  else
+    safe_name="$name"
+  fi
 
-  path="$root/.worktrees/$name"
+  # Safety: reject names that still contain path separators after extraction
+  [[ "$safe_name" =~ / ]] && die "worktree name must not contain path separators: $name"
+
+  path="$root/.worktrees/$safe_name"
 
   # Skip creation if the path is already a registered worktree (idempotent).
   if ! git worktree list --porcelain | grep -Fxq -- "worktree $path"; then
@@ -671,21 +679,25 @@ handle_branch_selection() {
   local root path short_name
   root="$(git rev-parse --show-toplevel)"
 
-  # Check if this is a remote branch (e.g. origin/feature)
-  if [[ "$branch" == */* ]]; then
-    # Extract short name (e.g. origin/feature → feature)
+  # Check if this is a remote branch (e.g. origin/feature) vs a local
+  # branch with a slash (e.g. feature/my-branch).
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    # Local branch (possibly with slashes) — use last component for directory.
+    short_name="${branch##*/}"
+    path="$root/.worktrees/$short_name"
+    git worktree add "$path" "$branch" >/dev/null || die "git worktree add failed"
+  elif git show-ref --verify --quiet "refs/remotes/$branch"; then
+    # Remote tracking branch — create local branch tracking it.
     short_name="${branch#*/}"
-    # Safety: reject names that contain path separators or traversal
+    # Safety: reject names that contain path separators or traversal after extraction
     [[ "$short_name" =~ / ]] && die "worktree name must not contain path separators: $short_name"
-    # Check if local branch already exists (shouldn't happen, but safety check)
     if git show-ref --verify --quiet "refs/heads/$short_name"; then
       die "local branch '$short_name' already exists — cannot create from remote '$branch'"
     fi
-    # Create worktree with new local branch tracking the remote
     path="$root/.worktrees/$short_name"
     git worktree add -b "$short_name" "$path" "$branch" >/dev/null || die "git worktree add failed"
   else
-    # Local branch — use as-is
+    # Local branch without slashes — use as-is.
     short_name="$branch"
     path="$root/.worktrees/$short_name"
     git worktree add "$path" "$branch" >/dev/null || die "git worktree add failed"

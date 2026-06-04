@@ -28,7 +28,7 @@ All `*-wt` launchers support:
 
 | Flag | Description |
 |------|-------------|
-| `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch name |
+| `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. |
 | `--yolo` | Skip permission prompts (agent-specific) |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--code` | Use code model rotation (default if neither flag given) |
