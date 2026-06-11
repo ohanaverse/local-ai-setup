@@ -50,7 +50,7 @@ The `--native` flag bypasses model rotation and uses the agent's dedicated nativ
 | `copilot-wt --native` | `NATIVE_COPILOT` | `claude-sonnet-4-5` |
 | `codex-wt --native` | `NATIVE_CODEX` | `claude-sonnet-4-5` |
 
-The native model is read from `~/.config/ai-shell/models.conf`. If the variable is not configured, the launcher errors:
+The native model is read from `~/.config/agent-wt/models.conf`. If the variable is not configured, the launcher errors:
 ```bash
 claude-wt: --native requires NATIVE_CLAUDE to be configured in models.conf
 ```
@@ -85,4 +85,4 @@ Agents differ in how they validate models against their internal configuration:
 | **codex** | Uses profile config (`~/.codex/ollama-launch.config.toml`) | ⚠️ Partial — profile must exist |
 | **agy** | No model rotation support | ❌ No |
 
-**pi-wt auto-sync:** On every launch, `pi-wt` compares cloud models (`*:cloud` suffix) from `~/.config/ai-shell/models.conf` against `~/.pi/agent/models.json`. Missing models are added automatically with default settings (262K context, text+image input, reasoning enabled). The sync is idempotent and requires `jq` to be installed.
+**pi-wt auto-sync:** On every launch, `pi-wt` compares cloud models (`*:cloud` suffix) from `~/.config/agent-wt/models.conf` against `~/.pi/agent/models.json`. Missing models are added automatically with default settings (262K context, text+image input, reasoning enabled). The sync is idempotent and requires `jq` to be installed.

@@ -44,7 +44,7 @@ ANTHROPIC_API_KEY=""
 ANTHROPIC_BASE_URL="http://localhost:11434/v1"
 ```
 
-The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/ai-shell/models.conf`, falling back to `http://localhost:11434`. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-wt/models.conf`, falling back to `http://localhost:11434`. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
 
 ## Agent init
 

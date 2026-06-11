@@ -24,7 +24,7 @@ die() {
 
 # Config directory for rotation state and model configs.
 wt_config_dir() {
-  printf '%s' "${XDG_CONFIG_HOME:-${HOME}/.config}/ai-shell"
+  printf '%s' "${XDG_CONFIG_HOME:-${HOME}/.config}/agent-wt"
 }
 
 # Returns the path to the rotation state file for a mode (code/design).

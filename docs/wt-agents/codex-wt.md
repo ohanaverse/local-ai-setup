@@ -51,7 +51,7 @@ wire_api = "responses"
 
 The launcher regenerates this file on each launch — but only when its contents differ from the desired shape, so the on-disk file is touched once per model change. Both top-level `model` and `model_provider` settings are required: if either is missing, codex falls back to the default `openai` provider, which then shows a "Sign in with ChatGPT" prompt when no `auth.json` is present.
 
-Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/ai-shell/models.conf`, with a default of `http://localhost:11434`. Trailing `/v1` and trailing slashes are normalized so the profile always has a single canonical `/v1` suffix.
+Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-wt/models.conf`, with a default of `http://localhost:11434`. Trailing `/v1` and trailing slashes are normalized so the profile always has a single canonical `/v1` suffix.
 
 The launcher's `native:codex` sentinel skips profile generation entirely and invokes `codex` directly.
 

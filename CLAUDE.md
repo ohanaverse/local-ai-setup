@@ -55,8 +55,8 @@ Branch names with slashes (e.g. `feature/my-branch`, `origin/feature`) are suppo
 Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, which has no CLI `--model` flag).
 
 - `get_model_from_rotation()` is in `wt-core.sh` — shared across all model-rotating launchers. It reads `WT_DEFAULT_CODE`, `WT_DEFAULT_DESIGN`, `WT_AGENT_NAME`, and `WT_MODEL_MODE` directly.
-- Config: `~/.config/ai-shell/models.conf` — defines `CODE_MODELS`, `DESIGN_MODELS` arrays, `NATIVE_<AGENT>` vars, and `PROVIDER_OLLAMA_BASE_URL` (used by copilot-wt). Respects `XDG_CONFIG_HOME` override.
-- State: `~/.config/ai-shell/rotation-{code,design}.state` — two-line file: `<next_index>\n<last_selected>`
+- Config: `~/.config/agent-wt/models.conf` — defines `CODE_MODELS`, `DESIGN_MODELS` arrays, `NATIVE_<AGENT>` vars, and `PROVIDER_OLLAMA_BASE_URL` (used by copilot-wt). Respects `XDG_CONFIG_HOME` override.
+- State: `~/.config/agent-wt/rotation-{code,design}.state` — two-line file: `<next_index>\n<last_selected>`
 - Cross-rotation coordination: each mode checks the other's last-used model and skips it to avoid duplication
 - Model values: `native:<agent>` or bare `native` (use agent's own default) or a model name string (cloud/ollama)
 - `--code` (default) and `--design` select which rotation list to use

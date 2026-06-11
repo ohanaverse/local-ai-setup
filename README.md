@@ -82,7 +82,7 @@ Works for `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt`.
 
 ### Configuration
 
-`~/.config/ai-shell/models.conf`:
+`~/.config/agent-wt/models.conf`:
 
 ```bash
 CODE_MODELS=(llama3.3:70b qwen2.5-coder:32b)
@@ -96,7 +96,7 @@ NATIVE_PI=claude-sonnet-4-6
 PROVIDER_OLLAMA_BASE_URL=http://localhost:11434
 ```
 
-State is tracked in `~/.config/ai-shell/rotation-{code,design}.state` (two lines: next index, last selected model).
+State is tracked in `~/.config/agent-wt/rotation-{code,design}.state` (two lines: next index, last selected model).
 
 ### How it works
 
