@@ -689,18 +689,27 @@ handle_branch_selection() {
   elif git show-ref --verify --quiet "refs/remotes/$branch"; then
     # Remote tracking branch — create local branch tracking it.
     short_name="${branch#*/}"
+    # Use last path component for the worktree directory name.
+    local worktree_dir="${short_name##*/}"
     # Safety: reject names that contain path separators or traversal after extraction
-    [[ "$short_name" =~ / ]] && die "worktree name must not contain path separators: $short_name"
+    [[ "$worktree_dir" =~ / ]] && die "worktree name must not contain path separators: $short_name"
     if git show-ref --verify --quiet "refs/heads/$short_name"; then
       die "local branch '$short_name' already exists — cannot create from remote '$branch'"
     fi
-    path="$root/.worktrees/$short_name"
+    path="$root/.worktrees/$worktree_dir"
     git worktree add -b "$short_name" "$path" "$branch" >/dev/null || die "git worktree add failed"
   else
-    # Local branch without slashes — use as-is.
+    # Branch doesn't exist yet — create new local branch.
+    # Use last path component for the worktree directory name.
     short_name="$branch"
-    path="$root/.worktrees/$short_name"
-    git worktree add "$path" "$branch" >/dev/null || die "git worktree add failed"
+    local worktree_dir
+    if [[ "$branch" == */* ]]; then
+      worktree_dir="${branch##*/}"
+    else
+      worktree_dir="$branch"
+    fi
+    path="$root/.worktrees/$worktree_dir"
+    git worktree add -b "$short_name" "$path" >/dev/null || die "git worktree add failed"
   fi
 
   handle_worktree_selection "$path" "$@"
