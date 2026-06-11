@@ -99,6 +99,10 @@ wt_pre_exec() {
   # Skip session resume prompt when --cwd is used.
   [[ "${WT_CWD:-0}" -eq 1 ]] && return
 
+  # Skip session resume when a model mode is explicitly requested.
+  # Resuming would bypass the intended model selection (--code, --design, --native).
+  [[ -n "${WT_MODEL_MODE:-}" || "${WT_NATIVE:-0}" -eq 1 ]] && return
+
   local session_info
   session_info="$(find_latest_session "$path")"
   if [[ -z "$session_info" ]]; then

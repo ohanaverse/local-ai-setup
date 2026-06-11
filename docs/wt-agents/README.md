@@ -39,6 +39,10 @@ All `*-wt` launchers support:
 
 With no flags, launchers present an fzf picker showing available worktrees and branches.
 
+### Session resume and model rotation
+
+`claude-wt` uniquely supports session resume (via `wt_pre_exec`). When `--code`, `--design`, or `--native` is passed, session resume is **skipped** so that the requested model selection takes precedence. Resuming a session would restore the session's original model, silently ignoring the rotation flag. Other launchers do not implement session resume.
+
 ## Native model flag
 
 The `--native` flag bypasses model rotation and uses the agent's dedicated native model:

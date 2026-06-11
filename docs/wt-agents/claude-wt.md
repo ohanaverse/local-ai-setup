@@ -34,6 +34,14 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` passes the rotation-selected model directly through with `--model`. The model name format is whatever Claude Code accepts (e.g., `claude-opus-4-7`).
 
+## Session resume
+
+`claude-wt` is the only launcher with a session-resume hook (`wt_pre_exec`). When entering a worktree that has a previous Claude Code session, it prompts via fzf to **Resume** or **Start fresh**.
+
+**Model-rotation interaction:** When `--code`, `--design`, or `--native` is explicitly requested, session resume is skipped entirely. Resuming a session would bypass the intended model selection because the resumed session carries its own model context. The launcher falls through to `wt_exec`, which applies the requested rotation or native model.
+
+Other launchers (`pi-wt`, `codex-wt`, `copilot-wt`, `agy-wt`) do not implement `wt_pre_exec` and therefore have no session-resume behavior.
+
 ### Cloud models via Ollama
 
 When a cloud model (e.g., `minimax-m3:cloud`) is selected from rotation and is available in Ollama, `claude-wt` sets Anthropic-compatible environment variables:

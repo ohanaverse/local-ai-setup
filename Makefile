@@ -45,13 +45,19 @@ check:                  # Run all quality checks
 	@echo "Running format check..."
 	$(MAKE) format-check
 
-test:                   # Run smoke tests
+test:                   # Run smoke tests + regression tests
+	@echo "Running regression tests..."
+	@for t in test/*.test.sh; do \
+		echo "Running $$t..."; \
+		bash "$$t" || exit 1; \
+	done
+	@echo ""
 	@echo "Smoke testing launcher flags..."
 	@for launcher in claude-wt codex-wt copilot-wt pi-wt agy-wt; do \
 		echo "Testing $$launcher --help..."; \
 		$(BINDIR)/$$launcher --help >/dev/null 2>&1 || echo "  $$launcher --help: skipped (agent may not be installed)"; \
 	done
-	@echo "Smoke tests complete."
+	@echo "All tests complete."
 
 clean:                  # Remove build artifacts
 	rm -rf .pytest_cache .mypy_cache __pycache__
