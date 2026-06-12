@@ -4,11 +4,13 @@ Per-agent reference docs for the `*-wt` launchers in [`bin/`](../../bin/). Each 
 
 ## Scope
 
-These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, and `agy-wt`.
+These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, and `opencode-wt`.
 
 The launcher contract itself (flags, rotation behavior, install commands) lives in this README. These per-agent docs add per-agent context that does not fit in the table above.
 
 ## Agents
+
+Quick reference (homepage, GitHub, install): [supported-agents.md](supported-agents.md)
 
 | Agent | File | Verification status |
 |---|---|---|
@@ -17,6 +19,7 @@ The launcher contract itself (flags, rotation behavior, install commands) lives 
 | GitHub Copilot CLI | [copilot-wt.md](copilot-wt.md) | Convention only (not installed on this machine) |
 | pi-coding-agent | [pi-wt.md](pi-wt.md) | Verified on this machine, 2026-06-01 — includes NYT LiteLLM worked example |
 | Antigravity CLI | [agy-wt.md](agy-wt.md) | Convention only (not installed on this machine) |
+| OpenCode | [opencode-wt.md](opencode-wt.md) | Verified on this machine, 2026-06-11 |
 
 ## Verification convention
 
@@ -41,7 +44,7 @@ With no flags, launchers present an fzf picker showing available worktrees and b
 
 ### Session resume and model rotation
 
-`claude-wt` uniquely supports session resume (via `wt_pre_exec`). When `--code`, `--design`, or `--native` is passed, session resume is **skipped** so that the requested model selection takes precedence. Resuming a session would restore the session's original model, silently ignoring the rotation flag. Other launchers do not implement session resume.
+`claude-wt` and `opencode-wt` support session resume (via `wt_pre_exec`). When `--code`, `--design`, or `--native` is passed, session resume is **skipped** so that the requested model selection takes precedence. Resuming a session would restore the session's original model, silently ignoring the rotation flag. Other launchers do not implement session resume.
 
 ## Native model flag
 
@@ -53,7 +56,7 @@ The `--native` flag bypasses model rotation and uses the agent's dedicated nativ
 | `pi-wt --native` | `NATIVE_PI` | `claude-sonnet-4-5` |
 | `copilot-wt --native` | `NATIVE_COPILOT` | `claude-sonnet-4-5` |
 | `codex-wt --native` | `NATIVE_CODEX` | `claude-sonnet-4-5` |
-
+| `opencode-wt --native` | `NATIVE_OPENCODE` | `claude-sonnet-4-5` |
 The native model is read from `~/.config/agent-wt/models.conf`. If the variable is not configured, the launcher errors:
 ```bash
 claude-wt: --native requires NATIVE_CLAUDE to be configured in models.conf
@@ -69,7 +72,7 @@ All model-rotating launchers share a single `get_model_from_rotation()` function
 | `pi-wt` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `pi` |
 | `codex-wt` | `native:codex` | `native:codex` | `codex` |
 | `copilot-wt` | `native:copilot` | `native:copilot` | `copilot` |
-
+| `opencode-wt` | `native:opencode` | `native:opencode` | `opencode` |
 The function handles:
 - Missing config file → use agent-specific defaults
 - Empty rotation array → use agent-specific defaults
@@ -88,5 +91,5 @@ Agents differ in how they validate models against their internal configuration:
 | **copilot** | Checks Ollama for local models (`ollama list`) | ⚠️ Partial — cloud models pass through |
 | **codex** | Uses profile config (`~/.codex/ollama-launch.config.toml`) | ⚠️ Partial — profile must exist |
 | **agy** | No model rotation support | ❌ No |
-
+| **opencode** | No local config — passes Ollama config via `OPENCODE_CONFIG_CONTENT` env var | ❌ No |
 **pi-wt auto-sync:** On every launch, `pi-wt` compares cloud models (`*:cloud` suffix) from `~/.config/agent-wt/models.conf` against `~/.pi/agent/models.json`. Missing models are added automatically with default settings (262K context, text+image input, reasoning enabled). The sync is idempotent and requires `jq` to be installed.

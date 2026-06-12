@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# opencode-wt — launch OpenCode in a chosen worktree or branch.
+# Usage: opencode-wt [-w/--worktree <name>] [--cwd] [--yolo] [--code] [--design] [--native] [opencode-args...]
+#
+# Install: copy to ~/.local/bin/opencode-wt alongside wt-core.sh.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Bootstrap guard: wt-core.sh must be co-located
+if [[ ! -f "$SCRIPT_DIR/wt-core.sh" ]]; then
+  printf '%s: wt-core.sh not found at %s/wt-core.sh\n' "$(basename "$0")" "$SCRIPT_DIR" >&2
+  printf '%s: Ensure both wt-core.sh and %s are copied to the same directory.\n' "$(basename "$0")" "$(basename "$0")" >&2
+  exit 1
+fi
+
+# Model rotation defaults for opencode — must be set before sourcing wt-core.sh.
+WT_DEFAULT_CODE="native:opencode"
+WT_DEFAULT_DESIGN="native:opencode"
+WT_AGENT_NAME="opencode"
+
+source "$SCRIPT_DIR/wt-core.sh"
+
+WT_NAME="$(basename "$0")"
+
+wt_check_deps() {
+  command -v opencode >/dev/null 2>&1 || die "opencode not found. Install: curl -fsSL https://opencode.ai/install | bash"
+}
+
+wt_yolo_flag() {
+  echo "--dangerously-skip-permissions"
+}
+
+# Config helper: read PROVIDER_OLLAMA_BASE_URL from models.conf.
+_ollama_base_url() {
+  local base="http://localhost:11434"
+  if [[ -f "$(wt_config_dir)/models.conf" ]]; then
+    local configured
+    configured=$(source "$(wt_config_dir)/models.conf" && printf '%s' "${PROVIDER_OLLAMA_BASE_URL:-}")
+    [[ -n "$configured" ]] && base="$configured"
+  fi
+  printf '%s' "${base%/v1}"
+}
+
+# Find OpenCode sessions for the current worktree.
+# OpenCode sessions are stored in ~/.local/share/opencode/storage/session/<project-id>/
+# where project-id is the git commit hash of the repo's root commit.
+_find_opencode_sessions() {
+  local path="$1"
+  local project_id
+  project_id="$(git -C "$path" rev-list --max-parents=0 HEAD 2>/dev/null | head -1)" || return
+  [[ -z "$project_id" ]] && return
+
+  local dir="$HOME/.local/share/opencode/storage/session/$project_id"
+  [[ -d "$dir" ]] || return
+
+  # Find newest session by mtime.
+  local newest
+  newest="$(find "$dir" -maxdepth 1 -name '*.json' -exec stat -f '%m%t%N' {} + 2>/dev/null |
+    sort -rn |
+    head -1)" || true
+
+  [[ -z "$newest" ]] && return
+
+  local mtime="${newest%%$'\t'*}"
+  local filepath="${newest#*$'\t'}"
+  local basename
+  basename="$(basename "$filepath" .json)"
+  printf '%s\t%s\n' "$basename" "$mtime"
+}
+
+wt_exec() {
+  local model_to_use=""
+
+  # --native flag: use agent's native model, error if not configured.
+  if [[ "${WT_NATIVE:-0}" -eq 1 ]]; then
+    local config_file="$(wt_config_dir)/models.conf"
+    if [[ -f "$config_file" ]]; then
+      source "$config_file"
+      if [[ -n "${NATIVE_OPENCODE:-}" ]]; then
+        model_to_use="$NATIVE_OPENCODE"
+      else
+        die "--native requires NATIVE_OPENCODE to be configured in models.conf"
+      fi
+    else
+      die "--native requires models.conf with NATIVE_OPENCODE configured"
+    fi
+  elif [[ -n "${WT_MODEL_MODE:-}" ]]; then
+    model_to_use=$(get_model_from_rotation) || exit 1
+  fi
+
+  if [[ -n "$model_to_use" ]]; then
+    if [[ "$model_to_use" == native:* && "$model_to_use" != "native:opencode" ]]; then
+      printf '%s: skipping "%s" (not an opencode model)\n' "$WT_NAME" "$model_to_use" >&2
+      exec opencode "$@"
+    fi
+    if [[ "$model_to_use" == "native" || "$model_to_use" == "native:opencode" ]]; then
+      exec opencode "$@"
+    fi
+    # Ollama model — pass config inline via OPENCODE_CONFIG_CONTENT.
+    local base_url
+    base_url="$(_ollama_base_url)"
+    exec env \
+      OPENCODE_CONFIG_CONTENT='{"model":"ollama/'"$model_to_use"'","provider":{"ollama":{"options":{"baseURL":"'"$base_url"'/v1","apiKey":""}}}}' \
+      opencode "$@"
+  fi
+  exec opencode "$@"
+}
+
+wt_pre_exec() {
+  local path="$1"
+  shift
+
+  # Skip session resume prompt when --cwd is used.
+  [[ "${WT_CWD:-0}" -eq 1 ]] && return
+
+  # Skip session resume when a model mode is explicitly requested.
+  [[ -n "${WT_MODEL_MODE:-}" || "${WT_NATIVE:-0}" -eq 1 ]] && return
+
+  local session_info
+  session_info="$(_find_opencode_sessions "$path")"
+  if [[ -z "$session_info" ]]; then
+    return
+  fi
+
+  local session_id mtime branch choice
+  IFS=$'\t' read -r session_id mtime <<<"$session_info"
+  branch="$(git branch --show-current 2>/dev/null || basename "$path")"
+  choice="$(session_resume_prompt "$branch" "$session_id" "$mtime")"
+  # Empty choice = user picked "Start fresh" or cancelled; return so wt_main
+  # falls through to _wt_exec_with_yolo (applies --yolo and model rotation).
+  [[ -z "$choice" ]] && return
+
+  set -- --session "$choice"
+
+  # --native flag: read NATIVE_OPENCODE directly.
+  local model_to_use=""
+  if [[ "${WT_NATIVE:-0}" -eq 1 ]]; then
+    local config_file="$(wt_config_dir)/models.conf"
+    if [[ -f "$config_file" ]]; then
+      source "$config_file"
+      if [[ -n "${NATIVE_OPENCODE:-}" ]]; then
+        model_to_use="$NATIVE_OPENCODE"
+      else
+        die "--native requires NATIVE_OPENCODE to be configured in models.conf"
+      fi
+    else
+      die "--native requires models.conf with NATIVE_OPENCODE configured"
+    fi
+  fi
+
+  if [[ -n "$model_to_use" ]]; then
+    if [[ "$model_to_use" == native:* && "$model_to_use" != "native:opencode" ]]; then
+      printf '%s: skipping "%s" (not an opencode model)\n' "$WT_NAME" "$model_to_use" >&2
+    elif [[ "$model_to_use" != "native" && "$model_to_use" != "native:opencode" ]]; then
+      local base_url
+      base_url="$(_ollama_base_url)"
+      exec env \
+        OPENCODE_CONFIG_CONTENT='{"model":"ollama/'"$model_to_use"'","provider":{"ollama":{"options":{"baseURL":"'"$base_url"'/v1","apiKey":""}}}}' \
+        opencode "$@"
+    fi
+  fi
+  exec opencode "$@"
+}
+
+wt_main "$@"

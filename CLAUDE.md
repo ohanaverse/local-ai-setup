@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Shell scripts that wrap AI coding agent CLIs (claude, codex, copilot, pi, agy) with git worktree management. Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates worktrees on demand, optionally selects a model via rotation, and then `exec`s the underlying agent.
+Shell scripts that wrap AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode) with git worktree management. Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates worktrees on demand, optionally selects a model via rotation, and then `exec`s the underlying agent.
 
 ## Installation
 
@@ -35,7 +35,7 @@ make clean        # Remove build artifacts
 | `wt_check_deps()` | Yes | Verify agent binary exists; call `die` with install hint if not |
 | `wt_yolo_flag()` | Yes | Echo the tool's skip-permissions flag (or empty string) |
 | `wt_exec "$@"` | Yes | Construct and `exec` the final agent launch command |
-| `wt_pre_exec()` | No | Hook called after `cd` into worktree, before `wt_exec` (only `claude-wt` defines this) |
+| `wt_pre_exec()` | No | Hook called after `cd` into worktree, before `wt_exec` (`claude-wt` and `opencode-wt` define this) |
 
 ### Core flow (`wt_main`)
 
@@ -52,7 +52,7 @@ Branch names with slashes (e.g. `feature/my-branch`, `origin/feature`) are suppo
 
 ### Model rotation
 
-Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, which has no CLI `--model` flag).
+Applies to `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, and `opencode-wt` (not `agy-wt`, which has no CLI `--model` flag).
 
 - `get_model_from_rotation()` is in `wt-core.sh` — shared across all model-rotating launchers. It reads `WT_DEFAULT_CODE`, `WT_DEFAULT_DESIGN`, `WT_AGENT_NAME`, and `WT_MODEL_MODE` directly.
 - Config: `~/.config/agent-wt/models.conf` — defines `CODE_MODELS`, `DESIGN_MODELS` arrays, `NATIVE_<AGENT>` vars, and `PROVIDER_OLLAMA_BASE_URL` (used by copilot-wt). Respects `XDG_CONFIG_HOME` override.
@@ -73,9 +73,12 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, whi
 
 `seed_agent_instructions` in `wt-core.sh` seeds project-level instruction files when `--init` is passed. It creates `AGENTS.md` with a seed template if missing, plus an agent-specific pointer file if the agent supports one (`CLAUDE.md` for Claude, `.github/copilot-instructions.md` for Copilot). Files that already exist are never overwritten. Requires a git working tree (bare repos are rejected); exits with an error if not in one. After seeding, the main guard is auto-installed just as a normal launch would. If `-w` is also given, it is ignored with a warning — seeding always targets the current working tree root.
 
-### Session resume (claude-wt only)
+### Session resume (claude-wt, opencode-wt)
 
-`wt_pre_exec` checks `~/.claude/projects/<slug>/*.jsonl` for prior sessions. The slug is the worktree path with non-alphanumeric chars replaced by `-`. When a session is found, fzf offers "Resume" or "Start fresh." Skipped when `--cwd` is used.
+`wt_pre_exec` checks for prior sessions and, if found, offers "Resume" or "Start fresh" via fzf. Skipped when `--cwd` is used.
+
+- `claude-wt`: checks `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
+- `opencode-wt`: checks `~/.local/share/opencode/storage/session/<project-id>/`, where `<project-id>` is the git commit hash of the repo's root commit (matches OpenCode's own project-id algorithm).
 
 ## Key flags (all launchers)
 
@@ -98,13 +101,17 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt` (not `agy-wt`, whi
 3. If the agent supports model rotation, set `WT_DEFAULT_CODE`, `WT_DEFAULT_DESIGN`, and `WT_AGENT_NAME` **before** `source "$SCRIPT_DIR/wt-core.sh"` — these must exist before the source so `parse_wt_args` can detect rotation support
 4. `source "$SCRIPT_DIR/wt-core.sh"`, then set `WT_NAME="$(basename "$0")"`
 5. Implement `wt_check_deps()`, `wt_yolo_flag()`, `wt_exec`
-6. Implement `wt_pre_exec()` if the agent has a session concept (only `claude-wt` does)
+6. Implement `wt_pre_exec()` if the agent has a session concept (see `claude-wt` and `opencode-wt` for two different session-detection approaches)
 7. Call `wt_main "$@"`
 8. Add a doc file to `docs/wt-agents/`
 
 ## Copilot-specific: Ollama model passthrough
 
 `copilot-wt` does not pass `--model` for Ollama models. Instead it sets four environment variables (`COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, `COPILOT_MODEL`) before `exec copilot`. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `models.conf`, defaulting to `http://localhost:11434`.
+
+## OpenCode-specific: Ollama model passthrough
+
+`opencode-wt` does not pass `--model` for Ollama models. Instead it sets `OPENCODE_CONFIG_CONTENT` (inline JSON) before `exec opencode`, e.g. `{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"<url>/v1","apiKey":""}}}}`. This is OpenCode's highest-precedence config layer and overrides `~/.config/opencode/opencode.json`. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `models.conf`, same as `copilot-wt`.
 
 ## Docs
 
