@@ -20,6 +20,7 @@ Quick reference (homepage, GitHub, install): [supported-agents.md](supported-age
 | pi-coding-agent | [pi-wt.md](pi-wt.md) | Verified on this machine, 2026-06-01 — includes NYT LiteLLM worked example |
 | Antigravity CLI | [agy-wt.md](agy-wt.md) | Convention only (not installed on this machine) |
 | OpenCode | [opencode-wt.md](opencode-wt.md) | Verified on this machine, 2026-06-11 |
+| Shell command | [shell-wt.md](shell-wt.md) | Verified on this machine, 2026-07-22 |
 
 ## Verification convention
 

@@ -656,7 +656,7 @@ handle_worktree_selection() {
   [[ -d "$path" ]] || die "worktree path is not a directory: $path"
   cd "$path"
 
-  # Optional session resume hook (only claude-wt defines this).
+  # Optional session resume hook (claude-wt and opencode-wt define this).
   if declare -f wt_pre_exec >/dev/null 2>&1; then
     wt_pre_exec "$path" "$@"
     # If wt_pre_exec exec'd, we never reach here.

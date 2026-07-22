@@ -11,8 +11,10 @@ Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates w
 | `claude-wt` | Claude Code | Yes | Yes |
 | `codex-wt` | OpenAI Codex CLI | Yes | No |
 | `copilot-wt` | GitHub Copilot CLI | Yes | No |
+| `opencode-wt` | OpenCode | Yes | Yes |
 | `pi-wt` | pi-coding-agent | Yes | No |
 | `agy-wt` | Antigravity CLI | No | No |
+| `shell-wt` | Shell command | No | No |
 
 ## Installation
 
@@ -68,7 +70,7 @@ All launchers support:
 | `--no-guard` | Remove the main-branch commit guard and exit |
 | `--check-guard` | Report whether the guard is installed |
 
-Model-rotating launchers (`claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`) also support:
+Model-rotating launchers (`claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, `pi-wt`) also support:
 
 | Flag | Description |
 |---|---|
@@ -78,7 +80,7 @@ Model-rotating launchers (`claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`) also s
 
 ## Model rotation
 
-Works for `claude-wt`, `codex-wt`, `copilot-wt`, and `pi-wt`.
+Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
 ### Configuration
 
@@ -112,6 +114,7 @@ Bypasses rotation entirely and uses the agent's dedicated native model from `mod
 
 ```bash
 claude-wt --native     # uses NATIVE_CLAUDE
+opencode-wt --native    # uses NATIVE_OPENCODE
 pi-wt --native         # uses NATIVE_PI
 codex-wt --native      # uses NATIVE_CODEX
 copilot-wt --native    # uses NATIVE_COPILOT
@@ -138,9 +141,9 @@ Launchers auto-install a `block-main-commit v1` pre-commit hook on every invocat
 - `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
 - `<launcher> --no-guard` (removes the hook)
 
-## Session resume (claude-wt only)
+## Session resume (`claude-wt`, `opencode-wt`)
 
-When a prior Claude Code session exists for the worktree path, `claude-wt` prompts whether to resume it. Skipped when `--cwd` is used.
+When a prior Claude Code or OpenCode session exists for the worktree path, the launcher prompts whether to resume it. Skipped when `--cwd` is used.
 
 ## Development
 

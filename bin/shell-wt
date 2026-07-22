@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# shell-wt — execute a shell command in a chosen worktree or branch.
+# Usage: shell-wt [-w/--worktree <name>] [--cwd] -- <command>
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ ! -f "$SCRIPT_DIR/wt-core.sh" ]]; then
+  printf '%s: wt-core.sh not found at %s/wt-core.sh\n' "$(basename "$0")" "$SCRIPT_DIR" >&2
+  printf '%s: Ensure both wt-core.sh and %s are copied to the same directory.\n' "$(basename "$0")" "$(basename "$0")" >&2
+  exit 1
+fi
+
+source "$SCRIPT_DIR/wt-core.sh"
+
+# shellcheck disable=SC2034
+WT_NAME="$(basename "$0")"
+
+wt_check_deps() {
+  command -v bash >/dev/null 2>&1 || die "bash not found"
+}
+
+wt_yolo_flag() {
+  echo ""
+}
+
+wt_exec() {
+  if [[ $# -eq 0 ]]; then
+    die "usage: shell-wt [-w <name>] [--cwd] -- <command>"
+  fi
+  if [[ "$1" == "--" ]]; then
+    shift
+  fi
+  if [[ $# -eq 0 ]]; then
+    die "usage: shell-wt [-w <name>] [--cwd] -- <command>"
+  fi
+  local cmd=""
+  for arg in "$@"; do
+    cmd+="$(printf '%q ' "$arg")"
+  done
+  exec bash -c "$cmd"
+}
+
+wt_main "$@"

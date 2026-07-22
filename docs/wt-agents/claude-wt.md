@@ -36,11 +36,11 @@ Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude
 
 ## Session resume
 
-`claude-wt` is the only launcher with a session-resume hook (`wt_pre_exec`). When entering a worktree that has a previous Claude Code session, it prompts via fzf to **Resume** or **Start fresh**.
+`claude-wt` is one of two launchers with a session-resume hook (`wt_pre_exec`, the other being `opencode-wt`). When entering a worktree that has a previous Claude Code session, it prompts via fzf to **Resume** or **Start fresh**.
 
 **Model-rotation interaction:** When `--code`, `--design`, or `--native` is explicitly requested, session resume is skipped entirely. Resuming a session would bypass the intended model selection because the resumed session carries its own model context. The launcher falls through to `wt_exec`, which applies the requested rotation or native model.
 
-Other launchers (`pi-wt`, `codex-wt`, `copilot-wt`, `agy-wt`) do not implement `wt_pre_exec` and therefore have no session-resume behavior.
+Other launchers (`pi-wt`, `codex-wt`, `copilot-wt`, `agy-wt`, `shell-wt`) do not implement `wt_pre_exec` and therefore have no session-resume behavior.
 
 ### Cloud models via Ollama
 
