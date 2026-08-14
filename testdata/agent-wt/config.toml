@@ -1,0 +1,77 @@
+default_tag = "code"
+
+[[providers]]
+id = "ollama"
+name = "Ollama"
+auth = { type = "none", base_url = "http://localhost:11434" }
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+auth = { type = "api_key", secret_ref = "openrouter.key" }
+
+[[providers]]
+id = "claude"
+name = "Claude Code"
+location = "cloud"
+auth = { type = "native" }
+
+[[providers]]
+id = "copilot"
+name = "GitHub Copilot"
+location = "cloud"
+auth = { type = "native" }
+
+[[models]]
+id = "ollama/gemma4:9b"
+family = "gemma4"
+provider_id = "ollama"
+model_name = "gemma4:9b"
+location = "local"
+tags = ["code", "design"]
+
+[[models]]
+id = "ollama/gemma4:27b"
+family = "gemma4"
+provider_id = "ollama"
+model_name = "gemma4:27b"
+location = "local"
+tags = ["code"]
+
+[[models]]
+id = "openrouter/google/gemma-4-9b"
+family = "gemma4"
+provider_id = "openrouter"
+model_name = "google/gemma-4-9b"
+tags = ["code", "design"]
+
+[[models]]
+id = "openrouter/google/gemma-4-27b"
+family = "gemma4"
+provider_id = "openrouter"
+model_name = "google/gemma-4-27b"
+tags = ["code"]
+
+[[models]]
+id = "ollama/kimi-k2.6:cloud"
+family = "kimi-k2.6"
+provider_id = "ollama"
+model_name = "kimi-k2.6:cloud"
+location = "cloud"
+tags = ["code", "design"]
+
+[[agents]]
+name = "claude"
+supported_providers = ["claude", "ollama", "openrouter"]
+default_provider = "claude"
+
+[[agents]]
+name = "pi"
+supported_providers = ["claude", "ollama", "openrouter"]
+default_provider = "openrouter"
+
+[[agents]]
+name = "copilot"
+supported_providers = ["copilot", "ollama"]
+default_provider = "copilot"

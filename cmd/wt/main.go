@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/spf13/cobra"
 )
 
 // version is set at build time via -ldflags:
-//   go build -ldflags "-X main.version=1.2.3" ./cmd/wt
+//
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/wt
 var version = "0.1.0"
 
 func main() {
@@ -20,7 +22,7 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "wt",
+		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 	}
 
@@ -60,17 +62,43 @@ func rootCmd() *cobra.Command {
 
 func modelsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use: "models",
+		Use:   "models",
 		Short: "Browse and manage the model registry",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("(models registry not yet implemented - lesson 2)")
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+
+			fmt.Println("Providers:")
+			for _, p := range cfg.Providers {
+				fmt.Printf("  %-15s %-10s auth=%-8s base_url=%s\n",
+					p.ID, p.Location, p.Auth.Type, p.Auth.BaseURL)
+			}
+
+			fmt.Println("\nModels:")
+			for _, m := range cfg.ModelsWithTag("code") {
+				loc, _ := cfg.ResolveLocation(m)
+				fmt.Printf("  %-35s family=%-12s provider=%-12s location=%-6s tags=%v\n",
+					m.ID, m.Family, m.ProviderID, loc, m.Tags)
+			}
+
+			fmt.Println("\nAgents:")
+			for _, a := range cfg.Agents {
+				fmt.Printf("  %-10s providers=%v default=%s\n",
+					a.Name, a.SupportedProviders, a.DefaultProvider)
+			}
+			return nil
 		},
 	}
 }
 
 func agentsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use: "agents",
+		Use:   "agents",
 		Short: "List installed agents and set defaults",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println("(agents not yet implemented - lesson 6)")

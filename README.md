@@ -4,6 +4,8 @@ Wrappers around AI coding agent CLIs that add git worktree management.
 
 Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates worktrees on demand, optionally rotates models, and launches the underlying agent.
 
+> **Go rewrite in progress:** A unified `wt` TUI tool is being built in `cmd/wt/`. See `docs/go-course/` for the lesson plan and `docs/superpowers/specs/` for design docs.
+
 ## Supported agents
 
 | Launcher | Agent | Model rotation | Session resume |
@@ -147,6 +149,8 @@ When a prior Claude Code or OpenCode session exists for the worktree path, the l
 
 ## Development
 
+### Bash wrappers
+
 ```bash
 make help         # Show available targets
 make install      # Install to ~/.local/bin/
@@ -156,6 +160,37 @@ make check        # Run lint + format-check
 make test         # Run smoke tests
 make clean        # Remove build artifacts
 ```
+
+### Go module (`wt`)
+
+```bash
+go build ./...     # Build everything
+go test ./...      # Run all tests
+go run ./cmd/wt    # Run the wt CLI
+go fmt ./...       # Format
+go vet ./...       # Vet
+```
+
+#### Structure
+
+| Path | Purpose |
+|---|---|
+| `cmd/wt/main.go` | CLI entry point (cobra) |
+| `internal/config/` | Config loading, model registry types, validation, secrets |
+| `testdata/` | Sample configs for manual testing |
+| `docs/go-course/` | 20-lesson course building the Go rewrite |
+| `docs/superpowers/specs/` | Design specs |
+| `docs/superpowers/plans/` | Implementation plans |
+
+#### Config (Go)
+
+The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types:
+
+- **Provider** — model source with auth config (ollama, openrouter, claude, copilot)
+- **Model** — specific variant from a provider, grouped by family (e.g. gemma4)
+- **Agent** — AI coding tool with supported providers and optional default
+
+See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
 ## Architecture
 

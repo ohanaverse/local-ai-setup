@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Shell scripts that wrap AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode) with git worktree management. Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates worktrees on demand, optionally selects a model via rotation, and then `exec`s the underlying agent.
 
+A Go rewrite is in progress — the `wt` binary (`cmd/wt/`) will eventually replace the bash wrappers with a unified TUI tool. See `docs/go-course/` for the lesson plan.
+
 ## Installation
 
 Copy everything in `bin/` to a single directory on `$PATH` (e.g., `~/.local/bin/`). All scripts must remain co-located — wrappers find `wt-core.sh` and `wt-install-guard` via `SCRIPT_DIR`. If `wt-install-guard` is missing, launchers print a warning and skip auto-installing the main-branch commit guard.
@@ -118,9 +120,9 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, and `opencode-wt` (no
 - `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)
 - `docs/wt-agents/` — per-agent reference docs (one file per launcher)
 
-## No test suite
+## No test suite (bash)
 
-These are bash scripts. Quality gates:
+The bash scripts have no automated test suite. Quality gates:
 
 ```bash
 make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
@@ -130,6 +132,39 @@ make format-check # shfmt -d (CI check)
 make check        # lint + format-check
 make test         # smoke test invocations
 ```
+
+## Go module
+
+The Go `wt` tool lives alongside the bash wrappers. Module root is the repo root.
+
+```bash
+go build ./...       # build everything
+go test ./...        # run all tests
+go run ./cmd/wt      # run the wt CLI
+go fmt ./...         # format
+go vet ./...         # vet
+```
+
+### Structure
+
+| Path | Purpose |
+|---|---|
+| `cmd/wt/main.go` | CLI entry point (cobra) |
+| `internal/config/` | Config loading, model registry types, validation, secrets |
+| `testdata/` | Sample configs for manual testing |
+| `docs/go-course/` | 20-lesson course building the Go rewrite |
+| `docs/superpowers/specs/` | Design specs |
+| `docs/superpowers/plans/` | Implementation plans |
+
+### Config (Go)
+
+The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types:
+
+- **Provider** — model source with auth config (ollama, openrouter, claude, copilot)
+- **Model** — specific variant from a provider, grouped by family (e.g. gemma4)
+- **Agent** — AI coding tool with supported providers and optional default
+
+See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
 Validate changes by running the launcher manually. Representative invocations:
 
