@@ -1,122 +1,3 @@
-# Lesson 3: Migration from legacy config
-
-## Concept Intro
-
-The existing tool stores configuration in a bash-sourced file at
-`~/.config/agent-wt/models.conf` and rotation position in two small state
-files, `rotation-code.state` and `rotation-design.state`. The new Go tool uses
-a richer TOML config (`config.toml` from lesson 2). To preserve the user's
-existing rotation lists and current position, we add a **one-time migration**:
-on first run, if `config.toml` doesn't exist but `models.conf` does, read the
-legacy file, convert it to the new format, write `config.toml`, and record
-that migration happened (so it doesn't run again).
-
-The legacy format is bash. Arrays are spread across multiple lines, and
-commented-out models are disabled with `#`:
-
-```bash
-CODE_MODELS=(
-  "native:copilot"
-  "deepseek-v4-pro:cloud"
-  "native:claude"
-  # "nemotron-3-ultra:cloud"
-)
-DESIGN_MODELS=(
-  "native:copilot"
-  "deepseek-v4-pro:cloud"
-)
-NATIVE_CLAUDE="native:claude"
-PROVIDER_OLLAMA_BASE_URL="http://localhost:11434"
-```
-
-We can't safely `source` bash from Go, so we parse it with a small hand-rolled
-parser. Two subtleties matter:
-
-1. **Arrays span multiple lines** — the regex must run over the *whole file
-   content*, not line-by-line. `[^)]*` matches newlines, so a single
-   `FindAllStringSubmatch` over the full content captures each array.
-2. **Comments disable models** — `# "nemotron-3-ultra:cloud"` must not be
-   migrated. Strip `#`-to-end-of-line before parsing.
-
-Since the format is simple and machine-generated, a regex that extracts the
-quoted tokens from `NAME=(...)` blocks is sufficient and robust enough for the
-migration path (it only runs once, on data we don't fully control but which
-follows this exact shape).
-
-### Mapping legacy → new data model
-
-The legacy format has flat model strings. The new format has three entities
-(Provider, Model, Agent). The migration must create all three.
-
-| Legacy string | Provider created | Model created | Agent created |
-|---|---|---|---|
-| `native:claude` | `{id:"claude", auth:{type:"native"}}` | `{id:"claude/native", family:"claude", provider_id:"claude"}` | `{name:"claude", supported_providers:["claude","ollama"], default_provider:"claude"}` |
-| `native:copilot` | `{id:"copilot", auth:{type:"native"}}` | `{id:"copilot/native", family:"copilot", provider_id:"copilot"}` | `{name:"copilot", supported_providers:["copilot","ollama"], default_provider:"copilot"}` |
-| `deepseek-v4-pro:cloud` | (uses existing ollama) | `{id:"ollama/deepseek-v4-pro:cloud", family:"deepseek-v4-pro", provider_id:"ollama", location:"cloud"}` | — |
-| `qwen3.5:cloud` | (uses existing ollama) | `{id:"ollama/qwen3.5:cloud", family:"qwen3.5", provider_id:"ollama", location:"cloud"}` | — |
-| bare name (no `:cloud`, no `native:`) | (uses existing ollama) | `{id:"ollama/<name>", family:"<name>", provider_id:"ollama", location:"local"}` | — |
-
-The ollama provider is always created (every legacy config uses it). Native
-providers and agents are created for each unique `native:X` model found in the
-legacy arrays.
-
-A model that appears in *both* `CODE_MODELS` and `DESIGN_MODELS` (e.g.
-`native:copilot`) must become a **single** entry with both tags — not two
-duplicate IDs, which would fail validation.
-
-## New Syntax & Vocabulary
-
-| Term | Meaning |
-|---|---|
-| `regexp.MustCompile` | Compiles a regex at startup (panics on bad pattern). |
-| `re.FindAllStringSubmatch` | Returns all non-overlapping matches and their capture groups. |
-| `os.IsNotExist` | Reports whether the error is a missing file. |
-| `toml.NewEncoder` | Encodes a Go value as TOML bytes (streaming). |
-| `atomic file write` | Write to a temp file then rename, so a crash never leaves a half-written config. |
-
-## Worked Walkthrough
-
-### Step 1: Add `Save` to config.go
-
-The migration needs to write the new config. Add to `internal/config/config.go`:
-
-```go
-import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-
-	"github.com/BurntSushi/toml"
-)
-
-// Save writes cfg to the config path using an atomic temp-file + rename.
-func Save(cfg *Config) error {
-	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
-		return err
-	}
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
-		return err
-	}
-	tmp := Path() + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, Path())
-}
-```
-
-Note: this also adds `"bytes"` and `"strings"` to the import block. The
-existing `"strings"` import may already be present from `secrets.go` — if so,
-don't duplicate it.
-
-### Step 2: Create migrate.go
-
-Create `internal/config/migrate.go`:
-
-```go
 package config
 
 import (
@@ -168,7 +49,7 @@ func parseBashArray(line string) (name string, vals []string) {
 }
 
 // Migrate converts a legacy models.conf into the new TOML Config, if the new
-// config does not already exist. Returns whether it performed a migration.
+// config does not already exist. Returns whether if performed a migration.
 func Migrate() (bool, error) {
 	if _, err := os.Stat(Path()); err == nil {
 		return false, nil // new config already exists
@@ -191,7 +72,10 @@ func Migrate() (bool, error) {
 	cfg.Providers = append(cfg.Providers, Provider{
 		ID:   "ollama",
 		Name: "Ollama",
-		Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
+		Auth: AuthConfig{
+			Type:    "none",
+			BaseURL: "http://localhost:11434",
+		},
 	})
 
 	// Track which native agents we've seen so we don't create duplicates.
@@ -275,7 +159,6 @@ func convertModels(raw []string, tag string) ([]Model, []string) {
 				Location:   LocationCloud,
 				Tags:       []string{tag},
 			})
-
 		case strings.HasSuffix(id, ":cloud"):
 			family := strings.TrimSuffix(id, ":cloud")
 			models = append(models, Model{
@@ -286,7 +169,6 @@ func convertModels(raw []string, tag string) ([]Model, []string) {
 				Location:   LocationCloud,
 				Tags:       []string{tag},
 			})
-
 		default:
 			models = append(models, Model{
 				ID:         "ollama/" + id,
@@ -301,7 +183,7 @@ func convertModels(raw []string, tag string) ([]Model, []string) {
 	return models, natives
 }
 
-// nativeProvider creates a Provider for a native agent (e.g. claude, copilot).
+// nativeProvider creates a Provider for a native agent (e.g. claude, copilot)
 func nativeProvider(agent string) Provider {
 	return Provider{
 		ID:       agent,
@@ -362,7 +244,7 @@ func displayName(agent string) string {
 	case "copilot":
 		return "GitHub Copilot"
 	case "codex":
-		return "OpenAI Codex CLI"
+		return "OpenAI Codex"
 	case "pi":
 		return "pi Coding Agent"
 	default:
@@ -396,84 +278,3 @@ func migrateRotationState(stateDir string) error {
 func trimQuotes(s string) string {
 	return strings.Trim(s, `"`)
 }
-```
-
-### Step 3: Wire migration into Load
-
-Update `Load()` in `config.go` to call `Migrate()` before reading the config:
-
-```go
-// Load reads the config file at Path(). Runs legacy migration first if needed.
-// Returns an empty Config if the file does not exist yet.
-func Load() (*Config, error) {
-	if _, err := Migrate(); err != nil {
-		return nil, fmt.Errorf("migration: %w", err)
-	}
-
-	cfg := &Config{DefaultTag: "code"}
-	data, err := os.ReadFile(Path())
-	if os.IsNotExist(err) {
-		return cfg, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if _, err := toml.Decode(string(data), cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	return cfg, nil
-}
-```
-
-## Run It
-
-If you have a real legacy `~/.config/agent-wt/models.conf`, back up your
-current `config.toml` first (if it exists from manual testing), then run:
-
-```bash
-mv ~/.config/agent-wt/config.toml ~/.config/agent-wt/config.toml.bak
-go run ./cmd/wt models
-```
-
-The first run prints migration notices to stderr and writes `config.toml`.
-A second run skips migration (`config.toml` already exists).
-
-To test without touching your real config, copy the legacy files to a temp dir:
-
-```bash
-mkdir -p /tmp/test-migrate/agent-wt
-cp ~/.config/agent-wt/models.conf /tmp/test-migrate/agent-wt/
-XDG_CONFIG_HOME=/tmp/test-migrate go run ./cmd/wt models
-cat /tmp/test-migrate/agent-wt/config.toml
-```
-
-## Try It Yourself
-
-Write a unit test for `parseBashArray` that parses this line and checks the
-name and values:
-
-```bash
-CODE_MODELS=("native:copilot" "deepseek-v4-pro:cloud")
-```
-
-<details>
-<summary>Solution</summary>
-
-```go
-func TestParseBashArray(t *testing.T) {
-	name, vals := parseBashArray(`CODE_MODELS=("native:copilot" "deepseek-v4-pro:cloud")`)
-	if name != "CODE_MODELS" {
-		t.Fatalf("name = %q, want CODE_MODELS", name)
-	}
-	if len(vals) != 2 || vals[0] != "native:copilot" || vals[1] != "deepseek-v4-pro:cloud" {
-		t.Fatalf("vals = %v, want the two models", vals)
-	}
-}
-```
-</details>
-
-## Checkpoint
-
-```bash
-git add -A && git commit -m "lesson 03: migration from legacy config" && git tag lesson-03
-```

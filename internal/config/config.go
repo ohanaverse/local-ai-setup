@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,9 +75,13 @@ func Path() string {
 	return filepath.Join(base, "agent-wt", "config.toml")
 }
 
-// Load reads the config file at Path(). Returns an empty Config if the file
-// does not exist yet (so first-run works before any config is written).
+// Load reads the config file at Path(). Runs legacy migration first if needed.
+// Returns an empty Config if the file does not exist yet.
 func Load() (*Config, error) {
+	if _, err := Migrate(); err != nil {
+		return nil, fmt.Errorf("migration: %w", err)
+	}
+
 	cfg := &Config{DefaultTag: "code"}
 	data, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
@@ -256,4 +261,20 @@ func (c *Config) ResolveLocation(m Model) (Location, error) {
 		return p.Location, nil
 	}
 	return "", fmt.Errorf("model %q: no location on model or provider %q", m.ID, p.ID)
+}
+
+// Save writes cfg to the config path using an atomic temp-file + rename.
+func Save(cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return err
+	}
+	tmp := Path() + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, Path())
 }

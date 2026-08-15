@@ -150,7 +150,7 @@ go vet ./...         # vet
 | Path | Purpose |
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra) |
-| `internal/config/` | Config loading, model registry types, validation, secrets |
+| `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -165,6 +165,17 @@ The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types
 - **Agent** — AI coding tool with supported providers and optional default
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
+
+### Migration (Go)
+
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf`
+into `config.toml` automatically. The migration:
+
+- Parses multi-line `CODE_MODELS`/`DESIGN_MODELS` bash arrays
+- Strips `#`-commented-out models
+- Creates `Provider`/`Agent` entries for each `native:X` model
+- Merges models that appear in both code and design rotations (union of tags)
+- Runs only once — skipped if `config.toml` already exists
 
 Validate changes by running the launcher manually. Representative invocations:
 
