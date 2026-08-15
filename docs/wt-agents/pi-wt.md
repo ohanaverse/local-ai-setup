@@ -10,7 +10,7 @@
 npm install -g @mariozechner/pi-coding-agent
 ```
 
-This installs the `pi` binary globally. The `pi-wt` launcher in this repo wraps `pi` with worktree-aware FZF selection and code/design model rotation. Install `pi-wt` itself by copying `bin/pi-wt` (and the rest of `bin/`) into `~/.local/bin/`.
+This installs the `pi` binary globally. The `pi-wt` launcher in this repo wraps `pi` with worktree-aware FZF selection and code/design model rotation. Install `pi-wt` itself by copying `bin/pi-wt` (and the rest of `bin/`) into `~/.local/bin/`. Requires `jq` for model verification.
 
 ## Configuration files & locations
 
@@ -34,7 +34,7 @@ In the NYT LiteLLM deployment on this machine, the wrapper is `~/.pi/agent/activ
 
 pi picks a model from `~/.pi/agent/models.json` based on `--model <id>` and `--provider <name>` arguments. With no flags, pi prompts the user (or, in the LiteLLM wrapper, falls back to the injected default).
 
-`pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model name from `~/.config/agent-wt/models.conf`; if that name also exists as a model ID in `~/.pi/agent/models.json`, `pi-wt` execs `pi --model <id>`.
+`pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model name from `~/.config/agent-wt/models.conf`; `pi-wt` then verifies the model is both present in `~/.pi/agent/models.json` **and** marked `._launch: true` (only models explicitly configured for launch are used — orphaned entries are skipped). If verified, `pi-wt` execs `pi --model <id>`. This check requires `jq`.
 
 **Auto-sync on launch:** `pi-wt` automatically syncs cloud models (`*:cloud` suffix) from `models.conf` into `~/.pi/agent/models.json` if they are missing. This happens on every launch, is idempotent (only adds, never removes), and ensures rotation models are always available to pi. The sync runs silently unless models are added, in which case it logs:
 ```bash

@@ -240,7 +240,7 @@ Per-agent behavior:
 - **codex** — `--model <id>`; native uses no args
 - **copilot** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL` env vars; never passes `--model`
 - **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) for the ollama provider
-- **pi** — `--model <id>`; no yolo flag
+- **pi** — `--model <id>` if model is present in `models.json` with `._launch: true`; requires `jq`; no yolo flag
 - **agy** — no model passthrough (model chosen inside its TUI)
 
 The `wt agents` subcommand lists registered drivers, whether each binary is
