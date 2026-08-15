@@ -180,7 +180,7 @@ go vet ./...       # Vet
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
-| `internal/worktree/` | Git worktree and branch enumeration (picker data source) |
+| `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -241,12 +241,21 @@ Per-agent behavior:
 
 The `internal/worktree` package enumerates worktrees, local branches, and
 remote-tracking branches by shelling out to `git` and parsing porcelain
-output. This is the data source for the TUI picker (lessons 12–13).
+output, and creates worktrees on demand. This is the data source for the TUI
+picker (lessons 12–13) and the engine behind the `-w` flag.
 
 - `worktree.Enumerate(dir, cwdRoot)` returns `[]Entry` with `Type` (`current`, `worktree`, `branch`)
+- `worktree.EnsureForName(dir, name)` — idempotent worktree for the `-w` flag
+  (reuses an existing worktree path, else creates via `git worktree add`)
+- `worktree.EnsureForBranch(dir, branch)` — the picker path, handling local,
+  remote-tracking, and brand-new branches
 - Parses `git worktree list --porcelain` (block-oriented state machine)
 - Uses `git for-each-ref` for stable branch listing
 - Deduplicates: remote branches shadowed by locals are excluded; default branch is hidden as a bare branch
+
+```bash
+go run ./cmd/wt -w my-feature   # create/reuse worktree, print its path
+```
 
 #### Testing (Go)
 

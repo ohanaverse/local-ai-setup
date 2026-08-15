@@ -86,6 +86,18 @@ func rootCmd() *cobra.Command {
 			fmt.Println(m.ID)
 			return nil
 		}
+		if w, _ := cmd.Flags().GetString("worktree"); w != "" {
+			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+			if err != nil {
+				return fmt.Errorf("not in a git repo: %w", err)
+			}
+			path, err := worktree.EnsureForName(strings.TrimSpace(string(root)), w)
+			if err != nil {
+				return err
+			}
+			fmt.Println("worktree at:", path)
+			return nil
+		}
 		if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
 			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 			if err != nil {

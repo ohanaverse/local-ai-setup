@@ -155,7 +155,7 @@ Test coverage by package:
 | `internal/registry` | 9 | Merge (curated wins), parseOllamaList, OpenRouter JSON |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
 | `internal/agents` | 10 | Per-agent Build output, Installed, Command |
-| `internal/worktree` | 6 | Worktree parsing, branch dedup, default-branch skip, remote shadowing |
+| `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 
 ## Go module
 
@@ -178,7 +178,7 @@ go vet ./...         # vet
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
-| `internal/worktree/` | Git worktree and branch enumeration (picker data source) |
+| `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -249,6 +249,31 @@ Per-agent behavior:
 
 The `wt agents` subcommand lists registered drivers, whether each binary is
 installed, and its yolo flag.
+
+### Worktree (Go)
+
+The `internal/worktree` package handles both enumeration (lesson 7) and
+creation (lesson 8) — the Go equivalent of `gather_entries` and
+`ensure_worktree_for_name`/`handle_branch_selection` in `wt-core.sh`. Every
+function takes `dir` (the repo root) as its first parameter so tests can run
+git inside a temp repo.
+
+- `Enumerate(dir, cwdRoot)` — lists pickable targets (current, worktrees, bare branches)
+- `EnsureForName(dir, name)` — idempotent worktree for the `-w` flag: reuses an
+  already-checked-out worktree path, reuses an existing `.worktrees/<name>`
+  path, otherwise creates via `git worktree add` (or `-b` for a new branch)
+- `EnsureForBranch(dir, branch)` — the picker path, handling local,
+  remote-tracking, and brand-new branches. Remote branches create a local
+  branch tracking them; errors if the short name collides with a local branch
+- Helpers: `branchExists`, `remoteExists`, `isWorktreePath`
+
+Branch names with slashes use the last path component as the worktree
+directory (`.worktrees/my-branch`). The `-w` flag is wired in `cmd/wt/main.go`
+and prints the resulting worktree path.
+
+```bash
+go run ./cmd/wt -w my-feature   # create/reuse worktree, print its path
+```
 
 ### Migration (Go)
 
