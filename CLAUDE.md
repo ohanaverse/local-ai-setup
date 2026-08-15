@@ -115,6 +115,10 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, and `opencode-wt` (no
 
 `opencode-wt` does not pass `--model` for Ollama models. Instead it sets `OPENCODE_CONFIG_CONTENT` (inline JSON) before `exec opencode`, e.g. `{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"<url>/v1","apiKey":""}}}}`. This is OpenCode's highest-precedence config layer and overrides `~/.config/opencode/opencode.json`. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `models.conf`, same as `copilot-wt`.
 
+## Pi-specific: model sync
+
+`pi-wt` launches pi with `--model <id>` only when the model is present in `~/.pi/agent/models.json` with `._launch: true` (orphaned entries are skipped) — this check requires `jq`. `pi` reads its model catalog from `models.json`, so `pi-wt` auto-syncs **non-native** models from `~/.config/agent-wt/models.conf` into it on every launch — both cloud models (`:cloud` suffix) and local models (MLX, etc.). `native:` entries are skipped. The sync is idempotent (only adds, never removes) and requires `jq`.
+
 ## Docs
 
 - `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)

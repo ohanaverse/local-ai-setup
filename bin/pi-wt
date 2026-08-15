@@ -40,7 +40,7 @@ pi_launcher() {
   fi
 }
 
-# Syncs models.conf cloud models into ~/.pi/agent/models.json if missing.
+# Syncs models.conf non-native models (cloud + local) into ~/.pi/agent/models.json if missing.
 # Idempotent — safe to run on every launch. Only adds, never removes.
 _sync_pi_models() {
   local config_file="$(wt_config_dir)/models.conf"
@@ -51,18 +51,18 @@ _sync_pi_models() {
 
   source "$config_file"
 
-  # Collect all cloud models from both rotation lists.
-  local all_cloud_models=()
+  # Collect all non-native models from both rotation lists.
+  # Both cloud (:cloud suffix) and local (MLX, etc.) models need to be
+  # in pi's models.json for the jq _launch check to pass.
+  local all_models=()
   local m
   for m in "${CODE_MODELS[@]:-}" "${DESIGN_MODELS[@]:-}"; do
     [[ -z "$m" ]] && continue
-    # Skip native: entries and non-cloud models (ollama local models have no :cloud suffix).
     [[ "$m" == native:* ]] && continue
-    [[ "$m" != *:cloud ]] && continue
-    all_cloud_models+=("$m")
+    all_models+=("$m")
   done
 
-  [[ ${#all_cloud_models[@]} -eq 0 ]] && return 0
+  [[ ${#all_models[@]} -eq 0 ]] && return 0
 
   # Read existing model IDs from pi's models.json.
   local existing_ids
@@ -70,7 +70,7 @@ _sync_pi_models() {
 
   # Build a set of models to add.
   local to_add=()
-  for m in "${all_cloud_models[@]}"; do
+  for m in "${all_models[@]}"; do
     if ! printf '%s\n' "$existing_ids" | grep -qFx "$m"; then
       to_add+=("$m")
     fi
@@ -108,7 +108,7 @@ _sync_pi_models() {
 
   if [[ $added -gt 0 ]]; then
     mv "$tmp" "$pi_models"
-    printf '%s: synced %d cloud model(s) to pi models.json\n' "$WT_NAME" "$added" >&2
+    printf '%s: synced %d model(s) to pi models.json\n' "$WT_NAME" "$added" >&2
   else
     rm -f "$tmp"
   fi
