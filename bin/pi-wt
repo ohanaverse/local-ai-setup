@@ -144,7 +144,12 @@ wt_exec() {
     if [[ "$model_to_use" == "native" || "$model_to_use" == "native:pi" ]]; then
       exec "$(pi_launcher)" "$@"
     fi
-    if grep -qF "\"id\": \"$model_to_use\"" "$HOME/.pi/agent/models.json" 2>/dev/null; then
+    # Use jq to verify the model is both present AND marked _launch: true.
+    # This prevents launching models that exist in models.json but were
+    # added manually (e.g. orphaned entries) and not intended for use.
+    if jq -e --arg model "$model_to_use" '
+      .providers.ollama.models | any(.id == $model and (._launch // false) == true)
+    ' "$HOME/.pi/agent/models.json" >/dev/null 2>&1; then
       exec "$(pi_launcher)" --model "$model_to_use" "$@"
     fi
     printf '%s: model "%s" not configured for pi, using default\n' \
