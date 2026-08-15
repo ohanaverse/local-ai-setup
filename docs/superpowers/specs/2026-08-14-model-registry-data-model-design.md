@@ -53,6 +53,13 @@ model specify.
 A specific variant of a base model available from a provider.
 
 ```go
+type Source string
+
+const (
+    SourceCurated    Source = "curated"
+    SourceDiscovered Source = "discovered"
+)
+
 type Model struct {
     ID         string   `toml:"id"`          // unique key, e.g. "ollama/gemma4:9b"
     Family     string   `toml:"family"`      // base model grouping, e.g. "gemma4"
@@ -60,6 +67,7 @@ type Model struct {
     ModelName  string   `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
     Location   Location `toml:"location,omitempty"`
     Tags       []string `toml:"tags"`        // e.g. ["code", "design"]
+    Source     Source   `toml:"source,omitempty"` // curated or discovered
 }
 ```
 
@@ -74,6 +82,10 @@ skip applies. Used for:
 - **Display grouping** — TUI groups variants under a family header.
 - **Rotation skip** — if a gemma4 variant was just used, skip all other gemma4
   variants regardless of provider.
+
+**Source:** `curated` for models from the config file; `discovered` for models
+found via live discovery (Ollama CLI, OpenRouter API). Curated entries always
+win on ID collisions.
 
 **Location resolution:** model location takes precedence. If omitted, the
 provider's location is used. At least one must be set.
@@ -126,6 +138,21 @@ Agent selected
       → Tag filter = models whose tags include the selected tag
         → Family grouping for display
 ```
+
+## Live discovery
+
+The registry supports hybrid curation: config-file models are merged with
+live-discovered models at runtime.
+
+| Discoverer | Source | Method |
+|---|---|---|
+| `Ollama` | `ollama list` CLI | Shell out, parse NAME / ID / SIZE / MODIFIED table. Cloud models have `-` in SIZE; local models have a size. |
+| `OpenRouter` | `https://openrouter.ai/api/v1/models` | HTTP GET, decode JSON `data[].id`. |
+
+**Merge rules:**
+- Curated entries win on ID collision (preserves user tags and metadata).
+- Discovered entries are appended when no curated entry exists.
+- Discovery failures are non-fatal — the registry falls back to curated only.
 
 ## Example config
 
@@ -276,6 +303,8 @@ The `SecretStore` interface allows swapping in a secret manager (vault,
 | Remove | `Model.Native bool`, `Model.Location Location`, `Model.Provider string` |
 | Add | `Model.Family string`, `Model.ProviderID string`, `Model.ModelName string` |
 | Add | `Model.Location Location` (optional, overrides provider) |
+| Add | `Model.Source Source` (`curated` or `discovered`) |
+| Add | `Source` type + `SourceCurated`/`SourceDiscovered` constants |
 | Add | `Provider` struct with `ID`, `Name`, `Location`, `Auth` |
 | Add | `AuthConfig` struct with `Type`, `SecretRef`, `BaseURL` |
 | Replace | `AgentDefault` → `Agent` with `SupportedProviders`, `DefaultProvider` |
@@ -285,3 +314,5 @@ The `SecretStore` interface allows swapping in a secret manager (vault,
 | Add | `ModelsByFamily`, `ModelsByProvider`, `ProvidersForAgent`, `AgentByName`, `ProviderByID`, `ResolveLocation` |
 | Update | `Validate()` with cross-entity reference checks |
 | Remove | `OllamaBaseURL` from `Config` (moved to `Provider.Auth.BaseURL`) |
+| Add | `internal/registry/` package with `Discoverer` interface, `Ollama`/`OpenRouter` discoverers, `Merge()` |
+| Add | Live discovery: `ollama list` + OpenRouter API merged with curated config at runtime |

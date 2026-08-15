@@ -192,9 +192,15 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		}
 	}
 
-	// Agents: copilot
-	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "copilot" {
-		t.Fatalf("expected 1 copilot agent, got %v", cfg.Agents)
+	// Agents: copilot + pi (pi is always added as a special case)
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d: %v", len(cfg.Agents), cfg.Agents)
+	}
+	if cfg.Agents[0].Name != "copilot" {
+		t.Errorf("expected copilot agent, got %v", cfg.Agents[0])
+	}
+	if cfg.Agents[1].Name != "pi" {
+		t.Errorf("expected pi agent, got %v", cfg.Agents[1])
 	}
 
 	// Second run must not migrate again

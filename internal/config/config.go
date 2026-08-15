@@ -17,6 +17,14 @@ const (
 	LocationCloud Location = "cloud"
 )
 
+// Source tracks how a model entered the registry.
+type Source string
+
+const (
+	SourceCurated    Source = "curated"
+	SourceDiscovered Source = "discovered"
+)
+
 // ── Provider ──────────────────────────────────────────────
 
 // Provider is a source of models with connection info.
@@ -44,6 +52,7 @@ type Model struct {
 	ModelName  string   `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
 	Location   Location `toml:"location,omitempty"`
 	Tags       []string `toml:"tags"` // e.g. ["code", "design"]
+	Source     Source   `toml:"source,omitempty"` // curated or discovered
 }
 
 // ── Agent ─────────────────────────────────────────────────

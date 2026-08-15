@@ -151,6 +151,7 @@ go vet ./...         # vet
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra) |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
+| `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -161,10 +162,19 @@ go vet ./...         # vet
 The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types:
 
 - **Provider** — model source with auth config (ollama, openrouter, claude, copilot)
-- **Model** — specific variant from a provider, grouped by family (e.g. gemma4)
+- **Model** — specific variant from a provider, grouped by family (e.g. gemma4). Models carry a `Source` field (`curated` | `discovered`) to distinguish config-file entries from live discovery results.
 - **Agent** — AI coding tool with supported providers and optional default
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
+
+### Live discovery (Go)
+
+The `internal/registry` package queries connected providers at runtime and merges the results with the curated config:
+
+- **Ollama** — runs `ollama list`, parses both local models (with a size) and cloud models (size `-`).
+- **OpenRouter** — fetches `https://openrouter.ai/api/v1/models` via HTTP.
+
+Curated entries win on ID collisions; discovered entries fill gaps. The `wt models` subcommand prints the merged registry.
 
 ### Migration (Go)
 

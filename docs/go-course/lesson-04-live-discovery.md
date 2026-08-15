@@ -10,34 +10,69 @@ curated entries.
 
 Two providers cover the common cases:
 
-- **Ollama (local):** list models via the CLI, `ollama list`, which prints a
-  table of `NAME  ID  SIZE  MODIFIED`. We shell out and parse the first column.
+- **Ollama:** list models via the CLI, `ollama list`, which prints a
+table of `NAME  ID  SIZE  MODIFIED`. The output includes **both** local models
+(with a size like `21 GB`) and cloud models (size is `-`, name usually ends
+in `:cloud`). We shell out, parse the first column, and decide `local` vs
+`cloud` from the size field.
 - **OpenRouter (cloud):** a REST API `https://openrouter.ai/api/v1/models`
-  returns a JSON array. We fetch it and pull each model's `id`.
+returns a JSON array. We fetch it and pull each model's `id`.
 
 Discovery results are tagged `SourceDiscovered` and merged into the registry,
 deduped by model id against curated entries (curated wins — it carries the
 user's tags and metadata).
 
-This lesson also introduces the **provider interface**: a small abstraction so
-future providers slot in without touching the merge logic.
+This lesson also introduces the **discoverer interface**: a small abstraction
+so future providers slot in without touching the merge logic. We call it
+`Discoverer` rather than `Provider` because `config.Provider` already exists
+as a struct.
 
 ## New Syntax & Vocabulary
 
 | Term | Meaning |
 |---|---|
-| `exec.Command(name, args...).Output()` | Runs a command and captures stdout (returns `[]byte`). |
-| `encoding/json.Unmarshal` | Decodes JSON bytes into a struct/slice. |
-| `http.Client{Timeout: ...}` | An HTTP client with a request timeout so discovery can't hang forever. |
-| `defer resp.Body.Close()` | Ensures the response body is closed even on early return. |
-| `io.ReadAll(resp.Body)` | Reads the whole response body. |
-| `Provider` interface | `Discover() ([]Model, error)` — the seam for adding providers. |
-| merge / dedup | Curated entries override discovered ones with the same id. |
+|`exec.Command(name, args...).Output()`|Runs a command and captures stdout (returns `[]byte`).|
+|`encoding/json.Unmarshal`|Decodes JSON bytes into a struct/slice.|
+|`http.Client{Timeout: ...}`|An HTTP client with a request timeout so discovery can't hang forever.|
+|`defer resp.Body.Close()`|Ensures the response body is closed even on early return.|
+|`io.ReadAll(resp.Body)`|Reads the whole response body.|
+|`Discoverer` interface|`Discover() ([]config.Model, error)` — the seam for adding providers.|
+|merge / dedup|Curated entries override discovered ones with the same id.|
 
 ## Worked Walkthrough
 
-Add the provider interface and an ollama implementation in
-`internal/registry/discover.go`:
+### Step 1: Add `Source` to `config.Model`
+
+The config needs to track whether a model came from the config file or from
+live discovery. Add the type and field to `internal/config/config.go`:
+
+```go
+// Source tracks how a model entered the registry.
+type Source string
+
+const (
+	SourceCurated    Source = "curated"
+	SourceDiscovered Source = "discovered"
+)
+```
+
+And add the field to `Model`:
+
+```go
+type Model struct {
+	ID         string   `toml:"id"`          // unique key, e.g. "ollama/gemma4:9b"
+	Family     string   `toml:"family"`      // base model grouping, e.g. "gemma4"
+	ProviderID string   `toml:"provider_id"` // → Provider.ID
+	ModelName  string   `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
+	Location   Location `toml:"location,omitempty"`
+	Tags       []string `toml:"tags"` // e.g. ["code", "design"]
+	Source     Source   `toml:"source,omitempty"` // curated or discovered
+}
+```
+
+### Step 2: Create `internal/registry/discover.go`
+
+Add the discoverer interface and an ollama implementation:
 
 ```go
 package registry
@@ -50,14 +85,17 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
-// Provider discovers models from a single source.
-type Provider interface {
+// Discoverer discovers models from a single source.
+type Discoverer interface {
 	Discover() ([]config.Model, error)
 }
 
-// Ollama lists local models via `ollama list`.
+// Ollama lists models via `ollama list`. The CLI prints both local and cloud
+// models; cloud entries have "-" in the SIZE column.
 type Ollama struct{}
 
 func (Ollama) Discover() ([]config.Model, error) {
@@ -73,23 +111,33 @@ func (Ollama) Discover() ([]config.Model, error) {
 		if i == 0 {
 			continue // header row: NAME  ID  SIZE  MODIFIED
 		}
-		name := strings.Fields(line)[0]
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		name := fields[0]
 		if name == "" {
 			continue
 		}
+		// Cloud models have "-" in the SIZE column; local models have a size.
+		loc := config.LocationLocal
+		if fields[2] == "-" {
+			loc = config.LocationCloud
+		}
 		models = append(models, config.Model{
-			ID:       name,
-			Provider: "ollama",
-			Location: config.LocationLocal,
-			Source:   config.SourceDiscovered,
+			ID:         "ollama/" + name,
+			Family:     name,
+			ProviderID: "ollama",
+			ModelName:  name,
+			Location:   loc,
+			Source:     config.SourceDiscovered,
 		})
 	}
 	return models, nil
 }
 ```
 
-Add the OpenRouter provider — it hits a JSON API. We need the `Source` field
-on `config.Model` (added in lesson 2) and a `SetSource` helper:
+Add the OpenRouter discoverer — it hits a JSON API:
 
 ```go
 // OpenRouter lists cloud models via the OpenRouter REST API.
@@ -120,18 +168,25 @@ func (or OpenRouter) Discover() ([]config.Model, error) {
 	}
 	models := make([]config.Model, 0, len(payload.Data))
 	for _, m := range payload.Data {
+		id := m.ID
+		family := id
+		if idx := strings.LastIndex(id, "/"); idx >= 0 {
+			family = id[idx+1:]
+		}
 		models = append(models, config.Model{
-			ID:       m.ID,
-			Provider: "openrouter",
-			Location: config.LocationCloud,
-			Source:   config.SourceDiscovered,
+			ID:         "openrouter/" + id,
+			Family:     family,
+			ProviderID: "openrouter",
+			ModelName:  id,
+			Location:   config.LocationCloud,
+			Source:     config.SourceDiscovered,
 		})
 	}
 	return models, nil
 }
 ```
 
-Now the merge in `internal/registry/registry.go`:
+### Step 3: Add merge logic in `internal/registry/registry.go`
 
 ```go
 package registry
@@ -141,7 +196,7 @@ import (
 )
 
 // Merge combines curated models with discovered ones. Curated entries win on
-// id collisions; discovered entries are appended (tag-free) otherwise.
+// id collisions; discovered entries are appended otherwise.
 func Merge(curated []config.Model, discovered []config.Model) []config.Model {
 	byID := make(map[string]config.Model, len(curated))
 	for _, m := range curated {
@@ -159,14 +214,12 @@ func Merge(curated []config.Model, discovered []config.Model) []config.Model {
 	return out
 }
 
-// Discover runs each connected provider and returns the merged registry.
-// baseURL is passed so future providers that need it (like ollama over HTTP)
-// can use it; today it is reserved.
+// Discover runs each connected discoverer and returns the merged registry.
 func Discover(cfg *config.Config) []config.Model {
 	var discovered []config.Model
-	providers := []Provider{Ollama{}, OpenRouter{}}
-	for _, p := range providers {
-		models, err := p.Discover()
+	discoverers := []Discoverer{Ollama{}, OpenRouter{}}
+	for _, d := range discoverers {
+		models, err := d.Discover()
 		if err != nil {
 			// Discovery failures are non-fatal — fall back to curated only.
 			continue
@@ -177,37 +230,102 @@ func Discover(cfg *config.Config) []config.Model {
 }
 ```
 
-Note `config.Model` needs a `Source` field. Add it:
+### Step 4: Wire `modelsCmd` to show curated models as a table
+
+Update `modelsCmd()` in `cmd/wt/main.go` to display only configured models,
+sorted by provider and model name, in a clean table format. Remove the
+`registry` import — discovery is implemented and ready for the TUI (lesson 12)
+and launch flow, but `wt models` shows the user's hand-curated registry only.
+
+Add `"sort"` to the imports:
 
 ```go
-	Source Source `toml:"source,omitempty"`
+import (
+	"fmt"
+	"os"
+	"sort"
+
+	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/spf13/cobra"
+)
+```
+
+Then change the `models` subcommand:
+
+```go
+func modelsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "models",
+		Short: "Browse and manage the model registry",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+
+			fmt.Println("Providers:")
+			for _, p := range cfg.Providers {
+				fmt.Printf("  %-15s %-10s auth=%-8s base_url=%s\n",
+					p.ID, p.Location, p.Auth.Type, p.Auth.BaseURL)
+			}
+
+			// Sort curated models by provider, then model name.
+			models := make([]config.Model, len(cfg.Models))
+			copy(models, cfg.Models)
+			sort.Slice(models, func(i, j int) bool {
+				if models[i].ProviderID != models[j].ProviderID {
+					return models[i].ProviderID < models[j].ProviderID
+				}
+				return models[i].ID < models[j].ID
+			})
+
+			fmt.Println("\nModels:")
+			fmt.Printf("%-32s %-16s %-12s %-8s %s\n",
+				"ID", "FAMILY", "PROVIDER", "LOCATION", "TAGS")
+			fmt.Println("--------------------------------------------------------------------------------")
+			for _, m := range models {
+				loc, _ := cfg.ResolveLocation(m)
+				fmt.Printf("%-32s %-16s %-12s %-8s %v\n",
+					m.ID, m.Family, m.ProviderID, loc, m.Tags)
+			}
+
+			fmt.Println("\nAgents:")
+			for _, a := range cfg.Agents {
+				fmt.Printf("  %-10s providers=%v default=%s\n",
+					a.Name, a.SupportedProviders, a.DefaultProvider)
+			}
+			return nil
+		},
+	}
+}
 ```
 
 ## Run It
 
-Wire a quick test invocation:
-
-```go
-// in main or a scratch func
-cfg, _ := config.Load()
-all := registry.Discover(cfg)
-for _, m := range all {
-	fmt.Printf("%-24s %-10s %-6s %s\n", m.ID, m.Provider, m.Location, m.Source)
-}
-```
-
 ```bash
-go run ./cmd/wt
+go run ./cmd/wt models
 ```
 
-```
-native:claude         claude     cloud  curated
-kimi-k2.6:cloud       ollama     cloud  curated
-llama3.1              ollama     local  discovered   <- from `ollama list`
-qwen3                 ollama     local  discovered   <- from `ollama list`
-```
+Sample output (depends on what's in your config):
 
-(The exact local models depend on what's installed.)
+```
+Providers:
+  ollama          local      auth=none    base_url=http://localhost:11434
+  claude          cloud      auth=native  base_url=
+
+Models:
+ID                               FAMILY           PROVIDER     LOCATION TAGS
+--------------------------------------------------------------------------------
+claude/native                    claude           claude       cloud    [code design]
+ollama/gemma4:9b                 gemma4           ollama       local    [code design]
+ollama/gemma4:27b                gemma4           ollama       local    [code]
+
+Agents:
+  claude     providers=[claude ollama] default=claude
+```
 
 ## Try It Yourself
 

@@ -129,6 +129,24 @@ func Migrate() (bool, error) {
 		}
 	}
 
+	// Pi is a special case: it does not use native:pi in legacy configs.
+	// It uses ollama models via its own models.json, so it has no native
+	// provider. Add the agent entry if not already present.
+	piFound := false
+	for _, a := range cfg.Agents {
+		if a.Name == "pi" {
+			piFound = true
+			break
+		}
+	}
+	if !piFound {
+		cfg.Agents = append(cfg.Agents, Agent{
+			Name:               "pi",
+			SupportedProviders: []string{"ollama"},
+			DefaultProvider:    "ollama",
+		})
+	}
+
 	if err := Save(cfg); err != nil {
 		return false, err
 	}

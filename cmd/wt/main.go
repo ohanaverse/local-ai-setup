@@ -3,7 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -60,6 +64,19 @@ func rootCmd() *cobra.Command {
 	return cmd
 }
 
+// borderStyle is the shared table border colour.
+var borderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+func renderTable(headers []string, rows [][]string) string {
+	t := table.New().
+		Headers(headers...).
+		Rows(rows...).
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(borderStyle).
+		BorderRow(true)
+	return t.Render()
+}
+
 func modelsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "models",
@@ -73,24 +90,64 @@ func modelsCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Println("Providers:")
+			// Providers table
+			provRows := make([][]string, 0, len(cfg.Providers))
 			for _, p := range cfg.Providers {
-				fmt.Printf("  %-15s %-10s auth=%-8s base_url=%s\n",
-					p.ID, p.Location, p.Auth.Type, p.Auth.BaseURL)
+				provRows = append(provRows, []string{
+					p.ID,
+					string(p.Location),
+					p.Auth.Type,
+					p.Auth.BaseURL,
+				})
 			}
+			fmt.Println("Providers:")
+			fmt.Println(renderTable(
+				[]string{"ID", "LOCATION", "AUTH", "BASE_URL"},
+				provRows,
+			))
 
-			fmt.Println("\nModels:")
-			for _, m := range cfg.ModelsWithTag("code") {
+			// Models table — sort by provider, then ID
+			models := make([]config.Model, len(cfg.Models))
+			copy(models, cfg.Models)
+			sort.Slice(models, func(i, j int) bool {
+				if models[i].ProviderID != models[j].ProviderID {
+					return models[i].ProviderID < models[j].ProviderID
+				}
+				return models[i].ID < models[j].ID
+			})
+
+			modelRows := make([][]string, 0, len(models))
+			for _, m := range models {
 				loc, _ := cfg.ResolveLocation(m)
-				fmt.Printf("  %-35s family=%-12s provider=%-12s location=%-6s tags=%v\n",
-					m.ID, m.Family, m.ProviderID, loc, m.Tags)
+				modelRows = append(modelRows, []string{
+					m.ID,
+					m.Family,
+					m.ProviderID,
+					string(loc),
+					strings.Join(m.Tags, ", "),
+				})
 			}
+			fmt.Println("Models:")
+			fmt.Println(renderTable(
+				[]string{"ID", "FAMILY", "PROVIDER", "LOCATION", "TAGS"},
+				modelRows,
+			))
 
-			fmt.Println("\nAgents:")
+			// Agents table
+			agentRows := make([][]string, 0, len(cfg.Agents))
 			for _, a := range cfg.Agents {
-				fmt.Printf("  %-10s providers=%v default=%s\n",
-					a.Name, a.SupportedProviders, a.DefaultProvider)
+				agentRows = append(agentRows, []string{
+					a.Name,
+					strings.Join(a.SupportedProviders, ", "),
+					a.DefaultProvider,
+				})
 			}
+			fmt.Println("Agents:")
+			fmt.Println(renderTable(
+				[]string{"NAME", "PROVIDERS", "DEFAULT"},
+				agentRows,
+			))
+
 			return nil
 		},
 	}
