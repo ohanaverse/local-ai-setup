@@ -9,6 +9,10 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
+// Merge must keep curated entries when a discovered entry has the same ID.
+// Curated entries carry tags (e.g. "code", "design") that the user
+// explicitly configured; discarding them would break rotation and TUI
+// filtering.
 func TestMergeCuratedWins(t *testing.T) {
 	curated := []config.Model{
 		{ID: "a", ProviderID: "p1", Tags: []string{"code"}, Source: config.SourceCurated},
@@ -28,6 +32,9 @@ func TestMergeCuratedWins(t *testing.T) {
 	}
 }
 
+// Merge must append discovered models whose IDs are not already present.
+// This is how live discovery fills in models the user hasn't manually
+// curated (e.g. a new Ollama model pulled since last config edit).
 func TestMergeDiscoveredAppended(t *testing.T) {
 	curated := []config.Model{
 		{ID: "a", ProviderID: "p1"},
@@ -48,6 +55,9 @@ func TestMergeDiscoveredAppended(t *testing.T) {
 	}
 }
 
+// Merge must handle nil slices gracefully without panic. Both curated and
+// discovered can be nil when there are no models (e.g. first run with no
+// config, or a provider that returned nothing).
 func TestMergeEmpty(t *testing.T) {
 	merged := Merge(nil, nil)
 	if len(merged) != 0 {
@@ -55,6 +65,9 @@ func TestMergeEmpty(t *testing.T) {
 	}
 }
 
+// Merge must include every distinct model. A regression here would silently
+// drop discovered models, leaving the user wondering why a newly pulled model
+// doesn't appear in the registry.
 func TestMergeStableOrder(t *testing.T) {
 	curated := []config.Model{
 		{ID: "first", ProviderID: "p1"},
@@ -79,6 +92,9 @@ func TestMergeStableOrder(t *testing.T) {
 	}
 }
 
+// parseOllamaList must extract both local models (with a size) and cloud
+// models (size "-"). The location field must be correct because it decides
+// whether the agent uses a local Ollama instance or a cloud endpoint.
 func TestParseOllamaListLocalAndCloud(t *testing.T) {
 	input := `NAME                       ID              SIZE      MODIFIED
 qwen3.6:35b-mlx            1b50c6fdc2d4    21 GB     3 days ago
@@ -120,6 +136,8 @@ nomic-embed-text:latest    0a109f422b47    274 MB    3 months ago`
 	}
 }
 
+// parseOllamaList must skip the header row (NAME ID SIZE MODIFIED). A
+// regression here would emit a fake model called "NAME" into the registry.
 func TestParseOllamaListSkipsHeader(t *testing.T) {
 	input := `NAME  ID  SIZE  MODIFIED
 llama3.1    abc123    4.7 GB    2 weeks ago`
@@ -132,6 +150,8 @@ llama3.1    abc123    4.7 GB    2 weeks ago`
 	}
 }
 
+// An empty ollama list (e.g. when no models have been pulled) must return
+// an empty slice, not a nil-vs-empty distinction that confuses upstream code.
 func TestParseOllamaListEmpty(t *testing.T) {
 	models := parseOllamaList("")
 	if len(models) != 0 {
@@ -139,8 +159,12 @@ func TestParseOllamaListEmpty(t *testing.T) {
 	}
 }
 
+// OpenRouter.Discover hits the public OpenRouter API. The test server
+// verifies the HTTP client is wired correctly. Skipped because the URL is
+// hardcoded in the production code; this test documents the need for URL
+// injection to make the test fully runnable.
 func TestOpenRouterDiscover(t *testing.T) {
-	 srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/models" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -161,9 +185,10 @@ func TestOpenRouterDiscover(t *testing.T) {
 	}
 }
 
+// OpenRouter returns models with openrouter/ prefixed IDs and cloud location.
+// The JSON-to-Model conversion must correctly split the provider prefix from
+// the model name to produce sensible family names.
 func TestOpenRouterDiscoverParsePayload(t *testing.T) {
-	// Test the parsing logic that happens after the HTTP call.
-	// We simulate by constructing the payload manually.
 	payload := []byte(`{"data":[{"id":"anthropic/claude-sonnet-4"},{"id":"openai/gpt-4o"}]}`)
 	var parsed struct {
 		Data []struct {

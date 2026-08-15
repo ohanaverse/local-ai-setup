@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -58,6 +60,12 @@ func rootCmd() *cobra.Command {
 		"",
 		"Print next model in the given tag group (test helper)",
 	)
+	// Test-only flag: enumerate worktrees and branches.
+	cmd.Flags().Bool(
+		"debug-worktrees",
+		false,
+		"List worktrees and branches (test helper)",
+	)
 
 	// With no subcommand, wt launches the interactive TUI.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
@@ -76,6 +84,21 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("no models tagged %q", tag)
 			}
 			fmt.Println(m.ID)
+			return nil
+		}
+		if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
+			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+			if err != nil {
+				return fmt.Errorf("not in a git repo: %w", err)
+			}
+			cwdRoot := strings.TrimSpace(string(root))
+			entries, err := worktree.Enumerate(cwdRoot, cwdRoot)
+			if err != nil {
+				return err
+			}
+			for _, e := range entries {
+				fmt.Printf("%-9s %-30s %s\n", e.Type, e.Branch, e.Path)
+			}
 			return nil
 		}
 		fmt.Println("(TUI not yet implemented - coming in lesson 12)")

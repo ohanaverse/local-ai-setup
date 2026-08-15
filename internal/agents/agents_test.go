@@ -19,6 +19,9 @@ func localModel(id string) config.Model {
 	return config.Model{ID: id, ModelName: id, Location: config.LocationLocal}
 }
 
+// Names must return every agent registered in the package. A mismatch means
+// the registry is incomplete and the CLI will be unable to list or launch
+// one or more agents.
 func TestNames(t *testing.T) {
 	names := Names()
 	want := map[string]bool{"claude": true, "codex": true, "copilot": true, "opencode": true, "pi": true, "agy": true}
@@ -32,12 +35,19 @@ func TestNames(t *testing.T) {
 	}
 }
 
+// ByName must return nil for an unknown agent name so callers (the CLI, the
+// TUI) can distinguish between supported and unsupported agents rather than
+// panicking on a nil dereference.
 func TestByNameUnknown(t *testing.T) {
 	if d := ByName("nope"); d != nil {
 		t.Fatalf("ByName(nope) = %v, want nil", d)
 	}
 }
 
+// The Claude driver handles three cases: native (no args/env), cloud (sets
+// the Ollama gateway env var and passes --model), and yolo (prepends the
+// skip-permissions flag). Getting any of these wrong means the launched
+// claude process receives the wrong CLI flags.
 func TestClaude(t *testing.T) {
 	d := ByName("claude")
 	if d == nil {
@@ -66,6 +76,8 @@ func TestClaude(t *testing.T) {
 	}
 }
 
+// Codex is a cloud-only agent that passes --model for non-native models and
+// nothing for native. It has no custom env vars. Verify both paths.
 func TestCodex(t *testing.T) {
 	d := ByName("codex")
 	if d == nil {
@@ -83,6 +95,9 @@ func TestCodex(t *testing.T) {
 	}
 }
 
+// Copilot never receives --model on the CLI. Instead it gets three COPILOT_*
+// env vars that tell the VS Code extension which provider and model to use.
+// Native models must produce no env vars at all.
 func TestCopilot(t *testing.T) {
 	d := ByName("copilot")
 	if d == nil {
@@ -103,6 +118,8 @@ func TestCopilot(t *testing.T) {
 	}
 }
 
+// OpenCode receives its model configuration via a single OPENCODE_CONFIG_CONTENT
+// env var containing inline JSON. Native models must not set this var.
 func TestOpenCode(t *testing.T) {
 	d := ByName("opencode")
 	if d == nil {
@@ -123,6 +140,8 @@ func TestOpenCode(t *testing.T) {
 	}
 }
 
+// Pi passes --model for non-native models and has no yolo flag (the pi CLI
+// doesn't support skipping permissions). Native models produce no args.
 func TestPi(t *testing.T) {
 	d := ByName("pi")
 	if d == nil {
@@ -140,6 +159,9 @@ func TestPi(t *testing.T) {
 	}
 }
 
+// Agy is model-agnostic — the model is chosen inside its TUI. The driver must
+// ignore the model entirely and only handle the yolo flag. A broken driver
+// could accidentally pass --model to agy, which would crash or misbehave.
 func TestAgy(t *testing.T) {
 	d := ByName("agy")
 	if d == nil {
@@ -153,6 +175,43 @@ func TestAgy(t *testing.T) {
 	lc = d.Build(cloudModel("anything"), true)
 	if len(lc.Args) != 1 || lc.Args[0] != "--dangerously-skip-permissions" {
 		t.Errorf("agy yolo args = %v, want [--dangerously-skip-permissions]", lc.Args)
+	}
+}
+
+// Installed must return true for binaries on PATH (e.g. git) and false for
+// ones that don't exist. This is the gate check the TUI uses to grey out
+// unavailable agents.
+func TestInstalled(t *testing.T) {
+	if !Installed("git") {
+		t.Error("expected git to be on PATH")
+	}
+	if Installed("not-a-real-binary-ever-12345") {
+		t.Error("expected unknown binary to not be installed")
+	}
+}
+
+// Command builds an exec.Cmd with the correct binary, args, working
+// directory, and merged environment. This is the final step before the
+// tool replaces itself with the agent process.
+func TestCommand(t *testing.T) {
+	d := ByName("pi")
+	m := cloudModel("test-model")
+	workdir := "/tmp"
+
+	cmd, err := Command(d, m, false, workdir)
+	if err != nil {
+		// pi may not be installed; that's fine, just verify the error is clear.
+		if !strings.Contains(err.Error(), "not installed") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
+	}
+	if cmd.Dir != workdir {
+		t.Errorf("cmd.Dir = %q, want %q", cmd.Dir, workdir)
+	}
+	// cmd.Env should start with os.Environ() (inherited env).
+	if len(cmd.Env) == 0 {
+		t.Error("cmd.Env should include inherited environment")
 	}
 }
 

@@ -544,3 +544,31 @@ func TestHasTag(t *testing.T) {
 		t.Error("expected HasTag on nil tags = false")
 	}
 }
+
+// Save writes config.toml atomically via temp file + rename. If the write
+// fails partway through (e.g. disk full), the original file must remain
+// intact. A regression here would corrupt the user's configuration on save.
+func TestSave(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	cfg := &Config{
+		DefaultTag: "code",
+		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// File must exist and be loadable.
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after Save() error = %v", err)
+	}
+	if loaded.DefaultTag != "code" {
+		t.Errorf("DefaultTag = %q, want %q", loaded.DefaultTag, "code")
+	}
+	if len(loaded.Providers) != 1 || loaded.Providers[0].ID != "ollama" {
+		t.Errorf("Providers = %v, want [ollama]", loaded.Providers)
+	}
+}

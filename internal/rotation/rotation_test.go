@@ -8,6 +8,10 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
+// Next must advance the index each call and persist it to disk so the
+// rotation survives process restarts. After cycling through all models it
+// must wrap around. The state file must contain both the next index and
+// the last selected model ID.
 func TestNext_AdvancesAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	models := []config.Model{
@@ -50,6 +54,9 @@ func TestNext_AdvancesAndPersists(t *testing.T) {
 	}
 }
 
+// An empty rotation group (no models tagged with the requested tag) must
+// return !ok so the caller can show a helpful message instead of panicking
+// or entering an infinite loop.
 func TestNext_EmptyGroup(t *testing.T) {
 	r := New("code", nil, t.TempDir())
 	if _, ok := r.Next(""); ok {
@@ -57,6 +64,9 @@ func TestNext_EmptyGroup(t *testing.T) {
 	}
 }
 
+// When the other tag group just used a model, Next must skip that model
+// to avoid both code and design landing on the same model simultaneously.
+// This prevents redundant usage and encourages variety.
 func TestNext_CrossSkipsOtherTag(t *testing.T) {
 	dir := t.TempDir()
 	models := []config.Model{
@@ -87,6 +97,10 @@ func TestNext_CrossSkipsOtherTag(t *testing.T) {
 	}
 }
 
+// When every candidate in the group matches the cross-skip target (e.g.
+// a single-model group), Next must still return a model so the caller
+// never gets stuck. This is the graceful-degradation path for small
+// rotation groups.
 func TestNext_CrossSkipFallsBackWhenAllCandidatesMatch(t *testing.T) {
 	dir := t.TempDir()
 	// Single-model group: every pick is "alpha", and "design" just used it.
@@ -112,6 +126,9 @@ func TestNext_CrossSkipFallsBackWhenAllCandidatesMatch(t *testing.T) {
 	}
 }
 
+// ForTag builds a Rotation from only the models in cfg that carry the
+// requested tag. Models without the tag must be excluded so the rotation
+// doesn't pick an irrelevant model.
 func TestForTag_FiltersModels(t *testing.T) {
 	cfg := &config.Config{
 		Models: []config.Model{
@@ -130,6 +147,9 @@ func TestForTag_FiltersModels(t *testing.T) {
 	}
 }
 
+// StateFile must return a predictable path under the given directory. This
+// is the contract between the Rotation and the config package's
+// LastSelected helper, which reads the same files.
 func TestStateFilePath(t *testing.T) {
 	got := StateFile("/tmp/cfg", "code")
 	want := "/tmp/cfg/rotation-code.state"
@@ -138,6 +158,9 @@ func TestStateFilePath(t *testing.T) {
 	}
 }
 
+// The default state directory must respect XDG_CONFIG_HOME, matching the
+// behaviour of config.Path(). A mismatch would mean rotation state and
+// config files end up in different directories.
 func TestStateFile_DefaultDirRespectsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
 	r := New("design", []config.Model{{ID: "x"}}, "")

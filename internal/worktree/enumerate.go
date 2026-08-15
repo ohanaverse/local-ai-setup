@@ -1,46 +1,3 @@
-# Lesson 7: Worktree & branch enumeration
-
-## Concept Intro
-
-Before the TUI can present a picker, it needs the list of choices. This is the
-port of `gather_entries()` from `wt-core.sh`. It enumerates three kinds of
-targets:
-
-1. **Worktrees** — every registered worktree (from `git worktree list
-   --porcelain`), tagging the current directory's one as `current`.
-2. **Local branches** not checked out in any worktree.
-3. **Remote-tracking branches** (e.g. `origin/feature`) not shadowed by a
-   local branch of the same short name.
-
-We shell out to `git` and parse its output. The porcelain format for worktrees
-is block-oriented:
-
-```
-worktree /abs/path
-branch refs/heads/main
-```
-
-A blank line separates blocks. We parse that with a small state machine and
-emit rows. Branch enumeration uses `git for-each-ref` which is scriptable and
-stable (better than parsing `git branch -a`).
-
-## New Syntax & Vocabulary
-
-| Term | Meaning |
-|---|---|
-| `git worktree list --porcelain` | Machine-readable list of worktrees. |
-| `git for-each-ref --format=%(refname:short)` | Lists refs with a custom format, one per line. |
-| `bufio.Scanner` | Reads lines from stdout without loading everything into memory. |
-| `cmd.StdoutPipe()` | Streams a command's stdout line-by-line. |
-| `bufio.Scanner.Split(bufio.ScanLines)` | Split default; handles long lines and trailing newlines. |
-| `Entry` struct | `{ Type, Branch, Path string }` — one pickable target. |
-| `filepath.EvalSymlinks` | Resolves macOS `/var` → `/private/var` mismatches when comparing git-reported paths. |
-
-## Worked Walkthrough
-
-Create `internal/worktree/enumerate.go`:
-
-```go
 package worktree
 
 import (
@@ -75,16 +32,7 @@ func runGit(dir string, args ...string) ([]byte, error) {
 	}
 	return cmd.Output()
 }
-```
 
-> **Regrounding note:** The original lesson had `runGit` take only `args`,
-> but that breaks tests because `git` runs in the current working directory.
-> Adding a `dir` parameter lets tests create temp repos and run git inside
-> them.
-
-### Parsing worktree porcelain
-
-```go
 // listWorktrees parses `git worktree list --porcelain` into entries.
 func listWorktrees(dir, cwdRoot string) ([]Entry, error) {
 	out, err := runGit(dir, "worktree", "list", "--porcelain")
@@ -139,18 +87,7 @@ func listWorktrees(dir, cwdRoot string) ([]Entry, error) {
 	}
 	return entries, nil
 }
-```
 
-> **Regrounding note:** On macOS, `git worktree list` returns resolved paths
-> under `/private/var` while `t.TempDir()` returns `/var`. We use
-> `filepath.EvalSymlinks` on both sides so `TypeCurrent` tagging works in
-> tests and production.
-
-### Branch enumeration
-
-Remote branches are included only when no local branch has the same short name:
-
-```go
 // listLocalBranches returns short names of all local branches.
 func listLocalBranches(dir string) ([]string, error) {
 	out, err := runGit(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads")
@@ -185,13 +122,7 @@ func splitLines(b []byte) []string {
 	}
 	return out
 }
-```
 
-### Assembling the full list
-
-The `Enumerate` function ties it together, mirroring `gather_entries`:
-
-```go
 // inUse returns the set of branch names checked out in any worktree.
 func inUse(entries []Entry) map[string]bool {
 	m := make(map[string]bool)
@@ -207,7 +138,7 @@ func inUse(entries []Entry) map[string]bool {
 func defaultBranch(dir string) (string, error) {
 	out, err := runGit(dir, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err != nil {
-		return "", nil // No remote or origin/HEAD not set is non-fatal.
+		return "", nil //nolint:nilerr // No remote or origin/HEAD not set is non-fatal.
 	}
 	s := strings.TrimSpace(string(out))
 	return strings.TrimPrefix(s, "refs/remotes/origin/"), nil
@@ -256,66 +187,3 @@ func Enumerate(dir, cwdRoot string) ([]Entry, error) {
 
 	return entries, nil
 }
-```
-
-## Run It
-
-Add a temporary debug flag in `cmd/wt/main.go` (similar to `--rotate-tag`):
-
-```go
-// Test-only flag: enumerate worktrees and branches.
-cmd.Flags().Bool(
-    "debug-worktrees",
-    false,
-    "List worktrees and branches (test helper)",
-)
-```
-
-And in the root `RunE`, before the TUI placeholder:
-
-```go
-if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
-    root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-    if err != nil {
-        return fmt.Errorf("not in a git repo: %w", err)
-    }
-    cwdRoot := strings.TrimSpace(string(root))
-    entries, err := worktree.Enumerate(cwdRoot, cwdRoot)
-    if err != nil {
-        return err
-    }
-    for _, e := range entries {
-        fmt.Printf("%-9s %-30s %s\n", e.Type, e.Branch, e.Path)
-    }
-    return nil
-}
-```
-
-```bash
-go run ./cmd/wt --debug-worktrees
-```
-
-```
-current   main                           /Users/keith/.../agent-worktree
-```
-
-## Try It Yourself
-
-Write unit tests that run `git init` in a temp dir (via `t.TempDir()` +
-`exec.Command("git","init")`), create branches/worktrees, and assert
-`Enumerate` behaviour.
-
-Key test scenarios:
-- A branch not checked out anywhere appears as `TypeBranch`
-- The default branch does **not** appear as `TypeBranch` (it's in `used`)
-- A branch checked out in a worktree appears as `TypeWorktree`, not `TypeBranch`
-- Remote branches shadowed by a local branch of the same name are excluded
-- `TypeCurrent` is assigned to the worktree matching `cwdRoot`
-
-See `internal/worktree/enumerate_test.go` in the repo for the full test suite.
-
-## Checkpoint
-
-```bash
-git add -A && git commit -m "lesson 07: worktree & branch enumeration" && git tag lesson-07
-```

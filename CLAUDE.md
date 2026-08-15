@@ -122,7 +122,7 @@ Applies to `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, and `opencode-wt` (no
 
 ## No test suite (bash)
 
-The bash scripts have no automated test suite. Quality gates:
+The bash scripts have no automated unit test suite. Quality gates:
 
 ```bash
 make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
@@ -130,8 +130,28 @@ make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
 make format       # shfmt -w -i 2 -ci
 make format-check # shfmt -d (CI check)
 make check        # lint + format-check
-make test         # smoke test invocations
+make test         # regression tests + smoke test invocations
 ```
+
+## Go tests
+
+The Go packages have unit and integration tests with a **what/why comment convention**: every `Test*` function has a top-level `//` block explaining what it tests and why that matters (the user-facing consequence of a regression). This makes the test suite self-documenting and helps reviewers understand the stakes of each assertion.
+
+```bash
+go test ./...        # run all Go tests
+go test ./internal/worktree -v  # verbose, one package
+go vet ./...         # static analysis
+```
+
+Test coverage by package:
+
+| Package | Tests | Focus |
+|---|---|---|
+| `internal/config` | 30+ | Load, Validate, Save, HasTag, ResolveLocation, migration, secrets |
+| `internal/registry` | 9 | Merge (curated wins), parseOllamaList, OpenRouter JSON |
+| `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
+| `internal/agents` | 10 | Per-agent Build output, Installed, Command |
+| `internal/worktree` | 6 | Worktree parsing, branch dedup, default-branch skip, remote shadowing |
 
 ## Go module
 
@@ -154,6 +174,7 @@ go vet ./...         # vet
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
+| `internal/worktree/` | Git worktree and branch enumeration (picker data source) |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -236,9 +257,15 @@ into `config.toml` automatically. The migration:
 - Merges models that appear in both code and design rotations (union of tags)
 - Runs only once — skipped if `config.toml` already exists
 
-Validate changes by running the launcher manually. Representative invocations:
+Validate changes by running tests and the launcher manually. Representative invocations:
 
 ```bash
+# Go tests — run before any commit
+go test ./...          # all packages
+go vet ./...           # static analysis
+go build ./...         # verify compilation
+
+# CLI smoke tests
 # Basic flow — fzf picker inside a git repo
 claude-wt
 
