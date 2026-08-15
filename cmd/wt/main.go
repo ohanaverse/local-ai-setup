@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/spf13/cobra"
 )
 
@@ -50,10 +51,30 @@ func rootCmd() *cobra.Command {
 		"Print version and exit",
 	)
 
+	// Test-only flag: print the next model in a tag rotation and exit.
+	cmd.Flags().String(
+		"rotate-tag",
+		"",
+		"Print next model in the given tag group (test helper)",
+	)
+
 	// With no subcommand, wt launches the interactive TUI.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if showVersion {
 			fmt.Println("wt", version)
+			return nil
+		}
+		if tag, _ := cmd.Flags().GetString("rotate-tag"); tag != "" {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			r := rotation.ForTag(cfg, tag)
+			m, ok := r.Next("")
+			if !ok {
+				return fmt.Errorf("no models tagged %q", tag)
+			}
+			fmt.Println(m.ID)
 			return nil
 		}
 		fmt.Println("(TUI not yet implemented - coming in lesson 12)")

@@ -177,6 +177,7 @@ go vet ./...       # Vet
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra) |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
+| `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -191,6 +192,26 @@ The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types
 - **Agent** — AI coding tool with supported providers and optional default
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
+
+#### Rotation (Go)
+
+The `internal/rotation` package implements tag-based model rotation — the Go
+equivalent of the bash `--code`/`--design` rotation. Any tag can be a rotation
+group, not just `code` and `design`.
+
+- `rotation.ForTag(cfg, tag)` builds a `Rotation` from all models tagged with `tag`
+- `Next(otherTag)` advances to the next model in the group, persists state to
+  `rotation-<tag>.state`, and optionally cross-skips the model that `otherTag`
+  most recently used (avoids both groups landing on the same model)
+- State is a two-line file: `<next_index>\n<last_selected_model>`, written
+  atomically via temp file + rename
+- The hidden `--rotate-tag <tag>` flag prints the next model in a tag group
+  and exits — a test helper until the TUI arrives (lesson 12)
+
+```bash
+go run ./cmd/wt --rotate-tag code    # prints next code model, advances state
+go run ./cmd/wt --rotate-tag design  # independent rotation for design
+```
 
 #### Migration (Go)
 

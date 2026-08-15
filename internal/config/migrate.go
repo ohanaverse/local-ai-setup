@@ -270,7 +270,24 @@ func displayName(agent string) string {
 	}
 }
 
-// lastSelected reads the last line of a legacy <mode>.state file.
+// LastSelected returns the last model ID chosen in the rotation-<tag>.state
+// file under stateDir. Returns "" if the file is missing or has no second
+// line (i.e. the rotation has never been advanced). Used by Rotation.Next to
+// cross-skip models between tag groups.
+func LastSelected(stateDir, tag string) string {
+	data, err := os.ReadFile(filepath.Join(stateDir, "rotation-"+tag+".state"))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
+}
+
+// lastSelected reads the last line of a legacy <mode>.state file. Used only
+// by migrateRotationState for one-time migration logging.
 func lastSelected(stateDir, mode string) string {
 	data, err := os.ReadFile(filepath.Join(stateDir, "rotation-"+mode+".state"))
 	if err != nil {

@@ -152,6 +152,7 @@ go vet ./...         # vet
 | `cmd/wt/main.go` | CLI entry point (cobra) |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
+| `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -175,6 +176,26 @@ The `internal/registry` package queries connected providers at runtime and merge
 - **OpenRouter** — fetches `https://openrouter.ai/api/v1/models` via HTTP.
 
 Curated entries win on ID collisions; discovered entries fill gaps. The `wt models` subcommand prints the merged registry.
+
+### Rotation (Go)
+
+The `internal/rotation` package implements tag-based model rotation — the Go
+equivalent of the bash `--code`/`--design` rotation, generalized so any tag
+can be a rotation group.
+
+- `rotation.ForTag(cfg, tag)` builds a `Rotation` from all models tagged with `tag`
+- `Next(otherTag)` advances to the next model, persists state to
+  `rotation-<tag>.state`, and optionally cross-skips the model that `otherTag`
+  most recently used (avoids both groups landing on the same model)
+- State file: `~/.config/agent-wt/rotation-<tag>.state` — two lines:
+  `<next_index>\n<last_selected_model>`, written atomically (temp + rename)
+- The hidden `--rotate-tag <tag>` flag on `wt` prints the next model in a tag
+  group and exits — a test helper until the TUI (lesson 12)
+
+```bash
+go run ./cmd/wt --rotate-tag code    # prints next code model, advances state
+go run ./cmd/wt --rotate-tag design  # independent rotation for design
+```
 
 ### Migration (Go)
 
