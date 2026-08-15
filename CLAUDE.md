@@ -153,6 +153,7 @@ go vet ./...         # vet
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
+| `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -196,6 +197,33 @@ can be a rotation group.
 go run ./cmd/wt --rotate-tag code    # prints next code model, advances state
 go run ./cmd/wt --rotate-tag design  # independent rotation for design
 ```
+
+### Agents (Go)
+
+The `internal/agents` package abstracts how each coding agent is launched —
+the Go equivalent of the per-launcher `wt_exec` logic in the bash wrappers.
+Each agent registers a `Driver` that builds a `LaunchCmd` (binary, args, and
+extra env vars) for a given model, so the TUI/CLI can say "launch agent X
+with model Y" without knowing the agent's quirks.
+
+- `Driver` interface: `Build(m config.Model, yolo bool) LaunchCmd` and `YoloFlag() string`
+- `LaunchCmd` — plain struct: `Bin`, `Args`, `Env` (extra env merged over `os.Environ()`)
+- Registry keyed by agent name; `ByName(name)` returns a driver or nil
+- `Command(d, m, yolo, workdir)` resolves the binary via `LookPath` and returns a ready `exec.Cmd`
+- `Installed(bin)` reports whether a binary is on PATH
+- Native models (e.g. `claude/native`) are detected via `Model.IsNative()` and launch with no model args/env
+
+Per-agent behavior:
+
+- **claude** — cloud/local models set `ANTHROPIC_*` env vars pointing at the ollama gateway plus `--model`; native uses no args
+- **codex** — `--model <id>`; native uses no args
+- **copilot** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL` env vars; never passes `--model`
+- **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) for the ollama provider
+- **pi** — `--model <id>`; no yolo flag
+- **agy** — no model passthrough (model chosen inside its TUI)
+
+The `wt agents` subcommand lists registered drivers, whether each binary is
+installed, and its yolo flag.
 
 ### Migration (Go)
 

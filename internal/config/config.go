@@ -174,6 +174,12 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// IsNative reports whether this model is an agent's native model
+// (e.g. "claude/native"), as opposed to a provider-hosted model.
+func (m Model) IsNative() bool {
+	return m.ModelName == "native"
+}
+
 // HasTag returns true if the model has the given tag.
 func (m Model) HasTag(tag string) bool {
 	for _, t := range m.Tags {

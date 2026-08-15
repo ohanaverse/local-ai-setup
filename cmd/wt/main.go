@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/spf13/cobra"
@@ -179,7 +180,22 @@ func agentsCmd() *cobra.Command {
 		Use:   "agents",
 		Short: "List installed agents and set defaults",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("(agents not yet implemented - lesson 6)")
+			names := agents.Names()
+			sort.Strings(names)
+			rows := make([][]string, 0, len(names))
+			for _, n := range names {
+				d := agents.ByName(n)
+				installed := "no"
+				if agents.Installed(n) {
+					installed = "yes"
+				}
+				rows = append(rows, []string{n, installed, d.YoloFlag()})
+			}
+			fmt.Println("Agents:")
+			fmt.Println(renderTable(
+				[]string{"NAME", "INSTALLED", "YOLO_FLAG"},
+				rows,
+			))
 		},
 	}
 }

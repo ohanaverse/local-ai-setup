@@ -34,6 +34,12 @@ added per driver too, since each agent uses a different flag.
 | registry of drivers | `map[string]Driver` keyed by agent name. |
 | `LookPath` | Resolves an executable before building (to detect "not installed"). |
 
+> **Note on native detection.** The lesson text below uses `m.Native`, but the
+> `config.Model` struct has no `Native` field. Native models are identified by
+> `ModelName == "native"` (e.g. `claude/native`), so the implementation adds a
+> `Model.IsNative()` helper in `internal/config/config.go` and the drivers use
+> `m.IsNative()` in place of `m.Native`.
+
 ## Worked Walkthrough
 
 Create `internal/agents/agents.go`:
@@ -128,7 +134,7 @@ func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc := LaunchCmd{Bin: "claude", Args: args}
 
 	switch {
-	case m.Native:
+	case m.IsNative():
 		// native model — no extra args/env
 		return lc
 	case m.Location == config.LocationCloud:
@@ -197,7 +203,7 @@ func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	if yolo {
 		lc.Args = append(lc.Args, "--skip-permission")
 	}
-	if !m.Native {
+	if !m.IsNative() {
 		lc.Args = append(lc.Args, "--model", m.ID)
 	}
 	return lc
@@ -278,7 +284,7 @@ func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	if yolo {
 		lc.Args = append(lc.Args, copilotDriver{}.YoloFlag())
 	}
-	if !m.Native {
+	if !m.IsNative() {
 		lc.Env = append(lc.Env,
 			"COPILOT_PROVIDER_BASE_URL=http://localhost:11434",
 			"COPILOT_PROVIDER_API_KEY=",
