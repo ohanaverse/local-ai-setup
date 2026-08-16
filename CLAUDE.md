@@ -89,7 +89,9 @@ make test         # smoke test invocations (requires make install first)
 
 ## Go tests
 
-The Go packages have unit and integration tests with a **what/why comment convention**: every `Test*` function has a top-level `//` block explaining what it tests and why that matters (the user-facing consequence of a regression). This makes the test suite self-documenting and helps reviewers understand the stakes of each assertion.
+The Go packages have unit and integration tests with a **what/why comment convention**: every `Test*` function has a top-level `//` block explaining what it tests and why that matters (the user-facing consequence of a regression). This convention is formalized in [Lesson 18](docs/go-course/lesson-18-testing.md); it makes the test suite self-documenting and helps reviewers understand the stakes of each assertion.
+
+The Go test gate is separate from the Makefile's bash smoke tests:
 
 ```bash
 go test ./...        # run all Go tests
@@ -101,15 +103,15 @@ Test coverage by package:
 
 | Package | Tests | Focus |
 |---|---|---|
-| `internal/config` | 30+ | Load, Validate, Save, HasTag, ResolveLocation, migration, secrets |
+| `internal/config` | 37 | Load, Validate, Save, HasTag, ResolveLocation, migration, secrets |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
 | `internal/agents` | 10 | Per-agent Build output, Installed, Command |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
-| `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
+| `internal/worktree` | 23 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 70+ | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `internal/tui` | 78 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
 | `cmd/wt` | 10 | Non-TUI launch (lesson 17): `defaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection, `inGitRepoAt` |
 
 ## Go module

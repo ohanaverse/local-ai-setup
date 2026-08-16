@@ -44,7 +44,7 @@ feature to Go.
 | 15 | [Model browser](lesson-15-model-browser.md) | filterable/taggable list, metadata columns, search | interactive browse |
 | 16 | [Launching the agent](lesson-16-launch-agent.md) | `exec.Command` with env/args, yolo flag, TUI→subprocess handoff | the actual exec |
 | 17 | [End-to-end flow + legacy shims](lesson-17-end-to-end-shims.md) | wiring screens, `*-wt` → `exec wt` shims | unified tool |
-| 18 | [Testing](lesson-18-testing.md) | unit tests (registry/rotation/config), temp-repo integration tests, TUI test helpers | quality |
+| 18 | [Testing](lesson-18-testing.md) | unit/integration/TUI tests, `t.TempDir()` git repos, what/why comment convention | quality gate |
 | 19 | [Module split & polish](lesson-19-module-split.md) | `internal/` layout, error handling, help text | maintainability |
 | 20 | [Final integration](lesson-20-final-integration.md) | config-edit flow, real `ollama`/agent run, docs | done |
 
