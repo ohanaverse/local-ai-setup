@@ -159,7 +159,7 @@ Test coverage by package:
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 57 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `internal/tui` | 70+ | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
 
 ## Go module
 
@@ -186,7 +186,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser (lessons 12–15): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation, model browser |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt (lessons 12–16): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation, model browser, agent launch, session resume prompt |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -316,10 +316,19 @@ newest resumable session for an agent in a worktree.
 - `RelativeTime(t)` — "just now", "5m ago", "3h ago", "2d ago", "1w ago".
 
 Sessions are ranked by mtime (newest wins). A missing session dir yields `nil`,
-not an error. The bash wrappers resume with a per-agent flag — claude uses
-`--resume <id>`, opencode uses `--session <id>` — and skip the prompt on
-`--cwd` or an explicit model mode; that launch wiring lands in the TUI
-(lesson 16).
+not an error.
+
+In the TUI (lesson 16), pressing Enter on the agent+model screen checks
+`session.LatestForAgent` for claude/opencode. If a session exists, a
+`phaseResume` prompt offers three choices:
+- **Resume** — append `--resume <id>` (claude) or `--session <id>` (opencode)
+  and launch.
+- **Start fresh** — launch without resume args.
+- **Cancel** — return to the agent+model screen.
+
+If no session exists, the agent launches immediately. The bash wrappers use
+the same per-agent flags but prompt via fzf; the Go TUI prompts via its own
+list widget.
 
 ```bash
 # Test helper: print the newest resumable session for an agent
@@ -329,16 +338,25 @@ wt --debug-session opencode
 
 ### TUI shell (Go)
 
-The `internal/tui` package holds the Bubble Tea app shell. `Run()` starts
-`tea.NewProgram` with `tea.WithAltScreen()` and returns when the program
+The `internal/tui` package holds the Bubble Tea app shell. `Run(yolo bool)`
+starts `tea.NewProgram` with `tea.WithAltScreen()` and returns when the program
 exits. The `model` type implements `tea.Model` (`Init` / `Update` / `View`);
 lessons 12+ layer on the worktree list, agent+model screen, model browser,
-and launch command.
+resume prompt, and launch command.
 
-- `Run()` — entry point; reached from `rootCmd.RunE` as the fallback after
-  every flag handler has had a chance to early-return.
+- `Run(yolo bool)` — entry point; reached from `rootCmd.RunE` as the fallback
+  after every flag handler has had a chance to early-return. The `yolo`
+  argument is stored in the model and passed through to the selected agent's
+  driver at launch time.
 - `tea.WithAltScreen()` — Bubble Tea manages the alternate screen buffer
   for full-screen TUI rendering.
+- `currentProgram` — a package-level pointer to the running `tea.Program`,
+  set by `Run()` so `runAndWaitCmd` can call `ReleaseTerminal()` before the
+  agent takes over and `RestoreTerminal()` when it exits.
+- `launchAgent()` — builds the `exec.Cmd` via `agents.Command` and appends
+  `--resume` / `--session` flags when resuming a claude/opencode session.
+- `runAndWaitCmd()` — a `tea.Cmd` that releases the terminal, wires stdio,
+  runs the agent, restores the terminal, and returns a `launchDoneMsg`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`. Running from a pipe,
 > CI runner, or editor output panel fails with
@@ -377,8 +395,8 @@ go run ./cmd/wt --version # non-interactive, no TTY needed
 After the user picks a worktree, the TUI moves to an **agent+model screen**
 that shows the selected agent and the currently shown model, with explicit
 one-keystroke actions replacing the bash tool's silent auto-rotation. A
-`phase` value (`phaseList` / `phaseModel` / `phaseBrowser`) tracks which
-screen is active.
+`phase` value (`phaseList` / `phaseModel` / `phaseBrowser` / `phaseResume`)
+tracks which screen is active.
 
 - `selectedEntryMsg` now transitions to `phaseModel`, resolving the initial
   agent (first in `cfg.Agents`) and model (first in the default tag group)
@@ -391,8 +409,12 @@ screen is active.
 - **`d`** — toggle the active tag group between `code` and `design`,
   re-resolving the shown model; `otherTag` drives the cross-tag skip so
   rotation avoids the other group's last-used model.
+- **`enter`** — launch the agent (lesson 16). If `session.LatestForAgent`
+  finds a claude/opencode session, switch to `phaseResume` and show a
+  resume prompt instead of launching immediately.
 - `View` renders the model phase distinctly (agent / model / tag + keybind
-  hints); `Run()` loads the config up front and passes it into the model.
+  hints); `Run(yolo bool)` loads the config up front and passes it into the
+  model.
 
 ```bash
 go run ./cmd/wt           # interactive TUI (needs a TTY)
@@ -400,10 +422,11 @@ go run ./cmd/wt           # interactive TUI (needs a TTY)
 
 Pick a worktree, then on the agent+model screen press `r` to cycle the
 model (and watch `~/.config/agent-wt/rotation-code.state` advance), `d` to
-toggle the tag group, `m` to open the model browser, `q` to quit.
+toggle the tag group, `m` to open the model browser, `enter` to launch or
+show the resume prompt, `q` to quit.
 
 The full TUI flow (worktree list → agent/model screen → model browser →
-launch) is built across lessons 13–16 and wired in lesson 17.
+resume prompt → launch) is built across lessons 13–16 and wired in lesson 17.
 
 ### Model browser screen (Lesson 15)
 

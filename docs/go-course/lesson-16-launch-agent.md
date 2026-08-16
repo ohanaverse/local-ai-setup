@@ -9,13 +9,12 @@ chosen worktree. This uses the driver abstraction from lesson 6 to build the
 The critical detail is the **TUI → subprocess handoff**: Bubble Tea runs in the
 alternate screen buffer, so we must stop the TUI (`p.ReleaseTerminal()` /
 `tea.Program` quit) *before* starting the agent, or the agent's output will be
-mangled. The clean pattern is to emit a `launchMsg` carrying the built command,
-and in response: return `tea.Quit`, then run the command and stream its output
-to the terminal. In practice we build the command, `ReleaseTerminal()`, run it,
+mangled. The clean pattern is to build the command, `ReleaseTerminal()`, run it,
 and restore the terminal afterward.
 
 We also handle the `--yolo` flag by passing it through the driver's
-`YoloFlag()`.
+`YoloFlag()`, and we surface a **session resume prompt** for claude and
+opencode when a prior session exists.
 
 ## New Syntax & Vocabulary
 
@@ -25,152 +24,184 @@ We also handle the `--yolo` flag by passing it through the driver's
 | `tea.Program.RestoreTerminal()` | Returns to the TUI afterward. |
 | `cmd.Stdout = os.Stdout` / `cmd.Stderr` | Wire the subprocess to the real terminal. |
 | `cmd.Run()` | Runs and waits for the subprocess to exit. |
-| launch message | A `tea.Msg` carrying `(*exec.Cmd, error)`. |
-| `tea.Batch(quit, runCmd)` | Quits the TUI and runs the agent. |
+| `launchMsg` / `launchDoneMsg` | Messages that carry the built command and the subprocess exit result. |
+| `phaseResume` | A new TUI phase that asks whether to resume a prior claude/opencode session. |
+| `tea.Batch(tea.Quit, runAndWaitCmd)` | Quits the TUI and runs the agent. |
 
 ## Worked Walkthrough
 
-Add a launch command builder in the agents package (lesson 6 already has
-`Command`). We just need the TUI side to use it. Create
-`internal/tui/launch.go`:
+Add a launch command builder in `internal/tui/launch.go`:
 
 ```go
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
 // launchMsg tells the app to quit the TUI and run the agent.
-type launchMsg struct {
-	cmd  *exec.Cmd
-	path string
-}
+type launchMsg struct{ cmd *exec.Cmd }
 
-// launchAgent builds the command for agent/model in worktreePath.
-func launchAgent(agent string, m config.Model, worktreePath string, yolo bool) (*exec.Cmd, error) {
+// launchDoneMsg is emitted after the agent subprocess exits.
+type launchDoneMsg struct{ err error }
+
+// currentProgram holds the running tea.Program so runAndWaitCmd can
+// release/restore the terminal. It is set in Run().
+var currentProgram *tea.Program
+
+// launchAgent builds the command for agent/model in worktreePath, optionally
+// appending a resume flag for claude or opencode.
+func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session) (*exec.Cmd, error) {
 	d := agents.ByName(agent)
 	if d == nil {
-		return nil, agentUnknownError{agent: agent}
+		return nil, fmt.Errorf("unknown agent: %s", agent)
 	}
-	return agents.Command(d, m, yolo, worktreePath)
+	cmd, err := agents.Command(d, m, yolo, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	if sess != nil {
+		switch agent {
+		case "claude":
+			cmd.Args = append(cmd.Args, "--resume", sess.ID)
+		case "opencode":
+			cmd.Args = append(cmd.Args, "--session", sess.ID)
+		}
+	}
+	return cmd, nil
 }
 
-type agentUnknownError struct{ agent string }
-
-func (e agentUnknownError) Error() string { return "unknown agent: " + e.agent }
-```
-
-Now handle Enter on the model phase to build and send the launch. In `Update`,
-replace the Enter handling for the model phase:
-
-```go
-case "enter":
-	if m.browserOpen {
-		// pick model (lesson 15)
-		...
-	} else if m.phase == phaseModel {
-		cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo)
-		if err != nil {
-			m.status = err.Error()
-			return m, nil
-		}
-		return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
-	}
-```
-
-We need `m.selectedPath` (the worktree path chosen in lesson 13) and `m.yolo`.
-Add them to `model` and set them when the worktree is selected. The command
-that releases the terminal and runs the agent:
-
-```go
-// runAndWaitCmd releases the TUI, runs cmd, restores the TUI, and quits.
+// runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
+// terminal, restores the TUI, and returns a launchDoneMsg.
 func runAndWaitCmd(cmd *exec.Cmd) tea.Cmd {
 	return func() tea.Msg {
-		p := currentProgram()
-		p.ReleaseTerminal()
-
+		if currentProgram != nil {
+			currentProgram.ReleaseTerminal()
+		}
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err := cmd.Run()
-
-		p.RestoreTerminal()
+		if currentProgram != nil {
+			currentProgram.RestoreTerminal()
+		}
 		return launchDoneMsg{err: err}
 	}
 }
-
-// currentProgram returns the running tea.Program (set at Run() time).
-var currentProgram = func() *tea.Program {
-	// In practice, store the program in a package var when Run() starts.
-	return nil
-}
 ```
 
-To keep the program handle available, store it in a package var in `Run`:
+The resume prompt uses the same `bubbles/list` widget with three choices:
 
 ```go
-// in app.go
-var prog *tea.Program
+type resumeOption int
 
-func Run() error {
-	prog = tea.NewProgram(model{status: "ready"}, tea.WithAltScreen())
-	_, err := prog.Run()
-	return err
+const (
+	resumeChoice resumeOption = iota
+	freshChoice
+	cancelChoice
+)
+
+type resumeItem struct {
+	choice resumeOption
+	title  string
+	desc   string
 }
-```
 
-and make `currentProgram` return it. After the agent exits, the program is
-already quitting, so `launchDoneMsg` can just return `tea.Quit` in `Update`:
-
-```go
-case launchDoneMsg:
-	if msg.err != nil {
-		m.status = "agent exited: " + msg.err.Error()
+func buildResumeChoices(sess *session.Session) []list.Item {
+	items := []list.Item{
+		resumeItem{choice: freshChoice, title: "Start fresh", desc: "Launch without resuming a session"},
+		resumeItem{choice: cancelChoice, title: "Cancel", desc: "Return to agent+model screen"},
 	}
-	return m, tea.Quit
+	if sess != nil {
+		items = append([]list.Item{resumeItem{
+			choice: resumeChoice,
+			title:  fmt.Sprintf("Resume %s", sess.ID),
+			desc:   session.RelativeTime(sess.MTime),
+		}}, items...)
+	}
+	return items
+}
 ```
+
+In `internal/tui/app.go`, store the selected worktree path and yolo flag, then
+handle Enter in the model phase:
+
+```go
+case phaseModel:
+	sess, err := session.LatestForAgent(m.agent, m.selectedPath)
+	if err != nil {
+		m.status = "session check failed: " + err.Error()
+		return m, nil
+	}
+	if sess == nil {
+		cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil)
+		if err != nil {
+			m.status = "launch failed: " + err.Error()
+			return m, nil
+		}
+		return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+	}
+	m.phase = phaseResume
+	m.resume.session = sess
+	m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
+	m.resume.choices.Title = "Resume previous session?"
+	return m, nil
+```
+
+The resume prompt has its own Enter handling:
+
+```go
+case phaseResume:
+	if item, ok := m.resume.choices.SelectedItem().(resumeItem); ok {
+		switch item.choice {
+		case cancelChoice:
+			m.phase = phaseModel
+			return m, nil
+		case freshChoice:
+			cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil)
+			...
+		case resumeChoice:
+			cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session)
+			...
+		}
+	}
+```
+
+Both launch paths return `tea.Batch(tea.Quit, runAndWaitCmd(cmd))` so the TUI
+exits and the agent takes over the terminal. When the agent exits,
+`runAndWaitCmd` restores the terminal and returns a `launchDoneMsg`; the
+`Update` handler records any error and quits.
 
 ## Run It
 
 ```bash
-go run ./cmd/wt --yolo
+go run ./cmd/wt            # interactive TUI (needs a TTY)
+go run ./cmd/wt --yolo     # pass the agent's skip-permissions flag
 ```
 
-Pick a worktree, a model, press Enter. The TUI releases, and the agent runs
-interactively in the terminal. When the agent exits, the TUI restores briefly
-and quits.
+Pick a worktree, a model, press Enter. If a prior claude/opencode session
+exists, the TUI shows a resume prompt. Choose **Resume** to append `--resume`
+/ `--session`, **Start fresh** to launch without resuming, or **Cancel** to go
+back.
 
 ## Try It Yourself
 
-Support **session resume** on launch: before launching a claude/opencode agent,
-check `session.LatestForAgent` (lesson 11) and, if a session exists, append the
-agent's resume flag (e.g. `--resume <id>` for claude) to the command args.
-
-<details>
-<summary>Solution</summary>
-
-```go
-if s := sessionLatest(m.agent, m.selectedPath); s != nil {
-	switch m.agent {
-	case "claude":
-		cmd.Args = append(cmd.Args, "--resume", s.ID)
-	case "opencode":
-		cmd.Args = append(cmd.Args, "--session", s.ID)
-	}
-}
-```
-
-(Add a `sessionLatest` helper wrapping `session.LatestForAgent`, ignoring errors.)
-</details>
+- Add a key (e.g. `l`) as an alternate launch keybind alongside Enter.
+- Print a short "launching <agent> with <model>" status just before
+  `tea.Quit`.
+- Skip the resume prompt entirely when `--cwd` is used (hint: add a `noResume`
+  field to `model`).
 
 ## Checkpoint
 
 ```bash
-git add -A && git commit -m "lesson 16: launch the agent" && git tag lesson-16
+git add -A && git commit -m "lesson 16: launch the agent with resume prompt" && git tag lesson-16
 ```

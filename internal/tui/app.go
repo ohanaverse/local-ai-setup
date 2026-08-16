@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
+	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -26,7 +27,14 @@ const (
 	phaseList    phase = iota // worktree list (lesson 13)
 	phaseModel                // agent+model screen (lesson 14)
 	phaseBrowser              // model browser (lesson 15)
+	phaseResume               // resume prompt (lesson 16)
 )
+
+// resumeModel holds the resume-prompt state for phaseResume (lesson 16).
+type resumeModel struct {
+	session *session.Session
+	choices list.Model
+}
 
 // model holds the entire UI state.
 type model struct {
@@ -45,6 +53,11 @@ type model struct {
 	otherTag string         // tag group to cross-skip against during rotation
 	current  config.Model   // currently shown model
 	cfg      *config.Config // loaded config for the model catalog
+
+	// launch state (lesson 16)
+	selectedPath string // worktree path chosen in lesson 13
+	yolo         bool   // pass skip-permissions flag to the agent
+	resume       resumeModel
 
 	// model browser (lesson 15)
 	browser      list.Model     // browser list widget
@@ -69,6 +82,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseBrowser {
 			m.refreshBrowser()
 		}
+		if m.phase == phaseResume {
+			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
+		}
 	case entriesLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -83,10 +99,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// phase and pick an initial agent + model (first agent default,
 		// first model in the default tag group).
 		m.phase = phaseModel
+		m.selectedPath = msg.entry.Path
 		m.agent = firstAgent(m.cfg)
 		m.tag = m.cfg.DefaultTag
 		m.current = firstModel(m.cfg, m.tag)
 		return m, nil
+	case launchDoneMsg:
+		if msg.err != nil {
+			m.status = "agent exited: " + msg.err.Error()
+		}
+		return m, tea.Quit
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -94,6 +116,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			// esc is phase-aware: pop back from a nested screen, else quit.
 			if m.phase == phaseBrowser {
+				m.phase = phaseModel
+				return m, nil
+			}
+			if m.phase == phaseResume {
 				m.phase = phaseModel
 				return m, nil
 			}
@@ -107,10 +133,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 					}
 				}
+			case phaseModel:
+				sess, err := session.LatestForAgent(m.agent, m.selectedPath)
+				if err != nil {
+					m.status = "session check failed: " + err.Error()
+					return m, nil
+				}
+				if sess == nil {
+					cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil)
+					if err != nil {
+						m.status = "launch failed: " + err.Error()
+						return m, nil
+					}
+					return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+				}
+				m.phase = phaseResume
+				m.resume.session = sess
+				m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
+				m.resume.choices.Title = "Resume previous session?"
+				return m, nil
 			case phaseBrowser:
 				if item, ok := m.browser.SelectedItem().(modelItem); ok {
 					m.current = item.model
 					m.phase = phaseModel
+				}
+			case phaseResume:
+				if item, ok := m.resume.choices.SelectedItem().(resumeItem); ok {
+					switch item.choice {
+					case cancelChoice:
+						m.phase = phaseModel
+						return m, nil
+					case freshChoice:
+						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil)
+						if err != nil {
+							m.status = "launch failed: " + err.Error()
+							return m, nil
+						}
+						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+					case resumeChoice:
+						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session)
+						if err != nil {
+							m.status = "launch failed: " + err.Error()
+							return m, nil
+						}
+						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+					}
 				}
 			}
 		case "r":
@@ -166,11 +233,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseBrowser && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.browser, cmd = m.browser.Update(msg)
+		return m, cmd
+	}
+	if m.phase == phaseResume && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.resume.choices, cmd = m.resume.choices.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
 // View renders the screen as a string.
 func (m model) View() string {
+	if m.phase == phaseResume {
+		if m.width <= 0 || m.height <= 0 {
+			return "resume prompt (waiting for window size)"
+		}
+		return m.resume.choices.View() + "\n[enter] choose   [esc] back"
+	}
 	if m.phase == phaseBrowser {
 		return m.browserView()
 	}
@@ -231,12 +314,13 @@ type entriesLoadedMsg struct {
 }
 
 // Run starts the TUI in alternate-screen mode and returns when it quits.
-func Run() error {
+func Run(yolo bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	p := tea.NewProgram(model{loading: true, status: "loading worktrees...", cfg: cfg}, tea.WithAltScreen())
+	p := tea.NewProgram(model{loading: true, status: "loading worktrees...", cfg: cfg, yolo: yolo}, tea.WithAltScreen())
+	currentProgram = p
 	_, err = p.Run()
 	return err
 }

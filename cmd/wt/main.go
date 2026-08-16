@@ -168,7 +168,8 @@ func rootCmd() *cobra.Command {
 			}
 			return nil
 		}
-		return tui.Run()
+		yolo, _ := cmd.Flags().GetBool("yolo")
+		return tui.Run(yolo)
 	}
 
 	cmd.AddCommand(modelsCmd(), agentsCmd())
