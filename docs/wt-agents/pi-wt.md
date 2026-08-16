@@ -10,7 +10,7 @@
 npm install -g @mariozechner/pi-coding-agent
 ```
 
-This installs the `pi` binary globally. The `pi-wt` launcher in this repo wraps `pi` with worktree-aware FZF selection and code/design model rotation. Install `pi-wt` itself by copying `bin/pi-wt` (and the rest of `bin/`) into `~/.local/bin/`. Requires `jq` for model verification.
+This installs the `pi` binary globally. The `pi-wt` file in this repo is a shim that forwards to `wt --agent pi`. Install `pi-wt` itself by copying `bin/pi-wt` (and the rest of `bin/`) into `~/.local/bin/`. Requires `jq` for model verification.
 
 ## Configuration files & locations
 

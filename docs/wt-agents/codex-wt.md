@@ -10,7 +10,7 @@
 npm install -g @openai/codex
 ```
 
-This installs the `codex` binary. The `codex-wt` launcher in this repo wraps `codex` with worktree-aware FZF selection and code/design model rotation. Install `codex-wt` itself by copying `bin/codex-wt` into `~/.local/bin/`.
+This installs the `codex` binary. The `codex-wt` file in this repo is a shim that forwards to `wt --agent codex`. Install `codex-wt` itself by copying `bin/codex-wt` into `~/.local/bin/`.
 
 ## Configuration files & locations
 

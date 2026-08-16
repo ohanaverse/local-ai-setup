@@ -4,13 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Shell scripts that wrap AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode) with git worktree management. Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates worktrees on demand, optionally selects a model via rotation, and then `exec`s the underlying agent.
+The `wt` binary (`cmd/wt/`) is a Go tool that launches AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode) in a chosen worktree or branch. It presents a Bubble Tea TUI picker of worktrees and branches, creates worktrees on demand, rotates models by tag, and launches the selected agent. Non-interactive flags (`-w`, `--cwd`, `--agent`) skip the TUI and launch directly.
 
-A Go rewrite is in progress — the `wt` binary (`cmd/wt/`) will eventually replace the bash wrappers with a unified TUI tool. See `docs/go-course/` for the lesson plan.
+The `bin/*-wt` files are thin legacy shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`). The original bash engine (`wt-core.sh`, `wt-install-guard`) is retained only for `shell-wt`, which launches a shell command rather than an agent and has no Go equivalent yet. See `docs/go-course/` for the lesson plan.
 
 ## Installation
 
-Copy everything in `bin/` to a single directory on `$PATH` (e.g., `~/.local/bin/`). All scripts must remain co-located — wrappers find `wt-core.sh` and `wt-install-guard` via `SCRIPT_DIR`. If `wt-install-guard` is missing, launchers print a warning and skip auto-installing the main-branch commit guard.
+Build the `wt` binary and put it on `$PATH`:
+
+```bash
+go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
+```
+
+The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH` for them to work. `shell-wt` is the only remaining bash launcher and still needs `wt-core.sh` co-located.
 
 ### Using the Makefile
 
@@ -25,108 +31,48 @@ make clean        # Remove build artifacts
 
 ## Architecture
 
-### Plugin pattern
+The Go tool is the primary implementation; its packages are documented in [Go module](#go-module) below. The bash engine described here is **legacy** — retained only for `shell-wt`, which has no Go equivalent yet.
 
-`bin/wt-core.sh` is the shared engine. It is never executed directly — wrappers `source` it and implement a contract before calling `wt_main`. The contract is:
+### Legacy bash engine
 
-| Global / Function | Required | Purpose |
-|---|---|---|
-| `WT_DEFAULT_CODE` | Yes (model rotators) | Fallback model for `--code` mode |
-| `WT_DEFAULT_DESIGN` | Yes (model rotators) | Fallback model for `--design` mode |
-| `WT_AGENT_NAME` | Yes (model rotators) | Agent identifier for model-usability checks (e.g. `claude`) |
-| `wt_check_deps()` | Yes | Verify agent binary exists; call `die` with install hint if not |
-| `wt_yolo_flag()` | Yes | Echo the tool's skip-permissions flag (or empty string) |
-| `wt_exec "$@"` | Yes | Construct and `exec` the final agent launch command |
-| `wt_pre_exec()` | No | Hook called after `cd` into worktree, before `wt_exec` (`claude-wt` and `opencode-wt` define this) |
+`bin/wt-core.sh` is the shared bash engine that `shell-wt` still sources. It implements the plugin contract (`wt_check_deps`, `wt_yolo_flag`, `wt_exec`, optional `wt_pre_exec`), flag parsing, worktree/branch selection via fzf, model rotation, the main-branch commit guard, and `--init` seeding. `bin/wt-install-guard` installs the `block-main-commit` pre-commit hook. All of this functionality is now implemented in Go (`internal/agents`, `internal/worktree`, `internal/rotation`, `internal/guard`, `internal/initseed`, `internal/session`), so the bash engine is only exercised by `shell-wt`.
 
-### Core flow (`wt_main`)
-
-1. Parse flags (`--code`, `--design`, `--native`, `-w`, `--yolo`, `--cwd`, `--no-guard`, `--check-guard`, `--init`) — all flag parsing is shared in `wt-core.sh`
-2. If `--init` was given: call `seed_agent_instructions`, auto-install guard, and exit — no agent binary required
-3. Call `wt_check_deps`
-4. Auto-install `block-main-commit` pre-commit hook via `wt-install-guard`
-5. If `-w <name>` given: `ensure_worktree_for_name` then launch — skip fzf
-6. If `--cwd` given: launch in current repo root — skip fzf
-7. If outside a git repo: pure passthrough to agent — skip fzf
-8. Otherwise: `gather_entries` → fzf → `handle_worktree_selection` or `handle_branch_selection`
-
-Branch names with slashes (e.g. `feature/my-branch`, `origin/feature`) are supported: the last path component is used for the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`) while the full branch name is passed to `git worktree add`. Remote tracking branches are checked out as new local branches.
-
-### Model rotation
-
-Applies to `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, and `opencode-wt` (not `agy-wt`, which has no CLI `--model` flag).
-
-- `get_model_from_rotation()` is in `wt-core.sh` — shared across all model-rotating launchers. It reads `WT_DEFAULT_CODE`, `WT_DEFAULT_DESIGN`, `WT_AGENT_NAME`, and `WT_MODEL_MODE` directly.
-- Config: `~/.config/agent-wt/models.conf` — defines `CODE_MODELS`, `DESIGN_MODELS` arrays, `NATIVE_<AGENT>` vars, and `PROVIDER_OLLAMA_BASE_URL` (used by copilot-wt). Respects `XDG_CONFIG_HOME` override.
-- State: `~/.config/agent-wt/rotation-{code,design}.state` — two-line file: `<next_index>\n<last_selected>`
-- Cross-rotation coordination: each mode checks the other's last-used model and skips it to avoid duplication
-- Model values: `native:<agent>` or bare `native` (use agent's own default) or a model name string (cloud/ollama)
-- `--code` (default) and `--design` select which rotation list to use
-- `--native` bypasses rotation entirely, reads `NATIVE_<AGENT>` from `models.conf`; errors if not configured
-
-### Main guard
-
-`wt-install-guard` writes a `block-main-commit v1` pre-commit hook that blocks commits to `main`/`master`. Launchers auto-install it on every invocation when inside a git repo. The hook can be bypassed by:
-- `git commit --no-verify` (emergency)
-- `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
-- `<launcher> --no-guard` (removes the hook via `wt-install-guard --uninstall`)
-
-### Agent init
-
-`seed_agent_instructions` in `wt-core.sh` seeds project-level instruction files when `--init` is passed. It creates `AGENTS.md` with a seed template if missing, plus an agent-specific pointer file if the agent supports one (`CLAUDE.md` for Claude, `.github/copilot-instructions.md` for Copilot). Files that already exist are never overwritten. Requires a git working tree (bare repos are rejected); exits with an error if not in one. After seeding, the main guard is auto-installed just as a normal launch would. If `-w` is also given, it is ignored with a warning — seeding always targets the current working tree root.
-
-### Session resume (claude-wt, opencode-wt)
-
-`wt_pre_exec` checks for prior sessions and, if found, offers "Resume" or "Start fresh" via fzf. Skipped when `--cwd` is used.
-
-- `claude-wt`: checks `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
-- `opencode-wt`: checks `~/.local/share/opencode/storage/session/<project-id>/`, where `<project-id>` is the git commit hash of the repo's root commit (matches OpenCode's own project-id algorithm).
-
-## Key flags (all launchers)
+## Key flags (`wt`)
 
 | Flag | Effect |
 |---|---|
-| `-w <name>`, `--worktree <name>` | Use/create worktree for branch `<name>`; skip fzf |
-| `--cwd` | Launch in current repo root; skip fzf and session resume |
+| `-w <name>`, `--worktree <name>` | Use/create worktree for branch `<name>`; skip the TUI and launch |
+| `--cwd` | Launch in the current repo root; skip the TUI |
+| `--agent <name>` | Pin the agent to launch (claude, codex, copilot, pi, agy, opencode); defaults to the first configured agent |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
-| `--code` | Use code model rotation (default) — rotation-supporting launchers only |
-| `--design` | Use design model rotation — rotation-supporting launchers only |
-| `--native` | Use `NATIVE_<AGENT>` from `models.conf`; error if not configured — rotation-supporting launchers only |
-| `--no-guard` | Remove the main-branch commit guard and exit |
-| `--check-guard` | Report guard status and exit |
+| `--version` | Print version and exit |
+| `--rotate-tag <tag>` | Print the next model in a tag group and exit (test helper) |
+| `--debug-worktrees` | List worktrees and branches (test helper) |
+| `--debug-session <agent>` | Print the newest resumable session for an agent (test helper) |
 
-## Adding a new launcher
+The legacy bash flags `--code`, `--design`, `--native`, `--no-guard`, and `--check-guard` are not supported by `wt`. Model rotation is now tag-based (see [Rotation (Go)](#rotation-go)); the main guard is managed by `internal/guard`.
 
-1. Copy an existing wrapper (e.g., `agy-wt` for no model rotation, or `claude-wt` for model rotation)
-2. Set `SCRIPT_DIR` at the top (via `"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`)
-3. If the agent supports model rotation, set `WT_DEFAULT_CODE`, `WT_DEFAULT_DESIGN`, and `WT_AGENT_NAME` **before** `source "$SCRIPT_DIR/wt-core.sh"` — these must exist before the source so `parse_wt_args` can detect rotation support
-4. `source "$SCRIPT_DIR/wt-core.sh"`, then set `WT_NAME="$(basename "$0")"`
-5. Implement `wt_check_deps()`, `wt_yolo_flag()`, `wt_exec`
-6. Implement `wt_pre_exec()` if the agent has a session concept (see `claude-wt` and `opencode-wt` for two different session-detection approaches)
-7. Call `wt_main "$@"`
-8. Add a doc file to `docs/wt-agents/`
+## Adding a new agent
 
-## Copilot-specific: Ollama model passthrough
+1. Add a driver in `internal/agents/` (e.g. `internal/agents/<name>.go`) that registers a `Driver` via `register("<name>", ...)` and implements `Build`/`YoloFlag`.
+2. Add a legacy shim in `bin/<name>-wt`:
 
-`copilot-wt` does not pass `--model` for Ollama models. Instead it sets four environment variables (`COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, `COPILOT_MODEL`) before `exec copilot`. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `models.conf`, defaulting to `http://localhost:11434`.
+   ```sh
+   #!/usr/bin/env bash
+   exec wt --agent <name> "$@"
+   ```
 
-## OpenCode-specific: Ollama model passthrough
-
-`opencode-wt` does not pass `--model` for Ollama models. Instead it sets `OPENCODE_CONFIG_CONTENT` (inline JSON) before `exec opencode`, e.g. `{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"<url>/v1","apiKey":""}}}}`. This is OpenCode's highest-precedence config layer and overrides `~/.config/opencode/opencode.json`. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `models.conf`, same as `copilot-wt`.
-
-## Pi-specific: model sync
-
-`pi-wt` launches pi with `--model <id>` only when the model is present in `~/.pi/agent/models.json` with `._launch: true` (orphaned entries are skipped) — this check requires `jq`. `pi` reads its model catalog from `models.json`, so `pi-wt` auto-syncs **non-native** models from `~/.config/agent-wt/models.conf` into it on every launch — both cloud models (`:cloud` suffix) and local models (MLX, etc.). `native:` entries are skipped. The sync is idempotent (only adds, never removes) and requires `jq`.
+3. Add a doc file to `docs/wt-agents/`.
 
 ## Docs
 
 - `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)
 - `docs/wt-agents/` — per-agent reference docs (one file per launcher)
 
-## No test suite (bash)
+## Bash quality gates
 
-The bash scripts have no automated unit test suite. Quality gates:
+The remaining bash scripts (`wt-core.sh`, `wt-install-guard`, `shell-wt`, and the `*-wt` shims) have no automated unit test suite. Quality gates:
 
 ```bash
 make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
@@ -134,7 +80,7 @@ make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
 make format       # shfmt -w -i 2 -ci
 make format-check # shfmt -d (CI check)
 make check        # lint + format-check
-make test         # regression tests + smoke test invocations
+make test         # smoke test invocations (requires make install first)
 ```
 
 ## Go tests
@@ -160,10 +106,11 @@ Test coverage by package:
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
 | `internal/tui` | 70+ | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `cmd/wt` | 10 | Non-TUI launch (lesson 17): `defaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection, `inGitRepoAt` |
 
 ## Go module
 
-The Go `wt` tool lives alongside the bash wrappers. Module root is the repo root.
+The Go `wt` tool is the primary implementation; the `bin/*-wt` files are shims that forward to it. Module root is the repo root.
 
 ```bash
 go build ./...       # build everything
@@ -177,7 +124,8 @@ go vet ./...         # vet
 
 | Path | Purpose |
 |---|---|
-| `cmd/wt/main.go` | CLI entry point (cobra) |
+| `cmd/wt/main.go` | CLI entry point (cobra): flag wiring, non-interactive launch paths (`-w`, `--cwd`, passthrough) |
+| `cmd/wt/launch.go` | Non-TUI launch helpers (lesson 17): `launch`, `buildLaunch`, `defaultAgent`, `defaultModel`, `inGitRepo` |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
@@ -326,9 +274,9 @@ In the TUI (lesson 16), pressing Enter on the agent+model screen checks
 - **Start fresh** — launch without resume args.
 - **Cancel** — return to the agent+model screen.
 
-If no session exists, the agent launches immediately. The bash wrappers use
-the same per-agent flags but prompt via fzf; the Go TUI prompts via its own
-list widget.
+If no session exists, the agent launches immediately. The non-TUI launch path
+(lesson 17) performs the same resume check in `buildLaunch`, appending
+`--resume`/`--session` without prompting.
 
 ```bash
 # Test helper: print the newest resumable session for an agent
@@ -361,9 +309,9 @@ resume prompt, and launch command.
 > **TTY required.** `WithAltScreen` opens `/dev/tty`. Running from a pipe,
 > CI runner, or editor output panel fails with
 > `could not open a new TTY: open /dev/tty: device not configured`. Always
-> run `wt` from a real terminal session. The other flag paths (`--version`,
-> `-w`, `--rotate-tag`, etc.) print and exit before `tui.Run()` is reached
-> and don't need a TTY.
+> run `wt` from a real terminal session. The non-TUI flag paths (`--version`,
+> `-w`, `--cwd`, `--rotate-tag`, etc.) skip `tui.Run()` and don't need a TTY
+> for `wt` itself (though the launched agent is interactive).
 
 ### Worktree picker screen (Lesson 13)
 
@@ -491,11 +439,11 @@ git inside a temp repo.
 - Helpers: `branchExists`, `remoteExists`, `isWorktreePath`
 
 Branch names with slashes use the last path component as the worktree
-directory (`.worktrees/my-branch`). The `-w` flag is wired in `cmd/wt/main.go`
-and prints the resulting worktree path.
+directory (`.worktrees/my-branch`). The `-w` flag is wired in `cmd/wt/main.go`:
+it creates/reuses the worktree and then launches the agent there (no TUI).
 
 ```bash
-go run ./cmd/wt -w my-feature   # create/reuse worktree, print its path
+go run ./cmd/wt -w my-feature --agent claude   # create/reuse worktree, launch claude there
 ```
 
 ### Migration (Go)
@@ -518,27 +466,18 @@ go vet ./...           # static analysis
 go build ./...         # verify compilation
 
 # CLI smoke tests
-# Basic flow — fzf picker inside a git repo (TUI not yet implemented)
-claude-wt
+# Interactive TUI (needs a TTY)
+wt
 
-# Skip picker, use/create a named worktree
-claude-wt -w my-feature
+# Skip picker, use/create a named worktree and launch
+wt -w my-feature --agent claude
 
-# Launch in current directory (no worktree switch)
-claude-wt --cwd
+# Launch in current repo root (no worktree switch)
+wt --cwd --agent codex
 
-# Model rotation flags
-claude-wt --code
-claude-wt --design
-claude-wt --native          # requires NATIVE_CLAUDE in models.conf
+# Legacy shim forwards to wt
+claude-wt --cwd   # → wt --agent claude --cwd
 
 # Seed agent instruction files in a new repo (no agent binary required)
 wt --init
-
-# Guard management
-claude-wt --check-guard
-claude-wt --no-guard
-
-# Non-rotation wrapper (agy-wt passes unknown flags through to agy)
-agy-wt -w my-feature
 ```

@@ -1,36 +1,3 @@
 #!/usr/bin/env bash
-# agy-wt — launch Antigravity CLI in a chosen worktree or branch.
-# Usage: agy-wt [-w/--worktree <name>] [--yolo] [agy-args...]
-#
-# Install: copy to ~/.local/bin/agy-wt alongside wt-core.sh.
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-if [[ ! -f "$SCRIPT_DIR/wt-core.sh" ]]; then
-  printf '%s: wt-core.sh not found at %s/wt-core.sh\n' "$(basename "$0")" "$SCRIPT_DIR" >&2
-  printf '%s: Ensure both wt-core.sh and %s are copied to the same directory.\n' "$(basename "$0")" "$(basename "$0")" >&2
-  exit 1
-fi
-
-source "$SCRIPT_DIR/wt-core.sh"
-
-# shellcheck disable=SC2034
-WT_NAME="$(basename "$0")"
-
-wt_check_deps() {
-  command -v agy >/dev/null 2>&1 || die "agy not found. Install: curl -fsSL https://antigravity.google/cli/install.sh | bash"
-}
-
-wt_yolo_flag() {
-  echo "--dangerously-skip-permissions"
-}
-
-wt_exec() {
-  # agy does not accept --model on the CLI (model selection is done
-  # inside the TUI via /model).
-  exec agy "$@"
-}
-
-wt_main "$@"
+# agy-wt — legacy shim; forwards to the unified wt tool.
+exec wt --agent agy "$@"

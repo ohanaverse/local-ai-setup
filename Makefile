@@ -45,13 +45,7 @@ check:                  # Run all quality checks
 	@echo "Running format check..."
 	$(MAKE) format-check
 
-test:                   # Run smoke tests + regression tests
-	@echo "Running regression tests..."
-	@for t in test/*.test.sh; do \
-		echo "Running $$t..."; \
-		bash "$$t" || exit 1; \
-	done
-	@echo ""
+test:                   # Run smoke tests
 	@echo "Smoke testing launcher flags..."
 	@for launcher in agy-wt claude-wt codex-wt copilot-wt opencode-wt pi-wt shell-wt; do \
 		echo "Testing $$launcher --help..."; \

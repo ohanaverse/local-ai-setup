@@ -10,7 +10,7 @@
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 ```
 
-This installs the `agy` binary. The `agy-wt` launcher in this repo wraps `agy` with worktree-aware FZF selection. Install `agy-wt` itself by copying `bin/agy-wt` into `~/.local/bin/`.
+This installs the `agy` binary. The `agy-wt` file in this repo is a shim that forwards to `wt --agent agy`. Install `agy-wt` itself by copying `bin/agy-wt` into `~/.local/bin/`.
 
 ## Configuration files & locations
 

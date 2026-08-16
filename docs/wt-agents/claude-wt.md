@@ -10,7 +10,7 @@
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-This installs the `claude` binary. The `claude-wt` launcher in this repo wraps `claude` with worktree-aware FZF selection and code/design model rotation. Install `claude-wt` itself by copying `bin/claude-wt` (and the rest of `bin/`) into `~/.local/bin/`.
+This installs the `claude` binary. The `claude-wt` file in this repo is a shim that forwards to `wt --agent claude`. Install `claude-wt` itself by copying `bin/claude-wt` (and the rest of `bin/`) into `~/.local/bin/`.
 
 ## Configuration files & locations
 
@@ -36,11 +36,7 @@ Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude
 
 ## Session resume
 
-`claude-wt` is one of two launchers with a session-resume hook (`wt_pre_exec`, the other being `opencode-wt`). When entering a worktree that has a previous Claude Code session, it prompts via fzf to **Resume** or **Start fresh**.
-
-**Model-rotation interaction:** When `--code`, `--design`, or `--native` is explicitly requested, session resume is skipped entirely. Resuming a session would bypass the intended model selection because the resumed session carries its own model context. The launcher falls through to `wt_exec`, which applies the requested rotation or native model.
-
-Other launchers (`pi-wt`, `codex-wt`, `copilot-wt`, `agy-wt`, `shell-wt`) do not implement `wt_pre_exec` and therefore have no session-resume behavior.
+`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; the non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
 
 ### Cloud models via Ollama
 

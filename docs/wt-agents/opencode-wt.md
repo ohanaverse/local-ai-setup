@@ -10,7 +10,7 @@
 curl -fsSL https://opencode.ai/install | bash
 ```
 
-This installs the `opencode` binary. The `opencode-wt` launcher in this repo wraps `opencode` with worktree-aware FZF selection and code/design model rotation. Install `opencode-wt` itself by copying `bin/opencode-wt` (and the rest of `bin/`) into `~/.local/bin/`.
+This installs the `opencode` binary. The `opencode-wt` file in this repo is a shim that forwards to `wt --agent opencode`. Install `opencode-wt` itself by copying `bin/opencode-wt` (and the rest of `bin/`) into `~/.local/bin/`.
 
 Alternative install methods: `npm install -g opencode-ai@latest`, `brew install anomalyco/tap/opencode`, etc.
 
@@ -60,9 +60,7 @@ The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-
 
 ## Session resume
 
-`opencode-wt` implements `wt_pre_exec` (like `claude-wt`). When entering a worktree with prior OpenCode sessions, it prompts via fzf to **Resume** or **Start fresh**. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.
-
-**Model-rotation interaction:** When `--code`, `--design`, or `--native` is explicitly requested, session resume is skipped — same behavior as `claude-wt`.
+`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; the non-TUI launch path appends `--session <id>` automatically. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.
 
 ## Agent init
 

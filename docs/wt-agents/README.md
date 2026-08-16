@@ -1,12 +1,12 @@
 # wt-agents reference
 
-Per-agent reference docs for the `*-wt` launchers in [`bin/`](../../bin/). Each file documents how the underlying agent is configured on disk, how it authenticates, and how the launcher invokes it.
+Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims in [`bin/`](../../bin/)). Each file documents how the underlying agent is configured on disk and how it authenticates. The `*-wt` files are now thin shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`); the launch logic lives in the Go tool (`cmd/wt/`, `internal/agents/`).
 
 ## Scope
 
 These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, and `opencode-wt`.
 
-The launcher contract itself (flags, rotation behavior, install commands) lives in this README. These per-agent docs add per-agent context that does not fit in the table above.
+The launcher contract (flags, rotation, install) now lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
 
 ## Agents
 
@@ -28,69 +28,18 @@ Each per-agent file ends with a "Verified on this machine" section. Verified fil
 
 ## Common launcher flags
 
-All `*-wt` launchers support:
+The `wt` tool (and therefore every `*-wt` shim) supports:
 
 | Flag | Description |
 |------|-------------|
 | `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. |
+| `--cwd` | Launch in the current repo root, no picker |
+| `--agent <name>` | Pin the agent to launch (defaults to the first configured agent) |
 | `--yolo` | Skip permission prompts (agent-specific) |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
-| `--code` | Use code model rotation (default if neither flag given) |
-| `--design` | Use design model rotation |
-| `--native` | Use the agent's configured native model (requires `NATIVE_<AGENT>` in models.conf) |
-| `--no-guard` | Remove the main-branch commit guard |
-| `--check-guard` | Report whether the guard is installed |
 
-With no flags, launchers present an fzf picker showing available worktrees and branches.
+With no flags, `wt` presents a Bubble Tea TUI picker showing available worktrees and branches, then an agent+model screen.
 
-### Session resume and model rotation
+### Legacy bash flags
 
-`claude-wt` and `opencode-wt` support session resume (via `wt_pre_exec`). When `--code`, `--design`, or `--native` is passed, session resume is **skipped** so that the requested model selection takes precedence. Resuming a session would restore the session's original model, silently ignoring the rotation flag. Other launchers do not implement session resume.
-
-## Native model flag
-
-The `--native` flag bypasses model rotation and uses the agent's dedicated native model:
-
-| Command | Config variable | Example value |
-|---------|-----------------|---------------|
-| `claude-wt --native` | `NATIVE_CLAUDE` | `claude-sonnet-4-5` |
-| `pi-wt --native` | `NATIVE_PI` | `claude-sonnet-4-5` |
-| `copilot-wt --native` | `NATIVE_COPILOT` | `claude-sonnet-4-5` |
-| `codex-wt --native` | `NATIVE_CODEX` | `claude-sonnet-4-5` |
-| `opencode-wt --native` | `NATIVE_OPENCODE` | `claude-sonnet-4-5` |
-The native model is read from `~/.config/agent-wt/models.conf`. If the variable is not configured, the launcher errors:
-```bash
-claude-wt: --native requires NATIVE_CLAUDE to be configured in models.conf
-```
-
-## Model rotation
-
-All model-rotating launchers share a single `get_model_from_rotation()` function implemented in `wt-core.sh`. The wrapper sets three globals before sourcing `wt-core.sh` to configure behavior:
-
-| Wrapper | `WT_DEFAULT_CODE` | `WT_DEFAULT_DESIGN` | `WT_AGENT_NAME` |
-|---|---|---|---|
-| `claude-wt` | `native:claude` | `native:claude` | `claude` |
-| `pi-wt` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `pi` |
-| `codex-wt` | `native:codex` | `native:codex` | `codex` |
-| `copilot-wt` | `native:copilot` | `native:copilot` | `copilot` |
-| `opencode-wt` | `native:opencode` | `native:opencode` | `opencode` |
-The function handles:
-- Missing config file → use agent-specific defaults
-- Empty rotation array → use agent-specific defaults
-- Cloud models → verify they are available in ollama; skip and retry if not
-- `native:X` where X ≠ `WT_AGENT_NAME` → skip (model not usable by this agent)
-- Cross-rotation skip → avoid picking the same model the other mode last used
-
-## Model list synchronization
-
-Agents differ in how they validate models against their internal configuration:
-
-| Agent | Model validation | Sync needed? |
-|---|---|---|
-| **pi** | Checks `~/.pi/agent/models.json` before passing `--model` | ✅ Yes — auto-sync on launch |
-| **claude** | No local config — passes `--model` through to cloud API | ❌ No |
-| **copilot** | Checks Ollama for local models (`ollama list`) | ⚠️ Partial — cloud models pass through |
-| **codex** | Uses profile config (`~/.codex/ollama-launch.config.toml`) | ⚠️ Partial — profile must exist |
-| **agy** | No model rotation support | ❌ No |
-| **opencode** | No local config — passes Ollama config via `OPENCODE_CONFIG_CONTENT` env var | ❌ No |
-**pi-wt auto-sync:** On every launch, `pi-wt` compares cloud models (`*:cloud` suffix) from `~/.config/agent-wt/models.conf` against `~/.pi/agent/models.json`. Missing models are added automatically with default settings (262K context, text+image input, reasoning enabled). The sync is idempotent and requires `jq` to be installed.
+The original bash launchers supported `--code`, `--design`, `--native`, `--no-guard`, and `--check-guard`. These are not supported by `wt`: model rotation is now tag-based (the `r` key in the TUI, or `--rotate-tag`), and the main guard is managed by `internal/guard`. The bash model-rotation and pi `models.json` auto-sync behavior described in earlier versions of this doc is not yet ported to Go.

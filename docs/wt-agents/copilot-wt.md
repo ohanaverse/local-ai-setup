@@ -10,7 +10,7 @@
 npm install -g @github/copilot
 ```
 
-This installs the `copilot` binary. The `copilot-wt` launcher in this repo wraps `copilot` with worktree-aware FZF selection and code/design model rotation. Install `copilot-wt` itself by copying `bin/copilot-wt` into `~/.local/bin/`.
+This installs the `copilot` binary. The `copilot-wt` file in this repo is a shim that forwards to `wt --agent copilot`. Install `copilot-wt` itself by copying `bin/copilot-wt` into `~/.local/bin/`.
 
 ## Configuration files & locations
 

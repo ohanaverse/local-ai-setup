@@ -50,6 +50,16 @@ func rootCmd() *cobra.Command {
 		"",
 		"Use/create worktree for branch",
 	)
+	cmd.PersistentFlags().String(
+		"agent",
+		"",
+		"Agent to launch (claude, codex, copilot, pi, agy, opencode)",
+	)
+	cmd.PersistentFlags().Bool(
+		"cwd",
+		false,
+		"Launch in the current repo root, no picker",
+	)
 	var showVersion bool
 	cmd.PersistentFlags().BoolVar(
 		&showVersion,
@@ -124,18 +134,6 @@ func rootCmd() *cobra.Command {
 			fmt.Println(m.ID)
 			return nil
 		}
-		if w, _ := cmd.Flags().GetString("worktree"); w != "" {
-			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-			if err != nil {
-				return fmt.Errorf("not in a git repo: %w", err)
-			}
-			path, err := worktree.EnsureForName(strings.TrimSpace(string(root)), w)
-			if err != nil {
-				return err
-			}
-			fmt.Println("worktree at:", path)
-			return nil
-		}
 		if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
 			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 			if err != nil {
@@ -168,8 +166,48 @@ func rootCmd() *cobra.Command {
 			}
 			return nil
 		}
-		yolo, _ := cmd.Flags().GetBool("yolo")
-		return tui.Run(yolo)
+
+		// Load config for the launch paths.
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+
+		// Resolve the agent: --agent flag wins, else the config default.
+		agent := mustGetString(cmd, "agent")
+		if agent == "" {
+			agent = defaultAgent(cfg)
+		}
+
+		// -w <name>: use/create a worktree, then launch (no picker).
+		if name := mustGetString(cmd, "worktree"); name != "" {
+			root, err := worktree.RepoRoot()
+			if err != nil {
+				return err
+			}
+			path, err := worktree.EnsureForName(root, name)
+			if err != nil {
+				return err
+			}
+			return launch(agent, path, cfg, yolo(cmd))
+		}
+
+		// --cwd: launch in the current repo root.
+		if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
+			root, err := worktree.RepoRoot()
+			if err != nil {
+				return err
+			}
+			return launch(agent, root, cfg, yolo(cmd))
+		}
+
+		// Outside a git repo: pure passthrough to the agent.
+		if !inGitRepo() {
+			return launchDirect(agent, cfg, yolo(cmd))
+		}
+
+		// Interactive TUI.
+		return tui.Run(yolo(cmd))
 	}
 
 	cmd.AddCommand(modelsCmd(), agentsCmd())
