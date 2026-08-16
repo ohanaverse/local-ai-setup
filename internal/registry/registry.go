@@ -25,8 +25,14 @@ func Merge(curated []config.Model, discovered []config.Model) []config.Model {
 
 // Discover runs each connected discoverer and returns the merged registry.
 func Discover(cfg *config.Config) []config.Model {
+	return DiscoverWith(cfg, []Discoverer{Ollama{}, OpenRouter{}})
+}
+
+// DiscoverWith is the testable seam: callers (typically tests) pass their
+// own []Discoverer to avoid shell/HTTP calls. Production callers should
+// use Discover, which wires the default Ollama + OpenRouter discoverers.
+func DiscoverWith(cfg *config.Config, discoverers []Discoverer) []config.Model {
 	var discovered []config.Model
-	discoverers := []Discoverer{Ollama{}, OpenRouter{}}
 	for _, d := range discoverers {
 		models, err := d.Discover()
 		if err != nil {

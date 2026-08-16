@@ -152,14 +152,14 @@ Test coverage by package:
 | Package | Tests | Focus |
 |---|---|---|
 | `internal/config` | 30+ | Load, Validate, Save, HasTag, ResolveLocation, migration, secrets |
-| `internal/registry` | 9 | Merge (curated wins), parseOllamaList, OpenRouter JSON |
+| `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
 | `internal/agents` | 10 | Per-agent Build output, Installed, Command |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 38 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, browser placeholder (`m`), tag toggle (`d`), model-phase View; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `internal/tui` | 57 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
 
 ## Go module
 
@@ -186,7 +186,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen (lessons 12–14): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser (lessons 12–15): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation, model browser |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -377,7 +377,8 @@ go run ./cmd/wt --version # non-interactive, no TTY needed
 After the user picks a worktree, the TUI moves to an **agent+model screen**
 that shows the selected agent and the currently shown model, with explicit
 one-keystroke actions replacing the bash tool's silent auto-rotation. A
-`phase` value (`phaseList` / `phaseModel`) tracks which screen is active.
+`phase` value (`phaseList` / `phaseModel` / `phaseBrowser`) tracks which
+screen is active.
 
 - `selectedEntryMsg` now transitions to `phaseModel`, resolving the initial
   agent (first in `cfg.Agents`) and model (first in the default tag group)
@@ -386,7 +387,7 @@ one-keystroke actions replacing the bash tool's silent auto-rotation. A
 - **`r`** — rotate to the next model in the active tag group via
   `rotation.ForTag(cfg, tag).Next(otherTag)`, advancing the on-disk
   `rotation-<tag>.state` file.
-- **`m`** — placeholder status for the lesson 15 model browser.
+- **`m`** — open the model browser (lesson 15).
 - **`d`** — toggle the active tag group between `code` and `design`,
   re-resolving the shown model; `otherTag` drives the cross-tag skip so
   rotation avoids the other group's last-used model.
@@ -399,10 +400,53 @@ go run ./cmd/wt           # interactive TUI (needs a TTY)
 
 Pick a worktree, then on the agent+model screen press `r` to cycle the
 model (and watch `~/.config/agent-wt/rotation-code.state` advance), `d` to
-toggle the tag group, `m` for the browser placeholder, `q` to quit.
+toggle the tag group, `m` to open the model browser, `q` to quit.
 
 The full TUI flow (worktree list → agent/model screen → model browser →
 launch) is built across lessons 13–16 and wired in lesson 17.
+
+### Model browser screen (Lesson 15)
+
+The model browser is the "choose the backend LLM from a list" feature: a
+`bubbles/list`-backed picker over the curated + discovered model registry
+(opened with `m` from the agent+model screen). The browser is a *view*
+into the registry, not rotation: picking a model here sets the current
+model directly (no state-file advance), distinguishing deliberate
+selection from `r`'s quick rotation.
+
+- `internal/tui/model_browser.go` — `modelItem` adapter (lists
+  `config.Model` with provider/location/source/tags columns), `buildModelItems`,
+  `refreshBrowser`, and `browserView`.
+- `phaseBrowser` constant extends the existing `phase` enum; the prior
+  lesson's `browserOpen bool` was rejected in favor of an enum constant so
+  every key gate is uniform (`m.phase == phaseBrowser`).
+- `m` key opens the browser; `enter` picks the selection back into
+  `m.current` and returns to `phaseModel`. Picking never writes the
+  rotation state file (asserted in `TestBrowserEnterPicksModel`).
+- `esc` is phase-aware: pops back from the browser, quits from
+  `phaseModel`.
+- `f` toggles the tag filter between `""` and `m.tag`; `c` cycles a
+  `sourceCycle` int 0→1→2 (all → curated → discovered), wired through
+  `registry.FilterByTag` and `registry.FilterBySource`.
+- **Discovery cache** — `m.browserCache` snapshots `registry.Discover(cfg)`
+  once per browser-open; subsequent filter toggles reuse the cache rather
+  than re-shell to `ollama list` and re-HTTP OpenRouter. The cache is
+  cleared on every `m` press so each browser session re-discovers.
+- **Deferred build** — `refreshBrowser` skips the list build when
+  `width`/`height` are zero (no `WindowSizeMsg` yet); the next
+  `WindowSizeMsg` triggers a rebuild while the browser is open.
+- **Test seam** — `registry.Discover` now has a `DiscoverWith(cfg,
+  []Discoverer)` variant for test injection; production callers still use
+  `Discover(cfg)` with the default Ollama + OpenRouter discoverers.
+
+```bash
+go run ./cmd/wt           # interactive TUI (needs a TTY)
+```
+
+Pick a worktree, press `m` to open the browser. You'll see curated +
+discovered models with provider/location/source/tags columns. Filter by
+typing; press `f` to toggle tag filtering, `c` to cycle source filter,
+`enter` to select a model, `esc` to go back.
 
 ### Worktree (Go)
 

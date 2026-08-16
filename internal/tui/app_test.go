@@ -253,18 +253,6 @@ func TestRotateKeyIgnoredInListPhase(t *testing.T) {
 	}
 }
 
-// TestModelKeyShowsPlaceholder asserts pressing 'm' in the model phase sets a
-// status placeholder for the lesson 15 model browser. This confirms the key
-// is wired before the browser exists.
-func TestModelKeyShowsPlaceholder(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseModel, tag: "code"}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	gotModel := got.(model)
-	if !strings.Contains(gotModel.status, "model browser") {
-		t.Errorf("status missing browser placeholder: %q", gotModel.status)
-	}
-}
-
 // TestToggleTagSwitchesGroup asserts pressing 'd' in the model phase flips
 // the active tag group (code <-> design) and re-resolves the shown model to
 // the new group's first entry. This powers cross-tag rotation from a single

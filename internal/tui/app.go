@@ -4,6 +4,8 @@
 // responds to q/esc/ctrl+c, and demonstrates the Model/Update/View cycle.
 // Lesson 13 layers on the worktree/branch picker using bubbles/list.
 // Lesson 14 adds the agent+model screen reached after picking a worktree.
+// Lesson 15 adds the model browser, opened from the agent+model screen
+// with `m`, which lets the user pick any model from the registry.
 package tui
 
 import (
@@ -21,8 +23,9 @@ import (
 type phase int
 
 const (
-	phaseList  phase = iota // worktree list (lesson 13)
-	phaseModel              // agent+model screen (this lesson)
+	phaseList    phase = iota // worktree list (lesson 13)
+	phaseModel                // agent+model screen (lesson 14)
+	phaseBrowser              // model browser (lesson 15)
 )
 
 // model holds the entire UI state.
@@ -42,6 +45,12 @@ type model struct {
 	otherTag string         // tag group to cross-skip against during rotation
 	current  config.Model   // currently shown model
 	cfg      *config.Config // loaded config for the model catalog
+
+	// model browser (lesson 15)
+	browser      list.Model     // browser list widget
+	browserCache []config.Model // snapshot of registry.Discover, per browser-open
+	browserTag   string         // "" = all models; otherwise a tag like "code"
+	sourceCycle  int            // 0=all, 1=curated, 2=discovered
 }
 
 // Init returns the initial command: load worktrees/branches.
@@ -56,6 +65,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		if m.ready {
 			m.list.SetSize(msg.Width-2, msg.Height-2)
+		}
+		if m.phase == phaseBrowser {
+			m.refreshBrowser()
 		}
 	case entriesLoadedMsg:
 		m.loading = false
@@ -77,13 +89,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			// esc is phase-aware: pop back from a nested screen, else quit.
+			if m.phase == phaseBrowser {
+				m.phase = phaseModel
+				return m, nil
+			}
 			return m, tea.Quit
 		case "enter":
-			if m.ready && m.phase == phaseList {
-				item, ok := m.list.SelectedItem().(entryItem)
-				if ok {
-					return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
+			switch m.phase {
+			case phaseList:
+				if m.ready {
+					item, ok := m.list.SelectedItem().(entryItem)
+					if ok {
+						return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
+					}
+				}
+			case phaseBrowser:
+				if item, ok := m.browser.SelectedItem().(modelItem); ok {
+					m.current = item.model
+					m.phase = phaseModel
 				}
 			}
 		case "r":
@@ -98,7 +125,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "m":
 			if m.phase == phaseModel {
-				m.status = "model browser coming in lesson 15"
+				// Open the model browser. Reset the cache so each open
+				// re-discovers; filter toggles inside the browser reuse it.
+				m.phase = phaseBrowser
+				m.browserCache = nil
+				m.refreshBrowser()
 			}
 		case "d":
 			if m.phase == phaseModel {
@@ -110,6 +141,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Re-resolve the shown model to the new group's first entry.
 				m.current = firstModel(m.cfg, m.tag)
+			}
+		case "f":
+			if m.phase == phaseBrowser {
+				// Toggle tag filter between "" (all) and m.tag.
+				if m.browserTag == "" {
+					m.browserTag = m.tag
+				} else {
+					m.browserTag = ""
+				}
+				m.refreshBrowser()
+			}
+		case "c":
+			if m.phase == phaseBrowser {
+				// Cycle source filter: 0=all, 1=curated, 2=discovered.
+				m.sourceCycle = (m.sourceCycle + 1) % 3
+				m.refreshBrowser()
 			}
 		}
 	}
@@ -124,6 +171,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the screen as a string.
 func (m model) View() string {
+	if m.phase == phaseBrowser {
+		return m.browserView()
+	}
 	if m.phase == phaseModel {
 		style := lipgloss.NewStyle().Padding(2, 2)
 		return style.Render(
