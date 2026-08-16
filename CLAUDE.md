@@ -155,6 +155,7 @@ Test coverage by package:
 | `internal/registry` | 9 | Merge (curated wins), parseOllamaList, OpenRouter JSON |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
 | `internal/agents` | 10 | Per-agent Build output, Installed, Command |
+| `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 
 ## Go module
@@ -178,6 +179,7 @@ go vet ./...         # vet
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
+| `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook, reports status (`Check`/`Install`/`Uninstall`) |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
@@ -249,6 +251,22 @@ Per-agent behavior:
 
 The `wt agents` subcommand lists registered drivers, whether each binary is
 installed, and its yolo flag.
+
+### Guard (Go)
+
+The `internal/guard` package ports the bash `wt-install-guard` script into Go.
+It installs a `block-main-commit v1` pre-commit hook that blocks commits to
+`main`/`master`. The hook is embedded into the binary with `//go:embed`.
+
+- `Check()` — reports `Installed`, `NotInstalled`, or `Err` by reading the
+  common git dir's `hooks/pre-commit` and looking for the marker string.
+- `Install()` — idempotent; appends the guard to an existing hook rather
+  than overwriting it. Returns `changed` so callers can skip noisy output.
+- `Uninstall()` — restores any preserved original hook; removes the file only
+  when we created it and there was nothing before. Leaves foreign hooks alone.
+
+The common git dir (via `git rev-parse --git-common-dir`) is used so the
+hook applies to all worktrees of the repo.
 
 ### Worktree (Go)
 

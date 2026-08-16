@@ -7,7 +7,8 @@ hook that refuses commits to `main`/`master`. The `*-wt` launchers auto-install
 it on every run inside a git repo, and offer `--check-guard` (report status)
 and `--no-guard` (uninstall).
 
-This lesson ports `guard_status` and the install/uninstall logic. The tricky
+This lesson ports `guard_status` and the install/uninstall logic from the
+bash `wt-install-guard` into Go. The tricky
 part is finding the right hooks directory: `git rev-parse --git-common-dir`
 returns the *common* git dir, which for a worktree is the main repo's
 `.git` (so the hook applies to all worktrees of the repo). We install one
@@ -26,7 +27,7 @@ separate `wt-install-guard` shell script.
 | `os.WriteFile(..., 0o755)` | Writes the hook as executable. |
 | `os.Stat` / `os.IsNotExist` | Checks for file existence / absence. |
 | `strings.Contains(hookSrc, "block-main-commit v1")` | Detects whether the guard is present. |
-| `Status` result | One of: installed, not installed, error. |
+| `Check` result | One of: installed, not installed, error. |
 
 ## Worked Walkthrough
 
@@ -88,8 +89,8 @@ func CommonDir() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Status reports whether the guard is installed in this repo.
-func Status() Status {
+// Check reports whether the guard is installed in this repo.
+func Check() Status {
 	common, err := CommonDir()
 	if err != nil {
 		return Err
@@ -186,7 +187,7 @@ In `rootCmd`'s `RunE`, before the TUI placeholder:
 
 ```go
 if check, _ := cmd.Flags().GetBool("check-guard"); check {
-	switch guard.Status() {
+	switch guard.Check() {
 	case guard.Installed:
 		fmt.Println("wt: main guard is installed in this repo.")
 	case guard.NotInstalled:
