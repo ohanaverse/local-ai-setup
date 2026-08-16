@@ -54,6 +54,5 @@ test:                   # Run smoke tests
 	@echo "All tests complete."
 
 clean:                  # Remove build artifacts
-	rm -rf .pytest_cache .mypy_cache __pycache__
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	rm -f bin/wt
+	find . -type f -name "*.test" -delete 2>/dev/null || true

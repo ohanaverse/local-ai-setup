@@ -2,20 +2,31 @@
 
 ## Concept Intro
 
-The final lesson ties everything together and makes the tool actually usable
-day-to-day. Three things remain:
+The Go tool is complete through lesson 19: `cmd/wt/` is split into
+`main.go` (cobra wiring), `app.go` (shared dependencies), `commands.go`
+(subcommands), `helpers.go` (accessors), and `launch.go` (non-TUI launch).
+The TUI, model browser, rotation, guard, init seeding, and session resume
+all work. The `bin/*-wt` shims forward to `wt --agent <name>`.
 
-1. **Config-edit flow** — a `wt config` subcommand that opens (or prints) the
-   TOML config so you can curate models and tags without hand-editing blind.
+But the tool isn't fully usable day-to-day yet. Three things remain:
+
+1. **Config-edit flow** — a `wt config` subcommand that opens (or prints)
+   the TOML config so you can curate models and tags without hand-editing
+   blind. Today there's no way to find or edit the config from the CLI.
 2. **Real integration check** — a smoke test against a real repo, real
    `ollama` (if installed), and a real agent launch, to confirm the whole
    pipeline works outside temp dirs.
-3. **Docs** — update `README.md` and the `docs/` so the unified `wt` tool is
-   the documented interface and the legacy shims are noted as forwards.
+3. **Docs** — `README.md` still leads with the bash wrappers and the Go tool
+   is described as "in progress." The `Makefile` `install` target only
+   copies bash scripts — it doesn't build the `wt` binary. This lesson
+   updates both so the unified `wt` tool is the documented interface and
+   the legacy shims are noted as forwards.
 
-This is the point where you'd delete the old `wt-core.sh`-based wrappers'
-logic — the shims from lesson 17 are now the only bash left, and they just
-`exec wt`.
+> **`shell-wt` still needs bash.** The `*-wt` shims from lesson 17 are thin
+> `exec wt` wrappers, but `shell-wt` still sources `wt-core.sh` (it launches
+> a shell command, not an agent, and has no Go equivalent yet). So
+> `wt-core.sh` and `wt-install-guard` must remain in `bin/` and stay
+> co-located with the shims. This lesson does **not** delete them.
 
 ## New Syntax & Vocabulary
 
@@ -88,10 +99,16 @@ func editConfig(path string, a *app) error {
 }
 ```
 
-Wire it into `rootCmd`:
+Wire it into `rootCmd`. The current line in `cmd/wt/main.go` is:
 
 ```go
-cmd.AddCommand(modelsCmd(a), agentsCmd(a), configCmd(a))
+cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a))
+```
+
+Add `configCmd(a)`:
+
+```go
+cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a), configCmd(a))
 ```
 
 ### Installing the binary
@@ -112,35 +129,51 @@ command -v wt
 Run the full flow manually:
 
 ```bash
-wt --check-guard          # guard status
-wt models --tag design    # non-interactive model list
-wt --init                 # seed AGENTS.md in a scratch repo
-wt -w smoke-test          # create worktree + launch (Ctrl-C to bail)
-wt --cwd                  # launch in current dir
+wt agents               # list registered agents + install status
+wt models               # non-interactive model list (curated + discovered)
+wt --init               # seed AGENTS.md in a scratch repo
+wt -w smoke-test        # create worktree + launch (Ctrl-C to bail)
+wt --cwd                # launch in current dir
 ```
 
-If `ollama` is installed, confirm discovered models appear in the browser:
+If `ollama` is installed, confirm discovered models appear in the model
+list:
 
 ```bash
-wt models                 # should include 'local  discovered' entries
+wt models               # should include 'discovered' source entries
 ```
 
 ### Updating docs
 
-Update `README.md` to lead with `wt`:
+**`README.md`** currently leads with the bash wrappers and describes the Go
+tool as "in progress." Update it to lead with `wt`:
 
-- Install: `go install ./cmd/wt` (or `make install` which also builds).
-- Usage: the `wt` subcommands + flags table.
+- Install: `go install ./cmd/wt` (or `make install` which also builds —
+  see below).
+- Usage: the `wt` subcommands + flags table (already documented in
+  `CLAUDE.md`).
 - Note the legacy `*-wt` shims forward to `wt --agent <name>`.
+- Keep the `shell-wt` row since it still needs `wt-core.sh`.
 
-Update the `Makefile` `install` target to build the binary and copy the shims:
+**`Makefile`** — the current `install` target only copies bash scripts:
 
 ```makefile
-install:
-	go build -o $(HOME)/.local/bin/wt ./cmd/wt
-	cp bin/*-wt $(HOME)/.local/bin/
-	chmod +x $(HOME)/.local/bin/wt $(HOME)/.local/bin/*-wt
+install:                # Install scripts to ~/.local/bin/
+	cp -r $(SRCDIR)/* $(BINDIR)/
+	chmod +x $(BINDIR)/*-wt $(BINDIR)/wt-core.sh $(BINDIR)/wt-install-guard
 ```
+
+Update it to also build the `wt` binary, while still copying the bash
+scripts that `shell-wt` needs:
+
+```makefile
+install:                # Install wt binary + scripts to ~/.local/bin/
+	go build -o $(BINDIR)/wt ./cmd/wt
+	cp -r $(SRCDIR)/* $(BINDIR)/
+	chmod +x $(BINDIR)/wt $(BINDIR)/*-wt $(BINDIR)/wt-core.sh $(BINDIR)/wt-install-guard
+```
+
+Also add `$(BINDIR)/wt` to the `uninstall` target's `rm -f` list.
 
 ## Run It
 
@@ -149,14 +182,14 @@ go install ./cmd/wt
 wt --help
 wt config
 EDITOR=nano wt config edit
-wt models --tag code
+wt models
 ```
 
 ## Try It Yourself
 
-Add a `wt models add --id ... --provider ... --location ... --tag ...` command
-that appends a curated entry to the config and re-saves it, so curation doesn't
-require opening the file.
+Add a `wt models add --id ... --family ... --provider ... --model-name ...
+--location ... --tag ...` command that appends a curated entry to the
+config and re-saves it, so curation doesn't require opening the file.
 
 <details>
 <summary>Solution</summary>
@@ -164,10 +197,17 @@ require opening the file.
 ```go
 // append a Model to a.cfg.Models, then config.Save(a.cfg)
 a.cfg.Models = append(a.cfg.Models, config.Model{
-	ID: id, Provider: provider, Location: config.Location(location),
-	Tags: tags, Source: config.SourceCurated,
+	ID:         id,
+	Family:     family,
+	ProviderID: provider,
+	ModelName:  modelName,
+	Location:   config.Location(location),
+	Tags:       tags,
+	Source:     config.SourceCurated,
 })
-if err := config.Save(a.cfg); err != nil { return err }
+if err := config.Save(a.cfg); err != nil {
+	return err
+}
 ```
 </details>
 

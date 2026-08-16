@@ -18,7 +18,7 @@ go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
 
 Requires Go 1.26.3 (see `go.mod`).
 
-> **Makefile scope.** The Makefile below only handles bash script tasks (install, lint, format, smoke tests). It does **not** build the Go binary — use `go build` above for that.
+> **Makefile scope.** The Makefile handles bash script tasks (install, lint, format, smoke tests) and a `clean` target that removes Go build artifacts (`bin/wt`, `*.test`). It does **not** build the Go binary — use `go build` above for that.
 
 The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH` for them to work. `shell-wt` is the only remaining bash launcher and still needs `wt-core.sh` co-located.
 

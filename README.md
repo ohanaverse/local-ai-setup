@@ -4,7 +4,7 @@ Wrappers around AI coding agent CLIs that add git worktree management.
 
 Each `*-wt` launcher presents an fzf picker of worktrees and branches, creates worktrees on demand, optionally rotates models, and launches the underlying agent.
 
-> **Go rewrite in progress:** A unified `wt` TUI tool is being built in `cmd/wt/`. See `docs/go-course/` for the lesson plan and `docs/superpowers/specs/` for design docs.
+> **Go rewrite:** A unified `wt` TUI tool in `cmd/wt/` is the primary implementation. The `bin/*-wt` shims forward to it; `shell-wt` still uses the bash engine. See `docs/go-course/` for the lesson plan and `docs/superpowers/specs/` for design docs.
 
 ## Supported agents
 
@@ -34,7 +34,7 @@ make install      # Install to ~/.local/bin/
 make uninstall    # Remove from ~/.local/bin/
 ```
 
-All scripts must remain co-located — wrappers find `wt-core.sh` via `SCRIPT_DIR`.
+`shell-wt` must remain co-located with `wt-core.sh` (it sources it via `SCRIPT_DIR`). The other `*-wt` shims just `exec wt --agent <name>` and only need `wt` on `$PATH`.
 
 ## Quick start
 
@@ -175,12 +175,20 @@ go vet ./...       # Vet
 
 | Path | Purpose |
 |---|---|
-| `cmd/wt/main.go` | CLI entry point (cobra) |
+| `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
+| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
+| `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
+| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
+| `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
+| `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
+| `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -282,17 +290,8 @@ into `config.toml` automatically. The migration:
 
 ## Architecture
 
-- `bin/wt-core.sh` — shared engine, sourced by all wrappers
-- `bin/*-wt` — per-agent wrappers; each sets globals and implements `wt_check_deps`, `wt_yolo_flag`, `wt_exec`, and optionally `wt_pre_exec`
-
-### Wrapper globals (for model-rotating launchers)
-
-Before sourcing `wt-core.sh`:
-
-```bash
-WT_DEFAULT_CODE="native:claude"    # fallback for --code mode
-WT_DEFAULT_DESIGN="native:claude"  # fallback for --design mode
-WT_AGENT_NAME="claude"             # used to filter native:X models
-```
+- `bin/wt-core.sh` — shared bash engine, sourced only by `shell-wt`
+- `bin/*-wt` — thin shims that `exec wt --agent <name>` (except `shell-wt`, which sources `wt-core.sh`)
+- `cmd/wt/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, rotation, guard, init seeding, session resume
 
 See `CLAUDE.md` for the full architecture documentation.
