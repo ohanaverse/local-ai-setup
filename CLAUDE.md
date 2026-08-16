@@ -159,6 +159,7 @@ Test coverage by package:
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
+| `internal/tui` | 5 | WindowSizeMsg records dimensions; q/esc/ctrl+c quit; unknown keys ignored; View renders status + hint; View safe before WindowSizeMsg |
 
 ## Go module
 
@@ -185,6 +186,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
+| `internal/tui/` | Bubble Tea app shell (lesson 12): Model/Update/View, alternate-screen runner |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -323,6 +325,34 @@ not an error. The bash wrappers resume with a per-agent flag — claude uses
 # Test helper: print the newest resumable session for an agent
 wt --debug-session claude
 wt --debug-session opencode
+```
+
+### TUI shell (Go)
+
+The `internal/tui` package holds the Bubble Tea app shell (lesson 12).
+`Run()` starts `tea.NewProgram` with `tea.WithAltScreen()` and returns when
+the program exits. The `model` type implements `tea.Model` (`Init` /
+`Update` / `View`); lessons 13+ extend the same `model` with a worktree
+list, agent+model screen, model browser, and a launch command.
+
+- `Run()` — entry point; reached from `rootCmd.RunE` as the fallback after
+  every flag handler has had a chance to early-return.
+- `tea.WithAltScreen()` — Bubble Tea manages the alternate screen buffer
+  for full-screen TUI rendering.
+
+> **TTY required.** `WithAltScreen` opens `/dev/tty`. Running from a pipe,
+> CI runner, or editor output panel fails with
+> `could not open a new TTY: open /dev/tty: device not configured`. Always
+> run `wt` from a real terminal session. The other flag paths (`--version`,
+> `-w`, `--rotate-tag`, etc.) print and exit before `tui.Run()` is reached
+> and don't need a TTY.
+
+The full TUI flow (worktree list → agent/model screen → model browser →
+launch) is built across lessons 12–16 and wired in lesson 17.
+
+```bash
+go run ./cmd/wt           # interactive TUI (needs a TTY)
+go run ./cmd/wt --version # non-interactive, no TTY needed
 ```
 
 ### Worktree (Go)

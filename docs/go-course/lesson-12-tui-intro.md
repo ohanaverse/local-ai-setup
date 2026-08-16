@@ -40,10 +40,11 @@ set up the renderer for an alternate-screen (full-screen) TUI.
 Add the TUI dependencies:
 
 ```bash
-go get github.com/charmbracelet/bubbletea@latest \
-       github.com/charmbracelet/bubbles@latest \
-       github.com/charmbracelet/lipgloss@latest
+go get github.com/charmbracelet/bubbletea \
+       github.com/charmbracelet/lipgloss
 ```
+
+(`bubbles` is added in lesson 13, when we wire up `list.Model`.)
 
 Create `internal/tui/app.go`:
 
@@ -100,21 +101,36 @@ func Run() error {
 
 ### Wiring
 
-Replace the placeholder in `rootCmd`'s `RunE` (but keep `--rotate-tag` and the
-guard/init handling from earlier lessons above it):
+In `cmd/wt/main.go`, replace the final placeholder (`fmt.Println("(TUI not yet
+implemented - coming in lesson 12)")`) with a call to `tui.Run()`. It must
+come *after* all the existing flag handlers (`--init`, `--version`,
+`--rotate-tag`, `-w`, `--debug-session`, `--debug-worktrees`) so those flags
+still take their early-return paths and never reach the TUI:
 
 ```go
-if interactive {
-	// not in a git repo -> just pass through? handle later.
-	return tui.Run()
+import "github.com/ohanaverse/agent-worktree/internal/tui"
+
+// ...inside rootCmd().RunE, after the --debug-worktrees branch:
+
+return tui.Run()
+```
+
+The full RunE currently looks like:
+
+```go
+cmd.RunE = func(cmd *cobra.Command, args []string) error {
+    // --init         → seed agent files, install guard, exit
+    // --version      → print version, exit
+    // --rotate-tag   → print next model in tag group, exit
+    // -w <name>      → ensure worktree, print path, exit
+    // --debug-session <agent> → print newest session, exit
+    // --debug-worktrees       → print entries, exit
+    return tui.Run()  // ← this lesson's change
 }
 ```
 
-For now, call `tui.Run()` unconditionally as the fallback:
-
-```go
-return tui.Run()
-```
+(We'll add an "outside a git repo" passthrough in lesson 17; for now `tui.Run`
+is the unconditional fallback for an interactive launch.)
 
 ## Run It
 
@@ -122,8 +138,31 @@ return tui.Run()
 go run ./cmd/wt
 ```
 
-A full-screen view appears with `wt`, the status, and "Press q to quit". Press
-`q` to exit.
+With no flags set, the TUI is reached (all five flag handlers skip themselves)
+and the alternate-screen full-screen view appears with `wt`, the status
+(`ready`), and "Press q to quit". Press `q` to exit.
+
+> **TTY required.** Bubble Tea's `tea.WithAltScreen()` opens `/dev/tty` to
+> manage the alternate screen buffer. Running from a non-TTY context — a
+> pipe (`go run ./cmd/wt | tee out.log`), a CI runner, an editor's output
+> panel — fails with:
+>
+> ```
+> Error: could not open a new TTY: open /dev/tty: device not configured
+> ```
+>
+> Run from a real terminal session (Terminal.app, iTerm, gnome-terminal,
+> Windows Terminal, etc.). The other flag paths (`--version`, `-w`,
+> `--rotate-tag`, etc.) work fine without a TTY — they print and exit before
+> `tui.Run()` is reached.
+
+To confirm the other flag paths still work and bypass the TUI:
+
+```bash
+go run ./cmd/wt --version           # prints "wt 0.1.0", no TUI
+go run ./cmd/wt -w my-feature       # prints worktree path, no TUI
+go run ./cmd/wt --rotate-tag code   # prints next code model (or an error if the tag group is empty), no TUI
+```
 
 ## Try It Yourself
 

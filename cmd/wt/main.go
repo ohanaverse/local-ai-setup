@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/initseed"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
+	"github.com/ohanaverse/agent-worktree/internal/tui"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -167,9 +168,8 @@ func rootCmd() *cobra.Command {
 			}
 			return nil
 		}
-		fmt.Println("(TUI not yet implemented - coming in lesson 12)")
-		return nil
-	}
+		return tui.Run()
+}
 
 	cmd.AddCommand(modelsCmd(), agentsCmd())
 	return cmd
