@@ -112,6 +112,15 @@ func listRemoteBranches(dir string) ([]string, error) {
 	return remotes, nil
 }
 
+// RepoRoot returns the absolute path of the current git repository root.
+func RepoRoot() (string, error) {
+	out, err := runGit("", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func splitLines(b []byte) []string {
 	var out []string
 	for _, l := range strings.Split(string(bytes.TrimSpace(b)), "\n") {

@@ -186,7 +186,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell (lesson 12): Model/Update/View, alternate-screen runner |
+| `internal/tui/` | Bubble Tea app shell + worktree picker (lessons 12–13): Model/Update/View, alternate-screen runner, `bubbles/list` picker |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -329,11 +329,11 @@ wt --debug-session opencode
 
 ### TUI shell (Go)
 
-The `internal/tui` package holds the Bubble Tea app shell (lesson 12).
-`Run()` starts `tea.NewProgram` with `tea.WithAltScreen()` and returns when
-the program exits. The `model` type implements `tea.Model` (`Init` /
-`Update` / `View`); lessons 13+ extend the same `model` with a worktree
-list, agent+model screen, model browser, and a launch command.
+The `internal/tui` package holds the Bubble Tea app shell. `Run()` starts
+`tea.NewProgram` with `tea.WithAltScreen()` and returns when the program
+exits. The `model` type implements `tea.Model` (`Init` / `Update` / `View`);
+lessons 12+ layer on the worktree list, agent+model screen, model browser,
+and launch command.
 
 - `Run()` — entry point; reached from `rootCmd.RunE` as the fallback after
   every flag handler has had a chance to early-return.
@@ -347,13 +347,32 @@ list, agent+model screen, model browser, and a launch command.
 > `-w`, `--rotate-tag`, etc.) print and exit before `tui.Run()` is reached
 > and don't need a TTY.
 
-The full TUI flow (worktree list → agent/model screen → model browser →
-launch) is built across lessons 12–16 and wired in lesson 17.
+### Worktree picker screen (Lesson 13)
+
+The worktree list screen replaces the bash `fzf` picker with a richer
+`bubbles/list` widget:
+
+- `internal/tui/worktree_list.go` — adapts `worktree.Entry` to `list.Item`
+  via `entryItem` (`Title()`, `Description()`, `FilterValue()`)
+- `buildList(entries, width, height)` — builds a `list.Model` with title
+  `"Pick a worktree or branch"`
+- `loadEntriesCmd()` — async `tea.Cmd` that calls `worktree.RepoRoot()` +
+  `worktree.Enumerate(root, root)` in a goroutine
+- `entriesLoadedMsg` — carries the enumerated entries (or error) back into
+  `Update`
+- `selectedEntryMsg` — emitted on Enter carrying the chosen `worktree.Entry`
+
+The list supports arrow navigation and built-in fuzzy filtering (type to
+narrow branches). Selection is currently handled by updating the status line;
+worktree creation and agent launch are wired in later lessons.
 
 ```bash
 go run ./cmd/wt           # interactive TUI (needs a TTY)
 go run ./cmd/wt --version # non-interactive, no TTY needed
 ```
+
+The full TUI flow (worktree list → agent/model screen → model browser →
+launch) is built across lessons 13–16 and wired in lesson 17.
 
 ### Worktree (Go)
 
@@ -363,6 +382,8 @@ creation (lesson 8) — the Go equivalent of `gather_entries` and
 function takes `dir` (the repo root) as its first parameter so tests can run
 git inside a temp repo.
 
+- `RepoRoot()` — returns the current repo root via `git rev-parse --show-toplevel`;
+  used by the TUI to discover which repo to enumerate without an explicit path
 - `Enumerate(dir, cwdRoot)` — lists pickable targets (current, worktrees, bare branches)
 - `EnsureForName(dir, name)` — idempotent worktree for the `-w` flag: reuses an
   already-checked-out worktree path, reuses an existing `.worktrees/<name>`

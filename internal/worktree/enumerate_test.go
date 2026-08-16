@@ -1,8 +1,10 @@
 package worktree
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -210,6 +212,64 @@ func TestEnumerateWorktreeAndBranch(t *testing.T) {
 	}
 	if foundBranch {
 		t.Fatalf("feature should not appear as bare branch when checked out in worktree, got %+v", entries)
+	}
+}
+
+// RepoRoot must report the root of the repo containing the current working
+// directory. The TUI relies on this to know which repo to enumerate without
+// being passed an explicit directory.
+func TestRepoRoot(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	// Change into a subdirectory and verify RepoRoot still returns dir.
+	sub := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = sub
+	want, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStr := strings.TrimSpace(string(want))
+
+	// RepoRoot uses the current working directory, so run from sub.
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != wantStr {
+		t.Errorf("RepoRoot = %q, want %q", got, wantStr)
+	}
+}
+
+// RepoRoot must fail when not inside a git repo so the TUI can report the
+// error instead of showing an empty list.
+func TestRepoRootNotARepo(t *testing.T) {
+	dir := t.TempDir()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RepoRoot(); err == nil {
+		t.Fatal("expected error outside repo, got nil")
 	}
 }
 

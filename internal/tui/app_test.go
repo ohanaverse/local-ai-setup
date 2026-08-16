@@ -5,15 +5,24 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
+// TestInitLoadsEntries asserts Init starts background worktree enumeration.
+// Without this command, the TUI would sit forever at the loading screen.
+func TestInitLoadsEntries(t *testing.T) {
+	m := model{loading: true, status: "loading worktrees..."}
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil cmd; expected loadEntriesCmd")
+	}
+}
+
 // TestUpdateWindowSizeMsg asserts the model records the terminal's reported
-// dimensions on a WindowSizeMsg. Without this, the centered View would lay
-// out at zero width and the user would see no content when the TUI starts
-// before Bubble Tea has dispatched the initial window-size event.
+// dimensions on a WindowSizeMsg. Without this, the list would lay out at zero
+// size and render nothing usable.
 func TestUpdateWindowSizeMsg(t *testing.T) {
 	m := model{status: "ready"}
-
 	got, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	gotModel, ok := got.(model)
 	if !ok {
@@ -29,25 +38,23 @@ func TestUpdateWindowSizeMsg(t *testing.T) {
 // the user can get stuck in the alternate screen with no way back to the
 // shell.
 func TestUpdateQuitKeys(t *testing.T) {
-	cases := []struct {
-		key tea.KeyMsg
-	}{
-		{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}},
-		{tea.KeyMsg{Type: tea.KeyEsc}},
-		{tea.KeyMsg{Type: tea.KeyCtrlC}},
+	cases := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyCtrlC},
 	}
 	for _, c := range cases {
 		m := model{status: "ready"}
-		_, cmd := m.Update(c.key)
+		_, cmd := m.Update(c)
 		if cmd == nil {
-			t.Errorf("key %q: got nil cmd, want tea.Quit", c.key.String())
+			t.Errorf("key %q: got nil cmd, want tea.Quit", c.String())
 		}
 	}
 }
 
 // TestUpdateOtherKeyIgnored asserts that pressing a non-quit key returns nil
-// (no quit) and leaves state untouched. If unknown keys accidentally quit,
-// the TUI is unusable; if they accidentally mutate state, behavior is
+// (no quit) and leaves state untouched while the list is not yet ready. If
+// unknown keys accidentally quit or mutate state, behavior is
 // non-deterministic across terminals.
 func TestUpdateOtherKeyIgnored(t *testing.T) {
 	m := model{status: "ready", width: 80, height: 24}
@@ -64,25 +71,29 @@ func TestUpdateOtherKeyIgnored(t *testing.T) {
 	}
 }
 
-// TestViewContainsStatusAndHint asserts View emits the status string and the
-// quit hint. These are the two pieces of user-visible feedback: without the
-// status, the screen is blank; without the hint, the user has no idea how to
-// exit.
-func TestViewContainsStatusAndHint(t *testing.T) {
-	m := model{status: "ready", width: 80, height: 24}
+// TestViewLoading asserts View shows a loading message while worktrees are
+// being enumerated. This is the first feedback the user sees after launching.
+func TestViewLoading(t *testing.T) {
+	m := model{loading: true, status: "loading worktrees..."}
+	view := m.View()
+	if !strings.Contains(view, "loading worktrees") {
+		t.Errorf("View missing loading message: %q", view)
+	}
+}
+
+// TestViewNotReady asserts View renders the status string when the list is
+// not ready. This covers error states and any pre-load messages.
+func TestViewNotReady(t *testing.T) {
+	m := model{status: "ready"}
 	view := m.View()
 	if !strings.Contains(view, "ready") {
 		t.Errorf("View missing status %q: %q", "ready", view)
-	}
-	if !strings.Contains(view, "Press q to quit") {
-		t.Errorf("View missing quit hint: %q", view)
 	}
 }
 
 // TestViewBeforeWindowSizeDoesNotPanic asserts View is safe to call when no
 // WindowSizeMsg has been received yet. The model's width/height start at
-// zero; lipgloss must accept zero dimensions without panicking — otherwise
-// the first frame (before Bubble Tea's initial WindowSizeMsg) would crash.
+// zero; the simple string views must not panic.
 func TestViewBeforeWindowSizeDoesNotPanic(t *testing.T) {
 	m := model{status: "ready"}
 	defer func() {
@@ -91,4 +102,84 @@ func TestViewBeforeWindowSizeDoesNotPanic(t *testing.T) {
 		}
 	}()
 	_ = m.View()
+}
+
+// TestEntriesLoadedMsg asserts receiving worktree data builds the list,
+// marks the model ready, and clears the loading flag. Without this the TUI
+// would never transition from the loading screen to the picker.
+func TestEntriesLoadedMsg(t *testing.T) {
+	m := model{loading: true, width: 80, height: 24}
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+	}
+	got, _ := m.Update(entriesLoadedMsg{entries: entries})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.loading {
+		t.Errorf("loading = true, want false")
+	}
+	if !gotModel.ready {
+		t.Errorf("ready = false, want true")
+	}
+	if len(gotModel.entries) != 1 {
+		t.Errorf("entries = %d, want 1", len(gotModel.entries))
+	}
+}
+
+// TestViewReady asserts the rendered list contains the title. This confirms
+// the list widget was built and is visible once worktrees are loaded.
+func TestViewReady(t *testing.T) {
+	m := model{loading: true, width: 80, height: 24}
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+	}
+	got, _ := m.Update(entriesLoadedMsg{entries: entries})
+	gotModel := got.(model)
+	view := gotModel.View()
+	if !strings.Contains(view, "Pick a worktree or branch") {
+		t.Errorf("View missing list title: %q", view)
+	}
+}
+
+// TestEnterSelectsEntry asserts that pressing Enter when the list is ready
+// emits a selectedEntryMsg carrying the current entry. This is the primary
+// selection affordance for the worktree picker.
+func TestEnterSelectsEntry(t *testing.T) {
+	m := model{loading: true, width: 80, height: 24}
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
+	}
+	got, _ := m.Update(entriesLoadedMsg{entries: entries})
+	m = got.(model)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter returned nil cmd, want selectedEntryMsg")
+	}
+	msg := cmd()
+	selected, ok := msg.(selectedEntryMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want selectedEntryMsg", msg)
+	}
+	if selected.entry.Branch != "main" {
+		t.Errorf("selected branch = %q, want main", selected.entry.Branch)
+	}
+}
+
+// TestSelectedEntryMsgUpdatesStatus asserts that a selectedEntryMsg updates
+// the status line. This confirms the message is handled and provides user
+// feedback even before lesson 14 wires selection to a launch action.
+func TestSelectedEntryMsgUpdatesStatus(t *testing.T) {
+	m := model{ready: true, width: 80, height: 24}
+	m.list = buildList([]worktree.Entry{
+		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
+	}, 78, 22)
+
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if !strings.Contains(gotModel.status, "feature") {
+		t.Errorf("status missing selected branch: %q", gotModel.status)
+	}
 }

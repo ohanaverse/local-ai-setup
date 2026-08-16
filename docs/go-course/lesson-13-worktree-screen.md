@@ -101,7 +101,8 @@ type model struct {
 ```
 
 We need to load entries without blocking the UI. Bubble Tea's pattern: `Init`
-returns a `Cmd` that does the work in a goroutine and returns a `Msg`. Add a
+returns a `Cmd` that does the work in a goroutine and returns a `Msg`. Note
+that `RepoRoot()` was added to the `worktree` package for this lesson. Add a
 command:
 
 ```go
@@ -112,7 +113,7 @@ func loadEntriesCmd() tea.Cmd {
 		if err != nil {
 			return entriesLoadedMsg{err: err}
 		}
-		entries, err := worktree.Enumerate(root)
+		entries, err := worktree.Enumerate(root, root)
 		return entriesLoadedMsg{entries: entries, err: err}
 	}
 }
@@ -187,6 +188,21 @@ func (m model) View() string {
 }
 ```
 
+## Tests
+
+Add tests for the new TUI behavior and the `RepoRoot` helper:
+
+- `internal/worktree/enumerate_test.go` — verify `RepoRoot()` from a
+  subdirectory and that it fails outside a git repo.
+- `internal/tui/app_test.go` — verify `Init()` returns a command,
+  `entriesLoadedMsg` transitions the model to ready, Enter emits a
+  `selectedEntryMsg`, and the three views (loading / not-ready / ready)
+  render correctly.
+- `internal/tui/worktree_list_test.go` — verify `entryItem` implements
+  `list.Item`, `Title` strips remote prefixes, `FilterValue` keeps the full
+  branch name, `Description` formats type and path, and `buildList` populates
+  items with the correct dimensions, title, and status bar.
+
 ## Run It
 
 ```bash
@@ -197,7 +213,29 @@ A list of worktrees and branches appears, navigable with arrows and filterable
 by typing. Enter currently sends a `selectedEntryMsg` that is ignored (we'll
 handle it in lesson 14).
 
+The list supports built-in fuzzy filtering (type to narrow branches).
+`FilterValue` returns the full branch name so both `feature` and
+`origin/feature` are searchable.
+
 ## Try It Yourself
+
+Use `m.list.InputField()`/the built-in filter: type a substring to filter the
+list down (the `FilterValue` we implemented makes this work automatically). Add
+a help footer showing the keybinds via `m.list.Help.View(m.list.KeyMap)`.
+
+<details>
+<summary>Solution</summary>
+
+In `View`, append the help:
+
+```go
+return m.list.View() + "\n" + m.list.Help.View(m.list.KeyMap)
+```
+
+The `DefaultKeyMap` already includes `/` for filter and arrows for movement.
+</details>
+
+## Checkpoint
 
 Use `m.list.InputField()`/the built-in filter: type a substring to filter the
 list down (the `FilterValue` we implemented makes this work automatically). Add
