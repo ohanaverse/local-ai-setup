@@ -152,6 +152,47 @@ func TestEntriesLoadedMsg(t *testing.T) {
 	}
 }
 
+// TestEntriesLoadedSetsDefaultBranchWarning asserts that when the only
+// pickable target is the current worktree on the repo's default branch, the
+// list title is updated to warn the user. Without this, a user on main could
+// launch an agent without realizing they are working directly on the
+// protected branch.
+func TestEntriesLoadedSetsDefaultBranchWarning(t *testing.T) {
+	cfg := &config.Config{DefaultTag: "code"}
+	m := model{cfg: cfg, loading: true, width: 80, height: 24}
+
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
+	}
+	newM, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	mm := newM.(model)
+
+	if mm.defaultBranch != "main" {
+		t.Fatalf("defaultBranch = %q, want main", mm.defaultBranch)
+	}
+	if !strings.Contains(mm.list.Title, "main") {
+		t.Fatalf("expected title to contain default branch warning, got %q", mm.list.Title)
+	}
+}
+
+// TestEntriesLoadedNoWarningForMultipleEntries asserts that when there are
+// multiple choices, no default-branch warning is shown.
+func TestEntriesLoadedNoWarningForMultipleEntries(t *testing.T) {
+	cfg := &config.Config{DefaultTag: "code"}
+	m := model{cfg: cfg, loading: true, width: 80, height: 24}
+
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
+		{Type: worktree.TypeBranch, Branch: "feature"},
+	}
+	newM, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	mm := newM.(model)
+
+	if strings.Contains(mm.list.Title, "WARNING") {
+		t.Fatalf("expected no warning title, got %q", mm.list.Title)
+	}
+}
+
 // TestViewReady asserts the rendered list contains the title. This confirms
 // the list widget was built and is visible once worktrees are loaded.
 func TestViewReady(t *testing.T) {

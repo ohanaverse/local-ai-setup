@@ -43,12 +43,39 @@ func rootCmd() *cobra.Command {
 			"  wt --cwd --agent codex           # launch in current repo root\n" +
 			"  wt --init                        # seed agent instruction files",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Read the raw --agent flag early so --init can seed agent-specific
+			// pointer files when a wrapper like claude-wt forwards --agent claude.
+			agentFlag := mustGetString(cmd, "agent")
+
+			if check, _ := cmd.Flags().GetBool("check-guard"); check {
+				status, err := checkGuardStatus()
+				if err != nil {
+					return err
+				}
+				switch status {
+				case guard.Installed:
+					fmt.Println("wt: main guard is installed in this repo.")
+				default:
+					fmt.Fprintln(os.Stderr, "wt: main guard is NOT installed in this repo.")
+					os.Exit(1)
+				}
+				return nil
+			}
+
+			if noGuard, _ := cmd.Flags().GetBool("no-guard"); noGuard {
+				if err := removeGuard(); err != nil {
+					return err
+				}
+				fmt.Println("wt: main guard removed.")
+				return nil
+			}
+
 			if initFlag, _ := cmd.Flags().GetBool("init"); initFlag {
 				root, err := initseed.Root()
 				if err != nil {
 					return err
 				}
-				res, err := initseed.Seed("", root)
+				res, err := initseed.Seed(agentFlag, root)
 				if err != nil {
 					return err
 				}
@@ -104,7 +131,7 @@ func rootCmd() *cobra.Command {
 			}
 
 			// Resolve the agent: --agent flag wins, else the config default.
-			agent := mustGetString(cmd, "agent")
+			agent := agentFlag
 			if agent == "" {
 				agent = defaultAgent(a.cfg)
 			}
@@ -115,6 +142,7 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				maybeInstallGuard()
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
 					return err
@@ -128,6 +156,7 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				maybeInstallGuard()
 				return launch(agent, root, a.cfg, yolo(cmd))
 			}
 
@@ -137,6 +166,7 @@ func rootCmd() *cobra.Command {
 			}
 
 			// Interactive TUI.
+			maybeInstallGuard()
 			return tui.Run(yolo(cmd))
 		},
 	}
@@ -154,6 +184,10 @@ func rootCmd() *cobra.Command {
 
 	// Seed agent instruction files and exit (no agent binary required).
 	cmd.Flags().Bool("init", false, "Seed agent instruction files and exit")
+
+	// Guard management flags (legacy parity).
+	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
+	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
 	cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a))
 	return cmd

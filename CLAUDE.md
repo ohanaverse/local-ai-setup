@@ -39,7 +39,7 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 
 ### Legacy bash engine
 
-`bin/wt-core.sh` is the shared bash engine that `shell-wt` still sources. It implements the plugin contract (`wt_check_deps`, `wt_yolo_flag`, `wt_exec`, optional `wt_pre_exec`), flag parsing, worktree/branch selection via fzf, model rotation, the main-branch commit guard, and `--init` seeding. `bin/wt-install-guard` installs the `block-main-commit` pre-commit hook. All of this functionality is now implemented in Go (`internal/agents`, `internal/worktree`, `internal/rotation`, `internal/guard`, `internal/initseed`, `internal/session`), so the bash engine is only exercised by `shell-wt`.
+`bin/wt-core.sh` is the shared bash engine that `shell-wt` still sources. It implements the plugin contract (`wt_check_deps`, `wt_yolo_flag`, `wt_exec`, optional `wt_pre_exec`), flag parsing, worktree/branch selection via fzf, model rotation, the main-branch commit guard, and `--init` seeding. `bin/wt-install-guard` installs the `block-main-commit` pre-commit hook. All of this functionality except `shell-wt` is now implemented in Go (`internal/agents`, `internal/worktree`, `internal/rotation`, `internal/guard`, `internal/initseed`, `internal/session`, `internal/tui`), so the bash engine is only exercised by `shell-wt`.
 
 ## Key flags (`wt`)
 
@@ -51,10 +51,12 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--version` | Print version and exit |
+| `--check-guard` | Check if the `block-main-commit` guard is installed and exit |
+| `--no-guard` | Remove the `block-main-commit` guard and exit |
 | `--debug-worktrees` | List worktrees and branches (test helper) |
 | `--debug-session <agent>` | Print the newest resumable session for an agent (test helper) |
 
-The legacy bash flags `--code`, `--design`, `--native`, `--no-guard`, and `--check-guard` are not supported by `wt`. Model rotation is now tag-based (see [Rotation (Go)](#rotation-go)); the main guard is managed by `internal/guard`.
+The legacy bash flags `--code`, `--design`, and `--native` are not supported by `wt`. Model rotation is now tag-based (see [Rotation (Go)](#rotation-go)); the main guard is managed by `internal/guard`.
 
 ## Adding a new agent
 

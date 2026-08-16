@@ -101,3 +101,34 @@ func buildResumeChoices(sess *session.Session) []list.Item {
 	}
 	return items
 }
+
+// guardChoice identifies a choice in the default-branch guard prompt.
+type guardChoice int
+
+const (
+	guardProceedChoice guardChoice = iota
+	guardCancelChoice
+)
+
+// guardItem adapts a guard prompt choice to list.Item.
+type guardItem struct {
+	choice guardChoice
+	title  string
+	desc   string
+}
+
+func (g guardItem) FilterValue() string { return g.title }
+func (g guardItem) Title() string       { return g.title }
+func (g guardItem) Description() string { return g.desc }
+
+// buildGuardChoices creates the default-branch confirmation list items.
+func buildGuardChoices(branch string, installed bool) []list.Item {
+	hint := "commits to " + branch + " are blocked"
+	if !installed {
+		hint = "WARNING: main guard is NOT installed — commits to " + branch + " are NOT blocked"
+	}
+	return []list.Item{
+		guardItem{choice: guardProceedChoice, title: "Proceed anyway", desc: hint},
+		guardItem{choice: guardCancelChoice, title: "Cancel", desc: "Return to worktree list"},
+	}
+}

@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
@@ -24,10 +25,11 @@ import (
 type phase int
 
 const (
-	phaseList    phase = iota // worktree list (lesson 13)
-	phaseModel                // agent+model screen (lesson 14)
-	phaseBrowser              // model browser (lesson 15)
-	phaseResume               // resume prompt (lesson 16)
+	phaseList      phase = iota // worktree list (lesson 13)
+	phaseModel                  // agent+model screen (lesson 14)
+	phaseBrowser                // model browser (lesson 15)
+	phaseResume                 // resume prompt (lesson 16)
+	phaseGuardWarn              // confirm before launching on default branch
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -64,6 +66,11 @@ type model struct {
 	browserCache []config.Model // snapshot of registry.Discover, per browser-open
 	browserTag   string         // "" = all models; otherwise a tag like "code"
 	sourceCycle  int            // 0=all, 1=curated, 2=discovered
+
+	// default-branch guard warning
+	defaultBranch  string       // repo default branch (e.g. main)
+	guardWarnModel list.Model   // confirmation choices for default-branch launch
+	guardWarnEntry worktree.Entry // the entry being confirmed
 }
 
 // Init returns the initial command: load worktrees/branches.
@@ -92,8 +99,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.entries = msg.entries
+		m.defaultBranch = msg.defaultBranch
 		m.list = buildList(msg.entries, m.width-2, m.height-2)
 		m.ready = true
+
+		if len(msg.entries) == 1 && isCurrentOnDefaultBranch(msg.entries[0], msg.defaultBranch) {
+			m.list.Title = "WARNING: you are on the default branch (" + msg.defaultBranch + ")"
+		}
+		return m, nil
 	case selectedEntryMsg:
 		// Selection is stored for lesson 16's launch. Move to the model
 		// phase and pick an initial agent + model (first agent default,
@@ -123,16 +136,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.phase = phaseModel
 				return m, nil
 			}
+			if m.phase == phaseGuardWarn {
+				m.phase = phaseList
+				return m, nil
+			}
 			return m, tea.Quit
 		case "enter":
 			switch m.phase {
 			case phaseList:
-				if m.ready {
-					item, ok := m.list.SelectedItem().(entryItem)
-					if ok {
-						return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
-					}
+				if !m.ready {
+					return m, nil
 				}
+				item, ok := m.list.SelectedItem().(entryItem)
+				if !ok {
+					return m, nil
+				}
+				if isCurrentOnDefaultBranch(item.entry, m.defaultBranch) {
+					installed := guard.Check() == guard.Installed
+					m.guardWarnEntry = item.entry
+					m.guardWarnModel = list.New(buildGuardChoices(item.entry.Branch, installed), list.NewDefaultDelegate(), m.width-2, m.height-2)
+					m.guardWarnModel.Title = "Launch on default branch?"
+					m.phase = phaseGuardWarn
+					return m, nil
+				}
+				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
 				sess, err := session.LatestForAgent(m.agent, m.selectedPath)
 				if err != nil {
@@ -177,6 +204,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return m, nil
 						}
 						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+					}
+				}
+			case phaseGuardWarn:
+				if item, ok := m.guardWarnModel.SelectedItem().(guardItem); ok {
+					switch item.choice {
+					case guardProceedChoice:
+						return m, func() tea.Msg { return selectedEntryMsg{entry: m.guardWarnEntry} }
+					case guardCancelChoice:
+						m.phase = phaseList
+						return m, nil
 					}
 				}
 			}
@@ -243,6 +280,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resume.choices, cmd = m.resume.choices.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseGuardWarn && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.guardWarnModel, cmd = m.guardWarnModel.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -253,6 +295,12 @@ func (m model) View() string {
 			return "resume prompt (waiting for window size)"
 		}
 		return m.resume.choices.View() + "\n[enter] choose   [esc] back"
+	}
+	if m.phase == phaseGuardWarn {
+		if m.width <= 0 || m.height <= 0 {
+			return "default-branch warning (waiting for window size)"
+		}
+		return m.guardWarnModel.View() + "\n[enter] choose   [esc] back"
 	}
 	if m.phase == phaseBrowser {
 		return m.browserView()
@@ -303,14 +351,22 @@ func loadEntriesCmd() tea.Cmd {
 			return entriesLoadedMsg{err: err}
 		}
 		entries, err := worktree.Enumerate(root, root)
-		return entriesLoadedMsg{entries: entries, err: err}
+		defaultBranch, _ := worktree.DefaultBranch(root)
+		return entriesLoadedMsg{entries: entries, defaultBranch: defaultBranch, err: err}
 	}
+}
+
+// isCurrentOnDefaultBranch returns true when the entry is the current
+// worktree and its branch matches the repo default branch.
+func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
+	return defaultBranch != "" && e.Type == worktree.TypeCurrent && e.Branch == defaultBranch
 }
 
 // entriesLoadedMsg carries the enumeration result to Update.
 type entriesLoadedMsg struct {
-	entries []worktree.Entry
-	err     error
+	entries       []worktree.Entry
+	defaultBranch string
+	err           error
 }
 
 // Run starts the TUI in alternate-screen mode and returns when it quits.

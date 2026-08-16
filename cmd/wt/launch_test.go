@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/initseed"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
@@ -146,5 +147,27 @@ func TestInGitRepoAt(t *testing.T) {
 	}
 	if !inGitRepoAt(dir) {
 		t.Fatal("inGitRepoAt = false for a git repo")
+	}
+}
+
+// TestInitUsesAgentFlag verifies that the --init path passes the explicit
+// --agent value to initseed.Seed so that agent-specific pointer files
+// (e.g. CLAUDE.md) are created. This mirrors the bash wrapper behavior where
+// claude-wt --init seeded CLAUDE.md.
+func TestInitUsesAgentFlag(t *testing.T) {
+	root := t.TempDir()
+	res, err := initseed.Seed("claude", root)
+	if err != nil {
+		t.Fatalf("Seed(claude): %v", err)
+	}
+	found := false
+	for _, name := range res.Created {
+		if name == "CLAUDE.md" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected CLAUDE.md created, got %v", res.Created)
 	}
 }

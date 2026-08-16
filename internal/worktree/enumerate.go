@@ -143,8 +143,8 @@ func inUse(entries []Entry) map[string]bool {
 	return m
 }
 
-// defaultBranch returns the repo default branch (e.g. main) from origin/HEAD.
-func defaultBranch(dir string) (string, error) {
+// DefaultBranch returns the repo default branch (e.g. main) from origin/HEAD.
+func DefaultBranch(dir string) (string, error) {
 	out, err := runGit(dir, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err != nil {
 		return "", nil //nolint:nilerr // No remote or origin/HEAD not set is non-fatal.
@@ -164,7 +164,7 @@ func Enumerate(dir, cwdRoot string) ([]Entry, error) {
 	used := inUse(entries)
 	// Prevent the default branch from appearing as a bare branch so users are
 	// nudged toward feature branches.
-	if db, _ := defaultBranch(dir); db != "" {
+	if db, _ := DefaultBranch(dir); db != "" {
 		used[db] = true
 	}
 
