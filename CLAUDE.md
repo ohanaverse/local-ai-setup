@@ -158,6 +158,7 @@ Test coverage by package:
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
+| `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
 
 ## Go module
 
@@ -183,6 +184,7 @@ go vet ./...         # vet
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook, reports status (`Check`/`Install`/`Uninstall`) |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
+| `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -292,6 +294,35 @@ main guard is auto-installed, just like a normal launcher invocation.
 ```bash
 # Seed AGENTS.md in the current repo (no agent binary required)
 wt --init
+```
+
+### Session resume (Go)
+
+The `internal/session` package ports `find_latest_session`,
+`compute_project_slug`, and `relative_time` from `wt-core.sh`, plus the
+opencode-specific `_find_opencode_sessions` from `opencode-wt`. It detects the
+newest resumable session for an agent in a worktree.
+
+- `Slug(path)` — replaces every char outside `[a-zA-Z0-9-]` with `-`. The
+  leading `/` becomes a leading `-`, matching the real `~/.claude/projects/-Users-...` dirs.
+- `LatestClaude(path)` — newest `*.jsonl` under `~/.claude/projects/<slug>`.
+- `OpenCodeProjectID(path)` — runs `git -C <path> rev-list --max-parents=0 HEAD`
+  to get the repo's root commit hash (opencode's project id).
+- `LatestOpenCode(path)` — newest `*.json` (not `.jsonl`) under
+  `~/.local/share/opencode/storage/session/<project-id>`.
+- `LatestForAgent(agent, path)` — dispatches to claude/opencode, else nil.
+- `RelativeTime(t)` — "just now", "5m ago", "3h ago", "2d ago", "1w ago".
+
+Sessions are ranked by mtime (newest wins). A missing session dir yields `nil`,
+not an error. The bash wrappers resume with a per-agent flag — claude uses
+`--resume <id>`, opencode uses `--session <id>` — and skip the prompt on
+`--cwd` or an explicit model mode; that launch wiring lands in the TUI
+(lesson 16).
+
+```bash
+# Test helper: print the newest resumable session for an agent
+wt --debug-session claude
+wt --debug-session opencode
 ```
 
 ### Worktree (Go)

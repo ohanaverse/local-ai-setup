@@ -14,6 +14,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/initseed"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
+	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -67,6 +68,12 @@ func rootCmd() *cobra.Command {
 		"debug-worktrees",
 		false,
 		"List worktrees and branches (test helper)",
+	)
+	// Test-only flag: print the newest resumable session for an agent.
+	cmd.Flags().String(
+		"debug-session",
+		"",
+		"Print newest session for an agent (claude|opencode) (test helper)",
 	)
 
 	// Seed agent instruction files and exit (no agent binary required).
@@ -126,6 +133,23 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			fmt.Println("worktree at:", path)
+			return nil
+		}
+		if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
+			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+			if err != nil {
+				return fmt.Errorf("not in a git repo: %w", err)
+			}
+			cwdRoot := strings.TrimSpace(string(root))
+			s, err := session.LatestForAgent(agent, cwdRoot)
+			if err != nil {
+				return err
+			}
+			if s == nil {
+				fmt.Println("(no sessions)")
+				return nil
+			}
+			fmt.Printf("resume %s (last %s)\n", s.ID, session.RelativeTime(s.MTime))
 			return nil
 		}
 		if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
