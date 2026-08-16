@@ -4,16 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/lipgloss/table"
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/initseed"
-	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/tui"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
@@ -33,297 +27,134 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
+	a, err := newApp()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "wt: config error:", err)
+		os.Exit(1)
+	}
+
+	var showVersion bool
+
 	cmd := &cobra.Command{
 		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
+		Example: "  wt                          # interactive TUI\n" +
+			"  wt -w my-feature --agent claude  # create worktree and launch\n" +
+			"  wt --cwd --agent codex           # launch in current repo root\n" +
+			"  wt --init                        # seed agent instruction files",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if initFlag, _ := cmd.Flags().GetBool("init"); initFlag {
+				root, err := initseed.Root()
+				if err != nil {
+					return err
+				}
+				res, err := initseed.Seed("", root)
+				if err != nil {
+					return err
+				}
+				if len(res.Created) == 0 {
+					fmt.Println("wt: instruction files already exist.")
+				} else {
+					fmt.Printf("wt: seeded: %s\n", strings.Join(res.Created, ", "))
+				}
+				// Also auto-install the guard, like a normal launch would.
+				if _, err := guard.Install(); err != nil {
+					return err
+				}
+				return nil
+			}
+
+			if showVersion {
+				fmt.Println("wt", version)
+				return nil
+			}
+
+			if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
+				root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+				if err != nil {
+					return fmt.Errorf("not in a git repo: %w", err)
+				}
+				cwdRoot := strings.TrimSpace(string(root))
+				s, err := session.LatestForAgent(agent, cwdRoot)
+				if err != nil {
+					return err
+				}
+				if s == nil {
+					fmt.Println("(no sessions)")
+					return nil
+				}
+				fmt.Printf("resume %s (last %s)\n", s.ID, session.RelativeTime(s.MTime))
+				return nil
+			}
+
+			if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
+				root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+				if err != nil {
+					return fmt.Errorf("not in a git repo: %w", err)
+				}
+				cwdRoot := strings.TrimSpace(string(root))
+				entries, err := worktree.Enumerate(cwdRoot, cwdRoot)
+				if err != nil {
+					return err
+				}
+				for _, e := range entries {
+					fmt.Printf("%-9s %-30s %s\n", e.Type, e.Branch, e.Path)
+				}
+				return nil
+			}
+
+			// Resolve the agent: --agent flag wins, else the config default.
+			agent := mustGetString(cmd, "agent")
+			if agent == "" {
+				agent = defaultAgent(a.cfg)
+			}
+
+			// -w <name>: use/create a worktree, then launch (no picker).
+			if name := mustGetString(cmd, "worktree"); name != "" {
+				root, err := worktree.RepoRoot()
+				if err != nil {
+					return err
+				}
+				path, err := worktree.EnsureForName(root, name)
+				if err != nil {
+					return err
+				}
+				return launch(agent, path, a.cfg, yolo(cmd))
+			}
+
+			// --cwd: launch in the current repo root.
+			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
+				root, err := worktree.RepoRoot()
+				if err != nil {
+					return err
+				}
+				return launch(agent, root, a.cfg, yolo(cmd))
+			}
+
+			// Outside a git repo: pure passthrough to the agent.
+			if !inGitRepo() {
+				return launchDirect(agent, a.cfg, yolo(cmd))
+			}
+
+			// Interactive TUI.
+			return tui.Run(yolo(cmd))
+		},
 	}
 
 	// Flags shared by wt and its subcommands.
-	cmd.PersistentFlags().Bool(
-		"yolo",
-		false,
-		"Skip permission prompts",
-	)
-	cmd.PersistentFlags().StringP(
-		"worktree",
-		"w",
-		"",
-		"Use/create worktree for branch",
-	)
-	cmd.PersistentFlags().String(
-		"agent",
-		"",
-		"Agent to launch (claude, codex, copilot, pi, agy, opencode)",
-	)
-	cmd.PersistentFlags().Bool(
-		"cwd",
-		false,
-		"Launch in the current repo root, no picker",
-	)
-	var showVersion bool
-	cmd.PersistentFlags().BoolVar(
-		&showVersion,
-		"version",
-		false,
-		"Print version and exit",
-	)
+	cmd.PersistentFlags().Bool("yolo", false, "Skip permission prompts")
+	cmd.PersistentFlags().StringP("worktree", "w", "", "Use/create worktree for branch")
+	cmd.PersistentFlags().String("agent", "", "Agent to launch (claude, codex, copilot, pi, agy, opencode)")
+	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")
+	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 
-	// Test-only flag: print the next model in a tag rotation and exit.
-	cmd.Flags().String(
-		"rotate-tag",
-		"",
-		"Print next model in the given tag group (test helper)",
-	)
-	// Test-only flag: enumerate worktrees and branches.
-	cmd.Flags().Bool(
-		"debug-worktrees",
-		false,
-		"List worktrees and branches (test helper)",
-	)
-	// Test-only flag: print the newest resumable session for an agent.
-	cmd.Flags().String(
-		"debug-session",
-		"",
-		"Print newest session for an agent (claude|opencode) (test helper)",
-	)
+	// Test-only flags.
+	cmd.Flags().Bool("debug-worktrees", false, "List worktrees and branches (test helper)")
+	cmd.Flags().String("debug-session", "", "Print newest session for an agent (claude|opencode) (test helper)")
 
 	// Seed agent instruction files and exit (no agent binary required).
-	cmd.Flags().Bool(
-		"init",
-		false,
-		"Seed agent instruction files and exit",
-	)
+	cmd.Flags().Bool("init", false, "Seed agent instruction files and exit")
 
-	// With no subcommand, wt launches the interactive TUI.
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if initFlag, _ := cmd.Flags().GetBool("init"); initFlag {
-			root, err := initseed.Root()
-			if err != nil {
-				return err
-			}
-			res, err := initseed.Seed("", root)
-			if err != nil {
-				return err
-			}
-			if len(res.Created) == 0 {
-				fmt.Println("wt: instruction files already exist.")
-			} else {
-				fmt.Printf("wt: seeded: %s\n", strings.Join(res.Created, ", "))
-			}
-			// Also auto-install the guard, like a normal launch would.
-			if _, err := guard.Install(); err != nil {
-				return err
-			}
-			return nil
-		}
-
-		if showVersion {
-			fmt.Println("wt", version)
-			return nil
-		}
-		if tag, _ := cmd.Flags().GetString("rotate-tag"); tag != "" {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			r := rotation.ForTag(cfg, tag)
-			m, ok := r.Next("")
-			if !ok {
-				return fmt.Errorf("no models tagged %q", tag)
-			}
-			fmt.Println(m.ID)
-			return nil
-		}
-		if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
-			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-			if err != nil {
-				return fmt.Errorf("not in a git repo: %w", err)
-			}
-			cwdRoot := strings.TrimSpace(string(root))
-			s, err := session.LatestForAgent(agent, cwdRoot)
-			if err != nil {
-				return err
-			}
-			if s == nil {
-				fmt.Println("(no sessions)")
-				return nil
-			}
-			fmt.Printf("resume %s (last %s)\n", s.ID, session.RelativeTime(s.MTime))
-			return nil
-		}
-		if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
-			root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-			if err != nil {
-				return fmt.Errorf("not in a git repo: %w", err)
-			}
-			cwdRoot := strings.TrimSpace(string(root))
-			entries, err := worktree.Enumerate(cwdRoot, cwdRoot)
-			if err != nil {
-				return err
-			}
-			for _, e := range entries {
-				fmt.Printf("%-9s %-30s %s\n", e.Type, e.Branch, e.Path)
-			}
-			return nil
-		}
-
-		// Load config for the launch paths.
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-
-		// Resolve the agent: --agent flag wins, else the config default.
-		agent := mustGetString(cmd, "agent")
-		if agent == "" {
-			agent = defaultAgent(cfg)
-		}
-
-		// -w <name>: use/create a worktree, then launch (no picker).
-		if name := mustGetString(cmd, "worktree"); name != "" {
-			root, err := worktree.RepoRoot()
-			if err != nil {
-				return err
-			}
-			path, err := worktree.EnsureForName(root, name)
-			if err != nil {
-				return err
-			}
-			return launch(agent, path, cfg, yolo(cmd))
-		}
-
-		// --cwd: launch in the current repo root.
-		if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
-			root, err := worktree.RepoRoot()
-			if err != nil {
-				return err
-			}
-			return launch(agent, root, cfg, yolo(cmd))
-		}
-
-		// Outside a git repo: pure passthrough to the agent.
-		if !inGitRepo() {
-			return launchDirect(agent, cfg, yolo(cmd))
-		}
-
-		// Interactive TUI.
-		return tui.Run(yolo(cmd))
-	}
-
-	cmd.AddCommand(modelsCmd(), agentsCmd())
+	cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a))
 	return cmd
-}
-
-// borderStyle is the shared table border colour.
-var borderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-func renderTable(headers []string, rows [][]string) string {
-	t := table.New().
-		Headers(headers...).
-		Rows(rows...).
-		Border(lipgloss.NormalBorder()).
-		BorderStyle(borderStyle).
-		BorderRow(true)
-	return t.Render()
-}
-
-func modelsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "models",
-		Short: "Browse and manage the model registry",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			if err := cfg.Validate(); err != nil {
-				return err
-			}
-
-			// Providers table
-			provRows := make([][]string, 0, len(cfg.Providers))
-			for _, p := range cfg.Providers {
-				provRows = append(provRows, []string{
-					p.ID,
-					string(p.Location),
-					p.Auth.Type,
-					p.Auth.BaseURL,
-				})
-			}
-			fmt.Println("Providers:")
-			fmt.Println(renderTable(
-				[]string{"ID", "LOCATION", "AUTH", "BASE_URL"},
-				provRows,
-			))
-
-			// Models table — sort by provider, then ID
-			models := make([]config.Model, len(cfg.Models))
-			copy(models, cfg.Models)
-			sort.Slice(models, func(i, j int) bool {
-				if models[i].ProviderID != models[j].ProviderID {
-					return models[i].ProviderID < models[j].ProviderID
-				}
-				return models[i].ID < models[j].ID
-			})
-
-			modelRows := make([][]string, 0, len(models))
-			for _, m := range models {
-				loc, _ := cfg.ResolveLocation(m)
-				modelRows = append(modelRows, []string{
-					m.ID,
-					m.Family,
-					m.ProviderID,
-					string(loc),
-					strings.Join(m.Tags, ", "),
-				})
-			}
-			fmt.Println("Models:")
-			fmt.Println(renderTable(
-				[]string{"ID", "FAMILY", "PROVIDER", "LOCATION", "TAGS"},
-				modelRows,
-			))
-
-			// Agents table
-			agentRows := make([][]string, 0, len(cfg.Agents))
-			for _, a := range cfg.Agents {
-				agentRows = append(agentRows, []string{
-					a.Name,
-					strings.Join(a.SupportedProviders, ", "),
-					a.DefaultProvider,
-				})
-			}
-			fmt.Println("Agents:")
-			fmt.Println(renderTable(
-				[]string{"NAME", "PROVIDERS", "DEFAULT"},
-				agentRows,
-			))
-
-			return nil
-		},
-	}
-}
-
-func agentsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "agents",
-		Short: "List installed agents and set defaults",
-		Run: func(cmd *cobra.Command, args []string) {
-			names := agents.Names()
-			sort.Strings(names)
-			rows := make([][]string, 0, len(names))
-			for _, n := range names {
-				d := agents.ByName(n)
-				installed := "no"
-				if agents.Installed(n) {
-					installed = "yes"
-				}
-				rows = append(rows, []string{n, installed, d.YoloFlag()})
-			}
-			fmt.Println("Agents:")
-			fmt.Println(renderTable(
-				[]string{"NAME", "INSTALLED", "YOLO_FLAG"},
-				rows,
-			))
-		},
-	}
 }

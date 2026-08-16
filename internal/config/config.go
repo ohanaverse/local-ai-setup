@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -172,6 +173,76 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidateAll reports every validation problem at once using errors.Join.
+func (c *Config) ValidateAll() error {
+	var errs []error
+	if c.DefaultTag == "" {
+		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
+	}
+
+	// Providers
+	provIDs := map[string]bool{}
+	for _, p := range c.Providers {
+		if p.ID == "" {
+			errs = append(errs, fmt.Errorf("provider entry with empty id"))
+		}
+		if provIDs[p.ID] {
+			errs = append(errs, fmt.Errorf("duplicate provider id %q", p.ID))
+		}
+		provIDs[p.ID] = true
+	}
+
+	// Models
+	modelIDs := map[string]bool{}
+	for _, m := range c.Models {
+		if m.ID == "" {
+			errs = append(errs, fmt.Errorf("model entry with empty id"))
+		}
+		if modelIDs[m.ID] {
+			errs = append(errs, fmt.Errorf("duplicate model id %q", m.ID))
+		}
+		modelIDs[m.ID] = true
+		if !provIDs[m.ProviderID] {
+			errs = append(errs, fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID))
+		} else {
+			if _, err := c.ResolveLocation(m); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	// Agents
+	agentNames := map[string]bool{}
+	for _, a := range c.Agents {
+		if a.Name == "" {
+			errs = append(errs, fmt.Errorf("agent entry with empty name"))
+		}
+		if agentNames[a.Name] {
+			errs = append(errs, fmt.Errorf("duplicate agent name %q", a.Name))
+		}
+		agentNames[a.Name] = true
+		for _, pid := range a.SupportedProviders {
+			if !provIDs[pid] {
+				errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
+			}
+		}
+		if a.DefaultProvider != "" {
+			found := false
+			for _, pid := range a.SupportedProviders {
+				if pid == a.DefaultProvider {
+					found = true
+					break
+				}
+			}
+			if !found {
+				errs = append(errs, fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider))
+			}
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // IsNative reports whether this model is an agent's native model

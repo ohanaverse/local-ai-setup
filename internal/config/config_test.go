@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -279,6 +280,30 @@ func TestValidate_DefaultProviderNotInSupported(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for default provider not in supported_providers")
+	}
+}
+
+// ValidateAll must collect every validation error at once, not stop at the
+// first one. This gives users a complete list of config problems.
+func TestValidateAll_CollectsMultipleErrors(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "",
+		Providers:  []Provider{{ID: "ollama"}, {ID: "ollama"}},
+		Models:     []Model{{ID: "a", ProviderID: "ghost"}},
+	}
+	err := cfg.ValidateAll()
+	if err == nil {
+		t.Fatal("expected errors")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "default_tag") {
+		t.Error("expected default_tag error")
+	}
+	if !strings.Contains(errStr, "duplicate provider") {
+		t.Error("expected duplicate provider error")
+	}
+	if !strings.Contains(errStr, "ghost") {
+		t.Error("expected unknown provider error")
 	}
 }
 

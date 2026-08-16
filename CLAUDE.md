@@ -51,7 +51,6 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--version` | Print version and exit |
-| `--rotate-tag <tag>` | Print the next model in a tag group and exit (test helper) |
 | `--debug-worktrees` | List worktrees and branches (test helper) |
 | `--debug-session <agent>` | Print the newest resumable session for an agent (test helper) |
 
@@ -103,7 +102,7 @@ Test coverage by package:
 
 | Package | Tests | Focus |
 |---|---|---|
-| `internal/config` | 37 | Load, Validate, Save, HasTag, ResolveLocation, migration, secrets |
+| `internal/config` | 38 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
 | `internal/agents` | 10 | Per-agent Build output, Installed, Command |
@@ -130,8 +129,11 @@ go vet ./...         # vet
 
 | Path | Purpose |
 |---|---|
-| `cmd/wt/main.go` | CLI entry point (cobra): flag wiring, non-interactive launch paths (`-w`, `--cwd`, passthrough) |
-| `cmd/wt/launch.go` | Non-TUI launch helpers (lesson 17): `launch`, `buildLaunch`, `defaultAgent`, `defaultModel`, `inGitRepo` |
+| `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
+| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
+| `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
+| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
@@ -177,12 +179,12 @@ can be a rotation group.
   most recently used (avoids both groups landing on the same model)
 - State file: `~/.config/agent-wt/rotation-<tag>.state` — two lines:
   `<next_index>\n<last_selected_model>`, written atomically (temp + rename)
-- The hidden `--rotate-tag <tag>` flag on `wt` prints the next model in a tag
+- The hidden `wt rotate <tag>` subcommand prints the next model in a tag
   group and exits — a test helper until the TUI (lesson 12)
 
 ```bash
-go run ./cmd/wt --rotate-tag code    # prints next code model, advances state
-go run ./cmd/wt --rotate-tag design  # independent rotation for design
+go run ./cmd/wt rotate code    # prints next code model, advances state
+go run ./cmd/wt rotate design  # independent rotation for design
 ```
 
 ### Agents (Go)
@@ -316,7 +318,7 @@ resume prompt, and launch command.
 > CI runner, or editor output panel fails with
 > `could not open a new TTY: open /dev/tty: device not configured`. Always
 > run `wt` from a real terminal session. The non-TUI flag paths (`--version`,
-> `-w`, `--cwd`, `--rotate-tag`, etc.) skip `tui.Run()` and don't need a TTY
+> `-w`, `--cwd`, `wt rotate`, etc.) skip `tui.Run()` and don't need a TTY
 > for `wt` itself (though the launched agent is interactive).
 
 ### Worktree picker screen (Lesson 13)

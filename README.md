@@ -208,12 +208,12 @@ group, not just `code` and `design`.
   most recently used (avoids both groups landing on the same model)
 - State is a two-line file: `<next_index>\n<last_selected_model>`, written
   atomically via temp file + rename
-- The hidden `--rotate-tag <tag>` flag prints the next model in a tag group
+- The hidden `wt rotate <tag>` subcommand prints the next model in a tag group
   and exits — a test helper until the TUI arrives (lesson 12)
 
 ```bash
-go run ./cmd/wt --rotate-tag code    # prints next code model, advances state
-go run ./cmd/wt --rotate-tag design  # independent rotation for design
+go run ./cmd/wt rotate code    # prints next code model, advances state
+go run ./cmd/wt rotate design  # independent rotation for design
 ```
 
 #### Agents (Go)
