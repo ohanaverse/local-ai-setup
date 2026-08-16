@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/guard"
+	"github.com/ohanaverse/agent-worktree/internal/initseed"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 	"github.com/spf13/cobra"
@@ -67,8 +69,36 @@ func rootCmd() *cobra.Command {
 		"List worktrees and branches (test helper)",
 	)
 
+	// Seed agent instruction files and exit (no agent binary required).
+	cmd.Flags().Bool(
+		"init",
+		false,
+		"Seed agent instruction files and exit",
+	)
+
 	// With no subcommand, wt launches the interactive TUI.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if initFlag, _ := cmd.Flags().GetBool("init"); initFlag {
+			root, err := initseed.Root()
+			if err != nil {
+				return err
+			}
+			res, err := initseed.Seed("", root)
+			if err != nil {
+				return err
+			}
+			if len(res.Created) == 0 {
+				fmt.Println("wt: instruction files already exist.")
+			} else {
+				fmt.Printf("wt: seeded: %s\n", strings.Join(res.Created, ", "))
+			}
+			// Also auto-install the guard, like a normal launch would.
+			if _, err := guard.Install(); err != nil {
+				return err
+			}
+			return nil
+		}
+
 		if showVersion {
 			fmt.Println("wt", version)
 			return nil

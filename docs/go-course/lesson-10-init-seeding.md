@@ -157,7 +157,12 @@ Add `--init` to the root command and handle it in `RunE` *before* anything
 that requires an agent binary (it must work even if no agent is installed):
 
 ```go
-cmd.PersistentFlags().Bool("init", false, "Seed agent instruction files and exit")
+// Seed agent instruction files and exit (no agent binary required).
+cmd.Flags().Bool(
+    "init",
+    false,
+    "Seed agent instruction files and exit",
+)
 ```
 
 ```go
@@ -200,6 +205,29 @@ Run it again:
 
 ```
 wt: instruction files already exist.
+```
+
+## Tests
+
+The package tests live in `internal/initseed/initseed_test.go` and cover:
+
+- `TestSeedClaude` — creates `AGENTS.md` and `CLAUDE.md`, idempotently skips
+  both on a second run.
+- `TestSeedCopilot` — creates `.github/copilot-instructions.md` alongside
+  `AGENTS.md`.
+- `TestSeedUnknownAgent` — agents without a pointer file (e.g. `codex`) only
+  get `AGENTS.md`.
+- `TestSeedContent` — seeded files contain the expected template and pointer
+  text.
+- `TestRootInRepo` / `TestRootOutsideRepo` — `Root()` resolves the repo root
+  or errors outside a git working tree.
+- `TestSeedSkipsExistingPointer` — deleting just `AGENTS.md` re-creates it
+  while leaving the existing pointer file untouched.
+
+Run them with:
+
+```bash
+go test ./internal/initseed -v
 ```
 
 ## Try It Yourself

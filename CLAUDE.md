@@ -157,6 +157,7 @@ Test coverage by package:
 | `internal/agents` | 10 | Per-agent Build output, Installed, Command |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
+| `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 
 ## Go module
 
@@ -181,6 +182,7 @@ go vet ./...         # vet
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook, reports status (`Check`/`Install`/`Uninstall`) |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
+| `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -268,6 +270,30 @@ It installs a `block-main-commit v1` pre-commit hook that blocks commits to
 The common git dir (via `git rev-parse --git-common-dir`) is used so the
 hook applies to all worktrees of the repo.
 
+### Init seeding (Go)
+
+The `internal/initseed` package ports `seed_agent_instructions` from
+`wt-core.sh`. It is called by `wt --init` and, in later lessons, by the
+TUI when launching a specific agent.
+
+- `Root()` — resolves the current repo root via `git rev-parse --show-toplevel`.
+- `Seed(agent, repoRoot)` — writes `AGENTS.md` from a template if missing,
+  then writes an agent-specific pointer file if the agent supports one:
+  - **claude** → `CLAUDE.md` with `@AGENTS.md`
+  - **copilot** → `.github/copilot-instructions.md` with a pointer sentence
+  - other agents → no pointer file
+- Skip-if-exists: existing files are never overwritten; they are reported in
+  `Result.Skipped` instead of `Result.Created`.
+
+The `--init` flag is handled in `cmd/wt/main.go` *before* any agent-binary
+requirement, so it works even when no agent is installed. After seeding, the
+main guard is auto-installed, just like a normal launcher invocation.
+
+```bash
+# Seed AGENTS.md in the current repo (no agent binary required)
+wt --init
+```
+
 ### Worktree (Go)
 
 The `internal/worktree` package handles both enumeration (lesson 7) and
@@ -313,7 +339,7 @@ go vet ./...           # static analysis
 go build ./...         # verify compilation
 
 # CLI smoke tests
-# Basic flow — fzf picker inside a git repo
+# Basic flow — fzf picker inside a git repo (TUI not yet implemented)
 claude-wt
 
 # Skip picker, use/create a named worktree
@@ -328,7 +354,7 @@ claude-wt --design
 claude-wt --native          # requires NATIVE_CLAUDE in models.conf
 
 # Seed agent instruction files in a new repo (no agent binary required)
-claude-wt --init
+wt --init
 
 # Guard management
 claude-wt --check-guard
