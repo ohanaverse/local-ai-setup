@@ -1,12 +1,36 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
+
+// testConfig returns a Config with one agent and a two-model code tag group.
+// Several lesson-14 tests need a real catalog so firstAgent/firstModel and
+// the rotation have something to operate on.
+func testConfig() *config.Config {
+	return &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "ollama"},
+		},
+		Models: []config.Model{
+			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:14b", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:design", ProviderID: "ollama", Tags: []string{"design"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude"},
+		},
+	}
+}
 
 // TestInitLoadsEntries asserts Init starts background worktree enumeration.
 // Without this command, the TUI would sit forever at the loading screen.
@@ -168,18 +192,106 @@ func TestEnterSelectsEntry(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryMsgUpdatesStatus asserts that a selectedEntryMsg updates
-// the status line. This confirms the message is handled and provides user
-// feedback even before lesson 14 wires selection to a launch action.
-func TestSelectedEntryMsgUpdatesStatus(t *testing.T) {
-	m := model{ready: true, width: 80, height: 24}
-	m.list = buildList([]worktree.Entry{
-		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
-	}, 78, 22)
-
+// TestSelectedEntryMsgTransitionsToModelPhase asserts that choosing a
+// worktree moves the TUI into the model phase with a resolved agent, tag,
+// and current model. Without this, the picker would have nowhere to go and
+// the agent+model screen could never be shown.
+func TestSelectedEntryMsgTransitionsToModelPhase(t *testing.T) {
+	m := model{cfg: testConfig()}
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
 	gotModel := got.(model)
-	if !strings.Contains(gotModel.status, "feature") {
-		t.Errorf("status missing selected branch: %q", gotModel.status)
+	if gotModel.phase != phaseModel {
+		t.Errorf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	if gotModel.agent != "claude" {
+		t.Errorf("agent = %q, want claude", gotModel.agent)
+	}
+	if gotModel.tag != "code" {
+		t.Errorf("tag = %q, want code", gotModel.tag)
+	}
+	if gotModel.current.ID != "ollama/gemma4:9b" {
+		t.Errorf("current = %q, want first code model", gotModel.current.ID)
+	}
+}
+
+// TestRotateKeyAdvancesModel asserts pressing 'r' in the model phase advances
+// the current model through the active tag group via rotation.Next. This is
+// the explicit replacement for the bash tool's silent auto-rotation.
+func TestRotateKeyAdvancesModel(t *testing.T) {
+	// rotation.ForTag reads its next index from a per-tag state file on disk,
+	// so isolate the state in a temp XDG_CONFIG_HOME and seed it to point at
+	// the second model. Without this the test depends on the host's real
+	// rotation-code.state and is non-deterministic.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(rotation.StateFile(stateDir, "code"),
+		[]byte("1\nollama/gemma4:9b\n"), 0o600); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	m := model{cfg: testConfig(), phase: phaseModel, tag: "code",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	gotModel := got.(model)
+	if gotModel.current.ID != "ollama/gemma4:14b" {
+		t.Errorf("current = %q, want second code model", gotModel.current.ID)
+	}
+}
+
+// TestRotateKeyIgnoredInListPhase asserts 'r' does nothing while still on the
+// worktree list. Rotation is only meaningful once an agent+model is chosen.
+func TestRotateKeyIgnoredInListPhase(t *testing.T) {
+	m := model{cfg: testConfig(), phase: phaseList, tag: "code",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	gotModel := got.(model)
+	if gotModel.current.ID != "ollama/gemma4:9b" {
+		t.Errorf("current mutated in list phase: %q", gotModel.current.ID)
+	}
+}
+
+// TestModelKeyShowsPlaceholder asserts pressing 'm' in the model phase sets a
+// status placeholder for the lesson 15 model browser. This confirms the key
+// is wired before the browser exists.
+func TestModelKeyShowsPlaceholder(t *testing.T) {
+	m := model{cfg: testConfig(), phase: phaseModel, tag: "code"}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	gotModel := got.(model)
+	if !strings.Contains(gotModel.status, "model browser") {
+		t.Errorf("status missing browser placeholder: %q", gotModel.status)
+	}
+}
+
+// TestToggleTagSwitchesGroup asserts pressing 'd' in the model phase flips
+// the active tag group (code <-> design) and re-resolves the shown model to
+// the new group's first entry. This powers cross-tag rotation from a single
+// keystroke.
+func TestToggleTagSwitchesGroup(t *testing.T) {
+	m := model{cfg: testConfig(), phase: phaseModel, tag: "code",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	gotModel := got.(model)
+	if gotModel.tag != "design" || gotModel.otherTag != "code" {
+		t.Errorf("tag/otherTag = (%q, %q), want (design, code)", gotModel.tag, gotModel.otherTag)
+	}
+	if gotModel.current.ID != "ollama/gemma4:design" {
+		t.Errorf("current = %q, want first design model", gotModel.current.ID)
+	}
+}
+
+// TestViewModelPhase asserts the model-phase View renders agent, model, and
+// tag lines plus the keybind hints. This is the primary feedback surface for
+// the agent+model screen.
+func TestViewModelPhase(t *testing.T) {
+	m := model{phase: phaseModel, agent: "claude", tag: "code",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	view := m.View()
+	for _, want := range []string{"agent", "claude", "model", "ollama/gemma4:9b", "[r] rotate"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View missing %q in:\n%s", want, view)
+		}
 	}
 }

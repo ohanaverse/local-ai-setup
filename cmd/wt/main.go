@@ -169,7 +169,7 @@ func rootCmd() *cobra.Command {
 			return nil
 		}
 		return tui.Run()
-}
+	}
 
 	cmd.AddCommand(modelsCmd(), agentsCmd())
 	return cmd

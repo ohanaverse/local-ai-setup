@@ -159,7 +159,7 @@ Test coverage by package:
 | `internal/worktree` | 21 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 5 | WindowSizeMsg records dimensions; q/esc/ctrl+c quit; unknown keys ignored; View renders status + hint; View safe before WindowSizeMsg |
+| `internal/tui` | 38 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, browser placeholder (`m`), tag toggle (`d`), model-phase View; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
 
 ## Go module
 
@@ -186,7 +186,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell + worktree picker (lessons 12–13): Model/Update/View, alternate-screen runner, `bubbles/list` picker |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen (lessons 12–14): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -363,13 +363,43 @@ The worktree list screen replaces the bash `fzf` picker with a richer
 - `selectedEntryMsg` — emitted on Enter carrying the chosen `worktree.Entry`
 
 The list supports arrow navigation and built-in fuzzy filtering (type to
-narrow branches). Selection is currently handled by updating the status line;
-worktree creation and agent launch are wired in later lessons.
+narrow branches). Picking an entry emits `selectedEntryMsg`, which lesson 14
+wires to the agent+model screen; worktree creation and agent launch are wired
+in later lessons.
 
 ```bash
 go run ./cmd/wt           # interactive TUI (needs a TTY)
 go run ./cmd/wt --version # non-interactive, no TTY needed
 ```
+
+### Agent+model screen (Lesson 14)
+
+After the user picks a worktree, the TUI moves to an **agent+model screen**
+that shows the selected agent and the currently shown model, with explicit
+one-keystroke actions replacing the bash tool's silent auto-rotation. A
+`phase` value (`phaseList` / `phaseModel`) tracks which screen is active.
+
+- `selectedEntryMsg` now transitions to `phaseModel`, resolving the initial
+  agent (first in `cfg.Agents`) and model (first in the default tag group)
+  via `firstAgent` and `firstModel`. Worktree selection is stored for lesson
+  16's launch.
+- **`r`** — rotate to the next model in the active tag group via
+  `rotation.ForTag(cfg, tag).Next(otherTag)`, advancing the on-disk
+  `rotation-<tag>.state` file.
+- **`m`** — placeholder status for the lesson 15 model browser.
+- **`d`** — toggle the active tag group between `code` and `design`,
+  re-resolving the shown model; `otherTag` drives the cross-tag skip so
+  rotation avoids the other group's last-used model.
+- `View` renders the model phase distinctly (agent / model / tag + keybind
+  hints); `Run()` loads the config up front and passes it into the model.
+
+```bash
+go run ./cmd/wt           # interactive TUI (needs a TTY)
+```
+
+Pick a worktree, then on the agent+model screen press `r` to cycle the
+model (and watch `~/.config/agent-wt/rotation-code.state` advance), `d` to
+toggle the tag group, `m` for the browser placeholder, `q` to quit.
 
 The full TUI flow (worktree list → agent/model screen → model browser →
 launch) is built across lessons 13–16 and wired in lesson 17.

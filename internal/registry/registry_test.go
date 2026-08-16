@@ -107,10 +107,10 @@ nomic-embed-text:latest    0a109f422b47    274 MB    3 months ago`
 	}
 
 	cases := []struct {
-		idx      int
-		id       string
-		loc      config.Location
-		family   string
+		idx    int
+		id     string
+		loc    config.Location
+		family string
 	}{
 		{0, "ollama/qwen3.6:35b-mlx", config.LocationLocal, "qwen3.6:35b-mlx"},
 		{1, "ollama/gemma4:cloud", config.LocationCloud, "gemma4:cloud"},

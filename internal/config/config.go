@@ -51,7 +51,7 @@ type Model struct {
 	ProviderID string   `toml:"provider_id"` // → Provider.ID
 	ModelName  string   `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
 	Location   Location `toml:"location,omitempty"`
-	Tags       []string `toml:"tags"` // e.g. ["code", "design"]
+	Tags       []string `toml:"tags"`             // e.g. ["code", "design"]
 	Source     Source   `toml:"source,omitempty"` // curated or discovered
 }
 

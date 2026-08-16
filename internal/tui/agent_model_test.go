@@ -1,0 +1,225 @@
+package tui
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/rotation"
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
+)
+
+// tempStateDir creates an isolated agent-wt state directory under a temp
+// XDG_CONFIG_HOME. rotation.ForTag reads its per-tag state from disk, so
+// every test that presses 'r' must isolate state or it becomes dependent on
+// the host's real rotation-*.state files.
+func tempStateDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "agent-wt")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(dir))
+	return dir
+}
+
+// seedState writes "<index>\n<last>\n" for a tag group so rotation.Next picks
+// deterministically from a known starting point.
+func seedState(t *testing.T, dir, tag, content string) {
+	t.Helper()
+	if err := os.WriteFile(rotation.StateFile(dir, tag), []byte(content), 0o600); err != nil {
+		t.Fatalf("seed %s state: %v", tag, err)
+	}
+}
+
+// TestFirstAgentDefaultsToClaude asserts firstAgent falls back to "claude"
+// when there is no config or no agents are configured. The TUI must still
+// show a sensible default even against an empty catalog.
+func TestFirstAgentDefaultsToClaude(t *testing.T) {
+	for _, cfg := range []*config.Config{nil, {DefaultTag: "code"}} {
+		if got := firstAgent(cfg); got != "claude" {
+			t.Errorf("firstAgent(%v) = %q, want claude", cfg, got)
+		}
+	}
+}
+
+// TestFirstAgentPicksFirst asserts firstAgent returns the first configured
+// agent. This is the initial agent shown on the agent+model screen.
+func TestFirstAgentPicksFirst(t *testing.T) {
+	cfg := &config.Config{Agents: []config.Agent{{Name: "codex"}, {Name: "claude"}}}
+	if got := firstAgent(cfg); got != "codex" {
+		t.Errorf("firstAgent = %q, want codex", got)
+	}
+}
+
+// TestFirstModelPlaceholder asserts firstModel returns the "(none)" sentinel
+// for a nil config or an empty tag group. The agent+model screen must render
+// something rather than a zero-value Model with a blank ID.
+func TestFirstModelPlaceholder(t *testing.T) {
+	cases := []*config.Config{
+		nil,
+		{DefaultTag: "code", Models: []config.Model{
+			{ID: "m", Tags: []string{"design"}}, // only design, not code
+		}},
+	}
+	for _, cfg := range cases {
+		m := firstModel(cfg, "code")
+		if m.ID != "(none)" {
+			t.Errorf("firstModel = %q, want (none)", m.ID)
+		}
+		if m.Location != config.LocationCloud {
+			t.Errorf("placeholder location = %q, want cloud", m.Location)
+		}
+	}
+}
+
+// TestFirstModelPicksFirstInTag asserts firstModel returns the first model
+// whose tags include the given tag, ignoring models tagged otherwise.
+func TestFirstModelPicksFirstInTag(t *testing.T) {
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "design-first", Tags: []string{"design"}},
+		{ID: "code-first", Tags: []string{"code"}},
+	}}
+	if got := firstModel(cfg, "code"); got.ID != "code-first" {
+		t.Errorf("firstModel(code) = %q, want code-first", got.ID)
+	}
+	if got := firstModel(cfg, "design"); got.ID != "design-first" {
+		t.Errorf("firstModel(design) = %q, want design-first", got.ID)
+	}
+}
+
+// TestSelectedEntryMsgNoModelsShowsPlaceholder asserts that picking a
+// worktree when the active tag group is empty still lands on the model phase
+// with a "(none)" model rather than panicking or hanging. The user sees a
+// fallback screen even with a sparse catalog.
+func TestSelectedEntryMsgNoModelsShowsPlaceholder(t *testing.T) {
+	m := model{cfg: &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: "claude"}}}}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	if gotModel.current.ID != "(none)" {
+		t.Errorf("current = %q, want (none)", gotModel.current.ID)
+	}
+}
+
+// TestRotatePersistsState asserts pressing 'r' advances the on-disk
+// rotation-<tag>.state file, not just the in-memory model. Without state
+// persistence a restart would lose the user's place in the rotation.
+func TestRotatePersistsState(t *testing.T) {
+	dir := tempStateDir(t)
+	m := model{cfg: testConfig(), phase: phaseModel, tag: "code",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+
+	data, err := os.ReadFile(rotation.StateFile(dir, "code"))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	content := string(data)
+	// Fresh state starts at index 0, so one rotate picks the first model and
+	// persists the next index as 1.
+	if !strings.HasPrefix(content, "1\n") {
+		t.Errorf("state = %q, want index line starting with 1", content)
+	}
+	if !strings.Contains(content, "ollama/gemma4:9b") {
+		t.Errorf("state = %q, want last-selected model recorded", content)
+	}
+}
+
+// TestRotateSkipsOtherTagLastUsed asserts that when the other tag group most
+// recently used a model, rotating the active group skips that model and
+// lands on the next one instead. This is the cross-tag skip wired through
+// rot.Next(otherTag); without it both groups could stack on the same model.
+func TestRotateSkipsOtherTagLastUsed(t *testing.T) {
+	dir := tempStateDir(t)
+	// code = [A, B]; B is shared with design. Point code's index at B and
+	// record that design last used B, so rotating code must skip B → A.
+	cfg := &config.Config{DefaultTag: "code", Models: []config.Model{
+		{ID: "A", Tags: []string{"code"}},
+		{ID: "B", Tags: []string{"code", "design"}},
+	}}
+	seedState(t, dir, "code", "1\nB\n")
+	seedState(t, dir, "design", "0\nB\n")
+
+	m := model{cfg: cfg, phase: phaseModel, tag: "code", otherTag: "design",
+		current: config.Model{ID: "B"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	gotModel := got.(model)
+	if gotModel.current.ID != "A" {
+		t.Errorf("current = %q, want A (B cross-skipped by design)", gotModel.current.ID)
+	}
+}
+
+// TestRotateSingleModelStaysPut asserts rotating a one-model tag group keeps
+// the same model. The cross-skip fallback must still make progress by
+// returning the sole member rather than reporting failure.
+func TestRotateSingleModelStaysPut(t *testing.T) {
+	dir := tempStateDir(t)
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "only", Tags: []string{"code"}},
+	}}
+	seedState(t, dir, "code", "0\nonly\n")
+
+	m := model{cfg: cfg, phase: phaseModel, tag: "code", current: config.Model{ID: "only"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	gotModel := got.(model)
+	if gotModel.current.ID != "only" {
+		t.Errorf("current = %q, want only", gotModel.current.ID)
+	}
+}
+
+// TestToggleBackToCode asserts pressing 'd' twice returns to the code group.
+// Toggling is meant to be a stable two-way switch, not a one-way trip.
+func TestToggleBackToCode(t *testing.T) {
+	m := model{cfg: testConfig(), phase: phaseModel, tag: "code", otherTag: "",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	gotModel := got.(model)
+	if gotModel.tag != "code" || gotModel.otherTag != "design" {
+		t.Errorf("tag/otherTag = (%q, %q), want (code, design)", gotModel.tag, gotModel.otherTag)
+	}
+	if gotModel.current.ID != "ollama/gemma4:9b" {
+		t.Errorf("current = %q, want first code model", gotModel.current.ID)
+	}
+}
+
+// TestModelAndTagKeysIgnoredInListPhase asserts 'm' and 'd' do nothing while
+// on the worktree list, matching how 'r' is gated. The agent+model keybinds
+// must not fire before a worktree is chosen.
+func TestModelAndTagKeysIgnoredInListPhase(t *testing.T) {
+	for _, key := range []rune{'m', 'd'} {
+		m := model{cfg: testConfig(), phase: phaseList, tag: "code",
+			current: config.Model{ID: "ollama/gemma4:9b"}}
+		got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		gotModel := got.(model)
+		if gotModel.status != "" {
+			t.Errorf("key %q: status mutated in list phase: %q", string(key), gotModel.status)
+		}
+		if gotModel.tag != "code" {
+			t.Errorf("key %q: tag mutated in list phase: %q", string(key), gotModel.tag)
+		}
+		if gotModel.current.ID != "ollama/gemma4:9b" {
+			t.Errorf("key %q: current mutated in list phase: %q", string(key), gotModel.current.ID)
+		}
+	}
+}
+
+// TestViewModelPlaceholder asserts the model-phase View still renders a
+// coherent screen when the current model is the "(none)" placeholder. This
+// keeps the fallback catalog path from producing a blank screen.
+func TestViewModelPlaceholder(t *testing.T) {
+	m := model{phase: phaseModel, agent: "claude", tag: "code",
+		current: config.Model{ID: "(none)", ProviderID: "", Location: config.LocationCloud}}
+	view := m.View()
+	for _, want := range []string{"agent", "claude", "(none)", "tag"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View missing %q in:\n%s", want, view)
+		}
+	}
+}
