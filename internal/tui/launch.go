@@ -137,3 +137,36 @@ func buildGuardChoices(branch string, installed bool) []list.Item {
 		guardItem{choice: guardCancelChoice, title: "Cancel", desc: "Return to worktree list"},
 	}
 }
+
+// ollamaChoice identifies a choice in the ollama availability prompt.
+type ollamaChoice int
+
+const (
+	ollamaProceedChoice ollamaChoice = iota
+	ollamaSkipChoice
+	ollamaCancelChoice
+)
+
+// ollamaItem adapts an ollama prompt choice to list.Item.
+type ollamaItem struct {
+	choice ollamaChoice
+	title  string
+	desc   string
+}
+
+func (o ollamaItem) FilterValue() string { return o.title }
+func (o ollamaItem) Title() string       { return o.title }
+func (o ollamaItem) Description() string { return o.desc }
+
+// buildOllamaChoices creates the ollama availability confirmation list items.
+func buildOllamaChoices(modelName string, allUnavailable bool) []list.Item {
+	hint := "Launch with unavailable model (may fail)"
+	if allUnavailable {
+		hint = "Launch with unavailable model (all models in this group are unavailable)"
+	}
+	return []list.Item{
+		ollamaItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: hint},
+		ollamaItem{choice: ollamaSkipChoice, title: "Skip to next model", desc: "Rotate to the next model in the tag group"},
+		ollamaItem{choice: ollamaCancelChoice, title: "Cancel", desc: "Return to the agent+model screen"},
+	}
+}

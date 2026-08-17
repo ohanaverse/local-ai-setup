@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
@@ -322,5 +323,71 @@ func TestViewModelPhase(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q in:\n%s", want, view)
 		}
+	}
+}
+
+// TestOllamaWarnShownWhenUnavailable asserts that when the current model is an
+// unavailable ollama model, the TUI transitions to phaseOllamaWarn.
+func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Models: []config.Model{
+			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
+		},
+	}
+	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
+
+	// Simulate pressing enter — this should trigger the ollama check.
+	// The model name is guaranteed not to exist, so it will be unavailable.
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	mm := newM.(model)
+
+	if mm.phase != phaseOllamaWarn {
+		t.Fatalf("expected phaseOllamaWarn, got %d", mm.phase)
+	}
+	if !strings.Contains(mm.ollamaWarnModel.Title, "test-model-xyz-not-real") {
+		t.Fatalf("expected title to contain model name, got %q", mm.ollamaWarnModel.Title)
+	}
+}
+
+// TestNoOllamaWarnForNonOllamaModel asserts that non-ollama models skip the
+// availability check and proceed directly to launch/resume.
+func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Models: []config.Model{
+			{ID: "openrouter/gpt-4", ProviderID: "openrouter", Tags: []string{"code"}},
+		},
+	}
+	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
+
+	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	mm := newM.(model)
+
+	if mm.phase == phaseOllamaWarn {
+		t.Fatal("expected no ollama warn for non-ollama model")
+	}
+	// Should have produced a command (either launch or resume prompt).
+	if cmd == nil {
+		t.Fatal("expected a command from enter on non-ollama model")
+	}
+}
+
+// TestOllamaWarnCancel returns to phaseModel.
+func TestOllamaWarnCancel(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Models: []config.Model{
+			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
+		},
+	}
+	m := model{cfg: cfg, phase: phaseOllamaWarn, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
+	m.ollamaWarnModel = list.New(buildOllamaChoices("test-model-xyz-not-real", false), list.NewDefaultDelegate(), 78, 22)
+
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
+	mm := newM.(model)
+
+	if mm.phase != phaseModel {
+		t.Fatalf("expected phaseModel after cancel, got %d", mm.phase)
 	}
 }

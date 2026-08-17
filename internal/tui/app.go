@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
+	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
@@ -30,6 +31,7 @@ const (
 	phaseBrowser                // model browser (lesson 15)
 	phaseResume                 // resume prompt (lesson 16)
 	phaseGuardWarn              // confirm before launching on default branch
+	phaseOllamaWarn             // confirm before launching with unavailable ollama model
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -71,6 +73,10 @@ type model struct {
 	defaultBranch  string       // repo default branch (e.g. main)
 	guardWarnModel list.Model   // confirmation choices for default-branch launch
 	guardWarnEntry worktree.Entry // the entry being confirmed
+
+	// ollama availability warning
+	ollamaWarnModel     list.Model // confirmation choices for unavailable model
+	ollamaWarnModelName string     // the model name being warned about
 }
 
 // Init returns the initial command: load worktrees/branches.
@@ -140,6 +146,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.phase = phaseList
 				return m, nil
 			}
+			if m.phase == phaseOllamaWarn {
+				m.phase = phaseModel
+				return m, nil
+			}
 			return m, tea.Quit
 		case "enter":
 			switch m.phase {
@@ -161,6 +171,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
+				// Check ollama availability before launching.
+				if ollamacheck.IsOllamaModel(m.current) {
+					ok, err := ollamacheck.Available(m.current.ModelName)
+					if err != nil {
+						m.status = "ollama check failed: " + err.Error()
+						return m, nil
+					}
+					if !ok {
+						m.ollamaWarnModelName = m.current.ModelName
+						m.ollamaWarnModel = list.New(buildOllamaChoices(m.current.ModelName, false), list.NewDefaultDelegate(), m.width-2, m.height-2)
+						m.ollamaWarnModel.Title = "Model not available: " + m.current.ModelName
+						m.phase = phaseOllamaWarn
+						return m, nil
+					}
+				}
+
 				sess, err := session.LatestForAgent(m.agent, m.selectedPath)
 				if err != nil {
 					m.status = "session check failed: " + err.Error()
@@ -213,6 +239,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, func() tea.Msg { return selectedEntryMsg{entry: m.guardWarnEntry} }
 					case guardCancelChoice:
 						m.phase = phaseList
+						return m, nil
+					}
+				}
+			case phaseOllamaWarn:
+				if item, ok := m.ollamaWarnModel.SelectedItem().(ollamaItem); ok {
+					switch item.choice {
+					case ollamaProceedChoice:
+						// Continue to launch/resume flow.
+						sess, err := session.LatestForAgent(m.agent, m.selectedPath)
+						if err != nil {
+							m.status = "session check failed: " + err.Error()
+							return m, nil
+						}
+						if sess == nil {
+							cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg)
+							if err != nil {
+								m.status = "launch failed: " + err.Error()
+								return m, nil
+							}
+							return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+						}
+						m.phase = phaseResume
+						m.resume.session = sess
+						m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
+						m.resume.choices.Title = "Resume previous session?"
+						return m, nil
+					case ollamaSkipChoice:
+						// Rotate to next model and return to phaseModel.
+						rot := rotation.ForTag(m.cfg, m.tag)
+						next, ok := rot.Next(m.otherTag)
+						if ok {
+							m.current = next
+						}
+						m.phase = phaseModel
+						return m, nil
+					case ollamaCancelChoice:
+						m.phase = phaseModel
 						return m, nil
 					}
 				}
@@ -285,6 +348,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.guardWarnModel, cmd = m.guardWarnModel.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.ollamaWarnModel, cmd = m.ollamaWarnModel.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -295,6 +363,12 @@ func (m model) View() string {
 			return "resume prompt (waiting for window size)"
 		}
 		return m.resume.choices.View() + "\n[enter] choose   [esc] back"
+	}
+	if m.phase == phaseOllamaWarn {
+		if m.width <= 0 || m.height <= 0 {
+			return "ollama availability warning (waiting for window size)"
+		}
+		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
 	}
 	if m.phase == phaseGuardWarn {
 		if m.width <= 0 || m.height <= 0 {

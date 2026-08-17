@@ -8,6 +8,7 @@ import (
 
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
@@ -43,6 +44,18 @@ func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, s
 // preserving the agent's exit code so scripts see it.
 func launch(agent, worktreePath string, cfg *config.Config, yolo bool) error {
 	m := defaultModel(cfg, agent)
+
+	// Fail fast if the selected ollama model is not available locally.
+	if ollamacheck.IsOllamaModel(m) {
+		ok, err := ollamacheck.Available(m.ModelName)
+		if err != nil {
+			return fmt.Errorf("ollama check failed: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("model %q is not available locally. Run: ollama pull %s", m.ModelName, m.ModelName)
+		}
+	}
+
 	sess, _ := session.LatestForAgent(agent, worktreePath)
 	cmd, err := buildLaunch(agent, m, worktreePath, yolo, sess, cfg)
 	if err != nil {
