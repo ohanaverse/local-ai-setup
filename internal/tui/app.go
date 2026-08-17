@@ -48,7 +48,6 @@ type model struct {
 
 	entries []worktree.Entry
 	list    list.Model
-	loading bool
 	ready   bool
 
 	phase    phase
@@ -77,8 +76,7 @@ type model struct {
 	guardWarnEntry worktree.Entry // the entry being confirmed
 
 	// ollama availability warning
-	ollamaWarnModel     list.Model // confirmation choices for unavailable model
-	ollamaWarnModelName string     // the model name being warned about
+	ollamaWarnModel list.Model // confirmation choices for unavailable model
 }
 
 // Init returns the initial command: load worktrees/branches.
@@ -105,7 +103,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
 		}
 	case entriesLoadedMsg:
-		m.loading = false
 		if msg.err != nil {
 			m.status = "error: " + msg.err.Error()
 			return m, nil
@@ -125,7 +122,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.initialAgent != "" {
 			m.agent = m.initialAgent
 		} else {
-			m.agent = firstAgent(m.cfg)
+			m.agent = m.cfg.DefaultAgent()
 		}
 		// Shell agent: skip the model screen entirely — go straight to launch.
 		if isShellAgent(m.agent) {
@@ -191,8 +188,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					if !ok {
-						m.ollamaWarnModelName = m.current.ModelName
-						m.ollamaWarnModel = list.New(buildOllamaChoices(m.current.ModelName, false), list.NewDefaultDelegate(), m.width-2, m.height-2)
+						m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), m.width-2, m.height-2)
 						m.ollamaWarnModel.Title = "Model not available: " + m.current.ModelName
 						m.phase = phaseOllamaWarn
 						return m, nil
@@ -363,14 +359,10 @@ func (m model) View() string {
 				"[r] rotate   [m] browse models   [enter] launch   [q] quit",
 				m.agent, m.current.ID, m.tag))
 	}
-	switch {
-	case m.loading:
-		return "loading worktrees..."
-	case !m.ready:
+	if !m.ready {
 		return m.status
-	default:
-		return m.list.View()
 	}
+	return m.list.View()
 }
 
 // launchShell builds and runs a shell command (or interactive bash) in the
@@ -407,14 +399,6 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
 	return m, nil
-}
-
-// firstAgent returns the first configured agent, defaulting to "claude".
-func firstAgent(cfg *config.Config) string {
-	if cfg != nil && len(cfg.Agents) > 0 {
-		return cfg.Agents[0].Name
-	}
-	return "claude"
 }
 
 // firstModel returns the first model in a tag group, or a "(none)" placeholder.
@@ -465,7 +449,6 @@ func Run(yolo bool, agent string, extraArgs []string) error {
 		return err
 	}
 	p := tea.NewProgram(model{
-		loading:      true,
 		status:       "loading worktrees...",
 		cfg:          cfg,
 		yolo:         yolo,

@@ -17,7 +17,7 @@ func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	}
 	if !m.IsNative() {
 		lc.Env = append(lc.Env,
-			"COPILOT_PROVIDER_BASE_URL=http://localhost:11434",
+			"COPILOT_PROVIDER_BASE_URL="+config.OllamaBaseURL,
 			"COPILOT_PROVIDER_API_KEY=",
 			"COPILOT_MODEL="+m.ID,
 		)

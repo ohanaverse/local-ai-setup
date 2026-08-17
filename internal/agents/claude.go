@@ -29,7 +29,7 @@ func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc.Env = append(lc.Env,
 		"ANTHROPIC_AUTH_TOKEN=ollama",
 		"ANTHROPIC_API_KEY=",
-		"ANTHROPIC_BASE_URL=http://localhost:11434",
+		"ANTHROPIC_BASE_URL="+config.OllamaBaseURL,
 	)
 	lc.Args = append(lc.Args, "--model", m.ID)
 	return lc

@@ -36,7 +36,7 @@ func testConfig() *config.Config {
 // TestInitLoadsEntries asserts Init starts background worktree enumeration.
 // Without this command, the TUI would sit forever at the loading screen.
 func TestInitLoadsEntries(t *testing.T) {
-	m := model{loading: true, status: "loading worktrees..."}
+	m := model{status: "loading worktrees..."}
 	cmd := m.Init()
 	if cmd == nil {
 		t.Fatal("Init returned nil cmd; expected loadEntriesCmd")
@@ -99,7 +99,7 @@ func TestUpdateOtherKeyIgnored(t *testing.T) {
 // TestViewLoading asserts View shows a loading message while worktrees are
 // being enumerated. This is the first feedback the user sees after launching.
 func TestViewLoading(t *testing.T) {
-	m := model{loading: true, status: "loading worktrees..."}
+	m := model{status: "loading worktrees..."}
 	view := m.View()
 	if !strings.Contains(view, "loading worktrees") {
 		t.Errorf("View missing loading message: %q", view)
@@ -129,11 +129,11 @@ func TestViewBeforeWindowSizeDoesNotPanic(t *testing.T) {
 	_ = m.View()
 }
 
-// TestEntriesLoadedMsg asserts receiving worktree data builds the list,
-// marks the model ready, and clears the loading flag. Without this the TUI
-// would never transition from the loading screen to the picker.
+// TestEntriesLoadedMsg asserts receiving worktree data builds the list and
+// marks the model ready. Without this the TUI would never transition from the
+// loading screen to the picker.
 func TestEntriesLoadedMsg(t *testing.T) {
-	m := model{loading: true, width: 80, height: 24}
+	m := model{width: 80, height: 24}
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 	}
@@ -141,9 +141,6 @@ func TestEntriesLoadedMsg(t *testing.T) {
 	gotModel, ok := got.(model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.loading {
-		t.Errorf("loading = true, want false")
 	}
 	if !gotModel.ready {
 		t.Errorf("ready = false, want true")
@@ -160,7 +157,7 @@ func TestEntriesLoadedMsg(t *testing.T) {
 // protected branch.
 func TestEntriesLoadedSetsDefaultBranchWarning(t *testing.T) {
 	cfg := &config.Config{DefaultTag: "code"}
-	m := model{cfg: cfg, loading: true, width: 80, height: 24}
+	m := model{cfg: cfg, width: 80, height: 24}
 
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
@@ -180,7 +177,7 @@ func TestEntriesLoadedSetsDefaultBranchWarning(t *testing.T) {
 // multiple choices, no default-branch warning is shown.
 func TestEntriesLoadedNoWarningForMultipleEntries(t *testing.T) {
 	cfg := &config.Config{DefaultTag: "code"}
-	m := model{cfg: cfg, loading: true, width: 80, height: 24}
+	m := model{cfg: cfg, width: 80, height: 24}
 
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
@@ -197,7 +194,7 @@ func TestEntriesLoadedNoWarningForMultipleEntries(t *testing.T) {
 // TestViewReady asserts the rendered list contains the title. This confirms
 // the list widget was built and is visible once worktrees are loaded.
 func TestViewReady(t *testing.T) {
-	m := model{loading: true, width: 80, height: 24}
+	m := model{width: 80, height: 24}
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 	}
@@ -213,7 +210,7 @@ func TestViewReady(t *testing.T) {
 // emits a selectedEntryMsg carrying the current entry. This is the primary
 // selection affordance for the worktree picker.
 func TestEnterSelectsEntry(t *testing.T) {
-	m := model{loading: true, width: 80, height: 24}
+	m := model{width: 80, height: 24}
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
@@ -382,7 +379,7 @@ func TestOllamaWarnCancel(t *testing.T) {
 		},
 	}
 	m := model{cfg: cfg, phase: phaseOllamaWarn, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
-	m.ollamaWarnModel = list.New(buildOllamaChoices("test-model-xyz-not-real", false), list.NewDefaultDelegate(), 78, 22)
+	m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), 78, 22)
 
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
 	mm := newM.(model)

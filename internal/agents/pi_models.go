@@ -88,11 +88,7 @@ func syncModels(cfg *config.Config, path string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return config.WriteFileAtomic(path, out, 0o644)
 }
 
 // isLaunchable reports whether name is present in pi's models.json and marked

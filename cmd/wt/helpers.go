@@ -37,15 +37,6 @@ func inGitRepoAt(dir string) bool {
 	return exec.Command("git", "-C", dir, "rev-parse", "--git-dir").Run() == nil
 }
 
-// defaultAgent returns the agent to launch when --agent is not given: the
-// first configured agent, falling back to "claude".
-func defaultAgent(cfg *config.Config) string {
-	if cfg != nil && len(cfg.Agents) > 0 {
-		return cfg.Agents[0].Name
-	}
-	return "claude"
-}
-
 // defaultModel returns the model to launch for an agent: the agent's native
 // model (e.g. claude/native) if present, else the first model in the default
 // tag group.

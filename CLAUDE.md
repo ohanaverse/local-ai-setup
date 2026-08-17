@@ -131,8 +131,8 @@ Test coverage by package:
 | `internal/worktree` | 23 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 84 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Ollama warn: unavailable model warning, cancel/proceed; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
-| `cmd/wt` | 20 | Non-TUI launch (lesson 17): `defaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable |
+| `internal/tui` | 84 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Ollama warn: unavailable model warning, cancel/proceed; Helpers: `DefaultAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `cmd/wt` | 20 | Non-TUI launch (lesson 17): `DefaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable |
 
 ## Go module
 
@@ -151,11 +151,11 @@ go vet ./...         # vet
 | Path | Purpose |
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
-| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
+| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once (live model discovery is deferred to the `models` subcommand) |
 | `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
-| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
+| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultModel`, `renderTable` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` — all accept `extraArgs` for passthrough |
-| `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
+| `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration; shared helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `DefaultAgent`) |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands; `BuildLaunchCmd` shared constructor; `ArgSetter` interface for shell; drivers: claude, codex, copilot, opencode, pi, agy, shell |
@@ -163,7 +163,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/ollamacheck/` | Ollama model availability check before launch (`IsOllamaModel`, `Available`) |
+| `internal/ollamacheck/` | Ollama model availability check before launch (`IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
 | `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt + ollama warning + guard warning (lessons 12–17): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation, model browser, agent launch, session resume prompt, shell agent skip-model-screen |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
@@ -180,6 +180,14 @@ The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
+Shared helpers in `internal/config`:
+
+- `Dir()` — base config directory (`~/.config/agent-wt`, or `$XDG_CONFIG_HOME/agent-wt`)
+- `Path()` — `Dir()/config.toml`
+- `WriteFileAtomic(path, data, perm)` — atomic temp-file + rename write (used by `Save`, rotation state, and pi model sync)
+- `OllamaBaseURL` — the `http://localhost:11434` gateway constant (used by the claude/copilot/opencode drivers and migration)
+- `(*Config).DefaultAgent()` — first configured agent, else `"claude"`
+
 ### Live discovery (Go)
 
 The `internal/registry` package queries connected providers at runtime and merges the results with the curated config:
@@ -188,6 +196,13 @@ The `internal/registry` package queries connected providers at runtime and merge
 - **OpenRouter** — fetches `https://openrouter.ai/api/v1/models` via HTTP.
 
 Curated entries win on ID collisions; discovered entries fill gaps. The `wt models` subcommand prints the merged registry.
+
+Discovery is lazy: `newApp()` loads and validates config only. The full
+`registry.Discover` (including the OpenRouter HTTP call) runs on demand — in
+the `wt models` subcommand and the TUI model browser. Flag-only paths never
+hit the OpenRouter API. `--version` and `--init` don't shell out to ollama at
+all; `-w` and `--cwd` run a single `ollama list` via `ollamacheck.Available()`
+for the pre-launch availability check, but skip the full registry discovery.
 
 ### Rotation (Go)
 
@@ -261,7 +276,7 @@ The `internal/initseed` package handles `--init` seeding.
 It is called by `wt --init` and, in later lessons, by the
 TUI when launching a specific agent.
 
-- `Root()` — resolves the current repo root via `git rev-parse --show-toplevel`.
+- `Root()` — resolves the current repo root via `worktree.RepoRoot()`.
 - `Seed(agent, repoRoot)` — writes `AGENTS.md` from a template if missing,
   then writes an agent-specific pointer file if the agent supports one:
   - **claude** → `CLAUDE.md` with `@AGENTS.md`
@@ -385,9 +400,9 @@ passthrough command if provided). Shell has no model, no rotation, and no
 session resume.
 
 - `selectedEntryMsg` now transitions to `phaseModel`, resolving the initial
-  agent (first in `cfg.Agents`) and model (first in the default tag group)
-  via `firstAgent` and `firstModel`. Worktree selection is stored for lesson
-  16's launch.
+  agent (via `cfg.DefaultAgent()` — first configured agent, else `claude`)
+  and model (first in the default tag group) via `firstModel`. Worktree
+  selection is stored for lesson 16's launch.
 - **`r`** — rotate to the next model in the active tag group via
   `rotation.ForTag(cfg, tag).Next(otherTag)`, advancing the on-disk
   `rotation-<tag>.state` file.
@@ -465,7 +480,8 @@ function takes `dir` (the repo root) as its first parameter so tests can run
 git inside a temp repo.
 
 - `RepoRoot()` — returns the current repo root via `git rev-parse --show-toplevel`;
-  used by the TUI to discover which repo to enumerate without an explicit path
+  used by the TUI, `initseed.Root()`, and the `cmd/wt` debug handlers to
+  discover the repo root without an explicit path
 - `Enumerate(dir, cwdRoot)` — lists pickable targets (current, worktrees, bare branches)
 - `EnsureForName(dir, name)` — idempotent worktree for the `-w` flag: reuses an
   already-checked-out worktree path, reuses an existing `.worktrees/<name>`

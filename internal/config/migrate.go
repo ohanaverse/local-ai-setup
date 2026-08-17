@@ -10,17 +10,24 @@ import (
 
 // legacyPaths returns the paths to the legacy models.conf and state directory.
 func legacyPaths() (modelsConf, stateDir string) {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".config")
-	}
-	dir := filepath.Join(base, "agent-wt")
+	dir := Dir()
 	return filepath.Join(dir, "models.conf"), dir
 }
 
 // parseBashArray extracts the quoted tokens from `NAME=( "a" "b" ... )`.
 var bashArrayRe = regexp.MustCompile(`([A-Z_]+)=\(([^)]*)\)`)
+
+// quotedRe matches a double-quoted token.
+var quotedRe = regexp.MustCompile(`"([^"]*)"`)
+
+// extractQuoted returns the quoted tokens in s (e.g. `"a" "b"` → [a b]).
+func extractQuoted(s string) []string {
+	var vals []string
+	for _, q := range quotedRe.FindAllStringSubmatch(s, -1) {
+		vals = append(vals, q[1])
+	}
+	return vals
+}
 
 // stripComments removes bash comments (from # to end of line). Model names
 // never contain #, so this is safe for the legacy format.
@@ -40,12 +47,7 @@ func parseBashArray(line string) (name string, vals []string) {
 	if m == nil {
 		return "", nil
 	}
-	name = m[1]
-	quoted := regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(m[2], -1)
-	for _, q := range quoted {
-		vals = append(vals, q[1])
-	}
-	return name, vals
+	return m[1], extractQuoted(m[2])
 }
 
 // Migrate converts a legacy models.conf into the new TOML Config, if the new
@@ -74,7 +76,7 @@ func Migrate() (bool, error) {
 		Name: "Ollama",
 		Auth: AuthConfig{
 			Type:    "none",
-			BaseURL: "http://localhost:11434",
+			BaseURL: OllamaBaseURL,
 		},
 	})
 
@@ -100,10 +102,7 @@ func Migrate() (bool, error) {
 	// spreads each array across multiple lines).
 	for _, m := range bashArrayRe.FindAllStringSubmatch(content, -1) {
 		name := m[1]
-		var vals []string
-		for _, q := range regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(m[2], -1) {
-			vals = append(vals, q[1])
-		}
+		vals := extractQuoted(m[2])
 
 		switch name {
 		case "CODE_MODELS":

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/ohanaverse/agent-worktree/internal/guard"
@@ -104,12 +103,11 @@ func rootCmd() *cobra.Command {
 			}
 
 			if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
-				root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+				root, err := worktree.RepoRoot()
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				cwdRoot := strings.TrimSpace(string(root))
-				s, err := session.LatestForAgent(agent, cwdRoot)
+				s, err := session.LatestForAgent(agent, root)
 				if err != nil {
 					return err
 				}
@@ -122,12 +120,11 @@ func rootCmd() *cobra.Command {
 			}
 
 			if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
-				root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+				root, err := worktree.RepoRoot()
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				cwdRoot := strings.TrimSpace(string(root))
-				entries, err := worktree.Enumerate(cwdRoot, cwdRoot)
+				entries, err := worktree.Enumerate(root, root)
 				if err != nil {
 					return err
 				}
@@ -140,7 +137,7 @@ func rootCmd() *cobra.Command {
 			// Resolve the agent: --agent flag wins, else the config default.
 			agent := agentFlag
 			if agent == "" {
-				agent = defaultAgent(a.cfg)
+				agent = a.cfg.DefaultAgent()
 			}
 
 			// -w <name>: use/create a worktree, then launch (no picker).

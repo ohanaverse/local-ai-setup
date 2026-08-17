@@ -4,9 +4,9 @@ package initseed
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
 // Result reports what seeding did.
@@ -17,11 +17,11 @@ type Result struct {
 
 // Root returns the current repo's working-tree root.
 func Root() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	root, err := worktree.RepoRoot()
 	if err != nil {
 		return "", fmt.Errorf("not in a git working tree")
 	}
-	return strings.TrimSpace(string(out)), nil
+	return root, nil
 }
 
 // Seed creates AGENTS.md (if missing) and an agent pointer file if the agent

@@ -22,8 +22,8 @@ func (opencodeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		// precedence config layer.
 		lc.Env = append(lc.Env,
 			"OPENCODE_CONFIG_CONTENT="+fmt.Sprintf(
-				`{"model":"ollama/%s","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""}}}}`,
-				m.ID,
+				`{"model":"ollama/%s","provider":{"ollama":{"options":{"baseURL":"%s/v1","apiKey":""}}}}`,
+				m.ID, config.OllamaBaseURL,
 			),
 		)
 	}

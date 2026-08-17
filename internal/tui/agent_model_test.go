@@ -38,23 +38,23 @@ func seedState(t *testing.T, dir, tag, content string) {
 	}
 }
 
-// TestFirstAgentDefaultsToClaude asserts firstAgent falls back to "claude"
+// TestFirstAgentDefaultsToClaude asserts DefaultAgent falls back to "claude"
 // when there is no config or no agents are configured. The TUI must still
 // show a sensible default even against an empty catalog.
 func TestFirstAgentDefaultsToClaude(t *testing.T) {
 	for _, cfg := range []*config.Config{nil, {DefaultTag: "code"}} {
-		if got := firstAgent(cfg); got != "claude" {
-			t.Errorf("firstAgent(%v) = %q, want claude", cfg, got)
+		if got := cfg.DefaultAgent(); got != "claude" {
+			t.Errorf("DefaultAgent(%v) = %q, want claude", cfg, got)
 		}
 	}
 }
 
-// TestFirstAgentPicksFirst asserts firstAgent returns the first configured
+// TestFirstAgentPicksFirst asserts DefaultAgent returns the first configured
 // agent. This is the initial agent shown on the agent+model screen.
 func TestFirstAgentPicksFirst(t *testing.T) {
 	cfg := &config.Config{Agents: []config.Agent{{Name: "codex"}, {Name: "claude"}}}
-	if got := firstAgent(cfg); got != "codex" {
-		t.Errorf("firstAgent = %q, want codex", got)
+	if got := cfg.DefaultAgent(); got != "codex" {
+		t.Errorf("DefaultAgent = %q, want codex", got)
 	}
 }
 

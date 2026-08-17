@@ -18,12 +18,7 @@ func StateFile(cfgDir, tag string) string {
 
 // defaultStateDir returns ~/.config/agent-wt (or $XDG_CONFIG_HOME/agent-wt).
 func defaultStateDir() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, "agent-wt")
+	return config.Dir()
 }
 
 // Rotation cycles through a tag group's models, advancing each Next() call.
@@ -126,14 +121,6 @@ func (r *Rotation) loadIndex(dir string) int {
 
 // saveState writes "<index>\n<last>\n" atomically via temp file + rename.
 func (r *Rotation) saveState(dir string, idx int, last string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	content := fmt.Sprintf("%d\n%s\n", idx, last)
-	final := StateFile(dir, r.tag)
-	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, final)
+	return config.WriteFileAtomic(StateFile(dir, r.tag), []byte(content), 0o600)
 }

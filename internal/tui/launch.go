@@ -12,11 +12,6 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
-// launchMsg tells the app to quit the TUI and run the agent.
-type launchMsg struct {
-	cmd *exec.Cmd
-}
-
 // launchDoneMsg is emitted after the agent subprocess exits.
 type launchDoneMsg struct {
 	err error
@@ -140,13 +135,9 @@ func (o ollamaItem) Title() string       { return o.title }
 func (o ollamaItem) Description() string { return o.desc }
 
 // buildOllamaChoices creates the ollama availability confirmation list items.
-func buildOllamaChoices(modelName string, allUnavailable bool) []list.Item {
-	hint := "Launch with unavailable model (may fail)"
-	if allUnavailable {
-		hint = "Launch with unavailable model (all models in this group are unavailable)"
-	}
+func buildOllamaChoices() []list.Item {
 	return []list.Item{
-		ollamaItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: hint},
+		ollamaItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: "Launch with unavailable model (may fail)"},
 		ollamaItem{choice: ollamaSkipChoice, title: "Skip to next model", desc: "Rotate to the next model in the tag group"},
 		ollamaItem{choice: ollamaCancelChoice, title: "Cancel", desc: "Return to the agent+model screen"},
 	}

@@ -26,6 +26,10 @@ const (
 	SourceDiscovered Source = "discovered"
 )
 
+// OllamaBaseURL is the default address of the local Ollama gateway that
+// cloud and local models route through.
+const OllamaBaseURL = "http://localhost:11434"
+
 // ── Provider ──────────────────────────────────────────────
 
 // Provider is a source of models with connection info.
@@ -75,14 +79,20 @@ type Config struct {
 	Agents     []Agent    `toml:"agents"`
 }
 
-// Path returns the config file location, honoring XDG_CONFIG_HOME like wt-core.sh
-func Path() string {
+// Dir returns the base config directory (~/.config/agent-wt, or
+// $XDG_CONFIG_HOME/agent-wt), honoring XDG_CONFIG_HOME like wt-core.sh.
+func Dir() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "agent-wt", "config.toml")
+	return filepath.Join(base, "agent-wt")
+}
+
+// Path returns the config file location.
+func Path() string {
+	return filepath.Join(Dir(), "config.toml")
 }
 
 // Load reads the config file at Path(). Runs legacy migration first if needed.
@@ -106,77 +116,30 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// DefaultAgent returns the agent to launch when none is specified: the first
+// configured agent, falling back to "claude".
+func (c *Config) DefaultAgent() string {
+	if c == nil || len(c.Agents) == 0 {
+		return "claude"
+	}
+	return c.Agents[0].Name
+}
+
 // Validate returns an error describing the first invalid entry.
 func (c *Config) Validate() error {
-	if c.DefaultTag == "" {
-		return fmt.Errorf("default_tag must not be empty")
+	if errs := c.validate(); len(errs) > 0 {
+		return errs[0]
 	}
-
-	// Providers
-	provIDs := map[string]bool{}
-	for _, p := range c.Providers {
-		if p.ID == "" {
-			return fmt.Errorf("provider entry with empty id")
-		}
-		if provIDs[p.ID] {
-			return fmt.Errorf("duplicate provider id %q", p.ID)
-		}
-		provIDs[p.ID] = true
-	}
-
-	// Models
-	modelIDs := map[string]bool{}
-	for _, m := range c.Models {
-		if m.ID == "" {
-			return fmt.Errorf("model entry with empty id")
-		}
-		if modelIDs[m.ID] {
-			return fmt.Errorf("duplicate model id %q", m.ID)
-		}
-		modelIDs[m.ID] = true
-		if !provIDs[m.ProviderID] {
-			return fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID)
-		}
-		// Location must be resolvable
-		if _, err := c.ResolveLocation(m); err != nil {
-			return err
-		}
-	}
-
-	// Agents
-	agentNames := map[string]bool{}
-	for _, a := range c.Agents {
-		if a.Name == "" {
-			return fmt.Errorf("agent entry with empty name")
-		}
-		if agentNames[a.Name] {
-			return fmt.Errorf("duplicate agent name %q", a.Name)
-		}
-		agentNames[a.Name] = true
-		for _, pid := range a.SupportedProviders {
-			if !provIDs[pid] {
-				return fmt.Errorf("agent %q: unknown provider %q", a.Name, pid)
-			}
-		}
-		if a.DefaultProvider != "" {
-			found := false
-			for _, pid := range a.SupportedProviders {
-				if pid == a.DefaultProvider {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider)
-			}
-		}
-	}
-
 	return nil
 }
 
 // ValidateAll reports every validation problem at once using errors.Join.
 func (c *Config) ValidateAll() error {
+	return errors.Join(c.validate()...)
+}
+
+// validate collects every validation problem in c, in a stable order.
+func (c *Config) validate() []error {
 	var errs []error
 	if c.DefaultTag == "" {
 		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
@@ -206,10 +169,9 @@ func (c *Config) ValidateAll() error {
 		modelIDs[m.ID] = true
 		if !provIDs[m.ProviderID] {
 			errs = append(errs, fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID))
-		} else {
-			if _, err := c.ResolveLocation(m); err != nil {
-				errs = append(errs, err)
-			}
+		} else if _, err := c.ResolveLocation(m); err != nil {
+			// Location must be resolvable
+			errs = append(errs, err)
 		}
 	}
 
@@ -242,7 +204,7 @@ func (c *Config) ValidateAll() error {
 		}
 	}
 
-	return errors.Join(errs...)
+	return errs
 }
 
 // IsNative reports whether this model is an agent's native model
@@ -349,18 +311,24 @@ func (c *Config) ResolveLocation(m Model) (Location, error) {
 	return "", fmt.Errorf("model %q: no location on model or provider %q", m.ID, p.ID)
 }
 
-// Save writes cfg to the config path using an atomic temp-file + rename.
-func Save(cfg *Config) error {
-	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
+// WriteFileAtomic writes data to path atomically via a temp file + rename,
+// creating the parent directory if needed.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// Save writes cfg to the config path using an atomic temp-file + rename.
+func Save(cfg *Config) error {
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
 		return err
 	}
-	tmp := Path() + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, Path())
+	return WriteFileAtomic(Path(), buf.Bytes(), 0o644)
 }

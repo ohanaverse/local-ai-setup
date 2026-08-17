@@ -27,15 +27,5 @@ func (s *FileSecretStore) Get(ref string) (string, error) {
 
 // DefaultSecretsDir returns the default secrets directory.
 func DefaultSecretsDir() string {
-	return filepath.Join(configDir(), "secrets")
-}
-
-// configDir is the base config directory (shared with Path).
-func configDir() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, "agent-wt")
+	return filepath.Join(Dir(), "secrets")
 }

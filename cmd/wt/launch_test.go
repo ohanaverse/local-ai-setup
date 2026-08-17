@@ -16,7 +16,8 @@ import (
 
 // TestDefaultAgentFromConfig asserts that when the config lists agents, the
 // first one is the default. This is the non-TUI equivalent of the TUI's
-// firstAgent: the launch path must pick a sensible agent without --agent.
+// default-agent resolution: the launch path must pick a sensible agent
+// without --agent.
 func TestDefaultAgentFromConfig(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
@@ -24,19 +25,19 @@ func TestDefaultAgentFromConfig(t *testing.T) {
 			{Name: "claude"},
 		},
 	}
-	if got := defaultAgent(cfg); got != "codex" {
-		t.Errorf("defaultAgent = %q, want %q", got, "codex")
+	if got := cfg.DefaultAgent(); got != "codex" {
+		t.Errorf("DefaultAgent = %q, want %q", got, "codex")
 	}
 }
 
 // TestDefaultAgentFallback asserts that an empty or nil config falls back to
 // "claude". Without this, a first run with no config would launch nothing.
 func TestDefaultAgentFallback(t *testing.T) {
-	if got := defaultAgent(&config.Config{}); got != "claude" {
-		t.Errorf("defaultAgent(empty) = %q, want %q", got, "claude")
+	if got := (&config.Config{}).DefaultAgent(); got != "claude" {
+		t.Errorf("DefaultAgent(empty) = %q, want %q", got, "claude")
 	}
-	if got := defaultAgent(nil); got != "claude" {
-		t.Errorf("defaultAgent(nil) = %q, want %q", got, "claude")
+	if got := (*config.Config)(nil).DefaultAgent(); got != "claude" {
+		t.Errorf("DefaultAgent(nil) = %q, want %q", got, "claude")
 	}
 }
 

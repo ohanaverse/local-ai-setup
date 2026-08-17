@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/registry"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +16,7 @@ func modelsCmd(a *app) *cobra.Command {
 		Use:     "models",
 		Aliases: []string{"model"},
 		Short:   "Browse and manage the model registry",
-		Example: "  wt models          # list the registry\n  wt models --tag code",
+		Example: "  wt models          # list the registry",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Providers table
 			provRows := make([][]string, 0, len(a.cfg.Providers))
@@ -35,8 +35,7 @@ func modelsCmd(a *app) *cobra.Command {
 			))
 
 			// Models table — sort by provider, then ID
-			models := make([]config.Model, len(a.models))
-			copy(models, a.models)
+			models := registry.Discover(a.cfg)
 			sort.Slice(models, func(i, j int) bool {
 				if models[i].ProviderID != models[j].ProviderID {
 					return models[i].ProviderID < models[j].ProviderID
