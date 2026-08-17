@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-The `wt` binary (`cmd/wt/`) is a Go tool that launches AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode) in a chosen worktree or branch. It presents a Bubble Tea TUI picker of worktrees and branches, creates worktrees on demand, rotates models by tag, and launches the selected agent. Non-interactive flags (`-w`, `--cwd`, `--agent`) skip the TUI and launch directly.
+The `wt` binary (`cmd/wt/`) is a Go tool that launches AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode, shell) in a chosen worktree or branch. It presents a Bubble Tea TUI picker of worktrees and branches, creates worktrees on demand, rotates models by tag, and launches the selected agent. Non-interactive flags (`-w`, `--cwd`, `--agent`) skip the TUI and launch directly.
 
-The `bin/*-wt` files are thin legacy shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`). The original bash engine (`wt-core.sh`, `wt-install-guard`) is retained only for `shell-wt`, which launches a shell command rather than an agent and has no Go equivalent yet. See `docs/go-course/` for the lesson plan.
+The `bin/*-wt` files are thin shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). All functionality — including shell command execution — is implemented in Go. See `docs/go-course/` for the lesson plan.
 
 ## Installation
 
@@ -20,7 +20,7 @@ Requires Go 1.26.3 (see `go.mod`).
 
 > **Makefile scope.** The Makefile handles bash script tasks (install, lint, format, smoke tests) and a `clean` target that removes Go build artifacts (`bin/wt`, `*.test`). It does **not** build the Go binary — use `go build` above for that.
 
-The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH` for them to work. `shell-wt` is the only remaining bash launcher and still needs `wt-core.sh` co-located.
+The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH` for them to work.
 
 ### Using the Makefile
 
@@ -35,11 +35,11 @@ make clean        # Remove build artifacts
 
 ## Architecture
 
-The Go tool is the primary implementation; its packages are documented in [Go module](#go-module) below. The bash engine described here is **legacy** — retained only for `shell-wt`, which has no Go equivalent yet.
+The Go tool is the primary implementation; its packages are documented in [Go module](#go-module) below.
 
-### Legacy bash engine
+### Bash shims
 
-`bin/wt-core.sh` is the shared bash engine that `shell-wt` still sources. It implements the plugin contract (`wt_check_deps`, `wt_yolo_flag`, `wt_exec`, optional `wt_pre_exec`), flag parsing, worktree/branch selection via fzf, model rotation, the main-branch commit guard, and `--init` seeding. `bin/wt-install-guard` installs the `block-main-commit` pre-commit hook. All of this functionality except `shell-wt` is now implemented in Go (`internal/agents`, `internal/worktree`, `internal/rotation`, `internal/guard`, `internal/initseed`, `internal/session`, `internal/tui`), so the bash engine is only exercised by `shell-wt`.
+`bin/*-wt` are one-line shims that `exec wt --agent <name> "$@"`. They exist for ergonomic convenience (`claude-wt` is shorter than `wt --agent claude`). All logic — worktree selection, model rotation, guard, init seeding, session resume, and shell command execution — is in Go.
 
 ## Key flags (`wt`)
 
@@ -47,7 +47,7 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 |---|---|
 | `-w <name>`, `--worktree <name>` | Use/create worktree for branch `<name>`; skip the TUI and launch |
 | `--cwd` | Launch in the current repo root; skip the TUI |
-| `--agent <name>` | Pin the agent to launch (claude, codex, copilot, pi, agy, opencode); defaults to the first configured agent |
+| `--agent <name>` | Pin the agent to launch (claude, codex, copilot, pi, agy, opencode, shell); defaults to the first configured agent |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--version` | Print version and exit |
@@ -58,10 +58,30 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 
 The legacy bash flags `--code`, `--design`, and `--native` are not supported by `wt`. Model rotation is now tag-based (see [Rotation (Go)](#rotation-go)); the main guard is managed by `internal/guard`.
 
+### Passthrough args
+
+Extra args are forwarded to the launched agent. This restores the bash
+engine's `WT_PASSTHROUGH_ARGS` behavior and enables `shell-wt <command>`.
+`--` is only required when the command starts with a flag-like token (e.g.
+`shell-wt -- rm --init`), since the root `wt` command is registered with
+`cobra.ArbitraryArgs` so bare positional args reach the launcher instead of
+being rejected as an unknown subcommand — but pflag still consumes anything
+starting with `-` before it sees `--`.
+
+```bash
+claude-wt -- --verbose     # → claude --model X --verbose
+shell-wt -w test -- npm test  # → exec npm test in .worktrees/test
+wt --agent codex -- --full-auto  # → codex --model X --full-auto
+```
+
+For regular agents, extra args are appended to the agent's command. For the
+shell agent (which implements `ArgSetter`), the args become argv directly
+(no shell involved) — `d.args[0]` is the binary, `d.args[1:]` its args.
+
 ## Adding a new agent
 
 1. Add a driver in `internal/agents/` (e.g. `internal/agents/<name>.go`) that registers a `Driver` via `register("<name>", ...)` and implements `Build`/`YoloFlag`.
-2. Add a legacy shim in `bin/<name>-wt`:
+2. Add a shim in `bin/<name>-wt`:
 
    ```sh
    #!/usr/bin/env bash
@@ -75,13 +95,12 @@ The legacy bash flags `--code`, `--design`, and `--native` are not supported by 
 - `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)
 - `docs/wt-agents/` — per-agent reference docs (one file per launcher)
 
-## Bash quality gates
+## Shim quality gates
 
-The remaining bash scripts (`wt-core.sh`, `wt-install-guard`, `shell-wt`, and the `*-wt` shims) have no automated unit test suite. Quality gates:
+The `*-wt` shims are one-line bash wrappers with no automated unit test suite. Quality gates:
 
 ```bash
-make lint         # shellcheck (ignores expected warnings for dynamic sourcing)
-                  # Suppressed: SC1090,SC1091 (dynamic source), SC2034 (unused vars), SC2155 (declare+assign)
+make lint         # shellcheck
 make format       # shfmt -w -i 2 -ci
 make format-check # shfmt -d (CI check)
 make check        # lint + format-check
@@ -107,13 +126,13 @@ Test coverage by package:
 | `internal/config` | 38 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
-| `internal/agents` | 10 | Per-agent Build output, Installed, Command |
+| `internal/agents` | 29 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, shell driver, shell quoting |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 23 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 78 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
-| `cmd/wt` | 10 | Non-TUI launch (lesson 17): `defaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection, `inGitRepoAt` |
+| `internal/tui` | 84 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Ollama warn: unavailable model warning, cancel/proceed; Helpers: `firstAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `cmd/wt` | 20 | Non-TUI launch (lesson 17): `defaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable |
 
 ## Go module
 
@@ -135,16 +154,17 @@ go vet ./...         # vet
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
 | `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` — all accept `extraArgs` for passthrough |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
-| `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
+| `internal/agents/` | Agent driver abstraction — builds per-agent launch commands; `BuildLaunchCmd` shared constructor; `ArgSetter` interface for shell; drivers: claude, codex, copilot, opencode, pi, agy, shell |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook, reports status (`Check`/`Install`/`Uninstall`) |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt (lessons 12–16): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation, model browser, agent launch, session resume prompt |
+| `internal/ollamacheck/` | Ollama model availability check before launch (`IsOllamaModel`, `Available`) |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt + ollama warning + guard warning (lessons 12–17): Model/Update/View, alternate-screen runner, `bubbles/list` picker, model rotation, model browser, agent launch, session resume prompt, shell agent skip-model-screen |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -191,8 +211,7 @@ go run ./cmd/wt rotate design  # independent rotation for design
 
 ### Agents (Go)
 
-The `internal/agents` package abstracts how each coding agent is launched —
-the Go equivalent of the per-launcher `wt_exec` logic in the bash wrappers.
+The `internal/agents` package abstracts how each coding agent is launched.
 Each agent registers a `Driver` that builds a `LaunchCmd` (binary, args, and
 extra env vars) for a given model, so the TUI/CLI can say "launch agent X
 with model Y" without knowing the agent's quirks.
@@ -201,6 +220,9 @@ with model Y" without knowing the agent's quirks.
 - `LaunchCmd` — plain struct: `Bin`, `Args`, `Env` (extra env merged over `os.Environ()`)
 - Registry keyed by agent name; `ByName(name)` returns a driver or nil
 - `Command(d, m, yolo, workdir)` resolves the binary via `LookPath` and returns a ready `exec.Cmd`
+- `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` — shared launch constructor used by both TUI and non-TUI paths; calls Syncer/ArgSetter, builds the command, appends passthrough args and resume flags
+- `Syncer` interface — optional pre-launch step (pi syncing its model catalog)
+- `ArgSetter` interface — optional; drivers that need passthrough args to construct their command (shell)
 - `Installed(bin)` reports whether a binary is on PATH
 - Native models (e.g. `claude/native`) are detected via `Model.IsNative()` and launch with no model args/env
 
@@ -212,15 +234,16 @@ Per-agent behavior:
 - **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) for the ollama provider
 - **pi** — syncs non-native models into `~/.pi/agent/models.json` (idempotent, `_launch: true`) and passes `--model <ModelName>` only when the model is present and marked `_launch: true`; falls back to pi's default model with a warning otherwise; no `jq` dependency (native Go JSON); no yolo flag
 - **agy** — no model passthrough (model chosen inside its TUI)
+- **shell** — execs the user's passthrough args directly as argv (no shell involved), or interactive `bash` when no command is given; no model, no yolo, no session resume; implements `ArgSetter`
 
 The `wt agents` subcommand lists registered drivers, whether each binary is
 installed, and its yolo flag.
 
 ### Guard (Go)
 
-The `internal/guard` package ports the bash `wt-install-guard` script into Go.
-It installs a `block-main-commit v1` pre-commit hook that blocks commits to
-`main`/`master`. The hook is embedded into the binary with `//go:embed`.
+The `internal/guard` package manages the `block-main-commit` pre-commit hook
+that blocks commits to `main`/`master`. The hook is embedded into the binary
+with `//go:embed`.
 
 - `Check()` — reports `Installed`, `NotInstalled`, or `Err` by reading the
   common git dir's `hooks/pre-commit` and looking for the marker string.
@@ -234,8 +257,8 @@ hook applies to all worktrees of the repo.
 
 ### Init seeding (Go)
 
-The `internal/initseed` package ports `seed_agent_instructions` from
-`wt-core.sh`. It is called by `wt --init` and, in later lessons, by the
+The `internal/initseed` package handles `--init` seeding.
+It is called by `wt --init` and, in later lessons, by the
 TUI when launching a specific agent.
 
 - `Root()` — resolves the current repo root via `git rev-parse --show-toplevel`.
@@ -258,10 +281,9 @@ wt --init
 
 ### Session resume (Go)
 
-The `internal/session` package ports `find_latest_session`,
-`compute_project_slug`, and `relative_time` from `wt-core.sh`, plus the
-opencode-specific `_find_opencode_sessions` from `opencode-wt`. It detects the
-newest resumable session for an agent in a worktree.
+The `internal/session` package detects the newest resumable session for an
+agent in a worktree. It supports claude and opencode; all other agents
+(including shell) return nil.
 
 - `Slug(path)` — replaces every char outside `[a-zA-Z0-9-]` with `-`. The
   leading `/` becomes a leading `-`, matching the real `~/.claude/projects/-Users-...` dirs.
@@ -285,7 +307,7 @@ In the TUI (lesson 16), pressing Enter on the agent+model screen checks
 - **Cancel** — return to the agent+model screen.
 
 If no session exists, the agent launches immediately. The non-TUI launch path
-(lesson 17) performs the same resume check in `buildLaunch`, appending
+(lesson 17) performs the same resume check in `BuildLaunchCmd`, appending
 `--resume`/`--session` without prompting.
 
 ```bash
@@ -296,23 +318,25 @@ wt --debug-session opencode
 
 ### TUI shell (Go)
 
-The `internal/tui` package holds the Bubble Tea app shell. `Run(yolo bool)`
+The `internal/tui` package holds the Bubble Tea app shell. `Run(yolo, agent, extraArgs)`
 starts `tea.NewProgram` with `tea.WithAltScreen()` and returns when the program
 exits. The `model` type implements `tea.Model` (`Init` / `Update` / `View`);
 lessons 12+ layer on the worktree list, agent+model screen, model browser,
 resume prompt, and launch command.
 
-- `Run(yolo bool)` — entry point; reached from `rootCmd.RunE` as the fallback
-  after every flag handler has had a chance to early-return. The `yolo`
-  argument is stored in the model and passed through to the selected agent's
-  driver at launch time.
+- `Run(yolo bool, agent string, extraArgs []string)` — entry point; reached from `rootCmd.RunE` as the fallback
+  after every flag handler has had a chance to early-return. `agent` is the `--agent` flag value
+  ("" = use config default). `extraArgs` are the user's passthrough args after `--`.
+  Both are stored in the model and passed through to `agents.BuildLaunchCmd` at launch time.
 - `tea.WithAltScreen()` — Bubble Tea manages the alternate screen buffer
   for full-screen TUI rendering.
 - `currentProgram` — a package-level pointer to the running `tea.Program`,
   set by `Run()` so `runAndWaitCmd` can call `ReleaseTerminal()` before the
   agent takes over and `RestoreTerminal()` when it exits.
-- `launchAgent()` — builds the `exec.Cmd` via `agents.Command` and appends
-  `--resume` / `--session` flags when resuming a claude/opencode session.
+- `launchAgent()` — thin wrapper around `agents.BuildLaunchCmd`; builds the `exec.Cmd`
+  with passthrough args and resume flags.
+- `proceedToLaunch()` — shared session-check → launch-or-resume-prompt flow used by
+  both the `phaseModel` enter handler and the ollama warning proceed choice.
 - `runAndWaitCmd()` — a `tea.Cmd` that releases the terminal, wires stdio,
   runs the agent, restores the terminal, and returns a `launchDoneMsg`.
 
@@ -352,9 +376,13 @@ go run ./cmd/wt --version # non-interactive, no TTY needed
 
 After the user picks a worktree, the TUI moves to an **agent+model screen**
 that shows the selected agent and the currently shown model, with explicit
-one-keystroke actions replacing the bash tool's silent auto-rotation. A
-`phase` value (`phaseList` / `phaseModel` / `phaseBrowser` / `phaseResume`)
-tracks which screen is active.
+one-keystroke actions. A `phase` value (`phaseList` / `phaseModel` / `phaseBrowser` /
+`phaseResume` / `phaseGuardWarn` / `phaseOllamaWarn`) tracks which screen is active.
+
+When the `--agent` flag is set to `shell`, the model screen is skipped entirely —
+the TUI goes straight from worktree pick to launching `bash` (with the user's
+passthrough command if provided). Shell has no model, no rotation, and no
+session resume.
 
 - `selectedEntryMsg` now transitions to `phaseModel`, resolving the initial
   agent (first in `cfg.Agents`) and model (first in the default tag group)
@@ -371,7 +399,7 @@ tracks which screen is active.
   finds a claude/opencode session, switch to `phaseResume` and show a
   resume prompt instead of launching immediately.
 - `View` renders the model phase distinctly (agent / model / tag + keybind
-  hints); `Run(yolo bool)` loads the config up front and passes it into the
+  hints); `Run(yolo, agent, extraArgs)` loads the config up front and passes it into the
   model.
 
 ```bash
@@ -432,8 +460,7 @@ typing; press `f` to toggle tag filtering, `c` to cycle source filter,
 ### Worktree (Go)
 
 The `internal/worktree` package handles both enumeration (lesson 7) and
-creation (lesson 8) — the Go equivalent of `gather_entries` and
-`ensure_worktree_for_name`/`handle_branch_selection` in `wt-core.sh`. Every
+creation (lesson 8). Every
 function takes `dir` (the repo root) as its first parameter so tests can run
 git inside a temp repo.
 

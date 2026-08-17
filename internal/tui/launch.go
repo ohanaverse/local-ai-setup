@@ -27,30 +27,11 @@ type launchDoneMsg struct {
 var currentProgram *tea.Program
 
 // launchAgent builds the command for agent/model in worktreePath, optionally
-// appending a resume flag for claude or opencode.
-func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config) (*exec.Cmd, error) {
-	d := agents.ByName(agent)
-	if d == nil {
-		return nil, fmt.Errorf("unknown agent: %s", agent)
-	}
-	if s, ok := d.(agents.Syncer); ok {
-		if err := s.SyncModels(cfg); err != nil {
-			return nil, err
-		}
-	}
-	cmd, err := agents.Command(d, m, yolo, worktreePath)
-	if err != nil {
-		return nil, err
-	}
-	if sess != nil {
-		switch agent {
-		case "claude":
-			cmd.Args = append(cmd.Args, "--resume", sess.ID)
-		case "opencode":
-			cmd.Args = append(cmd.Args, "--session", sess.ID)
-		}
-	}
-	return cmd, nil
+// appending passthrough args and a resume flag for claude or opencode. It
+// delegates to agents.BuildLaunchCmd so the launch construction logic lives
+// in one place.
+func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 }
 
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the

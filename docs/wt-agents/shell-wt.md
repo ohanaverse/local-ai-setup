@@ -6,7 +6,7 @@
 
 ## Installation
 
-`shell-wt` is a standalone script. Copy `bin/shell-wt` into `~/.local/bin/` alongside `wt-core.sh`.
+`shell-wt` is a one-line shim that forwards to the `wt` binary (`exec wt --agent shell "$@"`). Build `wt` and put it on `$PATH` (see the repo's top-level `CLAUDE.md`), then put `bin/shell-wt` on `$PATH` too, e.g. via `make install`.
 
 ## Usage
 
@@ -14,7 +14,8 @@
 # Simple command (no -- needed if no flag-like args)
 shell-wt ls -la
 
-# Command with flag-like arguments
+# Command with flag-like arguments (required: `wt`'s flag parser would
+# otherwise try to interpret --init as a wt flag, not a shell-wt argument)
 shell-wt -- rm --init
 
 # Skip picker, use/create a named worktree
@@ -26,9 +27,9 @@ shell-wt --cwd -- npm test
 
 ## Command execution
 
-`shell-wt` runs `exec bash -c "<command>"` with arguments individually shell-quoted via `printf '%q'`. The launcher process is replaced by the shell, so exit codes propagate naturally.
+`shell-wt` execs the passthrough args directly as argv — no shell is involved, so there is no re-quoting step. The launcher process is replaced by the command, so exit codes propagate naturally.
 
-> **Limitation:** Because each argument is shell-quoted, shell metacharacters (`|`, `>`, `&&`, etc.) are treated as literal characters rather than shell syntax. To use pipelines, redirections, or other shell features, wrap the command in an explicit shell invocation:
+> **Limitation:** Because the command is exec'd directly (not interpreted by a shell), shell metacharacters (`|`, `>`, `&&`, etc.) are treated as literal argument characters. To use pipelines, redirections, or other shell features, wrap the command in an explicit shell invocation:
 >
 > ```bash
 > shell-wt -- bash -lc 'cmd1 | cmd2 > output.txt'
@@ -43,9 +44,10 @@ shell-wt --cwd -- npm test
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |
 | `--check-guard` | Report guard status |
-| `--code`, `--design`, `--native` | No-op (no model rotation) |
 | `--yolo` | No-op (no permission prompts) |
+
+Legacy bash flags `--code`, `--design`, and `--native` are not supported by `wt` — passing them now exits with `unknown flag`, since model rotation is tag-based and shell has no model concept.
 
 ## Verified on this machine
 
-**Verified on this machine, 2026-07-22.**
+**Verified on this machine, 2026-08-16.**

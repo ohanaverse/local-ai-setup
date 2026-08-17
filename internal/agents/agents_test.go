@@ -27,7 +27,7 @@ func localModel(id string) config.Model {
 // one or more agents.
 func TestNames(t *testing.T) {
 	names := Names()
-	want := map[string]bool{"claude": true, "codex": true, "copilot": true, "opencode": true, "pi": true, "agy": true}
+	want := map[string]bool{"claude": true, "codex": true, "copilot": true, "opencode": true, "pi": true, "agy": true, "shell": true}
 	if len(names) != len(want) {
 		t.Fatalf("Names() = %v, want %d agents", names, len(want))
 	}
@@ -276,6 +276,60 @@ func TestCommand(t *testing.T) {
 		t.Error("cmd.Env should include inherited environment")
 	}
 }
+
+// BuildLaunchCmd must append extraArgs to cmd.Args for regular agents (those
+// that do not implement ArgSetter). Failing to append means passthrough args
+// like `--verbose` after `--` are silently dropped and never reach the agent.
+func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
+	// Use a test-only driver backed by bash (always on PATH) that does not
+	// implement ArgSetter, exercising the regular-agent append path.
+	register("_test_regular", func() Driver { return regularTestDriver{} })
+	t.Cleanup(func() { delete(registry, "_test_regular") })
+
+	cmd, err := BuildLaunchCmd("_test_regular", config.Model{}, "/tmp", false, nil, nil, []string{"--foo", "--bar"})
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	args := cmd.Args
+	if len(args) < 2 {
+		t.Fatalf("cmd.Args = %v, want at least [--foo --bar] appended", args)
+	}
+	last2 := args[len(args)-2:]
+	if last2[0] != "--foo" || last2[1] != "--bar" {
+		t.Errorf("cmd.Args suffix = %v, want [--foo --bar]", last2)
+	}
+}
+
+// BuildLaunchCmd must not double-append extraArgs for agents that implement
+// ArgSetter (e.g. shell). The args must be passed to SetArgs only; if they
+// were also appended to cmd.Args the shell would receive duplicate arguments,
+// causing the command to malform or fail at runtime.
+func TestBuildLaunchCmdShellNoDoubleAppend(t *testing.T) {
+	cmd, err := BuildLaunchCmd("shell", config.Model{}, "/tmp", false, nil, nil, []string{"echo", "hello"})
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	// The shell driver execs the args directly as argv (no bash -c wrapping):
+	// cmd.Args must be exactly [<echo path> hello] — no extra args appended.
+	if len(cmd.Args) != 2 {
+		t.Fatalf("cmd.Args = %v (len %d), want exactly 2 elements [<echo path> hello]", cmd.Args, len(cmd.Args))
+	}
+	if !strings.HasSuffix(cmd.Args[0], "echo") {
+		t.Errorf("cmd.Args[0] = %q, want it to resolve to echo", cmd.Args[0])
+	}
+	if cmd.Args[1] != "hello" {
+		t.Errorf("cmd.Args[1] = %q, want %q", cmd.Args[1], "hello")
+	}
+}
+
+// regularTestDriver is a test-only Driver (no ArgSetter) that uses bash as its
+// binary so tests always run without requiring a real agent to be installed.
+type regularTestDriver struct{}
+
+func (regularTestDriver) Build(_ config.Model, _ bool) LaunchCmd {
+	return LaunchCmd{Bin: "bash"}
+}
+func (regularTestDriver) YoloFlag() string { return "" }
 
 func hasEnv(env []string, want string) bool {
 	for _, e := range env {

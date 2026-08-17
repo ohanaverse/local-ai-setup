@@ -16,7 +16,7 @@ import (
 // returns a clear error. Without this guard the TUI could try to exec a
 // nil driver.
 func TestLaunchAgentUnknownAgent(t *testing.T) {
-	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
+	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -30,7 +30,7 @@ func TestLaunchAgentUnknownAgent(t *testing.T) {
 // wiring that the bash wrappers do for claude.
 func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil)
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 // with a session appends --session <id> to the command args.
 func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 	cmd, err := launchAgent("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil)
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 // is passed, no resume/session flag is injected. This is the "start fresh"
 // path.
 func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false, nil, nil)
+	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestLaunchAgentSyncsPi(t *testing.T) {
 		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
 	}}
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
-	cmd, err := launchAgent("pi", m, "/tmp", false, nil, cfg)
+	cmd, err := launchAgent("pi", m, "/tmp", false, nil, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("launchAgent: %v", err)
 	}

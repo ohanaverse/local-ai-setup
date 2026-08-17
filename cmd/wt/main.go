@@ -42,6 +42,13 @@ func rootCmd() *cobra.Command {
 			"  wt -w my-feature --agent claude  # create worktree and launch\n" +
 			"  wt --cwd --agent codex           # launch in current repo root\n" +
 			"  wt --init                        # seed agent instruction files",
+		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
+		// rejects any leading positional arg that isn't a registered
+		// subcommand name (models/agents/rotate). Without this, passthrough
+		// commands given without `--` (e.g. `shell-wt ls -la`) fail with
+		// "unknown command \"ls\" for \"wt\"" even though Find() would never
+		// have routed them to a subcommand anyway.
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Read the raw --agent flag early so --init can seed agent-specific
 			// pointer files when a wrapper like claude-wt forwards --agent claude.
@@ -147,7 +154,7 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return launch(agent, path, a.cfg, yolo(cmd))
+				return launch(agent, path, a.cfg, yolo(cmd), args)
 			}
 
 			// --cwd: launch in the current repo root.
@@ -157,24 +164,24 @@ func rootCmd() *cobra.Command {
 					return err
 				}
 				maybeInstallGuard()
-				return launch(agent, root, a.cfg, yolo(cmd))
+				return launch(agent, root, a.cfg, yolo(cmd), args)
 			}
 
 			// Outside a git repo: pure passthrough to the agent.
 			if !inGitRepo() {
-				return launchDirect(agent, a.cfg, yolo(cmd))
+				return launchDirect(agent, a.cfg, yolo(cmd), args)
 			}
 
 			// Interactive TUI.
 			maybeInstallGuard()
-			return tui.Run(yolo(cmd))
+			return tui.Run(yolo(cmd), agent, args)
 		},
 	}
 
 	// Flags shared by wt and its subcommands.
 	cmd.PersistentFlags().Bool("yolo", false, "Skip permission prompts")
 	cmd.PersistentFlags().StringP("worktree", "w", "", "Use/create worktree for branch")
-	cmd.PersistentFlags().String("agent", "", "Agent to launch (claude, codex, copilot, pi, agy, opencode)")
+	cmd.PersistentFlags().String("agent", "", "Agent to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 

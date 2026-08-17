@@ -13,40 +13,22 @@ import (
 )
 
 // buildLaunch constructs the agent command for the given model and worktree,
-// appending a resume flag when a prior session exists. It is separated from
-// run so tests can assert the command shape without exec'ing an agent.
-func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config) (*exec.Cmd, error) {
-	d := agents.ByName(agent)
-	if d == nil {
-		return nil, fmt.Errorf("unknown agent: %s", agent)
-	}
-	if s, ok := d.(agents.Syncer); ok {
-		if err := s.SyncModels(cfg); err != nil {
-			return nil, err
-		}
-	}
-	cmd, err := agents.Command(d, m, yolo, worktreePath)
-	if err != nil {
-		return nil, err
-	}
-	if sess != nil {
-		switch agent {
-		case "claude":
-			cmd.Args = append(cmd.Args, "--resume", sess.ID)
-		case "opencode":
-			cmd.Args = append(cmd.Args, "--session", sess.ID)
-		}
-	}
-	return cmd, nil
+// appending passthrough args and a resume flag when a prior session exists.
+// It is a thin wrapper around agents.BuildLaunchCmd so tests can assert the
+// command shape without exec'ing an agent.
+func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 }
 
 // launch builds and runs the agent directly (no TUI), wiring stdio and
-// preserving the agent's exit code so scripts see it.
-func launch(agent, worktreePath string, cfg *config.Config, yolo bool) error {
+// preserving the agent's exit code so scripts see it. extraArgs are the
+// user's passthrough args after --.
+func launch(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) error {
 	m := defaultModel(cfg, agent)
 
 	// Fail fast if the selected ollama model is not available locally.
-	if ollamacheck.IsOllamaModel(m) {
+	// Skip the check for shell — it has no model.
+	if agent != "shell" && ollamacheck.IsOllamaModel(m) {
 		ok, err := ollamacheck.Available(m.ModelName)
 		if err != nil {
 			return fmt.Errorf("ollama check failed: %w", err)
@@ -57,7 +39,7 @@ func launch(agent, worktreePath string, cfg *config.Config, yolo bool) error {
 	}
 
 	sess, _ := session.LatestForAgent(agent, worktreePath)
-	cmd, err := buildLaunch(agent, m, worktreePath, yolo, sess, cfg)
+	cmd, err := buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 	if err != nil {
 		return err
 	}
@@ -76,6 +58,6 @@ func launch(agent, worktreePath string, cfg *config.Config, yolo bool) error {
 
 // launchDirect runs the agent in the current directory (passthrough when
 // outside a git repo).
-func launchDirect(agent string, cfg *config.Config, yolo bool) error {
-	return launch(agent, ".", cfg, yolo)
+func launchDirect(agent string, cfg *config.Config, yolo bool, extraArgs []string) error {
+	return launch(agent, ".", cfg, yolo, extraArgs)
 }

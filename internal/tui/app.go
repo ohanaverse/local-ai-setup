@@ -26,12 +26,12 @@ import (
 type phase int
 
 const (
-	phaseList      phase = iota // worktree list (lesson 13)
-	phaseModel                  // agent+model screen (lesson 14)
-	phaseBrowser                // model browser (lesson 15)
-	phaseResume                 // resume prompt (lesson 16)
-	phaseGuardWarn              // confirm before launching on default branch
-	phaseOllamaWarn             // confirm before launching with unavailable ollama model
+	phaseList       phase = iota // worktree list (lesson 13)
+	phaseModel                   // agent+model screen (lesson 14)
+	phaseBrowser                 // model browser (lesson 15)
+	phaseResume                  // resume prompt (lesson 16)
+	phaseGuardWarn               // confirm before launching on default branch
+	phaseOllamaWarn              // confirm before launching with unavailable ollama model
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -59,8 +59,10 @@ type model struct {
 	cfg      *config.Config // loaded config for the model catalog
 
 	// launch state (lesson 16)
-	selectedPath string // worktree path chosen in lesson 13
-	yolo         bool   // pass skip-permissions flag to the agent
+	selectedPath string   // worktree path chosen in lesson 13
+	yolo         bool     // pass skip-permissions flag to the agent
+	extraArgs    []string // user passthrough args after --
+	initialAgent string   // agent from --agent flag; "" = use config default
 	resume       resumeModel
 
 	// model browser (lesson 15)
@@ -70,8 +72,8 @@ type model struct {
 	sourceCycle  int            // 0=all, 1=curated, 2=discovered
 
 	// default-branch guard warning
-	defaultBranch  string       // repo default branch (e.g. main)
-	guardWarnModel list.Model   // confirmation choices for default-branch launch
+	defaultBranch  string         // repo default branch (e.g. main)
+	guardWarnModel list.Model     // confirmation choices for default-branch launch
 	guardWarnEntry worktree.Entry // the entry being confirmed
 
 	// ollama availability warning
@@ -83,6 +85,10 @@ type model struct {
 func (m model) Init() tea.Cmd {
 	return loadEntriesCmd()
 }
+
+// isShellAgent returns true when the active agent is "shell", which has no
+// model screen, no ollama check, and no session resume.
+func isShellAgent(agent string) bool { return agent == "shell" }
 
 // Update handles messages and returns the new state plus optional commands.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -114,12 +120,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedEntryMsg:
-		// Selection is stored for lesson 16's launch. Move to the model
-		// phase and pick an initial agent + model (first agent default,
-		// first model in the default tag group).
-		m.phase = phaseModel
+		// Resolve the agent: --agent flag wins, else the config default.
 		m.selectedPath = msg.entry.Path
-		m.agent = firstAgent(m.cfg)
+		if m.initialAgent != "" {
+			m.agent = m.initialAgent
+		} else {
+			m.agent = firstAgent(m.cfg)
+		}
+		// Shell agent: skip the model screen entirely — go straight to launch.
+		if isShellAgent(m.agent) {
+			return m.launchShell()
+		}
+		m.phase = phaseModel
 		m.tag = m.cfg.DefaultTag
 		m.current = firstModel(m.cfg, m.tag)
 		return m, nil
@@ -187,24 +199,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				sess, err := session.LatestForAgent(m.agent, m.selectedPath)
-				if err != nil {
-					m.status = "session check failed: " + err.Error()
-					return m, nil
-				}
-				if sess == nil {
-					cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg)
-					if err != nil {
-						m.status = "launch failed: " + err.Error()
-						return m, nil
-					}
-					return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
-				}
-				m.phase = phaseResume
-				m.resume.session = sess
-				m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
-				m.resume.choices.Title = "Resume previous session?"
-				return m, nil
+				return m.proceedToLaunch()
 			case phaseBrowser:
 				if item, ok := m.browser.SelectedItem().(modelItem); ok {
 					m.current = item.model
@@ -217,14 +212,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.phase = phaseModel
 						return m, nil
 					case freshChoice:
-						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg)
+						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
 						}
 						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
 					case resumeChoice:
-						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session, m.cfg)
+						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
@@ -246,25 +241,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item, ok := m.ollamaWarnModel.SelectedItem().(ollamaItem); ok {
 					switch item.choice {
 					case ollamaProceedChoice:
-						// Continue to launch/resume flow.
-						sess, err := session.LatestForAgent(m.agent, m.selectedPath)
-						if err != nil {
-							m.status = "session check failed: " + err.Error()
-							return m, nil
-						}
-						if sess == nil {
-							cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg)
-							if err != nil {
-								m.status = "launch failed: " + err.Error()
-								return m, nil
-							}
-							return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
-						}
-						m.phase = phaseResume
-						m.resume.session = sess
-						m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
-						m.resume.choices.Title = "Resume previous session?"
-						return m, nil
+						return m.proceedToLaunch()
 					case ollamaSkipChoice:
 						// Rotate to next model and return to phaseModel.
 						rot := rotation.ForTag(m.cfg, m.tag)
@@ -396,6 +373,42 @@ func (m model) View() string {
 	}
 }
 
+// launchShell builds and runs a shell command (or interactive bash) in the
+// selected worktree, skipping the model screen, ollama check, and session
+// resume. Used by the shell agent path.
+func (m model) launchShell() (model, tea.Cmd) {
+	cmd, err := launchAgent("shell", config.Model{}, m.selectedPath, false, nil, m.cfg, m.extraArgs)
+	if err != nil {
+		m.status = "launch failed: " + err.Error()
+		return m, nil
+	}
+	return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+}
+
+// proceedToLaunch checks for a prior session and either launches the agent
+// directly or transitions to the resume prompt. It is the shared flow used
+// by both the phaseModel enter handler and the ollama warning proceed choice.
+func (m model) proceedToLaunch() (model, tea.Cmd) {
+	sess, err := session.LatestForAgent(m.agent, m.selectedPath)
+	if err != nil {
+		m.status = "session check failed: " + err.Error()
+		return m, nil
+	}
+	if sess == nil {
+		cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
+		if err != nil {
+			m.status = "launch failed: " + err.Error()
+			return m, nil
+		}
+		return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+	}
+	m.phase = phaseResume
+	m.resume.session = sess
+	m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
+	m.resume.choices.Title = "Resume previous session?"
+	return m, nil
+}
+
 // firstAgent returns the first configured agent, defaulting to "claude".
 func firstAgent(cfg *config.Config) string {
 	if cfg != nil && len(cfg.Agents) > 0 {
@@ -444,12 +457,21 @@ type entriesLoadedMsg struct {
 }
 
 // Run starts the TUI in alternate-screen mode and returns when it quits.
-func Run(yolo bool) error {
+// agent is the --agent flag value ("" = use config default). extraArgs are
+// the user's passthrough args after --.
+func Run(yolo bool, agent string, extraArgs []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	p := tea.NewProgram(model{loading: true, status: "loading worktrees...", cfg: cfg, yolo: yolo}, tea.WithAltScreen())
+	p := tea.NewProgram(model{
+		loading:      true,
+		status:       "loading worktrees...",
+		cfg:          cfg,
+		yolo:         yolo,
+		initialAgent: agent,
+		extraArgs:    extraArgs,
+	}, tea.WithAltScreen())
 	currentProgram = p
 	_, err = p.Run()
 	return err

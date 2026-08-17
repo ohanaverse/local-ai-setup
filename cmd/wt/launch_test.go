@@ -85,7 +85,7 @@ func TestDefaultModelEmptyConfig(t *testing.T) {
 // clear error rather than a nil command. Without this the launch path could
 // dereference a nil driver.
 func TestBuildLaunchUnknownAgent(t *testing.T) {
-	_, err := buildLaunch("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
+	_, err := buildLaunch("not-an-agent", config.Model{}, "/tmp", false, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -99,7 +99,7 @@ func TestBuildLaunchUnknownAgent(t *testing.T) {
 // claude-wt wrapper used to do.
 func TestBuildLaunchClaudeResume(t *testing.T) {
 	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil)
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 // appends --session <id>.
 func TestBuildLaunchOpenCodeResume(t *testing.T) {
 	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil)
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 // TestBuildLaunchNoSessionOmitsResume asserts that a nil session injects no
 // resume/session flag. This is the "start fresh" path.
 func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false, nil, nil)
+	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
 	}}
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
-	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg)
+	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("buildLaunch: %v", err)
 	}
