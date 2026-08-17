@@ -208,7 +208,10 @@ func TestViewReady(t *testing.T) {
 
 // TestEnterSelectsEntry asserts that pressing Enter when the list is ready
 // emits a selectedEntryMsg carrying the current entry. This is the primary
-// selection affordance for the worktree picker.
+// selection affordance for the worktree picker. (The list's first item is
+// the "+ New worktree…" sentinel; we step down to a real entry before
+// pressing Enter, since Enter on the sentinel opens the new-worktree
+// prompt instead.)
 func TestEnterSelectsEntry(t *testing.T) {
 	m := model{width: 80, height: 24}
 	entries := []worktree.Entry{
@@ -217,6 +220,10 @@ func TestEnterSelectsEntry(t *testing.T) {
 	}
 	got, _ := m.Update(entriesLoadedMsg{entries: entries})
 	m = got.(model)
+	// Move down past the sentinel (index 0) to the first real entry.
+	var downCmd tea.Cmd
+	m.list, downCmd = m.list.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_ = downCmd
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter returned nil cmd, want selectedEntryMsg")
@@ -388,3 +395,457 @@ func TestOllamaWarnCancel(t *testing.T) {
 		t.Fatalf("expected phaseModel after cancel, got %d", mm.phase)
 	}
 }
+
+// TestNKeyOpensNewWorktreePhase asserts pressing `n` on the picker
+// list transitions to phaseNewWorktree. Without this wiring, the
+// keyboard shortcut is dead and only the sentinel is reachable.
+func TestNKeyOpensNewWorktreePhase(t *testing.T) {
+	m := model{phase: phaseList, ready: true, width: 80, height: 24}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree", gotModel.phase)
+	}
+}
+
+// TestNKeyIgnoredWhileLoading asserts `n` does not transition
+// before the list is ready. A user mashing `n` while the picker is
+// still loading would otherwise jump into an empty prompt and
+// have to esc out.
+func TestNKeyIgnoredWhileLoading(t *testing.T) {
+	m := model{phase: phaseList, ready: false, width: 80, height: 24}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase == phaseNewWorktree {
+		t.Errorf("phase = phaseNewWorktree, want phaseList (loading not complete)")
+	}
+}
+
+// TestEnterOnSentinelOpensNewWorktreePhase asserts picking the
+// sentinel and pressing Enter transitions to phaseNewWorktree. The
+// sentinel must be Enter-able, not just `n`-able.
+func TestEnterOnSentinelOpensNewWorktreePhase(t *testing.T) {
+	// Build a list with just the sentinel as the selected item.
+	l := buildList(nil, 80, 24)
+	m := model{
+		phase: phaseList, ready: true, width: 80, height: 24,
+		list: l,
+	}
+	// Sentinel is the first (and only) item, so the cursor is on it.
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree", gotModel.phase)
+	}
+}
+
+// TestEnterOnSentinelIgnoredWhileLoading asserts the sentinel
+// cannot be picked before the list is ready. Consistent with the
+// existing list-unready guard and the `n` keypress guard.
+func TestEnterOnSentinelIgnoredWhileLoading(t *testing.T) {
+	// Even with a sentinel-bearing list, ready=false short-circuits.
+	l := buildList(nil, 80, 24)
+	m := model{
+		phase: phaseList, ready: false, width: 80, height: 24,
+		list: l,
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase == phaseNewWorktree {
+		t.Errorf("phase = phaseNewWorktree, want phaseList (loading not complete)")
+	}
+}
+
+// TestEscOnNewWorktreeReturnsToList asserts pressing esc on the
+// new-worktree prompt returns to the picker. Without this, the
+// user is stuck in the prompt with no way out.
+func TestEscOnNewWorktreeReturnsToList(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		newInput: newInputModel(80),
+		newError: "previous error",
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseList {
+		t.Errorf("phase = %v, want phaseList", gotModel.phase)
+	}
+	if gotModel.newError != "" {
+		t.Errorf("newError = %q, want empty (esc clears it)", gotModel.newError)
+	}
+}
+
+// TestEnterOnNewWorktreeEmptyNameKeepsPhase asserts an empty name
+// does not dispatch a create command. The user must see the inline
+// error and try again; an empty-name dispatch would race a
+// `worktree add` for a malformed path.
+func TestEnterOnNewWorktreeEmptyNameKeepsPhase(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		repoRoot: "/tmp/repo",
+		newInput: newInputModel(80),
+	}
+	// newInput is empty by default.
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree", gotModel.phase)
+	}
+	if cmd != nil {
+		t.Errorf("cmd = %v, want nil (empty name should not dispatch)", cmd)
+	}
+	if gotModel.newError == "" {
+		t.Error("newError = empty, want validation error message")
+	}
+}
+
+// TestEnterOnNewWorktreeDispatchesCmd asserts a non-empty name
+// triggers the ensureNewWorktreeCmd with the repo root and the
+// input's current value. The cmd is what kicks off the async git
+// work; this is the contract that wires the input to the worker.
+func TestEnterOnNewWorktreeDispatchesCmd(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		repoRoot: "/tmp/repo",
+		newInput: newInputModel(80),
+	}
+	m.newInput.SetValue("my-feature")
+
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree (cmd runs async; phase stays)", gotModel.phase)
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want ensureNewWorktreeCmd")
+	}
+	// Run the cmd and verify the message type.
+	msg := cmd()
+	if _, ok := msg.(newWorktreeCreatedMsg); !ok {
+		t.Errorf("cmd returned %T, want newWorktreeCreatedMsg", msg)
+	}
+}
+
+// TestNewWorktreeCreatedErrorStaysOnPrompt asserts a git failure
+// surfaces inline and keeps the user on the prompt. A silent
+// failure would leave the user with no feedback.
+func TestNewWorktreeCreatedErrorStaysOnPrompt(t *testing.T) {
+	m := model{phase: phaseNewWorktree, width: 80, height: 24}
+	got, _ := m.Update(newWorktreeCreatedMsg{err: errMock("git worktree add: boom")})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree (stays on error)", gotModel.phase)
+	}
+	if gotModel.newError == "" {
+		t.Error("newError = empty, want error from msg")
+	}
+	if gotModel.pendingHighlight != "" {
+		t.Errorf("pendingHighlight = %q, want empty (no success)", gotModel.pendingHighlight)
+	}
+}
+
+// TestNewWorktreeCreatedSuccessTriggersReload asserts a successful
+// create sets pendingHighlight, transitions back to phaseList, and
+// dispatches loadEntriesCmd. The reload + highlight flow is what
+// brings the user back to the picker on the new entry.
+func TestNewWorktreeCreatedSuccessTriggersReload(t *testing.T) {
+	m := model{phase: phaseNewWorktree, width: 80, height: 24}
+	got, cmd := m.Update(newWorktreeCreatedMsg{path: "/repo/.worktrees/x", name: "x"})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseList {
+		t.Errorf("phase = %v, want phaseList (return to picker)", gotModel.phase)
+	}
+	if gotModel.pendingHighlight != "x" {
+		t.Errorf("pendingHighlight = %q, want x", gotModel.pendingHighlight)
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want loadEntriesCmd")
+	}
+}
+
+// TestEntriesLoadedAppliesPendingHighlight asserts that after a
+// reload, the list cursor moves to the entry matching the
+// pendingHighlight branch. This is the "you just created this,
+// here it is" feedback.
+func TestEntriesLoadedAppliesPendingHighlight(t *testing.T) {
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
+		{Type: worktree.TypeWorktree, Branch: "x", Path: "/repo/.worktrees/x"},
+	}
+	m := model{
+		width:            80,
+		height:           24,
+		pendingHighlight: "x",
+	}
+	got, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	// Find the index of "x" — should be selected.
+	items := gotModel.list.Items()
+	var xIdx int = -1
+	for i, it := range items {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && ei.entry.Branch == "x" {
+			xIdx = i
+			break
+		}
+	}
+	if xIdx < 0 {
+		t.Fatal("entry x not found in reloaded list")
+	}
+	if gotModel.list.Index() != xIdx {
+		t.Errorf("list.Index() = %d, want %d (x)", gotModel.list.Index(), xIdx)
+	}
+	if gotModel.pendingHighlight != "" {
+		t.Errorf("pendingHighlight = %q, want cleared after applying", gotModel.pendingHighlight)
+	}
+}
+
+// TestEntriesLoadedNoPendingHighlightLeavesCursorAtZero asserts
+// that without a pendingHighlight, the list cursor stays at the
+// default (top). This is the normal reload path — cursor reset is
+// fine.
+func TestEntriesLoadedNoPendingHighlightLeavesCursorAtZero(t *testing.T) {
+	entries := []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
+	}
+	m := model{width: 80, height: 24}
+	got, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	// After a fresh build, the cursor is at 0 (the sentinel). That's
+	// acceptable behavior — this test just guards against
+	// pendingHighlight being unexpectedly set.
+	if gotModel.pendingHighlight != "" {
+		t.Errorf("pendingHighlight = %q, want empty", gotModel.pendingHighlight)
+	}
+}
+
+// TestQTypesInNewWorktreePrompt asserts that pressing 'q' in the
+// new-worktree prompt types the character instead of quitting the TUI.
+// Before the phase-gated quit fix, any branch name containing 'q'
+// (e.g. quick-fix) killed the app mid-typing and lost the input.
+func TestQTypesInNewWorktreePrompt(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		newInput: newInputModel(80),
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if !strings.Contains(gotModel.newInput.Value(), "q") {
+		t.Errorf("input value = %q, want to contain q (quit hijacked the key)", gotModel.newInput.Value())
+	}
+}
+
+// TestQDoesNotQuitWhileFiltering asserts that 'q' types into the list
+// filter (bubbles/list incremental filter) rather than quitting. The
+// filter is opened with '/'; a query like "quality" would otherwise
+// quit the TUI on the first 'q'.
+func TestQDoesNotQuitWhileFiltering(t *testing.T) {
+	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
+	m := model{phase: phaseList, ready: true, width: 80, height: 24}
+	m.list = buildList(entries, 78, 22)
+	// Open the filter exactly like a user pressing '/'.
+	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.list.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.list.FilterState())
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if !strings.Contains(gotModel.list.FilterInput.Value(), "q") {
+		t.Errorf("filter input = %q, want to contain q (quit hijacked the key)", gotModel.list.FilterInput.Value())
+	}
+}
+
+// TestNNotHijackedWhileFiltering asserts that 'n' types into the list
+// filter instead of opening the new-worktree prompt. Before the fix,
+// the 'n' keypress was intercepted before bubbles/list saw it, so no
+// filter query could ever contain 'n' — branches with 'n' in their
+// name became unfilterable by typing.
+func TestNNotHijackedWhileFiltering(t *testing.T) {
+	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
+	m := model{phase: phaseList, ready: true, width: 80, height: 24}
+	m.list = buildList(entries, 78, 22)
+	// Open the filter exactly like a user pressing '/'.
+	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.list.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.list.FilterState())
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase == phaseNewWorktree {
+		t.Error("phase = phaseNewWorktree, want phaseList (n hijacked the filter)")
+	}
+	if !strings.Contains(gotModel.list.FilterInput.Value(), "n") {
+		t.Errorf("filter input = %q, want to contain n", gotModel.list.FilterInput.Value())
+	}
+}
+
+// TestEnterOnNewWorktreeSetsCreating asserts the first Enter in the
+// prompt marks the create as in-flight. The flag is what later Enters
+// check to avoid dispatching a second concurrent `git worktree add`.
+func TestEnterOnNewWorktreeSetsCreating(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		repoRoot: "/tmp/repo",
+		newInput: newInputModel(80),
+	}
+	m.newInput.SetValue("my-feature")
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if !gotModel.creating {
+		t.Error("creating = false, want true after first Enter")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want ensureNewWorktreeCmd")
+	}
+}
+
+// TestEnterIgnoredWhileCreating asserts a second Enter while a create
+// is in flight is ignored (no command dispatched). Without the
+// in-flight guard, two concurrent git worktree add calls raced and one
+// failed with a spurious "already exists" error.
+func TestEnterIgnoredWhileCreating(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		repoRoot: "/tmp/repo",
+		newInput: newInputModel(80),
+		creating: true,
+	}
+	m.newInput.SetValue("my-feature")
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if cmd != nil {
+		t.Error("cmd = non-nil, want nil (second Enter must not dispatch)")
+	}
+	if !gotModel.creating {
+		t.Error("creating = false, want true (flag must persist while in flight)")
+	}
+}
+
+// TestNewWorktreeCreatedClearsCreating asserts the in-flight flag is
+// cleared when the async create reports back (success or error). A
+// stale true would lock the prompt forever.
+func TestNewWorktreeCreatedClearsCreating(t *testing.T) {
+	m := model{phase: phaseNewWorktree, creating: true}
+	got, _ := m.Update(newWorktreeCreatedMsg{path: "/repo/.worktrees/x", name: "x"})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.creating {
+		t.Error("creating = true, want false after result msg")
+	}
+}
+
+// TestReloadErrorVisibleAboveList asserts that a reload failure after
+// a successful create renders above the list. Before the fix the error
+// was stored in m.status, which View only shows while !m.ready, so the
+// user saw a stale list with no explanation after the reload failed.
+func TestReloadErrorVisibleAboveList(t *testing.T) {
+	m := model{width: 80, height: 24}
+	got, _ := m.Update(entriesLoadedMsg{
+		entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}},
+	})
+	m = got.(model) // ready == true
+	if !m.ready {
+		t.Fatal("setup failed: model not ready")
+	}
+
+	got, _ = m.Update(entriesLoadedMsg{err: errMock("git worktree list: boom")})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.listError == "" {
+		t.Fatal("listError = empty, want reload error")
+	}
+	if view := gotModel.View(); !strings.Contains(view, "boom") {
+		t.Errorf("View missing reload error, got:\n%s", view)
+	}
+}
+
+// TestViewCreatingIndicator asserts the prompt shows a "creating…"
+// status while a create is in flight and hides the enter hint. This is
+// the visible feedback that explains why a second Enter does nothing.
+func TestViewCreatingIndicator(t *testing.T) {
+	m := model{
+		phase:    phaseNewWorktree,
+		width:    80,
+		height:   24,
+		newInput: newInputModel(80),
+		creating: true,
+	}
+	m.newInput.SetValue("my-feature")
+	view := m.View()
+	if !strings.Contains(view, "creating my-feature") {
+		t.Errorf("View missing creating indicator, got:\n%s", view)
+	}
+	if strings.Contains(view, "[enter] create") {
+		t.Errorf("View shows enter hint while creating, got:\n%s", view)
+	}
+}
+
+// errMock is a small helper to make error literals readable in tests.
+type errMock string
+
+func (e errMock) Error() string { return string(e) }

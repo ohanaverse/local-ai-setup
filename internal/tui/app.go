@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
@@ -26,12 +27,13 @@ import (
 type phase int
 
 const (
-	phaseList       phase = iota // worktree list (lesson 13)
-	phaseModel                   // agent+model screen (lesson 14)
-	phaseBrowser                 // model browser (lesson 15)
-	phaseResume                  // resume prompt (lesson 16)
-	phaseGuardWarn               // confirm before launching on default branch
-	phaseOllamaWarn              // confirm before launching with unavailable ollama model
+	phaseList        phase = iota // worktree list (lesson 13)
+	phaseModel                    // agent+model screen (lesson 14)
+	phaseBrowser                  // model browser (lesson 15)
+	phaseResume                   // resume prompt (lesson 16)
+	phaseGuardWarn                // confirm before launching on default branch
+	phaseOllamaWarn               // confirm before launching with unavailable ollama model
+	phaseNewWorktree              // create-new-worktree prompt
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -77,6 +79,14 @@ type model struct {
 
 	// ollama availability warning
 	ollamaWarnModel list.Model // confirmation choices for unavailable model
+
+	// new-worktree prompt (this lesson)
+	newInput         textinput.Model
+	newError         string
+	pendingHighlight string // branch name to focus after re-enumerating
+	repoRoot         string // cached from entriesLoadedMsg to avoid a second rev-parse
+	creating         bool   // true while a create is in flight (guards double-Enter)
+	listError        string // reload error shown above the list when ready
 }
 
 // Init returns the initial command: load worktrees/branches.
@@ -87,6 +97,26 @@ func (m model) Init() tea.Cmd {
 // isShellAgent returns true when the active agent is "shell", which has no
 // model screen, no ollama check, and no session resume.
 func isShellAgent(agent string) bool { return agent == "shell" }
+
+// isTyping reports whether the current phase is actively receiving character
+// input, in which case 'q' must not quit. The new-worktree prompt is a
+// textinput; the list filter is bubbles/list's incremental filter.
+func (m model) isTyping() bool {
+	if m.phase == phaseNewWorktree {
+		return true
+	}
+	return m.phase == phaseList && m.ready && m.list.FilterState() == list.Filtering
+}
+
+// openNewWorktreePrompt transitions to the new-worktree prompt, resetting the
+// input and any prior error. Shared by the sentinel-Enter and 'n' entry points
+// so prompt setup stays in one place.
+func (m model) openNewWorktreePrompt() model {
+	m.phase = phaseNewWorktree
+	m.newInput = newInputModel(m.width)
+	m.newError = ""
+	return m
+}
 
 // Update handles messages and returns the new state plus optional commands.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -102,18 +132,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseResume {
 			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
 		}
+		if m.phase == phaseNewWorktree {
+			m.newInput.Width = msg.Width - 4
+		}
 	case entriesLoadedMsg:
 		if msg.err != nil {
-			m.status = "error: " + msg.err.Error()
+			if m.ready {
+				// Reload after a create: the list is still usable, but the
+				// error must be visible — View renders it above the list.
+				m.listError = msg.err.Error()
+			} else {
+				m.status = "error: " + msg.err.Error()
+			}
 			return m, nil
 		}
+		m.listError = ""
 		m.entries = msg.entries
 		m.defaultBranch = msg.defaultBranch
+		m.repoRoot = msg.repoRoot
 		m.list = buildList(msg.entries, m.width-2, m.height-2)
 		m.ready = true
 
 		if len(msg.entries) == 1 && isCurrentOnDefaultBranch(msg.entries[0], msg.defaultBranch) {
 			m.list.Title = "WARNING: you are on the default branch (" + msg.defaultBranch + ")"
+		}
+		// Apply a pending highlight (set after a successful
+		// new-worktree create) by selecting the matching entry. If
+		// the branch isn't found (shouldn't happen post-create),
+		// leave the cursor at its default.
+		if m.pendingHighlight != "" {
+			for i, it := range m.list.Items() {
+				if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && ei.entry.Branch == m.pendingHighlight {
+					m.list.Select(i)
+					break
+				}
+			}
+			m.pendingHighlight = ""
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -137,9 +191,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "agent exited: " + msg.err.Error()
 		}
 		return m, tea.Quit
+	case newWorktreeCreatedMsg:
+		m.creating = false
+		if msg.err != nil {
+			m.newError = msg.err.Error()
+			return m, nil
+		}
+		m.pendingHighlight = msg.name
+		m.phase = phaseList
+		return m, loadEntriesCmd()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "q":
+			// 'q' must type a character while the user is entering text
+			// (new-worktree prompt, list filter) rather than quitting.
+			if !m.isTyping() {
+				return m, tea.Quit
+			}
+		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
 			// esc is phase-aware: pop back from a nested screen, else quit.
@@ -159,6 +228,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.phase = phaseModel
 				return m, nil
 			}
+			if m.phase == phaseNewWorktree {
+				m.phase = phaseList
+				m.newError = ""
+				return m, nil
+			}
 			return m, tea.Quit
 		case "enter":
 			switch m.phase {
@@ -169,6 +243,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				item, ok := m.list.SelectedItem().(entryItem)
 				if !ok {
 					return m, nil
+				}
+				if item.kind == kindNewWorktree {
+					return m.openNewWorktreePrompt(), nil
 				}
 				if isCurrentOnDefaultBranch(item.entry, m.defaultBranch) {
 					installed := guard.Check() == guard.Installed
@@ -252,6 +329,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 				}
+			case phaseNewWorktree:
+				if m.creating {
+					// A create is already in flight; ignore the second Enter
+					// so two concurrent `git worktree add` calls can't race.
+					return m, nil
+				}
+				if errMsg := validateNewWorktreeName(m.newInput.Value()); errMsg != "" {
+					m.newError = errMsg
+					return m, nil
+				}
+				m.newError = ""
+				m.creating = true
+				return m, ensureNewWorktreeCmd(m.repoRoot, m.newInput.Value())
 			}
 		case "r":
 			if m.phase == phaseModel {
@@ -270,6 +360,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.phase = phaseBrowser
 				m.browserCache = nil
 				m.refreshBrowser()
+			}
+		case "n":
+			// Open the new-worktree prompt. Skip while the list filter is
+			// being typed so 'n' can appear in filter queries.
+			if m.phase == phaseList && m.ready && m.list.FilterState() != list.Filtering {
+				return m.openNewWorktreePrompt(), nil
 			}
 		case "d":
 			if m.phase == phaseModel {
@@ -326,11 +422,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ollamaWarnModel, cmd = m.ollamaWarnModel.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseNewWorktree && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.newInput, cmd = m.newInput.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
 // View renders the screen as a string.
 func (m model) View() string {
+	if m.phase == phaseNewWorktree {
+		if m.width <= 0 || m.height <= 0 {
+			return "new worktree prompt (waiting for window size)"
+		}
+		body := m.newInput.View()
+		if m.newError != "" {
+			body += "\n" + errorStyle.Render(m.newError)
+		}
+		if m.creating {
+			body += "\ncreating " + m.newInput.Value() + "…"
+		} else {
+			body += "\n[enter] create   [esc] cancel"
+		}
+		return body
+	}
 	if m.phase == phaseResume {
 		if m.width <= 0 || m.height <= 0 {
 			return "resume prompt (waiting for window size)"
@@ -361,6 +477,9 @@ func (m model) View() string {
 	}
 	if !m.ready {
 		return m.status
+	}
+	if m.listError != "" {
+		return errorStyle.Render("error: "+m.listError) + "\n" + m.list.View()
 	}
 	return m.list.View()
 }
@@ -415,6 +534,8 @@ func firstModel(cfg *config.Config, tag string) config.Model {
 }
 
 // loadEntriesCmd returns a command that enumerates worktrees/branches.
+// loadEntriesCmd returns a command that enumerates worktrees/branches
+// and captures the repo root for the new-worktree prompt.
 func loadEntriesCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := worktree.RepoRoot()
@@ -423,7 +544,7 @@ func loadEntriesCmd() tea.Cmd {
 		}
 		entries, err := worktree.Enumerate(root, root)
 		defaultBranch, _ := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{entries: entries, defaultBranch: defaultBranch, err: err}
+		return entriesLoadedMsg{entries: entries, defaultBranch: defaultBranch, repoRoot: root, err: err}
 	}
 }
 
@@ -434,9 +555,12 @@ func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
 }
 
 // entriesLoadedMsg carries the enumeration result to Update.
+// repoRoot is the git repo root, captured at load time so the
+// new-worktree prompt can use it without re-resolving.
 type entriesLoadedMsg struct {
 	entries       []worktree.Entry
 	defaultBranch string
+	repoRoot      string
 	err           error
 }
 

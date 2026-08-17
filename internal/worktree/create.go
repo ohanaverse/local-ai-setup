@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -30,10 +29,22 @@ func EnsureForName(dir, name string) (string, error) {
 	if strings.ContainsAny(safeName, "/\\") {
 		return "", fmt.Errorf("worktree name must not contain path separators: %s", name)
 	}
+	// "." and ".." survive filepath.Base and would resolve to the repo root
+	// via filepath.Join (".worktrees/.." cleans to dir), silently creating
+	// nothing. Reject them explicitly.
+	if safeName == "." || safeName == ".." {
+		return "", fmt.Errorf("worktree name must not be %q", safeName)
+	}
 
 	path := filepath.Join(dir, ".worktrees", safeName)
-	// Idempotent: if the path is already a registered worktree, skip creation.
-	if isWorktreePath(dir, path) {
+	// Idempotent: if the path is already a registered worktree for the same
+	// branch, reuse it. If it's registered for a DIFFERENT branch (e.g. the
+	// user typed "feature/x" but .worktrees/x already holds branch "x"),
+	// error rather than silently returning the wrong worktree.
+	if branch, ok := worktreeBranchAt(dir, path); ok {
+		if branch != "" && branch != name {
+			return "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
+		}
 		return path, nil
 	}
 
@@ -54,13 +65,35 @@ func branchExists(dir, branch string) bool {
 	return err == nil
 }
 
-// isWorktreePath reports whether path is already registered as a worktree.
-func isWorktreePath(dir, path string) bool {
+// worktreeBranchAt returns the branch checked out at path, if path is a
+// registered worktree. The bool is true when path is registered (even when
+// detached, in which case branch is ""). Paths are resolved through symlinks
+// so the lookup matches git's porcelain output, which emits resolved paths
+// (macOS /var → /private/var); the old byte-compare failed on symlinked repos.
+func worktreeBranchAt(dir, path string) (string, bool) {
 	out, err := runGit(dir, "worktree", "list", "--porcelain")
 	if err != nil {
-		return false
+		return "", false
 	}
-	return bytes.Contains(out, []byte("worktree "+path+"\n"))
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	var curPath string
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			curPath = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			if curPath == path {
+				return strings.TrimPrefix(line, "branch refs/heads/"), true
+			}
+		case strings.HasPrefix(line, "detached"):
+			if curPath == path {
+				return "", true
+			}
+		}
+	}
+	return "", false
 }
 
 // EnsureForBranch creates (or reuses) a worktree for a picked branch.

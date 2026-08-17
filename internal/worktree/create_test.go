@@ -289,7 +289,7 @@ func TestEnsureForNameReusesCheckedOutWorktree(t *testing.T) {
 }
 
 // EnsureForName must skip creation when a worktree already exists at
-// .worktrees/<name> (the isWorktreePath idempotent path).
+// .worktrees/<name> (the worktreeBranchAt idempotent path).
 func TestEnsureForNameReusesExistingWorktreePath(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -479,5 +479,71 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 	_, err := EnsureForBranch(dir, "origin/foo")
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("want already-exists error, got %v", err)
+	}
+}
+
+// EnsureForName must error when the typed name's base path collides with an
+// existing worktree for a DIFFERENT branch. Typing "feature/x" when
+// .worktrees/x already holds branch "x" previously returned x's worktree
+// silently, so the TUI's pendingHighlight found no match and the user landed
+// on the wrong branch believing they created "feature/x".
+func TestEnsureForNameCollisionErrors(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	// Create a worktree for branch "x" at .worktrees/x.
+	wtDir := filepath.Join(dir, ".worktrees", "x")
+	cmd := exec.Command("git", "worktree", "add", "-b", "x", wtDir)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add -b x: %v\n%s", err, out)
+	}
+
+	_, err := EnsureForName(dir, "feature/x")
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("error = %q, want it to mention 'already in use'", err)
+	}
+}
+
+// EnsureForName must still reuse a worktree whose path base matches a
+// slash-containing branch (".worktrees/x" for branch "feature/x"). This is
+// the legitimate idempotent-reuse case the collision guard must not break.
+func TestEnsureForNameReusesSlashedBranchWorktree(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	// Create a worktree for branch "feature/x" at .worktrees/x.
+	wtDir := filepath.Join(dir, ".worktrees", "x")
+	cmd := exec.Command("git", "worktree", "add", "-b", "feature/x", wtDir)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add -b feature/x: %v\n%s", err, out)
+	}
+
+	path, err := EnsureForName(dir, "feature/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPath, _ := filepath.EvalSymlinks(path)
+	resolvedWt, _ := filepath.EvalSymlinks(wtDir)
+	if resolvedPath != resolvedWt {
+		t.Fatalf("path = %q, want existing worktree %q", path, wtDir)
+	}
+}
+
+// EnsureForName must reject "." and "..". filepath.Base leaves them intact
+// and filepath.Join(".worktrees", "..") cleans to the repo root, so without
+// this guard the call would return the repo root with no error and create
+// nothing.
+func TestEnsureForNameRejectsDot(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	for _, name := range []string{".", ".."} {
+		if _, err := EnsureForName(dir, name); err == nil {
+			t.Errorf("EnsureForName(%q) = nil error, want non-nil", name)
+		}
 	}
 }

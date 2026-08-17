@@ -368,7 +368,9 @@ resume prompt, and launch command.
 `entryItem` (`Title()`/`Description()`/`FilterValue()`). `buildList` builds
 the `list.Model`; `loadEntriesCmd` async-loads via `worktree.RepoRoot()` +
 `Enumerate(root, root)`; `entriesLoadedMsg` and `selectedEntryMsg` carry the
-results and the Enter-picked entry into `Update`. Full walkthrough:
+results and the Enter-picked entry into `Update`. The list is prepended with a
+"+ New worktree…" sentinel row (`kindNewWorktree`) that opens the
+new-worktree prompt on Enter, alongside the `n` keybinding. Full walkthrough:
 [docs/go-course/lesson-13-worktree-screen.md](docs/go-course/lesson-13-worktree-screen.md).
 
 ### Agent+model screen
@@ -376,15 +378,17 @@ results and the Enter-picked entry into `Update`. Full walkthrough:
 `selectedEntryMsg` transitions to `phaseModel`, resolving the initial agent
 via `cfg.DefaultAgent()` and model via `firstModel`. A `phase` enum
 (`phaseList` / `phaseModel` / `phaseBrowser` / `phaseResume` /
-`phaseGuardWarn` / `phaseOllamaWarn`) tracks the active screen. When
-`--agent shell`, this screen is skipped entirely — shell has no model,
-rotation, or session resume.
+`phaseGuardWarn` / `phaseOllamaWarn` / `phaseNewWorktree`) tracks the active
+screen. When `--agent shell`, this screen is skipped entirely — shell has no
+model, rotation, or session resume.
 
 Keybindings: **`r`** rotates via `rotation.ForTag(cfg, tag).Next(otherTag)`
 (advances `rotation-<tag>.state`); **`m`** opens the model browser; **`d`**
-toggles the `code`/`design` tag group, driving the cross-tag skip; **`enter`**
-launches, or switches to `phaseResume` if `session.LatestForAgent` finds a
-prior claude/opencode session. Full walkthrough:
+toggles the `code`/`design` tag group, driving the cross-tag skip; **`n`**
+opens the new-worktree prompt (also reachable via the "+ New worktree…"
+sentinel row in the picker); **`enter`** launches, or switches to
+`phaseResume` if `session.LatestForAgent` finds a prior claude/opencode
+session. Full walkthrough:
 [docs/go-course/lesson-14-agent-model-screen.md](docs/go-course/lesson-14-agent-model-screen.md).
 
 ### Model browser screen

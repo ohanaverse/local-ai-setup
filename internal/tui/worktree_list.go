@@ -7,16 +7,39 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
-// entryItem adapts a worktree.Entry to a list.Item.
+// entryKind discriminates sentinel rows from real entries in the picker.
+type entryKind int
+
+const (
+	// kindEntry is a real worktree or branch row.
+	kindEntry entryKind = iota
+	// kindNewWorktree is the "+ New worktree…" sentinel that opens
+	// the new-worktree prompt. The underlying entry field is unused.
+	kindNewWorktree
+)
+
+// entryItem adapts a worktree.Entry to a list.Item. With kind =
+// kindNewWorktree, it represents the create-new sentinel row.
 type entryItem struct {
+	kind  entryKind
 	entry worktree.Entry
 }
 
-// FilterValue is used by the list's built-in filter.
-func (e entryItem) FilterValue() string { return e.entry.Branch }
+// FilterValue is used by the list's built-in filter. The sentinel
+// returns "" so it is hidden when the user is filtering.
+func (e entryItem) FilterValue() string {
+	if e.kind == kindNewWorktree {
+		return ""
+	}
+	return e.entry.Branch
+}
 
-// Title renders the branch name (remote prefix stripped for display).
+// Title renders the branch name (remote prefix stripped for display)
+// for real entries, and a "+ New worktree…" label for the sentinel.
 func (e entryItem) Title() string {
+	if e.kind == kindNewWorktree {
+		return "+ New worktree…"
+	}
 	b := e.entry.Branch
 	if i := strings.IndexByte(b, '/'); i >= 0 {
 		b = b[i+1:] // strip remote prefix
@@ -24,8 +47,12 @@ func (e entryItem) Title() string {
 	return b
 }
 
-// Description renders the metadata columns.
+// Description renders the metadata columns. The sentinel gets a
+// static descriptor so users understand what the row does.
 func (e entryItem) Description() string {
+	if e.kind == kindNewWorktree {
+		return "create a new branch and worktree"
+	}
 	path := e.entry.Path
 	if path == "" {
 		path = "(no worktree)"
@@ -46,11 +73,13 @@ func pad(s string, n int) string {
 // selectedEntryMsg is emitted when the user picks a worktree or branch.
 type selectedEntryMsg struct{ entry worktree.Entry }
 
-// buildList constructs a list.Model from worktree entries.
+// buildList constructs a list.Model from worktree entries, prepending
+// the "+ New worktree…" sentinel so it's always reachable.
 func buildList(entries []worktree.Entry, width, height int) list.Model {
-	items := make([]list.Item, 0, len(entries))
+	items := make([]list.Item, 0, len(entries)+1)
+	items = append(items, entryItem{kind: kindNewWorktree})
 	for _, e := range entries {
-		items = append(items, entryItem{entry: e})
+		items = append(items, entryItem{kind: kindEntry, entry: e})
 	}
 	l := list.New(items, list.NewDefaultDelegate(), width, height)
 	l.Title = "Pick a worktree or branch"
