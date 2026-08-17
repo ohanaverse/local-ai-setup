@@ -597,3 +597,78 @@ func TestSave(t *testing.T) {
 		t.Errorf("Providers = %v, want [ollama]", loaded.Providers)
 	}
 }
+
+// TestModelsForAgentFiltersByProvider asserts ModelsForAgent returns only
+// models whose ProviderID is in the agent's supported_providers list.
+// Without this filter the TUI list would show models the active agent
+// cannot drive (e.g. claude/native listed for the codex agent).
+func TestModelsForAgentFiltersByProvider(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{
+			{ID: "ollama"},
+			{ID: "claude"},
+		},
+		Models: []Model{
+			{ID: "claude/native", ProviderID: "claude", ModelName: "native"},
+			{ID: "ollama/a:9b", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/b:9b", ProviderID: "ollama", Tags: []string{"code"}},
+		},
+		Agents: []Agent{
+			{Name: "codex", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	got, err := cfg.ModelsForAgent("codex")
+	if err != nil {
+		t.Fatalf("ModelsForAgent: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (claude/native filtered out)", len(got))
+	}
+	for _, m := range got {
+		if m.ProviderID != "ollama" {
+			t.Errorf("got model %q with provider %q, want only ollama", m.ID, m.ProviderID)
+		}
+	}
+}
+
+// TestModelsForAgentUnknownAgent asserts that asking for a non-existent
+// agent returns an error rather than panicking. The TUI uses this to
+// surface a clear error if --agent points at a typo.
+func TestModelsForAgentUnknownAgent(t *testing.T) {
+	cfg := &Config{
+		Agents: []Agent{{Name: "claude"}},
+	}
+	_, err := cfg.ModelsForAgent("nope")
+	if err == nil {
+		t.Fatal("expected error for unknown agent, got nil")
+	}
+}
+
+// TestModelsForAgentAndTagIntersectsBoth asserts the helper composes the
+// agent filter and the tag filter. A model that passes the agent filter
+// but is tagged with a different group must be excluded.
+func TestModelsForAgentAndTagIntersectsBoth(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{{ID: "ollama"}},
+		Models: []Model{
+			{ID: "ollama/code-1", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/design-1", ProviderID: "ollama", Tags: []string{"design"}},
+			{ID: "ollama/both", ProviderID: "ollama", Tags: []string{"code", "design"}},
+		},
+		Agents: []Agent{
+			{Name: "codex", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	got, err := cfg.ModelsForAgentAndTag("codex", "code")
+	if err != nil {
+		t.Fatalf("ModelsForAgentAndTag: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (ollama/code-1, ollama/both)", len(got))
+	}
+	for _, m := range got {
+		if !m.HasTag("code") {
+			t.Errorf("got %q without code tag", m.ID)
+		}
+	}
+}

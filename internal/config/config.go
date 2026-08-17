@@ -332,3 +332,44 @@ func Save(cfg *Config) error {
 	}
 	return WriteFileAtomic(Path(), buf.Bytes(), 0o644)
 }
+
+// ModelsForAgent returns the models whose ProviderID is in the named
+// agent's supported_providers list. Order matches cfg.Models.
+//
+// Errors:
+//   - agent not found in cfg.Agents
+//   - agent references a provider not in cfg.Providers (only reachable
+//     if Validate was bypassed)
+func (c *Config) ModelsForAgent(agentName string) ([]Model, error) {
+	a, err := c.AgentByName(agentName)
+	if err != nil {
+		return nil, err
+	}
+	allowed := map[string]bool{}
+	for _, pid := range a.SupportedProviders {
+		allowed[pid] = true
+	}
+	var out []Model
+	for _, m := range c.Models {
+		if allowed[m.ProviderID] {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// ModelsForAgentAndTag intersects ModelsForAgent with HasTag(tag).
+// tag == "" returns all agent-compatible models (no tag filter).
+func (c *Config) ModelsForAgentAndTag(agentName, tag string) ([]Model, error) {
+	ms, err := c.ModelsForAgent(agentName)
+	if err != nil {
+		return nil, err
+	}
+	var out []Model
+	for _, m := range ms {
+		if tag == "" || m.HasTag(tag) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}

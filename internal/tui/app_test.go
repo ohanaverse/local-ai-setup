@@ -13,9 +13,11 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
-// testConfig returns a Config with one agent and a two-model code tag group.
-// Several lesson-14 tests need a real catalog so firstAgent/firstModel and
-// the rotation have something to operate on.
+// testConfig returns a Config with one agent (claude, supporting the
+// ollama provider) and a two-model code tag group plus one design model.
+// Tests across the picker, rotation, and launch need a real catalog so
+// the agent filter, tag filter, and rotation all have something to
+// operate on.
 func testConfig() *config.Config {
 	return &config.Config{
 		DefaultTag: "code",
@@ -28,7 +30,7 @@ func testConfig() *config.Config {
 			{ID: "ollama/gemma4:design", ProviderID: "ollama", Tags: []string{"design"}},
 		},
 		Agents: []config.Agent{
-			{Name: "claude"},
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
 }
@@ -239,11 +241,12 @@ func TestEnterSelectsEntry(t *testing.T) {
 }
 
 // TestSelectedEntryMsgTransitionsToModelPhase asserts that choosing a
-// worktree moves the TUI into the model phase with a resolved agent, tag,
-// and current model. Without this, the picker would have nowhere to go and
-// the agent+model screen could never be shown.
+// worktree moves the TUI into the model phase with a resolved agent,
+// tag, and a populated picker list. The cursor lands on the rotation's
+// next-to-use model (index 0 with no state file).
 func TestSelectedEntryMsgTransitionsToModelPhase(t *testing.T) {
-	m := model{cfg: testConfig()}
+	tempStateDir(t) // isolate XDG_CONFIG_HOME so rotation state is fresh
+	m := model{cfg: testConfig(), width: 80, height: 24}
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
 	gotModel := got.(model)
 	if gotModel.phase != phaseModel {
@@ -256,7 +259,10 @@ func TestSelectedEntryMsgTransitionsToModelPhase(t *testing.T) {
 		t.Errorf("tag = %q, want code", gotModel.tag)
 	}
 	if gotModel.current.ID != "ollama/gemma4:9b" {
-		t.Errorf("current = %q, want first code model", gotModel.current.ID)
+		t.Errorf("current = %q, want first code model (rotation index 0)", gotModel.current.ID)
+	}
+	if len(gotModel.models.Items()) == 0 {
+		t.Error("models list is empty; expected populated picker")
 	}
 }
 
@@ -303,47 +309,44 @@ func TestRotateKeyIgnoredInListPhase(t *testing.T) {
 // the active tag group (code <-> design) and re-resolves the shown model to
 // the new group's first entry. This powers cross-tag rotation from a single
 // keystroke.
+// TestToggleTagSwitchesGroup asserts pressing 'd' in the model phase flips
+// the active tag group (code <-> design) and rebuilds the picker from
+// the new group's models. (otherTag is now computed via oppositeTag;
+// only m.tag is asserted.)
 func TestToggleTagSwitchesGroup(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseModel, tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
+	dir := tempStateDir(t)
+	seedState(t, dir, "design", "0\nollama/gemma4:design\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	gotModel := got.(model)
-	if gotModel.tag != "design" || gotModel.otherTag != "code" {
-		t.Errorf("tag/otherTag = (%q, %q), want (design, code)", gotModel.tag, gotModel.otherTag)
+	if gotModel.tag != "design" {
+		t.Errorf("tag = %q, want design", gotModel.tag)
 	}
 	if gotModel.current.ID != "ollama/gemma4:design" {
-		t.Errorf("current = %q, want first design model", gotModel.current.ID)
+		t.Errorf("current = %q, want ollama/gemma4:design", gotModel.current.ID)
 	}
 }
 
-// TestViewModelPhase asserts the model-phase View renders agent, model, and
-// tag lines plus the keybind hints. This is the primary feedback surface for
-// the agent+model screen.
-func TestViewModelPhase(t *testing.T) {
-	m := model{phase: phaseModel, agent: "claude", tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
-	view := m.View()
-	for _, want := range []string{"agent", "claude", "model", "ollama/gemma4:9b", "[r] rotate"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("View missing %q in:\n%s", want, view)
-		}
-	}
-}
+// (TestViewModelPhase was rewritten in agent_model_test.go using the
+// new picker-based View.)
 
 // TestOllamaWarnShownWhenUnavailable asserts that when the current model is an
 // unavailable ollama model, the TUI transitions to phaseOllamaWarn.
 func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "ollama"}},
 		Models: []config.Model{
 			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
 		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
-	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
+	m := phaseModelWithList(t, cfg, "claude", "code")
+	m.selectedPath = "/repo"
 
 	// Simulate pressing enter — this should trigger the ollama check.
 	// The model name is guaranteed not to exist, so it will be unavailable.
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := newM.(model)
 
 	if mm.phase != phaseOllamaWarn {

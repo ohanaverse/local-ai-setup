@@ -38,6 +38,38 @@ func seedState(t *testing.T, dir, tag, content string) {
 	}
 }
 
+// phaseModelWithList builds a model in phaseModel with m.models populated
+// for the given agent+tag, m.current set to the rotation's next-to-use
+// model, and the list cursor on that model. Tests that exercise 'r', 'd',
+// or the View use this helper instead of constructing model literals
+// (which would skip the list-build path the production code uses).
+func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
+	t.Helper()
+	models, err := cfg.ModelsForAgentAndTag(agent, tag)
+	if err != nil {
+		t.Fatalf("ModelsForAgentAndTag: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
+	}
+	m := model{
+		cfg:       cfg,
+		phase:     phaseModel,
+		agent:     agent,
+		tag:       tag,
+		models:    buildModelList(models, 80, 24),
+		modelsFor: agent,
+		modelsTag: tag,
+		width:     80,
+		height:    24,
+	}
+	if next, ok := rotation.ForTag(cfg, tag).Next(""); ok {
+		m.current = next
+		m.models.Select(indexOfModel(models, next))
+	}
+	return m
+}
+
 // TestFirstAgentDefaultsToClaude asserts DefaultAgent falls back to "claude"
 // when there is no config or no agents are configured. The TUI must still
 // show a sensible default even against an empty catalog.
@@ -58,55 +90,84 @@ func TestFirstAgentPicksFirst(t *testing.T) {
 	}
 }
 
-// TestFirstModelPlaceholder asserts firstModel returns the "(none)" sentinel
-// for a nil config or an empty tag group. The agent+model screen must render
-// something rather than a zero-value Model with a blank ID.
-func TestFirstModelPlaceholder(t *testing.T) {
-	cases := []*config.Config{
-		nil,
-		{DefaultTag: "code", Models: []config.Model{
-			{ID: "m", Tags: []string{"design"}}, // only design, not code
-		}},
+// TestModelsForAgentAndTagEmptyConfig asserts the helper returns an
+// empty list (not the legacy (none) placeholder) when the agent exists
+// but has no models for the requested tag. Validation happens at the
+// phaseList → phaseModel transition, not in a placeholder model.
+func TestModelsForAgentAndTagEmptyConfig(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Providers:  []config.Provider{{ID: "ollama"}},
+		// No models — ModelsForAgentAndTag should return an empty list.
 	}
-	for _, cfg := range cases {
-		m := firstModel(cfg, "code")
-		if m.ID != "(none)" {
-			t.Errorf("firstModel = %q, want (none)", m.ID)
-		}
-		if m.Location != config.LocationCloud {
-			t.Errorf("placeholder location = %q, want cloud", m.Location)
-		}
+	got, err := cfg.ModelsForAgentAndTag("claude", "code")
+	if err != nil {
+		t.Fatalf("ModelsForAgentAndTag: %v", err)
 	}
-}
-
-// TestFirstModelPicksFirstInTag asserts firstModel returns the first model
-// whose tags include the given tag, ignoring models tagged otherwise.
-func TestFirstModelPicksFirstInTag(t *testing.T) {
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "design-first", Tags: []string{"design"}},
-		{ID: "code-first", Tags: []string{"code"}},
-	}}
-	if got := firstModel(cfg, "code"); got.ID != "code-first" {
-		t.Errorf("firstModel(code) = %q, want code-first", got.ID)
-	}
-	if got := firstModel(cfg, "design"); got.ID != "design-first" {
-		t.Errorf("firstModel(design) = %q, want design-first", got.ID)
+	if len(got) != 0 {
+		t.Errorf("len = %d, want 0 (validation gate, not placeholder)", len(got))
 	}
 }
 
-// TestSelectedEntryMsgNoModelsShowsPlaceholder asserts that picking a
-// worktree when the active tag group is empty still lands on the model phase
-// with a "(none)" model rather than panicking or hanging. The user sees a
-// fallback screen even with a sparse catalog.
-func TestSelectedEntryMsgNoModelsShowsPlaceholder(t *testing.T) {
-	m := model{cfg: &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: "claude"}}}}
+// TestModelsForAgentAndTagReturnsFirstInTag asserts ModelsForAgentAndTag
+// preserves config-order, so the picker can use index 0 as the
+// "first model in this group" without further sorting.
+func TestModelsForAgentAndTagReturnsFirstInTag(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama"}},
+		Models: []config.Model{
+			{ID: "design-first", ProviderID: "ollama", Tags: []string{"design"}},
+			{ID: "code-first", ProviderID: "ollama", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	got, err := cfg.ModelsForAgentAndTag("claude", "code")
+	if err != nil {
+		t.Fatalf("ModelsForAgentAndTag: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "code-first" {
+		t.Errorf("got = %+v, want [code-first]", got)
+	}
+}
+
+// TestSelectedEntryMsgEmptyListStaysOnList asserts that when the agent+tag
+// has no compatible models, picking a worktree does NOT enter the model
+// phase. The validation gate at the phaseList → phaseModel boundary
+// surfaces a status message and keeps the user in the picker.
+func TestSelectedEntryMsgEmptyListStaysOnList(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Providers:  []config.Provider{{ID: "ollama"}},
+		// No models with provider "ollama".
+	}
+	m := model{cfg: cfg, phase: phaseList}
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
 	gotModel := got.(model)
-	if gotModel.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	if gotModel.phase != phaseList {
+		t.Errorf("phase = %v, want phaseList (no entry into picker)", gotModel.phase)
 	}
-	if gotModel.current.ID != "(none)" {
-		t.Errorf("current = %q, want (none)", gotModel.current.ID)
+	if gotModel.status == "" {
+		t.Error("status = empty, want an error message")
+	}
+}
+
+// TestSelectedEntryMsgEmptyListSetsActionableStatus asserts the status
+// message names the agent and the tag so the user knows what to fix.
+func TestSelectedEntryMsgEmptyListSetsActionableStatus(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Providers:  []config.Provider{{ID: "ollama"}},
+	}
+	m := model{cfg: cfg, phase: phaseList, agent: "claude", tag: "code"}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	for _, want := range []string{"claude", "code"} {
+		if !strings.Contains(gotModel.status, want) {
+			t.Errorf("status %q missing %q", gotModel.status, want)
+		}
 	}
 }
 
@@ -149,7 +210,7 @@ func TestRotateSkipsOtherTagLastUsed(t *testing.T) {
 	seedState(t, dir, "code", "1\nB\n")
 	seedState(t, dir, "design", "0\nB\n")
 
-	m := model{cfg: cfg, phase: phaseModel, tag: "code", otherTag: "design",
+	m := model{cfg: cfg, phase: phaseModel, tag: "code",
 		current: config.Model{ID: "B"}}
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	gotModel := got.(model)
@@ -178,49 +239,72 @@ func TestRotateSingleModelStaysPut(t *testing.T) {
 
 // TestToggleBackToCode asserts pressing 'd' twice returns to the code group.
 // Toggling is meant to be a stable two-way switch, not a one-way trip.
+// (otherTag is now computed via oppositeTag(m.tag), not stored on model.)
 func TestToggleBackToCode(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseModel, tag: "code", otherTag: "",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	got, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	gotModel := got.(model)
-	if gotModel.tag != "code" || gotModel.otherTag != "design" {
-		t.Errorf("tag/otherTag = (%q, %q), want (code, design)", gotModel.tag, gotModel.otherTag)
+	if gotModel.tag != "code" {
+		t.Errorf("tag = %q, want code (after two toggles)", gotModel.tag)
+	}
+}
+
+// TestTagKeyIgnoredInListPhase asserts 'd' does nothing while still on
+// the worktree list, matching how 'r' is gated. The model-screen keybind
+// must not fire before a worktree is chosen. (The 'm' key was removed
+// when the browser was deleted; this test now covers only 'd'.)
+func TestTagKeyIgnoredInListPhase(t *testing.T) {
+	m := model{cfg: testConfig(), phase: phaseList, tag: "code",
+		current: config.Model{ID: "ollama/gemma4:9b"}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	gotModel := got.(model)
+	if gotModel.status != "" {
+		t.Errorf("status mutated in list phase: %q", gotModel.status)
+	}
+	if gotModel.tag != "code" {
+		t.Errorf("tag mutated in list phase: %q", gotModel.tag)
 	}
 	if gotModel.current.ID != "ollama/gemma4:9b" {
-		t.Errorf("current = %q, want first code model", gotModel.current.ID)
+		t.Errorf("current mutated in list phase: %q", gotModel.current.ID)
 	}
 }
 
-// TestModelAndTagKeysIgnoredInListPhase asserts 'm' and 'd' do nothing while
-// on the worktree list, matching how 'r' is gated. The agent+model keybinds
-// must not fire before a worktree is chosen.
-func TestModelAndTagKeysIgnoredInListPhase(t *testing.T) {
-	for _, key := range []rune{'m', 'd'} {
-		m := model{cfg: testConfig(), phase: phaseList, tag: "code",
-			current: config.Model{ID: "ollama/gemma4:9b"}}
-		got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
-		gotModel := got.(model)
-		if gotModel.status != "" {
-			t.Errorf("key %q: status mutated in list phase: %q", string(key), gotModel.status)
-		}
-		if gotModel.tag != "code" {
-			t.Errorf("key %q: tag mutated in list phase: %q", string(key), gotModel.tag)
-		}
-		if gotModel.current.ID != "ollama/gemma4:9b" {
-			t.Errorf("key %q: current mutated in list phase: %q", string(key), gotModel.current.ID)
-		}
+// TestModelScreenMKeyIsNoOp asserts that pressing 'm' on the model
+// screen does not open a browser (there is no browser anymore) and
+// does not mutate any state. This pins the removal: if a future
+// change re-introduces 'm' as a keybind, this test will fail.
+func TestModelScreenMKeyIsNoOp(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	before := m
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	gotModel := got.(model)
+	if gotModel.phase != before.phase {
+		t.Errorf("phase changed: before %v, after %v", before.phase, gotModel.phase)
+	}
+	if gotModel.current.ID != before.current.ID {
+		t.Errorf("current changed: before %q, after %q", before.current.ID, gotModel.current.ID)
+	}
+	if gotModel.tag != before.tag {
+		t.Errorf("tag changed: before %q, after %q", before.tag, gotModel.tag)
+	}
+	if len(gotModel.models.Items()) != len(before.models.Items()) {
+		t.Errorf("models items changed: before %d, after %d", len(before.models.Items()), len(gotModel.models.Items()))
 	}
 }
 
-// TestViewModelPlaceholder asserts the model-phase View still renders a
-// coherent screen when the current model is the "(none)" placeholder. This
-// keeps the fallback catalog path from producing a blank screen.
-func TestViewModelPlaceholder(t *testing.T) {
-	m := model{phase: phaseModel, agent: "claude", tag: "code",
-		current: config.Model{ID: "(none)", ProviderID: "", Location: config.LocationCloud}}
+// TestViewModelPhase asserts the model-phase View renders the picker list
+// with the agent and tag in the header and the keybind hints in the footer.
+func TestViewModelPhase(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	view := m.View()
-	for _, want := range []string{"agent", "claude", "(none)", "tag"} {
+	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[r] rotate", "[d] switch tag", "[enter] launch"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q in:\n%s", want, view)
 		}
@@ -487,5 +571,138 @@ func TestResumeChoiceTitleIncludesRelativeTime(t *testing.T) {
 	}
 	if !strings.Contains(item.desc, "ago") && !strings.Contains(item.desc, "just now") {
 		t.Errorf("desc = %q, want relative time", item.desc)
+	}
+}
+
+// TestSelectedEntryMsgPositionsCursorAtNextToUse asserts the cursor lands
+// on the rotation's next-to-use model, not necessarily index 0.
+func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
+	dir := tempStateDir(t)
+	// State: next_index=1, last=ollama/gemma4:9b. With 2 code models, Next()
+	// returns models[1] (= gemma4:14b) and advances to index 0.
+	seedState(t, dir, "code", "1\nollama/gemma4:9b\n")
+	cfg := testConfig()
+	m := model{cfg: cfg, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.current.ID != "ollama/gemma4:14b" {
+		t.Errorf("current = %q, want ollama/gemma4:14b (rotation index 1)", gotModel.current.ID)
+	}
+	if gotModel.models.Index() != 1 {
+		t.Errorf("cursor index = %d, want 1", gotModel.models.Index())
+	}
+}
+
+// TestPhaseModelWithListBuildsAndPositionsCursor asserts the test
+// helper populates m.models and positions the cursor on the rotation's
+// next-to-use model. The production code uses the same list-build path
+// (in selectedEntryMsg and on 'd'), so this is a smoke test of the
+// shared infrastructure.
+func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
+	dir := tempStateDir(t)
+	// State file: next_index=1, last=ollama/gemma4:9b. With 2 code models,
+	// Next() returns models[1] (= gemma4:14b), then advances to index 0.
+	seedState(t, dir, "code", "1\nollama/gemma4:9b\n")
+	cfg := testConfig()
+	m := phaseModelWithList(t, cfg, "claude", "code")
+
+	if got := len(m.models.Items()); got != 2 {
+		t.Errorf("models items = %d, want 2 (testConfig code models)", got)
+	}
+	if m.current.ID != "ollama/gemma4:14b" {
+		t.Errorf("current = %q, want ollama/gemma4:14b (rotation index 1)", m.current.ID)
+	}
+	if m.models.Index() != 1 {
+		t.Errorf("cursor index = %d, want 1", m.models.Index())
+	}
+}
+
+// TestModelScreenRotateMovesCursor asserts pressing 'r' updates both
+// m.current (the rotation cursor) and m.models.Index() (the visible
+// list cursor). They are the same cursor, just two views of it.
+func TestModelScreenRotateMovesCursor(t *testing.T) {
+	dir := tempStateDir(t)
+	// State: index 0, last=gemma4:9b. Next() returns models[0]=gemma4:9b
+	// and advances to index 1. The visible cursor should land on the
+	// first model.
+	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	if m.current.ID != "ollama/gemma4:9b" {
+		t.Fatalf("precondition: current = %q, want ollama/gemma4:9b", m.current.ID)
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	gotModel := got.(model)
+	if gotModel.current.ID != "ollama/gemma4:14b" {
+		t.Errorf("current = %q, want ollama/gemma4:14b (rotated)", gotModel.current.ID)
+	}
+	if gotModel.models.Index() != 1 {
+		t.Errorf("cursor index = %d, want 1", gotModel.models.Index())
+	}
+}
+
+// TestModelScreenToggleTagRebuildsList asserts pressing 'd' rebuilds
+// m.models from the new tag's models and positions the cursor on the
+// new rotation index.
+func TestModelScreenToggleTagRebuildsList(t *testing.T) {
+	dir := tempStateDir(t)
+	// Pre-seed design rotation with index 0 = gemma4:design.
+	seedState(t, dir, "design", "0\nollama/gemma4:design\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	if m.tag != "code" {
+		t.Fatalf("precondition: tag = %q, want code", m.tag)
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	gotModel := got.(model)
+	if gotModel.tag != "design" {
+		t.Errorf("tag = %q, want design", gotModel.tag)
+	}
+	if len(gotModel.models.Items()) != 1 {
+		t.Errorf("models items = %d, want 1 (only design model)", len(gotModel.models.Items()))
+	}
+	if gotModel.current.ID != "ollama/gemma4:design" {
+		t.Errorf("current = %q, want ollama/gemma4:design", gotModel.current.ID)
+	}
+}
+
+// TestModelScreenToggleTagEmptyRestores asserts that toggling to a tag
+// with no models reverts to the previous tag and surfaces a status
+// message rather than leaving the user in a void.
+func TestModelScreenToggleTagEmptyRestores(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "ollama"}},
+		Models: []config.Model{
+			// Only code models, no design.
+			{ID: "ollama/code-only", ProviderID: "ollama", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	m := phaseModelWithList(t, cfg, "claude", "code")
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	gotModel := got.(model)
+	if gotModel.tag != "code" {
+		t.Errorf("tag = %q, want code (restored)", gotModel.tag)
+	}
+	if gotModel.status == "" {
+		t.Error("status = empty, want error message about empty design tag")
+	}
+}
+
+// TestModelScreenEnterUsesHighlightedNotCurrent asserts that Enter launches
+// the highlighted list item, even if m.current lags. This protects against
+// a class of bugs where stale state could launch the wrong model after
+// the user has navigated the cursor.
+func TestModelScreenEnterUsesHighlightedNotCurrent(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	// Move the list cursor to index 0 (gemma4:9b) without rotating.
+	m.models.Select(0)
+	// Stale m.current points at the second model.
+	m.current = config.Model{ID: "stale", ProviderID: "ollama"}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel := got.(model)
+	if gotModel.current.ID != "ollama/gemma4:9b" {
+		t.Errorf("current after Enter = %q, want ollama/gemma4:9b (highlighted wins)", gotModel.current.ID)
 	}
 }

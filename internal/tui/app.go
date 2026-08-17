@@ -4,8 +4,9 @@
 // responds to q/esc/ctrl+c, and demonstrates the Model/Update/View cycle.
 // Lesson 13 layers on the worktree/branch picker using bubbles/list.
 // Lesson 14 adds the agent+model screen reached after picking a worktree.
-// Lesson 15 adds the model browser, opened from the agent+model screen
-// with `m`, which lets the user pick any model from the registry.
+// Lesson 15 added a separate model browser, opened with `m`; the picker
+// list now subsumes that role (the agent+model screen shows all
+// agent-compatible models in the active tag, sourced from config.toml).
 package tui
 
 import (
@@ -14,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
@@ -28,8 +28,7 @@ type phase int
 
 const (
 	phaseList        phase = iota // worktree list (lesson 13)
-	phaseModel                    // agent+model screen (lesson 14)
-	phaseBrowser                  // model browser (lesson 15)
+	phaseModel                    // agent+model picker (lesson 14 + lesson 15 merged)
 	phaseResume                   // resume prompt (lesson 16)
 	phaseGuardWarn                // confirm before launching on default branch
 	phaseOllamaWarn               // confirm before launching with unavailable ollama model
@@ -55,9 +54,13 @@ type model struct {
 	phase    phase
 	agent    string         // current agent name
 	tag      string         // active rotation tag group
-	otherTag string         // tag group to cross-skip against during rotation
 	current  config.Model   // currently shown model
 	cfg      *config.Config // loaded config for the model catalog
+
+	// model picker (the agent+model screen IS the picker)
+	models    list.Model // bubble/list of agent+tag models
+	modelsTag string     // tag the list was built for; rebuild on change
+	modelsFor string     // agent the list was built for; rebuild on change
 
 	// launch state (lesson 16)
 	selectedPath string   // worktree path chosen in lesson 13
@@ -65,12 +68,6 @@ type model struct {
 	extraArgs    []string // user passthrough args after --
 	initialAgent string   // agent from --agent flag; "" = use config default
 	resume       resumeModel
-
-	// model browser (lesson 15)
-	browser      list.Model     // browser list widget
-	browserCache []config.Model // snapshot of registry.Discover, per browser-open
-	browserTag   string         // "" = all models; otherwise a tag like "code"
-	sourceCycle  int            // 0=all, 1=curated, 2=discovered
 
 	// default-branch guard warning
 	defaultBranch  string         // repo default branch (e.g. main)
@@ -126,8 +123,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ready {
 			m.list.SetSize(msg.Width-2, msg.Height-2)
 		}
-		if m.phase == phaseBrowser {
-			m.refreshBrowser()
+		if m.phase == phaseModel {
+			m.models.SetSize(msg.Width-2, msg.Height-2)
 		}
 		if m.phase == phaseResume {
 			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
@@ -182,9 +179,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if isShellAgent(m.agent) {
 			return m.launchShell()
 		}
-		m.phase = phaseModel
 		m.tag = m.cfg.DefaultTag
-		m.current = firstModel(m.cfg, m.tag)
+		// Validation gate: refuse to enter the picker with an empty list.
+		// This catches misconfigured catalogs (agent with no compatible models
+		// in the default tag) before the user gets a confusing screen.
+		models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
+		if err != nil {
+			m.status = "config error: " + err.Error()
+			return m, nil
+		}
+		if len(models) == 0 {
+			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
+			return m, nil
+		}
+		m.phase = phaseModel
+		m.models = buildModelList(models, m.width-2, m.height-2)
+		m.modelsFor = m.agent
+		m.modelsTag = m.tag
+		if next, ok := rotation.ForTag(m.cfg, m.tag).Next(""); ok {
+			m.current = next
+			if idx := indexOfModel(models, next); idx >= 0 {
+				m.models.Select(idx)
+			}
+		} else {
+			// Fallback: list non-empty but rotation says no model. Pick index 0.
+			m.current = models[0]
+			m.models.Select(0)
+		}
 		return m, nil
 	case launchDoneMsg:
 		if msg.err != nil {
@@ -212,10 +233,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			// esc is phase-aware: pop back from a nested screen, else quit.
-			if m.phase == phaseBrowser {
-				m.phase = phaseModel
-				return m, nil
-			}
 			if m.phase == phaseResume {
 				m.phase = phaseModel
 				return m, nil
@@ -257,6 +274,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
+				// The highlighted list item is what gets launched. Sync m.current
+				// so subsequent code paths (ollama check, session, launch) all see
+				// the user's choice.
+				if item, ok := m.models.SelectedItem().(modelItem); ok {
+					m.current = item.model
+				}
 				// Check ollama availability before launching.
 				if ollamacheck.IsOllamaModel(m.current) {
 					ok, err := ollamacheck.Available(m.current.ModelName)
@@ -271,13 +294,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 				}
-
 				return m.proceedToLaunch()
-			case phaseBrowser:
-				if item, ok := m.browser.SelectedItem().(modelItem); ok {
-					m.current = item.model
-					m.phase = phaseModel
-				}
 			case phaseResume:
 				if item, ok := m.resume.choices.SelectedItem().(resumeItem); ok {
 					switch item.choice {
@@ -317,8 +334,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.proceedToLaunch()
 					case ollamaSkipChoice:
 						// Rotate to next model and return to phaseModel.
-						rot := rotation.ForTag(m.cfg, m.tag)
-						next, ok := rot.Next(m.otherTag)
+						next, ok := rotation.ForTag(m.cfg, m.tag).Next(oppositeTag(m.tag))
 						if ok {
 							m.current = next
 						}
@@ -345,21 +361,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			if m.phase == phaseModel {
-				// Rotate to the next model in the active tag group, skipping
-				// whatever the other tag group last used (cross-tag skip).
-				rot := rotation.ForTag(m.cfg, m.tag)
-				next, ok := rot.Next(m.otherTag)
+				// Advance the rotation cursor; the visible list cursor follows.
+				next, ok := rotation.ForTag(m.cfg, m.tag).Next(oppositeTag(m.tag))
 				if ok {
 					m.current = next
+					for i, it := range m.models.Items() {
+						if mi, ok := it.(modelItem); ok && mi.model.ID == next.ID {
+							m.models.Select(i)
+							break
+						}
+					}
 				}
-			}
-		case "m":
-			if m.phase == phaseModel {
-				// Open the model browser. Reset the cache so each open
-				// re-discovers; filter toggles inside the browser reuse it.
-				m.phase = phaseBrowser
-				m.browserCache = nil
-				m.refreshBrowser()
 			}
 		case "n":
 			// Open the new-worktree prompt. Skip while the list filter is
@@ -369,30 +381,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "d":
 			if m.phase == phaseModel {
-				// Toggle the active tag group between code and design.
-				if m.tag == "code" {
-					m.tag, m.otherTag = "design", "code"
-				} else {
-					m.tag, m.otherTag = "code", "design"
+				prevTag := m.tag
+				m.tag = oppositeTag(m.tag)
+				// Empty-tag defense: if the new tag has no models, restore.
+				models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
+				if err != nil || len(models) == 0 {
+					m.tag = prevTag
+					m.status = fmt.Sprintf("tag %q has no models for agent %q", m.tag, m.agent)
+					return m, nil
 				}
-				// Re-resolve the shown model to the new group's first entry.
-				m.current = firstModel(m.cfg, m.tag)
-			}
-		case "f":
-			if m.phase == phaseBrowser {
-				// Toggle tag filter between "" (all) and m.tag.
-				if m.browserTag == "" {
-					m.browserTag = m.tag
+				// Rebuild the list and reposition the cursor on the new tag's
+				// rotation index. Cross-skip avoids the previous tag's last-used.
+				m.models = buildModelList(models, m.width-2, m.height-2)
+				m.modelsTag = m.tag
+				if next, ok := rotation.ForTag(m.cfg, m.tag).Next(prevTag); ok {
+					m.current = next
+					if idx := indexOfModel(models, next); idx >= 0 {
+						m.models.Select(idx)
+					}
 				} else {
-					m.browserTag = ""
+					m.current = models[0]
+					m.models.Select(0)
 				}
-				m.refreshBrowser()
-			}
-		case "c":
-			if m.phase == phaseBrowser {
-				// Cycle source filter: 0=all, 1=curated, 2=discovered.
-				m.sourceCycle = (m.sourceCycle + 1) % 3
-				m.refreshBrowser()
 			}
 		}
 	}
@@ -400,11 +410,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.ready && m.phase == phaseList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
-		return m, cmd
-	}
-	if m.phase == phaseBrowser && m.width > 0 && m.height > 0 {
-		var cmd tea.Cmd
-		m.browser, cmd = m.browser.Update(msg)
 		return m, cmd
 	}
 	if m.phase == phaseResume && m.width > 0 && m.height > 0 {
@@ -465,15 +470,11 @@ func (m model) View() string {
 		}
 		return m.guardWarnModel.View() + "\n[enter] choose   [esc] back"
 	}
-	if m.phase == phaseBrowser {
-		return m.browserView()
-	}
 	if m.phase == phaseModel {
-		style := lipgloss.NewStyle().Padding(2, 2)
-		return style.Render(
-			fmt.Sprintf("agent : %s\nmodel : %s\n\ntag : %s\n\n"+
-				"[r] rotate   [m] browse models   [enter] launch   [q] quit",
-				m.agent, m.current.ID, m.tag))
+		if m.width <= 0 || m.height <= 0 {
+			return "model picker (waiting for window size)"
+		}
+		return m.phaseModelView()
 	}
 	if !m.ready {
 		return m.status
@@ -518,19 +519,6 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
 	return m, nil
-}
-
-// firstModel returns the first model in a tag group, or a "(none)" placeholder.
-func firstModel(cfg *config.Config, tag string) config.Model {
-	none := config.Model{ID: "(none)", ProviderID: "", Location: config.LocationCloud}
-	if cfg == nil {
-		return none
-	}
-	ms := cfg.ModelsWithTag(tag)
-	if len(ms) == 0 {
-		return none
-	}
-	return ms[0]
 }
 
 // loadEntriesCmd returns a command that enumerates worktrees/branches.
