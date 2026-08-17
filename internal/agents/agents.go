@@ -13,6 +13,7 @@ type LaunchCmd struct {
 	Bin  string
 	Args []string
 	Env  []string // extra env vars, merged over os.Environ() by the caller
+	Warn string   // printed to stderr by Command when non-empty
 }
 
 // Driver knows how to build a launch command for one agent.
@@ -22,6 +23,13 @@ type Driver interface {
 	Build(m config.Model, yolo bool) LaunchCmd
 	// YoloFlag is the agent's permission-skip flag.
 	YoloFlag() string
+}
+
+// Syncer is an optional Driver capability: a pre-launch step that needs the
+// full config (e.g. pi syncing its model catalog). Launch paths call it once
+// before Build.
+type Syncer interface {
+	SyncModels(cfg *config.Config) error
 }
 
 // Installed reports whether bin resolves on PATH.
@@ -60,6 +68,9 @@ func Command(d Driver, m config.Model, yolo bool, workdir string) (*exec.Cmd, er
 	bin, err := exec.LookPath(lc.Bin)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s not installed", lc.Bin)
+	}
+	if lc.Warn != "" {
+		fmt.Fprintln(os.Stderr, lc.Warn)
 	}
 	cmd := exec.Command(bin, lc.Args...)
 	cmd.Dir = workdir

@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ import (
 // returns a clear error. Without this guard the TUI could try to exec a
 // nil driver.
 func TestLaunchAgentUnknownAgent(t *testing.T) {
-	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil)
+	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -28,7 +30,7 @@ func TestLaunchAgentUnknownAgent(t *testing.T) {
 // wiring that the bash wrappers do for claude.
 func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()})
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -42,7 +44,7 @@ func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 // with a session appends --session <id> to the command args.
 func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 	cmd, err := launchAgent("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()})
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 // is passed, no resume/session flag is injected. This is the "start fresh"
 // path.
 func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false, nil)
+	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false, nil, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -81,5 +83,40 @@ func TestRunAndWaitCmdWiresStdio(t *testing.T) {
 	}
 	if done.err != nil {
 		t.Errorf("true exited with error: %v", done.err)
+	}
+}
+
+// launchAgent must invoke the pi driver's SyncModels before building the
+// command, mirroring the non-TUI path. Without it, the TUI launch would fall
+// back to pi's default model for a rotation-selected model. The sync runs
+// before LookPath, so it is observable even when pi is not installed.
+func TestLaunchAgentSyncsPi(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	modelsPath := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(modelsPath, []byte(`{"providers":{"ollama":{"models":[]}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
+	}}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	cmd, err := launchAgent("pi", m, "/tmp", false, nil, cfg)
+	if err != nil && !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("launchAgent: %v", err)
+	}
+	data, _ := os.ReadFile(modelsPath)
+	if !strings.Contains(string(data), "deepseek-v4-pro:cloud") {
+		t.Errorf("models.json = %s, want it to contain deepseek-v4-pro:cloud (sync ran)", string(data))
+	}
+	if err == nil {
+		got := strings.Join(cmd.Args, " ")
+		if !strings.Contains(got, "--model deepseek-v4-pro:cloud") {
+			t.Errorf("args = %q, want --model deepseek-v4-pro:cloud (sync + verify)", got)
+		}
 	}
 }

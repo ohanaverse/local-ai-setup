@@ -210,7 +210,7 @@ Per-agent behavior:
 - **codex** — `--model <id>`; native uses no args
 - **copilot** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL` env vars; never passes `--model`
 - **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) for the ollama provider
-- **pi** — `--model <id>` if model is present in `models.json` with `._launch: true`; requires `jq`; no yolo flag
+- **pi** — syncs non-native models into `~/.pi/agent/models.json` (idempotent, `_launch: true`) and passes `--model <ModelName>` only when the model is present and marked `_launch: true`; falls back to pi's default model with a warning otherwise; no `jq` dependency (native Go JSON); no yolo flag
 - **agy** — no model passthrough (model chosen inside its TUI)
 
 The `wt agents` subcommand lists registered drivers, whether each binary is

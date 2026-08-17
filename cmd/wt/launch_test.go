@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +84,7 @@ func TestDefaultModelEmptyConfig(t *testing.T) {
 // clear error rather than a nil command. Without this the launch path could
 // dereference a nil driver.
 func TestBuildLaunchUnknownAgent(t *testing.T) {
-	_, err := buildLaunch("not-an-agent", config.Model{}, "/tmp", false, nil)
+	_, err := buildLaunch("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -96,7 +98,7 @@ func TestBuildLaunchUnknownAgent(t *testing.T) {
 // claude-wt wrapper used to do.
 func TestBuildLaunchClaudeResume(t *testing.T) {
 	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()})
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 // appends --session <id>.
 func TestBuildLaunchOpenCodeResume(t *testing.T) {
 	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()})
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 // TestBuildLaunchNoSessionOmitsResume asserts that a nil session injects no
 // resume/session flag. This is the "start fresh" path.
 func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false, nil)
+	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -169,5 +171,43 @@ func TestInitUsesAgentFlag(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected CLAUDE.md created, got %v", res.Created)
+	}
+}
+
+// buildLaunch must invoke the pi driver's SyncModels before building the
+// command, so a rotation-selected model is present in models.json by the time
+// the _launch check runs. Without the sync, pi would fall back to its default.
+// The sync runs before LookPath, so it is observable even when pi is not
+// installed (the "not installed" error is tolerated).
+func TestBuildLaunchSyncsPi(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	modelsPath := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(modelsPath, []byte(`{"providers":{"ollama":{"models":[]}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
+	}}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg)
+	if err != nil && !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("buildLaunch: %v", err)
+	}
+	// The sync must have added the model to models.json regardless of whether
+	// pi is installed (the sync runs before LookPath).
+	data, _ := os.ReadFile(modelsPath)
+	if !strings.Contains(string(data), "deepseek-v4-pro:cloud") {
+		t.Errorf("models.json = %s, want it to contain deepseek-v4-pro:cloud (sync ran)", string(data))
+	}
+	if err == nil {
+		got := strings.Join(cmd.Args, " ")
+		if !strings.Contains(got, "--model deepseek-v4-pro:cloud") {
+			t.Errorf("args = %q, want --model deepseek-v4-pro:cloud (sync + verify)", got)
+		}
 	}
 }

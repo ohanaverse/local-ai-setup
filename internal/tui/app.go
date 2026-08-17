@@ -167,7 +167,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if sess == nil {
-					cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil)
+					cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg)
 					if err != nil {
 						m.status = "launch failed: " + err.Error()
 						return m, nil
@@ -191,14 +191,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.phase = phaseModel
 						return m, nil
 					case freshChoice:
-						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil)
+						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
 						}
 						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
 					case resumeChoice:
-						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session)
+						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session, m.cfg)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil

@@ -28,10 +28,15 @@ var currentProgram *tea.Program
 
 // launchAgent builds the command for agent/model in worktreePath, optionally
 // appending a resume flag for claude or opencode.
-func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session) (*exec.Cmd, error) {
+func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config) (*exec.Cmd, error) {
 	d := agents.ByName(agent)
 	if d == nil {
 		return nil, fmt.Errorf("unknown agent: %s", agent)
+	}
+	if s, ok := d.(agents.Syncer); ok {
+		if err := s.SyncModels(cfg); err != nil {
+			return nil, err
+		}
 	}
 	cmd, err := agents.Command(d, m, yolo, worktreePath)
 	if err != nil {

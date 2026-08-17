@@ -1,6 +1,9 @@
 package agents
 
 import (
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -140,9 +143,24 @@ func TestOpenCode(t *testing.T) {
 	}
 }
 
-// Pi passes --model for non-native models and has no yolo flag (the pi CLI
-// doesn't support skipping permissions). Native models produce no args.
-func TestPi(t *testing.T) {
+// writePiModels points $HOME at a temp dir and writes a models.json there, so
+// piDriver.Build (which resolves the real path via os.UserHomeDir) reads the
+// test fixture instead of the user's real catalog.
+func writePiModels(t *testing.T, content string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Pi has no yolo flag (the pi CLI doesn't support skipping permissions).
+func TestPiYoloFlag(t *testing.T) {
 	d := ByName("pi")
 	if d == nil {
 		t.Fatal("pi driver not registered")
@@ -150,12 +168,56 @@ func TestPi(t *testing.T) {
 	if d.YoloFlag() != "" {
 		t.Errorf("pi yolo flag = %q, want empty", d.YoloFlag())
 	}
-	lc := d.Build(cloudModel("deepseek-v4-pro:cloud"), false)
-	if len(lc.Args) != 2 || lc.Args[0] != "--model" {
-		t.Errorf("args = %v, want [--model ...]", lc.Args)
+}
+
+// Pi passes --model <ModelName> only when the model is present in models.json
+// and marked _launch: true. Passing --model for an unverified model would
+// launch a model pi doesn't intend to use.
+func TestPiBuildVerified(t *testing.T) {
+	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"deepseek-v4-pro:cloud"}]}}}`)
+	d := ByName("pi")
+	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false)
+	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
+		t.Errorf("args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
-	if len(d.Build(nativeModel("pi"), false).Args) != 0 {
-		t.Errorf("native build should have no args")
+	if lc.Warn != "" {
+		t.Errorf("warn = %q, want empty for a verified model", lc.Warn)
+	}
+}
+
+// Pi falls back to its default model (no --model) and sets a warning when the
+// model is present but not marked _launch: true.
+func TestPiBuildNotVerified(t *testing.T) {
+	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":false,"id":"deepseek-v4-pro:cloud"}]}}}`)
+	d := ByName("pi")
+	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false)
+	if len(lc.Args) != 0 {
+		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
+	}
+	if lc.Warn == "" {
+		t.Error("warn should be set when falling back")
+	}
+}
+
+// Pi falls back to its default model when models.json is missing entirely.
+func TestPiBuildMissingFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no models.json created
+	d := ByName("pi")
+	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false)
+	if len(lc.Args) != 0 {
+		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
+	}
+	if lc.Warn == "" {
+		t.Error("warn should be set when models.json is missing")
+	}
+}
+
+// Pi native models produce no args and no warning.
+func TestPiBuildNative(t *testing.T) {
+	d := ByName("pi")
+	lc := d.Build(nativeModel("pi"), false)
+	if len(lc.Args) != 0 || lc.Warn != "" {
+		t.Errorf("native build = %+v, want bare pi", lc)
 	}
 }
 
@@ -222,4 +284,36 @@ func hasEnv(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// warnDriver is a test-only Driver whose Build returns a fixed warning, used
+// to verify Command surfaces it on stderr.
+type warnDriver struct{}
+
+func (warnDriver) Build(m config.Model, yolo bool) LaunchCmd {
+	return LaunchCmd{Bin: "true", Warn: "test warning"}
+}
+func (warnDriver) YoloFlag() string { return "" }
+
+// Command must print a non-empty LaunchCmd.Warn to stderr before returning the
+// command. This is how the pi driver tells the user it fell back to pi's
+// default model; if the warning is swallowed, the user silently gets a
+// different model than they selected.
+func TestCommandPrintsWarning(t *testing.T) {
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	_, cmdErr := Command(warnDriver{}, config.Model{}, false, "/tmp")
+	w.Close()
+	os.Stderr = old
+	if cmdErr != nil {
+		t.Fatalf("Command: %v", cmdErr)
+	}
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "test warning") {
+		t.Errorf("stderr = %q, want it to contain %q", string(out), "test warning")
+	}
 }

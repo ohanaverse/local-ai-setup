@@ -14,10 +14,15 @@ import (
 // buildLaunch constructs the agent command for the given model and worktree,
 // appending a resume flag when a prior session exists. It is separated from
 // run so tests can assert the command shape without exec'ing an agent.
-func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session) (*exec.Cmd, error) {
+func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config) (*exec.Cmd, error) {
 	d := agents.ByName(agent)
 	if d == nil {
 		return nil, fmt.Errorf("unknown agent: %s", agent)
+	}
+	if s, ok := d.(agents.Syncer); ok {
+		if err := s.SyncModels(cfg); err != nil {
+			return nil, err
+		}
 	}
 	cmd, err := agents.Command(d, m, yolo, worktreePath)
 	if err != nil {
@@ -39,7 +44,7 @@ func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, s
 func launch(agent, worktreePath string, cfg *config.Config, yolo bool) error {
 	m := defaultModel(cfg, agent)
 	sess, _ := session.LatestForAgent(agent, worktreePath)
-	cmd, err := buildLaunch(agent, m, worktreePath, yolo, sess)
+	cmd, err := buildLaunch(agent, m, worktreePath, yolo, sess, cfg)
 	if err != nil {
 		return err
 	}
