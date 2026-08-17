@@ -130,6 +130,45 @@ func TestBuildListShowsStatusBar(t *testing.T) {
 	}
 }
 
+// buildList must advertise the 'n' shortcut in the footer help so users know
+// they can open the new-worktree prompt directly. Without this, the shortcut
+// works but is invisible, so users would have to discover the sentinel row.
+// bubbles/list's ShortHelp() includes AdditionalShortHelpKeys; we assert the
+// binding appears with the right key and help text.
+func TestBuildListShortHelpAdvertisesNewWorktree(t *testing.T) {
+	l := buildList([]worktree.Entry{{Type: worktree.TypeBranch, Branch: "feature"}}, 80, 24)
+	bindings := l.ShortHelp()
+	found := false
+	for _, b := range bindings {
+		if b.Help().Key == "n" {
+			found = true
+			if got := b.Help().Desc; got != "new worktree" {
+				t.Errorf("n help desc = %q, want \"new worktree\"", got)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("ShortHelp did not contain an 'n' binding; got %v", bindings)
+	}
+}
+
+// buildList must also advertise 'n' in the full help view (the expanded help
+// screen toggled with '?'), so the shortcut is discoverable there too.
+func TestBuildListFullHelpAdvertisesNewWorktree(t *testing.T) {
+	l := buildList([]worktree.Entry{{Type: worktree.TypeBranch, Branch: "feature"}}, 80, 24)
+	found := false
+	for _, section := range l.FullHelp() {
+		for _, b := range section {
+			if b.Help().Key == "n" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("FullHelp did not contain an 'n' binding")
+	}
+}
+
 // buildList should respect the provided dimensions so the list fits the
 // terminal without overflowing.
 func TestBuildListDimensions(t *testing.T) {

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
@@ -84,5 +85,13 @@ func buildList(entries []worktree.Entry, width, height int) list.Model {
 	l := list.New(items, list.NewDefaultDelegate(), width, height)
 	l.Title = "Pick a worktree or branch"
 	l.SetShowStatusBar(true)
+	// Advertise the 'n' shortcut in the footer help line so users know they
+	// can open the new-worktree prompt directly instead of scrolling to the
+	// "+ New worktree…" sentinel row. bubbles/list renders these bindings in
+	// both the short help line and the full help view, and hides them while
+	// the user is actively typing a filter query.
+	newBinding := key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new worktree"))
+	l.AdditionalShortHelpKeys = func() []key.Binding { return []key.Binding{newBinding} }
+	l.AdditionalFullHelpKeys = func() []key.Binding { return []key.Binding{newBinding} }
 	return l
 }

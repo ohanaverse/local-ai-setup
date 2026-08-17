@@ -370,7 +370,10 @@ the `list.Model`; `loadEntriesCmd` async-loads via `worktree.RepoRoot()` +
 `Enumerate(root, root)`; `entriesLoadedMsg` and `selectedEntryMsg` carry the
 results and the Enter-picked entry into `Update`. The list is prepended with a
 "+ New worktree…" sentinel row (`kindNewWorktree`) that opens the
-new-worktree prompt on Enter, alongside the `n` keybinding. Full walkthrough:
+new-worktree prompt on Enter, alongside the `n` keybinding. `buildList` also
+advertises `n` in the footer help line (and full help view) via the list's
+`AdditionalShortHelpKeys`/`AdditionalFullHelpKeys`, so the shortcut is
+discoverable without scrolling to the sentinel row. Full walkthrough:
 [docs/go-course/lesson-13-worktree-screen.md](docs/go-course/lesson-13-worktree-screen.md).
 
 ### Agent+model screen
