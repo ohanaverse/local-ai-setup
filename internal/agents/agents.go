@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/session"
@@ -47,14 +48,48 @@ func Installed(bin string) bool {
 	return err == nil
 }
 
-// registry maps agent name -> driver constructor.
-var registry = map[string]func() Driver{}
+// registry maps agent name -> driver constructor. mu guards concurrent
+// access so tests using RegisterTest can safely run under t.Parallel.
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]func() Driver{}
+)
 
-func register(name string, f func() Driver) { registry[name] = f }
+func register(name string, f func() Driver) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	registry[name] = f
+}
+
+// RegisterTest installs (or removes) a driver under name. It returns a
+// cleanup function that restores the previous registration. Passing nil
+// as f removes the entry. Tests use this to inject stub drivers without
+// exposing the internal register function to other packages.
+func RegisterTest(name string, f func() Driver) (cleanup func()) {
+	registryMu.Lock()
+	prev, hadPrev := registry[name]
+	if f == nil {
+		delete(registry, name)
+	} else {
+		registry[name] = f
+	}
+	registryMu.Unlock()
+	return func() {
+		registryMu.Lock()
+		defer registryMu.Unlock()
+		if !hadPrev {
+			delete(registry, name)
+		} else {
+			registry[name] = prev
+		}
+	}
+}
 
 // ByName returns the driver for an agent, or nil if unknown.
 func ByName(name string) Driver {
+	registryMu.RLock()
 	f, ok := registry[name]
+	registryMu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -63,6 +98,8 @@ func ByName(name string) Driver {
 
 // Names lists registered agents.
 func Names() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	out := make([]string, 0, len(registry))
 	for n := range registry {
 		out = append(out, n)

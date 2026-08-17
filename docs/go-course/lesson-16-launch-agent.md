@@ -175,10 +175,14 @@ case phaseResume:
 	}
 ```
 
-Both launch paths return `tea.Batch(tea.Quit, runAndWaitCmd(cmd))` so the TUI
-exits and the agent takes over the terminal. When the agent exits,
-`runAndWaitCmd` restores the terminal and returns a `launchDoneMsg`; the
-`Update` handler records any error and quits.
+Both launch paths return `runAndWaitCmd(cmd)` (without batching it with
+`tea.Quit`). `tea.Quit` is intentionally not batched: Bubble Tea fires
+`QuitMsg` in a concurrent goroutine and `Program.Run()` would return on
+`QuitMsg`, killing the agent via process exit before `cmd.Run()` finished.
+By returning only `runAndWaitCmd(cmd)`, the program stays alive while the
+agent runs, and `Update(launchDoneMsg)` issues `tea.Quit` after the agent
+exits — so the TUI quits cleanly and the agent gets to run to completion.
+`runAndWaitCmd` releases and restores the terminal around the agent.
 
 ## Run It
 

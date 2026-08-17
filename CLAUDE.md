@@ -126,12 +126,12 @@ Test coverage by package:
 | `internal/config` | 38 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 7 | Next advances, cross-skip, fallback, state persistence |
-| `internal/agents` | 29 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, shell driver, shell quoting |
+| `internal/agents` | 30 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, shell driver, shell quoting |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 23 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 84 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch batch returns `tea.Quit`; Ollama warn: unavailable model warning, cancel/proceed; Helpers: `DefaultAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
+| `internal/tui` | 88 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, rotate (`r`) with temp state, rotate ignored in list phase, tag toggle (`d`), model-phase View; Model browser (lesson 15): `modelItem` filter/description, `refreshBrowser` cache + filter + deferred build, browser open/close, esc phase-gating, Enter-picks (no rotation advance), tag-filter toggle (`f`), source-filter cycle (`c`), WindowSizeMsg rebuild, empty-list state; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; Helpers: `DefaultAgent`/`firstModel` defaults & placeholders, state persistence, cross-tag skip, single-model group, placeholder View |
 | `cmd/wt` | 20 | Non-TUI launch (lesson 17): `DefaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable |
 
 ## Go module
@@ -362,115 +362,48 @@ resume prompt, and launch command.
 > `-w`, `--cwd`, `wt rotate`, etc.) skip `tui.Run()` and don't need a TTY
 > for `wt` itself (though the launched agent is interactive).
 
-### Worktree picker screen (Lesson 13)
+### Worktree picker screen
 
-The worktree list screen replaces the bash `fzf` picker with a richer
-`bubbles/list` widget:
+`internal/tui/worktree_list.go` adapts `worktree.Entry` to `list.Item` via
+`entryItem` (`Title()`/`Description()`/`FilterValue()`). `buildList` builds
+the `list.Model`; `loadEntriesCmd` async-loads via `worktree.RepoRoot()` +
+`Enumerate(root, root)`; `entriesLoadedMsg` and `selectedEntryMsg` carry the
+results and the Enter-picked entry into `Update`. Full walkthrough:
+[docs/go-course/lesson-13-worktree-screen.md](docs/go-course/lesson-13-worktree-screen.md).
 
-- `internal/tui/worktree_list.go` — adapts `worktree.Entry` to `list.Item`
-  via `entryItem` (`Title()`, `Description()`, `FilterValue()`)
-- `buildList(entries, width, height)` — builds a `list.Model` with title
-  `"Pick a worktree or branch"`
-- `loadEntriesCmd()` — async `tea.Cmd` that calls `worktree.RepoRoot()` +
-  `worktree.Enumerate(root, root)` in a goroutine
-- `entriesLoadedMsg` — carries the enumerated entries (or error) back into
-  `Update`
-- `selectedEntryMsg` — emitted on Enter carrying the chosen `worktree.Entry`
+### Agent+model screen
 
-The list supports arrow navigation and built-in fuzzy filtering (type to
-narrow branches). Picking an entry emits `selectedEntryMsg`, which lesson 14
-wires to the agent+model screen; worktree creation and agent launch are wired
-in later lessons.
+`selectedEntryMsg` transitions to `phaseModel`, resolving the initial agent
+via `cfg.DefaultAgent()` and model via `firstModel`. A `phase` enum
+(`phaseList` / `phaseModel` / `phaseBrowser` / `phaseResume` /
+`phaseGuardWarn` / `phaseOllamaWarn`) tracks the active screen. When
+`--agent shell`, this screen is skipped entirely — shell has no model,
+rotation, or session resume.
 
-```bash
-go run ./cmd/wt           # interactive TUI (needs a TTY)
-go run ./cmd/wt --version # non-interactive, no TTY needed
-```
+Keybindings: **`r`** rotates via `rotation.ForTag(cfg, tag).Next(otherTag)`
+(advances `rotation-<tag>.state`); **`m`** opens the model browser; **`d`**
+toggles the `code`/`design` tag group, driving the cross-tag skip; **`enter`**
+launches, or switches to `phaseResume` if `session.LatestForAgent` finds a
+prior claude/opencode session. Full walkthrough:
+[docs/go-course/lesson-14-agent-model-screen.md](docs/go-course/lesson-14-agent-model-screen.md).
 
-### Agent+model screen (Lesson 14)
+### Model browser screen
 
-After the user picks a worktree, the TUI moves to an **agent+model screen**
-that shows the selected agent and the currently shown model, with explicit
-one-keystroke actions. A `phase` value (`phaseList` / `phaseModel` / `phaseBrowser` /
-`phaseResume` / `phaseGuardWarn` / `phaseOllamaWarn`) tracks which screen is active.
+`internal/tui/model_browser.go` (`modelItem`, `buildModelItems`,
+`refreshBrowser`, `browserView`) implements a `bubbles/list` picker over the
+curated + discovered model registry, opened with `m` from the agent+model
+screen. It's a *view*, not rotation: picking a model sets `m.current`
+directly with no state-file write. `phaseBrowser` extends the phase enum;
+`f` toggles the tag filter, `c` cycles the source filter (all → curated →
+discovered) via `registry.FilterByTag`/`FilterBySource`, `esc` pops back,
+`enter` picks.
 
-When the `--agent` flag is set to `shell`, the model screen is skipped entirely —
-the TUI goes straight from worktree pick to launching `bash` (with the user's
-passthrough command if provided). Shell has no model, no rotation, and no
-session resume.
-
-- `selectedEntryMsg` now transitions to `phaseModel`, resolving the initial
-  agent (via `cfg.DefaultAgent()` — first configured agent, else `claude`)
-  and model (first in the default tag group) via `firstModel`. Worktree
-  selection is stored for lesson 16's launch.
-- **`r`** — rotate to the next model in the active tag group via
-  `rotation.ForTag(cfg, tag).Next(otherTag)`, advancing the on-disk
-  `rotation-<tag>.state` file.
-- **`m`** — open the model browser (lesson 15).
-- **`d`** — toggle the active tag group between `code` and `design`,
-  re-resolving the shown model; `otherTag` drives the cross-tag skip so
-  rotation avoids the other group's last-used model.
-- **`enter`** — launch the agent (lesson 16). If `session.LatestForAgent`
-  finds a claude/opencode session, switch to `phaseResume` and show a
-  resume prompt instead of launching immediately.
-- `View` renders the model phase distinctly (agent / model / tag + keybind
-  hints); `Run(yolo, agent, extraArgs)` loads the config up front and passes it into the
-  model.
-
-```bash
-go run ./cmd/wt           # interactive TUI (needs a TTY)
-```
-
-Pick a worktree, then on the agent+model screen press `r` to cycle the
-model (and watch `~/.config/agent-wt/rotation-code.state` advance), `d` to
-toggle the tag group, `m` to open the model browser, `enter` to launch or
-show the resume prompt, `q` to quit.
-
-The full TUI flow (worktree list → agent/model screen → model browser →
-resume prompt → launch) is built across lessons 13–16 and wired in lesson 17.
-
-### Model browser screen (Lesson 15)
-
-The model browser is the "choose the backend LLM from a list" feature: a
-`bubbles/list`-backed picker over the curated + discovered model registry
-(opened with `m` from the agent+model screen). The browser is a *view*
-into the registry, not rotation: picking a model here sets the current
-model directly (no state-file advance), distinguishing deliberate
-selection from `r`'s quick rotation.
-
-- `internal/tui/model_browser.go` — `modelItem` adapter (lists
-  `config.Model` with provider/location/source/tags columns), `buildModelItems`,
-  `refreshBrowser`, and `browserView`.
-- `phaseBrowser` constant extends the existing `phase` enum; the prior
-  lesson's `browserOpen bool` was rejected in favor of an enum constant so
-  every key gate is uniform (`m.phase == phaseBrowser`).
-- `m` key opens the browser; `enter` picks the selection back into
-  `m.current` and returns to `phaseModel`. Picking never writes the
-  rotation state file (asserted in `TestBrowserEnterPicksModel`).
-- `esc` is phase-aware: pops back from the browser, quits from
-  `phaseModel`.
-- `f` toggles the tag filter between `""` and `m.tag`; `c` cycles a
-  `sourceCycle` int 0→1→2 (all → curated → discovered), wired through
-  `registry.FilterByTag` and `registry.FilterBySource`.
-- **Discovery cache** — `m.browserCache` snapshots `registry.Discover(cfg)`
-  once per browser-open; subsequent filter toggles reuse the cache rather
-  than re-shell to `ollama list` and re-HTTP OpenRouter. The cache is
-  cleared on every `m` press so each browser session re-discovers.
-- **Deferred build** — `refreshBrowser` skips the list build when
-  `width`/`height` are zero (no `WindowSizeMsg` yet); the next
-  `WindowSizeMsg` triggers a rebuild while the browser is open.
-- **Test seam** — `registry.Discover` now has a `DiscoverWith(cfg,
-  []Discoverer)` variant for test injection; production callers still use
-  `Discover(cfg)` with the default Ollama + OpenRouter discoverers.
-
-```bash
-go run ./cmd/wt           # interactive TUI (needs a TTY)
-```
-
-Pick a worktree, press `m` to open the browser. You'll see curated +
-discovered models with provider/location/source/tags columns. Filter by
-typing; press `f` to toggle tag filtering, `c` to cycle source filter,
-`enter` to select a model, `esc` to go back.
+`m.browserCache` snapshots `registry.Discover(cfg)` once per browser-open
+(cleared on every `m` press) so filter toggles don't re-shell to `ollama
+list` or re-HTTP OpenRouter; `refreshBrowser` defers the list build until a
+`WindowSizeMsg` supplies real dimensions. `registry.DiscoverWith(cfg,
+[]Discoverer)` is the test-injection seam. Full walkthrough:
+[docs/go-course/lesson-15-model-browser.md](docs/go-course/lesson-15-model-browser.md).
 
 ### Worktree (Go)
 

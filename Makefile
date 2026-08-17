@@ -1,7 +1,8 @@
-.PHONY: help install uninstall check lint format test clean
+.PHONY: help build install uninstall check lint format format-check test clean
 
 help:                   # Show available targets
 	@echo "Available targets:"
+	@echo "  build     - Build the Go wt binary to bin/wt"
 	@echo "  install   - Copy bin/* to ~/.local/bin/"
 	@echo "  uninstall - Remove installed scripts from ~/.local/bin/"
 	@echo "  lint      - Run shellcheck on bin/*-wt"
@@ -13,6 +14,11 @@ help:                   # Show available targets
 
 BINDIR := $(HOME)/.local/bin
 SRCDIR := bin
+
+build:                  # Build the Go wt binary
+	@echo "Building wt..."
+	go build -o bin/wt ./cmd/wt
+	@echo "Built bin/wt"
 
 install:                # Install scripts to ~/.local/bin/
 	cp -r $(SRCDIR)/* $(BINDIR)/

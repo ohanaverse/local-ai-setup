@@ -1,3 +1,4 @@
 .worktrees
 docs/superpowers/
 .DS_Store
+bin/wt

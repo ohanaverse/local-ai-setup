@@ -213,14 +213,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
 						}
-						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+						return m, runAndWaitCmd(cmd)
 					case resumeChoice:
 						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
 						}
-						return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+						return m, runAndWaitCmd(cmd)
 					}
 				}
 			case phaseGuardWarn:
@@ -374,7 +374,7 @@ func (m model) launchShell() (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+	return m, runAndWaitCmd(cmd)
 }
 
 // proceedToLaunch checks for a prior session and either launches the agent
@@ -392,7 +392,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 			m.status = "launch failed: " + err.Error()
 			return m, nil
 		}
-		return m, tea.Batch(tea.Quit, runAndWaitCmd(cmd))
+		return m, runAndWaitCmd(cmd)
 	}
 	m.phase = phaseResume
 	m.resume.session = sess
