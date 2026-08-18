@@ -1,15 +1,12 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -258,50 +255,8 @@ func TestSelectedEntryMsgTransitionsToModelPhase(t *testing.T) {
 	if gotModel.tag != "code" {
 		t.Errorf("tag = %q, want code", gotModel.tag)
 	}
-	if gotModel.current.ID != "ollama/gemma4:9b" {
-		t.Errorf("current = %q, want first code model (rotation index 0)", gotModel.current.ID)
-	}
 	if len(gotModel.models.Items()) == 0 {
 		t.Error("models list is empty; expected populated picker")
-	}
-}
-
-// TestRotateKeyAdvancesModel asserts pressing 'r' in the model phase advances
-// the current model through the active tag group via rotation.Next. This is
-// the explicit replacement for the bash tool's silent auto-rotation.
-func TestRotateKeyAdvancesModel(t *testing.T) {
-	// rotation.ForTag reads its next index from a per-tag state file on disk,
-	// so isolate the state in a temp XDG_CONFIG_HOME and seed it to point at
-	// the second model. Without this the test depends on the host's real
-	// rotation-code.state and is non-deterministic.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatalf("mkdir state dir: %v", err)
-	}
-	if err := os.WriteFile(rotation.StateFile(stateDir, "code"),
-		[]byte("1\nollama/gemma4:9b\n"), 0o600); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-
-	m := model{cfg: testConfig(), phase: phaseModel, tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	gotModel := got.(model)
-	if gotModel.current.ID != "ollama/gemma4:14b" {
-		t.Errorf("current = %q, want second code model", gotModel.current.ID)
-	}
-}
-
-// TestRotateKeyIgnoredInListPhase asserts 'r' does nothing while still on the
-// worktree list. Rotation is only meaningful once an agent+model is chosen.
-func TestRotateKeyIgnoredInListPhase(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseList, tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	gotModel := got.(model)
-	if gotModel.current.ID != "ollama/gemma4:9b" {
-		t.Errorf("current mutated in list phase: %q", gotModel.current.ID)
 	}
 }
 
@@ -321,9 +276,6 @@ func TestToggleTagSwitchesGroup(t *testing.T) {
 	gotModel := got.(model)
 	if gotModel.tag != "design" {
 		t.Errorf("tag = %q, want design", gotModel.tag)
-	}
-	if gotModel.current.ID != "ollama/gemma4:design" {
-		t.Errorf("current = %q, want ollama/gemma4:design", gotModel.current.ID)
 	}
 }
 
@@ -366,7 +318,8 @@ func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 			{ID: "openrouter/gpt-4", ProviderID: "openrouter", Tags: []string{"code"}},
 		},
 	}
-	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
+	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", selectedPath: "/repo",
+		models: singleModelList(cfg.Models[0])}
 
 	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
 	mm := newM.(model)
@@ -388,7 +341,12 @@ func TestOllamaWarnCancel(t *testing.T) {
 			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
 		},
 	}
-	m := model{cfg: cfg, phase: phaseOllamaWarn, width: 80, height: 24, agent: "claude", tag: "code", current: cfg.Models[0], selectedPath: "/repo"}
+	m := model{cfg: cfg, phase: phaseOllamaWarn, width: 80, height: 24, agent: "claude", tag: "code", selectedPath: "/repo"}
+	// Build a stub picker with the unavailable model as the highlighted
+	// item, so ollamaWarn has a model to reference if proceedToLaunch
+	// is ever called from this test.
+	items := []list.Item{modelItem{model: cfg.Models[0]}}
+	m.models = list.New(items, list.NewDefaultDelegate(), 78, 22)
 	m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), 78, 22)
 
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
@@ -396,6 +354,39 @@ func TestOllamaWarnCancel(t *testing.T) {
 
 	if mm.phase != phaseModel {
 		t.Fatalf("expected phaseModel after cancel, got %d", mm.phase)
+	}
+}
+
+// TestOllamaWarnHasProceedAndCancelOnly asserts the ollama
+// availability warning has two choices: proceed and cancel.
+// The "skip" choice (which rotated to the next model) is gone
+// because rotation is now implicit via RecordLaunch on Enter.
+func TestOllamaWarnHasProceedAndCancelOnly(t *testing.T) {
+	choices := buildOllamaChoices()
+	if len(choices) != 2 {
+		t.Fatalf("ollama choices = %d, want 2 (proceed + cancel)", len(choices))
+	}
+	// Verify the two surviving choices are the ones we expect, and
+	// no entry references the removed "skip" wording.
+	for _, c := range choices {
+		oi, ok := c.(ollamaItem)
+		if !ok {
+			t.Fatalf("choice is %T, want ollamaItem", c)
+		}
+		if oi.choice == ollamaProceedChoice {
+			if oi.title != "Proceed anyway" {
+				t.Errorf("proceed title = %q, want %q", oi.title, "Proceed anyway")
+			}
+		} else if oi.choice == ollamaCancelChoice {
+			if oi.title != "Cancel" {
+				t.Errorf("cancel title = %q, want %q", oi.title, "Cancel")
+			}
+		} else {
+			t.Errorf("unexpected choice %v (%q)", oi.choice, oi.title)
+		}
+		if strings.Contains(strings.ToLower(oi.title), "skip") {
+			t.Errorf("choice title %q still mentions 'skip'", oi.title)
+		}
 	}
 }
 

@@ -1,10 +1,8 @@
 package rotation
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -21,7 +19,11 @@ func defaultStateDir() string {
 	return config.Dir()
 }
 
-// Rotation cycles through a tag group's models, advancing each Next() call.
+// Rotation remembers which model was last launched in a tag group.
+// The model set is fixed at construction time and must match the
+// picker's filtered snapshot. Rotation is driven by the launch
+// action: RecordLaunch persists the pick, and LastLaunched +
+// FirstAfter compute the cursor position for the next picker entry.
 type Rotation struct {
 	mu       sync.Mutex
 	tag      string
@@ -29,16 +31,11 @@ type Rotation struct {
 	stateDir string
 }
 
-// New builds a Rotation for a tag group from the given models. stateDir is
-// where rotation-<tag>.state lives; pass "" to use the default (~/.config/agent-wt).
+// New builds a Rotation for a tag group from the given models.
+// stateDir is where rotation-<tag>.state lives; pass "" to use the
+// default (~/.config/agent-wt).
 func New(tag string, models []config.Model, stateDir string) *Rotation {
 	return &Rotation{tag: tag, models: models, stateDir: stateDir}
-}
-
-// ForTag returns a Rotation over cfg's models tagged with tag, using the
-// default state directory.
-func ForTag(cfg *config.Config, tag string) *Rotation {
-	return New(tag, cfg.ModelsWithTag(tag), "")
 }
 
 // Tag returns the tag group this Rotation serves.
@@ -52,75 +49,62 @@ func (r *Rotation) StateDir() string {
 	return defaultStateDir()
 }
 
-// Next returns the next model in rotation. otherTag is the tag group to
-// cross-skip against (pass "" to disable). Returns false if the group is
-// empty or no model is usable. Advances the on-disk state.
-func (r *Rotation) Next(otherTag string) (config.Model, bool) {
+// LastLaunched returns the model most recently recorded for this
+// rotation, or (zero, false) if the state file is missing, empty,
+// or references a model no longer in the snapshot. Backward-
+// compatible with the legacy 2-line format ("<index>\n<id>\n") —
+// the last non-empty line is treated as the model ID.
+func (r *Rotation) LastLaunched() (config.Model, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.lastLaunchedLocked()
+}
 
-	if len(r.models) == 0 {
+func (r *Rotation) lastLaunchedLocked() (config.Model, bool) {
+	data, err := os.ReadFile(StateFile(r.StateDir(), r.tag))
+	if err != nil {
 		return config.Model{}, false
 	}
-
-	stateDir := r.StateDir()
-
-	// What did the other group last use? Avoid it.
-	otherLast := ""
-	if otherTag != "" {
-		otherLast = config.LastSelected(stateDir, otherTag)
-	}
-
-	// Load current index from disk.
-	idx := r.loadIndex(stateDir)
-	if idx < 0 || idx >= len(r.models) {
-		idx = 0
-	}
-
-	n := len(r.models)
-	// Walk forward from idx, skipping any candidate the other group just used.
-	for i := 0; i < n; i++ {
-		cand := r.models[(idx+i)%n]
-		if otherLast != "" && cand.ID == otherLast {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		id := strings.TrimSpace(lines[i])
+		if id == "" {
 			continue
 		}
-		// Persist next index (one past this pick) and the model we just chose.
-		nextIdx := (idx + i + 1) % n
-		if err := r.saveState(stateDir, nextIdx, cand.ID); err != nil {
-			// State write failed; still return the pick so callers can proceed.
-			return cand, true
+		for _, m := range r.models {
+			if m.ID == id {
+				return m, true
+			}
 		}
-		return cand, true
 	}
-
-	// All candidates were cross-skipped. Fall back to the index-position pick
-	// so we always make progress even when the other group just used the
-	// only model in this group.
-	selected := r.models[idx]
-	_ = r.saveState(stateDir, (idx+1)%n, selected.ID)
-	return selected, true
+	return config.Model{}, false
 }
 
-// loadIndex reads the saved index (first line) from the state file.
-// Returns -1 if the file is missing or malformed.
-func (r *Rotation) loadIndex(dir string) int {
-	data, err := os.ReadFile(StateFile(dir, r.tag))
-	if err != nil {
-		return -1
-	}
-	parts := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(parts) == 0 {
-		return -1
-	}
-	idx, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return -1
-	}
-	return idx
+// RecordLaunch writes the given model as the new last-launched.
+// The write is atomic (temp file + rename). Errors are returned to
+// the caller; the picker proceeds with the launch even if the write
+// fails (the next picker entry falls back to index 0).
+func (r *Rotation) RecordLaunch(m config.Model) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return config.WriteFileAtomic(StateFile(r.StateDir(), r.tag), []byte(m.ID+"\n"), 0o600)
 }
 
-// saveState writes "<index>\n<last>\n" atomically via temp file + rename.
-func (r *Rotation) saveState(dir string, idx int, last string) error {
-	content := fmt.Sprintf("%d\n%s\n", idx, last)
-	return config.WriteFileAtomic(StateFile(dir, r.tag), []byte(content), 0o600)
+// FirstAfter returns the model that comes after target in the
+// snapshot, wrapping to the first item if target is the last or
+// not in the snapshot. Returns (zero, false) if the snapshot is
+// empty. This is the "what to show on next picker entry" calculation.
+func FirstAfter(models []config.Model, target config.Model) (config.Model, bool) {
+	if len(models) == 0 {
+		return config.Model{}, false
+	}
+	for i, m := range models {
+		if m.ID == target.ID {
+			if i+1 < len(models) {
+				return models[i+1], true
+			}
+			return models[0], true
+		}
+	}
+	return models[0], true
 }

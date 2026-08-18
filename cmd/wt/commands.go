@@ -107,22 +107,28 @@ func agentsCmd(a *app) *cobra.Command {
 }
 
 func rotateCmd(a *app) *cobra.Command {
-	var crossTag string
 	c := &cobra.Command{
 		Use:    "rotate <tag>",
-		Short:  "Print the next model in a tag group's rotation (debug)",
+		Short:  "Print the model after the last-launched in a tag group (debug)",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r := rotation.ForTag(a.cfg, args[0])
-			m, ok := r.Next(crossTag)
-			if !ok {
-				return fmt.Errorf("no models tagged %q", args[0])
+			tag := args[0]
+			models := a.cfg.ModelsWithTag(tag)
+			if len(models) == 0 {
+				return fmt.Errorf("no models tagged %q", tag)
 			}
-			fmt.Println(m.ID)
+			r := rotation.New(tag, models, "")
+			last, ok := r.LastLaunched()
+			if !ok {
+				// No prior launch; print the first model.
+				fmt.Println(models[0].ID)
+				return nil
+			}
+			next, _ := rotation.FirstAfter(models, last)
+			fmt.Println(next.ID)
 			return nil
 		},
 	}
-	c.Flags().StringVar(&crossTag, "cross-tag", "", "skip models used by this tag")
 	return c
 }

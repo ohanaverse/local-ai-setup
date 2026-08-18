@@ -42,4 +42,4 @@ With no flags, `wt` presents a Bubble Tea TUI picker showing available worktrees
 
 ### Legacy bash flags
 
-The original bash launchers supported `--code`, `--design`, `--native`, `--no-guard`, and `--check-guard`. These are not supported by `wt`: model rotation is now tag-based (the `r` key in the TUI, or `wt rotate <tag>`), and the main guard is managed by `internal/guard`. The bash model-rotation and pi `models.json` auto-sync behavior described in earlier versions of this doc is not yet ported to Go.
+The original bash launchers supported `--code`, `--design`, `--native`, `--no-guard`, and `--check-guard`. These are not supported by `wt`: model rotation is now tag-based (implicit on launch in the TUI, or `wt rotate <tag>`), and the main guard is managed by `internal/guard`. The bash model-rotation and pi `models.json` auto-sync behavior described in earlier versions of this doc is not yet ported to Go.

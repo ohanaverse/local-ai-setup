@@ -119,7 +119,6 @@ type ollamaChoice int
 
 const (
 	ollamaProceedChoice ollamaChoice = iota
-	ollamaSkipChoice
 	ollamaCancelChoice
 )
 
@@ -134,11 +133,13 @@ func (o ollamaItem) FilterValue() string { return o.title }
 func (o ollamaItem) Title() string       { return o.title }
 func (o ollamaItem) Description() string { return o.desc }
 
-// buildOllamaChoices creates the ollama availability confirmation list items.
+// buildOllamaChoices creates the ollama availability confirmation list
+// items. With implicit rotation-by-launch, the user can navigate the
+// picker with up/down and press Enter on a different model; there is
+// no "skip to next" shortcut.
 func buildOllamaChoices() []list.Item {
 	return []list.Item{
 		ollamaItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: "Launch with unavailable model (may fail)"},
-		ollamaItem{choice: ollamaSkipChoice, title: "Skip to next model", desc: "Rotate to the next model in the tag group"},
 		ollamaItem{choice: ollamaCancelChoice, title: "Cancel", desc: "Return to the agent+model screen"},
 	}
 }

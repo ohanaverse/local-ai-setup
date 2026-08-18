@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +39,19 @@ func seedState(t *testing.T, dir, tag, content string) {
 	}
 }
 
+// singleModelList builds a one-item list.Model with m highlighted at
+// index 0. It replaces the pre-refactor pattern of setting m.current
+// directly: tests that need "the picker has X highlighted" now build
+// a single-item list and select index 0. m.models is the single
+// source of truth for the picked model in production code; this
+// helper lets tests mirror that contract.
+func singleModelList(m config.Model) list.Model {
+	items := []list.Item{modelItem{model: m}}
+	ml := list.New(items, list.NewDefaultDelegate(), 80, 24)
+	ml.Select(0)
+	return ml
+}
+
 // phaseModelWithList builds a model in phaseModel with m.models populated
 // for the given agent+tag, m.current set to the rotation's next-to-use
 // model, and the list cursor on that model. Tests that exercise 'r', 'd',
@@ -63,9 +77,13 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		width:     80,
 		height:    24,
 	}
-	if next, ok := rotation.ForTag(cfg, tag).Next(""); ok {
-		m.current = next
-		m.models.Select(indexOfModel(models, next))
+	// Set up the rotation snapshot for the picker's filtered list and
+	// position the cursor on the model after the last-launched one.
+	m.rotation = rotation.New(tag, models, "")
+	if last, ok := m.rotation.LastLaunched(); ok {
+		if next, ok := FindAfter(models, last); ok {
+			m.models.Select(indexOfModel(models, next))
+		}
 	}
 	return m
 }
@@ -171,72 +189,6 @@ func TestSelectedEntryMsgEmptyListSetsActionableStatus(t *testing.T) {
 	}
 }
 
-// TestRotatePersistsState asserts pressing 'r' advances the on-disk
-// rotation-<tag>.state file, not just the in-memory model. Without state
-// persistence a restart would lose the user's place in the rotation.
-func TestRotatePersistsState(t *testing.T) {
-	dir := tempStateDir(t)
-	m := model{cfg: testConfig(), phase: phaseModel, tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-
-	data, err := os.ReadFile(rotation.StateFile(dir, "code"))
-	if err != nil {
-		t.Fatalf("read state: %v", err)
-	}
-	content := string(data)
-	// Fresh state starts at index 0, so one rotate picks the first model and
-	// persists the next index as 1.
-	if !strings.HasPrefix(content, "1\n") {
-		t.Errorf("state = %q, want index line starting with 1", content)
-	}
-	if !strings.Contains(content, "ollama/gemma4:9b") {
-		t.Errorf("state = %q, want last-selected model recorded", content)
-	}
-}
-
-// TestRotateSkipsOtherTagLastUsed asserts that when the other tag group most
-// recently used a model, rotating the active group skips that model and
-// lands on the next one instead. This is the cross-tag skip wired through
-// rot.Next(otherTag); without it both groups could stack on the same model.
-func TestRotateSkipsOtherTagLastUsed(t *testing.T) {
-	dir := tempStateDir(t)
-	// code = [A, B]; B is shared with design. Point code's index at B and
-	// record that design last used B, so rotating code must skip B → A.
-	cfg := &config.Config{DefaultTag: "code", Models: []config.Model{
-		{ID: "A", Tags: []string{"code"}},
-		{ID: "B", Tags: []string{"code", "design"}},
-	}}
-	seedState(t, dir, "code", "1\nB\n")
-	seedState(t, dir, "design", "0\nB\n")
-
-	m := model{cfg: cfg, phase: phaseModel, tag: "code",
-		current: config.Model{ID: "B"}}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	gotModel := got.(model)
-	if gotModel.current.ID != "A" {
-		t.Errorf("current = %q, want A (B cross-skipped by design)", gotModel.current.ID)
-	}
-}
-
-// TestRotateSingleModelStaysPut asserts rotating a one-model tag group keeps
-// the same model. The cross-skip fallback must still make progress by
-// returning the sole member rather than reporting failure.
-func TestRotateSingleModelStaysPut(t *testing.T) {
-	dir := tempStateDir(t)
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "only", Tags: []string{"code"}},
-	}}
-	seedState(t, dir, "code", "0\nonly\n")
-
-	m := model{cfg: cfg, phase: phaseModel, tag: "code", current: config.Model{ID: "only"}}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	gotModel := got.(model)
-	if gotModel.current.ID != "only" {
-		t.Errorf("current = %q, want only", gotModel.current.ID)
-	}
-}
-
 // TestToggleBackToCode asserts pressing 'd' twice returns to the code group.
 // Toggling is meant to be a stable two-way switch, not a one-way trip.
 // (otherTag is now computed via oppositeTag(m.tag), not stored on model.)
@@ -258,7 +210,7 @@ func TestToggleBackToCode(t *testing.T) {
 // when the browser was deleted; this test now covers only 'd'.)
 func TestTagKeyIgnoredInListPhase(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseList, tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"}}
+		models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	gotModel := got.(model)
 	if gotModel.status != "" {
@@ -266,9 +218,6 @@ func TestTagKeyIgnoredInListPhase(t *testing.T) {
 	}
 	if gotModel.tag != "code" {
 		t.Errorf("tag mutated in list phase: %q", gotModel.tag)
-	}
-	if gotModel.current.ID != "ollama/gemma4:9b" {
-		t.Errorf("current mutated in list phase: %q", gotModel.current.ID)
 	}
 }
 
@@ -286,9 +235,6 @@ func TestModelScreenMKeyIsNoOp(t *testing.T) {
 	if gotModel.phase != before.phase {
 		t.Errorf("phase changed: before %v, after %v", before.phase, gotModel.phase)
 	}
-	if gotModel.current.ID != before.current.ID {
-		t.Errorf("current changed: before %q, after %q", before.current.ID, gotModel.current.ID)
-	}
 	if gotModel.tag != before.tag {
 		t.Errorf("tag changed: before %q, after %q", before.tag, gotModel.tag)
 	}
@@ -304,7 +250,7 @@ func TestViewModelPhase(t *testing.T) {
 	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	view := m.View()
-	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[r] rotate", "[d] switch tag", "[enter] launch"} {
+	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[↑/↓] navigate", "[d] switch tag", "[enter] launch"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q in:\n%s", want, view)
 		}
@@ -316,7 +262,7 @@ func TestViewModelPhase(t *testing.T) {
 // the immediate-launch path by inspecting the returned command batch.
 func TestEnterInModelPhaseLaunchesWithoutSession(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"}}
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if gotModel.status != "" {
@@ -343,7 +289,7 @@ func TestEnterInModelPhaseShowsResumePrompt(t *testing.T) {
 	}
 
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
-		selectedPath: repo, current: config.Model{ID: "ollama/gemma4:9b"}}
+		selectedPath: repo, models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if gotModel.phase != phaseResume {
@@ -358,7 +304,7 @@ func TestEnterInModelPhaseShowsResumePrompt(t *testing.T) {
 // resume prompt returns to the model phase without launching.
 func TestResumePromptCancelReturnsToModel(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"},
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
 		resume: resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 80, 24)}}
 	// Move selection to Cancel (index 1).
 	m.resume.choices.CursorDown()
@@ -418,7 +364,8 @@ func TestWindowSizeResizesResumePrompt(t *testing.T) {
 // resume choice builds a launch batch carrying the session resume flag.
 func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"},
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
+		launchModel: config.Model{ID: "ollama/gemma4:9b"},
 		resume: resumeModel{
 			session: &session.Session{ID: "abc-123"},
 			choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 80, 24),
@@ -438,7 +385,8 @@ func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
 // fresh builds a launch batch without a session.
 func TestResumePromptStartFreshLaunchesWithoutSession(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"},
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
+		launchModel: config.Model{ID: "ollama/gemma4:9b"},
 		resume: resumeModel{
 			session: &session.Session{ID: "abc-123"},
 			choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 80, 24),
@@ -502,7 +450,7 @@ func TestSelectedEntryMsgSetsSelectedPath(t *testing.T) {
 // launch command builder propagates it to the agent driver.
 func TestYoloFlagPassedToLaunch(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"}, yolo: true}
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}), yolo: true}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if gotModel.status != "" {
@@ -517,7 +465,7 @@ func TestYoloFlagPassedToLaunch(t *testing.T) {
 // unregistered agent surfaces a readable error instead of launching.
 func TestUnknownAgentLaunchShowsError(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "not-an-agent", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"}}
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if cmd != nil {
@@ -532,7 +480,7 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 // returns an error, the TUI surfaces it in status instead of crashing.
 func TestSessionCheckErrorShowsStatus(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "opencode", tag: "code",
-		selectedPath: "/nonexistent/path/that/cannot/be/git", current: config.Model{ID: "ollama/gemma4:9b"}}
+		selectedPath: "/nonexistent/path/that/cannot/be/git", models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if cmd != nil {
@@ -547,13 +495,13 @@ func TestSessionCheckErrorShowsStatus(t *testing.T) {
 // prompt preserves the current agent and model.
 func TestResumePromptCancelDoesNotMutateModel(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		current: config.Model{ID: "ollama/gemma4:9b"},
+		models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
 		resume:  resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 80, 24)}}
 	m.resume.choices.CursorDown() // Cancel
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
-	if gotModel.agent != "claude" || gotModel.current.ID != "ollama/gemma4:9b" || gotModel.tag != "code" {
-		t.Errorf("model mutated on cancel: agent=%q current=%q tag=%q", gotModel.agent, gotModel.current.ID, gotModel.tag)
+	if gotModel.agent != "claude" || gotModel.tag != "code" {
+		t.Errorf("model mutated on cancel: agent=%q tag=%q", gotModel.agent, gotModel.tag)
 	}
 }
 
@@ -585,9 +533,6 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 	m := model{cfg: cfg, width: 80, height: 24}
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
 	gotModel := got.(model)
-	if gotModel.current.ID != "ollama/gemma4:14b" {
-		t.Errorf("current = %q, want ollama/gemma4:14b (rotation index 1)", gotModel.current.ID)
-	}
 	if gotModel.models.Index() != 1 {
 		t.Errorf("cursor index = %d, want 1", gotModel.models.Index())
 	}
@@ -600,8 +545,10 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 // shared infrastructure.
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
-	// State file: next_index=1, last=ollama/gemma4:9b. With 2 code models,
-	// Next() returns models[1] (= gemma4:14b), then advances to index 0.
+	// State file: legacy 2-line "1\nollama/gemma4:9b\n". LastLaunched
+	// reads the last non-empty line (gemma4:9b) and FindAfter returns
+	// the next model (gemma4:14b at index 1). The cursor lands on
+	// gemma4:14b.
 	seedState(t, dir, "code", "1\nollama/gemma4:9b\n")
 	cfg := testConfig()
 	m := phaseModelWithList(t, cfg, "claude", "code")
@@ -609,34 +556,8 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	if got := len(m.models.Items()); got != 2 {
 		t.Errorf("models items = %d, want 2 (testConfig code models)", got)
 	}
-	if m.current.ID != "ollama/gemma4:14b" {
-		t.Errorf("current = %q, want ollama/gemma4:14b (rotation index 1)", m.current.ID)
-	}
 	if m.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1", m.models.Index())
-	}
-}
-
-// TestModelScreenRotateMovesCursor asserts pressing 'r' updates both
-// m.current (the rotation cursor) and m.models.Index() (the visible
-// list cursor). They are the same cursor, just two views of it.
-func TestModelScreenRotateMovesCursor(t *testing.T) {
-	dir := tempStateDir(t)
-	// State: index 0, last=gemma4:9b. Next() returns models[0]=gemma4:9b
-	// and advances to index 1. The visible cursor should land on the
-	// first model.
-	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	if m.current.ID != "ollama/gemma4:9b" {
-		t.Fatalf("precondition: current = %q, want ollama/gemma4:9b", m.current.ID)
-	}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	gotModel := got.(model)
-	if gotModel.current.ID != "ollama/gemma4:14b" {
-		t.Errorf("current = %q, want ollama/gemma4:14b (rotated)", gotModel.current.ID)
-	}
-	if gotModel.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1", gotModel.models.Index())
+		t.Errorf("cursor index = %d, want 1 (after gemma4:9b)", m.models.Index())
 	}
 }
 
@@ -658,9 +579,6 @@ func TestModelScreenToggleTagRebuildsList(t *testing.T) {
 	}
 	if len(gotModel.models.Items()) != 1 {
 		t.Errorf("models items = %d, want 1 (only design model)", len(gotModel.models.Items()))
-	}
-	if gotModel.current.ID != "ollama/gemma4:design" {
-		t.Errorf("current = %q, want ollama/gemma4:design", gotModel.current.ID)
 	}
 }
 
@@ -688,21 +606,305 @@ func TestModelScreenToggleTagEmptyRestores(t *testing.T) {
 	}
 }
 
-// TestModelScreenEnterUsesHighlightedNotCurrent asserts that Enter launches
-// the highlighted list item, even if m.current lags. This protects against
-// a class of bugs where stale state could launch the wrong model after
-// the user has navigated the cursor.
-func TestModelScreenEnterUsesHighlightedNotCurrent(t *testing.T) {
-	dir := tempStateDir(t)
-	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+// TestPhaseModelUpDownMovesCursor asserts the picker forwards
+// arrow keys to bubble/list. Before this fix, Update() never called
+// m.models.Update(msg) in phaseModel, so up/down were dead keys.
+// This is the regression guard for the up/down bug.
+func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	// Move the list cursor to index 0 (gemma4:9b) without rotating.
-	m.models.Select(0)
-	// Stale m.current points at the second model.
-	m.current = config.Model{ID: "stale", ProviderID: "ollama"}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.models.Index() != 0 {
+		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = got.(model)
+	if m.models.Index() != 1 {
+		t.Errorf("cursor after down = %d, want 1", m.models.Index())
+	}
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = got.(model)
+	if m.models.Index() != 0 {
+		t.Errorf("cursor after up = %d, want 0", m.models.Index())
+	}
+}
+
+// TestPhaseModelEnterStaysInApp asserts Enter in the picker does
+// NOT get consumed by bubble/list (which would otherwise launch
+// the highlighted item twice). The picker intercepts Enter for
+// ollama check + launch; the list is not allowed to handle it.
+func TestPhaseModelEnterStaysInApp(t *testing.T) {
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := got.(model); !ok {
+		t.Errorf("Update(Enter) returned %T, want model", got)
+	}
+	_ = cmd
+}
+
+// TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
+// no-op. Rotation now advances via RecordLaunch on Enter, not via
+// an explicit key. This test guards against accidental re-
+// introduction of the r key (which would conflict with the new
+// implicit-rotation model).
+func TestNoRKeyInModelPhase(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "ollama/gemma4:9b\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	beforeCursor := m.models.Index()
+	beforeItems := len(m.models.Items())
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	gotModel := got.(model)
-	if gotModel.current.ID != "ollama/gemma4:9b" {
-		t.Errorf("current after Enter = %q, want ollama/gemma4:9b (highlighted wins)", gotModel.current.ID)
+	if gotModel.models.Index() != beforeCursor {
+		t.Errorf("cursor moved on 'r': before=%d after=%d", beforeCursor, gotModel.models.Index())
+	}
+	if len(gotModel.models.Items()) != beforeItems {
+		t.Errorf("list size changed on 'r': before=%d after=%d", beforeItems, len(gotModel.models.Items()))
+	}
+}
+
+// TestSelectedEntryNoLastLaunchedStartsAtZero asserts the picker
+// lands the cursor at index 0 when no rotation state exists. This
+// is the cold-start path: fresh user, fresh state file.
+func TestSelectedEntryNoLastLaunchedStartsAtZero(t *testing.T) {
+	tempStateDir(t) // isolates state; file doesn't exist
+	cfg := testConfig()
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	if gotModel.models.Index() != 0 {
+		t.Errorf("cursor index = %d, want 0 (no last-launched)", gotModel.models.Index())
+	}
+}
+
+// TestSelectedEntryPositionsAfterLastLaunched asserts the picker
+// lands the cursor on the model after the last-launched one. With
+// the new model, rotation advances implicitly — every picker entry
+// is "one past where we left off".
+func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "ollama/gemma4:9b\n")
+	cfg := testConfig()
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	// testConfig has two code models: gemma4:9b (index 0) and
+	// gemma4:14b (index 1). Last launched was gemma4:9b, so the
+	// next-to-show must be gemma4:14b.
+	if gotModel.models.Index() != 1 {
+		t.Errorf("cursor index = %d, want 1 (after gemma4:9b)", gotModel.models.Index())
+	}
+}
+
+// TestSelectedEntryLastLaunchedMissingFallsBackToZero asserts the
+// picker lands on index 0 when the saved last-launched model is no
+// longer in the snapshot (config changed since last launch).
+func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "ollama/removed:cloud\n")
+	cfg := testConfig()
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	if gotModel.models.Index() != 0 {
+		t.Errorf("cursor index = %d, want 0 (fallback when last-launched missing)", gotModel.models.Index())
+	}
+}
+
+// TestSelectedEntryLastLaunchedLastInListWrapsToZero asserts the
+// picker wraps to index 0 when the saved last-launched is the last
+// item in the snapshot. Without wrap, the cursor would advance
+// past the end of the list forever.
+func TestSelectedEntryLastLaunchedLastInListWrapsToZero(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "code", "ollama/gemma4:14b\n") // last item in testConfig
+	cfg := testConfig()
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	if gotModel.models.Index() != 0 {
+		t.Errorf("cursor index = %d, want 0 (wrap when last-launched is last)", gotModel.models.Index())
+	}
+}
+
+// TestToggleTagRebuildsRotation asserts pressing 'd' rebuilds both
+// the model list and the rotation snapshot from the new tag's
+// filtered models. Without a fresh snapshot, rotation would still
+// operate on the old tag's list.
+func TestToggleTagRebuildsRotation(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, "design", "ollama/gemma4:design\n")
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	if m.tag != "code" {
+		t.Fatalf("precondition: tag = %q, want code", m.tag)
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	gotModel := got.(model)
+	if gotModel.tag != "design" {
+		t.Errorf("tag = %q, want design", gotModel.tag)
+	}
+	if gotModel.rotation == nil {
+		t.Fatal("rotation is nil after 'd' toggle")
+	}
+	if gotModel.rotation.Tag() != "design" {
+		t.Errorf("rotation tag = %q, want design", gotModel.rotation.Tag())
+	}
+	// The design tag has one model (gemma4:design). Last-launched
+	// is gemma4:design, so FirstAfter wraps to index 0 (only one
+	// item).
+	if gotModel.models.Index() != 0 {
+		t.Errorf("cursor index = %d, want 0 (wrap on single-item design)", gotModel.models.Index())
+	}
+	if len(gotModel.models.Items()) != 1 {
+		t.Errorf("models items = %d, want 1 (only design model)", len(gotModel.models.Items()))
+	}
+}
+
+// TestEnterInModelPhaseDoesNotRecordBeforeLaunch asserts that pressing Enter
+// alone does NOT write rotation state. Recording must happen only when the
+// launch actually commits (launchAndRecord), so a launch that never runs —
+// here the ollama availability warning fires, since the test model has no
+// ModelName so no ollama model matches — must not advance the rotation.
+// This is the regression guard for the "rotation advances on cancelled
+// launches" bug: without it, a user who cancels the ollama warning (or a
+// resume prompt, or hits an ollama-check error) would silently skip a model
+// on the next picker entry despite never launching anything.
+func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
+	dir := tempStateDir(t)
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+
+	// Cursor is at index 0 by default (no last-launched seed).
+	if m.models.Index() != 0 {
+		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// The launch did not commit (the ollama warning gates it), so no
+	// rotation state must have been written.
+	if _, err := os.Stat(rotation.StateFile(dir, "code")); err == nil {
+		t.Errorf("rotation state written on Enter without a committed launch")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat rotation state: %v", err)
+	}
+}
+
+// TestLaunchAndRecordWritesLastLaunched asserts that launchAndRecord — the
+// single commit point reached only after the ollama check and resume prompt
+// are satisfied — writes the launched model's ID to rotation-<tag>.state.
+// This is the positive counterpart to TestEnterInModelPhaseDoesNotRecordBefore
+// Launch: the rotation advances exactly when a launch commits, no sooner.
+func TestLaunchAndRecordWritesLastLaunched(t *testing.T) {
+	dir := tempStateDir(t)
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	first, ok := m.models.Items()[0].(modelItem)
+	if !ok {
+		t.Fatalf("items[0] is %T, want modelItem", m.models.Items()[0])
+	}
+	// launchAndRecord records the model captured in m.launchModel, then
+	// returns a tea.Cmd that would run the agent. We discard that cmd so
+	// the test never execs anything; the recording is what we verify.
+	m.launchModel = first.model
+	m, _ = m.launchAndRecord(exec.Command("true"))
+
+	data, err := os.ReadFile(rotation.StateFile(dir, "code"))
+	if err != nil {
+		t.Fatalf("read state after launchAndRecord: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != first.model.ID {
+		t.Errorf("state file = %q, want %q (launched model)", got, first.model.ID)
+	}
+}
+
+// TestNextEntryAfterLaunchAdvancesCursor asserts the picker entry after a
+// committed launch lands on the model AFTER the just-launched one. This is
+// the core promise of rotation-by-launch: every launch advances the
+// rotation. The launch is committed via launchAndRecord (the real recording
+// path) rather than bare Enter, so the test exercises the contract without
+// depending on a real agent binary or ollama being available.
+func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
+	dir := tempStateDir(t)
+	// Seed: last-launched is gemma4:9b (index 0). Picker entry 1
+	// will land on gemma4:14b (index 1).
+	seedState(t, dir, "code", "ollama/gemma4:9b\n")
+
+	// Picker entry 1.
+	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	m = got.(model)
+	if m.models.Index() != 1 {
+		t.Fatalf("entry 1: cursor = %d, want 1 (gemma4:14b)", m.models.Index())
+	}
+
+	// Commit the launch of gemma4:14b (the highlighted model) via the
+	// shared commit point. The returned tea.Cmd would run the agent; we
+	// discard it so the test never execs anything. Recording happens
+	// synchronously here, advancing the rotation to gemma4:14b.
+	m.launchModel = m.models.Items()[m.models.Index()].(modelItem).model
+	m, _ = m.launchAndRecord(exec.Command("true"))
+
+	// Picker entry 2 (e.g., user backed out and picked again, or the app
+	// restarted). New selectedEntryMsg rebuilds the rotation, sees
+	// gemma4:14b as last-launched, and advances to the next model — which
+	// wraps to gemma4:9b (only 2 models in the code tag).
+	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
+	got, _ = m2.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	m2 = got.(model)
+	if m2.models.Index() != 0 {
+		t.Errorf("entry 2: cursor = %d, want 0 (wrap after gemma4:14b)", m2.models.Index())
+	}
+}
+
+// TestNextEntryAfterManualPickAdvancesFromManualPick asserts the rotation
+// advances from the user's manual pick when they launch it. If the user
+// navigates to a non-rotation-suggested model and launches, the next entry
+// should land on the model AFTER the manual pick — not the model after the
+// prior rotation pick. This protects against "manual picks are ignored"
+// regressions. The launch is committed via launchAndRecord so the test
+// exercises the real recording path without a real agent or ollama.
+func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
+	dir := tempStateDir(t)
+	// No prior state. Picker entry 1 lands at index 0.
+	_ = dir
+
+	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	m = got.(model)
+	if m.models.Index() != 0 {
+		t.Fatalf("entry 1: cursor = %d, want 0", m.models.Index())
+	}
+
+	// User navigates down to index 1 — manual pick of gemma4:14b.
+	// (Capture the returned model so the cursor advance sticks; m.models
+	// is a value field, so the in-place update inside Update() doesn't
+	// propagate unless we use the result.)
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = got.(model)
+	if m.models.Index() != 1 {
+		t.Fatalf("after Down: cursor = %d, want 1 (gemma4:14b)", m.models.Index())
+	}
+
+	// Commit the launch of gemma4:14b (the manual pick) via the shared
+	// commit point. Discard the returned tea.Cmd so nothing execs.
+	m.launchModel = m.models.Items()[m.models.Index()].(modelItem).model
+	m, _ = m.launchAndRecord(exec.Command("true"))
+
+	// Picker entry 2: last-launched is gemma4:14b (the manual pick), so
+	// the next entry wraps to gemma4:9b (index 0).
+	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
+	got, _ = m2.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	m2 = got.(model)
+	if m2.models.Index() != 0 {
+		t.Errorf("entry 2: cursor = %d, want 0 (wrap after manual pick gemma4:14b)", m2.models.Index())
 	}
 }

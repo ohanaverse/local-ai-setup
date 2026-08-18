@@ -100,7 +100,7 @@ func TestEnterInModelPhaseDoesNotQuitImmediately(t *testing.T) {
 	// errors out — we don't need a real agent here, just to assert the cmd
 	// shape returned by the Enter handler.
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "not-a-real-agent", tag: "code",
-		selectedPath: tmp, current: config.Model{ID: "ollama/gemma4:9b"}}
+		selectedPath: tmp, models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	res, enteredCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	// launchAgent errors for unknown agents, so Update returns nil cmd and
 	// sets status on the returned model. Verify that:
@@ -131,7 +131,7 @@ func TestEnterInModelPhaseReturnsRunAndWaitNotBatchedQuit(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "wt-stub", tag: "code",
-		selectedPath: t.TempDir(), current: config.Model{ID: "ollama/gemma4:9b"}}
+		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 	if cmd == nil {

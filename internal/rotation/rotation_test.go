@@ -8,147 +8,162 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
-// Next must advance the index each call and persist it to disk so the
-// rotation survives process restarts. After cycling through all models it
-// must wrap around. The state file must contain both the next index and
-// the last selected model ID.
-func TestNext_AdvancesAndPersists(t *testing.T) {
-	dir := t.TempDir()
-	models := []config.Model{
-		{ID: "alpha"},
-		{ID: "beta"},
-		{ID: "gamma"},
-	}
-	r := New("code", models, dir)
-
-	got := make([]string, 0, 4)
-	for i := 0; i < 4; i++ {
-		m, ok := r.Next("")
-		if !ok {
-			t.Fatalf("iteration %d: Next returned !ok", i)
-		}
-		got = append(got, m.ID)
-	}
-
-	// After 4 picks, the index has wrapped around once and returned to alpha.
-	want := []string{"alpha", "beta", "gamma", "alpha"}
-	if len(got) != len(want) {
-		t.Fatalf("got %d picks, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("pick %d: got %q, want %q", i, got[i], want[i])
-		}
-	}
-
-	// State file should reflect the next index (1, after advancing from
-	// alpha at index 0) and last selected (alpha).
-	data, err := os.ReadFile(StateFile(dir, "code"))
-	if err != nil {
-		t.Fatalf("read state file: %v", err)
-	}
-	gotState := string(data)
-	wantState := "1\nalpha\n"
-	if gotState != wantState {
-		t.Errorf("state file = %q, want %q", gotState, wantState)
+// LastLaunched must return (zero, false) when no state file exists so
+// the caller (the picker entry handler) can fall back to index 0
+// without panicking or returning a zero-value model that the snapshot
+// contains.
+func TestLastLaunchedMissingFile(t *testing.T) {
+	r := New("code", []config.Model{{ID: "alpha"}}, t.TempDir())
+	if _, ok := r.LastLaunched(); ok {
+		t.Fatal("LastLaunched on missing file returned ok=true")
 	}
 }
 
-// An empty rotation group (no models tagged with the requested tag) must
-// return !ok so the caller can show a helpful message instead of panicking
-// or entering an infinite loop.
-func TestNext_EmptyGroup(t *testing.T) {
-	r := New("code", nil, t.TempDir())
-	if _, ok := r.Next(""); ok {
-		t.Fatal("Next on empty group returned ok=true")
-	}
-}
-
-// When the other tag group just used a model, Next must skip that model
-// to avoid both code and design landing on the same model simultaneously.
-// This prevents redundant usage and encourages variety.
-func TestNext_CrossSkipsOtherTag(t *testing.T) {
+// RecordLaunch must persist the model ID and LastLaunched must read
+// it back. The state file is the on-disk contract for "what was last
+// launched in this rotation" — without the round-trip the picker
+// can't advance after a launch.
+func TestRecordLaunchRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	models := []config.Model{
-		{ID: "alpha"},
-		{ID: "beta"},
-		{ID: "gamma"},
-	}
-	r := New("code", models, dir)
-
-	// Write a fake "design" state that says design last picked "beta".
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(dir, "rotation-design.state"),
-		[]byte("0\nbeta\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	m, ok := r.Next("design")
-	if !ok {
-		t.Fatal("Next returned !ok")
-	}
-	if m.ID == "beta" {
-		t.Errorf("Next returned %q which design just used; expected cross-skip", m.ID)
-	}
-}
-
-// When every candidate in the group matches the cross-skip target (e.g.
-// a single-model group), Next must still return a model so the caller
-// never gets stuck. This is the graceful-degradation path for small
-// rotation groups.
-func TestNext_CrossSkipFallsBackWhenAllCandidatesMatch(t *testing.T) {
-	dir := t.TempDir()
-	// Single-model group: every pick is "alpha", and "design" just used it.
-	// Next must still return alpha so we always make progress.
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(dir, "rotation-design.state"),
-		[]byte("0\nalpha\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
 	r := New("code", []config.Model{{ID: "alpha"}}, dir)
-	m, ok := r.Next("design")
+	if err := r.RecordLaunch(config.Model{ID: "alpha"}); err != nil {
+		t.Fatalf("RecordLaunch: %v", err)
+	}
+	got, ok := r.LastLaunched()
 	if !ok {
-		t.Fatal("Next returned !ok")
+		t.Fatal("LastLaunched returned !ok after RecordLaunch")
 	}
-	if m.ID != "alpha" {
-		t.Errorf("fallback pick = %q, want alpha", m.ID)
-	}
-}
-
-// ForTag builds a Rotation from only the models in cfg that carry the
-// requested tag. Models without the tag must be excluded so the rotation
-// doesn't pick an irrelevant model.
-func TestForTag_FiltersModels(t *testing.T) {
-	cfg := &config.Config{
-		Models: []config.Model{
-			{ID: "a", Tags: []string{"code"}},
-			{ID: "b", Tags: []string{"design"}},
-			{ID: "c", Tags: []string{"code", "design"}},
-			{ID: "d"},
-		},
-	}
-	r := ForTag(cfg, "code")
-	if got := len(r.models); got != 2 {
-		t.Fatalf("ForTag(code) returned %d models, want 2", got)
-	}
-	if r.models[0].ID != "a" || r.models[1].ID != "c" {
-		t.Errorf("ForTag(code) returned %v, want [a, c]", r.models)
+	if got.ID != "alpha" {
+		t.Errorf("LastLaunched.ID = %q, want alpha", got.ID)
 	}
 }
 
-// StateFile must return a predictable path under the given directory. This
-// is the contract between the Rotation and the config package's
+// RecordLaunch must overwrite any prior value. The picker may launch
+// the same model multiple times in a row if the user keeps pressing
+// Enter without navigating; each launch must normalize the file to
+// the latest pick.
+func TestRecordLaunchOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	r := New("code", []config.Model{{ID: "alpha"}, {ID: "beta"}}, dir)
+	_ = r.RecordLaunch(config.Model{ID: "alpha"})
+	_ = r.RecordLaunch(config.Model{ID: "beta"})
+	got, _ := r.LastLaunched()
+	if got.ID != "beta" {
+		t.Errorf("LastLaunched.ID = %q, want beta (overwritten)", got.ID)
+	}
+}
+
+// LastLaunched must read the legacy 2-line state file by taking the
+// last non-empty line. Without backward-compat the existing state
+// files on every user's machine would suddenly point at nothing
+// and the picker would fall back to index 0 — losing the rotation
+// memory they had.
+func TestLastLaunchedReadsLegacyTwoLineFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rotation-code.state"), []byte("5\nollama/x:cloud\n"), 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	r := New("code", []config.Model{{ID: "ollama/x:cloud"}}, dir)
+	got, ok := r.LastLaunched()
+	if !ok {
+		t.Fatal("LastLaunched returned !ok on legacy 2-line file")
+	}
+	if got.ID != "ollama/x:cloud" {
+		t.Errorf("LastLaunched.ID = %q, want ollama/x:cloud", got.ID)
+	}
+}
+
+// LastLaunched must return (zero, false) when the saved ID is no
+// longer in the snapshot. Config changes between launches (a model
+// was removed) should not crash or return a phantom model; the
+// caller falls back to index 0.
+func TestLastLaunchedConfigChanged(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rotation-code.state"), []byte("ollama/removed:cloud\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := New("code", []config.Model{{ID: "ollama/current:cloud"}}, dir)
+	if _, ok := r.LastLaunched(); ok {
+		t.Error("LastLaunched returned ok=true for ID not in snapshot")
+	}
+}
+
+// RecordLaunch must write a single-line file (no index prefix) and
+// the file must be 0600. The single-line format is the new on-disk
+// contract; 0600 is the existing security baseline.
+func TestRecordLaunchWritesSingleLine(t *testing.T) {
+	dir := t.TempDir()
+	r := New("code", []config.Model{{ID: "alpha"}}, dir)
+	if err := r.RecordLaunch(config.Model{ID: "alpha"}); err != nil {
+		t.Fatalf("RecordLaunch: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "rotation-code.state"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("perm = %o, want 0600", perm)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "rotation-code.state"))
+	if got := string(data); got != "alpha\n" {
+		t.Errorf("file = %q, want %q", got, "alpha\n")
+	}
+}
+
+// FirstAfter must return the model at target+1, wrapping to models[0]
+// if target is the last item. The picker uses this to compute "what
+// to show on the next entry after a launch" without knowing the
+// picker's order at the call site.
+func TestFirstAfterMiddle(t *testing.T) {
+	models := []config.Model{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	got, ok := FirstAfter(models, config.Model{ID: "b"})
+	if !ok {
+		t.Fatal("FirstAfter returned !ok")
+	}
+	if got.ID != "c" {
+		t.Errorf("FirstAfter = %q, want c", got.ID)
+	}
+}
+
+// FirstAfter must wrap to the first model when target is the last.
+// Without wrapping the picker would advance past the end of the
+// list on every cycle and the cursor would never move.
+func TestFirstAfterWraps(t *testing.T) {
+	models := []config.Model{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	got, ok := FirstAfter(models, config.Model{ID: "c"})
+	if !ok {
+		t.Fatal("FirstAfter returned !ok")
+	}
+	if got.ID != "a" {
+		t.Errorf("FirstAfter = %q, want a (wrap to start)", got.ID)
+	}
+}
+
+// FirstAfter must return models[0] when target is not in the list.
+// This is the "saved ID was removed from config" recovery path —
+// the picker falls back to the first model instead of failing.
+func TestFirstAfterMissingTarget(t *testing.T) {
+	models := []config.Model{{ID: "a"}, {ID: "b"}}
+	got, ok := FirstAfter(models, config.Model{ID: "ghost"})
+	if !ok {
+		t.Fatal("FirstAfter returned !ok")
+	}
+	if got.ID != "a" {
+		t.Errorf("FirstAfter = %q, want a (fallback to first)", got.ID)
+	}
+}
+
+// FirstAfter must return (zero, false) on an empty snapshot. The
+// picker's validation gate at selectedEntryMsg prevents this in
+// practice, but the helper must defend against it.
+func TestFirstAfterEmpty(t *testing.T) {
+	if _, ok := FirstAfter(nil, config.Model{ID: "x"}); ok {
+		t.Error("FirstAfter on empty snapshot returned ok=true")
+	}
+}
+
+// StateFile must return a predictable path under the given directory.
+// This is the contract between the Rotation and the config package's
 // LastSelected helper, which reads the same files.
 func TestStateFilePath(t *testing.T) {
 	got := StateFile("/tmp/cfg", "code")
@@ -158,9 +173,9 @@ func TestStateFilePath(t *testing.T) {
 	}
 }
 
-// The default state directory must respect XDG_CONFIG_HOME, matching the
-// behaviour of config.Path(). A mismatch would mean rotation state and
-// config files end up in different directories.
+// The default state directory must respect XDG_CONFIG_HOME, matching
+// the behaviour of config.Path(). A mismatch would mean rotation
+// state and config files end up in different directories.
 func TestStateFile_DefaultDirRespectsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
 	r := New("design", []config.Model{{ID: "x"}}, "")

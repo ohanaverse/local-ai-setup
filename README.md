@@ -60,10 +60,9 @@ claude-wt --yolo
 
 | Key | Action |
 |-----|--------|
-| `enter` | Select worktree → agent+model screen → launch |
-| `r` | Rotate to next model in the active tag group |
+| `enter` | Select worktree → agent+model screen → launch (and advance rotation) |
+| `up` / `down` (or `j` / `k`) | Move the model cursor |
 | `d` | Toggle between code and design tag groups |
-| `m` | Open model browser (filter by tag or source) |
 | `q` / `esc` | Quit / go back |
 
 ## Flags
@@ -81,7 +80,7 @@ All launchers support:
 | `--check-guard` | Report whether the main guard is installed |
 | `--no-guard` | Remove the main-branch commit guard and exit |
 
-Model rotation happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `r` to rotate, `d` to switch tag groups, and `m` to browse all models.
+Model rotation happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `d` to switch tag groups, and `up`/`down` to pick a model — launching it advances the rotation automatically for the next entry.
 
 ## Configuration
 
@@ -106,22 +105,21 @@ On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` int
 
 Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
-The `internal/rotation` package implements tag-based model rotation. Any tag can be a rotation group, not just `code` and `design`.
+The `internal/rotation` package implements tag-based model rotation. Any tag can be a rotation group, not just `code` and `design`. Rotation is implicit: every picker entry lands the cursor on the model after the one most recently launched, and pressing Enter records the launch. There is no `r` key — the user navigates with up/down and the rotation advances as a side effect of launching.
 
-- `r` in the TUI rotates to the next model in the active tag group
-- `d` toggles between code and design tag groups
-- Cross-tag skip: if the other group just used a model, it's skipped to avoid duplication
-- State is persisted to `~/.config/agent-wt/rotation-<tag>.state` (two lines: next index, last selected model)
-- The hidden `wt rotate <tag>` subcommand prints the next model and advances state (test helper)
+- `d` toggles between code and design tag groups; each tag has its own rotation state
+- State is persisted to `~/.config/agent-wt/rotation-<tag>.state` (one line: the last-launched model ID)
+- Legacy 2-line state files (index + ID) are still read correctly via the last non-empty line
+- The hidden `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
 
 ```bash
-wt rotate code    # prints next code model, advances state
+wt rotate code    # prints the model after the last code launch
 wt rotate design  # independent rotation for design
 ```
 
 ### Ollama availability check
 
-Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`. In the TUI, if the model is missing, you can proceed anyway, rotate to the next model, or cancel. In non-TUI mode (`-w` or `--cwd`), a missing model causes an error with a pull suggestion.
+Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`. In the TUI, if the model is missing, you can proceed anyway or cancel. (The "skip to next model" choice was removed when the `r` key was removed; use `up`/`down` to pick a different model.) In non-TUI mode (`-w` or `--cwd`), a missing model causes an error with a pull suggestion.
 
 ## Copilot-specific: Ollama passthrough
 
@@ -171,7 +169,7 @@ go vet ./...       # Vet
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
-| `internal/rotation/` | Tag-based model rotation with cross-tag skip and persistent state |
+| `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |

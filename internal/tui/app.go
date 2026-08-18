@@ -11,6 +11,7 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -52,10 +53,10 @@ type model struct {
 	ready   bool
 
 	phase    phase
-	agent    string         // current agent name
-	tag      string         // active rotation tag group
-	current  config.Model   // currently shown model
-	cfg      *config.Config // loaded config for the model catalog
+	agent    string              // current agent name
+	tag      string              // active rotation tag group
+	rotation *rotation.Rotation  // snapshot rotation for the active (agent, tag); set on picker entry and on 'd' tag toggle
+	cfg      *config.Config      // loaded config for the model catalog
 
 	// model picker (the agent+model screen IS the picker)
 	models    list.Model // bubble/list of agent+tag models
@@ -68,6 +69,7 @@ type model struct {
 	extraArgs    []string // user passthrough args after --
 	initialAgent string   // agent from --agent flag; "" = use config default
 	resume       resumeModel
+	launchModel  config.Model // highlighted model captured when entering phaseResume; launched from the resume choices
 
 	// default-branch guard warning
 	defaultBranch  string         // repo default branch (e.g. main)
@@ -196,16 +198,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models = buildModelList(models, m.width-2, m.height-2)
 		m.modelsFor = m.agent
 		m.modelsTag = m.tag
-		if next, ok := rotation.ForTag(m.cfg, m.tag).Next(""); ok {
-			m.current = next
-			if idx := indexOfModel(models, next); idx >= 0 {
-				m.models.Select(idx)
-			}
-		} else {
-			// Fallback: list non-empty but rotation says no model. Pick index 0.
-			m.current = models[0]
-			m.models.Select(0)
-		}
+		// Snapshot the rotation over the picker's filtered list so
+		// rotation's view of "the code tag" matches the picker's,
+		// and position the cursor on the model after the last-
+		// launched one (fall back to index 0 if no last-launched
+		// exists or its ID is no longer in the snapshot).
+		m.positionAfterLastLaunched(m.tag, models)
 		return m, nil
 	case launchDoneMsg:
 		if msg.err != nil {
@@ -274,22 +272,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
-				// The highlighted list item is what gets launched. Sync m.current
-				// so subsequent code paths (ollama check, session, launch) all see
-				// the user's choice.
-				if item, ok := m.models.SelectedItem().(modelItem); ok {
-					m.current = item.model
+				// The highlighted list item is what gets launched.
+				highlighted, ok := m.models.SelectedItem().(modelItem)
+				if !ok {
+					return m, nil
 				}
-				// Check ollama availability before launching.
-				if ollamacheck.IsOllamaModel(m.current) {
-					ok, err := ollamacheck.Available(m.current.ModelName)
+				// Check ollama availability before launching. Rotation is
+				// NOT recorded here: the user can still cancel the ollama
+				// warning or the resume prompt, or the check can fail, and
+				// in none of those cases did a launch happen. Recording
+				// lives in launchAndRecord, the single commit point.
+				if ollamacheck.IsOllamaModel(highlighted.model) {
+					ok, err := ollamacheck.Available(highlighted.model.ModelName)
 					if err != nil {
 						m.status = "ollama check failed: " + err.Error()
 						return m, nil
 					}
 					if !ok {
 						m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), m.width-2, m.height-2)
-						m.ollamaWarnModel.Title = "Model not available: " + m.current.ModelName
+						m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
 						m.phase = phaseOllamaWarn
 						return m, nil
 					}
@@ -302,19 +303,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.phase = phaseModel
 						return m, nil
 					case freshChoice:
-						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
+						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
 						}
-						return m, runAndWaitCmd(cmd)
+						return m.launchAndRecord(cmd)
 					case resumeChoice:
-						cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
+						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
 						if err != nil {
 							m.status = "launch failed: " + err.Error()
 							return m, nil
 						}
-						return m, runAndWaitCmd(cmd)
+						return m.launchAndRecord(cmd)
 					}
 				}
 			case phaseGuardWarn:
@@ -332,14 +333,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					switch item.choice {
 					case ollamaProceedChoice:
 						return m.proceedToLaunch()
-					case ollamaSkipChoice:
-						// Rotate to next model and return to phaseModel.
-						next, ok := rotation.ForTag(m.cfg, m.tag).Next(oppositeTag(m.tag))
-						if ok {
-							m.current = next
-						}
-						m.phase = phaseModel
-						return m, nil
 					case ollamaCancelChoice:
 						m.phase = phaseModel
 						return m, nil
@@ -359,20 +352,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.creating = true
 				return m, ensureNewWorktreeCmd(m.repoRoot, m.newInput.Value())
 			}
-		case "r":
-			if m.phase == phaseModel {
-				// Advance the rotation cursor; the visible list cursor follows.
-				next, ok := rotation.ForTag(m.cfg, m.tag).Next(oppositeTag(m.tag))
-				if ok {
-					m.current = next
-					for i, it := range m.models.Items() {
-						if mi, ok := it.(modelItem); ok && mi.model.ID == next.ID {
-							m.models.Select(i)
-							break
-						}
-					}
-				}
-			}
 		case "n":
 			// Open the new-worktree prompt. Skip while the list filter is
 			// being typed so 'n' can appear in filter queries.
@@ -382,31 +361,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			if m.phase == phaseModel {
 				prevTag := m.tag
-				m.tag = oppositeTag(m.tag)
-				// Empty-tag defense: if the new tag has no models, restore.
+				newTag := oppositeTag(m.tag)
+				// Empty-tag defense: if the toggled-to tag has no models,
+				// restore the previous tag. Report the empty tag (newTag),
+				// not the one the user is staying on.
+				m.tag = newTag
 				models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
 				if err != nil || len(models) == 0 {
 					m.tag = prevTag
-					m.status = fmt.Sprintf("tag %q has no models for agent %q", m.tag, m.agent)
+					m.status = fmt.Sprintf("tag %q has no models for agent %q", newTag, m.agent)
 					return m, nil
 				}
-				// Rebuild the list and reposition the cursor on the new tag's
-				// rotation index. Cross-skip avoids the previous tag's last-used.
+				// Rebuild the list and position the cursor on the model
+				// after the new tag's last-launched. Cross-skip is gone;
+				// each tag rotates independently.
 				m.models = buildModelList(models, m.width-2, m.height-2)
 				m.modelsTag = m.tag
-				if next, ok := rotation.ForTag(m.cfg, m.tag).Next(prevTag); ok {
-					m.current = next
-					if idx := indexOfModel(models, next); idx >= 0 {
-						m.models.Select(idx)
-					}
-				} else {
-					m.current = models[0]
-					m.models.Select(0)
-				}
+				m.positionAfterLastLaunched(m.tag, models)
+				// Return here: bubbles/list binds `d` to NextPage, so
+				// falling through to m.models.Update(msg) would advance
+				// the freshly rebuilt list's page on a multi-page tag.
+				return m, nil
 			}
 		}
 	}
 
+	if m.phase == phaseModel && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.models, cmd = m.models.Update(msg)
+		return m, cmd
+	}
 	if m.ready && m.phase == phaseList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
@@ -506,19 +490,46 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 		m.status = "session check failed: " + err.Error()
 		return m, nil
 	}
+	// The highlighted list item is what gets launched, regardless
+	// of any other state. m.current is gone; m.models is the
+	// single source of truth.
+	highlighted, ok := m.models.SelectedItem().(modelItem)
+	if !ok {
+		m.status = "no model selected"
+		return m, nil
+	}
+	// Capture the model so launchAndRecord records exactly this pick in
+	// both the no-session and resume paths, without re-reading the picker.
+	m.launchModel = highlighted.model
 	if sess == nil {
-		cmd, err := launchAgent(m.agent, m.current, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
+		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 		if err != nil {
 			m.status = "launch failed: " + err.Error()
 			return m, nil
 		}
-		return m, runAndWaitCmd(cmd)
+		return m.launchAndRecord(cmd)
 	}
 	m.phase = phaseResume
 	m.resume.session = sess
 	m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
 	return m, nil
+}
+
+// launchAndRecord records the model as last-launched (so the next picker
+// entry advances rotation) and then runs the agent. Recording happens
+// here — the single commit point reached only after the ollama check and
+// resume prompt have been satisfied — so a cancelled ollama warning, a
+// cancelled resume prompt, or a failed ollama check never advances the
+// rotation. The state write is best-effort: a failure surfaces in m.status
+// and the launch still proceeds.
+func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
+	if m.rotation != nil {
+		if err := m.rotation.RecordLaunch(m.launchModel); err != nil {
+			m.status = "rotation state not saved: " + err.Error()
+		}
+	}
+	return m, runAndWaitCmd(cmd)
 }
 
 // loadEntriesCmd returns a command that enumerates worktrees/branches.

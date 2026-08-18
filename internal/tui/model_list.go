@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/rotation"
 )
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
@@ -63,6 +64,33 @@ func indexOfModel(models []config.Model, target config.Model) int {
 	return -1
 }
 
+// FindAfter returns the model that comes after target in models,
+// wrapping to models[0] when target is the last or missing. It is a
+// thin, testable wrapper around rotation.FirstAfter shared by the
+// picker's cursor positioning (positionAfterLastLaunched) and the
+// rotation tests; model_list.go imports the rotation package for
+// exactly this call.
+func FindAfter(models []config.Model, target config.Model) (config.Model, bool) {
+	return rotation.FirstAfter(models, target)
+}
+
+// positionAfterLastLaunched rebuilds the rotation snapshot for tag over
+// models and positions the picker cursor on the model after the
+// last-launched one, falling back to index 0 when there is no
+// last-launched model or its ID is no longer in the snapshot. Shared by
+// the picker-entry (selectedEntryMsg) and 'd' tag-toggle paths so the
+// cursor-positioning logic lives in one place.
+func (m *model) positionAfterLastLaunched(tag string, models []config.Model) {
+	m.rotation = rotation.New(tag, models, "")
+	if last, ok := m.rotation.LastLaunched(); ok {
+		if next, ok := FindAfter(models, last); ok {
+			if idx := indexOfModel(models, next); idx >= 0 {
+				m.models.Select(idx)
+			}
+		}
+	}
+}
+
 // phaseModelView renders the model picker screen: the list of
 // agent+tag-compatible models, an agent/tag header, and a footer
 // describing the keybinds. The picker IS the agent+model screen —
@@ -70,6 +98,6 @@ func indexOfModel(models []config.Model, target config.Model) int {
 func (m *model) phaseModelView() string {
 	style := lipgloss.NewStyle().Padding(1, 2)
 	header := fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag)
-	footer := "\n[r] rotate   [d] switch tag   [enter] launch   [q] quit"
+	footer := "\n[↑/↓] navigate   [d] switch tag   [enter] launch   [q] quit"
 	return style.Render(header + m.models.View() + footer)
 }
