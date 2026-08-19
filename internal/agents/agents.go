@@ -107,6 +107,13 @@ func Names() []string {
 	return out
 }
 
+// IsCommand reports whether name is a registered command (no model layer).
+// Full implementation lands in PR 2 via the Commanded interface; for now
+// only "shell" is a command.
+func IsCommand(name string) bool {
+	return name == "shell"
+}
+
 // BuildLaunchCmd resolves the agent driver, runs any pre-launch sync, builds
 // the exec.Cmd, appends passthrough args, and adds a resume flag when a prior
 // session is provided. It is the single shared launch constructor used by both

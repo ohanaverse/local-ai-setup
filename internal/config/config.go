@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -370,6 +371,93 @@ func (c *Config) ModelsForAgentAndTag(agentName, tag string) ([]Model, error) {
 		if tag == "" || m.HasTag(tag) {
 			out = append(out, m)
 		}
+	}
+	return out, nil
+}
+
+// parseFilterList splits a comma-delimited string, trimming whitespace and
+// dropping empty entries. Empty or whitespace-only input returns nil.
+// Used by the -T/--tags and -F/--family CLI flags.
+func parseFilterList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ParseFilterList is the exported wrapper for parseFilterList so CLI callers
+// can share the same filter-list semantics.
+func ParseFilterList(s string) []string {
+	return parseFilterList(s)
+}
+
+// EligibleModels returns the models usable by agent after applying tag
+// and family filters. Order matches cfg.Models.
+//
+// Semantics:
+//   - Provider filter is hard: only models whose ProviderID is in
+//     agent.SupportedProviders are considered.
+//   - tags == "" → no tag filter.
+//   - tags != "" → model must have at least one matching tag.
+//   - family == "" → no family filter.
+//   - family != "" → model.Family must equal one of the listed families.
+//   - When both are non-empty: tags and family are AND-combined.
+//
+// Errors:
+//   - agent not found
+//   - agent references an unknown provider (only reachable if Validate
+//     was bypassed)
+func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error) {
+	a, err := c.AgentByName(agentName)
+	if err != nil {
+		return nil, err
+	}
+	tagSet := map[string]bool{}
+	for _, t := range parseFilterList(tags) {
+		tagSet[t] = true
+	}
+	familySet := map[string]bool{}
+	for _, f := range parseFilterList(family) {
+		familySet[f] = true
+	}
+	allowed := map[string]bool{}
+	for _, pid := range a.SupportedProviders {
+		if c.ProviderByID(pid) == nil {
+			return nil, fmt.Errorf("agent %q: provider %q not found in config", agentName, pid)
+		}
+		allowed[pid] = true
+	}
+	var out []Model
+	for _, m := range c.Models {
+		if !allowed[m.ProviderID] {
+			continue
+		}
+		if len(tagSet) > 0 {
+			hit := false
+			for _, t := range m.Tags {
+				if tagSet[t] {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
+		}
+		if len(familySet) > 0 {
+			if !familySet[m.Family] {
+				continue
+			}
+		}
+		out = append(out, m)
 	}
 	return out, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/initseed"
-	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
@@ -214,27 +214,122 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 	}
 }
 
-// TestLaunchFailsWhenOllamaModelUnavailable verifies that the non-TUI launch
-// path returns a clear error when the default model is an unavailable ollama
-// model.
-func TestLaunchFailsWhenOllamaModelUnavailable(t *testing.T) {
-	// This test is limited because launch() calls defaultModel which reads
-	// the real config. We test the ollamacheck integration directly instead.
-	m := config.Model{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b"}
-	if !ollamacheck.IsOllamaModel(m) {
-		t.Fatal("expected ollama model")
+// TestLaunchUsesResolveModel verifies the non-TUI launch path's filter
+// resolution contract. With no -M and no -T/-F, a multi-model agent falls back
+// to the default (pre-flag-surface) model rather than erroring, so existing
+// `wt -W foo --agent claude` invocations keep launching. When -T/-F are
+// supplied and the filtered set is still ambiguous, resolveModel must surface
+// a clear "specify -M" error. With -M it returns the pinned model.
+func TestLaunchUsesResolveModel(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Tags: []string{"code"}},
+			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
 	}
-	ok, err := ollamacheck.Available(m.ModelName)
+
+	// Two models, no -M, no -T/-F → default fallback. Must NOT error:
+	// existing users without the new flags see no change.
+	m, err := resolveModel("claude", cfg, "", "", "")
 	if err != nil {
-		t.Fatalf("ollamacheck.Available: %v", err)
+		t.Fatalf("expected default fallback, got error: %v", err)
 	}
-	if ok {
-		t.Skip("model is available locally; skipping unavailable test")
+	if m.ID != "claude/opus" {
+		t.Errorf("default fallback = %q, want claude/opus", m.ID)
 	}
-	// If we reach here, the model is unavailable. The launch() function
-	// should return an error with a helpful message.
-	// We can't easily test launch() without a real config, so we verify
-	// the error message format instead.
-	expectedHint := "ollama pull gemma4:9b"
-	_ = expectedHint
+
+	// Two models, -T code supplied (still ambiguous), no -M → error. The
+	// user opted into filtering, so an ambiguous result must be pinned.
+	if _, err := resolveModel("claude", cfg, "code", "", ""); err == nil {
+		t.Fatalf("expected error for filtered ambiguous list, got nil")
+	}
+
+	// With -M claude/opus → resolves correctly.
+	m, err = resolveModel("claude", cfg, "", "", "claude/opus")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ID != "claude/opus" {
+		t.Errorf("got %q, want claude/opus", m.ID)
+	}
+}
+
+// TestBuildFilteredCmdCommandAgentUsesWorktree is the regression lock for the
+// shell worktree-path drop: `wt -W foo --agent shell` must run in the worktree,
+// not the caller's CWD. The command-agent branch of launchFiltered previously
+// routed through launchDirect → launch(agent, "."), discarding the worktree
+// path that EnsureForName had just created. buildFilteredCmd must build the
+// command with cmd.Dir set to the requested worktree.
+func TestBuildFilteredCmdCommandAgentUsesWorktree(t *testing.T) {
+	cfg := &config.Config{}
+	worktree := "/tmp/wt-shell-regression"
+
+	_, cmd, err := buildFilteredCmd("shell", worktree, cfg, false, "", "", "", []string{"ls", "-la"})
+	if err != nil {
+		t.Fatalf("buildFilteredCmd: %v", err)
+	}
+	if cmd.Dir != worktree {
+		t.Errorf("cmd.Dir = %q, want %q (shell must run in the worktree, not the CWD)", cmd.Dir, worktree)
+	}
+	// Shell execs the passthrough args directly as argv (no model layer).
+	if got := strings.Join(cmd.Args, " "); !strings.Contains(got, "ls -la") {
+		t.Errorf("args = %q, want the passthrough argv (ls -la)", got)
+	}
+}
+
+// TestBuildFilteredCmdCommandAgentNotesIgnoredModel verifies that supplying -M
+// to a command agent (shell) does not break the build and surfaces a stderr
+// note so the user knows the pin was discarded. No note is emitted when -M is
+// absent. This matches the spec's "ignore -M with stderr note" for command
+// agents.
+func TestBuildFilteredCmdCommandAgentNotesIgnoredModel(t *testing.T) {
+	cfg := &config.Config{}
+	worktree := "/tmp/wt-shell-note"
+
+	captureStderr := func(pinned string) string {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("os.Pipe: %v", err)
+		}
+		orig := os.Stderr
+		os.Stderr = w
+		_, _, berr := buildFilteredCmd("shell", worktree, cfg, false, "", "", pinned, nil)
+		w.Close()
+		os.Stderr = orig
+		if berr != nil {
+			t.Fatalf("buildFilteredCmd: %v", berr)
+		}
+		out, _ := io.ReadAll(r)
+		return string(out)
+	}
+
+	if got := captureStderr("claude/opus"); !strings.Contains(got, "ignored for command agent") {
+		t.Errorf("with -M: stderr = %q, want a note that -M is ignored", got)
+	}
+	if got := captureStderr(""); strings.Contains(got, "ignored") {
+		t.Errorf("without -M: stderr = %q, want no note", got)
+	}
+}
+
+// TestOllamaUnavailableErrorIncludesPullHint verifies the user-facing error
+// text for unavailable local ollama models.
+func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
+	err := ollamaUnavailableError("gemma4:9b")
+	if err == nil {
+		t.Fatal("ollamaUnavailableError returned nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `model "gemma4:9b" is not available locally`) {
+		t.Fatalf("error %q missing unavailable-model text", msg)
+	}
+	if !strings.Contains(msg, "ollama pull gemma4:9b") {
+		t.Fatalf("error %q missing pull hint", msg)
+	}
 }

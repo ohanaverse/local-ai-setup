@@ -33,12 +33,15 @@ func rootCmd() *cobra.Command {
 	}
 
 	var showVersion bool
+	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
+	// Registered below as a hidden Bool flag; checked in RunE.
+	var legacyShortW bool
 
 	cmd := &cobra.Command{
 		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
-			"  wt -w my-feature --agent claude  # create worktree and launch\n" +
+			"  wt -W my-feature --agent claude  # create worktree and launch\n" +
 			"  wt --cwd --agent codex           # launch in current repo root\n" +
 			"  wt --init                        # seed agent instruction files",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
@@ -52,6 +55,11 @@ func rootCmd() *cobra.Command {
 			// Read the raw --agent flag early so --init can seed agent-specific
 			// pointer files when a wrapper like claude-wt forwards --agent claude.
 			agentFlag := mustGetString(cmd, "agent")
+
+			// Legacy short flag rejection: `-w` was removed in favor of `-W`.
+			if legacyShortW {
+				return fmt.Errorf("-w is removed; use -W or --worktree")
+			}
 
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
 				status, err := checkGuardStatus()
@@ -140,6 +148,14 @@ func rootCmd() *cobra.Command {
 				agent = a.cfg.DefaultAgent()
 			}
 
+			// Read the new filter flags (-M/-T/-F). They are plumbed through
+			// to launchFiltered even when empty so that the legacy
+			// defaultModel-based path is replaced uniformly. The TUI fallback
+			// below ignores them in PR 1.
+			tags := mustGetString(cmd, "tags")
+			family := mustGetString(cmd, "family")
+			pinned := mustGetString(cmd, "model")
+
 			// -w <name>: use/create a worktree, then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
@@ -151,7 +167,7 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return launch(agent, path, a.cfg, yolo(cmd), args)
+				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, args)
 			}
 
 			// --cwd: launch in the current repo root.
@@ -161,12 +177,12 @@ func rootCmd() *cobra.Command {
 					return err
 				}
 				maybeInstallGuard()
-				return launch(agent, root, a.cfg, yolo(cmd), args)
+				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, args)
 			}
 
 			// Outside a git repo: pure passthrough to the agent.
 			if !inGitRepo() {
-				return launchDirect(agent, a.cfg, yolo(cmd), args)
+				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, args)
 			}
 
 			// Interactive TUI.
@@ -177,10 +193,19 @@ func rootCmd() *cobra.Command {
 
 	// Flags shared by wt and its subcommands.
 	cmd.PersistentFlags().Bool("yolo", false, "Skip permission prompts")
-	cmd.PersistentFlags().StringP("worktree", "w", "", "Use/create worktree for branch")
-	cmd.PersistentFlags().String("agent", "", "Agent to launch (claude, codex, copilot, pi, agy, opencode, shell)")
+	cmd.PersistentFlags().StringP("worktree", "W", "", "Use/create worktree for branch")
+	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
+	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
+	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
+	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
+
+	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
+	// Register it as a hidden Bool flag so pflag accepts the invocation,
+	// then error out in RunE.
+	cmd.Flags().BoolVarP(&legacyShortW, "legacy-w", "w", false, "Deprecated; use -W")
+	cmd.Flags().MarkHidden("legacy-w")
 
 	// Test-only flags.
 	cmd.Flags().Bool("debug-worktrees", false, "List worktrees and branches (test helper)")
