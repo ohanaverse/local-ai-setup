@@ -40,3 +40,7 @@ func (d *shellDriver) Build(_ config.Model, _ bool) LaunchCmd {
 
 // YoloFlag returns empty — shell has no permission-skip concept.
 func (d *shellDriver) YoloFlag() string { return "" }
+
+// IsCommand marks shell as a command (no model layer) rather than an
+// agent. Used by IsCommand via the Commanded optional interface.
+func (d *shellDriver) IsCommand() bool { return true }

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
 // TestRunAndWaitCmdBlocksUntilAgentExits asserts that runAndWaitCmd waits
@@ -149,6 +150,136 @@ func TestEnterInModelPhaseReturnsRunAndWaitNotBatchedQuit(t *testing.T) {
 	}
 }
 
+// TestPhaseAgentEnterLaunchesPickedCommand asserts that pressing Enter on a
+// command row in the agent+command picker launches THAT driver, not a
+// hardcoded "shell". PR 2's launch site called launchShell() which passed
+// "shell" regardless of the picked item, so a second command driver would
+// have silently launched the shell instead. The stub driver writes its own
+// name to a marker file so the test can see which driver actually ran.
+func TestPhaseAgentEnterLaunchesPickedCommand(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched.txt")
+	cleanup := agents.RegisterTest("wt-cmd-stub", func() agents.Driver {
+		return commandStubDriver{name: "wt-cmd-stub", marker: marker}
+	})
+	t.Cleanup(cleanup)
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	m := model{cfg: cfg, width: 80, height: 24}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: t.TempDir()}})
+	m = got.(model)
+	if m.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent", m.phase)
+	}
+	// Select the command row (not claude) and press Enter.
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && ai.command && ai.name == "wt-cmd-stub" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+	got, entered := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel := got.(model)
+	if gotModel.phase != phaseAgent {
+		t.Errorf("phase = %v, want phaseAgent (command launch has no model phase)", gotModel.phase)
+	}
+	if entered == nil {
+		t.Fatal("Enter returned nil cmd for command row")
+	}
+	if _, ok := entered().(launchDoneMsg); !ok {
+		t.Fatalf("Enter cmd did not produce launchDoneMsg")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if string(data) != "wt-cmd-stub" {
+		t.Errorf("launched name = %q, want wt-cmd-stub (launch site hardcoded shell?)", string(data))
+	}
+}
+
+// TestPhaseAgentEnterIgnoresYoloForCommands asserts that command launches do
+// not inherit the TUI's yolo state. Commands are documented to skip yolo; if
+// this regresses, a future command driver that honors yolo would unexpectedly
+// change behavior based on unrelated UI state.
+func TestPhaseAgentEnterIgnoresYoloForCommands(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "yolo.txt")
+	cleanup := agents.RegisterTest("wt-cmd-yolo", func() agents.Driver {
+		return yoloCommandStubDriver{marker: marker}
+	})
+	t.Cleanup(cleanup)
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	m := model{cfg: cfg, width: 80, height: 24, yolo: true}
+	if !m.yolo {
+		t.Fatal("test precondition failed: model yolo must be true")
+	}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: t.TempDir()}})
+	m = got.(model)
+	if m.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent", m.phase)
+	}
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && ai.command && ai.name == "wt-cmd-yolo" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+	_, entered := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if entered == nil {
+		t.Fatal("Enter returned nil cmd for command row")
+	}
+	if _, ok := entered().(launchDoneMsg); !ok {
+		t.Fatalf("Enter cmd did not produce launchDoneMsg")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if string(data) != "false" {
+		t.Errorf("command received yolo=%q, want false", string(data))
+	}
+}
+
+// TestPinnedCommandAgentLaunchesDirectly asserts that `wt --agent <command>`
+// (pinned) launches the command directly with no model screen, detected via
+// agents.IsCommand rather than a string equality with "shell". Before the
+// fix the pinned path compared agent == "shell", so a future command driver
+// fell through to the model path and errored "agent not found".
+func TestPinnedCommandAgentLaunchesDirectly(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched.txt")
+	cleanup := agents.RegisterTest("wt-cmd-stub", func() agents.Driver {
+		return commandStubDriver{name: "wt-cmd-stub", marker: marker}
+	})
+	t.Cleanup(cleanup)
+
+	cfg := testConfig()
+	m := model{cfg: cfg, initialAgent: "wt-cmd-stub", width: 80, height: 24}
+	got, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: t.TempDir()}})
+	gotModel := got.(model)
+	if cmd == nil {
+		t.Fatalf("selectedEntryMsg returned nil cmd for pinned command agent; status=%q", gotModel.status)
+	}
+	if gotModel.phase == phaseModel {
+		t.Fatal("pinned command agent entered phaseModel (should skip the model screen)")
+	}
+	if _, ok := cmd().(launchDoneMsg); !ok {
+		t.Fatalf("cmd did not produce launchDoneMsg")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if string(data) != "wt-cmd-stub" {
+		t.Errorf("launched name = %q, want wt-cmd-stub", string(data))
+	}
+}
+
 // shQuote quotes a path for inclusion in a single-quoted shell string.
 func shQuote(s string) string {
 	return "'" + s + "'"
@@ -164,4 +295,45 @@ type stubDriver struct {
 func (stubDriver) YoloFlag() string { return "" }
 func (d stubDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
 	return agents.LaunchCmd{Bin: d.path}
+}
+
+// commandStubDriver is a Driver that also implements Commanded
+// (IsCommand() == true), so agents.IsCommand reports it as a command with no
+// model layer. Build runs `sh -c` that writes the driver's name to marker,
+// letting tests assert WHICH driver the TUI actually launched — the fix for
+// the hardcoded-"shell" launch site.
+type commandStubDriver struct {
+	name   string
+	marker string
+}
+
+func (commandStubDriver) YoloFlag() string { return "" }
+func (d commandStubDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
+	return agents.LaunchCmd{
+		Bin:  "sh",
+		Args: []string{"-c", "printf %s \"$0\" > " + shQuote(d.marker), d.name},
+	}
+}
+
+func (d commandStubDriver) IsCommand() bool { return true }
+
+type yoloCommandStubDriver struct {
+	marker string
+}
+
+func (yoloCommandStubDriver) YoloFlag() string { return "" }
+func (d yoloCommandStubDriver) Build(_ config.Model, yolo bool) agents.LaunchCmd {
+	return agents.LaunchCmd{
+		Bin:  "sh",
+		Args: []string{"-c", "printf %s \"$0\" > " + shQuote(d.marker), boolString(yolo)},
+	}
+}
+
+func (d yoloCommandStubDriver) IsCommand() bool { return true }
+
+func boolString(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }

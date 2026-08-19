@@ -237,26 +237,25 @@ func TestEnterSelectsEntry(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryMsgTransitionsToModelPhase asserts that choosing a
-// worktree moves the TUI into the model phase with a resolved agent,
-// tag, and a populated picker list. The cursor lands on the rotation's
-// next-to-use model (index 0 with no state file).
-func TestSelectedEntryMsgTransitionsToModelPhase(t *testing.T) {
+// TestSelectedEntryMsgTransitionsToAgentPhase asserts that choosing a
+// worktree moves the TUI into the agent+command picker phase, with the
+// agent list populated and selectedPath recorded. The model-tag resolution
+// and list build used to happen here, but moved to phaseAgent's Enter
+// handler in PR 2 — full transition tests for that handler are added in
+// the follow-up task.
+func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
 	tempStateDir(t) // isolate XDG_CONFIG_HOME so rotation state is fresh
 	m := model{cfg: testConfig(), width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
 	gotModel := got.(model)
-	if gotModel.phase != phaseModel {
-		t.Errorf("phase = %v, want phaseModel", gotModel.phase)
+	if gotModel.phase != phaseAgent {
+		t.Errorf("phase = %v, want phaseAgent", gotModel.phase)
 	}
-	if gotModel.agent != "claude" {
-		t.Errorf("agent = %q, want claude", gotModel.agent)
+	if gotModel.selectedPath != "/tmp/feature" {
+		t.Errorf("selectedPath = %q, want /tmp/feature", gotModel.selectedPath)
 	}
-	if gotModel.tag != "code" {
-		t.Errorf("tag = %q, want code", gotModel.tag)
-	}
-	if len(gotModel.models.Items()) == 0 {
-		t.Error("models list is empty; expected populated picker")
+	if len(gotModel.agentList.Items()) == 0 {
+		t.Error("agentList is empty; expected at least one configured agent")
 	}
 }
 
@@ -693,6 +692,33 @@ func TestQDoesNotQuitWhileFiltering(t *testing.T) {
 	}
 	if !strings.Contains(gotModel.list.FilterInput.Value(), "q") {
 		t.Errorf("filter input = %q, want to contain q (quit hijacked the key)", gotModel.list.FilterInput.Value())
+	}
+}
+
+// TestQDoesNotQuitWhileFilteringAgentList asserts that 'q' types into the
+// agent+command picker's list filter rather than quitting the TUI. PR 2's
+// phaseAgent screen reuses bubbles/list (filter opened with '/'), but
+// isTyping() had no phaseAgent case, so a query like "quality" killed the
+// app on the first 'q' while the worktree-list screen guarded it fine.
+func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	m := model{phase: phaseAgent, cfg: cfg, width: 80, height: 24}
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	// Open the filter exactly like a user pressing '/'.
+	m.agentList, _ = m.agentList.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.agentList.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.agentList.FilterState())
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if !strings.Contains(gotModel.agentList.FilterInput.Value(), "q") {
+		t.Errorf("filter input = %q, want to contain q (quit hijacked the key)", gotModel.agentList.FilterInput.Value())
 	}
 }
 

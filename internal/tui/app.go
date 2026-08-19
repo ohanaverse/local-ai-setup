@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
@@ -29,6 +30,7 @@ type phase int
 
 const (
 	phaseList        phase = iota // worktree list (lesson 13)
+	phaseAgent                    // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
 	phaseModel                    // agent+model picker (lesson 14 + lesson 15 merged)
 	phaseResume                   // resume prompt (lesson 16)
 	phaseGuardWarn                // confirm before launching on default branch
@@ -53,15 +55,21 @@ type model struct {
 	ready   bool
 
 	phase    phase
-	agent    string              // current agent name
-	tag      string              // active rotation tag group
-	rotation *rotation.Rotation  // snapshot rotation for the active (agent, tag); set on picker entry and on 'd' tag toggle
-	cfg      *config.Config      // loaded config for the model catalog
+	agent    string             // current agent name
+	tag      string             // active rotation tag group
+	rotation *rotation.Rotation // snapshot rotation for the active (agent, tag); set on picker entry and on 'd' tag toggle
+	cfg      *config.Config     // loaded config for the model catalog
 
 	// model picker (the agent+model screen IS the picker)
 	models    list.Model // bubble/list of agent+tag models
 	modelsTag string     // tag the list was built for; rebuild on change
 	modelsFor string     // agent the list was built for; rebuild on change
+
+	// agent+command picker (PR 2): user picks an agent or command before the
+	// model screen. Built from buildAgentList in selectedEntryMsg; rebuilt when
+	// the agent list itself changes (none expected today, but the field lives
+	// here so future per-phase rebuilds are one-line).
+	agentList list.Model // bubble/list of agent+command items (PR 2)
 
 	// launch state (lesson 16)
 	selectedPath string   // worktree path chosen in lesson 13
@@ -93,18 +101,18 @@ func (m model) Init() tea.Cmd {
 	return loadEntriesCmd()
 }
 
-// isShellAgent returns true when the active agent is "shell", which has no
-// model screen, no ollama check, and no session resume.
-func isShellAgent(agent string) bool { return agent == "shell" }
-
 // isTyping reports whether the current phase is actively receiving character
 // input, in which case 'q' must not quit. The new-worktree prompt is a
-// textinput; the list filter is bubbles/list's incremental filter.
+// textinput; the list filters (worktree and agent+command) are bubbles/list's
+// incremental filter.
 func (m model) isTyping() bool {
 	if m.phase == phaseNewWorktree {
 		return true
 	}
-	return m.phase == phaseList && m.ready && m.list.FilterState() == list.Filtering
+	if m.phase == phaseList && m.ready && m.list.FilterState() == list.Filtering {
+		return true
+	}
+	return m.phase == phaseAgent && m.agentList.FilterState() == list.Filtering
 }
 
 // openNewWorktreePrompt transitions to the new-worktree prompt, resetting the
@@ -124,6 +132,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		if m.ready {
 			m.list.SetSize(msg.Width-2, msg.Height-2)
+		}
+		if m.phase == phaseAgent {
+			m.agentList.SetSize(msg.Width-2, msg.Height-2)
 		}
 		if m.phase == phaseModel {
 			m.models.SetSize(msg.Width-2, msg.Height-2)
@@ -170,40 +181,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedEntryMsg:
-		// Resolve the agent: --agent flag wins, else the config default.
+		// PR 2: the agent/command picker is the new explicit entry point.
+		// When the user pinned an agent via --agent, mirror the pre-PR-2
+		// UX: a shell --agent skips the picker and launches immediately,
+		// any other --agent jumps straight to phaseModel. This keeps
+		// `wt --agent shell` and `wt --agent claude` exactly as they
+		// behaved before PR 2 — only the unpinned path shows the picker.
 		m.selectedPath = msg.entry.Path
 		if m.initialAgent != "" {
 			m.agent = m.initialAgent
-		} else {
-			m.agent = m.cfg.DefaultAgent()
-		}
-		// Shell agent: skip the model screen entirely — go straight to launch.
-		if isShellAgent(m.agent) {
-			return m.launchShell()
-		}
-		m.tag = m.cfg.DefaultTag
-		// Validation gate: refuse to enter the picker with an empty list.
-		// This catches misconfigured catalogs (agent with no compatible models
-		// in the default tag) before the user gets a confusing screen.
-		models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
-		if err != nil {
-			m.status = "config error: " + err.Error()
+			if agents.IsCommand(m.agent) {
+				return m.launchCommand(m.agent)
+			}
+			// Pinned agent: skip the picker, run the same model setup
+			// that phaseAgent Enter would have run for an agent item.
+			m.tag = m.cfg.DefaultTag
+			models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
+			if err != nil {
+				m.status = "config error: " + err.Error()
+				return m, nil
+			}
+			if len(models) == 0 {
+				m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
+				return m, nil
+			}
+			m.phase = phaseModel
+			m.models = buildModelList(models, m.width-2, m.height-2)
+			m.modelsFor = m.agent
+			m.modelsTag = m.tag
+			m.positionAfterLastLaunched(m.tag, models)
 			return m, nil
 		}
-		if len(models) == 0 {
-			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
-			return m, nil
-		}
-		m.phase = phaseModel
-		m.models = buildModelList(models, m.width-2, m.height-2)
-		m.modelsFor = m.agent
-		m.modelsTag = m.tag
-		// Snapshot the rotation over the picker's filtered list so
-		// rotation's view of "the code tag" matches the picker's,
-		// and position the cursor on the model after the last-
-		// launched one (fall back to index 0 if no last-launched
-		// exists or its ID is no longer in the snapshot).
-		m.positionAfterLastLaunched(m.tag, models)
+		// Unpinned: build the agent+command picker and hand off to phaseAgent.
+		// Clear any prior status so a stale error from a previous picker
+		// visit doesn't linger on the freshly rendered screen.
+		m.status = ""
+		items := buildAgentList(m.cfg)
+		m.agentList = list.New(items, list.NewDefaultDelegate(), m.width-2, m.height-2)
+		m.agentList.Title = "Pick an agent or command"
+		m.agentList.SetShowStatusBar(false)
+		m.phase = phaseAgent
 		return m, nil
 	case launchDoneMsg:
 		if msg.err != nil {
@@ -231,6 +248,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			// esc is phase-aware: pop back from a nested screen, else quit.
+			if m.phase == phaseAgent {
+				m.phase = phaseList
+				return m, nil
+			}
 			if m.phase == phaseResume {
 				m.phase = phaseModel
 				return m, nil
@@ -251,6 +272,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			switch m.phase {
+			case phaseAgent:
+				item, ok := m.agentList.SelectedItem().(agentItem)
+				if !ok {
+					return m, nil
+				}
+				m.agent = item.name
+				if item.command {
+					// Command (e.g. shell): no model layer — launch directly
+					// by the picked driver's name, not a hardcoded "shell".
+					return m.launchCommand(item.name)
+				}
+				// Agent: validate the model catalog for the agent + default tag,
+				// then build the picker list and position the cursor. Mirrors
+				// what selectedEntryMsg used to do for the pinned-agent path.
+				m.tag = m.cfg.DefaultTag
+				models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
+				if err != nil {
+					m.status = "config error: " + err.Error()
+					return m, nil
+				}
+				if len(models) == 0 {
+					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
+					return m, nil
+				}
+				m.phase = phaseModel
+				m.models = buildModelList(models, m.width-2, m.height-2)
+				m.modelsFor = m.agent
+				m.modelsTag = m.tag
+				m.positionAfterLastLaunched(m.tag, models)
+				return m, nil
 			case phaseList:
 				if !m.ready {
 					return m, nil
@@ -391,6 +442,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.models, cmd = m.models.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseAgent && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.agentList, cmd = m.agentList.Update(msg)
+		return m, cmd
+	}
 	if m.ready && m.phase == phaseList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
@@ -460,20 +516,34 @@ func (m model) View() string {
 		}
 		return m.phaseModelView()
 	}
+	if m.phase == phaseAgent {
+		if m.width <= 0 || m.height <= 0 {
+			return "agent picker (waiting for window size)"
+		}
+		return m.phaseAgentView()
+	}
 	if !m.ready {
 		return m.status
 	}
 	if m.listError != "" {
 		return errorStyle.Render("error: "+m.listError) + "\n" + m.list.View()
 	}
+	// A pinned --agent that errors (config error, empty model catalog) sets
+	// m.status while staying on the worktree list; render it so the failure
+	// is visible instead of silently swallowed by the list view.
+	if m.status != "" {
+		return errorStyle.Render(m.status) + "\n" + m.list.View()
+	}
 	return m.list.View()
 }
 
-// launchShell builds and runs a shell command (or interactive bash) in the
-// selected worktree, skipping the model screen, ollama check, and session
-// resume. Used by the shell agent path.
-func (m model) launchShell() (model, tea.Cmd) {
-	cmd, err := launchAgent("shell", config.Model{}, m.selectedPath, false, nil, m.cfg, m.extraArgs)
+// launchCommand builds and runs a command (no model layer) — e.g. the shell
+// driver — in the selected worktree, skipping the model screen, ollama
+// check, and session resume. name is the picked command's driver name; the
+// same BuildLaunchCmd path as agents is used, so a future command driver
+// launches by its own name rather than being hardcoded to "shell".
+func (m model) launchCommand(name string) (model, tea.Cmd) {
+	cmd, err := launchAgent(name, config.Model{}, m.selectedPath, false, nil, m.cfg, m.extraArgs)
 	if err != nil {
 		m.status = "launch failed: " + err.Error()
 		return m, nil

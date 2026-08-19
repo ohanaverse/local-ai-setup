@@ -42,6 +42,15 @@ type ArgSetter interface {
 	SetArgs(args []string)
 }
 
+// Commanded is an optional Driver capability: a driver that implements
+// it marks itself as a command (no model layer) rather than an agent.
+// Drivers that do not implement Commanded default to IsCommand() == false.
+// This lets new commands be added by implementing the method, with no
+// changes to IsCommand or its callers.
+type Commanded interface {
+	IsCommand() bool
+}
+
 // Installed reports whether bin resolves on PATH.
 func Installed(bin string) bool {
 	_, err := exec.LookPath(bin)
@@ -107,11 +116,19 @@ func Names() []string {
 	return out
 }
 
-// IsCommand reports whether name is a registered command (no model layer).
-// Full implementation lands in PR 2 via the Commanded interface; for now
-// only "shell" is a command.
+// IsCommand reports whether name is a registered command (no model layer),
+// as opposed to an agent. Drivers that implement the Commanded optional
+// interface and return true from IsCommand() are commands. Unknown names
+// and drivers that do not implement Commanded return false.
 func IsCommand(name string) bool {
-	return name == "shell"
+	d := ByName(name)
+	if d == nil {
+		return false
+	}
+	if c, ok := d.(Commanded); ok {
+		return c.IsCommand()
+	}
+	return false
 }
 
 // BuildLaunchCmd resolves the agent driver, runs any pre-launch sync, builds

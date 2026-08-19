@@ -88,6 +88,33 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	return m
 }
 
+// drivePhaseAgentEnter simulates the full PR-2 picker flow: fire
+// selectedEntryMsg (which builds m.agentList and transitions to
+// phaseAgent), select the agent row matching `agentName`, then fire
+// Enter on the picker. The returned model is whatever phaseAgent
+// Enter produces — phaseModel on the happy path, or phaseAgent
+// with m.status set if the catalog is empty for that agent+tag.
+// Tests that used to drive only selectedEntryMsg and assert
+// phaseModel state now call this helper to land at the same
+// post-transition state the production code reaches when the
+// user picks an agent from the picker.
+func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
+	t.Helper()
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	m = got.(model)
+	if m.phase != phaseAgent {
+		t.Fatalf("after selectedEntryMsg: phase = %v, want phaseAgent", m.phase)
+	}
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == agentName {
+			m.agentList.Select(i)
+			break
+		}
+	}
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return got.(model)
+}
+
 // TestFirstAgentDefaultsToClaude asserts DefaultAgent falls back to "claude"
 // when there is no config or no agents are configured. The TUI must still
 // show a sensible default even against an empty catalog.
@@ -150,9 +177,14 @@ func TestModelsForAgentAndTagReturnsFirstInTag(t *testing.T) {
 }
 
 // TestSelectedEntryMsgEmptyListStaysOnList asserts that when the agent+tag
-// has no compatible models, picking a worktree does NOT enter the model
-// phase. The validation gate at the phaseList → phaseModel boundary
-// surfaces a status message and keeps the user in the picker.
+// has no compatible models, pressing Enter on the agent row in the new
+// phaseAgent picker does NOT enter the model phase. The validation gate
+// fires when the user picks the agent (not when the worktree is picked,
+// since PR 2 split the entry into two transitions), surfaces a status
+// message, and keeps the user in phaseAgent so they can fix the config.
+// The message must reach the user: the assertion checks the rendered View,
+// not just the status field — before the fix, phaseAgentView never drew
+// m.status, so the empty catalog was a silent dead end.
 func TestSelectedEntryMsgEmptyListStaysOnList(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -160,32 +192,68 @@ func TestSelectedEntryMsgEmptyListStaysOnList(t *testing.T) {
 		Providers:  []config.Provider{{ID: "ollama"}},
 		// No models with provider "ollama".
 	}
-	m := model{cfg: cfg, phase: phaseList}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
-	if gotModel.phase != phaseList {
-		t.Errorf("phase = %v, want phaseList (no entry into picker)", gotModel.phase)
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
+	if gotModel.phase != phaseAgent {
+		t.Errorf("phase = %v, want phaseAgent (no entry into model picker)", gotModel.phase)
 	}
 	if gotModel.status == "" {
-		t.Error("status = empty, want an error message")
+		t.Fatal("status = empty, want an error message")
+	}
+	if view := gotModel.View(); !strings.Contains(view, gotModel.status) {
+		t.Errorf("View missing status %q:\n%s", gotModel.status, view)
 	}
 }
 
 // TestSelectedEntryMsgEmptyListSetsActionableStatus asserts the status
 // message names the agent and the tag so the user knows what to fix.
+// PR 2 moved the empty-catalog validation into the phaseAgent Enter
+// handler, so this test drives that path (selecting the agent row in
+// the new picker and pressing Enter) rather than the bare worktree pick.
+// It checks the rendered View so the message is verifiably on screen.
 func TestSelectedEntryMsgEmptyListSetsActionableStatus(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 		Providers:  []config.Provider{{ID: "ollama"}},
 	}
-	m := model{cfg: cfg, phase: phaseList, agent: "claude", tag: "code"}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
+	view := gotModel.View()
 	for _, want := range []string{"claude", "code"} {
-		if !strings.Contains(gotModel.status, want) {
-			t.Errorf("status %q missing %q", gotModel.status, want)
+		if !strings.Contains(view, want) {
+			t.Errorf("View %q missing %q (status must be rendered):\n%s", view, want, view)
 		}
+	}
+}
+
+// TestPinnedAgentErrorRenderedOnList asserts that a pinned --agent whose
+// model catalog is empty surfaces its error on the worktree list instead of
+// swallowing it. PR 2 moved model resolution into the pinned selectedEntryMsg
+// path; without the ready-phaseList status render, `wt --agent <agent>` with
+// an empty catalog failed with zero on-screen feedback.
+func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Providers:  []config.Provider{{ID: "ollama"}},
+		// No models — ModelsForAgentAndTag returns an empty list.
+	}
+	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
+	// Load the worktree list first so m.ready is true; the pinned-path
+	// error then must render on the ready list, not via the loading branch.
+	got, _ := m.Update(entriesLoadedMsg{entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}})
+	m = got.(model)
+	got, _ = m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
+	gotModel := got.(model)
+	if gotModel.phase != phaseList {
+		t.Fatalf("phase = %v, want phaseList (pinned agent error stays on list)", gotModel.phase)
+	}
+	if gotModel.status == "" {
+		t.Fatal("status = empty, want a config error")
+	}
+	if view := gotModel.View(); !strings.Contains(view, gotModel.status) {
+		t.Errorf("View missing status %q:\n%s", gotModel.status, view)
 	}
 }
 
@@ -496,7 +564,7 @@ func TestSessionCheckErrorShowsStatus(t *testing.T) {
 func TestResumePromptCancelDoesNotMutateModel(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
 		models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
-		resume:  resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 80, 24)}}
+		resume: resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 80, 24)}}
 	m.resume.choices.CursorDown() // Cancel
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
@@ -523,16 +591,18 @@ func TestResumeChoiceTitleIncludesRelativeTime(t *testing.T) {
 }
 
 // TestSelectedEntryMsgPositionsCursorAtNextToUse asserts the cursor lands
-// on the rotation's next-to-use model, not necessarily index 0.
+// on the rotation's next-to-use model, not necessarily index 0. PR 2
+// split the picker into a phaseAgent step followed by a phaseModel step,
+// so this test now drives both: selectEntryMsg lands in phaseAgent, the
+// phaseAgent Enter handler builds m.models and positions the cursor.
 func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 	dir := tempStateDir(t)
 	// State: next_index=1, last=ollama/gemma4:9b. With 2 code models, Next()
 	// returns models[1] (= gemma4:14b) and advances to index 0.
 	seedState(t, dir, "code", "1\nollama/gemma4:9b\n")
 	cfg := testConfig()
-	m := model{cfg: cfg, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.models.Index() != 1 {
 		t.Errorf("cursor index = %d, want 1", gotModel.models.Index())
 	}
@@ -663,13 +733,14 @@ func TestNoRKeyInModelPhase(t *testing.T) {
 
 // TestSelectedEntryNoLastLaunchedStartsAtZero asserts the picker
 // lands the cursor at index 0 when no rotation state exists. This
-// is the cold-start path: fresh user, fresh state file.
+// is the cold-start path: fresh user, fresh state file. PR 2 added
+// a phaseAgent step between worktree selection and the model picker,
+// so the test now drives both transitions to reach phaseModel.
 func TestSelectedEntryNoLastLaunchedStartsAtZero(t *testing.T) {
 	tempStateDir(t) // isolates state; file doesn't exist
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
@@ -681,14 +752,14 @@ func TestSelectedEntryNoLastLaunchedStartsAtZero(t *testing.T) {
 // TestSelectedEntryPositionsAfterLastLaunched asserts the picker
 // lands the cursor on the model after the last-launched one. With
 // the new model, rotation advances implicitly — every picker entry
-// is "one past where we left off".
+// is "one past where we left off". PR 2 added a phaseAgent step,
+// so the test drives both transitions to reach phaseModel.
 func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "code", "ollama/gemma4:9b\n")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
@@ -702,14 +773,15 @@ func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
 
 // TestSelectedEntryLastLaunchedMissingFallsBackToZero asserts the
 // picker lands on index 0 when the saved last-launched model is no
-// longer in the snapshot (config changed since last launch).
+// longer in the snapshot (config changed since last launch). PR 2
+// added a phaseAgent step, so the test drives both transitions to
+// reach phaseModel.
 func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "code", "ollama/removed:cloud\n")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
@@ -721,14 +793,14 @@ func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
 // TestSelectedEntryLastLaunchedLastInListWrapsToZero asserts the
 // picker wraps to index 0 when the saved last-launched is the last
 // item in the snapshot. Without wrap, the cursor would advance
-// past the end of the list forever.
+// past the end of the list forever. PR 2 added a phaseAgent step,
+// so the test drives both transitions to reach phaseModel.
 func TestSelectedEntryLastLaunchedLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "code", "ollama/gemma4:14b\n") // last item in testConfig
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	gotModel := got.(model)
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
@@ -831,17 +903,21 @@ func TestLaunchAndRecordWritesLastLaunched(t *testing.T) {
 // the core promise of rotation-by-launch: every launch advances the
 // rotation. The launch is committed via launchAndRecord (the real recording
 // path) rather than bare Enter, so the test exercises the contract without
-// depending on a real agent binary or ollama being available.
+// depending on a real agent binary or ollama being available. PR 2 added a
+// phaseAgent step before phaseModel, so each picker entry drives both
+// transitions (worktree pick → phaseAgent Enter) to reach the rotation
+// snapshot it asserts on.
 func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	dir := tempStateDir(t)
 	// Seed: last-launched is gemma4:9b (index 0). Picker entry 1
 	// will land on gemma4:14b (index 1).
 	seedState(t, dir, "code", "ollama/gemma4:9b\n")
 
-	// Picker entry 1.
+	// Picker entry 1: drive the full PR-2 path (worktree pick →
+	// phaseAgent → phaseModel) so m.models is built and cursor is
+	// positioned at "next-to-use".
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	m = got.(model)
+	m = drivePhaseAgentEnter(t, m, "claude")
 	if m.models.Index() != 1 {
 		t.Fatalf("entry 1: cursor = %d, want 1 (gemma4:14b)", m.models.Index())
 	}
@@ -854,12 +930,12 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	m, _ = m.launchAndRecord(exec.Command("true"))
 
 	// Picker entry 2 (e.g., user backed out and picked again, or the app
-	// restarted). New selectedEntryMsg rebuilds the rotation, sees
-	// gemma4:14b as last-launched, and advances to the next model — which
-	// wraps to gemma4:9b (only 2 models in the code tag).
+	// restarted). Drive selectedEntryMsg → phaseAgent → Enter; the
+	// phaseAgent Enter handler rebuilds the rotation, sees gemma4:14b
+	// as last-launched, and advances to the next model — which wraps to
+	// gemma4:9b (only 2 models in the code tag).
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	got, _ = m2.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	m2 = got.(model)
+	m2 = drivePhaseAgentEnter(t, m2, "claude")
 	if m2.models.Index() != 0 {
 		t.Errorf("entry 2: cursor = %d, want 0 (wrap after gemma4:14b)", m2.models.Index())
 	}
@@ -871,15 +947,16 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 // should land on the model AFTER the manual pick — not the model after the
 // prior rotation pick. This protects against "manual picks are ignored"
 // regressions. The launch is committed via launchAndRecord so the test
-// exercises the real recording path without a real agent or ollama.
+// exercises the real recording path without a real agent or ollama. PR 2
+// added a phaseAgent step before phaseModel, so each picker entry now
+// drives the worktree pick and the phaseAgent Enter to reach phaseModel.
 func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	dir := tempStateDir(t)
 	// No prior state. Picker entry 1 lands at index 0.
 	_ = dir
 
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	m = got.(model)
+	m = drivePhaseAgentEnter(t, m, "claude")
 	if m.models.Index() != 0 {
 		t.Fatalf("entry 1: cursor = %d, want 0", m.models.Index())
 	}
@@ -888,7 +965,7 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	// (Capture the returned model so the cursor advance sticks; m.models
 	// is a value field, so the in-place update inside Update() doesn't
 	// propagate unless we use the result.)
-	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = got.(model)
 	if m.models.Index() != 1 {
 		t.Fatalf("after Down: cursor = %d, want 1 (gemma4:14b)", m.models.Index())
@@ -899,11 +976,10 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	m.launchModel = m.models.Items()[m.models.Index()].(modelItem).model
 	m, _ = m.launchAndRecord(exec.Command("true"))
 
-	// Picker entry 2: last-launched is gemma4:14b (the manual pick), so
-	// the next entry wraps to gemma4:9b (index 0).
+	// Picker entry 2: last-launched is gemma4:14b (the manual pick),
+	// so the next entry wraps to gemma4:9b (index 0).
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	got, _ = m2.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	m2 = got.(model)
+	m2 = drivePhaseAgentEnter(t, m2, "claude")
 	if m2.models.Index() != 0 {
 		t.Errorf("entry 2: cursor = %d, want 0 (wrap after manual pick gemma4:14b)", m2.models.Index())
 	}
