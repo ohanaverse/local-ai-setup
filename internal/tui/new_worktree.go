@@ -39,6 +39,27 @@ func ensureNewWorktreeCmd(root, name string) tea.Cmd {
 	}
 }
 
+// branchWorktreeCreatedMsg is emitted after EnsureForBranch creates (or
+// reuses) a worktree for a picked bare branch. On success, path is the
+// worktree path; on failure, err is set and path is empty.
+type branchWorktreeCreatedMsg struct {
+	path   string
+	branch string
+	err    error
+}
+
+// ensureBranchWorktreeCmd returns a tea.Cmd that creates a worktree for a
+// bare branch via EnsureForBranch and reports the resolved path. Bare
+// branches (TypeBranch, Path="") have no worktree yet; selecting one must
+// materialize a worktree so the agent launches there rather than in wt's
+// CWD (cmd.Dir="").
+func ensureBranchWorktreeCmd(root, branch string) tea.Cmd {
+	return func() tea.Msg {
+		path, err := worktree.EnsureForBranch(root, branch)
+		return branchWorktreeCreatedMsg{path: path, branch: branch, err: err}
+	}
+}
+
 // newInputModel builds a focused textinput sized to the terminal
 // width. width is the full terminal width; the input is sized to
 // width-4 to leave room for padding in the View.

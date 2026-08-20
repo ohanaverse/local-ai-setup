@@ -325,10 +325,8 @@ func TestBuildListDefaultMarker(t *testing.T) {
 // TestBuildListCurrentWinsOverDefault asserts that when the current
 // worktree is also the default branch, the (current) marker is shown
 // rather than (default). (current) wins so the current worktree stays
-// visually distinct from the bare "main (default)" row that Enumerate
-// always emits — without this priority both rows would render
-// "(default)" and the bare row (which bypasses the launch guard) would
-// be easy to select by accident.
+// visually distinct from any other worktree that happens to be on the
+// default branch.
 func TestBuildListCurrentWinsOverDefault(t *testing.T) {
 	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{
 		Type:   worktree.TypeCurrent,

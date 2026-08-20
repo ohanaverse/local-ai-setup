@@ -189,45 +189,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedEntryMsg:
-		// PR 2: the agent/command picker is the new explicit entry point.
-		// When the user pinned an agent via --agent, mirror the pre-PR-2
-		// UX: a shell --agent skips the picker and launches immediately,
-		// any other --agent jumps straight to phaseModel. This keeps
-		// `wt --agent shell` and `wt --agent claude` exactly as they
-		// behaved before PR 2 — only the unpinned path shows the picker.
-		m.selectedPath = msg.entry.Path
-		if m.initialAgent != "" {
-			m.agent = m.initialAgent
-			if agents.IsCommand(m.agent) {
-				return m.launchCommand(m.agent)
-			}
-			// Pinned agent: skip the picker, run the same model setup
-			// that phaseAgent Enter would have run for an agent item.
-			// Use EligibleModels so -T/-F filters from CLI narrow the
-			// catalog consistently with the phaseAgent Enter path.
-			firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
-			m.tag = firstTag
-			models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
-			if err != nil {
-				m.status = "config error: " + err.Error()
-				return m, nil
-			}
-			if len(models) == 0 {
-				m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
-				return m, nil
-			}
-			return m.enterModelPhase(m.agent, models, firstTag)
+		// Bare branches (TypeBranch, Path="") have no worktree yet. Create
+		// one via EnsureForBranch before proceeding, so the agent launches
+		// in a worktree rather than in wt's CWD (cmd.Dir="").
+		if msg.entry.Type == worktree.TypeBranch && msg.entry.Path == "" {
+			m.creating = true
+			return m, ensureBranchWorktreeCmd(m.repoRoot, msg.entry.Branch)
 		}
-		// Unpinned: build the agent+command picker and hand off to phaseAgent.
-		// Clear any prior status so a stale error from a previous picker
-		// visit doesn't linger on the freshly rendered screen.
-		m.status = ""
-		items := buildAgentList(m.cfg)
-		m.agentList = list.New(items, list.NewDefaultDelegate(), m.width-2, m.height-2)
-		m.agentList.Title = "Pick an agent or command"
-		m.agentList.SetShowStatusBar(false)
-		m.phase = phaseAgent
-		return m, nil
+		m.selectedPath = msg.entry.Path
+		return m.proceedFromSelectedPath()
+	case branchWorktreeCreatedMsg:
+		m.creating = false
+		if msg.err != nil {
+			m.listError = msg.err.Error()
+			m.phase = phaseList
+			return m, nil
+		}
+		m.selectedPath = msg.path
+		return m.proceedFromSelectedPath()
 	case launchDoneMsg:
 		if msg.err != nil {
 			m.status = "agent exited: " + msg.err.Error()
@@ -308,6 +287,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.enterModelPhase(m.agent, models, firstTag)
 			case phaseList:
 				if !m.ready {
+					return m, nil
+				}
+				// A bare-branch worktree create is in flight; ignore Enter so
+				// a second selection can't race a second `git worktree add`.
+				if m.creating {
 					return m, nil
 				}
 				item, ok := m.list.SelectedItem().(entryItem)
@@ -414,8 +398,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "n":
 			// Open the new-worktree prompt. Skip while the list filter is
-			// being typed so 'n' can appear in filter queries.
-			if m.phase == phaseList && m.ready && m.list.FilterState() != list.Filtering {
+			// being typed so 'n' can appear in filter queries, and while a
+			// bare-branch create is in flight so the prompt can't be yanked
+			// away by the create's completion.
+			if m.phase == phaseList && m.ready && !m.creating && m.list.FilterState() != list.Filtering {
 				return m.openNewWorktreePrompt(), nil
 			}
 		}
@@ -535,6 +521,52 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 	return m, runAndWaitCmd(cmd)
 }
 
+// proceedFromSelectedPath continues the launch flow once m.selectedPath is
+// resolved — either directly from a worktree/current entry, or after
+// EnsureForBranch materialized a worktree for a bare branch. It is the body
+// of the old selectedEntryMsg handler, extracted so both the direct pick and
+// the post-create path share it.
+//
+// PR 2: the agent/command picker is the new explicit entry point. When the
+// user pinned an agent via --agent, mirror the pre-PR-2 UX: a shell --agent
+// skips the picker and launches immediately, any other --agent jumps straight
+// to phaseModel. This keeps `wt --agent shell` and `wt --agent claude` exactly
+// as they behaved before PR 2 — only the unpinned path shows the picker.
+func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
+	if m.initialAgent != "" {
+		m.agent = m.initialAgent
+		if agents.IsCommand(m.agent) {
+			return m.launchCommand(m.agent)
+		}
+		// Pinned agent: skip the picker, run the same model setup
+		// that phaseAgent Enter would have run for an agent item.
+		// Use EligibleModels so -T/-F filters from CLI narrow the
+		// catalog consistently with the phaseAgent Enter path.
+		firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
+		m.tag = firstTag
+		models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
+		if err != nil {
+			m.status = "config error: " + err.Error()
+			return m, nil
+		}
+		if len(models) == 0 {
+			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
+			return m, nil
+		}
+		return m.enterModelPhase(m.agent, models, firstTag)
+	}
+	// Unpinned: build the agent+command picker and hand off to phaseAgent.
+	// Clear any prior status so a stale error from a previous picker
+	// visit doesn't linger on the freshly rendered screen.
+	m.status = ""
+	items := buildAgentList(m.cfg)
+	m.agentList = list.New(items, list.NewDefaultDelegate(), m.width-2, m.height-2)
+	m.agentList.Title = "Pick an agent or command"
+	m.agentList.SetShowStatusBar(false)
+	m.phase = phaseAgent
+	return m, nil
+}
+
 // enterModelPhase sets up the model list for the picker, then either
 // transitions to phaseModel (when the eligible list has more than one
 // model) or skips the picker entirely (when it has exactly one model).
@@ -631,23 +663,23 @@ func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
 
 // launchesOnDefaultBranch reports whether selecting this entry would land
 // the agent on the repo default branch — the situation the phaseGuardWarn
-// prompt exists to gate. This covers every entry shape whose Branch is the
-// default branch: the current worktree on main (TypeCurrent), a separate
-// worktree checked out on main (TypeWorktree), and the bare default-branch
-// row Enumerate always emits (TypeBranch with Path=""). The previous check
-// only matched TypeCurrent, so the bare row silently bypassed the guard and
-// launched on main in wt's CWD with no protection.
+// prompt exists to gate. This covers the current worktree on main
+// (TypeCurrent), a separate worktree checked out on main (TypeWorktree), a
+// bare local default-branch row (TypeBranch), and the remote-tracking form
+// (origin/main) that EnsureForBranch turns into a local main.
 func launchesOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
-	return defaultBranch != "" && e.Branch == defaultBranch
+	if defaultBranch == "" {
+		return false
+	}
+	return e.Branch == defaultBranch || e.Branch == "origin/"+defaultBranch
 }
 
 // isDefaultBranchOnly reports whether the user is working directly on the
 // repo default branch with nothing else to switch to — the situation where
 // a default-branch warning in the picker title is warranted. Returns true
-// when the current worktree is on the default branch and every other entry
-// is just the redundant bare default-branch row Enumerate adds (a duplicate
-// view of main, not an alternative target). Any other entry — a different
-// branch, a detached worktree, a second worktree on main — means there is
+// when the current worktree is on the default branch and there are no
+// other branches or worktrees to pick. Any other entry — a different
+// branch, a detached worktree, or a second worktree on main — means there is
 // something to switch to, so the warning is suppressed.
 func isDefaultBranchOnly(groups []worktree.EntryGroup, defaultBranch string) bool {
 	if defaultBranch == "" {
@@ -658,11 +690,6 @@ func isDefaultBranchOnly(groups []worktree.EntryGroup, defaultBranch string) boo
 		for _, e := range g.Entries {
 			if isCurrentOnDefaultBranch(e, defaultBranch) {
 				onDefault = true
-				continue
-			}
-			// The bare default-branch row is a duplicate view of main, not
-			// an alternative target — skip it.
-			if e.Type == worktree.TypeBranch && e.Branch == defaultBranch {
 				continue
 			}
 			// Any other entry means there's something to switch to.

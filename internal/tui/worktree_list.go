@@ -102,9 +102,9 @@ type selectedEntryMsg struct{ entry worktree.Entry }
 // Entries matching the repo default branch are rendered with
 // "(default)"; the entry matching the launch directory (after resolving
 // symlinks) is rendered with "(current)", which wins over "(default)"
-// so the current worktree stays distinguishable from the bare
-// default-branch row. The markers are tracked on entryItem.label so the
-// underlying worktree.Entry is never mutated and remains safe to
+// so the current worktree stays distinguishable from a separate worktree
+// on the default branch. The markers are tracked on entryItem.label so
+// the underlying worktree.Entry is never mutated and remains safe to
 // forward into selectedEntryMsg.
 //
 // repoRoot is resolved with filepath.EvalSymlinks so symlinked paths
@@ -127,17 +127,15 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, wid
 		for _, e := range g.Entries {
 			ei := entryItem{kind: kindEntry, entry: e}
 			// Mark default-branch entries with (default). This applies to
-			// the bare default-branch row and to non-current worktrees on
-			// the default branch.
+			// non-current worktrees on the default branch and to a bare
+			// default-branch row (when the branch is not checked out).
 			if e.Branch == defaultBranch {
 				ei.label = "(default)"
 			}
 			// The entry matching the launch directory is (current). This
-			// wins over (default) so the current worktree is distinguishable
-			// from the bare default-branch row: without this priority the
-			// current worktree on main and the bare "main (default)" row
-			// would both render "(default)" and be easy to confuse — and
-			// the bare row bypasses the launch guard (see app.go).
+			// wins over (default) so the current worktree stays
+			// distinguishable from a separate worktree on the default
+			// branch.
 			if e.Path != "" {
 				resolved, _ := filepath.EvalSymlinks(e.Path)
 				if resolved == resolvedRepo {

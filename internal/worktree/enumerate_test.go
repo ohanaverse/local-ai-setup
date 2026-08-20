@@ -127,33 +127,22 @@ func TestEnumerateFindsBranch(t *testing.T) {
 	}
 }
 
-// TestEnumerateAlwaysEmitsDefaultBranchAsBare is the contract lock for PR
-// #56's "always-full view": Enumerate must emit the default branch as a bare
-// TypeBranch row even when that branch is already checked out in the current
-// worktree, so the picker is never empty of alternatives just because the
-// user is on main. This replaces the old TestEnumerateSkipsDefaultBranch
-// invariant (that the default branch never appears as a bare branch). That
-// invariant only ever held when origin/HEAD was unset, so the old test gave
-// false confidence: in any real repo with origin/HEAD set, Enumerate emits
-// the bare row — the opposite of what the old test asserted.
-func TestEnumerateAlwaysEmitsDefaultBranchAsBare(t *testing.T) {
+// TestEnumerateSkipsDefaultBranchWhenCheckedOut asserts that when the default
+// branch is already checked out in a worktree it does NOT appear as a bare
+// TypeBranch row. The bare duplicate was confusing: it has no worktree path,
+// so selecting it would launch the agent in wt's CWD rather than in a
+// worktree, and git worktree add cannot create a second worktree for a
+// branch that is already checked out.
+func TestEnumerateSkipsDefaultBranchWhenCheckedOut(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	// Detect the actual default branch (main or master, depending on the
-	// git version's init.defaultBranch) instead of assuming "main".
 	out, err := runGitCmd(dir, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
 		t.Fatalf("detect default branch: %v\n%s", err, out)
 	}
 	defaultBranch := strings.TrimSpace(string(out))
 
-	// Point origin/HEAD at the default branch so DefaultBranch resolves.
-	// DefaultBranch trims the "refs/remotes/origin/" prefix, so the symref
-	// must target a remote-tracking ref (refs/remotes/origin/<branch>), not
-	// refs/heads/<branch>. Create that tracking ref via update-ref (no real
-	// remote/fetch needed), then set origin/HEAD — mirroring setupTestRepo's
-	// push + symbolic-ref pattern.
 	if out, err := runGitCmd(dir, "update-ref", "refs/remotes/origin/"+defaultBranch, "refs/heads/"+defaultBranch); err != nil {
 		t.Fatalf("git update-ref origin/%s: %v\n%s", defaultBranch, err, out)
 	}
@@ -165,8 +154,6 @@ func TestEnumerateAlwaysEmitsDefaultBranchAsBare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The default branch is checked out in the current worktree, yet it must
-	// ALSO appear as a bare TypeBranch row (the always-full view contract).
 	foundCurrent := false
 	foundBare := false
 	for _, g := range groups {
@@ -185,8 +172,45 @@ func TestEnumerateAlwaysEmitsDefaultBranchAsBare(t *testing.T) {
 	if !foundCurrent {
 		t.Fatalf("expected current worktree on %q, got %+v", defaultBranch, groups)
 	}
+	if foundBare {
+		t.Fatalf("default branch %q must NOT appear as bare TypeBranch when checked out, got %+v", defaultBranch, groups)
+	}
+}
+
+// TestEnumerateIncludesDefaultBranchWhenNotCheckedOut asserts that when
+// the default branch exists locally but is not checked out in any worktree,
+// it appears as a bare TypeBranch row so the user can select it.
+func TestEnumerateIncludesDefaultBranchWhenNotCheckedOut(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	// Create a feature branch and switch to it so main is not checked out.
+	if out, err := runGitCmd(dir, "checkout", "-b", "feature"); err != nil {
+		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
+	}
+
+	// Set up origin/HEAD so DefaultBranch resolves to "main".
+	if out, err := runGitCmd(dir, "update-ref", "refs/remotes/origin/main", "refs/heads/main"); err != nil {
+		t.Fatalf("git update-ref origin/main: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("git symbolic-ref origin/HEAD: %v\n%s", err, out)
+	}
+
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundBare := false
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Type == TypeBranch && e.Branch == "main" {
+				foundBare = true
+			}
+		}
+	}
 	if !foundBare {
-		t.Fatalf("expected bare TypeBranch row for default branch %q (always-full view), got %+v", defaultBranch, groups)
+		t.Fatalf("expected bare TypeBranch row for main when not checked out, got %+v", groups)
 	}
 }
 
@@ -555,9 +579,9 @@ func TestEnumerateReturnsGroups(t *testing.T) {
 	}
 }
 
-// TestEnumerateAlwaysIncludesDefaultBranch verifies the picker-content
-// invariant: the default branch is always listed as a branch row, even
-// when checked out in a worktree or when it's also the current branch.
+// TestEnumerateAlwaysIncludesDefaultBranch verifies that the default branch
+// is always available in the picker: when checked out it appears as a
+// worktree entry, and when not checked out it appears as a bare branch row.
 func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
 	dir := setupTestRepo(t)
 	groups, err := Enumerate(dir, dir)
@@ -577,10 +601,14 @@ func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
 			}
 		}
 	}
-	if !foundAsBranch {
-		t.Error("default branch 'main' missing from local branches group")
+	// main is checked out in the current worktree, so it should appear as a
+	// worktree but NOT as a bare branch.
+	if foundAsBranch {
+		t.Error("default branch 'main' must not appear as bare branch when checked out in a worktree")
 	}
-	_ = foundAsWorktree // may or may not be true depending on test repo layout
+	if !foundAsWorktree {
+		t.Error("default branch 'main' missing from worktrees group")
+	}
 }
 
 // TestEnumerateOrdering verifies that within each group, entries are

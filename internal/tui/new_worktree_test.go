@@ -133,6 +133,42 @@ func TestEnsureNewWorktreeCmdGitError(t *testing.T) {
 	}
 }
 
+// TestEnsureBranchWorktreeCmdSuccess is the happy-path integration test for
+// the bare-branch path. In a fresh temp git repo, the command must create a
+// worktree for an existing local branch and emit a branchWorktreeCreatedMsg
+// with err == nil and a path under .worktrees/. A regression here means
+// selecting a bare branch silently does nothing.
+func TestEnsureBranchWorktreeCmdSuccess(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	// Create a feature branch without checking it out, so EnsureForBranch
+	// takes the local-branch path and git worktree add can check it out.
+	if out, err := exec.Command("git", "-C", dir, "branch", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("git branch feature: %v\n%s", err, out)
+	}
+
+	cmd := ensureBranchWorktreeCmd(dir, "feature")
+	msg := cmd()
+	got, ok := msg.(branchWorktreeCreatedMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want branchWorktreeCreatedMsg", msg)
+	}
+	if got.err != nil {
+		t.Fatalf("err = %v, want nil", got.err)
+	}
+	if got.branch != "feature" {
+		t.Errorf("branch = %q, want feature", got.branch)
+	}
+	wantPath := filepath.Join(dir, ".worktrees", "feature")
+	if got.path != wantPath {
+		t.Errorf("path = %q, want %q", got.path, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("worktree not created at %q: %v", wantPath, err)
+	}
+}
+
 // gitInit is a test helper that creates a fresh git repo in dir.
 // Duplicated from internal/worktree/create_test.go to keep this
 // package's tests self-contained.

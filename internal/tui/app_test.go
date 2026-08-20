@@ -259,24 +259,27 @@ func TestEnterSelectsEntry(t *testing.T) {
 	}
 }
 
-// TestEnterOnBareDefaultBranchTriggersGuard asserts that selecting the bare
-// default-branch row (TypeBranch with Path="") that Enumerate always emits
-// trips the phaseGuardWarn prompt before launching. This closes the guard
-// bypass where that row skipped the check because it isn't TypeCurrent, and
-// launched the agent on main in wt's CWD with no protection. A feature
-// branch must NOT trip the guard — it selects straight through.
-func TestEnterOnBareDefaultBranchTriggersGuard(t *testing.T) {
+// TestEnterOnDefaultBranchTriggersGuard asserts that selecting any entry
+// on the default branch trips the phaseGuardWarn prompt before launching.
+// This covers both worktree entries (TypeCurrent/TypeWorktree) and bare
+// branch rows (TypeBranch, when the branch exists locally but is not
+// checked out). A non-default branch must NOT trip the guard — it selects
+// straight through (dispatching a worktree create for a bare branch).
+func TestEnterOnDefaultBranchTriggersGuard(t *testing.T) {
 	m := model{width: 80, height: 24}
+	// The current worktree is on "feature", so "main" is genuinely not
+	// checked out and appears as a bare default-branch row — the only state
+	// Enumerate can produce for a bare default row.
 	groups := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+			{Type: worktree.TypeCurrent, Branch: "feature", Path: "/tmp/repo"},
 		}},
 		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "main"}, // bare default row
-			{Type: worktree.TypeBranch, Branch: "feature"},
+			{Type: worktree.TypeBranch, Branch: "main"}, // bare default row (main not checked out)
+			{Type: worktree.TypeBranch, Branch: "other"},
 		}},
 	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
 	m = got.(model)
 
 	// Select the bare default-branch row.
@@ -295,17 +298,44 @@ func TestEnterOnBareDefaultBranchTriggersGuard(t *testing.T) {
 
 	// A non-default branch must select straight through (no guard).
 	mm.phase = phaseList // reset for the contrast case
-	featIdx := pickEntryIndex(t, mm, func(ei entryItem) bool {
-		return ei.kind == kindEntry && ei.entry.Branch == "feature"
+	otherIdx := pickEntryIndex(t, mm, func(ei entryItem) bool {
+		return ei.kind == kindEntry && ei.entry.Branch == "other"
 	})
-	mm.list.Select(featIdx)
+	mm.list.Select(otherIdx)
 	newM2, cmd2 := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm2 := newM2.(model)
 	if mm2.phase == phaseGuardWarn {
-		t.Fatalf("feature row: phase = phaseGuardWarn, want no guard for non-default branch")
+		t.Fatalf("other row: phase = phaseGuardWarn, want no guard for non-default branch")
 	}
 	if cmd2 == nil {
-		t.Fatal("feature row: expected a selectedEntryMsg cmd, got nil")
+		t.Fatal("other row: expected a cmd (bare branch dispatches ensureBranchWorktreeCmd), got nil")
+	}
+}
+
+// TestLaunchesOnDefaultBranchCoversRemoteForm asserts the guard helper
+// matches both the bare local default branch and its remote-tracking form
+// (origin/main). The remote form is what Enumerate emits when the default
+// branch exists only as a remote ref; EnsureForBranch turns it into a local
+// main, so it must trip the guard too.
+func TestLaunchesOnDefaultBranchCoversRemoteForm(t *testing.T) {
+	cases := []struct {
+		name string
+		e    worktree.Entry
+		want bool
+	}{
+		{"current on main", worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}, true},
+		{"worktree on main", worktree.Entry{Type: worktree.TypeWorktree, Branch: "main", Path: "/repo/.worktrees/main"}, true},
+		{"bare local main", worktree.Entry{Type: worktree.TypeBranch, Branch: "main"}, true},
+		{"remote origin/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/main"}, true},
+		{"feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"}, false},
+		{"remote origin/feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feature"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := launchesOnDefaultBranch(tc.e, "main"); got != tc.want {
+				t.Errorf("launchesOnDefaultBranch(%+v, main) = %v, want %v", tc.e, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -351,21 +381,16 @@ func TestEnterOnSeparatorIsIgnored(t *testing.T) {
 	}
 }
 
-// TestDefaultBranchWarningFiresDespiteBareDefaultRow asserts that the
-// default-branch warning still fires when the only entries are the current
-// worktree on main plus the redundant bare default-branch row Enumerate
-// always emits. The old total==1 heuristic never saw this shape (Enumerate
-// now adds the bare row), so the warning became dead code; the new
-// heuristic discounts the bare row and still warns.
-func TestDefaultBranchWarningFiresDespiteBareDefaultRow(t *testing.T) {
+// TestDefaultBranchWarningFiresWhenOnlyDefaultBranch asserts that the
+// default-branch warning still fires when the only entry is the current
+// worktree on main with no other branches or worktrees. This is the
+// minimal-repo scenario where the user has nowhere else to switch.
+func TestDefaultBranchWarningFiresWhenOnlyDefaultBranch(t *testing.T) {
 	cfg := &config.Config{DefaultTag: "code"}
 	m := model{cfg: cfg, width: 80, height: 24}
 	groups := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
 			{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-		}},
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "main"}, // bare default row
 		}},
 	}
 	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
@@ -412,6 +437,94 @@ func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
 	}
 	if len(gotModel.agentList.Items()) == 0 {
 		t.Error("agentList is empty; expected at least one configured agent")
+	}
+}
+
+// TestEnterOnBareBranchDispatchesCreate asserts that selecting a bare
+// branch (TypeBranch, Path="") dispatches ensureBranchWorktreeCmd rather
+// than proceeding straight to the agent picker. Without this, the agent
+// would launch in wt's CWD (cmd.Dir="") instead of a worktree for the
+// branch.
+func TestEnterOnBareBranchDispatchesCreate(t *testing.T) {
+	m := model{width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "feature"},
+		}},
+	}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
+	m = got.(model)
+
+	idx := pickEntryIndex(t, m, func(ei entryItem) bool {
+		return ei.kind == kindEntry && ei.entry.Branch == "feature"
+	})
+	m.list.Select(idx)
+
+	// Enter emits selectedEntryMsg (the guard check passes for a non-default
+	// branch), which the runtime would feed back into Update.
+	_, selCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if selCmd == nil {
+		t.Fatal("Enter returned nil cmd, want selectedEntryMsg")
+	}
+	selMsg := selCmd()
+	selected, ok := selMsg.(selectedEntryMsg)
+	if !ok {
+		t.Fatalf("Enter cmd returned %T, want selectedEntryMsg", selMsg)
+	}
+
+	// Feeding selectedEntryMsg back in must dispatch the worktree create.
+	newM, createCmd := m.Update(selected)
+	mm := newM.(model)
+	if !mm.creating {
+		t.Error("creating = false, want true while the bare-branch create is in flight")
+	}
+	if createCmd == nil {
+		t.Fatal("cmd = nil, want ensureBranchWorktreeCmd")
+	}
+	msg := createCmd()
+	if _, ok := msg.(branchWorktreeCreatedMsg); !ok {
+		t.Errorf("cmd returned %T, want branchWorktreeCreatedMsg", msg)
+	}
+}
+
+// TestBranchWorktreeCreatedSuccessProceeds asserts that a successful
+// bare-branch create sets selectedPath to the created worktree and proceeds
+// to the agent picker. Without this, the created worktree would be ignored
+// and the agent would still launch in wt's CWD.
+func TestBranchWorktreeCreatedSuccessProceeds(t *testing.T) {
+	tempStateDir(t) // isolate XDG_CONFIG_HOME so rotation state is fresh
+	m := model{cfg: testConfig(), width: 80, height: 24, creating: true}
+	got, _ := m.Update(branchWorktreeCreatedMsg{path: "/tmp/repo/.worktrees/feature", branch: "feature"})
+	gotModel := got.(model)
+	if gotModel.creating {
+		t.Error("creating = true, want false after create completes")
+	}
+	if gotModel.selectedPath != "/tmp/repo/.worktrees/feature" {
+		t.Errorf("selectedPath = %q, want /tmp/repo/.worktrees/feature", gotModel.selectedPath)
+	}
+	if gotModel.phase != phaseAgent {
+		t.Errorf("phase = %v, want phaseAgent", gotModel.phase)
+	}
+}
+
+// TestBranchWorktreeCreatedErrorReturnsToList asserts that a failed
+// bare-branch create surfaces the error and returns to the list. A silent
+// failure would leave the user on a stale screen with no feedback.
+func TestBranchWorktreeCreatedErrorReturnsToList(t *testing.T) {
+	m := model{phase: phaseList, width: 80, height: 24, creating: true}
+	got, _ := m.Update(branchWorktreeCreatedMsg{err: errMock("git worktree add: boom")})
+	gotModel := got.(model)
+	if gotModel.creating {
+		t.Error("creating = true, want false after create completes")
+	}
+	if gotModel.phase != phaseList {
+		t.Errorf("phase = %v, want phaseList", gotModel.phase)
+	}
+	if gotModel.listError == "" {
+		t.Error("listError = empty, want error from msg")
 	}
 }
 

@@ -172,17 +172,15 @@ func DefaultBranch(dir string) (string, error) {
 }
 
 // Enumerate returns pickable targets grouped by kind: worktrees
-// first, then local branches, then remote branches. The default
-// branch is always emitted as a TypeBranch row (even when also
-// checked out in a worktree) so the picker is never empty for that
-// reason alone.
+// first, then local branches, then remote branches. Branches already
+// checked out in a worktree are omitted from the bare-branch lists
+// so the picker never shows duplicates.
 func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	worktreeEntries, err := listWorktrees(dir, cwdRoot)
 	if err != nil {
 		return nil, err
 	}
 	used := inUse(worktreeEntries)
-	db, _ := DefaultBranch(dir)
 
 	local, err := listLocalBranches(dir)
 	if err != nil {
@@ -192,8 +190,7 @@ func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	var localEntries []Entry
 	for _, b := range local {
 		localSet[b] = true
-		// Always emit the default branch as a TypeBranch row.
-		if b == db || !used[b] {
+		if !used[b] {
 			localEntries = append(localEntries, Entry{Type: TypeBranch, Branch: b})
 		}
 	}
