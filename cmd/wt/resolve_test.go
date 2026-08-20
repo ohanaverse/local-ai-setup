@@ -29,10 +29,9 @@ func TestResolveModel(t *testing.T) {
 		},
 	}
 
-	// PR 3 tightens resolveModel: any ambiguous eligible list now errors
-	// rather than falling back to defaultModel. Existing call sites that
-	// relied on the fallback must be updated (launch.go calls
-	// resolveModel and now must handle the error via rotation).
+	// resolveModel errors on any ambiguous eligible list rather than
+	// falling back to defaultModel. launch.go calls resolveModel and
+	// handles the error via rotation.
 
 	tests := []struct {
 		name    string

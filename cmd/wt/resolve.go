@@ -22,11 +22,11 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //   - pinned != "" and not in eligible → error
 //   - len(eligible) == 0 → error "no models match"
 //   - len(eligible) == 1 → return it
-//   - len(eligible) > 1 and pinned == "" → error "specify -M"
+//   - len(eligible) > 1 and pinned == "" → error "multiple models match"
 //   - len(eligible) > 1 and pinned != "" → return pinned
 //
-// Note: rotation lives outside this function. PR 3 will wrap this to
-// advance through the eligible list when pinned == "".
+// Note: rotation lives outside this function. launchFiltered catches
+// this error and advances through the eligible list when pinned == "".
 func resolveModel(agent string, cfg *config.Config, tags, family, pinned string) (config.Model, error) {
 	if agents.IsCommand(agent) {
 		return config.Model{}, errCommandAgent
@@ -47,7 +47,7 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		return config.Model{}, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 	}
 	if len(eligible) > 1 {
-		return config.Model{}, fmt.Errorf("multiple models match for agent %q; specify -M to pin one", agent)
+		return config.Model{}, fmt.Errorf("multiple models match for agent %q", agent)
 	}
 	return eligible[0], nil
 }

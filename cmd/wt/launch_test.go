@@ -218,7 +218,7 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 // TestLaunchUsesResolveModel verifies that the non-TUI launch path's filter
 // resolution goes through resolveModel when -M is supplied, returning the
 // pinned model. Without -M and with multiple eligible models, resolveModel
-// must surface a clear "specify -M" error rather than silently picking one.
+// must surface a clear "multiple models match" error rather than silently picking one.
 // This is the contract launchFiltered in launch.go relies on (rotation
 // outside the function advances through the eligible list when pinned == "").
 func TestLaunchUsesResolveModel(t *testing.T) {
@@ -236,9 +236,9 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 		},
 	}
 
-	// Two models, no -M → resolveModel errors with "specify -M". PR 3
-	// tightens the contract: any ambiguous eligible list errors so callers
-	// can route through rotation rather than silently picking one.
+	// Two models, no -M → resolveModel errors with "multiple models match".
+	// Any ambiguous eligible list errors so callers can route through
+	// rotation rather than silently picking one.
 	if _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
 		t.Fatal("expected error for ambiguous eligible list, got nil")
 	}
@@ -366,11 +366,10 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 		},
 	}
 
-	// Two eligible models, no -M → resolveModel errors with "specify -M".
-	// PR 3 tightens the contract: the defaultModel fallback is gone, so any
-	// ambiguous eligible list surfaces a clear error. The rotation advance
-	// in launchFiltered's run path wraps resolveModel so callers see the
-	// rotated model instead.
+	// Two eligible models, no -M → resolveModel errors with "multiple models
+	// match". The defaultModel fallback is gone, so any ambiguous eligible
+	// list surfaces a clear error. The rotation advance in launchFiltered's
+	// run path wraps resolveModel so callers see the rotated model instead.
 	if _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
 		t.Fatal("expected error for ambiguous eligible list")
 	}

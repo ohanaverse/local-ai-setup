@@ -155,7 +155,7 @@ func rootCmd() *cobra.Command {
 			// Read the new filter flags (-M/-T/-F). They are plumbed through
 			// to launchFiltered even when empty so that the legacy
 			// defaultModel-based path is replaced uniformly. The TUI fallback
-			// below ignores them in PR 1.
+			// below forwards them to tui.Run for the model picker.
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
@@ -164,7 +164,7 @@ func rootCmd() *cobra.Command {
 			// is paired with a command agent.
 			pinnedSupplied := cmd.Flags().Changed("model")
 
-			// -w <name>: use/create a worktree, then launch (no picker).
+			// -W <name>: use/create a worktree, then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
 				if err != nil {

@@ -664,6 +664,10 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 // m.models.Update(msg) in phaseModel, so up/down were dead keys.
 // This is the regression guard for the up/down bug.
 func TestPhaseModelUpDownMovesCursor(t *testing.T) {
+	// Isolate rotation state so the host's real ~/.config/agent-wt
+	// rotation file can't position the cursor away from index 0 and
+	// break the precondition assertion.
+	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	if m.models.Index() != 0 {
 		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
@@ -685,6 +689,9 @@ func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 // the highlighted item twice). The picker intercepts Enter for
 // ollama check + launch; the list is not allowed to handle it.
 func TestPhaseModelEnterStaysInApp(t *testing.T) {
+	// Isolate rotation state so the host's real rotation file can't
+	// shift the cursor and make this test order-dependent.
+	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if _, ok := got.(model); !ok {
