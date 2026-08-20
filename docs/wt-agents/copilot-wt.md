@@ -22,23 +22,22 @@ Native auth: `gh auth login` plus a Copilot subscription. Provider override: set
 
 ## Model selection
 
-Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; instead it sets the `COPILOT_PROVIDER_*` env vars when the rotation selects an Ollama-style local model, and maps `native:copilot` to `--model auto` so Copilot uses its own model selection logic. The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-wt/models.conf`, falling back to `http://localhost:11434`.
+Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; it handles two cases:
+
+- **`copilot/native`** — clears any inherited `COPILOT_*` env vars, so Copilot uses its native subscription.
+- **Ollama-routed models** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, and `COPILOT_MODEL` env vars pointing at the local Ollama gateway (see [Cloud models via Ollama](#cloud-models-via-ollama)).
 
 ### Cloud models via Ollama
 
-When a cloud model (e.g., `minimax-m2.7:cloud`) is selected from rotation and is available in Ollama, `copilot-wt` sets:
+When a non-native model (e.g., `minimax-m2.7:cloud`) is selected, `copilot-wt` sets:
 
 ```bash
-COPILOT_PROVIDER_BASE_URL="http://localhost:11434/v1"
+COPILOT_PROVIDER_BASE_URL="http://localhost:11434"
 COPILOT_PROVIDER_API_KEY=""
-COPILOT_PROVIDER_WIRE_API="responses"
-COPILOT_PROVIDER_MODEL_ID="gpt-4"  # Suppresses "not in catalog" warning
 COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 ```
 
-`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved.
-
-The `COPILOT_PROVIDER_MODEL_ID` tells Copilot to use a well-known model's configuration (token limits, agent behavior) while still sending the actual model name to Ollama. This suppresses the warning: `! Model "<name>" is not in the built-in catalog.`
+`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`).
 
 ## Agent init
 

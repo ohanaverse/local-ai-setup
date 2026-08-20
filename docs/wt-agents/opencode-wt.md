@@ -49,16 +49,16 @@ The `opencode-wt` launcher does not manage credentials — it relies on the user
 
 OpenCode selects models via `--model provider/model` (e.g., `--model anthropic/claude-sonnet-4-5`). `opencode-wt` handles two cases:
 
-- **`native:opencode`** — no `--model` flag; OpenCode uses its configured default.
-- **Ollama models** — generates inline JSON via `OPENCODE_CONFIG_CONTENT` environment variable:
+- **`opencode/native`** — no `--model` flag and no `OPENCODE_CONFIG_CONTENT`; OpenCode uses its configured default.
+- **Ollama models** — generates inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable:
 
 ```json
-{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"<url>/v1","apiKey":""}}}}
+{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""}}}}
 ```
 
 OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher constructs the literal `ollama/` prefix from the **bare** provider-specific name (`config.Model.ModelName`), not from `config.Model.ID`. Using `m.ID` here would produce `ollama/ollama/<model>` (a double prefix) because the registry already prefixes IDs with the provider id. This is the symmetric trap to the one in `claude-wt`/`codex-wt`/`copilot-wt`, where the launcher must NOT add a prefix.
 
-The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-wt/models.conf`, defaulting to `http://localhost:11434`. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`). To preserve a custom baseURL, set it in `PROVIDER_OLLAMA_BASE_URL` so the launcher's inline config matches.
+The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) with a `/v1` suffix. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`).
 
 ## Session resume
 

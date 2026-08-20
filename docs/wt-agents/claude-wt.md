@@ -32,25 +32,28 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 
 ## Model selection
 
-Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` passes the rotation-selected model directly through with `--model`. The model name format is whatever Claude Code accepts (e.g., `claude-opus-4-7` for native models, or the bare Ollama name like `minimax-m3:cloud` for Ollama-routed models).
+Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
 
-When routing through the Ollama Anthropic-compatible gateway, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
+- **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
+- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)).
 
-## Session resume
-
-`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; the non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
+For Ollama-routed models, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
 
 ### Cloud models via Ollama
 
-When a cloud model (e.g., `minimax-m3:cloud`) is selected from rotation and is available in Ollama, `claude-wt` sets Anthropic-compatible environment variables:
+When a non-native model (e.g., `minimax-m3:cloud`) is selected, `claude-wt` sets Anthropic-compatible environment variables pointing at the local Ollama gateway:
 
 ```bash
 ANTHROPIC_AUTH_TOKEN=ollama
 ANTHROPIC_API_KEY=""
-ANTHROPIC_BASE_URL="http://localhost:11434/v1"
+ANTHROPIC_BASE_URL="http://localhost:11434"
 ```
 
-The Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-wt/models.conf`, falling back to `http://localhost:11434`. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+
+## Session resume
+
+`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; the non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
 
 ## Agent init
 

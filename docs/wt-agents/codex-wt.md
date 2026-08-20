@@ -33,27 +33,12 @@ When using `codex-wt` with a rotation-selected model, codex talks to a local Oll
 
 ## Model selection
 
-Codex picks a model from a `--profile <name>` and `-m <model>` flag combination. `codex-wt` passes the rotation-selected model with `--profile ollama-launch -m <model>`. `<model>` is the **bare** provider-specific name (`config.Model.ModelName`) — the registry key `config.Model.ID` has the `provider/model` form and would reach Ollama with a prefix it cannot resolve. The launcher's `native:codex` sentinel maps to codex's own default model for that profile (no `--profile` flag is passed in that case).
+Codex picks a model from `--model <name>` (or a `--profile <name>` + `-m <model>` combination). `codex-wt` handles two cases:
 
-### Ollama launch profile
+- **`codex/native`** — passes no `--model` flag, so codex uses its own default model.
+- **Ollama-routed models** — passes `--model <name>`, where `<name>` is the **bare** provider-specific name (`config.Model.ModelName`). The registry key `config.Model.ID` has the `provider/model` form and would reach Ollama with a prefix it cannot resolve.
 
-When rotation selects a non-`native:codex` model, `codex-wt` ensures `~/.codex/ollama-launch.config.toml` exists with a known-good shape:
-
-```toml
-model = "<rotation-picked model>"
-model_provider = "ollama-launch"
-
-[model_providers.ollama-launch]
-name = "Ollama"
-base_url = "<PROVIDER_OLLAMA_BASE_URL from models.conf, default http://localhost:11434>/v1"
-wire_api = "responses"
-```
-
-The launcher regenerates this file on each launch — but only when its contents differ from the desired shape, so the on-disk file is touched once per model change. Both top-level `model` and `model_provider` settings are required: if either is missing, codex falls back to the default `openai` provider, which then shows a "Sign in with ChatGPT" prompt when no `auth.json` is present.
-
-Ollama base URL is read from `PROVIDER_OLLAMA_BASE_URL` in `~/.config/agent-wt/models.conf`, with a default of `http://localhost:11434`. Trailing `/v1` and trailing slashes are normalized so the profile always has a single canonical `/v1` suffix.
-
-The launcher's `native:codex` sentinel skips profile generation entirely and invokes `codex` directly.
+The launcher does not generate a `~/.codex/ollama-launch.config.toml` profile (that was the legacy bash engine's approach). To route a model through Ollama, configure the endpoint in `~/.codex/config.toml` yourself; `codex-wt` only selects the model name.
 
 ## Agent init
 
@@ -65,4 +50,4 @@ Codex reads `AGENTS.md` natively, so no pointer file is needed.
 
 ## Verified on this machine
 
-The ollama-launch profile generation, the ollama base-URL fallback, and the `--profile ollama-launch` model resolution were all verified live against the local ollama instance on 2026-06-03. Statements about codex CLI behavior are sourced from the [Codex CLI docs](https://developers.openai.com/codex/cli/) and the [Ollama Codex integration guide](https://docs.ollama.com/integrations/codex). Re-verify after codex CLI upgrades.
+The legacy bash engine's `ollama-launch` profile generation (described in earlier versions of this doc) is no longer performed by the Go driver — it passes `--model <ModelName>` directly and relies on the user's `~/.codex/config.toml` for the Ollama endpoint. Statements about codex CLI behavior are sourced from the [Codex CLI docs](https://developers.openai.com/codex/cli/) and the [Ollama Codex integration guide](https://docs.ollama.com/integrations/codex). Re-verify after codex CLI upgrades.

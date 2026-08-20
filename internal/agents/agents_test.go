@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,10 +58,16 @@ func TestClaude(t *testing.T) {
 		t.Fatal("claude driver not registered")
 	}
 
-	// Native — no args/env.
+	// Native — no args/env, but clears the inherited ANTHROPIC_* gateway
+	// vars so the native subscription is used instead of routing to ollama.
 	lc := d.Build(nativeModel("claude"), false)
 	if lc.Bin != "claude" || len(lc.Args) != 0 || len(lc.Env) != 0 {
 		t.Errorf("native build = %+v, want bare claude", lc)
+	}
+	for _, k := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"} {
+		if !slices.Contains(lc.ClearEnv, k) {
+			t.Errorf("native ClearEnv = %v, want it to include %q", lc.ClearEnv, k)
+		}
 	}
 
 	// Cloud — env gateway + --model.
@@ -119,6 +126,14 @@ func TestCopilot(t *testing.T) {
 	if len(d.Build(nativeModel("copilot"), false).Env) != 0 {
 		t.Errorf("native build should have no env")
 	}
+	// Native must clear the inherited COPILOT_* gateway vars so the native
+	// subscription is used instead of routing to ollama.
+	clear := d.Build(nativeModel("copilot"), false).ClearEnv
+	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL"} {
+		if !slices.Contains(clear, k) {
+			t.Errorf("native ClearEnv = %v, want it to include %q", clear, k)
+		}
+	}
 }
 
 // OpenCode receives its model configuration via a single OPENCODE_CONFIG_CONTENT
@@ -140,6 +155,11 @@ func TestOpenCode(t *testing.T) {
 	}
 	if len(d.Build(nativeModel("opencode"), false).Env) != 0 {
 		t.Errorf("native build should have no env")
+	}
+	// Native must clear the inherited OPENCODE_CONFIG_CONTENT var so the
+	// native subscription is used instead of routing to ollama.
+	if clear := d.Build(nativeModel("opencode"), false).ClearEnv; !slices.Contains(clear, "OPENCODE_CONFIG_CONTENT") {
+		t.Errorf("native ClearEnv = %v, want it to include OPENCODE_CONFIG_CONTENT", clear)
 	}
 }
 
@@ -277,6 +297,27 @@ func TestCommand(t *testing.T) {
 	}
 }
 
+// Command must strip LaunchCmd.ClearEnv names from the inherited environment
+// before launching. This is how native launches avoid inheriting the ollama
+// gateway vars (ANTHROPIC_BASE_URL etc.) from a parent shell that has them
+// exported — without it, a native claude launch would silently route to the
+// gateway instead of the native subscription.
+func TestCommandClearsInheritedEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://localhost:11434")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ollama")
+
+	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, "/tmp")
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if hasEnvKey(cmd.Env, "ANTHROPIC_BASE_URL") {
+		t.Errorf("cmd.Env still contains ANTHROPIC_BASE_URL: %v", cmd.Env)
+	}
+	if hasEnvKey(cmd.Env, "ANTHROPIC_AUTH_TOKEN") {
+		t.Errorf("cmd.Env still contains ANTHROPIC_AUTH_TOKEN: %v", cmd.Env)
+	}
+}
+
 // BuildLaunchCmd must append extraArgs to cmd.Args for regular agents (those
 // that do not implement ArgSetter). Failing to append means passthrough args
 // like `--verbose` after `--` are silently dropped and never reach the agent.
@@ -339,6 +380,26 @@ func hasEnv(env []string, want string) bool {
 	}
 	return false
 }
+
+// hasEnvKey reports whether env contains an entry for key (KEY=...).
+func hasEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// clearEnvDriver is a test-only Driver that clears two env vars, used to
+// verify Command strips them from the inherited environment.
+type clearEnvDriver struct{}
+
+func (clearEnvDriver) Build(_ config.Model, _ bool) LaunchCmd {
+	return LaunchCmd{Bin: "true", ClearEnv: []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"}}
+}
+func (clearEnvDriver) YoloFlag() string { return "" }
 
 // warnDriver is a test-only Driver whose Build returns a fixed warning, used
 // to verify Command surfaces it on stderr.

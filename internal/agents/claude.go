@@ -20,7 +20,10 @@ func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc := LaunchCmd{Bin: "claude", Args: args}
 
 	if m.IsNative() {
-		// native model — no extra args/env
+		// Native model — no extra args/env. Clear any inherited gateway
+		// vars so the native subscription is used instead of routing to
+		// the ollama gateway (which a parent shell may have exported).
+		lc.ClearEnv = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
 		return lc
 	}
 

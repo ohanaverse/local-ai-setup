@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
@@ -12,10 +13,11 @@ import (
 
 // LaunchCmd describes a fully-built process to exec.
 type LaunchCmd struct {
-	Bin  string
-	Args []string
-	Env  []string // extra env vars, merged over os.Environ() by the caller
-	Warn string   // printed to stderr by Command when non-empty
+	Bin      string
+	Args     []string
+	Env      []string // extra env vars, merged over os.Environ() by the caller
+	ClearEnv []string // env var names stripped from the inherited environment
+	Warn     string   // printed to stderr by Command when non-empty
 }
 
 // Driver knows how to build a launch command for one agent.
@@ -187,6 +189,32 @@ func Command(d Driver, m config.Model, yolo bool, workdir string) (*exec.Cmd, er
 	}
 	cmd := exec.Command(bin, lc.Args...)
 	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), lc.Env...)
+	if len(lc.ClearEnv) > 0 {
+		cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
+	} else {
+		cmd.Env = append(os.Environ(), lc.Env...)
+	}
 	return cmd, nil
+}
+
+// filterEnv returns env with any entry whose key is in clear removed. It is
+// used to strip inherited gateway vars (e.g. ANTHROPIC_BASE_URL) before a
+// native launch, so the agent uses its own subscription rather than routing
+// to a gateway a parent shell happened to export.
+func filterEnv(env, clear []string) []string {
+	drop := make(map[string]bool, len(clear))
+	for _, k := range clear {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i >= 0 {
+			key = e[:i]
+		}
+		if !drop[key] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
