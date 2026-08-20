@@ -32,7 +32,9 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 
 ## Model selection
 
-Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` passes the rotation-selected model directly through with `--model`. The model name format is whatever Claude Code accepts (e.g., `claude-opus-4-7`).
+Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` passes the rotation-selected model directly through with `--model`. The model name format is whatever Claude Code accepts (e.g., `claude-opus-4-7` for native models, or the bare Ollama name like `minimax-m3:cloud` for Ollama-routed models).
+
+When routing through the Ollama Anthropic-compatible gateway, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
 
 ## Session resume
 

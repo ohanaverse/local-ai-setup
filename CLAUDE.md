@@ -267,12 +267,14 @@ with model Y" without knowing the agent's quirks.
 - `Installed(bin)` reports whether a binary is on PATH
 - Native models (e.g. `claude/native`) are detected via `Model.IsNative()` and launch with no model args/env
 
+**Model id contract.** Drivers hand the **bare provider-specific name** (`m.ModelName`) to the agent CLI on the model-id slot — not the registry key (`m.ID`, which carries the `provider/` prefix and is for registry lookups only). Most agent CLIs (claude/codex/copilot/pi) accept the bare name as-is. OpenCode is the exception: its CLI uniquely requires `provider/model`, so `opencodeDriver.Build` constructs `"ollama/" + m.ModelName` deliberately. Adding the prefix from `m.ID` would produce a double prefix (`ollama/ollama/<model>`); forgetting to add it (or passing `m.ID` directly) would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id. Each driver has a regression test in `internal/agents/agents_test.go` (`TestClaudeOllamaPrefix`, `TestCodexOllamaPrefix`, `TestCopilotOllamaPrefix`, `TestOpenCodeOllamaPrefix`) using `ollamaPrefixedModel()` — a model with distinct `ID`/`ModelName` so the wrong-field bug cannot reappear silently.
+
 Per-agent behavior:
 
-- **claude** — cloud/local models set `ANTHROPIC_*` env vars pointing at the ollama gateway plus `--model`; native uses no args
-- **codex** — `--model <id>`; native uses no args
-- **copilot** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL` env vars; never passes `--model`
-- **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) for the ollama provider
+- **claude** — cloud/local models set `ANTHROPIC_*` env vars pointing at the ollama gateway plus `--model <m.ModelName>` (bare provider name); native uses no args
+- **codex** — `--model <m.ModelName>` (bare provider name); native uses no args
+- **copilot** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL=<m.ModelName>` env vars; never passes `--model`
+- **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) with `model: "ollama/<m.ModelName>"` (constructs the `provider/` prefix deliberately); never passes `--model`
 - **pi** — syncs non-native models into `~/.pi/agent/models.json` (idempotent, `_launch: true`) and passes `--model <ModelName>` only when the model is present and marked `_launch: true`; falls back to pi's default model with a warning otherwise; no `jq` dependency (native Go JSON); no yolo flag
 - **agy** — no model passthrough (model chosen inside its TUI)
 - **shell** — execs the user's passthrough args directly as argv (no shell involved), or interactive `bash` when no command is given; no model, no yolo, no session resume; implements `ArgSetter`

@@ -10,7 +10,7 @@
 npm install -g @mariozechner/pi-coding-agent
 ```
 
-This installs the `pi` binary globally. The `pi-wt` file in this repo is a shim that forwards to `wt --agent pi`. Install `pi-wt` itself by copying `bin/pi-wt` (and the rest of `bin/`) into `~/.local/bin/`. Requires `jq` for model verification.
+This installs the `pi` binary globally. The `pi-wt` file in this repo is a shim that forwards to `wt --agent pi`. Install `pi-wt` itself by copying `bin/pi-wt` (and the rest of `bin/`) into `~/.local/bin/`. The launcher verifies models against `~/.pi/agent/models.json` using native Go JSON parsing (no `jq` dependency).
 
 ## Configuration files & locations
 
@@ -34,14 +34,14 @@ In the NYT LiteLLM deployment on this machine, the wrapper is `~/.pi/agent/activ
 
 pi picks a model from `~/.pi/agent/models.json` based on `--model <id>` and `--provider <name>` arguments. With no flags, pi prompts the user (or, in the LiteLLM wrapper, falls back to the injected default).
 
-`pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model name from `~/.config/agent-wt/models.conf`; `pi-wt` then verifies the model is both present in `~/.pi/agent/models.json` **and** marked `._launch: true` (only models explicitly configured for launch are used — orphaned entries are skipped). If verified, `pi-wt` execs `pi --model <id>`. This check requires `jq`.
+`pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model name from `~/.config/agent-wt/models.conf`; `pi-wt` then verifies the model is both present in `~/.pi/agent/models.json` **and** marked `._launch: true` (only models explicitly configured for launch are used — orphaned entries are skipped) using native Go JSON parsing (no `jq` dependency). If verified, `pi-wt` execs `pi --model <id>` where `<id>` is the **bare** provider-specific name (`config.Model.ModelName`), not the registry key. pi was the first driver to follow this contract; see the "Model id contract" note in CLAUDE.md for the rationale shared across all drivers.
 
 **Auto-sync on launch:** `pi-wt` automatically syncs non-native models from `models.conf` into `~/.pi/agent/models.json` if they are missing — including both cloud models (`:cloud` suffix) and local models (MLX, etc.). This happens on every launch, is idempotent (only adds, never removes), and ensures rotation models are always available to pi. The sync runs silently unless models are added, in which case it logs:
 ```bash
 pi-wt: synced N model(s) to pi models.json
 ```
 
-**If the model ID is not present in `models.json` and sync fails**, `pi-wt` prints a warning and falls back to pi's default model — this is intentional, not a bug. The sync function requires `jq` to be installed.
+**If the model ID is not present in `models.json` and sync fails**, `pi-wt` prints a warning and falls back to pi's default model — this is intentional, not a bug. The sync function uses native Go JSON parsing (no `jq` dependency).
 
 For `native:pi` (the launcher's "use pi's own default" sentinel), `pi-wt` execs `pi` with no `--model` flag and lets pi (or the LiteLLM wrapper, if present) choose.
 

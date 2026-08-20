@@ -19,7 +19,7 @@ func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		lc.Env = append(lc.Env,
 			"COPILOT_PROVIDER_BASE_URL="+config.OllamaBaseURL,
 			"COPILOT_PROVIDER_API_KEY=",
-			"COPILOT_MODEL="+m.ID,
+			"COPILOT_MODEL="+m.ModelName,
 		)
 	}
 	return lc

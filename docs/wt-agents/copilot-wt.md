@@ -33,8 +33,10 @@ COPILOT_PROVIDER_BASE_URL="http://localhost:11434/v1"
 COPILOT_PROVIDER_API_KEY=""
 COPILOT_PROVIDER_WIRE_API="responses"
 COPILOT_PROVIDER_MODEL_ID="gpt-4"  # Suppresses "not in catalog" warning
-COPILOT_MODEL="<selected-model>"
+COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 ```
+
+`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved.
 
 The `COPILOT_PROVIDER_MODEL_ID` tells Copilot to use a well-known model's configuration (token limits, agent behavior) while still sending the actual model name to Ollama. This suppresses the warning: `! Model "<name>" is not in the built-in catalog.`
 

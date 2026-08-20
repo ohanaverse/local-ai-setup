@@ -371,3 +371,108 @@ func TestCommandPrintsWarning(t *testing.T) {
 		t.Errorf("stderr = %q, want it to contain %q", string(out), "test warning")
 	}
 }
+
+// ollamaPrefixedModel is the production-shaped config.Model: ID has the
+// provider/model form (the registry key) while ModelName has the bare
+// provider-side name. Existing tests use cloudModel(id) which collapses
+// both fields to the same string, masking bugs where the wrong field is
+// passed to the agent CLI. These regression tests use the real shape.
+func ollamaPrefixedModel() config.Model {
+	return config.Model{
+		ID:         "ollama/deepseek-v4-pro:cloud",
+		ModelName:  "deepseek-v4-pro:cloud",
+		ProviderID: "ollama",
+		Location:   config.LocationCloud,
+	}
+}
+
+// Claude must pass --model with the bare ModelName, not the registry ID
+// with the ollama/ prefix. With ANTHROPIC_BASE_URL pointing at the local
+// Ollama gateway, the prefixed id reaches Ollama unchanged and Ollama
+// reports "model not found" — the launch silently fails to use the model
+// the user picked.
+func TestClaudeOllamaPrefix(t *testing.T) {
+	d := ByName("claude")
+	if d == nil {
+		t.Fatal("claude driver not registered")
+	}
+	lc := d.Build(ollamaPrefixedModel(), false)
+	if len(lc.Args) != 2 || lc.Args[0] != "--model" {
+		t.Fatalf("args = %v, want [--model <name>]", lc.Args)
+	}
+	if lc.Args[1] != "deepseek-v4-pro:cloud" {
+		t.Errorf("--model = %q, want %q (bare name, NOT the ollama/-prefixed id)", lc.Args[1], "deepseek-v4-pro:cloud")
+	}
+	for _, e := range lc.Env {
+		if strings.HasPrefix(e, "ANTHROPIC_BASE_URL=") || strings.HasPrefix(e, "ANTHROPIC_AUTH_TOKEN=") {
+			continue
+		}
+		if strings.Contains(e, "ollama/deepseek-v4-pro:cloud") {
+			t.Errorf("env leaked the prefixed id: %s", e)
+		}
+	}
+}
+
+// Codex must pass --model with the bare ModelName. The ollama-launch
+// profile (see docs/wt-agents/codex-wt.md) routes through Ollama; passing
+// the prefixed id causes codex to ask Ollama for an unknown model.
+func TestCodexOllamaPrefix(t *testing.T) {
+	d := ByName("codex")
+	if d == nil {
+		t.Fatal("codex driver not registered")
+	}
+	lc := d.Build(ollamaPrefixedModel(), false)
+	if len(lc.Args) != 2 || lc.Args[0] != "--model" {
+		t.Fatalf("args = %v, want [--model <name>]", lc.Args)
+	}
+	if lc.Args[1] != "deepseek-v4-pro:cloud" {
+		t.Errorf("--model = %q, want %q (bare name)", lc.Args[1], "deepseek-v4-pro:cloud")
+	}
+}
+
+// Copilot must set COPILOT_MODEL=<bare name>, not the prefixed id. The
+// COPILOT_PROVIDER_* env vars route through Ollama; the model id reaches
+// Ollama verbatim and must not carry the registry prefix.
+func TestCopilotOllamaPrefix(t *testing.T) {
+	d := ByName("copilot")
+	if d == nil {
+		t.Fatal("copilot driver not registered")
+	}
+	lc := d.Build(ollamaPrefixedModel(), false)
+	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
+		t.Errorf("COPILOT_MODEL missing or wrong; env = %v", lc.Env)
+	}
+	for _, e := range lc.Env {
+		if strings.Contains(e, "COPILOT_MODEL=ollama/") {
+			t.Errorf("COPILOT_MODEL leaked the prefixed id: %s", e)
+		}
+	}
+}
+
+// OpenCode is the one driver whose CLI uniquely requires the
+// provider/model form (see docs/wt-agents/opencode-wt.md), so its inline
+// JSON config deliberately constructs "ollama/" + m.ModelName — the bare
+// provider-side name, NOT m.ID. The model field in OPENCODE_CONFIG_CONTENT
+// must be "ollama/<ModelName>", never "ollama/ollama/<ModelName>". The
+// double prefix is the trap to avoid: m.ID already carries the "ollama/"
+// prefix (it is the registry key), so constructing "ollama/" + m.ID would
+// yield "ollama/ollama/<ModelName>". A future refactor that switches this
+// slot to m.ID would reintroduce the bug; this test locks in the correct
+// m.ModelName shape.
+func TestOpenCodeOllamaPrefix(t *testing.T) {
+	d := ByName("opencode")
+	if d == nil {
+		t.Fatal("opencode driver not registered")
+	}
+	lc := d.Build(ollamaPrefixedModel(), false)
+	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
+		t.Fatalf("env = %v, want single OPENCODE_CONFIG_CONTENT entry", lc.Env)
+	}
+	cfg := lc.Env[0]
+	if !strings.Contains(cfg, `"model":"ollama/deepseek-v4-pro:cloud"`) {
+		t.Errorf("config missing ollama/<bare>; config = %s", cfg)
+	}
+	if strings.Contains(cfg, `"model":"ollama/ollama/`) {
+		t.Errorf("config has double-prefix (driver likely applied the m.ModelName fix incorrectly): %s", cfg)
+	}
+}

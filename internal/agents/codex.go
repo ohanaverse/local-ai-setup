@@ -16,7 +16,7 @@ func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		lc.Args = append(lc.Args, codexDriver{}.YoloFlag())
 	}
 	if !m.IsNative() {
-		lc.Args = append(lc.Args, "--model", m.ID)
+		lc.Args = append(lc.Args, "--model", m.ModelName)
 	}
 	return lc
 }

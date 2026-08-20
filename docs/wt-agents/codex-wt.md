@@ -33,7 +33,7 @@ When using `codex-wt` with a rotation-selected model, codex talks to a local Oll
 
 ## Model selection
 
-Codex picks a model from a `--profile <name>` and `-m <model>` flag combination. `codex-wt` passes the rotation-selected model with `--profile ollama-launch -m <model>`. The launcher's `native:codex` sentinel maps to codex's own default model for that profile (no `--profile` flag is passed in that case).
+Codex picks a model from a `--profile <name>` and `-m <model>` flag combination. `codex-wt` passes the rotation-selected model with `--profile ollama-launch -m <model>`. `<model>` is the **bare** provider-specific name (`config.Model.ModelName`) — the registry key `config.Model.ID` has the `provider/model` form and would reach Ollama with a prefix it cannot resolve. The launcher's `native:codex` sentinel maps to codex's own default model for that profile (no `--profile` flag is passed in that case).
 
 ### Ollama launch profile
 
