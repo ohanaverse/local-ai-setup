@@ -19,7 +19,7 @@ shell-wt ls -la
 shell-wt -- rm --init
 
 # Skip picker, use/create a named worktree
-shell-wt -w my-feature -- make test
+shell-wt -W my-feature -- make test
 
 # Run in current repo root (skip picker)
 shell-wt --cwd -- npm test
@@ -39,14 +39,21 @@ shell-wt --cwd -- npm test
 
 | Flag | Description |
 |------|-------------|
-| `-w <name>`, `--worktree <name>` | Use/create worktree for branch, skip picker |
-| `--cwd` | Run in current repo root, skip picker |
+| `-W <name>`, `--worktree <name>` | Use/create worktree for branch, skip worktree picker |
+| `--cwd` | Run in current repo root, skip worktree picker |
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |
 | `--check-guard` | Report guard status |
 | `--yolo` | No-op (no permission prompts) |
 
-Legacy bash flags `--code`, `--design`, and `--native` are not supported by `wt` — passing them now exits with `unknown flag`, since model rotation is tag-based and shell has no model concept.
+Passing `-M` with `-A shell` (e.g. `shell-wt -M foo -- ls`) is allowed and
+ignored — `wt` prints a stderr note `wt: -M ignored for command "shell"`
+because model pinning has no meaning for command agents.
+
+Legacy short flag `-w` for `--worktree` has been removed — use `-W` or
+`--worktree`. Legacy bash flags `--code`, `--design`, and `--native` are
+not supported by `wt` — passing them now exits with `unknown flag`, since
+model rotation is slot-based and shell has no model concept.
 
 ## Verified on this machine
 

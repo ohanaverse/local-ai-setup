@@ -28,18 +28,34 @@ Each per-agent file ends with a "Verified on this machine" section. Verified fil
 
 ## Common launcher flags
 
-The `wt` tool (and therefore every `*-wt` shim) supports:
+The `wt` tool (and therefore every `*-wt` shim) needs three inputs to launch:
+a directory, an agent or command, and (for agents) a model. Each can be
+supplied via flag, picked from a TUI screen, or defaulted.
 
 | Flag | Description |
 |------|-------------|
-| `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. |
-| `--cwd` | Launch in the current repo root, no picker |
-| `--agent <name>` | Pin the agent to launch (defaults to the first configured agent) |
-| `--yolo` | Skip permission prompts (agent-specific) |
-| `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. |
+| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. Defaults to the first configured agent. Skips the agent+command picker. |
+| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. The model picker is still shown; auto-skip on a single-item list is a planned follow-up (see design spec, §"Picker-skip conditions for the model picker"). |
+| `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
+| `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
+| `--cwd` | Launch in the current repo root; skip the worktree picker. |
+| `--yolo` | Skip permission prompts (agent-specific). |
+| `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
-With no flags, `wt` presents a Bubble Tea TUI picker showing available worktrees and branches, then an agent+model screen.
+With no flags, `wt` presents the worktree picker, then the agent+command
+picker, then the model picker (for agents). Multiple eligible models
+rotate on successive launches via the slot state file.
 
 ### Legacy bash flags
 
-The original bash launchers supported `--code`, `--design`, `--native`, `--no-guard`, and `--check-guard`. These are not supported by `wt`: model rotation is now tag-based (implicit on launch in the TUI, or `wt rotate <tag>`), and the main guard is managed by `internal/guard`. The bash model-rotation and pi `models.json` auto-sync behavior described in earlier versions of this doc is not yet ported to Go.
+The original bash launchers supported `-w`/`--worktree`, `--code`,
+`--design`, and `--native`. The short flag `-w` has been removed in favor
+of `-W`; the others are not supported by `wt`. The `--no-guard` and
+`--check-guard` flags ARE supported by `wt` (see
+[shell-wt.md](./shell-wt.md#key-flags)) — they were bash-only originally
+and now work via the Go binary. Model rotation is now slot-based
+(`(agent, tag, family)` — implicit on launch in the TUI, or
+`wt rotate <tag>` for debugging); the main guard is managed by
+`internal/guard`. The bash model-rotation and pi `models.json` auto-sync
+behavior described in earlier versions of this doc has been ported to Go.

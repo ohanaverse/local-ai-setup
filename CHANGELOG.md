@@ -25,9 +25,7 @@
   files are now named `rotation-<agent>-<tag>-<family>.state`; reads
   fall back to legacy `rotation-<tag>.state` for backward compatibility.
 - Model picker now honors `-T` and `-F` filters from the CLI: only
-  models matching the agent + tag set + family set are eligible, and
-  the picker is skipped when the eligible list contains exactly one
-  model.
+  models matching the agent + tag set + family set are eligible.
 
 ### Removed
 
@@ -48,3 +46,9 @@
 - All PRs 1-4 of the wt flow cleanup plan are bundled in this release;
   see `docs/superpowers/specs/2026-08-18-wt-flow-cleanup-design.md`
   for the unified design.
+- `CLAUDE.md` and `docs/wt-agents/{README.md,shell-wt.md}` were re-synced
+  to the new flag surface and three-input mental model (directory /
+  agent-or-command / model). The legacy `-w` short flag references were
+  removed; `-W`/`-A`/`-M`/`-T`/`-F` are now documented everywhere they
+  apply. The Rotation (Go) section reflects the slot-based rotation
+  (`Slot{Agent, Tag, Family}` + `NewForSlot`) introduced in PR 3.

@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-The `wt` binary (`cmd/wt/`) is a Go tool that launches AI coding agent CLIs (claude, codex, copilot, pi, agy, opencode, shell) in a chosen worktree or branch. It presents a Bubble Tea TUI picker of worktrees and branches, creates worktrees on demand, rotates models by tag, and launches the selected agent. Non-interactive flags (`-w`, `--cwd`, `--agent`) skip the TUI and launch directly.
+The `wt` binary (`cmd/wt/`) is a Go tool that launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. To launch, `wt` needs three pieces of information:
+
+1. **Where** — the directory: the current repo root (`--cwd`), a named worktree (`-W <name>` / `--worktree <name>`), or a picker screen when running from a git repo with no flags.
+2. **What** — the agent or command: an agent that drives an LLM (`-A <name>` / `--agent <name>`: claude, codex, copilot, pi, agy, opencode), or a command that does not (`shell`, also via `-A`). When `-A` is omitted, an agent+command picker is shown.
+3. **Which model** — for agents only: pin with `-M <provider>/<name>` / `--model <provider>/<name>`, narrow the eligible list with `-T <tags>` / `--tags <tags>` and `-F <family>` / `--family <family>`, or pick from the picker. Multiple eligible models rotate on successive launches.
 
 The `bin/*-wt` files are thin shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). All functionality — including shell command execution — is implemented in Go. See `docs/go-course/` for the lesson plan.
 
@@ -39,15 +43,20 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 
 ### Bash shims
 
-`bin/*-wt` are one-line shims that `exec wt --agent <name> "$@"`. They exist for ergonomic convenience (`claude-wt` is shorter than `wt --agent claude`). All logic — worktree selection, model rotation, guard, init seeding, session resume, and shell command execution — is in Go.
+`bin/*-wt` are one-line shims that `exec wt --agent <name> "$@"`. They exist for ergonomic convenience (`claude-wt` is shorter than `wt --agent claude`). All logic — directory selection, agent+command picker, model picker with `-T`/`-F` filters, slot rotation, guard, init seeding, session resume, and shell command execution — is in Go.
 
 ## Key flags (`wt`)
 
+`wt` exposes short flags for the three launch inputs plus the supporting flags. Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; flags not supplied are gathered from picker screens or sensible defaults.
+
 | Flag | Effect |
 |---|---|
-| `-w <name>`, `--worktree <name>` | Use/create worktree for branch `<name>`; skip the TUI and launch |
-| `--cwd` | Launch in the current repo root; skip the TUI |
-| `--agent <name>` | Pin the agent to launch (claude, codex, copilot, pi, agy, opencode, shell); defaults to the first configured agent |
+| `-W <name>`, `--worktree <name>` | Use or create the worktree for branch `<name>`; skip the worktree picker |
+| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch; defaults to the first configured agent |
+| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>`; errors if it isn't in the eligible list for the chosen agent |
+| `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR within flag) |
+| `-F <family>`, `--family <family>` | Filter models by model family (comma-delimited, OR within flag) |
+| `--cwd` | Launch in the current repo root; skip the worktree picker |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--version` | Print version and exit |
@@ -56,7 +65,7 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 | `--debug-worktrees` | List worktrees and branches (test helper) |
 | `--debug-session <agent>` | Print the newest resumable session for an agent (test helper) |
 
-The legacy bash flags `--code`, `--design`, and `--native` are not supported by `wt`. Model rotation is now tag-based (see [Rotation (Go)](#rotation-go)); the main guard is managed by `internal/guard`.
+The legacy short flag `-w` for `--worktree` has been removed — use `-W` or `--worktree`. The legacy bash flags `--code`, `--design`, and `--native` are not supported by `wt`; model rotation is now slot-based (see [Rotation (Go)](#rotation-go)), and the main guard is managed by `internal/guard`.
 
 ### Passthrough args
 
@@ -69,9 +78,9 @@ being rejected as an unknown subcommand — but pflag still consumes anything
 starting with `-` before it sees `--`.
 
 ```bash
-claude-wt -- --verbose     # → claude --model X --verbose
-shell-wt -w test -- npm test  # → exec npm test in .worktrees/test
-wt --agent codex -- --full-auto  # → codex --model X --full-auto
+claude-wt -W feat -- --verbose  # → claude --model X --verbose (worktree picker skipped via -W)
+shell-wt -W test -- npm test    # → exec npm test in .worktrees/test
+wt -W feat -A codex -- --full-auto   # → codex --model X --full-auto
 ```
 
 For regular agents, extra args are appended to the agent's command. For the
@@ -123,16 +132,16 @@ Test coverage by package:
 
 | Package | Tests | Focus |
 |---|---|---|
-| `internal/config` | 38 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets |
+| `internal/config` | 44 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets, EligibleModels, ParseFilterList |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
-| `internal/rotation` | 12 | LastLaunched/RecordLaunch/FirstAfter, snapshot-based model set, single-line state file with backward-compat read of legacy 2-line files |
-| `internal/agents` | 30 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, shell driver, shell quoting |
+| `internal/rotation` | 18 | Slot{Agent,Tag,Family}, SlotFromFlags, LastLaunched/RecordLaunch/FirstAfter, snapshot-based model set, per-slot state file with backward-compat read of legacy single-tag state files |
+| `internal/agents` | 32 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, IsCommand (Commanded interface), shell driver, shell quoting, pi model sync |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
-| `internal/worktree` | 23 | Worktree parsing, branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
+| `internal/worktree` | 29 | Worktree parsing, three-group enumeration (worktrees / locals / remotes), branch dedup, default-branch skip, remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 100 | List: WindowSizeMsg, quit keys, unknown keys, loading/not-ready/ready View, list build; Agent+model screen: selection → model phase, picker key forwarding (up/down/j/k), tag toggle (`d`), model-phase View, picker cursor positioned on last-launched + 1, Enter records launch, `r` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed (skip choice removed with the `r` key); Helpers: `DefaultAgent`/`firstModel` defaults & placeholders, state persistence, single-model group, placeholder View |
-| `cmd/wt` | 20 | Non-TUI launch (lesson 17): `DefaultAgent`/`defaultModel` resolution, `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable |
+| `internal/tui` | 124 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut; phaseAgent: agent+command picker, `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; Helpers: `DefaultAgent` defaults, state persistence, placeholder View |
+| `cmd/wt` | 29 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, picker-skip conditions for `-W`/`--cwd`/non-git-repo, legacy `-w` short flag |
 
 ## Go module
 
@@ -154,17 +163,17 @@ go vet ./...         # vet
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once (live model discovery is deferred to the `models` subcommand) |
 | `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultModel`, `renderTable` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` — all accept `extraArgs` for passthrough |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd` (central dispatcher over `-T`/`-F`/`-M`), `buildLaunch`, `buildCommandForModel`, `buildCommandForCommand`, `launchFiltered`, `runAgentCmd`, `ollamaUnavailableError`, `firstOrDefault` — all accept `extraArgs` for passthrough |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration; shared helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `DefaultAgent`) |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
-| `internal/rotation/` | Tag-based model rotation with snapshot-based model set, `LastLaunched`/`RecordLaunch`/`FirstAfter` API, persistent state |
+| `internal/rotation/` | Slot-based model rotation (`Slot{Agent, Tag, Family}`) with snapshot-based model set, `NewForSlot`/`LastLaunched`/`RecordLaunch`/`FirstAfter` API, per-slot persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands; `BuildLaunchCmd` shared constructor; `ArgSetter` interface for shell; drivers: claude, codex, copilot, opencode, pi, agy, shell |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook, reports status (`Check`/`Install`/`Uninstall`) |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
 | `internal/ollamacheck/` | Ollama model availability check before launch (`IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model picker screen (lesson 14, list-based) + launch/resume prompt + ollama warning + guard warning (lessons 12–17): Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt, shell agent skip-model-screen |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning + guard warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt, shell agent skip-model-screen |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -202,20 +211,24 @@ Discovery is lazy: `newApp()` loads and validates config only. The full
 in the `wt models` subcommand. The TUI picker sources its model list
 exclusively from `config.toml` (no live discovery) so flag-only and TUI
 paths never hit the OpenRouter API. `--version` and `--init` don't shell
-out to ollama at all; `-w` and `--cwd` run a single `ollama list` via
+out to ollama at all; `-W` and `--cwd` run a single `ollama list` via
 `ollamacheck.Available()` for the pre-launch availability check, but skip
 the full registry discovery.
 
 ### Rotation (Go)
 
-The `internal/rotation` package implements tag-based model rotation — the Go
-equivalent of the bash `--code`/`--design` rotation, generalized so any tag
-can be a rotation group. Rotation is driven by launches: the picker remembers
-which model was last launched per tag, and the next picker entry lands the
-cursor on the model *after* it.
+The `internal/rotation` package implements slot-based model rotation — the Go
+equivalent of the bash `--code`/`--design` rotation, generalized so any
+`(agent, tag, family)` triple can be a rotation group. Rotation is driven by
+launches: each successful launch records the model id to the per-slot state
+file, and the next picker entry lands the cursor on the model *after* it.
 
-- `rotation.New(tag, models, stateDir)` builds a `Rotation` from a snapshot
-  of models (the picker's filtered list, not `cfg.ModelsWithTag`)
+- `rotation.Slot{Agent, Tag, Family}` is the rotation key. Construct with
+  `rotation.SlotFromFlags(agent, tag, family)` (the tag component is the
+  first tag from `-T`, falling back to `cfg.DefaultTag`; `family` from `-F`).
+- `rotation.NewForSlot(slot, models, stateDir)` builds a `Rotation` from a
+  snapshot of the *eligible* models (the agent-filtered, tag-filtered,
+  family-filtered list — not the full `cfg.ModelsWithTag`)
 - `LastLaunched()` reads the last-launched model from the state file, or
   returns `(zero, false)` if the file is missing or references a model no
   longer in the snapshot
@@ -224,14 +237,15 @@ cursor on the model *after* it.
 - `FirstAfter(models, target)` returns the model after `target` in the
   snapshot, wrapping to the first item — the "what to show on next picker
   entry" calculation
-- State file: `~/.config/agent-wt/rotation-<tag>.state` — one line:
-  `<model_id>\n`, written atomically (temp + rename). Legacy 2-line files
-  (`<index>\n<model_id>\n`) are read correctly via the last non-empty line
-- The hidden `wt rotate <tag>` subcommand prints the model after the
-  last-launched one and exits — a read-only debug helper
+- State file: `~/.config/agent-wt/rotation-<agent>-<tag>-<family>.state` —
+  one line: `<model_id>\n`, written atomically (temp + rename). Legacy
+  single-tag files (`rotation-<tag>.state`) are still read for backward
+  compatibility via a placeholder agent/family
+- The hidden `wt rotate <tag>` debug subcommand prints the model after the
+  last-launched one and exits
 
 ```bash
-go run ./cmd/wt rotate code    # prints the model after the last code launch
+go run ./cmd/wt rotate code    # prints the model after the last launch in the code slot (any agent)
 go run ./cmd/wt rotate design  # independent rotation for design
 ```
 
@@ -370,7 +384,7 @@ and launch command.
 > CI runner, or editor output panel fails with
 > `could not open a new TTY: open /dev/tty: device not configured`. Always
 > run `wt` from a real terminal session. The non-TUI flag paths (`--version`,
-> `-w`, `--cwd`, `wt rotate`, etc.) skip `tui.Run()` and don't need a TTY
+> `-W`, `--cwd`, `wt rotate`, etc.) skip `tui.Run()` and don't need a TTY
 > for `wt` itself (though the launched agent is interactive).
 
 ### Worktree picker screen
@@ -378,35 +392,46 @@ and launch command.
 `internal/tui/worktree_list.go` adapts `worktree.Entry` to `list.Item` via
 `entryItem` (`Title()`/`Description()`/`FilterValue()`). `buildList` builds
 the `list.Model`; `loadEntriesCmd` async-loads via `worktree.RepoRoot()` +
-`Enumerate(root, root)`; `entriesLoadedMsg` and `selectedEntryMsg` carry the
-results and the Enter-picked entry into `Update`. The list is prepended with a
-"+ New worktree…" sentinel row (`kindNewWorktree`) that opens the
-new-worktree prompt on Enter, alongside the `n` keybinding. `buildList` also
-advertises `n` in the footer help line (and full help view) via the list's
-`AdditionalShortHelpKeys`/`AdditionalFullHelpKeys`, so the shortcut is
-discoverable without scrolling to the sentinel row. Full walkthrough:
+`Enumerate(root, root)` (which returns three `EntryGroup` slices:
+worktrees / local branches / remote-only branches); `entriesLoadedMsg`
+carries the groups plus the default branch and repo root into `Update`,
+and `selectedEntryMsg` carries the Enter-picked entry. The list is
+prepended with a "+ New worktree…" sentinel row (`kindNewWorktree`) that
+opens the new-worktree prompt on Enter, alongside the `n` keybinding.
+`buildList` also advertises `n` in the footer help line (and full help
+view) via the list's `AdditionalShortHelpKeys`/`AdditionalFullHelpKeys`,
+so the shortcut is discoverable without scrolling to the sentinel row.
+The picker is skipped entirely when `-W`, `--cwd`, or a non-git-repo
+condition holds; the picker also always shows the default branch plus
+local worktrees and remotes, even when launched from inside a worktree.
+Full walkthrough:
 [docs/go-course/lesson-13-worktree-screen.md](docs/go-course/lesson-13-worktree-screen.md).
 
 ### Agent+model screen
 
-`selectedEntryMsg` transitions to `phaseModel`, resolving the initial agent
-via `cfg.DefaultAgent()`. A `phase` enum
-(`phaseList` / `phaseModel` / `phaseResume` /
-`phaseGuardWarn` / `phaseOllamaWarn` / `phaseNewWorktree`) tracks the active
-screen. When `--agent shell`, this screen is skipped entirely — shell has no
-model, rotation, or session resume.
+`selectedEntryMsg` transitions to `phaseAgent`, which lists configured
+agents plus the registered command agents (currently `shell`). `Enter` on
+an agent advances to `phaseModel` (with the agent pre-selected); `Enter`
+on a command agent launches immediately (no model screen, no rotation,
+no session resume). When `-A` is supplied, the agent+command picker is
+skipped and `phaseModel` opens directly (or launches immediately for a
+command agent). A `phase` enum
+(`phaseList` / `phaseAgent` / `phaseModel` / `phaseResume` /
+`phaseGuardWarn` / `phaseOllamaWarn` / `phaseNewWorktree`) tracks the
+active screen.
 
-The phaseModel View is itself a `bubble/list` picker over the agent+tag
-filtered models (sourced from `config.toml` only — no live discovery).
-`Update()` forwards `tea.KeyMsg` to the list (mirroring the worktree-list
-forwarding) so up/down/enter work natively. **`d`** toggles the
-`code`/`design` tag group, rebuilding the list and the rotation snapshot;
-**`n`** opens the new-worktree prompt (also reachable via the "+ New worktree…"
-sentinel row in the picker); **`enter`** launches the highlighted model,
-recording it as the new "last-launched" so the next picker entry advances
-automatically. If `session.LatestForAgent` finds a prior claude/opencode
-session, Enter switches to `phaseResume` instead. The `r` key is gone
-(rotation-by-launch replaces it). Full walkthrough:
+The phaseModel View is itself a `bubble/list` picker over the
+agent+tag+family filtered models (sourced from `config.toml` only — no
+live discovery). `Update()` forwards `tea.KeyMsg` to the list
+(mirroring the worktree-list forwarding) so up/down/enter work natively.
+**`n`** opens the new-worktree prompt (also reachable via the
+"+ New worktree…" sentinel row in the worktree picker); **`enter`**
+launches the highlighted model, recording it as the new "last-launched"
+so the next picker entry advances automatically. If
+`session.LatestForAgent` finds a prior claude/opencode session, Enter
+switches to `phaseResume` instead. The `r` and `d` keys are gone
+(rotation-by-launch replaces `r`; `-T`/`--tags` replaces the in-picker
+tag toggle). Full walkthrough:
 [docs/go-course/lesson-14-agent-model-screen.md](docs/go-course/lesson-14-agent-model-screen.md).
 
 ### Model list helpers
@@ -414,10 +439,11 @@ session, Enter switches to `phaseResume` instead. The `r` key is gone
 `internal/tui/model_list.go` (`modelItem`, `buildModelList`, `indexOfModel`,
 `FindAfter`, `phaseModelView`) builds the picker list. `modelItem` adapts
 `config.Model` to `list.Item`; `buildModelList` constructs the `bubble/list`
-from a snapshot of models; `indexOfModel` and `FindAfter` (a thin wrapper
-over `rotation.FirstAfter`) compute cursor positions; `phaseModelView`
-renders the picker screen with the agent/tag header and keybind footer.
-Full walkthrough:
+from a snapshot of eligible models (agent + `-T` tags + `-F` family
+filtered via `cfg.EligibleModels`); `indexOfModel` and `FindAfter` (a thin
+wrapper over `rotation.FirstAfter`) compute cursor positions;
+`phaseModelView` renders the picker screen with the agent/tag header and
+keybind footer. Full walkthrough:
 [docs/go-course/lesson-15-model-browser.md](docs/go-course/lesson-15-model-browser.md)
 (lesson 15's separate browser screen has been folded into phaseModel; the
 walkthrough is kept as historical record per the project convention).
@@ -432,21 +458,26 @@ git inside a temp repo.
 - `RepoRoot()` — returns the current repo root via `git rev-parse --show-toplevel`;
   used by the TUI, `initseed.Root()`, and the `cmd/wt` debug handlers to
   discover the repo root without an explicit path
-- `Enumerate(dir, cwdRoot)` — lists pickable targets (current, worktrees, bare branches)
-- `EnsureForName(dir, name)` — idempotent worktree for the `-w` flag: reuses an
-  already-checked-out worktree path, reuses an existing `.worktrees/<name>`
-  path, otherwise creates via `git worktree add` (or `-b` for a new branch)
+- `Enumerate(dir, cwdRoot)` — returns three `EntryGroup` slices in order:
+  worktrees (including the current worktree), local branches that aren't
+  checked out anywhere, and remote-only branches. The TUI picker consumes
+  the groups directly and inserts a separator between locals and remotes
+- `EnsureForName(dir, name)` — idempotent worktree for the `-W`/`--worktree`
+  flag: reuses an already-checked-out worktree path, reuses an existing
+  `.worktrees/<name>` path, otherwise creates via `git worktree add` (or
+  `-b` for a new branch)
 - `EnsureForBranch(dir, branch)` — the picker path, handling local,
   remote-tracking, and brand-new branches. Remote branches create a local
   branch tracking them; errors if the short name collides with a local branch
 - Helpers: `branchExists`, `remoteExists`, `isWorktreePath`
 
 Branch names with slashes use the last path component as the worktree
-directory (`.worktrees/my-branch`). The `-w` flag is wired in `cmd/wt/main.go`:
-it creates/reuses the worktree and then launches the agent there (no TUI).
+directory (`.worktrees/my-branch`). The `-W`/`--worktree` flag is wired in
+`cmd/wt/main.go`: it creates/reuses the worktree and then launches the
+agent there (no TUI).
 
 ```bash
-go run ./cmd/wt -w my-feature --agent claude   # create/reuse worktree, launch claude there
+go run ./cmd/wt -W my-feature -A claude   # create/reuse worktree, launch claude there
 ```
 
 ### Migration (Go)
@@ -473,10 +504,10 @@ go build ./...         # verify compilation
 wt
 
 # Skip picker, use/create a named worktree and launch
-wt -w my-feature --agent claude
+wt -W my-feature -A claude
 
 # Launch in current repo root (no worktree switch)
-wt --cwd --agent codex
+wt --cwd -A codex
 
 # Legacy shim forwards to wt
 claude-wt --cwd   # → wt --agent claude --cwd
