@@ -11,6 +11,15 @@ func IsOllamaModel(m config.Model) bool {
 	return m.ProviderID == "ollama"
 }
 
+// Check reports whether m is locally available. Non-ollama models are always
+// available (true, nil); ollama models are checked against `ollama list`.
+func Check(m config.Model) (bool, error) {
+	if !IsOllamaModel(m) {
+		return true, nil
+	}
+	return Available(m.ModelName)
+}
+
 // Available checks whether modelName appears in `ollama list` output.
 // Returns false with a nil error when ollama is not installed.
 // Returns an error when `ollama list` exits non-zero.

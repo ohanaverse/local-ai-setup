@@ -7,7 +7,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
-	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/spf13/cobra"
 )
@@ -35,22 +34,6 @@ func inGitRepo() bool {
 // process.
 func inGitRepoAt(dir string) bool {
 	return exec.Command("git", "-C", dir, "rev-parse", "--git-dir").Run() == nil
-}
-
-// defaultModel returns the model to launch for an agent: the agent's native
-// model (e.g. claude/native) if present, else the first model in the default
-// tag group.
-func defaultModel(cfg *config.Config, agent string) config.Model {
-	for _, m := range cfg.Models {
-		if m.ID == agent+"/native" {
-			return m
-		}
-	}
-	ms := cfg.ModelsWithTag(cfg.DefaultTag)
-	if len(ms) > 0 {
-		return ms[0]
-	}
-	return config.Model{ID: "(none)", Location: config.LocationCloud}
 }
 
 // borderStyle is the shared table border colour.

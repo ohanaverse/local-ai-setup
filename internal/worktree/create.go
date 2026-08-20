@@ -41,14 +41,14 @@ func EnsureForName(dir, name string) (string, error) {
 	// branch, reuse it. If it's registered for a DIFFERENT branch (e.g. the
 	// user typed "feature/x" but .worktrees/x already holds branch "x"),
 	// error rather than silently returning the wrong worktree.
-	if branch, ok := worktreeBranchAt(dir, path); ok {
+	if branch, ok := branchAtPath(entries, path); ok {
 		if branch != "" && branch != name {
 			return "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
 		}
 		return path, nil
 	}
 
-	if branchExists(dir, name) {
+	if refExists(dir, "refs/heads/"+name) {
 		if _, err := runGit(dir, "worktree", "add", path, name); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
@@ -60,37 +60,34 @@ func EnsureForName(dir, name string) (string, error) {
 	return path, nil
 }
 
-func branchExists(dir, branch string) bool {
-	_, err := runGit(dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+// refExists reports whether the fully-qualified ref (e.g. refs/heads/main)
+// exists in dir.
+func refExists(dir, ref string) bool {
+	_, err := runGit(dir, "show-ref", "--verify", "--quiet", ref)
 	return err == nil
 }
 
-// worktreeBranchAt returns the branch checked out at path, if path is a
-// registered worktree. The bool is true when path is registered (even when
-// detached, in which case branch is ""). Paths are resolved through symlinks
-// so the lookup matches git's porcelain output, which emits resolved paths
-// (macOS /var → /private/var); the old byte-compare failed on symlinked repos.
-func worktreeBranchAt(dir, path string) (string, bool) {
-	out, err := runGit(dir, "worktree", "list", "--porcelain")
-	if err != nil {
-		return "", false
-	}
+// branchAtPath returns the branch checked out at path among the already-listed
+// worktree entries, if path is a registered worktree. The bool is true when
+// path is registered (even when detached, in which case branch is ""). Paths
+// are compared through symlinks so the lookup matches git's resolved porcelain
+// output (macOS /var → /private/var); the old byte-compare failed on symlinked
+// repos. Reusing the entries from listWorktrees avoids a second
+// `git worktree list` subprocess on the EnsureForName path.
+func branchAtPath(entries []Entry, path string) (string, bool) {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
-	var curPath string
-	for _, line := range strings.Split(string(out), "\n") {
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			curPath = strings.TrimPrefix(line, "worktree ")
-		case strings.HasPrefix(line, "branch refs/heads/"):
-			if curPath == path {
-				return strings.TrimPrefix(line, "branch refs/heads/"), true
-			}
-		case strings.HasPrefix(line, "detached"):
-			if curPath == path {
+	for _, e := range entries {
+		ep, err := filepath.EvalSymlinks(e.Path)
+		if err != nil {
+			ep = e.Path
+		}
+		if ep == path {
+			if e.Branch == "(detached)" {
 				return "", true
 			}
+			return e.Branch, true
 		}
 	}
 	return "", false
@@ -100,7 +97,7 @@ func worktreeBranchAt(dir, path string) (string, bool) {
 // Handles local, remote-tracking, and new branches.
 func EnsureForBranch(dir, branch string) (string, error) {
 	switch {
-	case branchExists(dir, branch):
+	case refExists(dir, "refs/heads/"+branch):
 		// Local branch (possibly with slashes) — use last component.
 		path := filepath.Join(dir, ".worktrees", filepath.Base(branch))
 		if _, err := runGit(dir, "worktree", "add", path, branch); err != nil {
@@ -108,14 +105,14 @@ func EnsureForBranch(dir, branch string) (string, error) {
 		}
 		return path, nil
 
-	case remoteExists(dir, branch):
+	case refExists(dir, "refs/remotes/"+branch):
 		// Remote-tracking branch — create a local branch tracking it.
 		short := branch[strings.IndexByte(branch, '/')+1:]
 		worktreeDir := filepath.Base(short)
 		if strings.ContainsAny(worktreeDir, "/\\") {
 			return "", fmt.Errorf("worktree name must not contain path separators: %s", short)
 		}
-		if branchExists(dir, short) {
+		if refExists(dir, "refs/heads/"+short) {
 			return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, branch)
 		}
 		path := filepath.Join(dir, ".worktrees", worktreeDir)
@@ -135,7 +132,3 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	}
 }
 
-func remoteExists(dir, ref string) bool {
-	_, err := runGit(dir, "show-ref", "--verify", "--quiet", "refs/remotes/"+ref)
-	return err == nil
-}

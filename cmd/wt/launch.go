@@ -32,8 +32,7 @@ func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg
 // buildCommandForCommand builds the exec.Cmd for a command-like agent (e.g.
 // shell). It runs in the requested worktree; the -M warning lives in
 // launchFiltered where the pinnedSupplied signal is available.
-func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, pinned string, extraArgs []string) (*exec.Cmd, error) {
-	_ = pinned
+func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
 	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, nil, cfg, extraArgs)
 }
 
@@ -48,7 +47,7 @@ func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo
 func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, extraArgs []string) (config.Model, *exec.Cmd, error) {
 	m, err := resolveModel(agent, cfg, tags, family, pinned)
 	if errors.Is(err, errCommandAgent) {
-		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, pinned, extraArgs)
+		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, extraArgs)
 		return config.Model{}, cmd, berr
 	}
 	if err != nil {
@@ -100,7 +99,7 @@ func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, t
 				return eerr
 			}
 			if len(eligible) > 1 {
-				firstTag := firstOrDefault(tags, cfg.DefaultTag)
+				firstTag := config.FirstTag(tags, cfg.DefaultTag)
 				slot := rotation.SlotFromFlags(agent, firstTag, family)
 				rot = rotation.NewForSlot(slot, eligible, "")
 				last, _ := rot.LastLaunched()
@@ -119,14 +118,12 @@ func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, t
 	// Fail fast if the selected ollama model is not available locally.
 	// This runs before session lookup and full command construction so we
 	// don't waste work on a model we can't launch.
-	if ollamacheck.IsOllamaModel(m) {
-		ok, oerr := ollamacheck.Available(m.ModelName)
-		if oerr != nil {
-			return fmt.Errorf("ollama check failed: %w", oerr)
-		}
-		if !ok {
-			return ollamaUnavailableError(m.ModelName)
-		}
+	ok, oerr := ollamacheck.Check(m)
+	if oerr != nil {
+		return fmt.Errorf("ollama check failed: %w", oerr)
+	}
+	if !ok {
+		return ollamaUnavailableError(m.ModelName)
 	}
 
 	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
@@ -159,15 +156,4 @@ func runAgentCmd(cmd *exec.Cmd) error {
 
 func ollamaUnavailableError(modelName string) error {
 	return fmt.Errorf("model %q is not available locally. Run: ollama pull %s", modelName, modelName)
-}
-
-// firstOrDefault returns the first comma-delimited tag from s, or
-// fallback if s is empty. Used by callers that derive a rotation slot's tag
-// component from -T when no tag is supplied.
-func firstOrDefault(s, fallback string) string {
-	parts := config.ParseFilterList(s)
-	if len(parts) == 0 {
-		return fallback
-	}
-	return parts[0]
 }

@@ -105,18 +105,9 @@ func Migrate() (bool, error) {
 		vals := extractQuoted(m[2])
 
 		switch name {
-		case "CODE_MODELS":
-			models, natives := convertModels(vals, "code")
-			cfg.Models = addModels(cfg.Models, models)
-			for _, n := range natives {
-				if !nativeSeen[n] {
-					nativeSeen[n] = true
-					cfg.Providers = append(cfg.Providers, nativeProvider(n))
-					cfg.Agents = append(cfg.Agents, nativeAgent(n))
-				}
-			}
-		case "DESIGN_MODELS":
-			models, natives := convertModels(vals, "design")
+		case "CODE_MODELS", "DESIGN_MODELS":
+			tag := strings.ToLower(strings.TrimSuffix(name, "_MODELS"))
+			models, natives := convertModels(vals, tag)
 			cfg.Models = addModels(cfg.Models, models)
 			for _, n := range natives {
 				if !nativeSeen[n] {

@@ -38,10 +38,9 @@ func (a agentItem) Description() string {
 // PR 3 reverts the PR 2 sort.Strings determinism: the picker lists every
 // registered driver (in agents.Names() map range order, so nondeterministic)
 // after the configured agents. The deterministic-ordering test was removed
-// in PR 3b. width/height are kept in the signature for test compatibility
-// (app_test.go calls buildAgentList(cfg, w, h)) but unused — the picker is
-// sized by the bubbles/list constructor in selectedEntryMsg, not here.
-func buildAgentList(cfg *config.Config, width, height int) []list.Item {
+// in PR 3b. The picker is sized by the bubbles/list constructor in
+// selectedEntryMsg, not here.
+func buildAgentList(cfg *config.Config) []list.Item {
 	items := make([]list.Item, 0)
 	seen := map[string]bool{}
 
@@ -64,8 +63,6 @@ func buildAgentList(cfg *config.Config, width, height int) []list.Item {
 		items = append(items, agentItem{name: n, command: agents.IsCommand(n)})
 	}
 
-	_ = width
-	_ = height
 	return items
 }
 

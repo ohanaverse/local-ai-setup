@@ -42,47 +42,6 @@ func TestDefaultAgentFallback(t *testing.T) {
 	}
 }
 
-// TestDefaultModelPrefersNative asserts that an agent's native model
-// (e.g. claude/native) is chosen over the first code-tagged model. This
-// mirrors the bash wrappers' WT_DEFAULT_CODE="native:claude".
-func TestDefaultModelPrefersNative(t *testing.T) {
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Models: []config.Model{
-			{ID: "ollama/gemma4:9b", Tags: []string{"code"}},
-			{ID: "claude/native", ModelName: "native", Tags: []string{"code", "design"}},
-		},
-	}
-	if got := defaultModel(cfg, "claude"); got.ID != "claude/native" {
-		t.Errorf("defaultModel = %q, want %q", got.ID, "claude/native")
-	}
-}
-
-// TestDefaultModelFallsBackToTag asserts that when an agent has no native
-// model, the first model in the default tag group is used. This is the
-// fallback for agents like pi that route through a provider.
-func TestDefaultModelFallsBackToTag(t *testing.T) {
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Models: []config.Model{
-			{ID: "ollama/gemma4:9b", Tags: []string{"code"}},
-		},
-	}
-	if got := defaultModel(cfg, "pi"); got.ID != "ollama/gemma4:9b" {
-		t.Errorf("defaultModel = %q, want %q", got.ID, "ollama/gemma4:9b")
-	}
-}
-
-// TestDefaultModelEmptyConfig asserts that an empty config yields a "(none)"
-// placeholder rather than a zero-value model. This keeps the launch path from
-// exec'ing an agent with an empty model id.
-func TestDefaultModelEmptyConfig(t *testing.T) {
-	cfg := &config.Config{DefaultTag: "code"}
-	if got := defaultModel(cfg, "claude"); got.ID != "(none)" {
-		t.Errorf("defaultModel = %q, want %q", got.ID, "(none)")
-	}
-}
-
 // TestBuildLaunchUnknownAgent asserts that an unregistered agent returns a
 // clear error rather than a nil command. Without this the launch path could
 // dereference a nil driver.

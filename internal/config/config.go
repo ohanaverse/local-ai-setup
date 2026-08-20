@@ -398,6 +398,18 @@ func parseFilterList(s string) []string {
 // drops empty entries, and returns nil for empty/whitespace-only input.
 func ParseFilterList(s string) []string { return parseFilterList(s) }
 
+// FirstTag returns the first comma-delimited tag from s, or fallback if s is
+// empty. It is the shared form of the rotation slot's tag component: both the
+// non-TUI launch path and the TUI picker derive the slot tag from -T the same
+// way.
+func FirstTag(s, fallback string) string {
+	parts := ParseFilterList(s)
+	if len(parts) == 0 {
+		return fallback
+	}
+	return parts[0]
+}
+
 // EligibleModels returns the models usable by agent after applying tag
 // and family filters. Order matches cfg.Models.
 //

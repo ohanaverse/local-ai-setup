@@ -513,9 +513,9 @@ func TestOllamaWarnHasProceedAndCancelOnly(t *testing.T) {
 	// Verify the two surviving choices are the ones we expect, and
 	// no entry references the removed "skip" wording.
 	for _, c := range choices {
-		oi, ok := c.(ollamaItem)
+		oi, ok := c.(choiceItem)
 		if !ok {
-			t.Fatalf("choice is %T, want ollamaItem", c)
+			t.Fatalf("choice is %T, want choiceItem", c)
 		}
 		if oi.choice == ollamaProceedChoice {
 			if oi.title != "Proceed anyway" {
@@ -853,7 +853,7 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
 	m := model{phase: phaseAgent, cfg: cfg, width: 80, height: 24}
-	m.agentList = list.New(buildAgentList(cfg, 78, 22), list.NewDefaultDelegate(), 78, 22)
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
 	// Open the filter exactly like a user pressing '/'.
 	m.agentList, _ = m.agentList.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.agentList.FilterState() != list.Filtering {

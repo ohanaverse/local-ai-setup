@@ -56,25 +56,27 @@ const (
 	cancelChoice
 )
 
-// resumeItem adapts a resume prompt choice to list.Item.
-type resumeItem struct {
-	choice resumeOption
+// choiceItem adapts a prompt choice to list.Item. The three prompt screens
+// (resume, guard, ollama) share this single type; each keeps its own named
+// choice enum, stored in the any-typed choice field.
+type choiceItem struct {
+	choice any
 	title  string
 	desc   string
 }
 
-func (r resumeItem) FilterValue() string { return r.title }
-func (r resumeItem) Title() string       { return r.title }
-func (r resumeItem) Description() string { return r.desc }
+func (c choiceItem) FilterValue() string { return c.title }
+func (c choiceItem) Title() string       { return c.title }
+func (c choiceItem) Description() string { return c.desc }
 
 // buildResumeChoices creates the resume prompt list items.
 func buildResumeChoices(sess *session.Session) []list.Item {
 	items := []list.Item{
-		resumeItem{choice: freshChoice, title: "Start fresh", desc: "Launch without resuming a session"},
-		resumeItem{choice: cancelChoice, title: "Cancel", desc: "Return to agent+model screen"},
+		choiceItem{choice: freshChoice, title: "Start fresh", desc: "Launch without resuming a session"},
+		choiceItem{choice: cancelChoice, title: "Cancel", desc: "Return to agent+model screen"},
 	}
 	if sess != nil {
-		items = append([]list.Item{resumeItem{
+		items = append([]list.Item{choiceItem{
 			choice: resumeChoice,
 			title:  fmt.Sprintf("Resume %s", sess.ID),
 			desc:   session.RelativeTime(sess.MTime),
@@ -91,17 +93,6 @@ const (
 	guardCancelChoice
 )
 
-// guardItem adapts a guard prompt choice to list.Item.
-type guardItem struct {
-	choice guardChoice
-	title  string
-	desc   string
-}
-
-func (g guardItem) FilterValue() string { return g.title }
-func (g guardItem) Title() string       { return g.title }
-func (g guardItem) Description() string { return g.desc }
-
 // buildGuardChoices creates the default-branch confirmation list items.
 func buildGuardChoices(branch string, installed bool) []list.Item {
 	hint := "commits to " + branch + " are blocked"
@@ -109,8 +100,8 @@ func buildGuardChoices(branch string, installed bool) []list.Item {
 		hint = "WARNING: main guard is NOT installed — commits to " + branch + " are NOT blocked"
 	}
 	return []list.Item{
-		guardItem{choice: guardProceedChoice, title: "Proceed anyway", desc: hint},
-		guardItem{choice: guardCancelChoice, title: "Cancel", desc: "Return to worktree list"},
+		choiceItem{choice: guardProceedChoice, title: "Proceed anyway", desc: hint},
+		choiceItem{choice: guardCancelChoice, title: "Cancel", desc: "Return to worktree list"},
 	}
 }
 
@@ -122,24 +113,13 @@ const (
 	ollamaCancelChoice
 )
 
-// ollamaItem adapts an ollama prompt choice to list.Item.
-type ollamaItem struct {
-	choice ollamaChoice
-	title  string
-	desc   string
-}
-
-func (o ollamaItem) FilterValue() string { return o.title }
-func (o ollamaItem) Title() string       { return o.title }
-func (o ollamaItem) Description() string { return o.desc }
-
 // buildOllamaChoices creates the ollama availability confirmation list
 // items. With implicit rotation-by-launch, the user can navigate the
 // picker with up/down and press Enter on a different model; there is
 // no "skip to next" shortcut.
 func buildOllamaChoices() []list.Item {
 	return []list.Item{
-		ollamaItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: "Launch with unavailable model (may fail)"},
-		ollamaItem{choice: ollamaCancelChoice, title: "Cancel", desc: "Return to the agent+model screen"},
+		choiceItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: "Launch with unavailable model (may fail)"},
+		choiceItem{choice: ollamaCancelChoice, title: "Cancel", desc: "Return to the agent+model screen"},
 	}
 }

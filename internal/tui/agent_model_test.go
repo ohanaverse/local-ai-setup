@@ -87,8 +87,6 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		agent:     agent,
 		tag:       tag,
 		models:    buildModelList(models, 80, 24),
-		modelsFor: agent,
-		modelsTag: tag,
 		width:     80,
 		height:    24,
 	}
@@ -597,7 +595,7 @@ func TestResumeChoiceTitleIncludesRelativeTime(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("expected resume items")
 	}
-	item := items[0].(resumeItem)
+	item := items[0].(choiceItem)
 	if item.choice != resumeChoice {
 		t.Errorf("first choice = %v, want resumeChoice", item.choice)
 	}

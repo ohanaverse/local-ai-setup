@@ -391,7 +391,7 @@ func TestEnsureForBranchRemoteWithSlash(t *testing.T) {
 	}
 }
 
-// branchExists must report true for an existing local branch and false for a
+// refExists must report true for an existing local branch and false for a
 // missing one. This drives the local-vs-new decision in EnsureForName and
 // EnsureForBranch.
 func TestBranchExists(t *testing.T) {
@@ -404,26 +404,26 @@ func TestBranchExists(t *testing.T) {
 		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
 	}
 
-	if !branchExists(dir, "feature") {
-		t.Error("branchExists(feature) = false, want true")
+	if !refExists(dir, "refs/heads/feature") {
+		t.Error("refExists(refs/heads/feature) = false, want true")
 	}
-	if branchExists(dir, "nope") {
-		t.Error("branchExists(nope) = true, want false")
+	if refExists(dir, "refs/heads/nope") {
+		t.Error("refExists(refs/heads/nope) = true, want false")
 	}
 }
 
-// remoteExists must report true for an existing remote-tracking branch and
+// refExists must report true for an existing remote-tracking branch and
 // false for a missing one. This drives the remote case in EnsureForBranch.
 func TestRemoteExists(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 	setupRemote(t, dir, "temp", "feature")
 
-	if !remoteExists(dir, "origin/feature") {
-		t.Error("remoteExists(origin/feature) = false, want true")
+	if !refExists(dir, "refs/remotes/origin/feature") {
+		t.Error("refExists(refs/remotes/origin/feature) = false, want true")
 	}
-	if remoteExists(dir, "origin/nope") {
-		t.Error("remoteExists(origin/nope) = true, want false")
+	if refExists(dir, "refs/remotes/origin/nope") {
+		t.Error("refExists(refs/remotes/origin/nope) = true, want false")
 	}
 }
 

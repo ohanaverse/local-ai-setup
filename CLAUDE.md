@@ -162,9 +162,9 @@ go vet ./...         # vet
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once (live model discovery is deferred to the `models` subcommand) |
 | `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
-| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultModel`, `renderTable` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd` (central dispatcher over `-T`/`-F`/`-M`), `buildLaunch`, `buildCommandForModel`, `buildCommandForCommand`, `launchFiltered`, `runAgentCmd`, `ollamaUnavailableError`, `firstOrDefault` — all accept `extraArgs` for passthrough |
-| `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration; shared helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `DefaultAgent`) |
+| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `renderTable` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd` (central dispatcher over `-T`/`-F`/`-M`), `buildLaunch`, `buildCommandForModel`, `buildCommandForCommand`, `launchFiltered`, `runAgentCmd`, `ollamaUnavailableError` — all accept `extraArgs` for passthrough |
+| `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration; shared helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `DefaultAgent`, `FirstTag`) |
 | `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
 | `internal/rotation/` | Slot-based model rotation (`Slot{Agent, Tag, Family}`) with snapshot-based model set, `NewForSlot`/`LastLaunched`/`RecordLaunch`/`FirstAfter` API, per-slot persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands; `BuildLaunchCmd` shared constructor; `ArgSetter` interface for shell; drivers: claude, codex, copilot, opencode, pi, agy, shell |
@@ -172,7 +172,7 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/ollamacheck/` | Ollama model availability check before launch (`IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
+| `internal/ollamacheck/` | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
 | `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning + guard warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt, shell agent skip-model-screen |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
@@ -196,6 +196,7 @@ Shared helpers in `internal/config`:
 - `WriteFileAtomic(path, data, perm)` — atomic temp-file + rename write (used by `Save`, rotation state, and pi model sync)
 - `OllamaBaseURL` — the `http://localhost:11434` gateway constant (used by the claude/copilot/opencode drivers and migration)
 - `(*Config).DefaultAgent()` — first configured agent, else `"claude"`
+- `FirstTag(s, fallback)` — first comma-delimited tag from `s`, else `fallback`; the shared form of the rotation slot's tag component (used by both the non-TUI launch path and the TUI picker)
 
 ### Live discovery (Go)
 
@@ -469,7 +470,7 @@ git inside a temp repo.
 - `EnsureForBranch(dir, branch)` — the picker path, handling local,
   remote-tracking, and brand-new branches. Remote branches create a local
   branch tracking them; errors if the short name collides with a local branch
-- Helpers: `branchExists`, `remoteExists`, `isWorktreePath`
+- Helpers: `refExists`, `branchAtPath`, `isWorktreePath`
 
 Branch names with slashes use the last path component as the worktree
 directory (`.worktrees/my-branch`). The `-W`/`--worktree` flag is wired in

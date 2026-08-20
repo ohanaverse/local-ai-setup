@@ -60,9 +60,7 @@ type model struct {
 	cfg      *config.Config     // loaded config for the model catalog
 
 	// model picker (the agent+model screen IS the picker)
-	models    list.Model // bubble/list of agent+tag models
-	modelsTag string     // tag the list was built for; rebuild on change
-	modelsFor string     // agent the list was built for; rebuild on change
+	models list.Model // bubble/list of agent+tag models
 
 	// agent+command picker (PR 2): user picks an agent or command before the
 	// model screen. Built from buildAgentList in selectedEntryMsg; rebuilt when
@@ -207,7 +205,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// that phaseAgent Enter would have run for an agent item.
 			// Use EligibleModels so -T/-F filters from CLI narrow the
 			// catalog consistently with the phaseAgent Enter path.
-			firstTag := firstOrDefault(m.activeTags, m.cfg.DefaultTag)
+			firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
 			m.tag = firstTag
 			models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
 			if err != nil {
@@ -224,7 +222,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear any prior status so a stale error from a previous picker
 		// visit doesn't linger on the freshly rendered screen.
 		m.status = ""
-		items := buildAgentList(m.cfg, m.width-2, m.height-2)
+		items := buildAgentList(m.cfg)
 		m.agentList = list.New(items, list.NewDefaultDelegate(), m.width-2, m.height-2)
 		m.agentList.Title = "Pick an agent or command"
 		m.agentList.SetShowStatusBar(false)
@@ -297,7 +295,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// and family; the rotation slot is keyed by
 				// (agent, firstTag, family) so per-slot state matches
 				// the cmd/wt launchFiltered path.
-				firstTag := firstOrDefault(m.activeTags, m.cfg.DefaultTag)
+				firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
 				models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
 				if err != nil {
 					m.status = "config error: " + err.Error()
@@ -346,22 +344,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// warning or the resume prompt, or the check can fail, and
 				// in none of those cases did a launch happen. Recording
 				// lives in launchAndRecord, the single commit point.
-				if ollamacheck.IsOllamaModel(highlighted.model) {
-					ok, err := ollamacheck.Available(highlighted.model.ModelName)
-					if err != nil {
-						m.status = "ollama check failed: " + err.Error()
-						return m, nil
-					}
-					if !ok {
-						m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), m.width-2, m.height-2)
-						m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
-						m.phase = phaseOllamaWarn
-						return m, nil
-					}
+				ok, err := ollamacheck.Check(highlighted.model)
+				if err != nil {
+					m.status = "ollama check failed: " + err.Error()
+					return m, nil
+				}
+				if !ok {
+					m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), m.width-2, m.height-2)
+					m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
+					m.phase = phaseOllamaWarn
+					return m, nil
 				}
 				return m.proceedToLaunch()
 			case phaseResume:
-				if item, ok := m.resume.choices.SelectedItem().(resumeItem); ok {
+				if item, ok := m.resume.choices.SelectedItem().(choiceItem); ok {
 					switch item.choice {
 					case cancelChoice:
 						m.phase = phaseModel
@@ -383,7 +379,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case phaseGuardWarn:
-				if item, ok := m.guardWarnModel.SelectedItem().(guardItem); ok {
+				if item, ok := m.guardWarnModel.SelectedItem().(choiceItem); ok {
 					switch item.choice {
 					case guardProceedChoice:
 						return m, func() tea.Msg { return selectedEntryMsg{entry: m.guardWarnEntry} }
@@ -393,7 +389,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case phaseOllamaWarn:
-				if item, ok := m.ollamaWarnModel.SelectedItem().(ollamaItem); ok {
+				if item, ok := m.ollamaWarnModel.SelectedItem().(choiceItem); ok {
 					switch item.choice {
 					case ollamaProceedChoice:
 						return m.proceedToLaunch()
@@ -549,9 +545,7 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 // Caller is responsible for the len(models) == 0 guard.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.models = buildModelList(models, m.width-2, m.height-2)
-	m.modelsFor = agent
 	m.tag = firstTag
-	m.modelsTag = firstTag
 	slot := rotation.SlotFromFlags(agent, firstTag, m.activeFamily)
 	m.positionAfterLastLaunched(slot, models)
 	if len(models) == 1 {

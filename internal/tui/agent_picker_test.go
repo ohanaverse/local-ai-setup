@@ -22,7 +22,7 @@ func TestBuildAgentList(t *testing.T) {
 			{Name: "codex", SupportedProviders: []string{"openai"}},
 		},
 	}
-	items := buildAgentList(cfg, 80, 24)
+	items := buildAgentList(cfg)
 	if len(items) < 3 { // 2 agents + 1 command (shell)
 		t.Fatalf("expected at least 3 items, got %d", len(items))
 	}
@@ -93,7 +93,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 		width:  80,
 		height: 24,
 	}
-	m.agentList = list.New(buildAgentList(cfg, 78, 22), list.NewDefaultDelegate(), 78, 22)
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
 	// Select the "claude" row so the Enter handler picks the right agent.
 	for i, it := range m.agentList.Items() {
 		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
@@ -159,7 +159,7 @@ func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 		width:  80,
 		height: 24,
 	}
-	m.agentList = list.New(buildAgentList(cfg, 78, 22), list.NewDefaultDelegate(), 78, 22)
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
 	for i, it := range m.agentList.Items() {
 		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
 			m.agentList.Select(i)
