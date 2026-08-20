@@ -25,6 +25,13 @@ func EnsureForName(dir, name string) (string, error) {
 		}
 	}
 
+	// The default branch must never be a linked worktree. If it isn't
+	// already checked out (the reuse loop above found nothing), refuse
+	// rather than create .worktrees/<default>.
+	if db, _ := DefaultBranch(dir); db != "" && name == db {
+		return "", fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", name)
+	}
+
 	safeName := filepath.Base(name)
 	if strings.ContainsAny(safeName, "/\\") {
 		return "", fmt.Errorf("worktree name must not contain path separators: %s", name)
@@ -96,6 +103,14 @@ func branchAtPath(entries []Entry, path string) (string, bool) {
 // EnsureForBranch creates (or reuses) a worktree for a picked branch.
 // Handles local, remote-tracking, and new branches.
 func EnsureForBranch(dir, branch string) (string, error) {
+	// The default branch must never be a linked worktree, so refuse both
+	// the local form and any remote-tracking form (origin/<default>,
+	// upstream/<default>, ...). isDefaultBranchSelection confirms the ref
+	// really lives under refs/remotes/ so a local branch that merely ends
+	// in "/<default>" (e.g. feature/main) is not falsely refused.
+	if db, _ := DefaultBranch(dir); db != "" && isDefaultBranchSelection(branch, db, dir) {
+		return "", fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", db)
+	}
 	switch {
 	case refExists(dir, "refs/heads/"+branch):
 		// Local branch (possibly with slashes) — use last component.
@@ -132,3 +147,17 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	}
 }
 
+// isDefaultBranchSelection reports whether picking branch would create (or
+// reuse) a worktree on the repo default branch db — the situation the
+// default-branch invariant forbids for linked worktrees. It matches the bare
+// local default (db) or a real remote-tracking ref whose short name is db
+// (origin/db, upstream/db, ...). A local branch that merely ends in "/db"
+// (e.g. feature/main) is NOT a match: it is a feature branch, not the
+// default, so IsDefaultBranchForm's name-only match is gated on the ref
+// actually existing under refs/remotes/.
+func isDefaultBranchSelection(branch, db, dir string) bool {
+	if branch == db {
+		return true
+	}
+	return IsDefaultBranchForm(branch, db) && refExists(dir, "refs/remotes/"+branch)
+}

@@ -308,7 +308,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item.kind == kindSeparator {
 					return m, nil
 				}
-				if launchesOnDefaultBranch(item.entry, m.defaultBranch) {
+				if launchesOnDefaultBranch(item.entry, item.groupKind, m.defaultBranch) {
 					installed := guard.Check() == guard.Installed
 					m.guardWarnEntry = item.entry
 					m.guardWarnModel = list.New(buildGuardChoices(item.entry.Branch, installed), list.NewDefaultDelegate(), m.width-2, m.height-2)
@@ -663,15 +663,25 @@ func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
 
 // launchesOnDefaultBranch reports whether selecting this entry would land
 // the agent on the repo default branch — the situation the phaseGuardWarn
-// prompt exists to gate. This covers the current worktree on main
-// (TypeCurrent), a separate worktree checked out on main (TypeWorktree), a
-// bare local default-branch row (TypeBranch), and the remote-tracking form
-// (origin/main) that EnsureForBranch turns into a local main.
-func launchesOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
+// prompt exists to gate. A checked-out worktree (Path != "") runs a local
+// branch, so only an exact default-branch name matches there: a worktree on
+// "feature/main" is not the default branch even though its name ends in
+// /main. A bare row (Path == "") covers the local default and any
+// remote-tracking form of it (origin/main, upstream/main, ...) that
+// EnsureForBranch would turn into a local default-branch worktree; gating
+// the remote match on groupKind keeps a local branch whose name ends in
+// "/<default>" from spuriously triggering the warning.
+func launchesOnDefaultBranch(e worktree.Entry, groupKind worktree.GroupKind, defaultBranch string) bool {
 	if defaultBranch == "" {
 		return false
 	}
-	return e.Branch == defaultBranch || e.Branch == "origin/"+defaultBranch
+	if e.Path != "" {
+		return e.Branch == defaultBranch
+	}
+	if e.Branch == defaultBranch {
+		return true
+	}
+	return groupKind == worktree.GroupRemoteBranches && worktree.IsDefaultBranchForm(e.Branch, defaultBranch)
 }
 
 // isDefaultBranchOnly reports whether the user is working directly on the

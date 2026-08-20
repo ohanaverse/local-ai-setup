@@ -30,9 +30,10 @@ const (
 // the underlying entry worktree.Entry is never mutated, so it stays
 // safe to forward into selectedEntryMsg at launch time.
 type entryItem struct {
-	kind  entryKind
-	entry worktree.Entry
-	label string
+	kind      entryKind
+	entry     worktree.Entry
+	label     string
+	groupKind worktree.GroupKind // group the entry came from (zero value for sentinel/separator)
 }
 
 // FilterValue is used by the list's built-in filter. Non-entry rows
@@ -125,10 +126,23 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, wid
 			items = append(items, entryItem{kind: kindSeparator, label: "── remote branches ──"})
 		}
 		for _, e := range g.Entries {
-			ei := entryItem{kind: kindEntry, entry: e}
+			// The default branch must never be a linked worktree, so skip
+			// bare default-branch rows — the picker must not offer them as
+			// create-targets. The primary checkout on the default branch
+			// still appears as (current). The remote form is matched by short
+			// name across all remotes (origin/main, upstream/main, ...) via
+			// IsDefaultBranchForm, but only for entries in the remote-branches
+			// group: a local branch whose name ends in "/main" (e.g.
+			// feature/main) is a feature branch, not the default, and must
+			// stay pickable.
+			isRemoteDefault := g.Kind == worktree.GroupRemoteBranches && worktree.IsDefaultBranchForm(e.Branch, defaultBranch)
+			if e.Path == "" && defaultBranch != "" && (e.Branch == defaultBranch || isRemoteDefault) {
+				continue
+			}
+			ei := entryItem{kind: kindEntry, entry: e, groupKind: g.Kind}
 			// Mark default-branch entries with (default). This applies to
-			// non-current worktrees on the default branch and to a bare
-			// default-branch row (when the branch is not checked out).
+			// non-current worktrees on the default branch (a linked worktree
+			// created outside wt); bare default-branch rows are skipped above.
 			if e.Branch == defaultBranch {
 				ei.label = "(default)"
 			}

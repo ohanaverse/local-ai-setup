@@ -547,3 +547,142 @@ func TestEnsureForNameRejectsDot(t *testing.T) {
 		}
 	}
 }
+
+// setupDefaultRemote creates a bare remote, adds it as origin, pushes the
+// current branch, and points origin/HEAD at it so DefaultBranch() resolves.
+// Returns the default branch name (main or master). The default-branch
+// refusal in EnsureForName/EnsureForBranch is gated on DefaultBranch(), which
+// reads origin/HEAD, so these tests need a real remote.
+func setupDefaultRemote(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := strings.TrimSpace(string(out))
+
+	remoteDir := filepath.Join(dir, "remote.git")
+	if err := exec.Command("git", "init", "--bare", remoteDir).Run(); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("remote", "add", "origin", remoteDir)
+	run("push", "origin", db)
+	run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+db)
+	return db
+}
+
+// EnsureForName must refuse to create a linked worktree for the default
+// branch when it isn't already checked out. Creating .worktrees/main would
+// put the default branch in a linked worktree — a dead end the guard makes
+// read-only and the tool's model forbids.
+func TestEnsureForNameRefusesDefaultBranch(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	// Move the primary checkout off the default branch so it is "free".
+	cmd := exec.Command("git", "checkout", "-b", "feature")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
+	}
+
+	_, err := EnsureForName(dir, db)
+	if err == nil {
+		t.Fatalf("EnsureForName(%q) = nil error, want refusal", db)
+	}
+	if !strings.Contains(err.Error(), "default branch") {
+		t.Fatalf("error = %q, want it to mention 'default branch'", err)
+	}
+}
+
+// EnsureForName must still open the primary checkout when the default branch
+// is already checked out there. -W main should launch in the repo root, not
+// create a linked worktree.
+func TestEnsureForNameReusesDefaultBranchPrimary(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	path, err := EnsureForName(dir, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPath, _ := filepath.EvalSymlinks(path)
+	resolvedDir, _ := filepath.EvalSymlinks(dir)
+	if resolvedPath != resolvedDir {
+		t.Fatalf("path = %q, want primary checkout %q", path, dir)
+	}
+}
+
+// EnsureForBranch must refuse the default branch and its remote-tracking
+// form. The picker path must not create a linked worktree for the default
+// branch, even when it is reachable only as origin/<default>.
+func TestEnsureForBranchRefusesDefaultBranch(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	for _, branch := range []string{db, "origin/" + db} {
+		if _, err := EnsureForBranch(dir, branch); err == nil {
+			t.Errorf("EnsureForBranch(%q) = nil error, want refusal", branch)
+		}
+	}
+}
+
+// EnsureForBranch must refuse the default branch reachable via ANY remote,
+// not just origin. In a fork workflow the default branch may only be
+// reachable as upstream/<default>; selecting it would create a local
+// <default> in a linked worktree — exactly the state the invariant forbids.
+// The refusal must also be precise: a local branch whose name ends in
+// "/<default>" (e.g. feature/main) is a feature branch, not the default, and
+// must NOT be refused — the name-only suffix match is gated on the ref
+// actually existing under refs/remotes/.
+func TestEnsureForBranchRefusesDefaultBranchAnyRemote(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	// Add a second remote "upstream" and push the default branch to it so
+	// refs/remotes/upstream/<db> exists — the fork-workflow shape where the
+	// default branch is only reachable via a non-origin remote.
+	upstreamDir := filepath.Join(dir, "upstream.git")
+	if err := exec.Command("git", "init", "--bare", upstreamDir).Run(); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("remote", "add", "upstream", upstreamDir)
+	run("push", "upstream", db)
+
+	// Move the primary checkout off the default branch so it is "free".
+	// Use "topic" (not "feature") so refs/heads/feature doesn't block
+	// creating the feature/<db> branch below (git forbids a ref that is
+	// both a leaf and a directory: refs/heads/feature vs feature/main).
+	run("checkout", "-b", "topic")
+
+	// upstream/<db> must be refused — the invariant holds across remotes.
+	if _, err := EnsureForBranch(dir, "upstream/"+db); err == nil {
+		t.Errorf("EnsureForBranch(upstream/%s) = nil error, want refusal", db)
+	}
+
+	// A local branch ending in "/<db>" is a feature branch, not the default.
+	// It must NOT be refused: without the refs/remotes/ existence check, the
+	// name-only suffix match would wrongly refuse it.
+	run("branch", "feature/"+db)
+	if _, err := EnsureForBranch(dir, "feature/"+db); err != nil {
+		t.Errorf("EnsureForBranch(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
+	}
+}

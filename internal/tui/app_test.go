@@ -259,41 +259,38 @@ func TestEnterSelectsEntry(t *testing.T) {
 	}
 }
 
-// TestEnterOnDefaultBranchTriggersGuard asserts that selecting any entry
-// on the default branch trips the phaseGuardWarn prompt before launching.
-// This covers both worktree entries (TypeCurrent/TypeWorktree) and bare
-// branch rows (TypeBranch, when the branch exists locally but is not
-// checked out). A non-default branch must NOT trip the guard — it selects
-// straight through (dispatching a worktree create for a bare branch).
+// TestEnterOnDefaultBranchTriggersGuard asserts that selecting the current
+// worktree on the default branch trips the phaseGuardWarn prompt before
+// launching. Bare default-branch rows are filtered out of the picker (the
+// default branch must never be a linked worktree), so the guard now only
+// fires for a worktree entry on the default branch. A non-default branch must
+// NOT trip the guard — it selects straight through (dispatching a worktree
+// create for a bare branch).
 func TestEnterOnDefaultBranchTriggersGuard(t *testing.T) {
 	m := model{width: 80, height: 24}
-	// The current worktree is on "feature", so "main" is genuinely not
-	// checked out and appears as a bare default-branch row — the only state
-	// Enumerate can produce for a bare default row.
 	groups := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "feature", Path: "/tmp/repo"},
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 		}},
 		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "main"}, // bare default row (main not checked out)
 			{Type: worktree.TypeBranch, Branch: "other"},
 		}},
 	}
 	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
 	m = got.(model)
 
-	// Select the bare default-branch row.
+	// Select the current worktree on the default branch.
 	idx := pickEntryIndex(t, m, func(ei entryItem) bool {
-		return ei.kind == kindEntry && ei.entry.Type == worktree.TypeBranch && ei.entry.Branch == "main"
+		return ei.kind == kindEntry && ei.entry.Type == worktree.TypeCurrent && ei.entry.Branch == "main"
 	})
 	m.list.Select(idx)
 	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := newM.(model)
 	if mm.phase != phaseGuardWarn {
-		t.Fatalf("bare default row: phase = %v, want phaseGuardWarn (must trip guard, not launch)", mm.phase)
+		t.Fatalf("current default row: phase = %v, want phaseGuardWarn (must trip guard, not launch)", mm.phase)
 	}
 	if cmd != nil {
-		t.Errorf("bare default row: expected nil cmd (guard prompt, no launch), got %T", cmd())
+		t.Errorf("current default row: expected nil cmd (guard prompt, no launch), got %T", cmd())
 	}
 
 	// A non-default branch must select straight through (no guard).
@@ -313,27 +310,35 @@ func TestEnterOnDefaultBranchTriggersGuard(t *testing.T) {
 }
 
 // TestLaunchesOnDefaultBranchCoversRemoteForm asserts the guard helper
-// matches both the bare local default branch and its remote-tracking form
-// (origin/main). The remote form is what Enumerate emits when the default
-// branch exists only as a remote ref; EnsureForBranch turns it into a local
-// main, so it must trip the guard too.
+// matches both the bare local default branch and the remote-tracking form of
+// the default under ANY remote (origin/main, upstream/main, ...). The remote
+// form is what Enumerate emits when the default branch exists only as a
+// remote ref; EnsureForBranch turns it into a local main, so it must trip the
+// guard too. It also asserts the helper is precise: a branch whose name ends
+// in "/main" but is not the default — a local feature/main, or a worktree
+// checked out on feature/main — must NOT trip the guard, since launching
+// there runs the feature branch, not the default.
 func TestLaunchesOnDefaultBranchCoversRemoteForm(t *testing.T) {
 	cases := []struct {
-		name string
-		e    worktree.Entry
-		want bool
+		name      string
+		e         worktree.Entry
+		groupKind worktree.GroupKind
+		want      bool
 	}{
-		{"current on main", worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}, true},
-		{"worktree on main", worktree.Entry{Type: worktree.TypeWorktree, Branch: "main", Path: "/repo/.worktrees/main"}, true},
-		{"bare local main", worktree.Entry{Type: worktree.TypeBranch, Branch: "main"}, true},
-		{"remote origin/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/main"}, true},
-		{"feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"}, false},
-		{"remote origin/feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feature"}, false},
+		{"current on main", worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}, worktree.GroupWorktrees, true},
+		{"worktree on main", worktree.Entry{Type: worktree.TypeWorktree, Branch: "main", Path: "/repo/.worktrees/main"}, worktree.GroupWorktrees, true},
+		{"bare local main", worktree.Entry{Type: worktree.TypeBranch, Branch: "main"}, worktree.GroupLocalBranches, true},
+		{"remote origin/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/main"}, worktree.GroupRemoteBranches, true},
+		{"remote upstream/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "upstream/main"}, worktree.GroupRemoteBranches, true},
+		{"feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"}, worktree.GroupLocalBranches, false},
+		{"remote origin/feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feature"}, worktree.GroupRemoteBranches, false},
+		{"bare local feature/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "feature/main"}, worktree.GroupLocalBranches, false},
+		{"worktree on feature/main", worktree.Entry{Type: worktree.TypeWorktree, Branch: "feature/main", Path: "/repo/.worktrees/main"}, worktree.GroupWorktrees, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := launchesOnDefaultBranch(tc.e, "main"); got != tc.want {
-				t.Errorf("launchesOnDefaultBranch(%+v, main) = %v, want %v", tc.e, got, tc.want)
+			if got := launchesOnDefaultBranch(tc.e, tc.groupKind, "main"); got != tc.want {
+				t.Errorf("launchesOnDefaultBranch(%+v, %v, main) = %v, want %v", tc.e, tc.groupKind, got, tc.want)
 			}
 		})
 	}

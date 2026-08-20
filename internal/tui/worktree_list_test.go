@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -299,16 +300,21 @@ func TestBuildListCurrentMarker(t *testing.T) {
 	}
 }
 
-// TestBuildListDefaultMarker asserts entries whose Branch matches the
-// repo default branch are annotated with "(default)". Like the
-// (current) marker, the original entry.Branch is never mutated.
+// TestBuildListDefaultMarker asserts a non-current worktree on the default
+// branch is annotated with "(default)". Bare default-branch rows are skipped
+// (the default branch must never be a linked worktree), so the marker now
+// only applies to a linked worktree created outside wt. Like the (current)
+// marker, the original entry.Branch is never mutated.
 func TestBuildListDefaultMarker(t *testing.T) {
+	// Use a real repo root so EvalSymlinks resolves it; a non-existent
+	// fixture path would resolve to "" and falsely match the (current) marker.
+	repoRoot := t.TempDir()
 	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "main"},
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeWorktree, Branch: "main", Path: filepath.Join(repoRoot, ".worktrees", "main")},
 		}},
 	}
-	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	l := buildList(groups, "main", repoRoot, 80, 24)
 	items := l.Items()
 	got, ok := items[1].(entryItem)
 	if !ok {
@@ -319,6 +325,57 @@ func TestBuildListDefaultMarker(t *testing.T) {
 	}
 	if got.entry.Branch != "main" {
 		t.Errorf("entry.Branch = %q, want main (entry must not be mutated)", got.entry.Branch)
+	}
+}
+
+// TestBuildListSkipsBareDefaultBranch asserts bare default-branch rows
+// (local and remote form) are omitted from the picker. The default branch
+// must never be a linked worktree, so the picker must not offer it as a
+// create-target; the primary checkout on the default branch still appears
+// as (current), and non-default bare branches are unaffected. The remote
+// form is matched across ALL remotes (origin/main, upstream/main), not just
+// origin, so a fork workflow cannot offer the default branch via a second
+// remote. A local branch whose name ends in "/main" (feature/main) is a
+// feature branch, not the default, and must stay pickable.
+func TestBuildListSkipsBareDefaultBranch(t *testing.T) {
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "feature", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "main"},
+			{Type: worktree.TypeBranch, Branch: "other"},
+			{Type: worktree.TypeBranch, Branch: "feature/main"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/main"},
+			{Type: worktree.TypeBranch, Branch: "upstream/main"},
+			{Type: worktree.TypeBranch, Branch: "origin/dev"},
+		}},
+	}
+	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+
+	seen := map[string]bool{}
+	for _, it := range l.Items() {
+		ei, ok := it.(entryItem)
+		if !ok {
+			continue
+		}
+		seen[ei.entry.Branch] = true
+	}
+	// Bare default rows (local and every remote form) must be gone.
+	for _, b := range []string{"main", "origin/main", "upstream/main"} {
+		if seen[b] {
+			t.Errorf("bare default-branch row %q was not skipped", b)
+		}
+	}
+	// Non-default bare rows must survive — including a local branch whose
+	// name ends in "/main", which the name-only suffix match would wrongly
+	// skip without the group-kind gating.
+	for _, b := range []string{"other", "feature/main", "origin/dev"} {
+		if !seen[b] {
+			t.Errorf("non-default bare row %q was wrongly skipped", b)
+		}
 	}
 }
 

@@ -137,10 +137,10 @@ Test coverage by package:
 | `internal/rotation` | 18 | Slot{Agent,Tag,Family}, SlotFromFlags, LastLaunched/RecordLaunch/FirstAfter, snapshot-based model set, per-slot state file with backward-compat read of legacy single-tag state files |
 | `internal/agents` | 32 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, IsCommand (Commanded interface), shell driver, shell quoting, pi model sync |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
-| `internal/worktree` | 29 | Worktree parsing, three-group enumeration (worktrees / locals / remotes), branch dedup (skip branches already checked out in worktrees), remote shadowing, worktree creation (EnsureForName/EnsureForBranch) |
+| `internal/worktree` | 34 | Worktree parsing, three-group enumeration (worktrees / locals / remotes), branch dedup (skip branches already checked out in worktrees), remote shadowing, worktree creation (EnsureForName/EnsureForBranch), default-branch refusal across all remotes (never a linked worktree) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
-| `internal/tui` | 127 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut; phaseAgent: agent+command picker, `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; Helpers: `DefaultAgent` defaults, state persistence, placeholder View |
+| `internal/tui` | 133 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut, default-branch bare-row skip; phaseAgent: agent+command picker, `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; Helpers: `DefaultAgent` defaults, state persistence, placeholder View |
 | `cmd/wt` | 29 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, picker-skip conditions for `-W`/`--cwd`/non-git-repo, legacy `-w` short flag |
 
 ## Go module
@@ -468,11 +468,21 @@ git inside a temp repo.
 - `EnsureForName(dir, name)` — idempotent worktree for the `-W`/`--worktree`
   flag: reuses an already-checked-out worktree path, reuses an existing
   `.worktrees/<name>` path, otherwise creates via `git worktree add` (or
-  `-b` for a new branch)
+  `-b` for a new branch). Refuses to create a linked worktree for the default
+  branch (it must only ever be the primary checkout)
 - `EnsureForBranch(dir, branch)` — the picker path, handling local,
   remote-tracking, and brand-new branches. Remote branches create a local
-  branch tracking them; errors if the short name collides with a local branch
-- Helpers: `refExists`, `branchAtPath`, `isWorktreePath`
+  branch tracking them; errors if the short name collides with a local branch.
+  Refuses the default branch and any `<remote>/<default>` form (origin,
+  upstream, … — matched by short name across all remotes, gated on the ref
+  really existing under `refs/remotes/` so a local `feature/main` is not
+  falsely refused); see `IsDefaultBranchForm` / `isDefaultBranchSelection`
+- Helpers: `refExists`, `branchAtPath`, `isWorktreePath`, `IsDefaultBranchForm`
+
+The default branch (main/master) must never be checked out in a linked
+worktree (`.worktrees/*`); it may only ever be the primary checkout. Both
+creation functions refuse it, and the TUI picker skips bare default-branch
+rows so it is never offered as a create-target.
 
 Branch names with slashes use the last path component as the worktree
 directory (`.worktrees/my-branch`). The `-W`/`--worktree` flag is wired in

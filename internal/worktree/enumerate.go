@@ -171,6 +171,26 @@ func DefaultBranch(dir string) (string, error) {
 	return strings.TrimPrefix(s, "refs/remotes/origin/"), nil
 }
 
+// IsDefaultBranchForm reports whether branch names the repo default branch
+// in any of its selectable forms — the bare local name (e.g. "main") or a
+// remote-tracking ref under any remote (e.g. "origin/main", "upstream/main").
+// Matching by short name across all remotes, rather than hardcoding "origin/",
+// covers fork workflows where the default branch is only reachable as
+// <other-remote>/<default>.
+//
+// The match is by name alone: a local branch whose name happens to end in
+// "/<db>" (e.g. "feature/main") also matches. Callers that can distinguish a
+// local branch from a real remote-tracking ref must add that context to avoid
+// falsely refusing such branches. The hard-refusal paths do exactly that:
+// EnsureForBranch confirms the ref under refs/remotes/, buildList checks the
+// entry's group kind, and launchesOnDefaultBranch checks the entry's Path.
+func IsDefaultBranchForm(branch, db string) bool {
+	if db == "" {
+		return false
+	}
+	return branch == db || strings.HasSuffix(branch, "/"+db)
+}
+
 // Enumerate returns pickable targets grouped by kind: worktrees
 // first, then local branches, then remote branches. Branches already
 // checked out in a worktree are omitted from the bare-branch lists
