@@ -15,9 +15,12 @@ func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	if yolo {
 		lc.Args = append(lc.Args, copilotDriver{}.YoloFlag())
 	}
-	if m.IsNative() {
-		// Native model — clear any inherited gateway vars so the native
-		// subscription is used instead of routing to the ollama gateway.
+	// Provider-keyed dispatch: native-provider models (copilot/native and
+	// any future copilot/* model that talks to the GitHub subscription)
+	// use the copilot subscription and clear any inherited ollama gateway
+	// vars so the subscription wins. Anything else routes through the
+	// ollama anthropic-compatible gateway via COPILOT_PROVIDER_* env vars.
+	if m.ProviderID == "copilot" {
 		lc.ClearEnv = []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL"}
 		return lc
 	}

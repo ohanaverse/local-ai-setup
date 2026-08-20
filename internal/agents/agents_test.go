@@ -12,7 +12,14 @@ import (
 )
 
 func nativeModel(agent string) config.Model {
-	return config.Model{ID: agent + "/native", ModelName: "native", Location: config.LocationCloud}
+	return config.Model{ID: agent + "/native", ProviderID: agent, ModelName: "native", Location: config.LocationCloud}
+}
+
+// namedNativeModel returns a non-sentinel native-provider model (e.g.
+// "claude/opus"): same provider key as the sentinel but with a real
+// model name that should be passed via --model.
+func namedNativeModel(provider, name string) config.Model {
+	return config.Model{ID: provider + "/" + name, ProviderID: provider, ModelName: name, Location: config.LocationCloud}
 }
 
 func cloudModel(id string) config.Model {
@@ -21,6 +28,14 @@ func cloudModel(id string) config.Model {
 
 func localModel(id string) config.Model {
 	return config.Model{ID: id, ModelName: id, Location: config.LocationLocal}
+}
+
+// ollamaCloudModel mirrors cloudModel but with a real ProviderID, so the
+// provider-keyed driver dispatch reaches the ollama branch (cloudModel
+// leaves ProviderID empty, which silently routes through the native
+// branch and breaks the "route through ollama" tests).
+func ollamaCloudModel(name string) config.Model {
+	return config.Model{ID: "ollama/" + name, ProviderID: "ollama", ModelName: name, Location: config.LocationCloud}
 }
 
 // Names must return every agent registered in the package. A mismatch means
@@ -48,18 +63,21 @@ func TestByNameUnknown(t *testing.T) {
 	}
 }
 
-// The Claude driver handles three cases: native (no args/env), cloud (sets
-// the Ollama gateway env var and passes --model), and yolo (prepends the
-// skip-permissions flag). Getting any of these wrong means the launched
-// claude process receives the wrong CLI flags.
+// The Claude driver handles three cases: native sentinel (no args/env,
+// clears the inherited gateway vars), native named (passes --model,
+// clears the inherited gateway vars), and ollama cloud (sets the
+// gateway env var and passes --model). Getting any of these wrong means
+// the launched claude process receives the wrong CLI flags or routes
+// through the wrong provider.
 func TestClaude(t *testing.T) {
 	d := ByName("claude")
 	if d == nil {
 		t.Fatal("claude driver not registered")
 	}
 
-	// Native — no args/env, but clears the inherited ANTHROPIC_* gateway
-	// vars so the native subscription is used instead of routing to ollama.
+	// Native sentinel — no args/env, but clears the inherited ANTHROPIC_*
+	// gateway vars so the native subscription is used instead of routing
+	// to ollama.
 	lc := d.Build(nativeModel("claude"), false)
 	if lc.Bin != "claude" || len(lc.Args) != 0 || len(lc.Env) != 0 {
 		t.Errorf("native build = %+v, want bare claude", lc)
@@ -70,8 +88,8 @@ func TestClaude(t *testing.T) {
 		}
 	}
 
-	// Cloud — env gateway + --model.
-	lc = d.Build(cloudModel("deepseek-v4-pro:cloud"), false)
+	// Ollama cloud — env gateway + --model.
+	lc = d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false)
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
 		t.Errorf("cloud args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
@@ -80,7 +98,7 @@ func TestClaude(t *testing.T) {
 	}
 
 	// Yolo flag prepended.
-	lc = d.Build(cloudModel("x"), true)
+	lc = d.Build(ollamaCloudModel("x"), true)
 	if len(lc.Args) < 1 || lc.Args[0] != "--dangerously-skip-permissions" {
 		t.Errorf("yolo args = %v, want leading --dangerously-skip-permissions", lc.Args)
 	}
@@ -113,7 +131,7 @@ func TestCopilot(t *testing.T) {
 	if d == nil {
 		t.Fatal("copilot driver not registered")
 	}
-	lc := d.Build(cloudModel("deepseek-v4-pro:cloud"), false)
+	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false)
 	if len(lc.Args) != 0 {
 		t.Errorf("copilot should not pass --model, got args %v", lc.Args)
 	}
@@ -143,7 +161,7 @@ func TestOpenCode(t *testing.T) {
 	if d == nil {
 		t.Fatal("opencode driver not registered")
 	}
-	lc := d.Build(cloudModel("deepseek-v4-pro:cloud"), false)
+	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false)
 	if len(lc.Args) != 0 {
 		t.Errorf("opencode should not pass --model, got args %v", lc.Args)
 	}
@@ -535,5 +553,78 @@ func TestOpenCodeOllamaPrefix(t *testing.T) {
 	}
 	if strings.Contains(cfg, `"model":"ollama/ollama/`) {
 		t.Errorf("config has double-prefix (driver likely applied the m.ModelName fix incorrectly): %s", cfg)
+	}
+}
+
+// Claude must treat non-sentinel claude/* models (e.g. claude/opus) as
+// native-provider launches: clear the inherited ANTHROPIC_* gateway
+// vars so the claude subscription wins, and pass --model <ModelName> so
+// claude picks the named model. Routing a non-sentinel claude/* model
+// through the ollama gateway would silently fail — claude would ask
+// ollama for a model the gateway doesn't recognize. This is the
+// regression test for the provider-keyed dispatch change in claude.go.
+func TestClaudeNativeProviderNamed(t *testing.T) {
+	d := ByName("claude")
+	if d == nil {
+		t.Fatal("claude driver not registered")
+	}
+	lc := d.Build(namedNativeModel("claude", "opus"), false)
+	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "opus" {
+		t.Errorf("args = %v, want [--model opus]", lc.Args)
+	}
+	if len(lc.Env) != 0 {
+		t.Errorf("env = %v, want none (subscription wins)", lc.Env)
+	}
+	for _, k := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"} {
+		if !slices.Contains(lc.ClearEnv, k) {
+			t.Errorf("ClearEnv = %v, want it to include %q", lc.ClearEnv, k)
+		}
+	}
+}
+
+// Copilot must treat non-sentinel copilot/* models as native-provider
+// launches: clear the COPILOT_* gateway vars so the copilot subscription
+// wins. Copilot's CLI does not accept --model, so the launch is bare
+// (no env, no args) regardless of whether the model name is the
+// sentinel or a real name.
+func TestCopilotNativeProviderNamed(t *testing.T) {
+	d := ByName("copilot")
+	if d == nil {
+		t.Fatal("copilot driver not registered")
+	}
+	lc := d.Build(namedNativeModel("copilot", "auto"), false)
+	if len(lc.Args) != 0 {
+		t.Errorf("args = %v, want none", lc.Args)
+	}
+	if len(lc.Env) != 0 {
+		t.Errorf("env = %v, want none (subscription wins)", lc.Env)
+	}
+	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL"} {
+		if !slices.Contains(lc.ClearEnv, k) {
+			t.Errorf("ClearEnv = %v, want it to include %q", lc.ClearEnv, k)
+		}
+	}
+}
+
+// OpenCode must treat non-sentinel opencode/* models as native-provider
+// launches: clear the OPENCODE_CONFIG_CONTENT var so the opencode
+// subscription wins. OpenCode's CLI receives model config inline via
+// OPENCODE_CONFIG_CONTENT, so native-provider launches are bare (no
+// env, no args) regardless of whether the model name is the sentinel
+// or a real name.
+func TestOpenCodeNativeProviderNamed(t *testing.T) {
+	d := ByName("opencode")
+	if d == nil {
+		t.Fatal("opencode driver not registered")
+	}
+	lc := d.Build(namedNativeModel("opencode", "auto"), false)
+	if len(lc.Args) != 0 {
+		t.Errorf("args = %v, want none", lc.Args)
+	}
+	if len(lc.Env) != 0 {
+		t.Errorf("env = %v, want none (subscription wins)", lc.Env)
+	}
+	if !slices.Contains(lc.ClearEnv, "OPENCODE_CONFIG_CONTENT") {
+		t.Errorf("ClearEnv = %v, want it to include OPENCODE_CONFIG_CONTENT", lc.ClearEnv)
 	}
 }

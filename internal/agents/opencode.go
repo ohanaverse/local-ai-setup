@@ -17,9 +17,12 @@ func (opencodeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	if yolo {
 		lc.Args = append(lc.Args, opencodeDriver{}.YoloFlag())
 	}
-	if m.IsNative() {
-		// Native model — clear any inherited gateway config so the native
-		// subscription is used instead of routing to the ollama gateway.
+	// Provider-keyed dispatch: native-provider models (opencode/native and
+	// any future opencode/* model that talks to the opencode subscription)
+	// use the opencode subscription and clear any inherited
+	// OPENCODE_CONFIG_CONTENT so the subscription wins. Anything else
+	// routes through the ollama gateway via inline config content.
+	if m.ProviderID == "opencode" {
 		lc.ClearEnv = []string{"OPENCODE_CONFIG_CONTENT"}
 		return lc
 	}

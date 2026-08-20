@@ -19,16 +19,20 @@ func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	}
 	lc := LaunchCmd{Bin: "claude", Args: args}
 
-	if m.IsNative() {
-		// Native model — no extra args/env. Clear any inherited gateway
-		// vars so the native subscription is used instead of routing to
-		// the ollama gateway (which a parent shell may have exported).
+	// Provider-keyed dispatch. Native-provider models (claude/native,
+	// claude/opus, etc.) use the claude subscription: clear any inherited
+	// ollama gateway vars so the subscription wins, and pass --model
+	// only when a specific claude/* model is named. The sentinel
+	// claude/native launches bare. Anything else routes through the
+	// ollama anthropic-compatible gateway.
+	if m.ProviderID == "claude" {
 		lc.ClearEnv = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
+		if m.ModelName != "native" {
+			lc.Args = append(lc.Args, "--model", m.ModelName)
+		}
 		return lc
 	}
 
-	// Cloud and local models both route through the ollama
-	// Anthropic-compatible gateway.
 	lc.Env = append(lc.Env,
 		"ANTHROPIC_AUTH_TOKEN=ollama",
 		"ANTHROPIC_API_KEY=",
