@@ -110,38 +110,83 @@ func TestEnumerateFindsBranch(t *testing.T) {
 		}
 	}
 
-	entries, err := Enumerate(dir, dir)
+	groups, err := Enumerate(dir, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
-	for _, e := range entries {
-		if e.Type == TypeBranch && e.Branch == "feature" {
-			found = true
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Type == TypeBranch && e.Branch == "feature" {
+				found = true
+			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected feature branch entry, got %+v", entries)
+		t.Fatalf("expected feature branch entry, got %+v", groups)
 	}
 }
 
-// The default branch (main/master) is always checked out in at least one
-// worktree, so it must never appear as a bare TypeBranch. Showing it as a
-// bare branch would encourage users to work directly on main, defeating the
-// guard's purpose.
-func TestEnumerateSkipsDefaultBranch(t *testing.T) {
+// TestEnumerateAlwaysEmitsDefaultBranchAsBare is the contract lock for PR
+// #56's "always-full view": Enumerate must emit the default branch as a bare
+// TypeBranch row even when that branch is already checked out in the current
+// worktree, so the picker is never empty of alternatives just because the
+// user is on main. This replaces the old TestEnumerateSkipsDefaultBranch
+// invariant (that the default branch never appears as a bare branch). That
+// invariant only ever held when origin/HEAD was unset, so the old test gave
+// false confidence: in any real repo with origin/HEAD set, Enumerate emits
+// the bare row — the opposite of what the old test asserted.
+func TestEnumerateAlwaysEmitsDefaultBranchAsBare(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	// main/master is checked out, so it shouldn't appear as a bare branch either.
-	entries, err := Enumerate(dir, dir)
+	// Detect the actual default branch (main or master, depending on the
+	// git version's init.defaultBranch) instead of assuming "main".
+	out, err := runGitCmd(dir, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("detect default branch: %v\n%s", err, out)
+	}
+	defaultBranch := strings.TrimSpace(string(out))
+
+	// Point origin/HEAD at the default branch so DefaultBranch resolves.
+	// DefaultBranch trims the "refs/remotes/origin/" prefix, so the symref
+	// must target a remote-tracking ref (refs/remotes/origin/<branch>), not
+	// refs/heads/<branch>. Create that tracking ref via update-ref (no real
+	// remote/fetch needed), then set origin/HEAD — mirroring setupTestRepo's
+	// push + symbolic-ref pattern.
+	if out, err := runGitCmd(dir, "update-ref", "refs/remotes/origin/"+defaultBranch, "refs/heads/"+defaultBranch); err != nil {
+		t.Fatalf("git update-ref origin/%s: %v\n%s", defaultBranch, err, out)
+	}
+	if out, err := runGitCmd(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+defaultBranch); err != nil {
+		t.Fatalf("git symbolic-ref origin/HEAD: %v\n%s", err, out)
+	}
+
+	groups, err := Enumerate(dir, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range entries {
-		if e.Type == TypeBranch && (e.Branch == "main" || e.Branch == "master") {
-			t.Fatalf("default branch should not appear as bare branch, got %+v", e)
+	// The default branch is checked out in the current worktree, yet it must
+	// ALSO appear as a bare TypeBranch row (the always-full view contract).
+	foundCurrent := false
+	foundBare := false
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Branch != defaultBranch {
+				continue
+			}
+			if e.Type == TypeCurrent {
+				foundCurrent = true
+			}
+			if e.Type == TypeBranch {
+				foundBare = true
+			}
 		}
+	}
+	if !foundCurrent {
+		t.Fatalf("expected current worktree on %q, got %+v", defaultBranch, groups)
+	}
+	if !foundBare {
+		t.Fatalf("expected bare TypeBranch row for default branch %q (always-full view), got %+v", defaultBranch, groups)
 	}
 }
 
@@ -193,25 +238,27 @@ func TestEnumerateWorktreeAndBranch(t *testing.T) {
 		}
 	}
 
-	entries, err := Enumerate(dir, dir)
+	groups, err := Enumerate(dir, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var foundWorktree, foundBranch bool
-	for _, e := range entries {
-		if e.Type == TypeWorktree && e.Branch == "feature" {
-			foundWorktree = true
-		}
-		if e.Type == TypeBranch && e.Branch == "feature" {
-			foundBranch = true
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Type == TypeWorktree && e.Branch == "feature" {
+				foundWorktree = true
+			}
+			if e.Type == TypeBranch && e.Branch == "feature" {
+				foundBranch = true
+			}
 		}
 	}
 	if !foundWorktree {
-		t.Fatalf("expected worktree entry for feature, got %+v", entries)
+		t.Fatalf("expected worktree entry for feature, got %+v", groups)
 	}
 	if foundBranch {
-		t.Fatalf("feature should not appear as bare branch when checked out in worktree, got %+v", entries)
+		t.Fatalf("feature should not appear as bare branch when checked out in worktree, got %+v", groups)
 	}
 }
 
@@ -324,14 +371,233 @@ func TestEnumerateRemoteBranchShadowedByLocal(t *testing.T) {
 		t.Fatalf("git fetch: %v\n%s", err, out)
 	}
 
-	entries, err := Enumerate(dir, dir)
+	groups, err := Enumerate(dir, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for _, e := range entries {
-		if e.Branch == "origin/feature" {
-			t.Fatalf("origin/feature should be shadowed by local feature, got %+v", entries)
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Branch == "origin/feature" {
+				t.Fatalf("origin/feature should be shadowed by local feature, got %+v", groups)
+			}
+		}
+	}
+}
+
+// setupTestRepo creates a minimal git repo with a default branch (main)
+// and a couple of local feature branches, so Enumerate has something to
+// group. The repo points at a fake "origin" so origin/HEAD resolves and
+// DefaultBranch() finds the default branch.
+func setupTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+
+	// Set up a bare remote so origin/HEAD can resolve and DefaultBranch returns "main".
+	remoteDir := filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare remote: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("git push -u origin main: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("git symbolic-ref origin/HEAD: %v\n%s", err, out)
+	}
+
+	// Create a couple of local feature branches so the local group has more than one entry.
+	for _, name := range []string{"feature-a", "feature-b"} {
+		if out, err := runGitCmd(dir, "checkout", "-b", name); err != nil {
+			t.Fatalf("git checkout -b %s: %v\n%s", name, err, out)
+		}
+	}
+	// Switch back to main so the feature branches are bare.
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
+	}
+
+	return dir
+}
+
+// runGitCmd is a tiny wrapper around exec.Command("git", ...) that
+// pins cmd.Dir to dir. Without this, every git invocation defaults to
+// the test binary's working directory — which is the repo root when
+// `go test` is run from a worktree, and any subsequent `git remote add
+// origin` will collide with the parent repo's existing origin. The
+// first setupTestRepo loop did set cmd.Dir directly, but the later
+// commands omitted it and silently ran in the wrong repo, which only
+// surfaced when the test ran inside the worktree where `origin` is
+// already configured.
+func runGitCmd(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
+// setupTestRepoWithManyBranches mirrors setupTestRepo but seeds enough
+// local and remote branches to verify alphabetical ordering within each
+// group: main, alpha, beta (local) plus origin/beta, origin/gamma,
+// origin/zzz (remote-only).
+func setupTestRepoWithManyBranches(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+
+	// Set up the bare remote and point origin/HEAD at main so the default
+	// branch resolves to "main" (matching the brief's expectation).
+	remoteDir := filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare remote: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("git push -u origin main: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("git symbolic-ref origin/HEAD: %v\n%s", err, out)
+	}
+
+	// Create enough local branches (out of alphabetical order) to exercise the sort.
+	for _, name := range []string{"gamma", "alpha", "beta"} {
+		if out, err := runGitCmd(dir, "checkout", "-b", name); err != nil {
+			t.Fatalf("git checkout -b %s: %v\n%s", name, err, out)
+		}
+	}
+	// Switch back to main so the other branches are bare.
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
+	}
+
+	// Make beta and gamma remote-only: push them, then delete the local copies.
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "beta"); err != nil {
+		t.Fatalf("git push origin beta: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "branch", "-D", "beta"); err != nil {
+		t.Fatalf("git branch -D beta: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "gamma"); err != nil {
+		t.Fatalf("git push origin gamma: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "branch", "-D", "gamma"); err != nil {
+		t.Fatalf("git branch -D gamma: %v\n%s", err, out)
+	}
+	// Push zzz to origin and drop the local copy so it appears only in the remote group.
+	if out, err := runGitCmd(dir, "checkout", "-b", "zzz"); err != nil {
+		t.Fatalf("git checkout -b zzz: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "zzz"); err != nil {
+		t.Fatalf("git push origin zzz: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "branch", "-D", "zzz"); err != nil {
+		t.Fatalf("git branch -D zzz: %v\n%s", err, out)
+	}
+	// Bring remote-tracking refs into the local repo so listRemoteBranches sees them.
+	if out, err := runGitCmd(dir, "fetch", "origin"); err != nil {
+		t.Fatalf("git fetch origin: %v\n%s", err, out)
+	}
+
+	return dir
+}
+
+// TestEnumerateReturnsGroups verifies the new three-group return
+// shape. The picker relies on this ordering to render rows without
+// re-sorting.
+func TestEnumerateReturnsGroups(t *testing.T) {
+	dir := setupTestRepo(t)
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("got %d groups, want 3 (worktrees, local branches, remote branches)", len(groups))
+	}
+	if groups[0].Kind != GroupWorktrees {
+		t.Errorf("group[0] = %v, want GroupWorktrees", groups[0].Kind)
+	}
+	if groups[1].Kind != GroupLocalBranches {
+		t.Errorf("group[1] = %v, want GroupLocalBranches", groups[1].Kind)
+	}
+	if groups[2].Kind != GroupRemoteBranches {
+		t.Errorf("group[2] = %v, want GroupRemoteBranches", groups[2].Kind)
+	}
+}
+
+// TestEnumerateAlwaysIncludesDefaultBranch verifies the picker-content
+// invariant: the default branch is always listed as a branch row, even
+// when checked out in a worktree or when it's also the current branch.
+func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
+	dir := setupTestRepo(t)
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundAsBranch, foundAsWorktree bool
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Branch == "main" {
+				switch g.Kind {
+				case GroupLocalBranches:
+					foundAsBranch = true
+				case GroupWorktrees:
+					foundAsWorktree = true
+				}
+			}
+		}
+	}
+	if !foundAsBranch {
+		t.Error("default branch 'main' missing from local branches group")
+	}
+	_ = foundAsWorktree // may or may not be true depending on test repo layout
+}
+
+// TestEnumerateOrdering verifies that within each group, entries are
+// sorted alphabetically by branch name (with remote prefix stripped
+// for the remote group).
+func TestEnumerateOrdering(t *testing.T) {
+	dir := setupTestRepoWithManyBranches(t)
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		for i := 1; i < len(g.Entries); i++ {
+			if g.Entries[i-1].Branch > g.Entries[i].Branch {
+				t.Errorf("group %v not sorted: %q > %q", g.Kind, g.Entries[i-1].Branch, g.Entries[i].Branch)
+				break
+			}
 		}
 	}
 }

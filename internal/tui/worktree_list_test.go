@@ -74,12 +74,17 @@ func TestPadDoesNotTruncate(t *testing.T) {
 	}
 }
 
-// buildList must create a list with one item per entry and set the title.
-// An empty entry list is also valid; it should not panic. The sentinel
-// is always present, even with zero real entries, so users in an empty
-// repo can still create a worktree from the TUI.
+// Build an EntryGroup with a single entry for compact test setup.
+func singleGroup(kind worktree.GroupKind, e worktree.Entry) []worktree.EntryGroup {
+	return []worktree.EntryGroup{{Kind: kind, Entries: []worktree.Entry{e}}}
+}
+
+// buildList must create a list with the sentinel alone and set the title when
+// given an empty group slice. The sentinel is always present, even with zero
+// real entries, so users in an empty repo can still create a worktree from
+// the TUI.
 func TestBuildListEmpty(t *testing.T) {
-	l := buildList(nil, 80, 24)
+	l := buildList(nil, "", "/tmp/repo", 80, 24)
 	if l.Title != "Pick a worktree or branch" {
 		t.Errorf("title = %q, want Pick a worktree or branch", l.Title)
 	}
@@ -91,40 +96,11 @@ func TestBuildListEmpty(t *testing.T) {
 	}
 }
 
-// buildList must preserve all entries as list items so every branch is
-// selectable. The sentinel is prepended at index 0, so real entries
-// start at index 1.
-func TestBuildListPopulatesItems(t *testing.T) {
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
-		{Type: worktree.TypeWorktree, Branch: "bugfix", Path: "/tmp/repo/.worktrees/bugfix"},
-	}
-	l := buildList(entries, 80, 24)
-	if len(l.Items()) != len(entries)+1 {
-		t.Fatalf("items = %d, want %d (sentinel + %d entries)", len(l.Items()), len(entries)+1, len(entries))
-	}
-	if first, ok := l.Items()[0].(entryItem); !ok || first.kind != kindNewWorktree {
-		t.Errorf("items[0] = %+v, want sentinel (kindNewWorktree)", l.Items()[0])
-	}
-	for i, want := range entries {
-		item, ok := l.Items()[i+1].(entryItem)
-		if !ok {
-			t.Fatalf("item %d is %T, want entryItem", i+1, l.Items()[i+1])
-		}
-		if item.kind != kindEntry {
-			t.Errorf("item %d kind = %d, want kindEntry (%d)", i+1, item.kind, kindEntry)
-		}
-		if item.entry != want {
-			t.Errorf("item %d entry = %+v, want %+v", i+1, item.entry, want)
-		}
-	}
-}
-
 // buildList must enable the status bar. This gives the user feedback on the
 // number of entries and filter state.
 func TestBuildListShowsStatusBar(t *testing.T) {
-	l := buildList([]worktree.Entry{{Type: worktree.TypeBranch, Branch: "feature"}}, 80, 24)
+	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
+	l := buildList(groups, "", "/tmp/repo", 80, 24)
 	if !l.ShowStatusBar() {
 		t.Error("ShowStatusBar = false, want true")
 	}
@@ -136,7 +112,8 @@ func TestBuildListShowsStatusBar(t *testing.T) {
 // bubbles/list's ShortHelp() includes AdditionalShortHelpKeys; we assert the
 // binding appears with the right key and help text.
 func TestBuildListShortHelpAdvertisesNewWorktree(t *testing.T) {
-	l := buildList([]worktree.Entry{{Type: worktree.TypeBranch, Branch: "feature"}}, 80, 24)
+	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
+	l := buildList(groups, "", "/tmp/repo", 80, 24)
 	bindings := l.ShortHelp()
 	found := false
 	for _, b := range bindings {
@@ -155,7 +132,8 @@ func TestBuildListShortHelpAdvertisesNewWorktree(t *testing.T) {
 // buildList must also advertise 'n' in the full help view (the expanded help
 // screen toggled with '?'), so the shortcut is discoverable there too.
 func TestBuildListFullHelpAdvertisesNewWorktree(t *testing.T) {
-	l := buildList([]worktree.Entry{{Type: worktree.TypeBranch, Branch: "feature"}}, 80, 24)
+	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
+	l := buildList(groups, "", "/tmp/repo", 80, 24)
 	found := false
 	for _, section := range l.FullHelp() {
 		for _, b := range section {
@@ -172,7 +150,8 @@ func TestBuildListFullHelpAdvertisesNewWorktree(t *testing.T) {
 // buildList should respect the provided dimensions so the list fits the
 // terminal without overflowing.
 func TestBuildListDimensions(t *testing.T) {
-	l := buildList([]worktree.Entry{{Type: worktree.TypeBranch, Branch: "feature"}}, 78, 22)
+	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
+	l := buildList(groups, "", "/tmp/repo", 78, 22)
 	if l.Width() != 78 || l.Height() != 22 {
 		t.Errorf("dimensions = (%d, %d), want (78, 22)", l.Width(), l.Height())
 	}
@@ -202,26 +181,23 @@ func TestSentinelItemHasEmptyFilterValue(t *testing.T) {
 }
 
 // TestBuildListPrependsSentinel asserts buildList always puts the
-// sentinel as the first item. Without the sentinel, users would
-// need to know the `n` shortcut to create worktrees from the picker.
+// sentinel as the first item, even when groups contain many entries.
+// Without the sentinel, users would need to know the `n` shortcut to
+// create worktrees from the picker.
 func TestBuildListPrependsSentinel(t *testing.T) {
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
 	}
-	l := buildList(entries, 80, 24)
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: entries},
+	}
+	l := buildList(groups, "", "/tmp/repo", 80, 24)
 	items := l.Items()
-	if len(items) != len(entries)+1 {
-		t.Fatalf("items = %d, want %d", len(items), len(entries)+1)
+	if first, ok := items[0].(entryItem); !ok || first.kind != kindNewWorktree {
+		t.Errorf("items[0] = %+v, want sentinel (kindNewWorktree)", items[0])
 	}
-	first, ok := items[0].(entryItem)
-	if !ok {
-		t.Fatalf("item 0 is %T, want entryItem", items[0])
-	}
-	if first.kind != kindNewWorktree {
-		t.Errorf("item 0 kind = %d, want kindNewWorktree (%d)", first.kind, kindNewWorktree)
-	}
-	// Real entries follow in order.
+	// Real entries follow in order with their kind markers.
 	for i, want := range entries {
 		got, ok := items[i+1].(entryItem)
 		if !ok {
@@ -240,7 +216,7 @@ func TestBuildListPrependsSentinel(t *testing.T) {
 // the sentinel even with zero real entries. A fresh repo with no
 // worktrees must still let users create one from the TUI.
 func TestBuildListSentinelFirstWhenEmpty(t *testing.T) {
-	l := buildList(nil, 80, 24)
+	l := buildList(nil, "", "/tmp/repo", 80, 24)
 	items := l.Items()
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1 (just the sentinel)", len(items))
@@ -251,5 +227,157 @@ func TestBuildListSentinelFirstWhenEmpty(t *testing.T) {
 	}
 	if first.kind != kindNewWorktree {
 		t.Errorf("sentinel kind = %d, want kindNewWorktree", first.kind)
+	}
+}
+
+// TestBuildListOrdering verifies the picker renders sentinel first,
+// then worktrees group (group 0), then locals group (group 1), then
+// a separator row, then the remotes group (group 2). This three-group
+// rendering is the core of the new picker shape: the separator is the
+// visible affordance that tells users "this set is remote-tracking
+// branches" without colliding with the filter UI.
+func TestBuildListOrdering(t *testing.T) {
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeWorktree, Branch: "feature/x", Path: "/tmp/repo/.worktrees/x"},
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "alpha"},
+			{Type: worktree.TypeBranch, Branch: "main"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/beta"},
+			{Type: worktree.TypeBranch, Branch: "origin/gamma"},
+		}},
+	}
+	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	items := l.Items()
+	if len(items) < 6 {
+		t.Fatalf("expected at least 6 items (sentinel + 2 worktrees + 2 locals + 1 remote + 1 separator?), got %d", len(items))
+	}
+	// Row 0 must be the sentinel.
+	if first, ok := items[0].(entryItem); !ok || first.kind != kindNewWorktree {
+		t.Errorf("row 0 is not the sentinel")
+	}
+	// Find the separator row (kindSeparator) between locals and remotes.
+	var sawSeparator bool
+	for _, it := range items {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
+			sawSeparator = true
+			break
+		}
+	}
+	if !sawSeparator {
+		t.Error("no separator row found between locals and remotes")
+	}
+}
+
+// TestBuildListCurrentMarker asserts the entry whose Path resolves to
+// repoRoot is annotated with "(current)" so users see which worktree
+// they launched from. The marker lives on entryItem.label, not the
+// underlying worktree.Entry, so the original entry value remains safe
+// to forward into selectedEntryMsg and on to the agent launch.
+func TestBuildListCurrentMarker(t *testing.T) {
+	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{
+		Type:   worktree.TypeCurrent,
+		Branch: "main",
+		Path:   "/tmp/repo",
+	})
+	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	items := l.Items()
+	// items[0] is the sentinel; the only real entry sits at items[1].
+	got, ok := items[1].(entryItem)
+	if !ok {
+		t.Fatalf("items[1] is %T, want entryItem", items[1])
+	}
+	if got.label != "(current)" {
+		t.Errorf("label = %q, want (current)", got.label)
+	}
+	if got.entry.Path != "/tmp/repo" {
+		t.Errorf("entry.Path = %q, want /tmp/repo (entry must not be mutated)", got.entry.Path)
+	}
+}
+
+// TestBuildListDefaultMarker asserts entries whose Branch matches the
+// repo default branch are annotated with "(default)". Like the
+// (current) marker, the original entry.Branch is never mutated.
+func TestBuildListDefaultMarker(t *testing.T) {
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "main"},
+		}},
+	}
+	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	items := l.Items()
+	got, ok := items[1].(entryItem)
+	if !ok {
+		t.Fatalf("items[1] is %T, want entryItem", items[1])
+	}
+	if got.label != "(default)" {
+		t.Errorf("label = %q, want (default)", got.label)
+	}
+	if got.entry.Branch != "main" {
+		t.Errorf("entry.Branch = %q, want main (entry must not be mutated)", got.entry.Branch)
+	}
+}
+
+// TestBuildListCurrentWinsOverDefault asserts that when the current
+// worktree is also the default branch, the (current) marker is shown
+// rather than (default). (current) wins so the current worktree stays
+// visually distinct from the bare "main (default)" row that Enumerate
+// always emits — without this priority both rows would render
+// "(default)" and the bare row (which bypasses the launch guard) would
+// be easy to select by accident.
+func TestBuildListCurrentWinsOverDefault(t *testing.T) {
+	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{
+		Type:   worktree.TypeCurrent,
+		Branch: "main",
+		Path:   "/tmp/repo",
+	})
+	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	items := l.Items()
+	got := items[1].(entryItem)
+	if got.label != "(current)" {
+		t.Errorf("label = %q, want (current) (current must win over default)", got.label)
+	}
+}
+
+// TestBuildListNoSeparatorWhenRemotesEmpty asserts the locals→remotes
+// divider is only rendered when the remote-branches group is non-empty.
+// Without this, a repo with no remote-tracking branches shows a dangling
+// "── remote branches ──" row with nothing below it.
+func TestBuildListNoSeparatorWhenRemotesEmpty(t *testing.T) {
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "feature"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: nil},
+	}
+	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	for _, it := range l.Items() {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
+			t.Errorf("separator rendered despite empty remote group: %+v", ei)
+		}
+	}
+}
+
+// TestSeparatorItemRendersLabel asserts the separator row's Title is
+// its label string and its FilterValue is empty (so filtering hides
+// the divider along with the sentinel). A separator that survived the
+// filter would interrupt search results.
+func TestSeparatorItemRendersLabel(t *testing.T) {
+	item := entryItem{kind: kindSeparator, label: "── remote branches ──"}
+	if got := item.Title(); got != "── remote branches ──" {
+		t.Errorf("Title = %q, want the separator label", got)
+	}
+	if got := item.FilterValue(); got != "" {
+		t.Errorf("FilterValue = %q, want empty (separator must be hidden while filtering)", got)
+	}
+	if got := item.Description(); got != "" {
+		t.Errorf("Description = %q, want empty", got)
 	}
 }

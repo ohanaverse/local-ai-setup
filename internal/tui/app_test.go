@@ -131,12 +131,17 @@ func TestViewBeforeWindowSizeDoesNotPanic(t *testing.T) {
 // TestEntriesLoadedMsg asserts receiving worktree data builds the list and
 // marks the model ready. Without this the TUI would never transition from the
 // loading screen to the picker.
+//
+// After Ruling 17 (Task 3) removed the m.entries field, this test asserts
+// directly against the built list instead: the picker still contains the
+// sentinel + the single entry, in that order, which is what the user sees.
 func TestEntriesLoadedMsg(t *testing.T) {
 	m := model{width: 80, height: 24}
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 	}
-	got, _ := m.Update(entriesLoadedMsg{entries: entries})
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
 	gotModel, ok := got.(model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", got)
@@ -144,8 +149,21 @@ func TestEntriesLoadedMsg(t *testing.T) {
 	if !gotModel.ready {
 		t.Errorf("ready = false, want true")
 	}
-	if len(gotModel.entries) != 1 {
-		t.Errorf("entries = %d, want 1", len(gotModel.entries))
+	items := gotModel.list.Items()
+	// Sentinel + one real entry = 2 items.
+	if len(items) != 2 {
+		t.Fatalf("list items = %d, want 2 (sentinel + entry)", len(items))
+	}
+	first, ok := items[0].(entryItem)
+	if !ok || first.kind != kindNewWorktree {
+		t.Errorf("items[0] = %+v, want sentinel (kindNewWorktree)", items[0])
+	}
+	second, ok := items[1].(entryItem)
+	if !ok {
+		t.Fatalf("items[1] is %T, want entryItem", items[1])
+	}
+	if second.entry.Branch != "main" {
+		t.Errorf("items[1] branch = %q, want main", second.entry.Branch)
 	}
 }
 
@@ -161,7 +179,8 @@ func TestEntriesLoadedSetsDefaultBranchWarning(t *testing.T) {
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
 	}
-	newM, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
+	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
 	mm := newM.(model)
 
 	if mm.defaultBranch != "main" {
@@ -182,7 +201,8 @@ func TestEntriesLoadedNoWarningForMultipleEntries(t *testing.T) {
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
 		{Type: worktree.TypeBranch, Branch: "feature"},
 	}
-	newM, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
+	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
 	mm := newM.(model)
 
 	if strings.Contains(mm.list.Title, "WARNING") {
@@ -197,7 +217,8 @@ func TestViewReady(t *testing.T) {
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 	}
-	got, _ := m.Update(entriesLoadedMsg{entries: entries})
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups})
 	gotModel := got.(model)
 	view := gotModel.View()
 	if !strings.Contains(view, "Pick a worktree or branch") {
@@ -217,7 +238,8 @@ func TestEnterSelectsEntry(t *testing.T) {
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
 	}
-	got, _ := m.Update(entriesLoadedMsg{entries: entries})
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups})
 	m = got.(model)
 	// Move down past the sentinel (index 0) to the first real entry.
 	var downCmd tea.Cmd
@@ -235,6 +257,140 @@ func TestEnterSelectsEntry(t *testing.T) {
 	if selected.entry.Branch != "main" {
 		t.Errorf("selected branch = %q, want main", selected.entry.Branch)
 	}
+}
+
+// TestEnterOnBareDefaultBranchTriggersGuard asserts that selecting the bare
+// default-branch row (TypeBranch with Path="") that Enumerate always emits
+// trips the phaseGuardWarn prompt before launching. This closes the guard
+// bypass where that row skipped the check because it isn't TypeCurrent, and
+// launched the agent on main in wt's CWD with no protection. A feature
+// branch must NOT trip the guard — it selects straight through.
+func TestEnterOnBareDefaultBranchTriggersGuard(t *testing.T) {
+	m := model{width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "main"}, // bare default row
+			{Type: worktree.TypeBranch, Branch: "feature"},
+		}},
+	}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
+	m = got.(model)
+
+	// Select the bare default-branch row.
+	idx := pickEntryIndex(t, m, func(ei entryItem) bool {
+		return ei.kind == kindEntry && ei.entry.Type == worktree.TypeBranch && ei.entry.Branch == "main"
+	})
+	m.list.Select(idx)
+	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := newM.(model)
+	if mm.phase != phaseGuardWarn {
+		t.Fatalf("bare default row: phase = %v, want phaseGuardWarn (must trip guard, not launch)", mm.phase)
+	}
+	if cmd != nil {
+		t.Errorf("bare default row: expected nil cmd (guard prompt, no launch), got %T", cmd())
+	}
+
+	// A non-default branch must select straight through (no guard).
+	mm.phase = phaseList // reset for the contrast case
+	featIdx := pickEntryIndex(t, mm, func(ei entryItem) bool {
+		return ei.kind == kindEntry && ei.entry.Branch == "feature"
+	})
+	mm.list.Select(featIdx)
+	newM2, cmd2 := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm2 := newM2.(model)
+	if mm2.phase == phaseGuardWarn {
+		t.Fatalf("feature row: phase = phaseGuardWarn, want no guard for non-default branch")
+	}
+	if cmd2 == nil {
+		t.Fatal("feature row: expected a selectedEntryMsg cmd, got nil")
+	}
+}
+
+// TestEnterOnSeparatorIsIgnored asserts that pressing Enter on the
+// locals→remotes separator row does nothing rather than forwarding a
+// zero-value worktree.Entry to selectedEntryMsg — which would launch the
+// agent in wt's CWD with cmd.Dir="". The separator is a visual divider
+// only; it carries no pickable target.
+func TestEnterOnSeparatorIsIgnored(t *testing.T) {
+	m := model{width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "feature"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/dev"},
+		}},
+	}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
+	m = got.(model)
+
+	idx := -1
+	for i, it := range m.list.Items() {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("separator row not found in list")
+	}
+	m.list.Select(idx)
+	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := newM.(model)
+	if mm.phase != phaseList {
+		t.Fatalf("separator Enter: phase = %v, want phaseList (must not transition)", mm.phase)
+	}
+	if cmd != nil {
+		t.Errorf("separator Enter: expected nil cmd, got %T (would forward a zero entry to launch)", cmd())
+	}
+}
+
+// TestDefaultBranchWarningFiresDespiteBareDefaultRow asserts that the
+// default-branch warning still fires when the only entries are the current
+// worktree on main plus the redundant bare default-branch row Enumerate
+// always emits. The old total==1 heuristic never saw this shape (Enumerate
+// now adds the bare row), so the warning became dead code; the new
+// heuristic discounts the bare row and still warns.
+func TestDefaultBranchWarningFiresDespiteBareDefaultRow(t *testing.T) {
+	cfg := &config.Config{DefaultTag: "code"}
+	m := model{cfg: cfg, width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "main"}, // bare default row
+		}},
+	}
+	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
+	mm := newM.(model)
+	if !strings.Contains(mm.list.Title, "WARNING") {
+		t.Fatalf("expected default-branch warning title, got %q", mm.list.Title)
+	}
+}
+
+// pickEntryIndex returns the index of the first list item matching match, or
+// fails the test. Used by Enter-handler tests to position the cursor on a
+// specific entry without depending on list ordering.
+func pickEntryIndex(t *testing.T, m model, match func(entryItem) bool) int {
+	t.Helper()
+	for i, it := range m.list.Items() {
+		ei, ok := it.(entryItem)
+		if !ok {
+			continue
+		}
+		if match(ei) {
+			return i
+		}
+	}
+	t.Fatal("no list item matched the requested entry")
+	return -1
 }
 
 // TestSelectedEntryMsgTransitionsToAgentPhase asserts that choosing a
@@ -414,7 +570,7 @@ func TestNKeyIgnoredWhileLoading(t *testing.T) {
 // sentinel must be Enter-able, not just `n`-able.
 func TestEnterOnSentinelOpensNewWorktreePhase(t *testing.T) {
 	// Build a list with just the sentinel as the selected item.
-	l := buildList(nil, 80, 24)
+	l := buildList(nil, "", "/tmp/repo", 80, 24)
 	m := model{
 		phase: phaseList, ready: true, width: 80, height: 24,
 		list: l,
@@ -435,7 +591,7 @@ func TestEnterOnSentinelOpensNewWorktreePhase(t *testing.T) {
 // existing list-unready guard and the `n` keypress guard.
 func TestEnterOnSentinelIgnoredWhileLoading(t *testing.T) {
 	// Even with a sentinel-bearing list, ready=false short-circuits.
-	l := buildList(nil, 80, 24)
+	l := buildList(nil, "", "/tmp/repo", 80, 24)
 	m := model{
 		phase: phaseList, ready: false, width: 80, height: 24,
 		list: l,
@@ -587,12 +743,13 @@ func TestEntriesLoadedAppliesPendingHighlight(t *testing.T) {
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
 		{Type: worktree.TypeWorktree, Branch: "x", Path: "/repo/.worktrees/x"},
 	}
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
 	m := model{
 		width:            80,
 		height:           24,
 		pendingHighlight: "x",
 	}
-	got, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
 	gotModel, ok := got.(model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", got)
@@ -625,8 +782,9 @@ func TestEntriesLoadedNoPendingHighlightLeavesCursorAtZero(t *testing.T) {
 	entries := []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
 	}
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
 	m := model{width: 80, height: 24}
-	got, _ := m.Update(entriesLoadedMsg{entries: entries, defaultBranch: "main"})
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
 	gotModel, ok := got.(model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", got)
@@ -666,8 +824,9 @@ func TestQTypesInNewWorktreePrompt(t *testing.T) {
 // quit the TUI on the first 'q'.
 func TestQDoesNotQuitWhileFiltering(t *testing.T) {
 	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
 	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	m.list = buildList(entries, 78, 22)
+	m.list = buildList(groups, "", "/repo", 78, 22)
 	// Open the filter exactly like a user pressing '/'.
 	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.list.FilterState() != list.Filtering {
@@ -718,8 +877,9 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 // name became unfilterable by typing.
 func TestNNotHijackedWhileFiltering(t *testing.T) {
 	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
 	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	m.list = buildList(entries, 78, 22)
+	m.list = buildList(groups, "", "/repo", 78, 22)
 	// Open the filter exactly like a user pressing '/'.
 	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.list.FilterState() != list.Filtering {
@@ -813,7 +973,7 @@ func TestNewWorktreeCreatedClearsCreating(t *testing.T) {
 func TestReloadErrorVisibleAboveList(t *testing.T) {
 	m := model{width: 80, height: 24}
 	got, _ := m.Update(entriesLoadedMsg{
-		entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}},
+		groups: []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}}},
 	})
 	m = got.(model) // ready == true
 	if !m.ready {

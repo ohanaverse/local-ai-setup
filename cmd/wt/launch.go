@@ -30,12 +30,10 @@ func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg
 }
 
 // buildCommandForCommand builds the exec.Cmd for a command-like agent (e.g.
-// shell). It prints a note when -M is supplied because pinned models are
-// meaningless for command agents, then runs in the requested worktree.
+// shell). It runs in the requested worktree; the -M warning lives in
+// launchFiltered where the pinnedSupplied signal is available.
 func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, pinned string, extraArgs []string) (*exec.Cmd, error) {
-	if pinned != "" {
-		fmt.Fprintf(os.Stderr, "note: -M ignored for command agent %q\n", agent)
-	}
+	_ = pinned
 	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, nil, cfg, extraArgs)
 }
 
@@ -60,26 +58,39 @@ func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool,
 	return m, cmd, berr
 }
 
-// launchFiltered is the non-TUI launch path used by main.go. It resolves the
-// model through the -M/-T/-F flags (or detects a command agent), fails fast if
-// the selected ollama model is unavailable, then runs the agent in
-// worktreePath with stdio wired through so the agent owns the terminal and its
-// exit code propagates to the caller. When multiple models are eligible and
-// no -M pin is given, it advances through the eligible list using the per-slot
-// rotation state (agent+tag+family) so successive launches rotate rather than
-// repeat the same model.
-func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, extraArgs []string) error {
+// launchFiltered is the wired-up launch path used by main.go for every
+// non-TUI launch (-w, --cwd, and outside-a-repo passthrough). It resolves
+// the eligible model list (via cfg.EligibleModels), pins the model when -M
+// is provided, and otherwise advances through the eligible list using the
+// per-slot rotation state (agent+tag+family). For a pinned match or a
+// single eligible model, no rotation is consulted. Command agents (shell,
+// etc.) bypass the model layer but still run in worktreePath — they route
+// through buildFilteredCmd so the same worktree-path threading that
+// TestBuildFilteredCmdCommandAgentUsesWorktree locks down is on the launch
+// path, instead of an ad-hoc CWD helper that silently dropped the path.
+//
+// pinnedSupplied distinguishes "user passed -M with an empty value" from
+// "user did not pass -M". It's used to surface a stderr note when -M is
+// passed together with a command agent (where the pin would otherwise be
+// silently dropped).
+func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+	if agents.IsCommand(agent) {
+		if pinnedSupplied {
+			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
+		}
+		// buildFilteredCmd dispatches command agents to buildCommandForCommand
+		// with the real worktreePath (not "."), so shell-wt -W foo runs in the
+		// worktree. runAgentCmd then wires stdio and execs it.
+		_, cmd, err := buildFilteredCmd(agent, worktreePath, cfg, yolo, "", "", "", extraArgs)
+		if err != nil {
+			return err
+		}
+		return runAgentCmd(cmd)
+	}
 	var rot *rotation.Rotation
 
 	// Resolve the model first. Command agents short-circuit here.
 	m, err := resolveModel(agent, cfg, tags, family, pinned)
-	if errors.Is(err, errCommandAgent) {
-		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, pinned, extraArgs)
-		if berr != nil {
-			return berr
-		}
-		return runAgentCmd(cmd)
-	}
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate
 		// through the eligible list by (agent, firstTag, family) slot.
@@ -159,17 +170,4 @@ func firstOrDefault(s, fallback string) string {
 		return fallback
 	}
 	return parts[0]
-}
-
-// launchDirect runs the agent in the current directory (passthrough when
-// outside a git repo).
-func launchDirect(agent string, cfg *config.Config, yolo bool, extraArgs []string) error {
-	// Use buildFilteredCmd with worktreePath="." to build against the CWD.
-	// buildFilteredCmd handles command agents correctly (zero-value model,
-	// stderr note on -M), so launchDirect becomes a one-liner.
-	_, cmd, err := buildFilteredCmd(agent, ".", cfg, yolo, "", "", "", extraArgs)
-	if err != nil {
-		return err
-	}
-	return runAgentCmd(cmd)
 }

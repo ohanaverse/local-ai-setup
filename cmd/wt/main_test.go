@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -33,5 +34,33 @@ func TestLegacyShortFlagRejected(t *testing.T) {
 				t.Errorf("error %q does not contain migration message", err.Error())
 			}
 		})
+	}
+}
+
+// TestPickerSkippedOnWorktreeFlag verifies that `wt -W foo` doesn't
+// open the TUI. We can't easily test the TUI itself from a unit test;
+// instead we verify the short-circuit path runs by checking that
+// `wt -W foo -A claude` errors with "not in a git repo" or similar
+// before any TUI is launched.
+func TestPickerSkippedOnWorktreeFlag(t *testing.T) {
+	// Run from a non-git directory.
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-W", "my-branch"})
+	err := root.Execute()
+	// Should error with "not in a git repo", not launch a TUI.
+	if err == nil {
+		t.Fatal("expected error for -W outside git repo")
+	}
+	if !strings.Contains(err.Error(), "git") {
+		t.Errorf("error %q doesn't mention git", err.Error())
 	}
 }

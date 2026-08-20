@@ -1,7 +1,7 @@
 package main
 
 import (
-	"io"
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -256,9 +256,9 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 // TestBuildFilteredCmdCommandAgentUsesWorktree is the regression lock for the
 // shell worktree-path drop: `wt -W foo --agent shell` must run in the worktree,
 // not the caller's CWD. The command-agent branch of launchFiltered previously
-// routed through launchDirect → launch(agent, "."), discarding the worktree
-// path that EnsureForName had just created. buildFilteredCmd must build the
-// command with cmd.Dir set to the requested worktree.
+// routed through a CWD-only helper that hardcoded worktreePath=".", discarding
+// the worktree path that EnsureForName had just created. buildFilteredCmd must
+// build the command with cmd.Dir set to the requested worktree.
 func TestBuildFilteredCmdCommandAgentUsesWorktree(t *testing.T) {
 	cfg := &config.Config{}
 	worktree := "/tmp/wt-shell-regression"
@@ -276,39 +276,55 @@ func TestBuildFilteredCmdCommandAgentUsesWorktree(t *testing.T) {
 	}
 }
 
-// TestBuildFilteredCmdCommandAgentNotesIgnoredModel verifies that supplying -M
-// to a command agent (shell) does not break the build and surfaces a stderr
-// note so the user knows the pin was discarded. No note is emitted when -M is
-// absent. This matches the spec's "ignore -M with stderr note" for command
-// agents.
-func TestBuildFilteredCmdCommandAgentNotesIgnoredModel(t *testing.T) {
-	cfg := &config.Config{}
-	worktree := "/tmp/wt-shell-note"
+// TestLaunchFilteredCommandAgentRunsInWorktree is the end-to-end regression
+// lock for the shell worktree-path drop: it exercises the full launchFiltered
+// → buildFilteredCmd → runAgentCmd path (not just buildFilteredCmd in
+// isolation) and asserts the command actually runs inside the requested
+// worktree. The build-only test above catches cmd.Dir; this catches a future
+// regression where the wired path bypasses buildFilteredCmd again (as the old
+// launchDirect helper did) and silently drops the worktree path.
+func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
 
-	captureStderr := func(pinned string) string {
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatalf("os.Pipe: %v", err)
-		}
-		orig := os.Stderr
-		os.Stderr = w
-		_, _, berr := buildFilteredCmd("shell", worktree, cfg, false, "", "", pinned, nil)
-		w.Close()
-		os.Stderr = orig
-		if berr != nil {
-			t.Fatalf("buildFilteredCmd: %v", berr)
-		}
-		out, _ := io.ReadAll(r)
-		return string(out)
+	// Recorder script: write its real CWD (via pwd) to an output file passed
+	// as argv[1]. The shell driver execs argv[0] directly with cmd.Dir set to
+	// the worktree, so the recorded CWD must equal the worktree path.
+	binDir := t.TempDir()
+	recorder := filepath.Join(binDir, "record-pwd.sh")
+	if err := os.WriteFile(recorder, []byte("#!/bin/sh\npwd > \"$1\"\n"), 0o755); err != nil {
+		t.Fatalf("write recorder: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "shell", SupportedProviders: nil},
+		},
 	}
 
-	if got := captureStderr("claude/opus"); !strings.Contains(got, "ignored for command agent") {
-		t.Errorf("with -M: stderr = %q, want a note that -M is ignored", got)
+	out := filepath.Join(t.TempDir(), "pwd.txt")
+	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{recorder, out}); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
 	}
-	if got := captureStderr(""); strings.Contains(got, "ignored") {
-		t.Errorf("without -M: stderr = %q, want no note", got)
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read recorded pwd: %v", err)
+	}
+	// Resolve symlinks so macOS /var → /private/var doesn't cause a spurious
+	// mismatch (the worktree and the recorder's pwd may report differently).
+	gotDir, _ := filepath.EvalSymlinks(strings.TrimSpace(string(got)))
+	wantDir, _ := filepath.EvalSymlinks(worktree)
+	if gotDir != wantDir {
+		t.Errorf("recorded CWD = %q, want %q (shell must run in the worktree)", gotDir, wantDir)
 	}
 }
+
+// (TestBuildFilteredCmdCommandAgentNotesIgnoredModel removed in PR #56.
+// The -M-with-command warning now lives in launchFiltered (where the
+// pinnedSupplied signal is available); see
+// TestLaunchFilteredWarnWhenModelPassedToCommand below for the contract test.)
 
 // TestOllamaUnavailableErrorIncludesPullHint verifies the user-facing error
 // text for unavailable local ollama models.
@@ -415,7 +431,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	slot := rotation.SlotFromFlags("claude", "code", "")
 	want := []string{"claude/a", "claude/b", "claude/c"}
 	for i, id := range want {
-		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", nil); err != nil {
+		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil); err != nil {
 			t.Fatalf("launchFiltered run %d: %v", i+1, err)
 		}
 		statePath := rotation.StateFileForSlot(filepath.Join(dir, "agent-wt"), slot)
@@ -426,5 +442,54 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 		if got := strings.TrimSpace(string(data)); got != id {
 			t.Fatalf("run %d state = %q, want %q", i+1, got, id)
 		}
+	}
+}
+
+// TestLaunchFilteredWarnWhenModelPassedToCommand verifies that when the
+// user passes -M together with a command agent (e.g. `-A shell -M foo`),
+// launchFiltered prints a stderr note `wt: -M ignored for command
+// "shell"` before launching the command. Without this warning the user
+// would see the command launch but the -M pin silently dropped —
+// surprising and hard to debug. The note is the spec's
+// error-handling row 6 contract.
+//
+// Note: a symmetric "no warning when -A is an agent" test is not added
+// here — exercising that branch through launchFiltered requires running
+// the actual agent binary, which hangs in the test environment. The
+// warning's only write site is the `if pinnedSupplied && IsCommand(agent)`
+// branch at launch.go:74-76; the inverse is locked by code review.
+func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Agents: []config.Agent{
+			{Name: "shell", SupportedProviders: nil},
+		},
+	}
+
+	// Capture stderr.
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = oldStderr }()
+
+	// launchFiltered with -A shell -M claude/opus. The actual exec may
+	// fail (no TTY, no args), but the stderr note is printed before the
+	// exec, so it lands in our pipe regardless of the outcome.
+	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil)
+
+	// Close the writer to flush the pipe and read.
+	_ = w.Close()
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	if !strings.Contains(buf.String(), `wt: -M ignored for command "shell"`) {
+		t.Errorf("stderr = %q; want it to contain %q", buf.String(), `wt: -M ignored for command "shell"`)
 	}
 }

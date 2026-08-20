@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -22,6 +23,23 @@ type Entry struct {
 	Type   Type
 	Branch string // branch name; "(detached)" for detached worktrees
 	Path   string // worktree path; empty for bare branches
+}
+
+// GroupKind identifies a logical group of picker rows.
+type GroupKind int
+
+const (
+	GroupWorktrees GroupKind = iota
+	GroupLocalBranches
+	GroupRemoteBranches
+)
+
+// EntryGroup is one ordered slice of entries in the picker. The picker
+// renders groups in order (worktrees, locals, remotes) with a
+// separator between locals and remotes.
+type EntryGroup struct {
+	Kind    GroupKind
+	Entries []Entry
 }
 
 // runGit runs a git command in dir (or the current directory if dir is empty).
@@ -153,30 +171,30 @@ func DefaultBranch(dir string) (string, error) {
 	return strings.TrimPrefix(s, "refs/remotes/origin/"), nil
 }
 
-// Enumerate returns all pickable targets in the repo at dir.
-// cwdRoot is the path of the current worktree; its entry is tagged TypeCurrent.
-func Enumerate(dir, cwdRoot string) ([]Entry, error) {
-	entries, err := listWorktrees(dir, cwdRoot)
+// Enumerate returns pickable targets grouped by kind: worktrees
+// first, then local branches, then remote branches. The default
+// branch is always emitted as a TypeBranch row (even when also
+// checked out in a worktree) so the picker is never empty for that
+// reason alone.
+func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
+	worktreeEntries, err := listWorktrees(dir, cwdRoot)
 	if err != nil {
 		return nil, err
 	}
-
-	used := inUse(entries)
-	// Prevent the default branch from appearing as a bare branch so users are
-	// nudged toward feature branches.
-	if db, _ := DefaultBranch(dir); db != "" {
-		used[db] = true
-	}
+	used := inUse(worktreeEntries)
+	db, _ := DefaultBranch(dir)
 
 	local, err := listLocalBranches(dir)
 	if err != nil {
 		return nil, err
 	}
 	localSet := make(map[string]bool, len(local))
+	var localEntries []Entry
 	for _, b := range local {
 		localSet[b] = true
-		if !used[b] {
-			entries = append(entries, Entry{Type: TypeBranch, Branch: b})
+		// Always emit the default branch as a TypeBranch row.
+		if b == db || !used[b] {
+			localEntries = append(localEntries, Entry{Type: TypeBranch, Branch: b})
 		}
 	}
 
@@ -184,15 +202,39 @@ func Enumerate(dir, cwdRoot string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	var remoteEntries []Entry
 	for _, r := range remotes {
 		short := r[strings.IndexByte(r, '/')+1:]
 		if localSet[short] {
-			continue // shadowed by a local branch
+			continue
 		}
 		if !used[r] {
-			entries = append(entries, Entry{Type: TypeBranch, Branch: r})
+			remoteEntries = append(remoteEntries, Entry{Type: TypeBranch, Branch: r})
 		}
 	}
 
-	return entries, nil
+	// Sort each group by branch name (with remote prefix stripped for remotes).
+	sortByBranch := func(es []Entry, stripRemote bool) {
+		sort.Slice(es, func(i, j int) bool {
+			a, b := es[i].Branch, es[j].Branch
+			if stripRemote {
+				if i := strings.IndexByte(a, '/'); i >= 0 {
+					a = a[i+1:]
+				}
+				if i := strings.IndexByte(b, '/'); i >= 0 {
+					b = b[i+1:]
+				}
+			}
+			return a < b
+		})
+	}
+	sortByBranch(worktreeEntries, false)
+	sortByBranch(localEntries, false)
+	sortByBranch(remoteEntries, true)
+
+	return []EntryGroup{
+		{Kind: GroupWorktrees, Entries: worktreeEntries},
+		{Kind: GroupLocalBranches, Entries: localEntries},
+		{Kind: GroupRemoteBranches, Entries: remoteEntries},
+	}, nil
 }

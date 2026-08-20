@@ -41,9 +41,9 @@ func rootCmd() *cobra.Command {
 		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
-			"  wt -W my-feature --agent claude  # create worktree and launch\n" +
-			"  wt --cwd --agent codex           # launch in current repo root\n" +
-			"  wt --init                        # seed agent instruction files",
+			"  wt -W my-feature -A claude   # create worktree and launch\n" +
+			"  wt --cwd --agent codex       # launch in current repo root\n" +
+			"  wt --init                    # seed agent instruction files",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered
 		// subcommand name (models/agents/rotate). Without this, passthrough
@@ -132,12 +132,16 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				entries, err := worktree.Enumerate(root, root)
+				groups, err := worktree.Enumerate(root, root)
 				if err != nil {
 					return err
 				}
-				for _, e := range entries {
-					fmt.Printf("%-9s %-30s %s\n", e.Type, e.Branch, e.Path)
+				// Enumerate now returns three ordered groups; iterate
+				// groups and entries the same way the picker does.
+				for _, g := range groups {
+					for _, e := range g.Entries {
+						fmt.Printf("%-9s %-30s %s\n", e.Type, e.Branch, e.Path)
+					}
 				}
 				return nil
 			}
@@ -155,34 +159,38 @@ func rootCmd() *cobra.Command {
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
+			// cmd.Flags().Changed("model") is true only when -M was passed
+			// (regardless of value). Used to surface a stderr note when -M
+			// is paired with a command agent.
+			pinnedSupplied := cmd.Flags().Changed("model")
 
 			// -w <name>: use/create a worktree, then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
 				if err != nil {
-					return err
+					return fmt.Errorf("not in a git repo: %w", err)
 				}
 				maybeInstallGuard()
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
 					return err
 				}
-				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, args)
+				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
 			// --cwd: launch in the current repo root.
 			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {
-					return err
+					return fmt.Errorf("not in a git repo: %w", err)
 				}
 				maybeInstallGuard()
-				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, args)
+				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
 			// Outside a git repo: pure passthrough to the agent.
 			if !inGitRepo() {
-				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, args)
+				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
 			// Interactive TUI.

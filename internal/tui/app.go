@@ -50,9 +50,8 @@ type model struct {
 	width  int
 	height int
 
-	entries []worktree.Entry
-	list    list.Model
-	ready   bool
+	list  list.Model
+	ready bool
 
 	phase    phase
 	agent    string             // current agent name
@@ -162,13 +161,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.listError = ""
-		m.entries = msg.entries
+		// Pass the three groups straight to buildList, which interleaves them
+		// into the picker (sentinel → worktrees → locals → separator → remotes)
+		// and tags the (current)/(default) markers on entryItem.
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
-		m.list = buildList(msg.entries, m.width-2, m.height-2)
+		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.width-2, m.height-2)
 		m.ready = true
 
-		if len(msg.entries) == 1 && isCurrentOnDefaultBranch(msg.entries[0], msg.defaultBranch) {
+		// Default-branch warning: if the only picker target is the current
+		// worktree on the repo default branch (no other worktrees, no local
+		// branches), warn the user they're working directly on the protected
+		// branch. Same intent as before, just on the new grouped shape.
+		if isDefaultBranchOnly(msg.groups, m.defaultBranch) {
 			m.list.Title = "WARNING: you are on the default branch (" + msg.defaultBranch + ")"
 		}
 		// Apply a pending highlight (set after a successful
@@ -329,7 +334,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item.kind == kindNewWorktree {
 					return m.openNewWorktreePrompt(), nil
 				}
-				if isCurrentOnDefaultBranch(item.entry, m.defaultBranch) {
+				// Separators are non-selectable visual dividers: they carry
+				// a zero-value worktree.Entry, so Enter must never forward
+				// one to selectedEntryMsg (it would launch the agent in wt's
+				// CWD with cmd.Dir=""). Ignore the keypress instead.
+				if item.kind == kindSeparator {
+					return m, nil
+				}
+				if launchesOnDefaultBranch(item.entry, m.defaultBranch) {
 					installed := guard.Check() == guard.Installed
 					m.guardWarnEntry = item.entry
 					m.guardWarnModel = list.New(buildGuardChoices(item.entry.Branch, installed), list.NewDefaultDelegate(), m.width-2, m.height-2)
@@ -593,18 +605,20 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	return m, runAndWaitCmd(cmd)
 }
 
-// loadEntriesCmd returns a command that enumerates worktrees/branches.
 // loadEntriesCmd returns a command that enumerates worktrees/branches
-// and captures the repo root for the new-worktree prompt.
+// and captures the repo root for the new-worktree prompt. The returned
+// message carries the three-group Enumerate shape, which the picker
+// (buildList) interleaves into sentinel → worktrees → locals →
+// separator → remotes.
 func loadEntriesCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := worktree.RepoRoot()
 		if err != nil {
 			return entriesLoadedMsg{err: err}
 		}
-		entries, err := worktree.Enumerate(root, root)
+		groups, err := worktree.Enumerate(root, root)
 		defaultBranch, _ := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{entries: entries, defaultBranch: defaultBranch, repoRoot: root, err: err}
+		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
 	}
 }
 
@@ -614,11 +628,57 @@ func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
 	return defaultBranch != "" && e.Type == worktree.TypeCurrent && e.Branch == defaultBranch
 }
 
-// entriesLoadedMsg carries the enumeration result to Update.
-// repoRoot is the git repo root, captured at load time so the
-// new-worktree prompt can use it without re-resolving.
+// launchesOnDefaultBranch reports whether selecting this entry would land
+// the agent on the repo default branch — the situation the phaseGuardWarn
+// prompt exists to gate. This covers every entry shape whose Branch is the
+// default branch: the current worktree on main (TypeCurrent), a separate
+// worktree checked out on main (TypeWorktree), and the bare default-branch
+// row Enumerate always emits (TypeBranch with Path=""). The previous check
+// only matched TypeCurrent, so the bare row silently bypassed the guard and
+// launched on main in wt's CWD with no protection.
+func launchesOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
+	return defaultBranch != "" && e.Branch == defaultBranch
+}
+
+// isDefaultBranchOnly reports whether the user is working directly on the
+// repo default branch with nothing else to switch to — the situation where
+// a default-branch warning in the picker title is warranted. Returns true
+// when the current worktree is on the default branch and every other entry
+// is just the redundant bare default-branch row Enumerate adds (a duplicate
+// view of main, not an alternative target). Any other entry — a different
+// branch, a detached worktree, a second worktree on main — means there is
+// something to switch to, so the warning is suppressed.
+func isDefaultBranchOnly(groups []worktree.EntryGroup, defaultBranch string) bool {
+	if defaultBranch == "" {
+		return false
+	}
+	onDefault := false
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if isCurrentOnDefaultBranch(e, defaultBranch) {
+				onDefault = true
+				continue
+			}
+			// The bare default-branch row is a duplicate view of main, not
+			// an alternative target — skip it.
+			if e.Type == worktree.TypeBranch && e.Branch == defaultBranch {
+				continue
+			}
+			// Any other entry means there's something to switch to.
+			return false
+		}
+	}
+	return onDefault
+}
+
+// entriesLoadedMsg carries the enumeration result to Update. groups is
+// the three-group shape from worktree.Enumerate (worktrees / local
+// branches / remote branches); the handler passes them straight to
+// buildList, which interleaves them with a separator between locals
+// and remotes. repoRoot is the git repo root, captured at load time so
+// the new-worktree prompt can use it without re-resolving.
 type entriesLoadedMsg struct {
-	entries       []worktree.Entry
+	groups        []worktree.EntryGroup
 	defaultBranch string
 	repoRoot      string
 	err           error
