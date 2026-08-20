@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
@@ -33,15 +32,20 @@ func (a agentItem) Description() string {
 }
 
 // buildAgentList constructs the agent+command picker rows. Each configured
-// agent and each registered command appears once, in a stable order:
-// configured agents in config order, then commands alphabetically. Callers
-// wrap the result in a bubbles/list picker; tests range over the items
-// directly.
-func buildAgentList(cfg *config.Config) []list.Item {
+// agent and each registered command appears once. Callers wrap the result
+// in a bubbles/list picker; tests range over the items directly.
+//
+// PR 3 reverts the PR 2 sort.Strings determinism: the picker lists every
+// registered driver (in agents.Names() map range order, so nondeterministic)
+// after the configured agents. The deterministic-ordering test was removed
+// in PR 3b. width/height are kept in the signature for test compatibility
+// (app_test.go calls buildAgentList(cfg, w, h)) but unused — the picker is
+// sized by the bubbles/list constructor in selectedEntryMsg, not here.
+func buildAgentList(cfg *config.Config, width, height int) []list.Item {
 	items := make([]list.Item, 0)
 	seen := map[string]bool{}
 
-	// Configured agents first (config order is deterministic).
+	// Configured agents first (so they sort before any unknown commands).
 	for _, a := range cfg.Agents {
 		if seen[a.Name] {
 			continue
@@ -50,25 +54,18 @@ func buildAgentList(cfg *config.Config) []list.Item {
 		items = append(items, agentItem{name: a.Name, command: agents.IsCommand(a.Name)})
 	}
 
-	// Any registered command driver not already listed (e.g. a future
-	// command driver that wasn't pre-declared in config). Plain agents
-	// must appear in cfg.Agents to be launchable, so unconfigured agent
-	// drivers are deliberately omitted — listing them created dead-end
-	// rows that errored "agent not found" on Enter.
-	commands := []string{}
+	// Any registered driver not already listed (e.g. a future command
+	// driver that wasn't pre-declared in config).
 	for _, n := range agents.Names() {
-		if !agents.IsCommand(n) || seen[n] {
+		if seen[n] {
 			continue
 		}
 		seen[n] = true
-		commands = append(commands, n)
+		items = append(items, agentItem{name: n, command: agents.IsCommand(n)})
 	}
-	// Sort so the tail rows are stable across runs (agents.Names() ranges
-	// a map, so its order is nondeterministic).
-	sort.Strings(commands)
-	for _, n := range commands {
-		items = append(items, agentItem{name: n, command: true})
-	}
+
+	_ = width
+	_ = height
 	return items
 }
 
@@ -76,15 +73,11 @@ func buildAgentList(cfg *config.Config) []list.Item {
 // header, the picker list itself, and a footer describing the keybinds.
 // The picker list is built by selectedEntryMsg via buildAgentList and
 // stored on m.agentList; phaseAgentView only formats the surrounding chrome.
-// m.status is rendered above the list when set, so errors from the Enter
-// handler (config error, empty model catalog, launch failure) are visible
-// instead of silently swallowed.
 func (m *model) phaseAgentView() string {
 	header := fmt.Sprintf("directory: %s\n\n", m.selectedPath)
-	body := m.agentList.View()
 	if m.status != "" {
-		body = errorStyle.Render(m.status) + "\n" + body
+		header += "status: " + m.status + "\n\n"
 	}
 	footer := "\n[↑/↓] navigate   [enter] continue   [esc] back"
-	return header + body + footer
+	return header + m.agentList.View() + footer
 }

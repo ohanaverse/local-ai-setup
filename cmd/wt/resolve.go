@@ -22,15 +22,11 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //   - pinned != "" and not in eligible → error
 //   - len(eligible) == 0 → error "no models match"
 //   - len(eligible) == 1 → return it
+//   - len(eligible) > 1 and pinned == "" → error "specify -M"
 //   - len(eligible) > 1 and pinned != "" → return pinned
-//   - len(eligible) > 1 and pinned == "" and no -T/-F → defaultModel fallback
-//     (preserves the pre-flag-surface behavior so `wt -W foo --agent claude`
-//     still launches instead of erroring)
-//   - len(eligible) > 1 and pinned == "" and -T/-F supplied → error "specify -M"
-//     (the user opted into filtering; an ambiguous result must be pinned)
 //
-// Note: rotation lives outside this function. PR 3 will replace the
-// defaultModel fallback with rotation through the eligible list.
+// Note: rotation lives outside this function. PR 3 will wrap this to
+// advance through the eligible list when pinned == "".
 func resolveModel(agent string, cfg *config.Config, tags, family, pinned string) (config.Model, error) {
 	if agents.IsCommand(agent) {
 		return config.Model{}, errCommandAgent
@@ -51,14 +47,7 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		return config.Model{}, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 	}
 	if len(eligible) > 1 {
-		// When the user supplied no filters at all, fall back to the
-		// pre-flag-surface default so existing invocations keep launching
-		// rather than erroring. Only demand -M when the user opted into
-		// -T/-F and the filtered set is still ambiguous.
-		if len(config.ParseFilterList(tags)) == 0 && len(config.ParseFilterList(family)) == 0 {
-			return defaultModel(cfg, agent), nil
-		}
-		return config.Model{}, fmt.Errorf("multiple models match for agent %q with tags %q and family %q; specify -M to pin one", agent, tags, family)
+		return config.Model{}, fmt.Errorf("multiple models match for agent %q; specify -M to pin one", agent)
 	}
 	return eligible[0], nil
 }

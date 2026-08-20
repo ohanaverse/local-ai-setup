@@ -118,7 +118,11 @@ func rotateCmd(a *app) *cobra.Command {
 			if len(models) == 0 {
 				return fmt.Errorf("no models tagged %q", tag)
 			}
-			r := rotation.New(tag, models, "")
+			// Legacy CLI shape: rotate is scoped by tag only. We use an empty
+			// agent/family so the state-file name matches legacy behavior
+			// (rotation-<tag>.state via the back-compat read path).
+			slot := rotation.Slot{Agent: "-", Tag: tag, Family: "-"}
+			r := rotation.NewForSlot(slot, models, "")
 			last, ok := r.LastLaunched()
 			if !ok {
 				// No prior launch; print the first model.

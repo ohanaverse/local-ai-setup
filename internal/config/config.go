@@ -393,11 +393,10 @@ func parseFilterList(s string) []string {
 	return out
 }
 
-// ParseFilterList is the exported wrapper for parseFilterList so CLI callers
-// can share the same filter-list semantics.
-func ParseFilterList(s string) []string {
-	return parseFilterList(s)
-}
+// ParseFilterList is the exported form of parseFilterList, used by callers
+// outside the config package (e.g. cmd/wt/launch.go). It trims whitespace,
+// drops empty entries, and returns nil for empty/whitespace-only input.
+func ParseFilterList(s string) []string { return parseFilterList(s) }
 
 // EligibleModels returns the models usable by agent after applying tag
 // and family filters. Order matches cfg.Models.
@@ -413,10 +412,8 @@ func ParseFilterList(s string) []string {
 //
 // Errors:
 //   - agent not found
-//   - agent references an unknown provider (only reachable if Validate
-//     was bypassed)
 func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error) {
-	a, err := c.AgentByName(agentName)
+	ms, err := c.ModelsForAgent(agentName)
 	if err != nil {
 		return nil, err
 	}
@@ -428,18 +425,8 @@ func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error)
 	for _, f := range parseFilterList(family) {
 		familySet[f] = true
 	}
-	allowed := map[string]bool{}
-	for _, pid := range a.SupportedProviders {
-		if c.ProviderByID(pid) == nil {
-			return nil, fmt.Errorf("agent %q: provider %q not found in config", agentName, pid)
-		}
-		allowed[pid] = true
-	}
 	var out []Model
-	for _, m := range c.Models {
-		if !allowed[m.ProviderID] {
-			continue
-		}
+	for _, m := range ms {
 		if len(tagSet) > 0 {
 			hit := false
 			for _, t := range m.Tags {
@@ -452,10 +439,8 @@ func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error)
 				continue
 			}
 		}
-		if len(familySet) > 0 {
-			if !familySet[m.Family] {
-				continue
-			}
+		if len(familySet) > 0 && !familySet[m.Family] {
+			continue
 		}
 		out = append(out, m)
 	}

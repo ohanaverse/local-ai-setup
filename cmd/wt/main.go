@@ -34,8 +34,8 @@ func rootCmd() *cobra.Command {
 
 	var showVersion bool
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
-	// Registered below as a hidden Bool flag; checked in RunE.
-	var legacyShortW bool
+	// Registered below as a hidden string flag; checked in RunE.
+	var legacyShortW string
 
 	cmd := &cobra.Command{
 		Use:   "wt",
@@ -57,7 +57,7 @@ func rootCmd() *cobra.Command {
 			agentFlag := mustGetString(cmd, "agent")
 
 			// Legacy short flag rejection: `-w` was removed in favor of `-W`.
-			if legacyShortW {
+			if legacyShortW != "" {
 				return fmt.Errorf("-w is removed; use -W or --worktree")
 			}
 
@@ -187,7 +187,7 @@ func rootCmd() *cobra.Command {
 
 			// Interactive TUI.
 			maybeInstallGuard()
-			return tui.Run(yolo(cmd), agent, args)
+			return tui.Run(yolo(cmd), agent, tags, family, args)
 		},
 	}
 
@@ -202,9 +202,10 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
-	// Register it as a hidden Bool flag so pflag accepts the invocation,
-	// then error out in RunE.
-	cmd.Flags().BoolVarP(&legacyShortW, "legacy-w", "w", false, "Deprecated; use -W")
+	// Register it as a hidden string flag so pflag parses the old arity
+	// (`-w name` or `-wname`), then error out with the migration message in
+	// RunE.
+	cmd.Flags().StringVarP(&legacyShortW, "legacy-w", "w", "", "Deprecated; use -W")
 	cmd.Flags().MarkHidden("legacy-w")
 
 	// Test-only flags.

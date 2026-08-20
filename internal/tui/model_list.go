@@ -54,7 +54,7 @@ func buildModelList(models []config.Model, width, height int) list.Model {
 
 // indexOfModel returns the index of target in models, or -1 if not found.
 // Used to position the list cursor on the rotation's next-to-use model
-// (in selectedEntryMsg and the 'd' tag toggle).
+// in selectedEntryMsg.
 func indexOfModel(models []config.Model, target config.Model) int {
 	for i, m := range models {
 		if m.ID == target.ID {
@@ -74,23 +74,6 @@ func FindAfter(models []config.Model, target config.Model) (config.Model, bool) 
 	return rotation.FirstAfter(models, target)
 }
 
-// positionAfterLastLaunched rebuilds the rotation snapshot for tag over
-// models and positions the picker cursor on the model after the
-// last-launched one, falling back to index 0 when there is no
-// last-launched model or its ID is no longer in the snapshot. Shared by
-// the picker-entry (selectedEntryMsg) and 'd' tag-toggle paths so the
-// cursor-positioning logic lives in one place.
-func (m *model) positionAfterLastLaunched(tag string, models []config.Model) {
-	m.rotation = rotation.New(tag, models, "")
-	if last, ok := m.rotation.LastLaunched(); ok {
-		if next, ok := FindAfter(models, last); ok {
-			if idx := indexOfModel(models, next); idx >= 0 {
-				m.models.Select(idx)
-			}
-		}
-	}
-}
-
 // phaseModelView renders the model picker screen: the list of
 // agent+tag-compatible models, an agent/tag header, and a footer
 // describing the keybinds. The picker IS the agent+model screen —
@@ -98,6 +81,6 @@ func (m *model) positionAfterLastLaunched(tag string, models []config.Model) {
 func (m *model) phaseModelView() string {
 	style := lipgloss.NewStyle().Padding(1, 2)
 	header := fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag)
-	footer := "\n[↑/↓] navigate   [d] switch tag   [enter] launch   [q] quit"
+	footer := "\n[↑/↓] navigate   [enter] launch   [q] quit"
 	return style.Render(header + m.models.View() + footer)
 }

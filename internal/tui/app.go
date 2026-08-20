@@ -57,7 +57,7 @@ type model struct {
 	phase    phase
 	agent    string             // current agent name
 	tag      string             // active rotation tag group
-	rotation *rotation.Rotation // snapshot rotation for the active (agent, tag); set on picker entry and on 'd' tag toggle
+	rotation *rotation.Rotation // snapshot rotation for the active (agent, tag); set on picker entry
 	cfg      *config.Config     // loaded config for the model catalog
 
 	// model picker (the agent+model screen IS the picker)
@@ -78,6 +78,11 @@ type model struct {
 	initialAgent string   // agent from --agent flag; "" = use config default
 	resume       resumeModel
 	launchModel  config.Model // highlighted model captured when entering phaseResume; launched from the resume choices
+
+	// filter inputs (PR 3b): -T/--tags and -F/--family values from the CLI;
+	// forwarded to the model screen so the picker can pre-filter the catalog.
+	activeTags   string // comma-delimited tag filter from -T/--tags; "" = no filter
+	activeFamily string // comma-delimited family filter from -F/--family; "" = no filter
 
 	// default-branch guard warning
 	defaultBranch  string         // repo default branch (e.g. main)
@@ -195,8 +200,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Pinned agent: skip the picker, run the same model setup
 			// that phaseAgent Enter would have run for an agent item.
-			m.tag = m.cfg.DefaultTag
-			models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
+			// Use EligibleModels so -T/-F filters from CLI narrow the
+			// catalog consistently with the phaseAgent Enter path.
+			firstTag := firstOrDefault(m.activeTags, m.cfg.DefaultTag)
+			m.tag = firstTag
+			models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
 			if err != nil {
 				m.status = "config error: " + err.Error()
 				return m, nil
@@ -208,15 +216,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.phase = phaseModel
 			m.models = buildModelList(models, m.width-2, m.height-2)
 			m.modelsFor = m.agent
-			m.modelsTag = m.tag
-			m.positionAfterLastLaunched(m.tag, models)
+			// Tag used for the rotation slot is the first active tag,
+			// or the config default if no tag filter is active.
+			m.modelsTag = firstTag
+			slot := rotation.SlotFromFlags(m.agent, firstTag, m.activeFamily)
+			m.positionAfterLastLaunched(slot, models)
 			return m, nil
 		}
 		// Unpinned: build the agent+command picker and hand off to phaseAgent.
 		// Clear any prior status so a stale error from a previous picker
 		// visit doesn't linger on the freshly rendered screen.
 		m.status = ""
-		items := buildAgentList(m.cfg)
+		items := buildAgentList(m.cfg, m.width-2, m.height-2)
 		m.agentList = list.New(items, list.NewDefaultDelegate(), m.width-2, m.height-2)
 		m.agentList.Title = "Pick an agent or command"
 		m.agentList.SetShowStatusBar(false)
@@ -283,24 +294,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// by the picked driver's name, not a hardcoded "shell".
 					return m.launchCommand(item.name)
 				}
-				// Agent: validate the model catalog for the agent + default tag,
-				// then build the picker list and position the cursor. Mirrors
-				// what selectedEntryMsg used to do for the pinned-agent path.
-				m.tag = m.cfg.DefaultTag
-				models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
+				// Agent: validate the model catalog for the agent + active
+				// filters (-T/-F), then build the picker list and position
+				// the cursor. EligibleModels narrows the catalog by tag
+				// and family; the rotation slot is keyed by
+				// (agent, firstTag, family) so per-slot state matches
+				// the cmd/wt launchFiltered path.
+				firstTag := firstOrDefault(m.activeTags, m.cfg.DefaultTag)
+				models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
 				if err != nil {
 					m.status = "config error: " + err.Error()
 					return m, nil
 				}
 				if len(models) == 0 {
-					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
+					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
 					return m, nil
 				}
 				m.phase = phaseModel
 				m.models = buildModelList(models, m.width-2, m.height-2)
 				m.modelsFor = m.agent
-				m.modelsTag = m.tag
-				m.positionAfterLastLaunched(m.tag, models)
+				m.tag = firstTag
+				m.modelsTag = firstTag
+				slot := rotation.SlotFromFlags(m.agent, firstTag, m.activeFamily)
+				m.positionAfterLastLaunched(slot, models)
 				return m, nil
 			case phaseList:
 				if !m.ready {
@@ -408,31 +424,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// being typed so 'n' can appear in filter queries.
 			if m.phase == phaseList && m.ready && m.list.FilterState() != list.Filtering {
 				return m.openNewWorktreePrompt(), nil
-			}
-		case "d":
-			if m.phase == phaseModel {
-				prevTag := m.tag
-				newTag := oppositeTag(m.tag)
-				// Empty-tag defense: if the toggled-to tag has no models,
-				// restore the previous tag. Report the empty tag (newTag),
-				// not the one the user is staying on.
-				m.tag = newTag
-				models, err := m.cfg.ModelsForAgentAndTag(m.agent, m.tag)
-				if err != nil || len(models) == 0 {
-					m.tag = prevTag
-					m.status = fmt.Sprintf("tag %q has no models for agent %q", newTag, m.agent)
-					return m, nil
-				}
-				// Rebuild the list and position the cursor on the model
-				// after the new tag's last-launched. Cross-skip is gone;
-				// each tag rotates independently.
-				m.models = buildModelList(models, m.width-2, m.height-2)
-				m.modelsTag = m.tag
-				m.positionAfterLastLaunched(m.tag, models)
-				// Return here: bubbles/list binds `d` to NextPage, so
-				// falling through to m.models.Update(msg) would advance
-				// the freshly rebuilt list's page on a multi-page tag.
-				return m, nil
 			}
 		}
 	}
@@ -634,9 +625,11 @@ type entriesLoadedMsg struct {
 }
 
 // Run starts the TUI in alternate-screen mode and returns when it quits.
-// agent is the --agent flag value ("" = use config default). extraArgs are
+// agent is the --agent flag value ("" = use config default). tags is the
+// -T/--tags flag value (comma-delimited; "" = no filter). family is the
+// -F/--family flag value (comma-delimited; "" = no filter). extraArgs are
 // the user's passthrough args after --.
-func Run(yolo bool, agent string, extraArgs []string) error {
+func Run(yolo bool, agent, tags, family string, extraArgs []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -646,6 +639,8 @@ func Run(yolo bool, agent string, extraArgs []string) error {
 		cfg:          cfg,
 		yolo:         yolo,
 		initialAgent: agent,
+		activeTags:   tags,
+		activeFamily: family,
 		extraArgs:    extraArgs,
 	}, tea.WithAltScreen())
 	currentProgram = p

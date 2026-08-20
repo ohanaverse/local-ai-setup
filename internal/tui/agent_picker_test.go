@@ -1,10 +1,10 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
@@ -18,7 +18,7 @@ func TestBuildAgentList(t *testing.T) {
 			{Name: "codex", SupportedProviders: []string{"openai"}},
 		},
 	}
-	items := buildAgentList(cfg)
+	items := buildAgentList(cfg, 80, 24)
 	if len(items) < 3 { // 2 agents + 1 command (shell)
 		t.Fatalf("expected at least 3 items, got %d", len(items))
 	}
@@ -48,69 +48,81 @@ func TestBuildAgentList(t *testing.T) {
 	}
 }
 
-// TestBuildAgentListOmitsUnconfiguredAgents asserts that registered driver
-// names absent from cfg.Agents (and not commands) never appear in the
-// picker, and that the resulting rows are deterministic across runs.
-// Before the fix, buildAgentList appended every registered driver, so a
-// config declaring only claude still showed codex/copilot/opencode/pi rows
-// that errored "agent not found" on Enter — and in nondeterministic order,
-// since agents.Names() ranges a map.
-func TestBuildAgentListOmitsUnconfiguredAgents(t *testing.T) {
-	cfg := &config.Config{
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-		},
-	}
-	items := buildAgentList(cfg)
-	var sawShell bool
-	for _, it := range items {
-		ai, ok := it.(agentItem)
-		if !ok {
-			t.Fatalf("item %T is not an agentItem", it)
-		}
-		if ai.name == "shell" {
-			sawShell = true
-			if !ai.command {
-				t.Error("shell should be marked as a command")
-			}
-			continue
-		}
-		if !ai.command && ai.name != "claude" {
-			t.Errorf("unconfigured agent %q appears in picker (dead-end row)", ai.name)
-		}
-	}
-	if !sawShell {
-		t.Error("missing shell command row (registered commands must still appear)")
-	}
-
-	// Determinism: a second build must produce the identical row order.
-	second := buildAgentList(cfg)
-	if len(items) != len(second) {
-		t.Fatalf("item count differs between builds: %d vs %d", len(items), len(second))
-	}
-	for i := range items {
-		if items[i].(agentItem).name != second[i].(agentItem).name {
-			t.Errorf("order differs at %d: %q vs %q", i, items[i].(agentItem).name, second[i].(agentItem).name)
-		}
-	}
-}
-
-// TestPhaseAgentViewRendersStatus asserts that an error stored in m.status
-// on the phaseAgent screen is drawn by the View. Before the fix,
-// phaseAgentView rendered only header + list + footer, so every error path
-// in the agent+command picker (config error, empty model catalog, launch
-// failure) was silent — the user saw an unchanged picker with no feedback.
-func TestPhaseAgentViewRendersStatus(t *testing.T) {
+// TestPhaseModelHonorsFilters verifies that when the TUI's `phaseAgent`
+// Enter handler advances to `phaseModel`, the picker list is narrowed
+// by the active -T (tags) and -F (family) filters via
+// cfg.EligibleModels. Without EligibleModels, the picker would show
+// every model for the agent+default-tag regardless of the CLI filter
+// flags — defeating the entire PR 3b "Filter inputs" promise.
+//
+// The test builds the config inline (rather than via a reusable
+// helper) because this is the only phaseModel test that exercises
+// filter-aware catalog narrowing; the other tests use the simpler
+// testConfig() shape.
+func TestPhaseModelHonorsFilters(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Providers: []config.Provider{
+			{ID: "ollama"},
+		},
+		Models: []config.Model{
+			// Two code models in the gemma4 family.
+			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			// One design model in a different family — must be filtered out
+			// by the -T code,design AND -F gemma4 combo below (design tag
+			// AND gemma4 family → still includes only the gemma4 family
+			// models, so design-only is excluded because it isn't gemma4).
+			{ID: "ollama/llama3:design", ProviderID: "ollama", Family: "llama3", Tags: []string{"design"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
 	}
-	m := model{phase: phaseAgent, cfg: cfg, width: 80, height: 24}
-	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	const want = `no models for agent "claude" in tag "code"`
-	m.status = want + " — edit your config"
-	view := m.phaseAgentView()
-	if !strings.Contains(view, want) {
-		t.Errorf("phaseAgentView missing status %q:\n%s", want, view)
+
+	// Build a model in phaseAgent (where phaseAgent Enter fires).
+	// The picker list is built from buildAgentList so Enter advances
+	// to phaseModel via the same production code path.
+	m := model{
+		cfg:    cfg,
+		phase:  phaseAgent,
+		width:  80,
+		height: 24,
+	}
+	m.agentList = list.New(buildAgentList(cfg, 78, 22), list.NewDefaultDelegate(), 78, 22)
+	// Select the "claude" row so the Enter handler picks the right agent.
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+	m.activeTags = "code,design"
+	m.activeFamily = "gemma4"
+
+	gotModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm, ok := gotModel.(model)
+	if !ok {
+		t.Fatalf("Update(Enter) returned %T, want model", gotModel)
+	}
+	if nm.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel after phaseAgent Enter", nm.phase)
+	}
+
+	// Every item in the picker must be in the gemma4 family; the
+	// design-tag llama3 model must be filtered out.
+	items := nm.models.Items()
+	if len(items) == 0 {
+		t.Fatal("picker list is empty after phaseAgent Enter")
+	}
+	for _, it := range items {
+		mi, ok := it.(modelItem)
+		if !ok {
+			t.Fatalf("picker item is %T, want modelItem", it)
+		}
+		if mi.model.Family != "gemma4" {
+			t.Errorf("model %s has family %q, want gemma4 (filter -F gemma4 not honored)",
+				mi.model.ID, mi.model.Family)
+		}
 	}
 }

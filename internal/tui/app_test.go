@@ -259,24 +259,13 @@ func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
 	}
 }
 
-// TestToggleTagSwitchesGroup asserts pressing 'd' in the model phase flips
-// the active tag group (code <-> design) and re-resolves the shown model to
-// the new group's first entry. This powers cross-tag rotation from a single
-// keystroke.
-// TestToggleTagSwitchesGroup asserts pressing 'd' in the model phase flips
-// the active tag group (code <-> design) and rebuilds the picker from
-// the new group's models. (otherTag is now computed via oppositeTag;
-// only m.tag is asserted.)
-func TestToggleTagSwitchesGroup(t *testing.T) {
-	dir := tempStateDir(t)
-	seedState(t, dir, "design", "0\nollama/gemma4:design\n")
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	gotModel := got.(model)
-	if gotModel.tag != "design" {
-		t.Errorf("tag = %q, want design", gotModel.tag)
-	}
-}
+// TestToggleTagSwitchesGroup was removed in PR 3b Task 3 along with
+// the `d` key handler. The cross-tag switch is no longer a TUI
+// keybinding; tag filtering happens at launch via the -T flag
+// (threaded through tui.Run in Task 4, exercised by
+// TestLaunchFilteredUsesEligibleAndSlot in cmd/wt/launch_test.go) and
+// the resulting picker list is covered by TestPhaseModelHonorsFilters
+// in agent_picker_test.go.
 
 // (TestViewModelPhase was rewritten in agent_model_test.go using the
 // new picker-based View.)
@@ -705,7 +694,7 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
 	m := model{phase: phaseAgent, cfg: cfg, width: 80, height: 24}
-	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	m.agentList = list.New(buildAgentList(cfg, 78, 22), list.NewDefaultDelegate(), 78, 22)
 	// Open the filter exactly like a user pressing '/'.
 	m.agentList, _ = m.agentList.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.agentList.FilterState() != list.Filtering {

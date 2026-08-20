@@ -13,7 +13,8 @@ import (
 // without panicking or returning a zero-value model that the snapshot
 // contains.
 func TestLastLaunchedMissingFile(t *testing.T) {
-	r := New("code", []config.Model{{ID: "alpha"}}, t.TempDir())
+	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "alpha"}}, t.TempDir())
 	if _, ok := r.LastLaunched(); ok {
 		t.Fatal("LastLaunched on missing file returned ok=true")
 	}
@@ -25,7 +26,8 @@ func TestLastLaunchedMissingFile(t *testing.T) {
 // can't advance after a launch.
 func TestRecordLaunchRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	r := New("code", []config.Model{{ID: "alpha"}}, dir)
+	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "alpha"}}, dir)
 	if err := r.RecordLaunch(config.Model{ID: "alpha"}); err != nil {
 		t.Fatalf("RecordLaunch: %v", err)
 	}
@@ -44,7 +46,8 @@ func TestRecordLaunchRoundTrip(t *testing.T) {
 // the latest pick.
 func TestRecordLaunchOverwrites(t *testing.T) {
 	dir := t.TempDir()
-	r := New("code", []config.Model{{ID: "alpha"}, {ID: "beta"}}, dir)
+	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "alpha"}, {ID: "beta"}}, dir)
 	_ = r.RecordLaunch(config.Model{ID: "alpha"})
 	_ = r.RecordLaunch(config.Model{ID: "beta"})
 	got, _ := r.LastLaunched()
@@ -57,13 +60,15 @@ func TestRecordLaunchOverwrites(t *testing.T) {
 // last non-empty line. Without backward-compat the existing state
 // files on every user's machine would suddenly point at nothing
 // and the picker would fall back to index 0 — losing the rotation
-// memory they had.
+// memory they had. PR 3b removed the public StateFile helper; the
+// legacy file name is now constructed inline via filepath.Join.
 func TestLastLaunchedReadsLegacyTwoLineFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "rotation-code.state"), []byte("5\nollama/x:cloud\n"), 0o600); err != nil {
 		t.Fatalf("write legacy state: %v", err)
 	}
-	r := New("code", []config.Model{{ID: "ollama/x:cloud"}}, dir)
+	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "ollama/x:cloud"}}, dir)
 	got, ok := r.LastLaunched()
 	if !ok {
 		t.Fatal("LastLaunched returned !ok on legacy 2-line file")
@@ -82,29 +87,33 @@ func TestLastLaunchedConfigChanged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "rotation-code.state"), []byte("ollama/removed:cloud\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := New("code", []config.Model{{ID: "ollama/current:cloud"}}, dir)
+	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "ollama/current:cloud"}}, dir)
 	if _, ok := r.LastLaunched(); ok {
 		t.Error("LastLaunched returned ok=true for ID not in snapshot")
 	}
 }
 
 // RecordLaunch must write a single-line file (no index prefix) and
-// the file must be 0600. The single-line format is the new on-disk
-// contract; 0600 is the existing security baseline.
+// the file must be 0600. The single-line format is the on-disk
+// contract; 0600 is the existing security baseline. The slot
+// {-/-/code/-} renders as rotation-_-code-_.state.
 func TestRecordLaunchWritesSingleLine(t *testing.T) {
 	dir := t.TempDir()
-	r := New("code", []config.Model{{ID: "alpha"}}, dir)
+	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "alpha"}}, dir)
 	if err := r.RecordLaunch(config.Model{ID: "alpha"}); err != nil {
 		t.Fatalf("RecordLaunch: %v", err)
 	}
-	info, err := os.Stat(filepath.Join(dir, "rotation-code.state"))
+	path := StateFileForSlot(dir, slot)
+	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("perm = %o, want 0600", perm)
 	}
-	data, _ := os.ReadFile(filepath.Join(dir, "rotation-code.state"))
+	data, _ := os.ReadFile(path)
 	if got := string(data); got != "alpha\n" {
 		t.Errorf("file = %q, want %q", got, "alpha\n")
 	}
@@ -162,24 +171,50 @@ func TestFirstAfterEmpty(t *testing.T) {
 	}
 }
 
-// StateFile must return a predictable path under the given directory.
-// This is the contract between the Rotation and the config package's
-// LastSelected helper, which reads the same files.
-func TestStateFilePath(t *testing.T) {
-	got := StateFile("/tmp/cfg", "code")
-	want := "/tmp/cfg/rotation-code.state"
+// StateFileForSlot must return a predictable per-slot path under the
+// given directory. This is the contract between the Rotation and the
+// state file the picker reads back on next entry.
+func TestStateFileForSlotPath(t *testing.T) {
+	slot := Slot{Agent: "claude", Tag: "code", Family: "gemma4"}
+	got := StateFileForSlot("/tmp/cfg", slot)
+	want := "/tmp/cfg/rotation-claude-code-gemma4.state"
 	if got != want {
-		t.Errorf("StateFile = %q, want %q", got, want)
+		t.Errorf("StateFileForSlot = %q, want %q", got, want)
 	}
 }
 
 // The default state directory must respect XDG_CONFIG_HOME, matching
 // the behaviour of config.Path(). A mismatch would mean rotation
 // state and config files end up in different directories.
-func TestStateFile_DefaultDirRespectsXDG(t *testing.T) {
+func TestStateDir_DefaultDirRespectsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
-	r := New("design", []config.Model{{ID: "x"}}, "")
+	slot := Slot{Agent: "-", Tag: "design", Family: "-"}
+	r := NewForSlot(slot, []config.Model{{ID: "x"}}, "")
 	if got, want := r.StateDir(), "/tmp/xdg-test/agent-wt"; got != want {
 		t.Errorf("StateDir with XDG = %q, want %q", got, want)
+	}
+}
+
+// SlotFromFlags must escape commas/dots to underscores in tag and
+// family so the resulting state-file name is safe. (Empty Tag/Family
+// are normalized to "-" so the filename stays free of consecutive
+// dashes; Agent is left as-is — callers always pass a real agent
+// name.) This is the construction used by both TUI and cmd/wt paths
+// to build the rotation slot.
+func TestSlotFromFlagsNormalizesComponents(t *testing.T) {
+	cases := []struct {
+		agent, tag, family string
+		want               Slot
+	}{
+		{"claude", "code", "gemma4", Slot{Agent: "claude", Tag: "code", Family: "gemma4"}},
+		{"", "code", "", Slot{Agent: "", Tag: "code", Family: "-"}},
+		{"claude", "", "", Slot{Agent: "claude", Tag: "-", Family: "-"}},
+		{"a.b", "c,d", "e.f", Slot{Agent: "a.b", Tag: "c_d", Family: "e_f"}},
+	}
+	for _, tc := range cases {
+		if got := SlotFromFlags(tc.agent, tc.tag, tc.family); got != tc.want {
+			t.Errorf("SlotFromFlags(%q, %q, %q) = %+v, want %+v",
+				tc.agent, tc.tag, tc.family, got, tc.want)
+		}
 	}
 }

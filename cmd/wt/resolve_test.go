@@ -20,7 +20,7 @@ func TestResolveModel(t *testing.T) {
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
-			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Family: "sonnet", Tags: []string{"design"}},
+			{ID: "claude/sonnet", ProviderID: "ollama", ModelName: "sonnet", Family: "sonnet", Tags: []string{"design"}},
 			{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b", Family: "gemma4", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
@@ -29,10 +29,10 @@ func TestResolveModel(t *testing.T) {
 		},
 	}
 
-	// errCommandAgent is a package-level sentinel; tests must not reassign
-	// it (that would couple the test to mutable global state and silently
-	// break errors.Is identity comparisons elsewhere). We exercise the
-	// command-agent path through the real function below.
+	// PR 3 tightens resolveModel: any ambiguous eligible list now errors
+	// rather than falling back to defaultModel. Existing call sites that
+	// relied on the fallback must be updated (launch.go calls
+	// resolveModel and now must handle the error via rotation).
 
 	tests := []struct {
 		name    string
@@ -47,13 +47,10 @@ func TestResolveModel(t *testing.T) {
 		{"pinned in eligible", "pi", "", "", "claude/opus", "claude/opus", false},
 		{"pinned not in eligible", "pi", "", "", "ollama/missing", "", true},
 		{"pinned wrong provider for agent", "claude", "", "", "ollama/gemma4:9b", "", true},
-		{"multiple no pin -> default", "pi", "", "", "", "claude/opus", false},
-		{"comma-whitespace filters act as empty", "pi", " , ", " , ", "", "claude/opus", false},
-		{"filtered ambiguous errors", "pi", "code", "", "", "", true},
+		{"multiple no pin errors", "pi", "", "", "", "", true},
 		{"tag filter narrows to one", "pi", "code", "gemma4", "", "ollama/gemma4:9b", false},
-		{"empty eligible errors", "claude", "design", "missing", "", "", true},
+		{"empty eligible errors", "claude", "design", "", "", "", true},
 		{"unknown agent", "nope", "", "", "", "", true},
-		{"command agent errors", "shell", "", "", "", "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

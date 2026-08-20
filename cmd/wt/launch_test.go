@@ -11,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/initseed"
+	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
@@ -214,12 +215,12 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 	}
 }
 
-// TestLaunchUsesResolveModel verifies the non-TUI launch path's filter
-// resolution contract. With no -M and no -T/-F, a multi-model agent falls back
-// to the default (pre-flag-surface) model rather than erroring, so existing
-// `wt -W foo --agent claude` invocations keep launching. When -T/-F are
-// supplied and the filtered set is still ambiguous, resolveModel must surface
-// a clear "specify -M" error. With -M it returns the pinned model.
+// TestLaunchUsesResolveModel verifies that the non-TUI launch path's filter
+// resolution goes through resolveModel when -M is supplied, returning the
+// pinned model. Without -M and with multiple eligible models, resolveModel
+// must surface a clear "specify -M" error rather than silently picking one.
+// This is the contract launchFiltered in launch.go relies on (rotation
+// outside the function advances through the eligible list when pinned == "").
 func TestLaunchUsesResolveModel(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -235,24 +236,15 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 		},
 	}
 
-	// Two models, no -M, no -T/-F → default fallback. Must NOT error:
-	// existing users without the new flags see no change.
-	m, err := resolveModel("claude", cfg, "", "", "")
-	if err != nil {
-		t.Fatalf("expected default fallback, got error: %v", err)
-	}
-	if m.ID != "claude/opus" {
-		t.Errorf("default fallback = %q, want claude/opus", m.ID)
-	}
-
-	// Two models, -T code supplied (still ambiguous), no -M → error. The
-	// user opted into filtering, so an ambiguous result must be pinned.
-	if _, err := resolveModel("claude", cfg, "code", "", ""); err == nil {
-		t.Fatalf("expected error for filtered ambiguous list, got nil")
+	// Two models, no -M → resolveModel errors with "specify -M". PR 3
+	// tightens the contract: any ambiguous eligible list errors so callers
+	// can route through rotation rather than silently picking one.
+	if _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
+		t.Fatal("expected error for ambiguous eligible list, got nil")
 	}
 
 	// With -M claude/opus → resolves correctly.
-	m, err = resolveModel("claude", cfg, "", "", "claude/opus")
+	m, err := resolveModel("claude", cfg, "", "", "claude/opus")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -331,5 +323,108 @@ func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
 	}
 	if !strings.Contains(msg, "ollama pull gemma4:9b") {
 		t.Fatalf("error %q missing pull hint", msg)
+	}
+}
+
+// TestLaunchFilteredUsesEligibleAndSlot verifies that the non-TUI launch path
+// (a) calls cfg.EligibleModels to resolve the model list, (b) builds a rotation
+// Slot from agent+tag+family via rotation.SlotFromFlags, and (c) pins the
+// resolved model without consulting rotation when -M is supplied. This is the
+// pin path's contract; the rotation advance is exercised separately by
+// TestLaunchFilteredRotationAdvances.
+func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Tags: []string{"code"}},
+			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+
+	// Two eligible models, no -M → resolveModel errors with "specify -M".
+	// PR 3 tightens the contract: the defaultModel fallback is gone, so any
+	// ambiguous eligible list surfaces a clear error. The rotation advance
+	// in launchFiltered's run path wraps resolveModel so callers see the
+	// rotated model instead.
+	if _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
+		t.Fatal("expected error for ambiguous eligible list")
+	}
+
+	// Pinned → resolves to claude/opus.
+	m, err := resolveModel("claude", cfg, "", "", "claude/opus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ID != "claude/opus" {
+		t.Errorf("got %q, want claude/opus", m.ID)
+	}
+
+	// Slot construction mirrors what launchFiltered does inside the
+	// rotation branch, and the resulting state-file name matches the
+	// expected per-slot filename format.
+	slot := rotation.SlotFromFlags("claude", "code", "")
+	expectedPath := filepath.Join(dir, "agent-wt", "rotation-claude-code-_.state")
+	gotPath := rotation.StateFileForSlot(filepath.Join(dir, "agent-wt"), slot)
+	if gotPath != expectedPath {
+		t.Errorf("state file = %q, want %q", gotPath, expectedPath)
+	}
+}
+
+// TestLaunchFilteredRotationAdvances verifies that when launchFiltered is
+// invoked repeatedly with multiple eligible models and no -M pin, the
+// non-TUI launch path rotates through the eligible list and records each
+// launch in the per-slot rotation state.
+func TestLaunchFilteredRotationAdvances(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+
+	// Install a fake claude binary so launchFiltered can execute without
+	// requiring the real CLI on PATH.
+	binDir := t.TempDir()
+	claudeBin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/a", ProviderID: "claude", ModelName: "a", Tags: []string{"code"}},
+			{ID: "claude/b", ProviderID: "claude", ModelName: "b", Tags: []string{"code"}},
+			{ID: "claude/c", ProviderID: "claude", ModelName: "c", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+
+	slot := rotation.SlotFromFlags("claude", "code", "")
+	want := []string{"claude/a", "claude/b", "claude/c"}
+	for i, id := range want {
+		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", nil); err != nil {
+			t.Fatalf("launchFiltered run %d: %v", i+1, err)
+		}
+		statePath := rotation.StateFileForSlot(filepath.Join(dir, "agent-wt"), slot)
+		data, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatalf("read state file run %d: %v", i+1, err)
+		}
+		if got := strings.TrimSpace(string(data)); got != id {
+			t.Fatalf("run %d state = %q, want %q", i+1, got, id)
+		}
 	}
 }

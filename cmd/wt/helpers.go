@@ -67,14 +67,12 @@ func renderTable(headers []string, rows [][]string) string {
 	return t.Render()
 }
 
-// maybeInstallGuard installs the main guard when inside a git repo. Errors
+// maybeInstallGuard installs the main guard. Callers must ensure the
+// current directory is inside a git repo before invoking this helper. Errors
 // are written to stderr and ignored so that a guard-install failure does not
 // block the agent launch. This matches the bash engine's best-effort
 // behavior.
 func maybeInstallGuard() {
-	if !inGitRepo() {
-		return
-	}
 	if _, err := guard.Install(); err != nil {
 		fmt.Fprintf(os.Stderr, "wt: failed to auto-install main guard: %v\n", err)
 	}
