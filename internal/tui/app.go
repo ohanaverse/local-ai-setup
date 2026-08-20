@@ -218,15 +218,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
 				return m, nil
 			}
-			m.phase = phaseModel
-			m.models = buildModelList(models, m.width-2, m.height-2)
-			m.modelsFor = m.agent
-			// Tag used for the rotation slot is the first active tag,
-			// or the config default if no tag filter is active.
-			m.modelsTag = firstTag
-			slot := rotation.SlotFromFlags(m.agent, firstTag, m.activeFamily)
-			m.positionAfterLastLaunched(slot, models)
-			return m, nil
+			return m.enterModelPhase(m.agent, models, firstTag)
 		}
 		// Unpinned: build the agent+command picker and hand off to phaseAgent.
 		// Clear any prior status so a stale error from a previous picker
@@ -315,14 +307,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
 					return m, nil
 				}
-				m.phase = phaseModel
-				m.models = buildModelList(models, m.width-2, m.height-2)
-				m.modelsFor = m.agent
-				m.tag = firstTag
-				m.modelsTag = firstTag
-				slot := rotation.SlotFromFlags(m.agent, firstTag, m.activeFamily)
-				m.positionAfterLastLaunched(slot, models)
-				return m, nil
+				return m.enterModelPhase(m.agent, models, firstTag)
 			case phaseList:
 				if !m.ready {
 					return m, nil
@@ -552,6 +537,28 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		return m, nil
 	}
 	return m, runAndWaitCmd(cmd)
+}
+
+// enterModelPhase sets up the model list for the picker, then either
+// transitions to phaseModel (when the eligible list has more than one
+// model) or skips the picker entirely (when it has exactly one model).
+// The skip path reuses proceedToLaunch so the session-resume prompt and
+// the per-slot rotation recording still run — the rotation only advances
+// after the user resolves the resume prompt, so a cancel there leaves
+// rotation untouched. firstTag is the resolved tag for the slot key.
+// Caller is responsible for the len(models) == 0 guard.
+func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
+	m.models = buildModelList(models, m.width-2, m.height-2)
+	m.modelsFor = agent
+	m.tag = firstTag
+	m.modelsTag = firstTag
+	slot := rotation.SlotFromFlags(agent, firstTag, m.activeFamily)
+	m.positionAfterLastLaunched(slot, models)
+	if len(models) == 1 {
+		return m.proceedToLaunch()
+	}
+	m.phase = phaseModel
+	return m, nil
 }
 
 // proceedToLaunch checks for a prior session and either launches the agent

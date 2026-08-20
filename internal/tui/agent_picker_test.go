@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/session"
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
 // TestBuildAgentList verifies the agent+command picker contains every
@@ -124,5 +128,119 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 			t.Errorf("model %s has family %q, want gemma4 (filter -F gemma4 not honored)",
 				mi.model.ID, mi.model.Family)
 		}
+	}
+}
+
+// singleModelConfig returns a config where the claude agent has exactly
+// one eligible code model. Used by the single-model picker-skip tests
+// below; mirrors the catalog-narrowing shape of TestPhaseModelHonorsFilters
+// but with one item, so EligibleModels returns a 1-element slice.
+func singleModelConfig() *config.Config {
+	return &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "ollama"}},
+		Models: []config.Model{
+			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+}
+
+// buildModelInPhaseAgent constructs a model in phaseAgent with the agent
+// row pre-selected. Mirrors the setup in TestPhaseModelHonorsFilters so
+// the production phaseAgent Enter handler fires against the same shape.
+func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
+	t.Helper()
+	m := model{
+		cfg:    cfg,
+		phase:  phaseAgent,
+		width:  80,
+		height: 24,
+	}
+	m.agentList = list.New(buildAgentList(cfg, 78, 22), list.NewDefaultDelegate(), 78, 22)
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+	return m
+}
+
+// TestPhaseAgentEnterSkipsPickerWhenSingleModel asserts that when the
+// eligible model list contains exactly one item, Enter in phaseAgent
+// bypasses the model picker and runs the agent immediately. Regression
+// coverage for the spec'd single-model picker-skip behavior — without
+// this branch, a user with one eligible model still sees a 1-item picker
+// and has to press Enter twice (once to confirm, once to launch).
+func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
+	m := buildModelInPhaseAgent(t, singleModelConfig())
+	m.selectedPath = t.TempDir()
+
+	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := gotModel.(model)
+	if nm.phase == phaseModel {
+		t.Fatalf("phase = phaseModel; want picker-skip (phaseResume or launch cmd)")
+	}
+	if cmd == nil {
+		t.Fatal("expected launch cmd from single-model skip; got nil")
+	}
+}
+
+// TestPhaseAgentEnterSingleModelShowsResumePrompt asserts that when the
+// eligible list is one model AND a prior claude session exists, the skip
+// path goes to phaseResume (the resume prompt still applies — skipping
+// the picker doesn't bypass the user's choice between resume/fresh).
+func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	repo := t.TempDir()
+	slug := session.Slug(repo)
+	sessDir := filepath.Join(homeDir, ".claude", "projects", slug)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "session.jsonl"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	m := buildModelInPhaseAgent(t, singleModelConfig())
+	m.selectedPath = repo
+
+	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := gotModel.(model)
+	if nm.phase != phaseResume {
+		t.Fatalf("phase = %v, want phaseResume (skip must still run session check)", nm.phase)
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd while showing resume prompt, got %v", cmd)
+	}
+}
+
+// TestPinnedAgentSingleModelSkipsPicker asserts the CLI-pinned path
+// (`wt -A claude` with one eligible model) also skips the picker. This
+// is the selectedEntryMsg handler with m.initialAgent set; the same
+// enterModelPhase helper drives both code paths, so a regression here
+// would surface in either.
+func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
+	m := model{
+		cfg:          singleModelConfig(),
+		phase:        phaseList,
+		width:        80,
+		height:       24,
+		initialAgent: "claude",
+		activeTags:   "code",
+	}
+	m.selectedPath = t.TempDir()
+
+	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	nm := gotModel.(model)
+	if nm.phase == phaseModel {
+		t.Fatalf("phase = phaseModel; want picker-skip for pinned-agent CLI path with single model")
+	}
+	if cmd == nil {
+		t.Fatal("expected launch cmd from single-model skip in pinned-agent path; got nil")
 	}
 }

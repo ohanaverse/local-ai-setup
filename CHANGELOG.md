@@ -26,6 +26,11 @@
   fall back to legacy `rotation-<tag>.state` for backward compatibility.
 - Model picker now honors `-T` and `-F` filters from the CLI: only
   models matching the agent + tag set + family set are eligible.
+- When the eligible list contains exactly one model, the model picker is
+  skipped and the agent launches (or the resume prompt appears, if a
+  prior session exists). Reuses the existing session-check and
+  rotation-recording flow, so cancelling the resume prompt leaves
+  rotation untouched.
 
 ### Removed
 
