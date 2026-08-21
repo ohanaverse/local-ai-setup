@@ -13,7 +13,8 @@ import (
 var errCommandAgent = fmt.Errorf("agent is a command")
 
 // resolveModel computes the single model to launch for a non-TUI flow.
-// agent is the resolved agent name (from -A or cfg.DefaultAgent).
+// agent is the resolved agent name (from -A; main routes unpinned launches
+// through the agent picker, so launchFiltered never sees an empty agent).
 // tags and family are the -T/-F flag values (comma-delimited).
 // pinned is the -M flag value ("" = not pinned).
 //

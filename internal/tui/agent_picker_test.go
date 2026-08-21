@@ -52,6 +52,40 @@ func TestBuildAgentList(t *testing.T) {
 	}
 }
 
+// TestBuildAgentListOrdering asserts the agent+command picker is ordered
+// deterministically: agents alphabetically, then commands alphabetically.
+// Without sorting, the picker would follow config order and the
+// nondeterministic agents.Names() map iteration, so the same config could
+// render a different menu on every launch. shell (the only command today)
+// must always be last.
+func TestBuildAgentListOrdering(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "codex"}, {Name: "copilot"}, {Name: "claude"}, {Name: "pi"},
+		},
+	}
+	items := buildAgentList(cfg)
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		ai, ok := it.(agentItem)
+		if !ok {
+			t.Fatalf("item %T is not an agentItem", it)
+		}
+		names = append(names, ai.name)
+	}
+	// All registered agents (agy, claude, codex, copilot, opencode, pi) plus
+	// the shell command, sorted: agents alphabetically, then commands.
+	want := []string{"agy", "claude", "codex", "copilot", "opencode", "pi", "shell"}
+	if len(names) != len(want) {
+		t.Fatalf("got %d items %v, want %d: %v", len(names), names, len(want), want)
+	}
+	for i, w := range want {
+		if names[i] != w {
+			t.Errorf("item[%d] = %q, want %q (full: %v)", i, names[i], w, names)
+		}
+	}
+}
+
 // TestPhaseModelHonorsFilters verifies that when the TUI's `phaseAgent`
 // Enter handler advances to `phaseModel`, the picker list is narrowed
 // by the active -T (tags) and -F (family) filters via

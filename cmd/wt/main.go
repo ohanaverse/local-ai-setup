@@ -146,11 +146,10 @@ func rootCmd() *cobra.Command {
 				return nil
 			}
 
-			// Resolve the agent: --agent flag wins, else the config default.
+			// The agent comes only from --agent or the picker; there is no
+			// implicit default. Every launch branch below routes through the
+			// agent/command picker when no agent was provided.
 			agent := agentFlag
-			if agent == "" {
-				agent = a.cfg.DefaultAgent()
-			}
 
 			// Read the new filter flags (-M/-T/-F). They are plumbed through
 			// to launchFiltered even when empty so that the legacy
@@ -175,6 +174,14 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if agent == "" {
+					// No agent provided: show the agent/command picker with the
+					// worktree already resolved (skips the worktree picker).
+					if !isStdinTTY() {
+						return errPickerNeedsTTY
+					}
+					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, path)
+				}
 				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
@@ -185,17 +192,37 @@ func rootCmd() *cobra.Command {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
 				maybeInstallGuard()
+				if agent == "" {
+					// No agent provided: show the picker with the current repo
+					// root pre-selected (skips the worktree picker).
+					if !isStdinTTY() {
+						return errPickerNeedsTTY
+					}
+					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, root)
+				}
 				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
-			// Outside a git repo: pure passthrough to the agent.
+			// Outside a git repo: pure passthrough to the agent. With no agent
+			// given, show the picker with worktree pre-selected as "." (no git
+			// enumeration needed).
 			if !inGitRepo() {
+				if agent == "" {
+					if !isStdinTTY() {
+						return errPickerNeedsTTY
+					}
+					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, ".")
+				}
 				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
-			// Interactive TUI.
+			// Interactive TUI: worktree picker first, then the agent/command
+			// picker (skipped only when -A pins an agent or command).
+			if agent == "" && !isStdinTTY() {
+				return errPickerNeedsTTY
+			}
 			maybeInstallGuard()
-			return tui.Run(yolo(cmd), agent, tags, family, args, a.theme)
+			return tui.Run(yolo(cmd), agent, tags, family, args, a.theme, "")
 		},
 	}
 

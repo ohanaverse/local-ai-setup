@@ -12,6 +12,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -71,9 +72,10 @@ type model struct {
 
 	// launch state (lesson 16)
 	selectedPath string   // worktree path chosen in lesson 13
+	prePath      string   // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
 	yolo         bool     // pass skip-permissions flag to the agent
 	extraArgs    []string // user passthrough args after --
-	initialAgent string   // agent from --agent flag; "" = use config default
+	initialAgent string   // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
 	resume       resumeModel
 	launchModel  config.Model // highlighted model captured when entering phaseResume; launched from the resume choices
 
@@ -99,8 +101,17 @@ type model struct {
 	listError        string // reload error shown above the list when ready
 }
 
-// Init returns the initial command: load worktrees/branches.
+// Init returns the initial command. When a worktree path was pre-resolved
+// (-W/--cwd/outside-repo), it skips enumeration and proceeds straight through
+// the existing selection flow: unpinned (no --agent) lands on the
+// agent/command picker, pinned lands on the model phase. Otherwise it loads
+// the worktree/branch picker.
 func (m model) Init() tea.Cmd {
+	if m.prePath != "" {
+		return func() tea.Msg {
+			return selectedEntryMsg{entry: worktree.Entry{Path: m.prePath}}
+		}
+	}
 	return loadEntriesCmd()
 }
 
@@ -741,13 +752,36 @@ type entriesLoadedMsg struct {
 	err           error
 }
 
+// repoRootFor resolves the git repository root that owns path. path is a
+// worktree or repo-root directory; the result is the primary repo root (the
+// parent of any .worktrees subdir), or "" if path is not inside a git repo.
+//
+// Used by Run() to seed model.repoRoot when prePath is set so the new-worktree
+// prompt (currently gated on m.ready, but reachable via any future UI
+// restoration to the worktree list) has a valid directory to pass to git.
+func repoRootFor(path string) string {
+	if path == "" || path == "." {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // Run starts the TUI in alternate-screen mode and returns when it quits.
-// agent is the --agent flag value ("" = use config default). tags is the
-// -T/--tags flag value (comma-delimited; "" = no filter). family is the
-// -F/--family flag value (comma-delimited; "" = no filter). extraArgs are
-// the user's passthrough args after --. theme is the active color theme,
-// loaded by cmd/wt.
-func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme) error {
+// agent is the --agent flag value ("" = no agent pinned; the agent/command
+// picker is shown). tags is the -T/--tags flag value (comma-delimited; "" =
+// no filter). family is the -F/--family flag value (comma-delimited; "" =
+// no filter). extraArgs are the user's passthrough args after --. theme is
+// the active color theme, loaded by cmd/wt. prePath, when non-empty, is a
+// pre-resolved worktree path (-W/--cwd/outside-repo): the worktree picker is
+// skipped and control starts at the agent/command picker (or model phase when
+// agent is pinned). When prePath is inside a git repo, repoRoot is seeded so
+// the new-worktree prompt has a valid directory even if it becomes reachable
+// from the pre-path entry point.
+func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme, prePath string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -761,6 +795,8 @@ func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes
 		activeTags:   tags,
 		activeFamily: family,
 		extraArgs:    extraArgs,
+		prePath:      prePath,
+		repoRoot:     repoRootFor(prePath),
 	}, tea.WithAltScreen())
 	currentProgram = p
 	_, err = p.Run()

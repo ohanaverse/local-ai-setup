@@ -1195,3 +1195,83 @@ func TestViewCreatingIndicator(t *testing.T) {
 type errMock string
 
 func (e errMock) Error() string { return string(e) }
+
+// TestPrePathInitSkipsWorktreePicker asserts that when a worktree path is
+// pre-resolved (Run's prePath, from -W/--cwd/outside-repo), Init skips
+// worktree enumeration and proceeds straight to the agent/command picker
+// when no agent is pinned. Without this, `wt -W feat` (no -A) could not
+// prompt for an agent.
+func TestPrePathInitSkipsWorktreePicker(t *testing.T) {
+	m := model{prePath: "/repo/.worktrees/feat", cfg: testConfig()}
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil cmd")
+	}
+	msg := cmd()
+	sel, ok := msg.(selectedEntryMsg)
+	if !ok {
+		t.Fatalf("Init cmd returned %T, want selectedEntryMsg", msg)
+	}
+	if sel.entry.Path != "/repo/.worktrees/feat" {
+		t.Errorf("path = %q, want prePath", sel.entry.Path)
+	}
+	// Feeding it proceeds to the agent picker (unpinned).
+	got, _ := m.Update(sel)
+	nm := got.(model)
+	if nm.phase != phaseAgent {
+		t.Errorf("phase = %v, want phaseAgent (skip worktree picker, show agent picker)", nm.phase)
+	}
+	if len(nm.agentList.Items()) == 0 {
+		t.Error("agentList empty; expected agent+command picker rows")
+	}
+}
+
+// TestPrePathInitPinnedGoesToModel asserts the pre-path shortcut still honors
+// a pinned --agent: the worktree picker is skipped and the model phase opens
+// directly.
+func TestPrePathInitPinnedGoesToModel(t *testing.T) {
+	m := model{prePath: "/repo/.worktrees/feat", cfg: testConfig(), initialAgent: "claude"}
+	msg := m.Init()()
+	sel, ok := msg.(selectedEntryMsg)
+	if !ok {
+		t.Fatalf("Init cmd returned %T, want selectedEntryMsg", msg)
+	}
+	got, _ := m.Update(sel)
+	nm := got.(model)
+	if nm.phase != phaseModel {
+		t.Errorf("phase = %v, want phaseModel (pinned agent with prePath)", nm.phase)
+	}
+}
+
+// TestPrePathInitPinnedCommandLaunches asserts that `wt -W feat -A shell`
+// (prePath + command agent) routes through launchCommand instead of the model
+// phase. Without this test, a regression in proceedFromSelectedPath's command
+// path could silently route shell through enterModelPhase — failing because
+// shell has no models — or skip launchCommand entirely. The assertion is
+// phase- and agent-based (not on the launch outcome) so the test is robust to
+// bash being absent from PATH: when bash is missing, m.status holds an error
+// and runAndWaitCmd is never returned, but the phase/agent transitions still
+// prove the right code path was taken.
+func TestPrePathInitPinnedCommandLaunches(t *testing.T) {
+	m := model{prePath: "/repo/.worktrees/feat", cfg: testConfig(), initialAgent: "shell"}
+	msg := m.Init()()
+	sel, ok := msg.(selectedEntryMsg)
+	if !ok {
+		t.Fatalf("Init cmd returned %T, want selectedEntryMsg", msg)
+	}
+	got, _ := m.Update(sel)
+	nm := got.(model)
+	if nm.agent != "shell" {
+		t.Errorf("agent = %q, want %q (pinned command agent must be honored)", nm.agent, "shell")
+	}
+	if nm.phase == phaseModel {
+		t.Errorf("phase = phaseModel, want command path (shell has no models)")
+	}
+	// selectedPath must be threaded to launchCommand even when the path is
+	// pre-resolved by -W. Verify it's set; the launch itself may or may not
+	// succeed depending on bash being on PATH, but the path argument is
+	// part of the launchCommand contract and must be populated.
+	if nm.selectedPath != "/repo/.worktrees/feat" {
+		t.Errorf("selectedPath = %q, want prePath (%q)", nm.selectedPath, "/repo/.worktrees/feat")
+	}
+}

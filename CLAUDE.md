@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The `wt` binary (`cmd/wt/`) is a Go tool that launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. To launch, `wt` needs three pieces of information:
 
 1. **Where** — the directory: the current repo root (`--cwd`), a named worktree (`-W <name>` / `--worktree <name>`), or a picker screen when running from a git repo with no flags.
-2. **What** — the agent or command: an agent that drives an LLM (`-A <name>` / `--agent <name>`: claude, codex, copilot, pi, agy, opencode), or a command that does not (`shell`, also via `-A`). When `-A` is omitted, an agent+command picker is shown.
+2. **What** — the agent or command: an agent that drives an LLM (`-A <name>` / `--agent <name>`: claude, codex, copilot, pi, agy, opencode), or a command that does not (`shell`, also via `-A`). The agent is never defaulted: when `-A` is omitted, the agent+command picker is always shown (agents alphabetically, then commands alphabetically).
 3. **Which model** — for agents only: pin with `-M <provider>/<name>` / `--model <provider>/<name>`, narrow the eligible list with `-T <tags>` / `--tags <tags>` and `-F <family>` / `--family <family>`, or pick from the picker. Multiple eligible models rotate on successive launches.
 
 The `bin/*-wt` files are thin shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). All functionality — including shell command execution — is implemented in Go. See `docs/go-course/` for the lesson plan.
@@ -51,16 +51,16 @@ The Go tool is the primary implementation; its packages are documented in [Go mo
 
 ## Key flags (`wt`)
 
-`wt` exposes short flags for the three launch inputs plus the supporting flags. Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; flags not supplied are gathered from picker screens or sensible defaults.
+`wt` exposes short flags for the three launch inputs plus the supporting flags. Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; flags not supplied are gathered from picker screens or sensible defaults. The agent is the one input never defaulted: it always comes from `-A` or the agent/command picker.
 
 | Flag | Effect |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use or create the worktree for branch `<name>`; skip the worktree picker |
-| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch; defaults to the first configured agent |
+| `-W <name>`, `--worktree <name>` | Use or create the worktree for branch `<name>`; skip the worktree picker. The agent/command picker still appears when `-A` is omitted |
+| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. The agent is never defaulted: when `-A` is omitted, the agent/command picker is always shown |
 | `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>`; errors if it isn't in the eligible list for the chosen agent |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR within flag) |
 | `-F <family>`, `--family <family>` | Filter models by model family (comma-delimited, OR within flag) |
-| `--cwd` | Launch in the current repo root; skip the worktree picker |
+| `--cwd` | Launch in the current repo root; skip the worktree picker. The agent/command picker still appears when `-A` is omitted |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit |
 | `--version` | Print version and exit |
@@ -146,10 +146,10 @@ Test coverage by package:
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
 | `internal/themes` | 24 | Registry: Builtins/Get/Token/AvailableList/AllTokens with fallback to Default; load/save/unset of `themes.toml` (missing file, empty file, valid theme, unknown theme, empty value, duplicate keys, malformed TOML, unknown keys ignored, case-insensitive, permission denied, atomic write, unknown name doesn't write, unset removes file, unset missing file no-op) |
-| `internal/tui` | 135 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut, default-branch bare-row skip; phaseAgent: agent+command picker, `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; **theming**: every picker list (worktree, agent+command, model, resume, ollama) is built with `ThemedListDelegate` from `delegate.go` so the active color theme applies to every screen — production code never uses `list.NewDefaultDelegate` (tests do, since they assert model state not colors); Helpers: `DefaultAgent` defaults, state persistence, placeholder View |
+| `internal/tui` | 139 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut, default-branch bare-row skip; phaseAgent: agent+command picker (agents-then-commands ordering), `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed, model-status rendering; prePath worktree-picker skip; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; **theming**: every picker list (worktree, agent+command, model, resume, ollama) is built with `ThemedListDelegate` from `delegate.go` so the active color theme applies to every screen — production code never uses `list.NewDefaultDelegate` (tests do, since they assert model state not colors); Helpers: `DefaultAgent` (config helper only, not launch defaulting), agent-list ordering, model-status rendering, prePath skip, state persistence, placeholder View |
 | `internal/ollamaconfig` | 33 | Union computation (synced/missing/untracked, sorting by family+name, non-ollama exclusion, empty edge cases); tags parsing/location toggle; save existing/new model, delete by ID; TUI phase transitions (Enter on synced→edit, missing→resolve, untracked→edit; Esc from edit/resolve→list; `r` refresh; quit keys) |
 | `internal/ollamacheck` | 3 | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available`) |
-| `cmd/wt` | 38 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, picker-skip conditions for `-W`/`--cwd`/non-git-repo, legacy `-w` short flag; `wt config` cobra subcommand: `config path`, `config theme {list,show,set,unset}` with case-insensitive theme lookup, accent-color list rendering, dark/light preview output, atomic theme writes, unset-no-op semantics; `config ollama` launches the sync TUI |
+| `cmd/wt` | 38 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, prePath picker-skip for `-W`/`--cwd`/non-git-repo (agent picker still shown without `-A`), legacy `-w` short flag; `wt config` cobra subcommand: `config path`, `config theme {list,show,set,unset}` with case-insensitive theme lookup, accent-color list rendering, dark/light preview output, atomic theme writes, unset-no-op semantics; `config ollama` launches the sync TUI |
 
 ## Go module
 
@@ -185,7 +185,7 @@ go vet ./...         # vet
 | `internal/ollamaconfig/` | `wt config ollama` TUI: syncs config.toml ollama models with `ollama list` — union list (synced/missing/untracked), edit screen (family/tags/location), resolve prompt (pull/delete) |
 | `internal/ollamacheck/` | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
 | `internal/themes/` | Active color theme: `Theme` struct + 4 built-in palettes (`default`/`solarized`/`mono`/`tokyo-night`), `themes.toml` load/save/unset, `lipgloss.AdaptiveColor` per token so the same theme works in light and dark terminals |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt (Start fresh is the cursor default), shell agent skip-model-screen. Picker styling comes from `delegate.go`, which threads the active theme through every `list.Model` (worktree, agent, model, resume/ollama confirmations) via the exported `ThemedListDelegate` function (also used by `internal/ollamaconfig`). |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent, ordered agents-then-commands; always shown when `-A` is omitted, `prePath` skips the worktree picker for `-W`/`--cwd`/outside-repo) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt (Start fresh is the cursor default), shell agent skip-model-screen. Picker styling comes from `delegate.go`, which threads the active theme through every `list.Model` (worktree, agent, model, resume/ollama confirmations) via the exported `ThemedListDelegate` function (also used by `internal/ollamaconfig`). |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -207,7 +207,7 @@ Shared helpers in `internal/config`:
 - `Path()` — `Dir()/config.toml`
 - `WriteFileAtomic(path, data, perm)` — atomic temp-file + rename write (used by `Save`, rotation state, and pi model sync)
 - `OllamaBaseURL` — the `http://localhost:11434` gateway constant (used by the claude/copilot/opencode drivers and migration)
-- `(*Config).DefaultAgent()` — first configured agent, else `"claude"`
+- `(*Config).DefaultAgent()` — first configured agent, else `"claude"`. Retained as a config helper; the launcher no longer calls it to auto-select an agent (the agent/command picker is always shown when `-A` is omitted)
 - `FirstTag(s, fallback)` — first comma-delimited tag from `s`, else `fallback`; the shared form of the rotation slot's tag component (used by both the non-TUI launch path and the TUI picker)
 
 ### Live discovery (Go)
@@ -407,9 +407,11 @@ exits. The `model` type implements `tea.Model` (`Init` / `Update` / `View`);
 lessons 12+ layer on the worktree list, agent+model picker screen, resume prompt,
 and launch command.
 
-- `Run(yolo bool, agent string, extraArgs []string)` — entry point; reached from `rootCmd.RunE` as the fallback
+- `Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme, prePath string)` — entry point; reached from `rootCmd.RunE` as the fallback
   after every flag handler has had a chance to early-return. `agent` is the `--agent` flag value
-  ("" = use config default). `extraArgs` are the user's passthrough args after `--`.
+  ("" = no agent pinned; the agent/command picker is shown). `extraArgs` are the user's
+  passthrough args after `--`. `prePath`, when non-empty (`-W`/`--cwd`/outside-repo), skips
+  the worktree picker and starts at the agent/command picker (or model phase when pinned).
   Both are stored in the model and passed through to `agents.BuildLaunchCmd` at launch time.
 - `tea.WithAltScreen()` — Bubble Tea manages the alternate screen buffer
   for full-screen TUI rendering.
@@ -427,8 +429,10 @@ and launch command.
 > CI runner, or editor output panel fails with
 > `could not open a new TTY: open /dev/tty: device not configured`. Always
 > run `wt` from a real terminal session. The non-TUI flag paths (`--version`,
-> `-W`, `--cwd`, `wt rotate`, etc.) skip `tui.Run()` and don't need a TTY
-> for `wt` itself (though the launched agent is interactive).
+> `wt rotate`, etc.) skip `tui.Run()` and don't need a TTY for `wt` itself
+> (though the launched agent is interactive). `-W`/`--cwd` need a TTY only
+> when `-A` is omitted (they route through the agent/command picker); with
+> `-A` they launch directly and skip the TUI.
 
 ### Worktree picker screen
 
@@ -458,15 +462,22 @@ Full walkthrough:
 ### Agent+model screen
 
 `selectedEntryMsg` transitions to `phaseAgent`, which lists configured
-agents plus the registered command agents (currently `shell`). `Enter` on
-an agent advances to `phaseModel` (with the agent pre-selected); `Enter`
-on a command agent launches immediately (no model screen, no rotation,
-no session resume). When `-A` is supplied, the agent+command picker is
-skipped and `phaseModel` opens directly (or launches immediately for a
-command agent). A `phase` enum
+agents plus the registered command agents (currently `shell`), ordered
+deterministically: agents alphabetically, then commands alphabetically.
+`Enter` on an agent advances to `phaseModel` (with the agent
+pre-selected); `Enter` on a command agent launches immediately (no model
+screen, no rotation, no session resume).
+
+There is **no default agent**: the agent/command picker is always shown
+when `-A` is omitted, across every launch path. When `-A` is supplied,
+the picker is skipped and `phaseModel` opens directly (or launches
+immediately for a command agent). Launch paths that already know the
+worktree (`-W`, `--cwd`, outside a repo) skip the worktree picker by
+seeding `model.prePath`; `Init()` emits a `selectedEntryMsg` for it, so
+the agent/command picker (unpinned) or model phase (pinned) opens
+straight away. A `phase` enum
 (`phaseList` / `phaseAgent` / `phaseModel` / `phaseResume` /
-`phaseOllamaWarn` / `phaseNewWorktree`) tracks the
-active screen.
+`phaseOllamaWarn` / `phaseNewWorktree`) tracks the active screen.
 
 The phaseModel View is itself a `bubble/list` picker over the
 agent+tag+family filtered models (sourced from `config.toml` only — no
@@ -491,7 +502,9 @@ from a snapshot of eligible models (agent + `-T` tags + `-F` family
 filtered via `cfg.EligibleModels`); `indexOfModel` and `FindAfter` (a thin
 wrapper over `rotation.FirstAfter`) compute cursor positions;
 `phaseModelView` renders the picker screen with the agent/tag header and
-keybind footer. Full walkthrough:
+keybind footer, and prepends any `m.status` error (launch/config/session/
+ollama failures are shown on the model screen rather than silently
+swallowed). Full walkthrough:
 [docs/go-course/lesson-15-model-browser.md](docs/go-course/lesson-15-model-browser.md)
 (lesson 15's separate browser screen has been folded into phaseModel; the
 walkthrough is kept as historical record per the project convention).
@@ -529,10 +542,12 @@ worktree (`.worktrees/*`); it may only ever be the primary checkout. Both
 creation functions refuse it, and the TUI picker skips bare default-branch
 rows so it is never offered as a create-target.
 
-Branch names with slashes use the last path component as the worktree
-directory (`.worktrees/my-branch`). The `-W`/`--worktree` flag is wired in
-`cmd/wt/main.go`: it creates/reuses the worktree and then launches the
-agent there (no TUI).
+Branch names with slashes use the last worktree path component
+(`.worktrees/my-branch`). The `-W`/`--worktree` flag is wired in
+`cmd/wt/main.go`: it creates/reuses the worktree and then, with `-A`,
+launches the agent there directly (no TUI); without `-A` it passes the
+resolved worktree to the TUI via `prePath` so the agent/command picker
+(and model picker) still appear.
 
 ```bash
 go run ./cmd/wt -W my-feature -A claude   # create/reuse worktree, launch claude there

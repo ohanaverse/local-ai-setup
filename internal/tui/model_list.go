@@ -86,5 +86,12 @@ func (m *model) phaseModelView() string {
 	dimStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	header := headerStyle.Render(fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag))
 	footer := dimStyle.Render("\n[↑/↓] navigate   [enter] launch   [q] quit")
-	return pad.Render(header + m.models.View() + footer)
+	body := header + m.models.View() + footer
+	// A launch/config/session/ollama error set on the model phase must be
+	// visible; phaseModelView previously dropped m.status, making a failed
+	// launch look like "nothing happens" when Enter was pressed.
+	if m.status != "" {
+		body = ErrorStyle(m.theme).Render(m.status) + "\n\n" + body
+	}
+	return pad.Render(body)
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
@@ -32,37 +33,46 @@ func (a agentItem) Description() string {
 }
 
 // buildAgentList constructs the agent+command picker rows. Each configured
-// agent and each registered command appears once. Callers wrap the result
-// in a bubbles/list picker; tests range over the items directly.
-//
-// PR 3 reverts the PR 2 sort.Strings determinism: the picker lists every
-// registered driver (in agents.Names() map range order, so nondeterministic)
-// after the configured agents. The deterministic-ordering test was removed
-// in PR 3b. The picker is sized by the bubbles/list constructor in
-// selectedEntryMsg, not here.
+// agent and each registered command appears once. The list is ordered
+// deterministically — agents alphabetically, then commands alphabetically —
+// regardless of config order or the nondeterministic agents.Names() map
+// iteration. Callers wrap the result in a bubbles/list picker; tests range
+// over the items directly.
 func buildAgentList(cfg *config.Config) []list.Item {
-	items := make([]list.Item, 0)
 	seen := map[string]bool{}
+	var agentRows, commandRows []agentItem
 
-	// Configured agents first (so they sort before any unknown commands).
+	// Collect every configured agent and registered driver once each.
+	add := func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		it := agentItem{name: name, command: agents.IsCommand(name)}
+		if it.command {
+			commandRows = append(commandRows, it)
+		} else {
+			agentRows = append(agentRows, it)
+		}
+	}
 	for _, a := range cfg.Agents {
-		if seen[a.Name] {
-			continue
-		}
-		seen[a.Name] = true
-		items = append(items, agentItem{name: a.Name, command: agents.IsCommand(a.Name)})
+		add(a.Name)
 	}
-
-	// Any registered driver not already listed (e.g. a future command
-	// driver that wasn't pre-declared in config).
 	for _, n := range agents.Names() {
-		if seen[n] {
-			continue
-		}
-		seen[n] = true
-		items = append(items, agentItem{name: n, command: agents.IsCommand(n)})
+		add(n)
 	}
 
+	// Agents first, then commands; each group sorted by name.
+	sort.Slice(agentRows, func(i, j int) bool { return agentRows[i].name < agentRows[j].name })
+	sort.Slice(commandRows, func(i, j int) bool { return commandRows[i].name < commandRows[j].name })
+
+	items := make([]list.Item, 0, len(agentRows)+len(commandRows))
+	for _, a := range agentRows {
+		items = append(items, a)
+	}
+	for _, c := range commandRows {
+		items = append(items, c)
+	}
 	return items
 }
 

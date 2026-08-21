@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/agent-worktree/internal/guard"
@@ -144,5 +146,52 @@ func TestGuardHelpersOutsideRepoError(t *testing.T) {
 	}
 	if err := removeGuard(); err == nil {
 		t.Fatal("expected error outside repo for removeGuard")
+	}
+}
+
+// TestPickerSkippedOutsideTTY confirms the root command returns the
+// picker-needs-TTY error when stdin is not a terminal. Without this guard,
+// `wt < /dev/null` (no -A) and other non-interactive invocations fail with
+// Bubble Tea's opaque "could not open a new TTY" message — users see the
+// failure but not the fix (add -A).
+//
+// The test swaps stdin to /dev/null, simulating the piped case, then asserts
+// the resulting error mentions both TTY and -A so users know what to fix.
+// The underlying term.IsTerminal check is exercised by the ioctl on the
+// swapped fd; this test does not duplicate that micro-assertion.
+func TestPickerSkippedOutsideTTY(t *testing.T) {
+	// Run from a non-git directory so the RunE path that would open the
+	// TUI is the outside-repo branch (the simplest one to trigger).
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	// Pipe stdin from /dev/null so isStdinTTY returns false.
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open /dev/null: %v", err)
+	}
+	t.Cleanup(func() { _ = devnull.Close() })
+	oldStdin := os.Stdin
+	os.Stdin = devnull
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{}) // no -A, so picker path is taken
+	err = root.Execute()
+	if err == nil {
+		t.Fatal("expected TTY-needs error, got nil")
+	}
+	if !strings.Contains(err.Error(), "TTY") {
+		t.Errorf("error %q doesn't mention TTY", err.Error())
+	}
+	if !strings.Contains(err.Error(), "-A") {
+		t.Errorf("error %q doesn't mention -A flag", err.Error())
 	}
 }

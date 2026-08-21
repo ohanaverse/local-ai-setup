@@ -30,22 +30,25 @@ Each per-agent file ends with a "Verified on this machine" section. Verified fil
 
 The `wt` tool (and therefore every `*-wt` shim) needs three inputs to launch:
 a directory, an agent or command, and (for agents) a model. Each can be
-supplied via flag, picked from a TUI screen, or defaulted.
+supplied via flag or picked from a TUI screen; only the agent is never
+defaulted (it always comes from `-A` or the agent+command picker).
 
 | Flag | Description |
 |------|-------------|
-| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. |
-| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. Defaults to the first configured agent. Skips the agent+command picker. |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted. |
+| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. The agent is never defaulted: when `-A` is omitted the agent+command picker is always shown. Supplying `-A` skips the picker. |
 | `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. Skips the model picker when the eligible list contains only that model. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current repo root; skip the worktree picker. |
+| `--cwd` | Launch in the current repo root; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. |
 | `--yolo` | Skip permission prompts (agent-specific). |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
 With no flags, `wt` presents the worktree picker, then the agent+command
 picker, then the model picker (for agents). Multiple eligible models
-rotate on successive launches via the slot state file.
+rotate on successive launches via the slot state file. `-W` and `--cwd`
+skip the worktree picker (its path is pre-resolved), but the agent+command
+picker still appears when `-A` is omitted.
 
 ### Legacy bash flags
 

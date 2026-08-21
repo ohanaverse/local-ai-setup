@@ -32,10 +32,11 @@ install:                # Install scripts to ~/.local/bin/
 ifeq ($(shell uname -s),Darwin)
 	@# The cp above leaves the copied binary with a signature AMFI rejects
 	@# ("Taskgated Invalid Signature"), SIGKILLing it on launch (exit 137)
-	@# even though the source bin/wt was re-sealed at build time. Verify the
-	@# installed signature and re-seal only if it is invalid — unconditional
-	@# re-sealing pays a codesign syscall on every install.
-	@if [ -f $(BINDIR)/wt ] && ! codesign -v $(BINDIR)/wt 2>/dev/null; then codesign --force --sign - $(BINDIR)/wt; fi
+	@# even though the source bin/wt was re-sealed at build time. A conditional
+	@# `codesign -v` check is NOT enough: the copy can be structurally valid to
+	@# codesign yet still rejected by AMFI, so always force re-seal. The cost is
+	@# one codesign syscall per install.
+	@codesign --force --sign - $(BINDIR)/wt
 endif
 	@echo "Installed agent-worktree scripts to $(BINDIR)"
 

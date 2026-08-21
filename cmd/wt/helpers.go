@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/spf13/cobra"
@@ -82,3 +83,28 @@ func removeGuard() error {
 	}
 	return guard.Uninstall()
 }
+
+// isStdinTTY reports whether stdin is attached to a terminal. Used to gate
+// the picker paths in main.go so a non-interactive invocation (CI, cron,
+// piped command) gets a clear error pointing at -A instead of Bubble Tea's
+// opaque "could not open a new TTY" failure from /dev/tty.
+//
+// stdin (not stdout) is checked because that's the input Bubble Tea reads
+// from. Piping output to a file or another program doesn't make the TUI
+// unusable on its own, but `wt < /dev/null` does.
+//
+// term.IsTerminal does a TIOCGWINSZ/TCGETS ioctl to confirm TTY-ness; a
+// plain os.FileInfo mode check would return true for /dev/null and other
+// character devices, which isn't strict enough.
+func isStdinTTY() bool {
+	return term.IsTerminal(os.Stdin.Fd())
+}
+
+// errPickerNeedsTTY is returned by the rootCmd RunE when an unpinned launch
+// path would otherwise try to open the interactive picker (Bubble Tea's
+// WithAltScreen opens /dev/tty, which fails opaquely outside a terminal).
+// The message tells the user exactly which flag to add so their script
+// works again.
+var errPickerNeedsTTY = fmt.Errorf(
+	"the agent/command picker needs a TTY; pass -A <agent> to launch without it " +
+		"(or run wt interactively from a terminal)")
