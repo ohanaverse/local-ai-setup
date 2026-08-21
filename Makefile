@@ -57,6 +57,14 @@ test:                   # Run smoke tests
 		echo "Testing $$launcher --help..."; \
 		$(BINDIR)/$$launcher --help >/dev/null 2>&1 || echo "  $$launcher --help: skipped (agent may not be installed)"; \
 	done
+	@echo "Smoke testing wt config..."
+	@echo "Testing wt config --help..."; \
+	$(BINDIR)/wt config --help >/dev/null || { echo "  wt config --help: FAILED"; exit 1; }; \
+	echo "Testing wt config theme list..."; \
+	$(BINDIR)/wt config theme list >/dev/null || { echo "  wt config theme list: FAILED"; exit 1; }; \
+	echo "Testing wt config path..."; \
+	$(BINDIR)/wt config path >/dev/null || { echo "  wt config path: FAILED"; exit 1; }; \
+	echo "wt config smoke tests passed."
 	@echo "All tests complete."
 
 clean:                  # Remove build artifacts

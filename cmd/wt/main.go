@@ -195,7 +195,7 @@ func rootCmd() *cobra.Command {
 
 			// Interactive TUI.
 			maybeInstallGuard()
-			return tui.Run(yolo(cmd), agent, tags, family, args)
+			return tui.Run(yolo(cmd), agent, tags, family, args, a.theme)
 		},
 	}
 
@@ -227,6 +227,6 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a))
+	cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a), configCmd(a))
 	return cmd
 }

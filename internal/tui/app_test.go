@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 )
 
 // testConfig returns a Config with one agent (claude, supporting the
@@ -688,7 +689,7 @@ func TestNKeyIgnoredWhileLoading(t *testing.T) {
 // sentinel must be Enter-able, not just `n`-able.
 func TestEnterOnSentinelOpensNewWorktreePhase(t *testing.T) {
 	// Build a list with just the sentinel as the selected item.
-	l := buildList(nil, "", "/tmp/repo", 80, 24)
+	l := buildList(nil, "", "/tmp/repo", themes.Default, 80, 24)
 	m := model{
 		phase: phaseList, ready: true, width: 80, height: 24,
 		list: l,
@@ -709,7 +710,7 @@ func TestEnterOnSentinelOpensNewWorktreePhase(t *testing.T) {
 // existing list-unready guard and the `n` keypress guard.
 func TestEnterOnSentinelIgnoredWhileLoading(t *testing.T) {
 	// Even with a sentinel-bearing list, ready=false short-circuits.
-	l := buildList(nil, "", "/tmp/repo", 80, 24)
+	l := buildList(nil, "", "/tmp/repo", themes.Default, 80, 24)
 	m := model{
 		phase: phaseList, ready: false, width: 80, height: 24,
 		list: l,
@@ -944,7 +945,7 @@ func TestQDoesNotQuitWhileFiltering(t *testing.T) {
 	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
 	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
 	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	m.list = buildList(groups, "", "/repo", 78, 22)
+	m.list = buildList(groups, "", "/repo", themes.Default, 78, 22)
 	// Open the filter exactly like a user pressing '/'.
 	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.list.FilterState() != list.Filtering {
@@ -997,7 +998,7 @@ func TestNNotHijackedWhileFiltering(t *testing.T) {
 	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
 	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
 	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	m.list = buildList(groups, "", "/repo", 78, 22)
+	m.list = buildList(groups, "", "/repo", themes.Default, 78, 22)
 	// Open the filter exactly like a user pressing '/'.
 	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.list.FilterState() != list.Filtering {

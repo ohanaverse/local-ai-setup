@@ -101,6 +101,22 @@ On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` int
 - Merges models in both code and design rotations (union of tags)
 - Runs only once — skipped if `config.toml` already exists
 
+## User preferences (`wt config`)
+
+The `wt config` family manages user-level preferences (separate from `config.toml`, which holds the agent/model registry). The first shipped subcommand is `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
+
+```bash
+wt config theme              # show the active theme + available names
+wt config theme list         # list all built-in themes
+wt config theme show         # show the active theme's tokens
+wt config theme show solarized
+wt config theme set tokyo-night    # effective on next wt launch
+wt config theme unset              # revert to default
+wt config path               # print the config directory
+```
+
+Themes apply to the TUI picker, CLI tables (`wt models`, `wt agents`), and `wt config theme list` output. See `docs/wt-config.md` for the full reference, including the `themes.toml` file format and the full list of built-in palettes.
+
 ## Model rotation
 
 Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 )
 
 // entryItem must implement list.Item so buildList can pass it to list.New.
@@ -85,7 +86,7 @@ func singleGroup(kind worktree.GroupKind, e worktree.Entry) []worktree.EntryGrou
 // real entries, so users in an empty repo can still create a worktree from
 // the TUI.
 func TestBuildListEmpty(t *testing.T) {
-	l := buildList(nil, "", "/tmp/repo", 80, 24)
+	l := buildList(nil, "", "/tmp/repo", themes.Default, 80, 24)
 	if l.Title != "Pick a worktree or branch" {
 		t.Errorf("title = %q, want Pick a worktree or branch", l.Title)
 	}
@@ -101,7 +102,7 @@ func TestBuildListEmpty(t *testing.T) {
 // number of entries and filter state.
 func TestBuildListShowsStatusBar(t *testing.T) {
 	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
-	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 80, 24)
 	if !l.ShowStatusBar() {
 		t.Error("ShowStatusBar = false, want true")
 	}
@@ -114,7 +115,7 @@ func TestBuildListShowsStatusBar(t *testing.T) {
 // binding appears with the right key and help text.
 func TestBuildListShortHelpAdvertisesNewWorktree(t *testing.T) {
 	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
-	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 80, 24)
 	bindings := l.ShortHelp()
 	found := false
 	for _, b := range bindings {
@@ -134,7 +135,7 @@ func TestBuildListShortHelpAdvertisesNewWorktree(t *testing.T) {
 // screen toggled with '?'), so the shortcut is discoverable there too.
 func TestBuildListFullHelpAdvertisesNewWorktree(t *testing.T) {
 	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
-	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 80, 24)
 	found := false
 	for _, section := range l.FullHelp() {
 		for _, b := range section {
@@ -152,7 +153,7 @@ func TestBuildListFullHelpAdvertisesNewWorktree(t *testing.T) {
 // terminal without overflowing.
 func TestBuildListDimensions(t *testing.T) {
 	groups := singleGroup(worktree.GroupWorktrees, worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"})
-	l := buildList(groups, "", "/tmp/repo", 78, 22)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 78, 22)
 	if l.Width() != 78 || l.Height() != 22 {
 		t.Errorf("dimensions = (%d, %d), want (78, 22)", l.Width(), l.Height())
 	}
@@ -193,7 +194,7 @@ func TestBuildListPrependsSentinel(t *testing.T) {
 	groups := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: entries},
 	}
-	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 80, 24)
 	items := l.Items()
 	if first, ok := items[0].(entryItem); !ok || first.kind != kindNewWorktree {
 		t.Errorf("items[0] = %+v, want sentinel (kindNewWorktree)", items[0])
@@ -217,7 +218,7 @@ func TestBuildListPrependsSentinel(t *testing.T) {
 // the sentinel even with zero real entries. A fresh repo with no
 // worktrees must still let users create one from the TUI.
 func TestBuildListSentinelFirstWhenEmpty(t *testing.T) {
-	l := buildList(nil, "", "/tmp/repo", 80, 24)
+	l := buildList(nil, "", "/tmp/repo", themes.Default, 80, 24)
 	items := l.Items()
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1 (just the sentinel)", len(items))
@@ -252,7 +253,7 @@ func TestBuildListOrdering(t *testing.T) {
 			{Type: worktree.TypeBranch, Branch: "origin/gamma"},
 		}},
 	}
-	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 80, 24)
 	items := l.Items()
 	if len(items) < 6 {
 		t.Fatalf("expected at least 6 items (sentinel + 2 worktrees + 2 locals + 1 remote + 1 separator?), got %d", len(items))
@@ -285,7 +286,7 @@ func TestBuildListCurrentMarker(t *testing.T) {
 		Branch: "main",
 		Path:   "/tmp/repo",
 	})
-	l := buildList(groups, "", "/tmp/repo", 80, 24)
+	l := buildList(groups, "", "/tmp/repo", themes.Default, 80, 24)
 	items := l.Items()
 	// items[0] is the sentinel; the only real entry sits at items[1].
 	got, ok := items[1].(entryItem)
@@ -314,7 +315,7 @@ func TestBuildListDefaultMarker(t *testing.T) {
 			{Type: worktree.TypeWorktree, Branch: "main", Path: filepath.Join(repoRoot, ".worktrees", "main")},
 		}},
 	}
-	l := buildList(groups, "main", repoRoot, 80, 24)
+	l := buildList(groups, "main", repoRoot, themes.Default, 80, 24)
 	items := l.Items()
 	got, ok := items[1].(entryItem)
 	if !ok {
@@ -353,7 +354,7 @@ func TestBuildListSkipsBareDefaultBranch(t *testing.T) {
 			{Type: worktree.TypeBranch, Branch: "origin/dev"},
 		}},
 	}
-	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	l := buildList(groups, "main", "/tmp/repo", themes.Default, 80, 24)
 
 	seen := map[string]bool{}
 	for _, it := range l.Items() {
@@ -390,7 +391,7 @@ func TestBuildListCurrentWinsOverDefault(t *testing.T) {
 		Branch: "main",
 		Path:   "/tmp/repo",
 	})
-	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	l := buildList(groups, "main", "/tmp/repo", themes.Default, 80, 24)
 	items := l.Items()
 	got := items[1].(entryItem)
 	if got.label != "(current)" {
@@ -412,7 +413,7 @@ func TestBuildListNoSeparatorWhenRemotesEmpty(t *testing.T) {
 		}},
 		{Kind: worktree.GroupRemoteBranches, Entries: nil},
 	}
-	l := buildList(groups, "main", "/tmp/repo", 80, 24)
+	l := buildList(groups, "main", "/tmp/repo", themes.Default, 80, 24)
 	for _, it := range l.Items() {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
 			t.Errorf("separator rendered despite empty remote group: %+v", ei)

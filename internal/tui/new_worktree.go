@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -14,10 +15,12 @@ import (
 // branch name or a path-like name (e.g. feature/x).
 const newWorktreePlaceholder = "branch-or-worktree-name"
 
-// errorStyle is the lipgloss style used to render user-facing errors:
-// m.newError under the new-worktree input and m.listError above the list.
-// ANSI color 9 is bright red.
-var errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+// errorStyle returns the lipgloss style for user-facing errors in the
+// active theme: m.newError under the new-worktree input and m.listError
+// above the list.
+func errorStyle(theme themes.Theme) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Token(themes.TokenError))
+}
 
 // newWorktreeCreatedMsg is emitted after a create attempt. On
 // success, path is the worktree path and name is the branch name.

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/spf13/cobra"
 )
 
@@ -36,16 +37,19 @@ func inGitRepoAt(dir string) bool {
 	return exec.Command("git", "-C", dir, "rev-parse", "--git-dir").Run() == nil
 }
 
-// borderStyle is the shared table border colour.
-var borderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+// borderStyle returns the table border style for the active theme.
+func borderStyle(theme themes.Theme) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Token(themes.TokenBorder))
+}
 
 // renderTable renders a simple lipgloss table from headers and rows.
-func renderTable(headers []string, rows [][]string) string {
+// theme controls the border color.
+func renderTable(headers []string, rows [][]string, theme themes.Theme) string {
 	t := table.New().
 		Headers(headers...).
 		Rows(rows...).
 		Border(lipgloss.NormalBorder()).
-		BorderStyle(borderStyle).
+		BorderStyle(borderStyle(theme)).
 		BorderRow(true)
 	return t.Render()
 }

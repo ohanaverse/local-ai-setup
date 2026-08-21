@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -86,7 +87,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		phase:     phaseModel,
 		agent:     agent,
 		tag:       tag,
-		models:    buildModelList(models, 80, 24),
+		models:    buildModelList(models, themes.Default, 80, 24),
 		width:     80,
 		height:    24,
 	}

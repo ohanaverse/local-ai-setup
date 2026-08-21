@@ -32,6 +32,7 @@ func modelsCmd(a *app) *cobra.Command {
 			fmt.Println(renderTable(
 				[]string{"ID", "LOCATION", "AUTH", "BASE_URL"},
 				provRows,
+				a.theme,
 			))
 
 			// Models table — sort by provider, then ID
@@ -58,6 +59,7 @@ func modelsCmd(a *app) *cobra.Command {
 			fmt.Println(renderTable(
 				[]string{"ID", "FAMILY", "PROVIDER", "LOCATION", "TAGS"},
 				modelRows,
+				a.theme,
 			))
 
 			// Agents table
@@ -73,6 +75,7 @@ func modelsCmd(a *app) *cobra.Command {
 			fmt.Println(renderTable(
 				[]string{"NAME", "PROVIDERS", "DEFAULT"},
 				agentRows,
+				a.theme,
 			))
 
 			return nil
@@ -101,6 +104,7 @@ func agentsCmd(a *app) *cobra.Command {
 			fmt.Println(renderTable(
 				[]string{"NAME", "INSTALLED", "YOLO_FLAG"},
 				rows,
+				a.theme,
 			))
 		},
 	}

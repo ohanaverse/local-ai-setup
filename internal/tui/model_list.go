@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 )
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
@@ -39,14 +40,15 @@ func (m modelItem) Description() string {
 }
 
 // buildModelList builds a bubble/list from the given models. The caller
-// passes the desired width/height. The list is created with the default
-// delegate and a fixed title.
-func buildModelList(models []config.Model, width, height int) list.Model {
+// passes the desired width/height. The list is created with a themed
+// delegate (themedListDelegate) so the picker honors the active color
+// theme, and a fixed title.
+func buildModelList(models []config.Model, theme themes.Theme, width, height int) list.Model {
 	items := make([]list.Item, 0, len(models))
 	for _, m := range models {
 		items = append(items, modelItem{model: m})
 	}
-	l := list.New(items, list.NewDefaultDelegate(), width, height)
+	l := list.New(items, themedListDelegate(theme), width, height)
 	l.Title = "Models"
 	l.SetShowStatusBar(false)
 	return l
@@ -79,8 +81,10 @@ func FindAfter(models []config.Model, target config.Model) (config.Model, bool) 
 // describing the keybinds. The picker IS the agent+model screen —
 // there is no separate browser.
 func (m *model) phaseModelView() string {
-	style := lipgloss.NewStyle().Padding(1, 2)
-	header := fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag)
-	footer := "\n[↑/↓] navigate   [enter] launch   [q] quit"
-	return style.Render(header + m.models.View() + footer)
+	pad := lipgloss.NewStyle().Padding(1, 2)
+	headerStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader))
+	dimStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	header := headerStyle.Render(fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag))
+	footer := dimStyle.Render("\n[↑/↓] navigate   [enter] launch   [q] quit")
+	return pad.Render(header + m.models.View() + footer)
 }

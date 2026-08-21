@@ -22,6 +22,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -58,6 +59,7 @@ type model struct {
 	tag      string             // active rotation tag group
 	rotation *rotation.Rotation // snapshot rotation for the active (agent, tag); set on picker entry
 	cfg      *config.Config     // loaded config for the model catalog
+	theme    themes.Theme       // active color theme; passed from cmd/wt
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
@@ -164,7 +166,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and tags the (current)/(default) markers on entryItem.
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
-		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.width-2, m.height-2)
+		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
 		m.ready = true
 
 		// Default-branch warning: if the only picker target is the current
@@ -453,7 +455,7 @@ func (m model) View() string {
 		}
 		body := m.newInput.View()
 		if m.newError != "" {
-			body += "\n" + errorStyle.Render(m.newError)
+			body += "\n" + errorStyle(m.theme).Render(m.newError)
 		}
 		if m.creating {
 			body += "\ncreating " + m.newInput.Value() + "…"
@@ -496,13 +498,13 @@ func (m model) View() string {
 		return m.status
 	}
 	if m.listError != "" {
-		return errorStyle.Render("error: "+m.listError) + "\n" + m.list.View()
+		return errorStyle(m.theme).Render("error: "+m.listError) + "\n" + m.list.View()
 	}
 	// A pinned --agent that errors (config error, empty model catalog) sets
 	// m.status while staying on the worktree list; render it so the failure
 	// is visible instead of silently swallowed by the list view.
 	if m.status != "" {
-		return errorStyle.Render(m.status) + "\n" + m.list.View()
+		return errorStyle(m.theme).Render(m.status) + "\n" + m.list.View()
 	}
 	return m.list.View()
 }
@@ -576,7 +578,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 // rotation untouched. firstTag is the resolved tag for the slot key.
 // Caller is responsible for the len(models) == 0 guard.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
-	m.models = buildModelList(models, m.width-2, m.height-2)
+	m.models = buildModelList(models, m.theme, m.width-2, m.height-2)
 	m.tag = firstTag
 	slot := rotation.SlotFromFlags(agent, firstTag, m.activeFamily)
 	m.positionAfterLastLaunched(slot, models)
@@ -726,8 +728,9 @@ type entriesLoadedMsg struct {
 // agent is the --agent flag value ("" = use config default). tags is the
 // -T/--tags flag value (comma-delimited; "" = no filter). family is the
 // -F/--family flag value (comma-delimited; "" = no filter). extraArgs are
-// the user's passthrough args after --.
-func Run(yolo bool, agent, tags, family string, extraArgs []string) error {
+// the user's passthrough args after --. theme is the active color theme,
+// loaded by cmd/wt.
+func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -735,6 +738,7 @@ func Run(yolo bool, agent, tags, family string, extraArgs []string) error {
 	p := tea.NewProgram(model{
 		status:       "loading worktrees...",
 		cfg:          cfg,
+		theme:        theme,
 		yolo:         yolo,
 		initialAgent: agent,
 		activeTags:   tags,

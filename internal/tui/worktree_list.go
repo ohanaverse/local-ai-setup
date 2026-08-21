@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -111,7 +112,7 @@ type selectedEntryMsg struct{ entry worktree.Entry }
 // repoRoot is resolved with filepath.EvalSymlinks so symlinked paths
 // (e.g. ~/.worktrees/foo -> .worktrees/foo) compare correctly against
 // the entry's Path.
-func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, width, height int) list.Model {
+func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, theme themes.Theme, width, height int) list.Model {
 	resolvedRepo, _ := filepath.EvalSymlinks(repoRoot)
 
 	items := make([]list.Item, 0)
@@ -160,7 +161,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, wid
 		}
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), width, height)
+	l := list.New(items, themedListDelegate(theme), width, height)
 	l.Title = "Pick a worktree or branch"
 	l.SetShowStatusBar(true)
 	// Advertise the 'n' shortcut in the footer help line so users know they
