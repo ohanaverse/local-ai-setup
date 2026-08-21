@@ -18,6 +18,12 @@ SRCDIR := bin
 build:                  # Build the Go wt binary
 	@echo "Building wt..."
 	go build -o bin/wt ./cmd/wt
+ifeq ($(shell uname -s),Darwin)
+	@# Re-seal the ad-hoc code signature so AMFI doesn't SIGKILL the binary
+	@# on launch (a stale/drifted linker signature is rejected with
+	@# "Taskgated Invalid Signature"; a fresh codesign regenerates the seal).
+	@codesign --force --sign - bin/wt
+endif
 	@echo "Built bin/wt"
 
 install:                # Install scripts to ~/.local/bin/
