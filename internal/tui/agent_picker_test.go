@@ -317,8 +317,8 @@ func TestAgentIssue(t *testing.T) {
 	if got := agentIssue("definitely-not-installed", cfg); !strings.Contains(got, "not installed") {
 		t.Errorf("agentIssue(definitely-not-installed) = %q, want to mention not installed", got)
 	}
-	if got := agentIssue("agy", cfg); !strings.Contains(got, "not configured") {
-		t.Errorf("agentIssue(agy) = %q, want to mention not configured", got)
+	if got := agentIssue("opencode", cfg); !strings.Contains(got, "not configured") {
+		t.Errorf("agentIssue(opencode) = %q, want to mention not configured", got)
 	}
 	if got := agentIssue("shell", cfg); got != "" {
 		t.Errorf("agentIssue(shell) = %q, want \"\" (command)", got)
@@ -350,8 +350,8 @@ func TestBuildAgentListShowsIssues(t *testing.T) {
 	if issues["definitely-not-installed"] == "" {
 		t.Error("definitely-not-installed should carry a not-installed issue")
 	}
-	if issues["agy"] == "" {
-		t.Error("agy (registered but not configured) should carry a not-configured issue")
+	if issues["opencode"] == "" {
+		t.Error("opencode (registered but not configured) should carry a not-configured issue")
 	}
 	if issues["shell"] != "" {
 		t.Errorf("shell issue = %q, want \"\" (command)", issues["shell"])
@@ -359,7 +359,7 @@ func TestBuildAgentListShowsIssues(t *testing.T) {
 }
 
 // TestPhaseAgentEnterBlocksUnconfiguredAgent verifies that selecting an
-// agent that is registered but not configured (e.g. agy/opencode missing
+// agent that is registered but not configured (e.g. opencode missing
 // from config.toml) does not advance to the model screen; it stays on the
 // picker and surfaces a clear "not configured" status instead of the old
 // cryptic "agent not found" that looked like "nothing happens".
@@ -374,7 +374,7 @@ func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
 	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "agy" {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "opencode" {
 			m.agentList.Select(i)
 			break
 		}

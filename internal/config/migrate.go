@@ -137,6 +137,49 @@ func Migrate() (bool, error) {
 		})
 	}
 
+	// Agy is a special case: it requires the google provider and a
+	// google/native model, and only supports the google provider.
+	googleFound := false
+	for _, p := range cfg.Providers {
+		if p.ID == "google" {
+			googleFound = true
+			break
+		}
+	}
+	if !googleFound {
+		cfg.Providers = append(cfg.Providers, Provider{
+			ID:       "google",
+			Name:     "Google",
+			Location: LocationCloud,
+			Auth:     AuthConfig{Type: "native"},
+		})
+	}
+	cfg.Models = addModels(cfg.Models, []Model{{
+		ID:         "google/native",
+		Family:     "google",
+		ProviderID: "google",
+		ModelName:  "native",
+		Location:   LocationCloud,
+		Tags:       []string{"code", "design"},
+	}})
+
+	agyFound := false
+	for i := range cfg.Agents {
+		if cfg.Agents[i].Name == "agy" {
+			agyFound = true
+			cfg.Agents[i].SupportedProviders = []string{"google"}
+			cfg.Agents[i].DefaultProvider = "google"
+			break
+		}
+	}
+	if !agyFound {
+		cfg.Agents = append(cfg.Agents, Agent{
+			Name:               "agy",
+			SupportedProviders: []string{"google"},
+			DefaultProvider:    "google",
+		})
+	}
+
 	if err := Save(cfg); err != nil {
 		return false, err
 	}

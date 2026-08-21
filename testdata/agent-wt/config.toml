@@ -23,6 +23,12 @@ name = "GitHub Copilot"
 location = "cloud"
 auth = { type = "native" }
 
+[[providers]]
+id = "google"
+name = "Google"
+location = "cloud"
+auth = { type = "native" }
+
 [[models]]
 id = "ollama/gemma4:9b"
 family = "gemma4"
@@ -61,6 +67,14 @@ model_name = "kimi-k2.6:cloud"
 location = "cloud"
 tags = ["code", "design"]
 
+[[models]]
+id = "google/native"
+family = "google"
+provider_id = "google"
+model_name = "native"
+location = "cloud"
+tags = ["code", "design"]
+
 [[agents]]
 name = "claude"
 supported_providers = ["claude", "ollama", "openrouter"]
@@ -75,3 +89,8 @@ default_provider = "openrouter"
 name = "copilot"
 supported_providers = ["copilot", "ollama"]
 default_provider = "copilot"
+
+[[agents]]
+name = "agy"
+supported_providers = ["google"]
+default_provider = "google"

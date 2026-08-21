@@ -22,7 +22,9 @@ Antigravity CLI authenticates against a Google account; see the [Antigravity CLI
 
 ## Model selection
 
-`agy-wt` does **not** pass a `--model` flag through to `agy`. The launcher still goes through the picker screen (so rotation state advances on each launch), but it lets `agy` choose its own model.
+`agy-wt` does **not** pass a `--model` flag through to `agy`. Model selection happens inside `agy`'s TUI via `/model`.
+
+`agy` is restricted to the `google` provider. The launcher only considers `google` models when building the eligible list, and it skips the model picker when exactly one eligible model exists.
 
 ## Agent init
 

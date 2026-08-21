@@ -167,9 +167,9 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	// Providers: ollama + copilot
-	if len(cfg.Providers) != 2 {
-		t.Fatalf("expected 2 providers, got %d", len(cfg.Providers))
+	// Providers: ollama + copilot + google
+	if len(cfg.Providers) != 3 {
+		t.Fatalf("expected 3 providers, got %d", len(cfg.Providers))
 	}
 	if cfg.Providers[0].ID != "ollama" || cfg.Providers[0].Auth.BaseURL != "http://localhost:9999" {
 		t.Errorf("ollama provider wrong: %+v", cfg.Providers[0])
@@ -178,9 +178,10 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		t.Errorf("copilot provider wrong: %+v", cfg.Providers[1])
 	}
 
-	// Models: copilot/native (merged tags), deepseek, kimi. No commented-out model.
-	if len(cfg.Models) != 3 {
-		t.Fatalf("expected 3 models, got %d: %v", len(cfg.Models), cfg.Models)
+	// Models: copilot/native (merged tags), deepseek, kimi, google/native.
+	// No commented-out model.
+	if len(cfg.Models) != 4 {
+		t.Fatalf("expected 4 models, got %d: %v", len(cfg.Models), cfg.Models)
 	}
 	copilot := cfg.Models[0]
 	if copilot.ID != "copilot/native" || !copilot.HasTag("code") || !copilot.HasTag("design") {
@@ -192,15 +193,18 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		}
 	}
 
-	// Agents: copilot + pi (pi is always added as a special case)
-	if len(cfg.Agents) != 2 {
-		t.Fatalf("expected 2 agents, got %d: %v", len(cfg.Agents), cfg.Agents)
+	// Agents: copilot + pi + agy (pi and agy are always added as special cases)
+	if len(cfg.Agents) != 3 {
+		t.Fatalf("expected 3 agents, got %d: %v", len(cfg.Agents), cfg.Agents)
 	}
 	if cfg.Agents[0].Name != "copilot" {
 		t.Errorf("expected copilot agent, got %v", cfg.Agents[0])
 	}
 	if cfg.Agents[1].Name != "pi" {
 		t.Errorf("expected pi agent, got %v", cfg.Agents[1])
+	}
+	if cfg.Agents[2].Name != "agy" {
+		t.Errorf("expected agy agent, got %v", cfg.Agents[2])
 	}
 
 	// Second run must not migrate again
@@ -225,4 +229,69 @@ func TestMigrate_NoLegacyFile(t *testing.T) {
 	if migrated {
 		t.Error("expected no migration when models.conf is absent")
 	}
+}
+
+// Migrate must keep agy restricted to google and avoid duplicating google
+// provider/model when legacy config already includes native:agy/native:google.
+func TestMigrate_AgyGoogleSeedingIsIdempotent(t *testing.T) {
+	tmp := t.TempDir()
+	cfgDir := filepath.Join(tmp, "agent-wt")
+	os.MkdirAll(cfgDir, 0755)
+
+	legacy := `CODE_MODELS=(
+	  "native:agy"
+	  "native:google"
+	)
+	`
+	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	migrated, err := Migrate()
+	if err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if !migrated {
+		t.Fatal("expected migration to run")
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	googleProviders := 0
+	for _, p := range cfg.Providers {
+		if p.ID == "google" {
+			googleProviders++
+		}
+	}
+	if googleProviders != 1 {
+		t.Fatalf("expected exactly 1 google provider, got %d", googleProviders)
+	}
+
+	googleNativeModels := 0
+	for _, m := range cfg.Models {
+		if m.ID == "google/native" {
+			googleNativeModels++
+			if !m.HasTag("code") || !m.HasTag("design") {
+				t.Fatalf("google/native tags = %v, want both code and design", m.Tags)
+			}
+		}
+	}
+	if googleNativeModels != 1 {
+		t.Fatalf("expected exactly 1 google/native model, got %d", googleNativeModels)
+	}
+
+	for _, a := range cfg.Agents {
+		if a.Name == "agy" {
+			if len(a.SupportedProviders) != 1 || a.SupportedProviders[0] != "google" || a.DefaultProvider != "google" {
+				t.Fatalf("agy agent not restricted to google: %+v", a)
+			}
+			return
+		}
+	}
+	t.Fatal("expected agy agent in migrated config")
 }
