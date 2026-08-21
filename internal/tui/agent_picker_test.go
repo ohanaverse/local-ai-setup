@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -11,6 +12,20 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
+
+// stubInstalled overrides the installed test seam so agentIssue treats the
+// given names as installed and everything else as not installed. Returns a
+// cleanup that restores the real agents.Installed. Tests use it so the
+// "installed" check is deterministic regardless of the host's binaries.
+func stubInstalled(names ...string) func() {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	prev := installed
+	installed = func(name string) bool { return set[name] }
+	return func() { installed = prev }
+}
 
 // TestBuildAgentList verifies the agent+command picker contains every
 // configured agent and every registered command, with their kinds
@@ -98,6 +113,7 @@ func TestBuildAgentListOrdering(t *testing.T) {
 // filter-aware catalog narrowing; the other tests use the simpler
 // testConfig() shape.
 func TestPhaseModelHonorsFilters(t *testing.T) {
+	t.Cleanup(stubInstalled("claude"))
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
@@ -187,6 +203,7 @@ func singleModelConfig() *config.Config {
 // the production phaseAgent Enter handler fires against the same shape.
 func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 	t.Helper()
+	t.Cleanup(stubInstalled("claude"))
 	m := model{
 		cfg:    cfg,
 		phase:  phaseAgent,
@@ -259,6 +276,7 @@ func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
 // enterModelPhase helper drives both code paths, so a regression here
 // would surface in either.
 func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
+	t.Cleanup(stubInstalled("claude"))
 	m := model{
 		cfg:          singleModelConfig(),
 		phase:        phaseList,
@@ -276,5 +294,136 @@ func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected launch cmd from single-model skip in pinned-agent path; got nil")
+	}
+}
+
+// TestAgentIssue verifies agentIssue reports the right problem for each
+// launchability state: configured+installed (launchable), not configured,
+// not installed, and commands (always launchable). This is the single source
+// of truth the picker rows and the Enter handler both rely on, so a
+// regression here would either hide a real problem or block a valid launch.
+func TestAgentIssue(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude"))
+
+	if got := agentIssue("claude", cfg); got != "" {
+		t.Errorf("agentIssue(claude) = %q, want \"\" (configured + installed)", got)
+	}
+	if got := agentIssue("definitely-not-installed", cfg); !strings.Contains(got, "not installed") {
+		t.Errorf("agentIssue(definitely-not-installed) = %q, want to mention not installed", got)
+	}
+	if got := agentIssue("agy", cfg); !strings.Contains(got, "not configured") {
+		t.Errorf("agentIssue(agy) = %q, want to mention not configured", got)
+	}
+	if got := agentIssue("shell", cfg); got != "" {
+		t.Errorf("agentIssue(shell) = %q, want \"\" (command)", got)
+	}
+}
+
+// TestBuildAgentListShowsIssues verifies the picker rows carry a non-empty
+// issue for agents that cannot launch (not configured, not installed) and an
+// empty issue for launchable agents and commands. Without this, the picker
+// would offer agents that silently fail on selection — the exact bug this
+// change fixes.
+func TestBuildAgentListShowsIssues(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude"))
+
+	issues := map[string]string{}
+	for _, it := range buildAgentList(cfg) {
+		ai := it.(agentItem)
+		issues[ai.name] = ai.issue
+	}
+	if issues["claude"] != "" {
+		t.Errorf("claude issue = %q, want \"\"", issues["claude"])
+	}
+	if issues["definitely-not-installed"] == "" {
+		t.Error("definitely-not-installed should carry a not-installed issue")
+	}
+	if issues["agy"] == "" {
+		t.Error("agy (registered but not configured) should carry a not-configured issue")
+	}
+	if issues["shell"] != "" {
+		t.Errorf("shell issue = %q, want \"\" (command)", issues["shell"])
+	}
+}
+
+// TestPhaseAgentEnterBlocksUnconfiguredAgent verifies that selecting an
+// agent that is registered but not configured (e.g. agy/opencode missing
+// from config.toml) does not advance to the model screen; it stays on the
+// picker and surfaces a clear "not configured" status instead of the old
+// cryptic "agent not found" that looked like "nothing happens".
+func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude"))
+
+	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "agy" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+
+	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := gotModel.(model)
+	if nm.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (selection blocked)", nm.phase)
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd, got %v", cmd)
+	}
+	if !strings.Contains(nm.status, "not configured") {
+		t.Errorf("status = %q, want to mention not configured", nm.status)
+	}
+}
+
+// TestPhaseAgentEnterBlocksUninstalledAgent verifies that selecting a
+// configured-but-uninstalled agent (e.g. codex/copilot with no binary on
+// PATH) is blocked on the picker with a clear "not installed" status, rather
+// than opening a model screen whose launch can never succeed.
+func TestPhaseAgentEnterBlocksUninstalledAgent(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude"))
+
+	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "definitely-not-installed" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+
+	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := gotModel.(model)
+	if nm.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (selection blocked)", nm.phase)
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd, got %v", cmd)
+	}
+	if !strings.Contains(nm.status, "not installed") {
+		t.Errorf("status = %q, want to mention not installed", nm.status)
 	}
 }

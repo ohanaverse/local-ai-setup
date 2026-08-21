@@ -50,6 +50,12 @@ rotate on successive launches via the slot state file. `-W` and `--cwd`
 skip the worktree picker (its path is pre-resolved), but the agent+command
 picker still appears when `-A` is omitted.
 
+The agent+command picker lists every registered agent and command. Agents
+that cannot launch carry an inline indication — "not configured" (missing
+from `config.toml`) or "not installed" (no binary on PATH) — and selecting
+one is blocked with a clear error rather than advancing to a model screen
+that can never succeed.
+
 ### Legacy bash flags
 
 The original bash launchers supported `-w`/`--worktree`, `--code`,

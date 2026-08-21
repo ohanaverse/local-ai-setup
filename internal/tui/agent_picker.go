@@ -9,11 +9,18 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
+// installed is a test seam wrapping agents.Installed. Production code uses
+// the real PATH lookup; tests override it to control the installed state
+// deterministically without depending on the host's installed binaries.
+var installed = agents.Installed
+
 // agentItem is one row in the phaseAgent picker. command distinguishes
-// agents (require model layer) from commands (launch directly).
+// agents (require model layer) from commands (launch directly). issue is a
+// short, human-readable problem that prevents launch ("" = launchable).
 type agentItem struct {
 	name    string
 	command bool
+	issue   string
 }
 
 func (a agentItem) FilterValue() string { return a.name }
@@ -26,10 +33,30 @@ func (a agentItem) Title() string {
 }
 
 func (a agentItem) Description() string {
+	if a.issue != "" {
+		return a.issue
+	}
 	if a.command {
 		return "no model; runs passthrough commands or interactive shell"
 	}
 	return "agent: launches with a model"
+}
+
+// agentIssue returns a short, human-readable problem that prevents name from
+// launching, or "" if it is launchable. An agent must be both configured (so
+// it has a model catalog) and installed (so its binary can be exec'd).
+// Commands (e.g. shell) are always launchable.
+func agentIssue(name string, cfg *config.Config) string {
+	if agents.IsCommand(name) {
+		return ""
+	}
+	if _, err := cfg.AgentByName(name); err != nil {
+		return "not configured — add it to config.toml"
+	}
+	if !installed(name) {
+		return "not installed — install the binary"
+	}
+	return ""
 }
 
 // buildAgentList constructs the agent+command picker rows. Each configured
@@ -52,6 +79,7 @@ func buildAgentList(cfg *config.Config) []list.Item {
 		if it.command {
 			commandRows = append(commandRows, it)
 		} else {
+			it.issue = agentIssue(name, cfg)
 			agentRows = append(agentRows, it)
 		}
 	}

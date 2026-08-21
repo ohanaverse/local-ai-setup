@@ -293,6 +293,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// by the picked driver's name, not a hardcoded "shell".
 					return m.launchCommand(item.name)
 				}
+				// An agent that is not configured or not installed cannot
+				// launch. Surface the reason inline instead of letting the
+				// user advance to a model screen that can never succeed.
+				if item.issue != "" {
+					m.status = "cannot launch " + item.name + ": " + item.issue
+					return m, nil
+				}
 				// Agent: validate the model catalog for the agent + active
 				// filters (-T/-F), then build the picker list and position
 				// the cursor. EligibleModels narrows the catalog by tag
@@ -559,6 +566,13 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 		m.agent = m.initialAgent
 		if agents.IsCommand(m.agent) {
 			return m.launchCommand(m.agent)
+		}
+		// A pinned agent that is not configured or not installed cannot
+		// launch; surface the reason instead of a cryptic "agent not found"
+		// from EligibleModels or a late "not installed" from the launch path.
+		if issue := agentIssue(m.agent, m.cfg); issue != "" {
+			m.status = "cannot launch " + m.agent + ": " + issue
+			return m, nil
 		}
 		// Pinned agent: skip the picker, run the same model setup
 		// that phaseAgent Enter would have run for an agent item.
