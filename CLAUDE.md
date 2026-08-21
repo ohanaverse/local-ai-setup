@@ -175,7 +175,7 @@ go vet ./...         # vet
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
 | `internal/ollamacheck/` | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
 | `internal/themes/` | Active color theme: `Theme` struct + 4 built-in palettes (`default`/`solarized`/`mono`/`tokyo-night`), `themes.toml` load/save/unset, `lipgloss.AdaptiveColor` per token so the same theme works in light and dark terminals |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning + guard warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt, shell agent skip-model-screen. Picker styling comes from `delegate.go`, which threads the active theme through every `list.Model` (worktree, agent, model, resume/guard/ollama confirmations). |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt (Start fresh is the cursor default), shell agent skip-model-screen. Picker styling comes from `delegate.go`, which threads the active theme through every `list.Model` (worktree, agent, model, resume/ollama confirmations). |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -363,10 +363,11 @@ not an error.
 In the TUI (lesson 16), pressing Enter on the agent+model screen checks
 `session.LatestForAgent` for claude/opencode. If a session exists, a
 `phaseResume` prompt offers three choices:
+- **Start fresh** — launch without resume args. **Default cursor position;
+  Enter launches a fresh session unless Resume is highlighted.**
+- **Cancel** — return to the agent+model screen.
 - **Resume** — append `--resume <id>` (claude) or `--session <id>` (opencode)
   and launch.
-- **Start fresh** — launch without resume args.
-- **Cancel** — return to the agent+model screen.
 
 If no session exists, the agent launches immediately. The non-TUI launch path
 (lesson 17) performs the same resume check in `BuildLaunchCmd`, appending
@@ -426,6 +427,11 @@ so the shortcut is discoverable without scrolling to the sentinel row.
 The picker is skipped entirely when `-W`, `--cwd`, or a non-git-repo
 condition holds; the picker also always shows the default branch plus
 local worktrees and remotes, even when launched from inside a worktree.
+On entry, the cursor lands on the worktree for the repo default branch
+(so Enter launches on `main` without an extra keystroke); bare default
+branches are filtered out of the picker entirely. Enter on a default-branch
+row launches straight through — there is no confirmation prompt before
+launching on the protected branch.
 Full walkthrough:
 [docs/go-course/lesson-13-worktree-screen.md](docs/go-course/lesson-13-worktree-screen.md).
 
@@ -439,7 +445,7 @@ no session resume). When `-A` is supplied, the agent+command picker is
 skipped and `phaseModel` opens directly (or launches immediately for a
 command agent). A `phase` enum
 (`phaseList` / `phaseAgent` / `phaseModel` / `phaseResume` /
-`phaseGuardWarn` / `phaseOllamaWarn` / `phaseNewWorktree`) tracks the
+`phaseOllamaWarn` / `phaseNewWorktree`) tracks the
 active screen.
 
 The phaseModel View is itself a `bubble/list` picker over the

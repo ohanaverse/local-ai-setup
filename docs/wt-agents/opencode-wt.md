@@ -62,7 +62,7 @@ The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) w
 
 ## Session resume
 
-`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; the non-TUI launch path appends `--session <id>` automatically. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.
+`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.
 
 ## Agent init
 

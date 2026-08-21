@@ -227,6 +227,56 @@ func TestViewReady(t *testing.T) {
 	}
 }
 
+// TestEntriesLoadedPositionsCursorOnDefaultBranch asserts that when the
+// picker loads, the cursor lands on the entry for the repo default branch
+// (so Enter launches on main without any keystrokes). When the current
+// worktree IS on the default branch, that (current) row is what the cursor
+// points at; otherwise the cursor jumps to whichever worktree holds main.
+// A repo with no worktree on the default branch leaves the cursor at its
+// default position (the sentinel) — bare default-branch rows are filtered
+// out of the picker.
+func TestEntriesLoadedPositionsCursorOnDefaultBranch(t *testing.T) {
+	m := model{width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+			{Type: worktree.TypeWorktree, Branch: "feature", Path: "/tmp/repo/.worktrees/feature"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "other"},
+		}},
+	}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
+	m = got.(model)
+
+	selected := m.list.SelectedItem().(entryItem)
+	if selected.kind != kindEntry {
+		t.Fatalf("cursor on sentinel/separator (%v), want a default-branch entry", selected.kind)
+	}
+	if selected.entry.Branch != "main" {
+		t.Errorf("cursor on branch %q, want main", selected.entry.Branch)
+	}
+	if selected.entry.Path != "/tmp/repo" {
+		t.Errorf("cursor on path %q, want current worktree /tmp/repo", selected.entry.Path)
+	}
+
+	// When the current worktree is NOT on the default branch, the cursor
+	// jumps to whichever worktree holds main instead.
+	groups2 := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "develop", Path: "/tmp/repo"},
+			{Type: worktree.TypeWorktree, Branch: "main", Path: "/tmp/repo/.worktrees/main"},
+		}},
+	}
+	m2 := model{width: 80, height: 24}
+	got2, _ := m2.Update(entriesLoadedMsg{groups: groups2, defaultBranch: "main", repoRoot: "/tmp/repo"})
+	m2 = got2.(model)
+	selected2 := m2.list.SelectedItem().(entryItem)
+	if selected2.kind != kindEntry || selected2.entry.Branch != "main" {
+		t.Errorf("cursor = %+v, want main entry even when current is develop", selected2)
+	}
+}
+
 // TestEnterSelectsEntry asserts that pressing Enter when the list is ready
 // emits a selectedEntryMsg carrying the current entry. This is the primary
 // selection affordance for the worktree picker. (The list's first item is
@@ -260,14 +310,14 @@ func TestEnterSelectsEntry(t *testing.T) {
 	}
 }
 
-// TestEnterOnDefaultBranchTriggersGuard asserts that selecting the current
-// worktree on the default branch trips the phaseGuardWarn prompt before
-// launching. Bare default-branch rows are filtered out of the picker (the
-// default branch must never be a linked worktree), so the guard now only
-// fires for a worktree entry on the default branch. A non-default branch must
-// NOT trip the guard — it selects straight through (dispatching a worktree
-// create for a bare branch).
-func TestEnterOnDefaultBranchTriggersGuard(t *testing.T) {
+// TestEnterOnDefaultBranchSkipsGuard asserts that selecting the current
+// worktree on the default branch launches straight through — the previous
+// phaseGuardWarn prompt is gone now that the picker cursor defaults to main.
+// The picker title still flags the "default branch only" case via
+// isDefaultBranchOnly, but Enter must dispatch selectedEntryMsg directly so
+// the user reaches the agent/model screen in one keystroke. A non-default
+// branch must keep its bare-branch create path.
+func TestEnterOnDefaultBranchSkipsGuard(t *testing.T) {
 	m := model{width: 80, height: 24}
 	groups := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
@@ -287,14 +337,22 @@ func TestEnterOnDefaultBranchTriggersGuard(t *testing.T) {
 	m.list.Select(idx)
 	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := newM.(model)
-	if mm.phase != phaseGuardWarn {
-		t.Fatalf("current default row: phase = %v, want phaseGuardWarn (must trip guard, not launch)", mm.phase)
+	if mm.phase == phaseGuardWarn {
+		t.Fatalf("current default row: phase = phaseGuardWarn, want no guard prompt (Enter must launch straight through)")
 	}
-	if cmd != nil {
-		t.Errorf("current default row: expected nil cmd (guard prompt, no launch), got %T", cmd())
+	if cmd == nil {
+		t.Fatal("current default row: expected a cmd (selectedEntryMsg), got nil")
+	}
+	msg := cmd()
+	selected, ok := msg.(selectedEntryMsg)
+	if !ok {
+		t.Fatalf("current default row: cmd returned %T, want selectedEntryMsg", msg)
+	}
+	if selected.entry.Branch != "main" {
+		t.Errorf("current default row: selected branch = %q, want main", selected.entry.Branch)
 	}
 
-	// A non-default branch must select straight through (no guard).
+	// A non-default branch must keep dispatching a bare-branch worktree create.
 	mm.phase = phaseList // reset for the contrast case
 	otherIdx := pickEntryIndex(t, mm, func(ei entryItem) bool {
 		return ei.kind == kindEntry && ei.entry.Branch == "other"

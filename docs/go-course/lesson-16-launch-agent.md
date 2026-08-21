@@ -196,6 +196,11 @@ exists, the TUI shows a resume prompt. Choose **Resume** to append `--resume`
 / `--session`, **Start fresh** to launch without resuming, or **Cancel** to go
 back.
 
+> **Update (post-lesson):** `buildResumeChoices` was reordered so
+> `freshChoice` is at index 0 — the bubbles/list cursor default. Enter
+> therefore launches a fresh session unless Resume is highlighted. Cancel
+> still backs out, and Resume is now the last entry when a session exists.
+
 ## Try It Yourself
 
 - Add a key (e.g. `l`) as an alternate launch keybind alongside Enter.

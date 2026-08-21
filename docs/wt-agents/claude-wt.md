@@ -53,7 +53,7 @@ The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). 
 
 ## Session resume
 
-`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; the non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
+`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
 
 ## Agent init
 

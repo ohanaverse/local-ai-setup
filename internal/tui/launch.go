@@ -69,18 +69,21 @@ func (c choiceItem) FilterValue() string { return c.title }
 func (c choiceItem) Title() string       { return c.title }
 func (c choiceItem) Description() string { return c.desc }
 
-// buildResumeChoices creates the resume prompt list items.
+// buildResumeChoices creates the resume prompt list items. The first item is
+// the default cursor position for bubbles/list, so Start fresh is placed at
+// index 0 to match the user's "default to start fresh" preference — Resume is
+// offered but opt-in, and Cancel backs out without launching.
 func buildResumeChoices(sess *session.Session) []list.Item {
 	items := []list.Item{
 		choiceItem{choice: freshChoice, title: "Start fresh", desc: "Launch without resuming a session"},
 		choiceItem{choice: cancelChoice, title: "Cancel", desc: "Return to agent+model screen"},
 	}
 	if sess != nil {
-		items = append([]list.Item{choiceItem{
+		items = append(items, choiceItem{
 			choice: resumeChoice,
 			title:  fmt.Sprintf("Resume %s", sess.ID),
 			desc:   session.RelativeTime(sess.MTime),
-		}}, items...)
+		})
 	}
 	return items
 }

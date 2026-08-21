@@ -18,7 +18,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
@@ -188,6 +187,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.pendingHighlight = ""
+		} else if m.defaultBranch != "" {
+			// Default the cursor to the repo default branch so Enter
+			// launches on main without an extra keystroke. Only
+			// checked-out worktrees on the default branch are pickable
+			// (bare default rows are filtered in buildList), so match
+			// by Branch == defaultBranch; the first hit wins because
+			// each branch appears at most once in the picker.
+			for i, it := range m.list.Items() {
+				if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && ei.entry.Branch == m.defaultBranch {
+					m.list.Select(i)
+					break
+				}
+			}
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -310,14 +322,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item.kind == kindSeparator {
 					return m, nil
 				}
-				if launchesOnDefaultBranch(item.entry, item.groupKind, m.defaultBranch) {
-					installed := guard.Check() == guard.Installed
-					m.guardWarnEntry = item.entry
-					m.guardWarnModel = list.New(buildGuardChoices(item.entry.Branch, installed), list.NewDefaultDelegate(), m.width-2, m.height-2)
-					m.guardWarnModel.Title = "Launch on default branch?"
-					m.phase = phaseGuardWarn
-					return m, nil
-				}
+				// Default-branch warning: previously gated here, but the
+				// picker title (isDefaultBranchOnly) already flags the
+				// "nothing-but-default" case and the user opted into
+				// main by the new cursor defaulting. Skip the prompt so
+				// Enter launches straight through.
 				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
 				// The highlighted list item is what gets launched.

@@ -445,6 +445,8 @@ func TestWindowSizeResizesResumePrompt(t *testing.T) {
 
 // TestResumePromptResumeChoiceLaunchesWithSession asserts selecting the
 // resume choice builds a launch batch carrying the session resume flag.
+// Resume is no longer the cursor default (Start fresh is); the test steps
+// down twice to reach the Resume row.
 func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
 		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
@@ -453,7 +455,9 @@ func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
 			session: &session.Session{ID: "abc-123"},
 			choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 80, 24),
 		}}
-	// Resume choice is at index 0.
+	// Step past Start fresh and Cancel to reach Resume (now at index 2).
+	m.resume.choices.CursorDown()
+	m.resume.choices.CursorDown()
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if gotModel.status != "" {
@@ -464,8 +468,12 @@ func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
 	}
 }
 
-// TestResumePromptStartFreshLaunchesWithoutSession asserts selecting Start
-// fresh builds a launch batch without a session.
+// TestResumePromptStartFreshLaunchesWithoutSession asserts the default
+// Start fresh choice (now at index 0 in buildResumeChoices) builds a
+// launch batch without a session. The previous shape of this test stepped
+// down to Start fresh from the resume-at-index-0 layout; the cursor
+// defaulting change made Start fresh the natural cursor position so
+// stepping is no longer required.
 func TestResumePromptStartFreshLaunchesWithoutSession(t *testing.T) {
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
 		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
@@ -474,8 +482,6 @@ func TestResumePromptStartFreshLaunchesWithoutSession(t *testing.T) {
 			session: &session.Session{ID: "abc-123"},
 			choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 80, 24),
 		}}
-	// Move selection to Start fresh (index 1).
-	m.resume.choices.CursorDown()
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if gotModel.status != "" {
@@ -588,20 +594,37 @@ func TestResumePromptCancelDoesNotMutateModel(t *testing.T) {
 	}
 }
 
-// TestResumeChoiceTitleIncludesRelativeTime asserts the resume choice shows
-// the session's relative time so the user knows how stale it is.
-func TestResumeChoiceTitleIncludesRelativeTime(t *testing.T) {
+// TestResumeDefaultIsStartFresh asserts that the resume prompt puts
+// "Start fresh" at index 0 so it lands under the bubbles/list cursor by
+// default. The user opted into a fresh session by the launch flow's
+// default; Resume is offered but opt-in.
+func TestResumeDefaultIsStartFresh(t *testing.T) {
 	sess := &session.Session{ID: "abc-123", MTime: time.Now()}
 	items := buildResumeChoices(sess)
 	if len(items) == 0 {
 		t.Fatal("expected resume items")
 	}
 	item := items[0].(choiceItem)
-	if item.choice != resumeChoice {
-		t.Errorf("first choice = %v, want resumeChoice", item.choice)
+	if item.choice != freshChoice {
+		t.Errorf("first choice = %v, want freshChoice (Start fresh is the cursor default)", item.choice)
 	}
-	if !strings.Contains(item.desc, "ago") && !strings.Contains(item.desc, "just now") {
-		t.Errorf("desc = %q, want relative time", item.desc)
+
+	// The Resume row is still offered but at a non-default position; assert
+	// the relative-time title still describes the session so the user can
+	// see how stale it is.
+	var resume choiceItem
+	for _, it := range items {
+		ci := it.(choiceItem)
+		if ci.choice == resumeChoice {
+			resume = ci
+			break
+		}
+	}
+	if resume.choice != resumeChoice {
+		t.Fatalf("no resumeChoice row in items: %+v", items)
+	}
+	if !strings.Contains(resume.desc, "ago") && !strings.Contains(resume.desc, "just now") {
+		t.Errorf("resume desc = %q, want relative time", resume.desc)
 	}
 }
 
