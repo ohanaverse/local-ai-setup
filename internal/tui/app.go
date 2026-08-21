@@ -345,7 +345,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if !ok {
-					m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), m.width-2, m.height-2)
+					m.ollamaWarnModel = list.New(buildOllamaChoices(), themedListDelegate(m.theme), m.width-2, m.height-2)
 					m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
 					m.phase = phaseOllamaWarn
 					return m, nil
@@ -571,7 +571,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 	// visit doesn't linger on the freshly rendered screen.
 	m.status = ""
 	items := buildAgentList(m.cfg)
-	m.agentList = list.New(items, list.NewDefaultDelegate(), m.width-2, m.height-2)
+	m.agentList = list.New(items, themedListDelegate(m.theme), m.width-2, m.height-2)
 	m.agentList.Title = "Pick an agent or command"
 	m.agentList.SetShowStatusBar(false)
 	m.phase = phaseAgent
@@ -636,7 +636,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	}
 	m.phase = phaseResume
 	m.resume.session = sess
-	m.resume.choices = list.New(buildResumeChoices(sess), list.NewDefaultDelegate(), m.width-2, m.height-2)
+	m.resume.choices = list.New(buildResumeChoices(sess), themedListDelegate(m.theme), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
 	return m, nil
 }
