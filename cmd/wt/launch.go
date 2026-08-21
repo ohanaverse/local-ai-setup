@@ -25,7 +25,13 @@ func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, s
 // model-driven agent. It is extracted so tests can assert command shape without
 // exec'ing an agent.
 func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	sess, _ := session.LatestForAgent(agent, worktreePath)
+	// Native models launch fresh: resuming a session would restore the
+	// session's stored model, overriding the user's "native" choice. Skip
+	// the session lookup so no --resume/--session flag is ever appended.
+	var sess *session.Session
+	if !m.IsNative() {
+		sess, _ = session.LatestForAgent(agent, worktreePath)
+	}
 	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 }
 

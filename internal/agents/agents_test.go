@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
 func nativeModel(agent string) config.Model {
@@ -626,5 +628,44 @@ func TestOpenCodeNativeProviderNamed(t *testing.T) {
 	}
 	if !slices.Contains(lc.ClearEnv, "OPENCODE_CONFIG_CONTENT") {
 		t.Errorf("ClearEnv = %v, want it to include OPENCODE_CONFIG_CONTENT", lc.ClearEnv)
+	}
+}
+
+// TestBuildLaunchCmdNativeSkipsResume pins the !m.IsNative() defense-in-depth
+// guard at the package level. The wrapper-level TestBuildLaunchNativeSkipsResume
+// in cmd/wt covers the same contract end-to-end, but if a refactor drops the
+// `!m.IsNative()` clause from BuildLaunchCmd itself, this test is the only
+// direct pin — without it the bug could regress silently if the wrapper test
+// is later deleted or rewritten as a perceived duplicate. Without this guard,
+// resuming a session would restore the session's stored model and silently
+// override the user's "native" choice (for claude, routing a gateway model at
+// the real Anthropic API).
+func TestBuildLaunchCmdNativeSkipsResume(t *testing.T) {
+	cmd, err := BuildLaunchCmd("claude", nativeModel("claude"), "/tmp/repo", false,
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	got := strings.Join(cmd.Args, " ")
+	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
+		t.Errorf("args = %q, native model must not resume", got)
+	}
+}
+
+// TestBuildLaunchCmdResumeNonNative pins the inverse: a non-native model with
+// a non-nil session must append --resume. Together with
+// TestBuildLaunchCmdNativeSkipsResume, this locks both halves of the
+// `sess != nil && !m.IsNative()` guard so neither clause can drift.
+func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
+	cmd, err := BuildLaunchCmd("claude",
+		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},
+		"/tmp/repo", false,
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	got := strings.Join(cmd.Args, " ")
+	if !strings.Contains(got, "--resume abc-123") {
+		t.Errorf("args = %q, want --resume abc-123", got)
 	}
 }

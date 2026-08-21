@@ -602,11 +602,6 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 // directly or transitions to the resume prompt. It is the shared flow used
 // by both the phaseModel enter handler and the ollama warning proceed choice.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
-	sess, err := session.LatestForAgent(m.agent, m.selectedPath)
-	if err != nil {
-		m.status = "session check failed: " + err.Error()
-		return m, nil
-	}
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.current is gone; m.models is the
 	// single source of truth.
@@ -618,6 +613,19 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// Capture the model so launchAndRecord records exactly this pick in
 	// both the no-session and resume paths, without re-reading the picker.
 	m.launchModel = highlighted.model
+	// Native models launch fresh: resuming a session would restore the
+	// session's stored model, silently overriding the user's "native" choice
+	// (and, for claude, routing a gateway model at the real Anthropic API).
+	// Look up a prior session only for non-native models.
+	var sess *session.Session
+	if !highlighted.model.IsNative() {
+		var err error
+		sess, err = session.LatestForAgent(m.agent, m.selectedPath)
+		if err != nil {
+			m.status = "session check failed: " + err.Error()
+			return m, nil
+		}
+	}
 	if sess == nil {
 		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 		if err != nil {

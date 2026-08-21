@@ -383,6 +383,38 @@ func TestEnterInModelPhaseShowsResumePrompt(t *testing.T) {
 	}
 }
 
+// TestEnterInModelPhaseNativeSkipsResume asserts that a native model (e.g.
+// claude/native) launches immediately even when a prior session exists,
+// never showing the resume prompt. Native models launch with no model
+// override, so resuming a session would restore the session's stored model
+// and silently override the user's "native" choice — the exact bug where
+// selecting claude/native launched claude with a prior session's
+// kimi-k2.7-code:cloud model.
+func TestEnterInModelPhaseNativeSkipsResume(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	repo := t.TempDir()
+	slug := session.Slug(repo)
+	sessDir := filepath.Join(homeDir, ".claude", "projects", slug)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "session.jsonl"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
+		selectedPath: repo, models: singleModelList(config.Model{ID: "claude/native", ModelName: "native"})}
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel := got.(model)
+	if gotModel.phase == phaseResume {
+		t.Errorf("phase = %v, native model must not show the resume prompt", gotModel.phase)
+	}
+	if cmd == nil {
+		t.Errorf("expected a launch cmd for native model, got nil")
+	}
+}
+
 // TestResumePromptCancelReturnsToModel asserts selecting Cancel in the
 // resume prompt returns to the model phase without launching.
 func TestResumePromptCancelReturnsToModel(t *testing.T) {

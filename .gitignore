@@ -2,4 +2,6 @@
 docs/superpowers/
 .DS_Store
 bin/wt
-wt
+# Root-anchored: only ignores a stray `wt` binary at the repo root (from
+# `go build ./cmd/wt`), not the `cmd/wt` source directory.
+/wt

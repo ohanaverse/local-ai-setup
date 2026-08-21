@@ -373,6 +373,14 @@ If no session exists, the agent launches immediately. The non-TUI launch path
 (lesson 17) performs the same resume check in `BuildLaunchCmd`, appending
 `--resume`/`--session` without prompting.
 
+**Native models never resume.** A native model (e.g. `claude/native`) launches
+with no model override, so resuming a session would restore the session's
+stored model and silently override the user's "native" choice (for claude,
+routing a gateway model at the real Anthropic API). Both the TUI
+(`proceedToLaunch`) and non-TUI (`buildCommandForModel`) paths skip the
+session lookup for native models, and `BuildLaunchCmd` guards the resume flag
+with `!m.IsNative()` as defense-in-depth.
+
 ```bash
 # Test helper: print the newest resumable session for an agent
 wt --debug-session claude

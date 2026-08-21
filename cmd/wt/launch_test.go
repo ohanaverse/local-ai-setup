@@ -57,9 +57,10 @@ func TestBuildLaunchUnknownAgent(t *testing.T) {
 
 // TestBuildLaunchClaudeResume asserts that a claude launch with a session
 // appends --resume <id>. This is the non-TUI resume wiring that the bash
-// claude-wt wrapper used to do.
+// claude-wt wrapper used to do. The model is a provider-hosted (non-native)
+// model: native models must never resume (see TestBuildLaunchNativeSkipsResume).
 func TestBuildLaunchClaudeResume(t *testing.T) {
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false,
+	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
@@ -67,6 +68,24 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 	got := strings.Join(cmd.Args, " ")
 	if !strings.Contains(got, "--resume abc-123") {
 		t.Errorf("args = %q, want --resume abc-123", got)
+	}
+}
+
+// TestBuildLaunchNativeSkipsResume asserts that a native model (e.g.
+// claude/native) never appends --resume, even when a session is supplied.
+// Native models launch with no model override, so resuming a session would
+// restore the session's stored model and silently override the user's
+// "native" choice — the exact bug where selecting claude/native launched
+// claude with a prior session's kimi-k2.7-code:cloud model.
+func TestBuildLaunchNativeSkipsResume(t *testing.T) {
+	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false,
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildLaunch: %v", err)
+	}
+	got := strings.Join(cmd.Args, " ")
+	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
+		t.Errorf("args = %q, native model must not resume", got)
 	}
 }
 
@@ -85,9 +104,14 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 }
 
 // TestBuildLaunchNoSessionOmitsResume asserts that a nil session injects no
-// resume/session flag. This is the "start fresh" path.
+// resume/session flag on a non-native model. This is the "start fresh" path
+// — and the test deliberately uses a non-native model so it exercises only
+// the sess==nil short-circuit. Native-model behavior is pinned separately:
+// TestBuildLaunchNativeSkipsResume covers native+session, and
+// TestBuildLaunchCmdNativeSkipsResume in the agents package pins the
+// defense-in-depth `!m.IsNative()` guard directly.
 func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false, nil, nil, nil)
+	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}

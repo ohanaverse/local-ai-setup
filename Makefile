@@ -29,6 +29,14 @@ endif
 install:                # Install scripts to ~/.local/bin/
 	cp -r $(SRCDIR)/* $(BINDIR)/
 	chmod +x $(BINDIR)/*-wt
+ifeq ($(shell uname -s),Darwin)
+	@# The cp above leaves the copied binary with a signature AMFI rejects
+	@# ("Taskgated Invalid Signature"), SIGKILLing it on launch (exit 137)
+	@# even though the source bin/wt was re-sealed at build time. Verify the
+	@# installed signature and re-seal only if it is invalid — unconditional
+	@# re-sealing pays a codesign syscall on every install.
+	@if [ -f $(BINDIR)/wt ] && ! codesign -v $(BINDIR)/wt 2>/dev/null; then codesign --force --sign - $(BINDIR)/wt; fi
+endif
 	@echo "Installed agent-worktree scripts to $(BINDIR)"
 
 uninstall:              # Remove installed scripts from ~/.local/bin/

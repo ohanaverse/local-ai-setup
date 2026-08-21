@@ -165,7 +165,11 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	if len(extraArgs) > 0 {
 		cmd.Args = append(cmd.Args, extraArgs...)
 	}
-	if sess != nil {
+	// Native models launch with no model override, so resuming a session
+	// would restore the session's stored model and silently override the
+	// user's "native" choice (for claude, routing a gateway model at the
+	// real Anthropic API). Skip the resume flag for native models.
+	if sess != nil && !m.IsNative() {
 		switch agent {
 		case "claude":
 			cmd.Args = append(cmd.Args, "--resume", sess.ID)
