@@ -137,10 +137,10 @@ Test coverage by package:
 
 | Package | Tests | Focus |
 |---|---|---|
-| `internal/config` | 44 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets, EligibleModels, ParseFilterList |
+| `internal/config` | 47 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration (legacy + schema), secrets, EligibleModels, ParseFilterList |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 18 | Slot{Agent,Tag,Family}, SlotFromFlags, LastLaunched/RecordLaunch/FirstAfter, snapshot-based model set, per-slot state file with backward-compat read of legacy single-tag state files |
-| `internal/agents` | 42 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, IsCommand (Commanded interface), shell driver, shell quoting, pi model sync |
+| `internal/agents` | 41 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, IsCommand (Commanded interface), shell driver, shell quoting, pi model sync |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 34 | Worktree parsing, three-group enumeration (worktrees / locals / remotes), branch dedup (skip branches already checked out in worktrees), remote shadowing, worktree creation (EnsureForName/EnsureForBranch), default-branch refusal across all remotes (never a linked worktree) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
@@ -195,9 +195,9 @@ go vet ./...         # vet
 
 The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types:
 
-- **Provider** — model source with auth config (ollama, openrouter, claude, copilot)
+- **Provider** — model source with auth config (ollama, agy, claude, codex, copilot). Native providers match their agent name (e.g. `claude` provider for the `claude` agent). `opencode` and `pi` have no native provider — they are ollama-only.
 - **Model** — specific variant from a provider, grouped by family (e.g. gemma4). Models carry a `Source` field (`curated` | `discovered`) to distinguish config-file entries from live discovery results.
-- **Agent** — AI coding tool with supported providers and optional default
+- **Agent** — AI coding tool with supported providers (at least one required) and optional default
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
@@ -305,7 +305,7 @@ Per-agent behavior:
 - **claude** — cloud/local models set `ANTHROPIC_*` env vars pointing at the ollama gateway plus `--model <m.ModelName>` (bare provider name); native uses no args
 - **codex** — `--model <m.ModelName>` (bare provider name); native uses no args
 - **copilot** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL=<m.ModelName>` env vars; never passes `--model`
-- **opencode** — sets `OPENCODE_CONFIG_CONTENT` (inline JSON) with `model: "ollama/<m.ModelName>"` (constructs the `provider/` prefix deliberately); never passes `--model`
+- **opencode** — ollama-only (no native provider); sets `OPENCODE_CONFIG_CONTENT` (inline JSON) with `model: "ollama/<m.ModelName>"` (constructs the `provider/` prefix deliberately); never passes `--model`
 - **pi** — syncs non-native models into `~/.pi/agent/models.json` (idempotent, `_launch: true`) and passes `--model <ModelName>` only when the model is present and marked `_launch: true`; falls back to pi's default model with a warning otherwise; no `jq` dependency (native Go JSON); no yolo flag
 - **agy** — no model passthrough (model chosen inside its TUI)
 - **shell** — execs the user's passthrough args directly as argv (no shell involved), or interactive `bash` when no command is given; no model, no yolo, no session resume; implements `ArgSetter`
@@ -569,9 +569,18 @@ into `config.toml` automatically. The migration:
 
 - Parses multi-line `CODE_MODELS`/`DESIGN_MODELS` bash arrays
 - Strips `#`-commented-out models
-- Creates `Provider`/`Agent` entries for each `native:X` model
+- Creates `Provider`/`Agent` entries for each `native:X` model (skipping `noNativeAgents`: `pi`, `opencode` — ollama-only agents with no native provider)
+- Seeds the `agy` provider/model/agent (provider name matches agent name, not `google`)
 - Merges models that appear in both code and design rotations (union of tags)
 - Runs only once — skipped if `config.toml` already exists
+
+**Schema migration** (`migrateConfigSchema`): On every `Load()`, idempotent
+fixups rewrite existing configs to the current schema:
+
+- Renames legacy `google` provider/model/agent references to `agy`
+- Ensures `agy` provider, `agy/native` model, and `agy` agent exist
+- Removes `opencode` native provider/model; rewires `opencode` agent to ollama-only
+- Saves and logs to stderr if any fixup fired; no-op on already-current configs
 
 Validate changes by running tests and the launcher manually. Representative invocations:
 

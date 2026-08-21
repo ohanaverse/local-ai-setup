@@ -47,11 +47,7 @@ The `opencode-wt` launcher does not manage credentials — it relies on the user
 
 ## Model selection
 
-OpenCode selects models via `--model provider/model` (e.g., `--model anthropic/claude-sonnet-4-5`). `opencode-wt` handles two cases:
-
-- **`opencode/native`** — no `--model` flag and no `OPENCODE_CONFIG_CONTENT`; OpenCode uses its configured default.
-- **Ollama models** — generates inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable:
-
+OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects ollama models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable:
 ```json
 {"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""}}}}
 ```

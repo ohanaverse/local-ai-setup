@@ -156,8 +156,10 @@ func TestCopilot(t *testing.T) {
 	}
 }
 
-// OpenCode receives its model configuration via a single OPENCODE_CONFIG_CONTENT
-// env var containing inline JSON. Native models must not set this var.
+// OpenCode receives its model configuration via a single
+// OPENCODE_CONFIG_CONTENT env var containing inline JSON. After the
+// native-provider alignment, opencode is ollama-only — there is no native
+// branch to test.
 func TestOpenCode(t *testing.T) {
 	d := ByName("opencode")
 	if d == nil {
@@ -172,14 +174,6 @@ func TestOpenCode(t *testing.T) {
 	}
 	if !strings.Contains(lc.Env[0], `"model":"ollama/deepseek-v4-pro:cloud"`) {
 		t.Errorf("config missing model: %s", lc.Env[0])
-	}
-	if len(d.Build(nativeModel("opencode"), false).Env) != 0 {
-		t.Errorf("native build should have no env")
-	}
-	// Native must clear the inherited OPENCODE_CONFIG_CONTENT var so the
-	// native subscription is used instead of routing to ollama.
-	if clear := d.Build(nativeModel("opencode"), false).ClearEnv; !slices.Contains(clear, "OPENCODE_CONFIG_CONTENT") {
-		t.Errorf("native ClearEnv = %v, want it to include OPENCODE_CONFIG_CONTENT", clear)
 	}
 }
 
@@ -605,29 +599,6 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 		if !slices.Contains(lc.ClearEnv, k) {
 			t.Errorf("ClearEnv = %v, want it to include %q", lc.ClearEnv, k)
 		}
-	}
-}
-
-// OpenCode must treat non-sentinel opencode/* models as native-provider
-// launches: clear the OPENCODE_CONFIG_CONTENT var so the opencode
-// subscription wins. OpenCode's CLI receives model config inline via
-// OPENCODE_CONFIG_CONTENT, so native-provider launches are bare (no
-// env, no args) regardless of whether the model name is the sentinel
-// or a real name.
-func TestOpenCodeNativeProviderNamed(t *testing.T) {
-	d := ByName("opencode")
-	if d == nil {
-		t.Fatal("opencode driver not registered")
-	}
-	lc := d.Build(namedNativeModel("opencode", "auto"), false)
-	if len(lc.Args) != 0 {
-		t.Errorf("args = %v, want none", lc.Args)
-	}
-	if len(lc.Env) != 0 {
-		t.Errorf("env = %v, want none (subscription wins)", lc.Env)
-	}
-	if !slices.Contains(lc.ClearEnv, "OPENCODE_CONFIG_CONTENT") {
-		t.Errorf("ClearEnv = %v, want it to include OPENCODE_CONFIG_CONTENT", lc.ClearEnv)
 	}
 }
 

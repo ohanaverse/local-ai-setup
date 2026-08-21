@@ -82,8 +82,8 @@ default_provider = "ollama"
 	if cfg.DefaultTag != "design" {
 		t.Errorf("DefaultTag = %q, want %q", cfg.DefaultTag, "design")
 	}
-	if len(cfg.Providers) != 1 {
-		t.Fatalf("expected 1 provider, got %d", len(cfg.Providers))
+	if len(cfg.Providers) != 2 {
+		t.Fatalf("expected 2 providers (ollama + agy from schema migration), got %d", len(cfg.Providers))
 	}
 	if cfg.Providers[0].ID != "ollama" {
 		t.Errorf("provider ID = %q, want %q", cfg.Providers[0].ID, "ollama")
@@ -94,14 +94,14 @@ default_provider = "ollama"
 	if cfg.Providers[0].Auth.BaseURL != "http://localhost:11434" {
 		t.Errorf("auth base_url = %q, want %q", cfg.Providers[0].Auth.BaseURL, "http://localhost:11434")
 	}
-	if len(cfg.Models) != 1 {
-		t.Fatalf("expected 1 model, got %d", len(cfg.Models))
+	if len(cfg.Models) != 2 {
+		t.Fatalf("expected 2 models (test + agy/native from schema migration), got %d", len(cfg.Models))
 	}
 	if cfg.Models[0].Family != "test" {
 		t.Errorf("model family = %q, want %q", cfg.Models[0].Family, "test")
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("expected 1 agent, got %d", len(cfg.Agents))
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("expected 2 agents (claude + agy from schema migration), got %d", len(cfg.Agents))
 	}
 	if cfg.Agents[0].DefaultProvider != "ollama" {
 		t.Errorf("agent default = %q, want %q", cfg.Agents[0].DefaultProvider, "ollama")
@@ -280,6 +280,24 @@ func TestValidate_DefaultProviderNotInSupported(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for default provider not in supported_providers")
+	}
+}
+
+// An agent with no supported_providers is unusable: the launcher cannot pick
+// a model for it. Validate must reject this so the user sees a clear error
+// instead of a runtime "no eligible models" message during launch.
+func TestValidate_AgentRequiresProvider(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "code",
+		Providers:  []Provider{{ID: "ollama", Name: "Ollama", Auth: AuthConfig{Type: "none"}}},
+		Agents:     []Agent{{Name: "lonely"}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for empty supported_providers")
+	}
+	if !strings.Contains(err.Error(), "must have at least one supported provider") {
+		t.Errorf("error = %q, want it to mention 'supported provider'", err)
 	}
 }
 
@@ -593,8 +611,12 @@ func TestSave(t *testing.T) {
 	if loaded.DefaultTag != "code" {
 		t.Errorf("DefaultTag = %q, want %q", loaded.DefaultTag, "code")
 	}
-	if len(loaded.Providers) != 1 || loaded.Providers[0].ID != "ollama" {
-		t.Errorf("Providers = %v, want [ollama]", loaded.Providers)
+	// migrateConfigSchema adds the agy provider on Load, so expect 2.
+	if len(loaded.Providers) != 2 {
+		t.Errorf("Providers = %v, want 2 (ollama + agy from schema migration)", loaded.Providers)
+	}
+	if loaded.Providers[0].ID != "ollama" {
+		t.Errorf("first provider = %q, want ollama", loaded.Providers[0].ID)
 	}
 }
 

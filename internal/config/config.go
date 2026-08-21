@@ -114,6 +114,17 @@ func Load() (*Config, error) {
 	if _, err := toml.Decode(string(data), cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	changed, err := migrateConfigSchema(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("schema migration: %w", err)
+	}
+	if changed {
+		if err := Save(cfg); err != nil {
+			return nil, fmt.Errorf("save migrated config: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, removed opencode native)")
+	}
 	return cfg, nil
 }
 
@@ -186,6 +197,9 @@ func (c *Config) validate() []error {
 			errs = append(errs, fmt.Errorf("duplicate agent name %q", a.Name))
 		}
 		agentNames[a.Name] = true
+		if len(a.SupportedProviders) == 0 {
+			errs = append(errs, fmt.Errorf("agent %q: must have at least one supported provider", a.Name))
+		}
 		for _, pid := range a.SupportedProviders {
 			if !provIDs[pid] {
 				errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))

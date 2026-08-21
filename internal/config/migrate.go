@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -108,75 +109,103 @@ func Migrate() (bool, error) {
 		case "CODE_MODELS", "DESIGN_MODELS":
 			tag := strings.ToLower(strings.TrimSuffix(name, "_MODELS"))
 			models, natives := convertModels(vals, tag)
-			cfg.Models = addModels(cfg.Models, models)
-			for _, n := range natives {
-				if !nativeSeen[n] {
-					nativeSeen[n] = true
-					cfg.Providers = append(cfg.Providers, nativeProvider(n))
-					cfg.Agents = append(cfg.Agents, nativeAgent(n))
+			// Filter out models for natives that are skipped below (google is
+			// a pseudo-native; noNativeAgents have no native provider). Without
+			// this, the model lingers in cfg.Models and either fails validation
+			// (unknown provider) or gets renamed by migrateConfigSchema into a
+			// duplicate (google/native → agy/native).
+			filtered := models[:0]
+			for _, m := range models {
+				if m.IsNative() && (m.Family == "google" || noNativeAgents[m.Family]) {
+					continue
 				}
+				filtered = append(filtered, m)
+			}
+			cfg.Models = addModels(cfg.Models, filtered)
+			for _, n := range natives {
+				if nativeSeen[n] {
+					continue
+				}
+				if noNativeAgents[n] {
+					// Skip native provider/model creation for agents that don't
+					// have a native provider after the schema alignment. The
+					// agent entry is added below, pinned to ollama.
+					continue
+				}
+				if n == "google" {
+					// "native:google" was a pseudo-native used only by the old
+					// agy special case. The agy provider is now seeded directly
+					// as "agy", so skip creating a separate "google" provider.
+					continue
+				}
+				nativeSeen[n] = true
+				cfg.Providers = append(cfg.Providers, nativeProvider(n))
+				cfg.Agents = append(cfg.Agents, nativeAgent(n))
 			}
 		}
 	}
 
-	// Pi is a special case: it does not use native:pi in legacy configs.
-	// It uses ollama models via its own models.json, so it has no native
-	// provider. Add the agent entry if not already present.
-	piFound := false
-	for _, a := range cfg.Agents {
-		if a.Name == "pi" {
-			piFound = true
+	// Ensure an agent entry exists for each noNativeAgent, pinned to ollama.
+	// For "pi", this is the only entry (it never appeared as native:pi).
+	// For "opencode", this corrects configs that may have seeded opencode
+	// via the native loop before this fix; after the early continue above,
+	// opencode will never get a native provider here, so this loop just
+	// creates a missing entry or rewires an existing one to ollama-only.
+	for name := range noNativeAgents {
+		found := false
+		for i := range cfg.Agents {
+			if cfg.Agents[i].Name != name {
+				continue
+			}
+			found = true
+			cfg.Agents[i].SupportedProviders = []string{"ollama"}
+			cfg.Agents[i].DefaultProvider = "ollama"
 			break
 		}
-	}
-	if !piFound {
-		cfg.Agents = append(cfg.Agents, Agent{
-			Name:               "pi",
-			SupportedProviders: []string{"ollama"},
-			DefaultProvider:    "ollama",
-		})
+		if !found {
+			cfg.Agents = append(cfg.Agents, Agent{
+				Name:               name,
+				SupportedProviders: []string{"ollama"},
+				DefaultProvider:    "ollama",
+			})
+		}
 	}
 
-	// Agy is a special case: it requires the google provider and a
-	// google/native model, and only supports the google provider.
-	googleFound := false
-	for _, p := range cfg.Providers {
-		if p.ID == "google" {
-			googleFound = true
-			break
-		}
-	}
-	if !googleFound {
+	// Seed agy: provider + model + agent. Use the same naming scheme as
+	// the schema fixup so a fresh install ends up with the same shape that
+	// migrateConfigSchema would produce on an upgraded install.
+	if cfg.ProviderByID("agy") == nil {
 		cfg.Providers = append(cfg.Providers, Provider{
-			ID:       "google",
-			Name:     "Google",
+			ID:       "agy",
+			Name:     "Antigravity",
 			Location: LocationCloud,
 			Auth:     AuthConfig{Type: "native"},
 		})
 	}
+	// Always run through addModels so tags are merged if the model already
+	// exists (e.g. native:agy in legacy config created it with one tag).
 	cfg.Models = addModels(cfg.Models, []Model{{
-		ID:         "google/native",
-		Family:     "google",
-		ProviderID: "google",
+		ID:         "agy/native",
+		Family:     "agy",
+		ProviderID: "agy",
 		ModelName:  "native",
 		Location:   LocationCloud,
 		Tags:       []string{"code", "design"},
 	}})
-
 	agyFound := false
 	for i := range cfg.Agents {
 		if cfg.Agents[i].Name == "agy" {
 			agyFound = true
-			cfg.Agents[i].SupportedProviders = []string{"google"}
-			cfg.Agents[i].DefaultProvider = "google"
+			cfg.Agents[i].SupportedProviders = []string{"agy"}
+			cfg.Agents[i].DefaultProvider = "agy"
 			break
 		}
 	}
 	if !agyFound {
 		cfg.Agents = append(cfg.Agents, Agent{
 			Name:               "agy",
-			SupportedProviders: []string{"google"},
-			DefaultProvider:    "google",
+			SupportedProviders: []string{"agy"},
+			DefaultProvider:    "agy",
 		})
 	}
 
@@ -329,4 +358,192 @@ func migrateRotationState(stateDir string) error {
 
 func trimQuotes(s string) string {
 	return strings.Trim(s, `"`)
+}
+
+// noNativeAgents lists agents that, after the native-provider alignment, have
+// no native provider: they only support ollama. The legacy migration skips
+// creating a native provider for these agents (in case a legacy models.conf
+// contains "native:opencode") and ensures each one has an agent entry pinned
+// to ollama only.
+var noNativeAgents = map[string]bool{
+	"pi":       true,
+	"opencode": true,
+}
+
+// migrateConfigSchema applies idempotent fixups to an already-decoded cfg:
+//  1. Rename the legacy "google" provider/model/agent references to "agy".
+//  2. Ensure an agy provider, agy/native model, and agy agent exist.
+//  3. Remove the opencode native provider/model and rewire the opencode
+//     agent to ollama only.
+//
+// Each fixup is self-extinguishing — once applied, the old pattern no longer
+// exists in cfg, so subsequent calls are no-ops. The boolean return is true
+// iff any fixup actually changed cfg.
+func migrateConfigSchema(cfg *Config) (bool, error) {
+	changed := false
+
+	// ── Fixup 1: rename "google" → "agy" everywhere ──────────────────
+	// If "agy" already exists, drop the legacy "google" provider to avoid
+	// creating a duplicate provider ID that would fail validation.
+	{
+		hasAgy := cfg.ProviderByID("agy") != nil
+		filtered := make([]Provider, 0, len(cfg.Providers))
+		for _, p := range cfg.Providers {
+			if p.ID == "google" {
+				if !hasAgy {
+					p.ID = "agy"
+					p.Name = "Antigravity"
+					filtered = append(filtered, p)
+				}
+				// else: drop the legacy google provider — agy already exists
+				changed = true
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		cfg.Providers = filtered
+	}
+	for i := range cfg.Models {
+		if cfg.Models[i].ProviderID == "google" {
+			cfg.Models[i].ProviderID = "agy"
+			changed = true
+		}
+	}
+	// If "agy/native" already exists, drop the legacy "google/native" model
+	// to avoid a duplicate model ID that would fail validation.
+	{
+		hasAgyNative := false
+		for _, m := range cfg.Models {
+			if m.ID == "agy/native" {
+				hasAgyNative = true
+				break
+			}
+		}
+		filtered := make([]Model, 0, len(cfg.Models))
+		for _, m := range cfg.Models {
+			if m.ID == "google/native" {
+				if !hasAgyNative {
+					m.ID = "agy/native"
+					m.Family = "agy"
+					filtered = append(filtered, m)
+				}
+				// else: drop the legacy google/native model — agy/native already exists
+				changed = true
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+		cfg.Models = filtered
+	}
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		rewired := false
+		for j, p := range a.SupportedProviders {
+			if p == "google" {
+				a.SupportedProviders[j] = "agy"
+				rewired = true
+			}
+		}
+		if a.DefaultProvider == "google" {
+			a.DefaultProvider = "agy"
+			rewired = true
+		}
+		if rewired {
+			changed = true
+		}
+	}
+
+	// ── Fixup 2: ensure agy provider/model/agent exist ───────────────
+	if cfg.ProviderByID("agy") == nil {
+		cfg.Providers = append(cfg.Providers, Provider{
+			ID:       "agy",
+			Name:     "Antigravity",
+			Location: LocationCloud,
+			Auth:     AuthConfig{Type: "native"},
+		})
+		changed = true
+	}
+	if !hasModel(cfg.Models, "agy/native") {
+		cfg.Models = append(cfg.Models, Model{
+			ID:         "agy/native",
+			Family:     "agy",
+			ProviderID: "agy",
+			ModelName:  "native",
+			Location:   LocationCloud,
+			Tags:       []string{"code", "design"},
+		})
+		changed = true
+	}
+	agyAgentFound := false
+	for i := range cfg.Agents {
+		if cfg.Agents[i].Name == "agy" {
+			agyAgentFound = true
+			if !slices.Equal(cfg.Agents[i].SupportedProviders, []string{"agy"}) ||
+				cfg.Agents[i].DefaultProvider != "agy" {
+				cfg.Agents[i].SupportedProviders = []string{"agy"}
+				cfg.Agents[i].DefaultProvider = "agy"
+				changed = true
+			}
+			break
+		}
+	}
+	if !agyAgentFound {
+		cfg.Agents = append(cfg.Agents, Agent{
+			Name:               "agy",
+			SupportedProviders: []string{"agy"},
+			DefaultProvider:    "agy",
+		})
+		changed = true
+	}
+
+	// ── Fixup 3: remove opencode native provider/model ───────────────
+	newProviders := make([]Provider, 0, len(cfg.Providers))
+	opencodeRemoved := false
+	for _, p := range cfg.Providers {
+		if p.ID == "opencode" {
+			opencodeRemoved = true
+			continue
+		}
+		newProviders = append(newProviders, p)
+	}
+	cfg.Providers = newProviders
+
+	newModels := make([]Model, 0, len(cfg.Models))
+	opencodeModelRemoved := false
+	for _, m := range cfg.Models {
+		if m.ProviderID == "opencode" {
+			opencodeModelRemoved = true
+			continue
+		}
+		newModels = append(newModels, m)
+	}
+	cfg.Models = newModels
+
+	for i := range cfg.Agents {
+		if cfg.Agents[i].Name != "opencode" {
+			continue
+		}
+		if !slices.Equal(cfg.Agents[i].SupportedProviders, []string{"ollama"}) ||
+			cfg.Agents[i].DefaultProvider != "ollama" {
+			cfg.Agents[i].SupportedProviders = []string{"ollama"}
+			cfg.Agents[i].DefaultProvider = "ollama"
+			changed = true
+		}
+	}
+
+	if opencodeRemoved || opencodeModelRemoved {
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// hasModel reports whether a model with the given id exists in models.
+func hasModel(models []Model, id string) bool {
+	for _, m := range models {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
 }
