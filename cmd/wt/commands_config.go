@@ -16,6 +16,7 @@ import (
 	"sort"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/agent-worktree/internal/ollamaconfig"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/spf13/cobra"
 )
@@ -27,11 +28,12 @@ func configCmd(a *app) *cobra.Command {
 		Use:   "config",
 		Short: "Manage wt preferences",
 		Long: "Manage wt user preferences. Subcommands configure specific concerns:\n" +
-			"  theme  active color theme\n" +
-			"  path   print the config directory",
+			"  theme   active color theme\n" +
+			"  path    print the config directory\n" +
+			"  ollama  sync ollama models with config.toml",
 		// No RunE: cobra prints help when called with no subcommand.
 	}
-	cmd.AddCommand(configPathCmd(a), configThemeCmd(a))
+	cmd.AddCommand(configPathCmd(a), configThemeCmd(a), configOllamaCmd(a))
 	return cmd
 }
 
@@ -43,6 +45,21 @@ func configPathCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), filepath.Dir(themes.Path()))
 			return nil
+		},
+	}
+}
+
+// configOllamaCmd returns the `wt config ollama` command. Launches an
+// interactive TUI for syncing config.toml ollama models with `ollama list`.
+func configOllamaCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "ollama",
+		Short: "Sync ollama models between config.toml and `ollama list`",
+		Long: "Launch an interactive TUI to sync ollama models between config.toml\n" +
+			"and the local Ollama instance. Shows a union of both sources with\n" +
+			"status indicators, and lets you edit, add, pull, or delete entries.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ollamaconfig.Run(a.theme)
 		},
 	}
 }

@@ -22,16 +22,20 @@ go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
 
 Requires Go 1.26.3 (see `go.mod`).
 
-> **Makefile scope.** The Makefile handles bash script tasks (install, lint, format, smoke tests) and a `clean` target that removes Go build artifacts (`bin/wt`, `*.test`). It does **not** build the Go binary — use `go build` above for that.
+> **Makefile scope.** The Makefile handles bash script tasks (install, lint, format, smoke tests), a `build` target that compiles the Go binary to `bin/wt`, and a `clean` target that removes Go build artifacts (`bin/wt`, `*.test`). On macOS, `build`/`install` re-seal the ad-hoc code signature (`codesign --force --sign -`) — a stale/drifted linker signature is rejected by AMFI with "Taskgated Invalid Signature" and SIGKILLs the binary on launch (exit 137).
 
 The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH` for them to work.
 
 ### Using the Makefile
 
 ```bash
+make build        # Build the Go binary to bin/wt (re-seals macOS signature)
 make install      # Install to ~/.local/bin/
 make uninstall    # Remove from ~/.local/bin/
 make help         # List all available targets
+make lint         # shellcheck on bin/*-wt
+make format       # shfmt -w on bin/*-wt
+make format-check # shfmt -d (CI check)
 make check        # Run lint + format-check
 make test         # Run smoke tests (requires make install first)
 make clean        # Remove build artifacts
@@ -102,6 +106,7 @@ shell agent (which implements `ArgSetter`), the args become argv directly
 ## Docs
 
 - `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)
+- `docs/wt-config.md` — `wt config` subcommands: themes and ollama model sync
 - `docs/wt-agents/` — per-agent reference docs (one file per launcher)
 
 ## Shim quality gates
@@ -135,14 +140,16 @@ Test coverage by package:
 | `internal/config` | 44 | Load, Validate, ValidateAll, Save, HasTag, ResolveLocation, migration, secrets, EligibleModels, ParseFilterList |
 | `internal/registry` | 15 | Merge (curated wins), parseOllamaList, OpenRouter JSON, FilterByTag/FilterBySource |
 | `internal/rotation` | 18 | Slot{Agent,Tag,Family}, SlotFromFlags, LastLaunched/RecordLaunch/FirstAfter, snapshot-based model set, per-slot state file with backward-compat read of legacy single-tag state files |
-| `internal/agents` | 32 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, IsCommand (Commanded interface), shell driver, shell quoting, pi model sync |
+| `internal/agents` | 42 | Per-agent Build output, Installed, Command, BuildLaunchCmd, ArgSetter, IsCommand (Commanded interface), shell driver, shell quoting, pi model sync |
 | `internal/guard` | 11 | Status check, install idempotency, foreign-hook preservation, uninstall restore |
 | `internal/worktree` | 34 | Worktree parsing, three-group enumeration (worktrees / locals / remotes), branch dedup (skip branches already checked out in worktrees), remote shadowing, worktree creation (EnsureForName/EnsureForBranch), default-branch refusal across all remotes (never a linked worktree) |
 | `internal/initseed` | 7 | `--init` seeding: AGENTS.md + pointer files, idempotency, Root() in/outside repo |
 | `internal/session` | 7 | Slug, relative time, newest-session-by-mtime, missing-dir handling, project-id, HOME-override integration |
 | `internal/themes` | 24 | Registry: Builtins/Get/Token/AvailableList/AllTokens with fallback to Default; load/save/unset of `themes.toml` (missing file, empty file, valid theme, unknown theme, empty value, duplicate keys, malformed TOML, unknown keys ignored, case-insensitive, permission denied, atomic write, unknown name doesn't write, unset removes file, unset missing file no-op) |
-| `internal/tui` | 133 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut, default-branch bare-row skip; phaseAgent: agent+command picker, `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; **theming**: every picker list (worktree, agent+command, model, resume, ollama) is built with `themedListDelegate` from `delegate.go` so the active color theme applies to every screen — production code never uses `list.NewDefaultDelegate` (tests do, since they assert model state not colors); Helpers: `DefaultAgent` defaults, state persistence, placeholder View |
-| `cmd/wt` | 40 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, picker-skip conditions for `-W`/`--cwd`/non-git-repo, legacy `-w` short flag; `wt config` cobra subcommand: `config path`, `config theme {list,show,set,unset}` with case-insensitive theme lookup, accent-color list rendering, dark/light preview output, atomic theme writes, unset-no-op semantics |
+| `internal/tui` | 135 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut, default-branch bare-row skip; phaseAgent: agent+command picker, `Enter` advances to phaseModel for agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; **theming**: every picker list (worktree, agent+command, model, resume, ollama) is built with `ThemedListDelegate` from `delegate.go` so the active color theme applies to every screen — production code never uses `list.NewDefaultDelegate` (tests do, since they assert model state not colors); Helpers: `DefaultAgent` defaults, state persistence, placeholder View |
+| `internal/ollamaconfig` | 33 | Union computation (synced/missing/untracked, sorting by family+name, non-ollama exclusion, empty edge cases); tags parsing/location toggle; save existing/new model, delete by ID; TUI phase transitions (Enter on synced→edit, missing→resolve, untracked→edit; Esc from edit/resolve→list; `r` refresh; quit keys) |
+| `internal/ollamacheck` | 3 | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available`) |
+| `cmd/wt` | 38 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, picker-skip conditions for `-W`/`--cwd`/non-git-repo, legacy `-w` short flag; `wt config` cobra subcommand: `config path`, `config theme {list,show,set,unset}` with case-insensitive theme lookup, accent-color list rendering, dark/light preview output, atomic theme writes, unset-no-op semantics; `config ollama` launches the sync TUI |
 
 ## Go module
 
@@ -163,6 +170,8 @@ go vet ./...         # vet
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once (live model discovery is deferred to the `models` subcommand) |
 | `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
+| `cmd/wt/commands_config.go` | `wt config` subcommand family: `config path`, `config theme {list,show,set,unset}`, `config ollama` (launches the sync TUI) |
+| `cmd/wt/resolve.go` | `resolveModel` — computes the single model for non-TUI launch (command-agent sentinel, pinned/eligible resolution, "multiple models match" error) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `renderTable` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd` (central dispatcher over `-T`/`-F`/`-M`), `buildLaunch`, `buildCommandForModel`, `buildCommandForCommand`, `launchFiltered`, `runAgentCmd`, `ollamaUnavailableError` — all accept `extraArgs` for passthrough |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration; shared helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `DefaultAgent`, `FirstTag`) |
@@ -173,9 +182,10 @@ go vet ./...         # vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
+| `internal/ollamaconfig/` | `wt config ollama` TUI: syncs config.toml ollama models with `ollama list` — union list (synced/missing/untracked), edit screen (family/tags/location), resolve prompt (pull/delete) |
 | `internal/ollamacheck/` | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available` — reuses `registry.Ollama{}.Discover()`) |
 | `internal/themes/` | Active color theme: `Theme` struct + 4 built-in palettes (`default`/`solarized`/`mono`/`tokyo-night`), `themes.toml` load/save/unset, `lipgloss.AdaptiveColor` per token so the same theme works in light and dark terminals |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt (Start fresh is the cursor default), shell agent skip-model-screen. Picker styling comes from `delegate.go`, which threads the active theme through every `list.Model` (worktree, agent, model, resume/ollama confirmations). |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent+command picker (phaseAgent) + agent/model picker screen (phaseModel, list-based) + new-worktree prompt + launch/resume prompt + ollama warning: Model/Update/View, alternate-screen runner, `bubbles/list` picker, rotation by launch (no `r` key, no separate browser), agent launch, session resume prompt (Start fresh is the cursor default), shell agent skip-model-screen. Picker styling comes from `delegate.go`, which threads the active theme through every `list.Model` (worktree, agent, model, resume/ollama confirmations) via the exported `ThemedListDelegate` function (also used by `internal/ollamaconfig`). |
 | `testdata/` | Sample configs for manual testing |
 | `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
@@ -221,10 +231,11 @@ the full registry discovery.
 ### Config (themes)
 
 `wt config` is the user-preference surface (separate from `config.toml`,
-which holds the agent/model registry). The first shipped subcommand is
-`wt config theme` — four built-in palettes with dark/light variants,
-stored in `~/.config/agent-wt/themes.toml`. Themes style the TUI picker,
-CLI tables, and `wt config theme list` output. See `docs/wt-config.md`.
+which holds the agent/model registry). Shipped subcommands are `wt config theme`
+(four built-in palettes with dark/light variants, stored in
+`~/.config/agent-wt/themes.toml`) and `wt config ollama` (interactive TUI to
+sync config.toml ollama models with `ollama list`). Themes style the TUI
+picker, CLI tables, and `wt config theme list` output. See `docs/wt-config.md`.
 
 ```bash
 wt config theme              # show the active theme + available names
@@ -233,6 +244,7 @@ wt config theme show <name>  # show a theme's tokens with dark/light hex preview
 wt config theme set <name>   # activate a theme (effective on next wt launch)
 wt config theme unset        # revert to the default theme
 wt config path               # print the config directory
+wt config ollama             # interactive TUI to sync ollama models with config.toml
 ```
 
 ### Rotation (Go)

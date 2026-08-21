@@ -1,8 +1,8 @@
 # `wt config`
 
-User-level preferences for the `wt` launcher. The first shipped surface is
-color themes; future subcommands (ollama sync, registry editing, etc.) slot
-in here without breaking changes.
+User-level preferences for the `wt` launcher. Shipped subcommands:
+color themes and ollama model sync; future subcommands (registry editing,
+etc.) slot in here without breaking changes.
 
 ## Where settings live
 
@@ -83,6 +83,70 @@ The file is read once at startup (in `newApp()`); the active theme does
 **not** hot-reload — relaunch `wt` to see changes. A missing or empty
 file falls back to the `default` theme. Unknown theme names fall back
 to `default` as well, so a typo never crashes the launcher.
+
+## Ollama model sync
+
+`wt config ollama` launches an interactive TUI for keeping
+`config.toml` ollama models in sync with the local Ollama instance
+(`ollama list`).
+
+### What it shows
+
+The TUI presents a union of both sources — models in `config.toml`
+(where `provider_id = "ollama"`) and models returned by `ollama list`.
+Each row is a single line:
+
+```
+gemma4 / gemma4:9b  SYNCED  local  code, design
+kimi-k2.6 / kimi-k2.6:cloud  MISSING  cloud  code, design
+llama3.2:3b / llama3.2:3b  UNTRACKED  local  -
+```
+
+Three states:
+
+| Status     | Meaning | Actions on Enter |
+|------------|---------|------------------|
+| `SYNCED`   | In both `config.toml` and `ollama list` | Edit the config entry |
+| `MISSING`  | In `config.toml` but not in `ollama list` | Pull via `ollama pull`, or delete from config |
+| `UNTRACKED`| In `ollama list` but not in `config.toml` | Add to config (edit screen with pre-filled values) |
+
+### Edit screen
+
+The edit screen shows read-only fields (`id`, `model_name`, `provider`)
+and three editable fields:
+
+- **family** — free text (default: model name for untracked models)
+- **location** — toggle between `local` and `cloud`
+- **tags** — comma-delimited (e.g. `code, design`)
+
+Tab / Shift+Tab cycles between fields. Enter saves to `config.toml`
+(atomically). Esc cancels.
+
+### Resolve prompt (missing models)
+
+Pressing Enter on a `MISSING` entry shows three choices:
+
+- **Pull with ollama** — runs `ollama pull <model_name>` with live progress
+  output (the TUI releases the terminal during the pull, then returns)
+- **Delete from config** — removes the model from `config.toml` (no
+  confirmation; the model is already unusable since it's not pulled)
+- **Cancel** — return to the list
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `↑/↓` | Navigate the list |
+| `enter` | Edit / resolve / add (depends on status) |
+| `r` | Refresh (re-read config + `ollama list`) |
+| `q` / `ctrl+c` | Quit |
+| `esc` | Quit from list; back from sub-screens |
+
+### When ollama is not installed
+
+If the `ollama` binary is not on `$PATH`, the list shows config models
+only (all `MISSING`) with a status note: "ollama not found — showing
+config models only". Pull attempts will fail with a clear error.
 
 ### Adding custom themes (not yet supported)
 

@@ -161,7 +161,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 		}
 	}
 
-	l := list.New(items, themedListDelegate(theme), width, height)
+	l := list.New(items, ThemedListDelegate(theme), width, height)
 	l.Title = "Pick a worktree or branch"
 	l.SetShowStatusBar(true)
 	// Advertise the 'n' shortcut in the footer help line so users know they

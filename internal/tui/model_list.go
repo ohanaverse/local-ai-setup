@@ -41,14 +41,14 @@ func (m modelItem) Description() string {
 
 // buildModelList builds a bubble/list from the given models. The caller
 // passes the desired width/height. The list is created with a themed
-// delegate (themedListDelegate) so the picker honors the active color
+// delegate (ThemedListDelegate) so the picker honors the active color
 // theme, and a fixed title.
 func buildModelList(models []config.Model, theme themes.Theme, width, height int) list.Model {
 	items := make([]list.Item, 0, len(models))
 	for _, m := range models {
 		items = append(items, modelItem{model: m})
 	}
-	l := list.New(items, themedListDelegate(theme), width, height)
+	l := list.New(items, ThemedListDelegate(theme), width, height)
 	l.Title = "Models"
 	l.SetShowStatusBar(false)
 	return l

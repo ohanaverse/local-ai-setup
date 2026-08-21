@@ -345,7 +345,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if !ok {
-					m.ollamaWarnModel = list.New(buildOllamaChoices(), themedListDelegate(m.theme), m.width-2, m.height-2)
+					m.ollamaWarnModel = list.New(buildOllamaChoices(), ThemedListDelegate(m.theme), m.width-2, m.height-2)
 					m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
 					m.phase = phaseOllamaWarn
 					return m, nil
@@ -464,7 +464,7 @@ func (m model) View() string {
 		}
 		body := m.newInput.View()
 		if m.newError != "" {
-			body += "\n" + errorStyle(m.theme).Render(m.newError)
+			body += "\n" + ErrorStyle(m.theme).Render(m.newError)
 		}
 		if m.creating {
 			body += "\ncreating " + m.newInput.Value() + "…"
@@ -507,13 +507,13 @@ func (m model) View() string {
 		return m.status
 	}
 	if m.listError != "" {
-		return errorStyle(m.theme).Render("error: "+m.listError) + "\n" + m.list.View()
+		return ErrorStyle(m.theme).Render("error: "+m.listError) + "\n" + m.list.View()
 	}
 	// A pinned --agent that errors (config error, empty model catalog) sets
 	// m.status while staying on the worktree list; render it so the failure
 	// is visible instead of silently swallowed by the list view.
 	if m.status != "" {
-		return errorStyle(m.theme).Render(m.status) + "\n" + m.list.View()
+		return ErrorStyle(m.theme).Render(m.status) + "\n" + m.list.View()
 	}
 	return m.list.View()
 }
@@ -571,7 +571,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 	// visit doesn't linger on the freshly rendered screen.
 	m.status = ""
 	items := buildAgentList(m.cfg)
-	m.agentList = list.New(items, themedListDelegate(m.theme), m.width-2, m.height-2)
+	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.agentList.Title = "Pick an agent or command"
 	m.agentList.SetShowStatusBar(false)
 	m.phase = phaseAgent
@@ -636,7 +636,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	}
 	m.phase = phaseResume
 	m.resume.session = sess
-	m.resume.choices = list.New(buildResumeChoices(sess), themedListDelegate(m.theme), m.width-2, m.height-2)
+	m.resume.choices = list.New(buildResumeChoices(sess), ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.resume.choices.Title = "Resume previous session?"
 	return m, nil
 }

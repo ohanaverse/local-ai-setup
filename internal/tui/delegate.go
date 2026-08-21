@@ -6,14 +6,13 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 )
 
-// themedListDelegate returns a list.DefaultDelegate whose Normal/Selected
+// ThemedListDelegate returns a list.DefaultDelegate whose Normal/Selected
 // styles are themed. This is the single styling point for every picker
 // list in the TUI (worktree list, agent list, model list, resume/guard/
-// ollama choice lists) — replacing the previous hardcoded list.NewDefaultDelegate
-// so every list honors the active color theme. Tests continue to use
-// list.NewDefaultDelegate() because they assert model state, not rendered
-// colors.
-func themedListDelegate(theme themes.Theme) list.DefaultDelegate {
+// ollama choice lists). Exported so internal/ollamaconfig can reuse it.
+// Tests continue to use list.NewDefaultDelegate() because they assert
+// model state, not rendered colors.
+func ThemedListDelegate(theme themes.Theme) list.DefaultDelegate {
 	d := list.NewDefaultDelegate()
 	d.Styles.NormalTitle = lipgloss.NewStyle().
 		Foreground(theme.Token(themes.TokenUnselected))

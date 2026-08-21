@@ -15,10 +15,11 @@ import (
 // branch name or a path-like name (e.g. feature/x).
 const newWorktreePlaceholder = "branch-or-worktree-name"
 
-// errorStyle returns the lipgloss style for user-facing errors in the
+// ErrorStyle returns the lipgloss style for user-facing errors in the
 // active theme: m.newError under the new-worktree input and m.listError
-// above the list.
-func errorStyle(theme themes.Theme) lipgloss.Style {
+// above the list. Exported so other packages building on the same theme
+// (e.g. internal/ollamaconfig) render errors identically.
+func ErrorStyle(theme themes.Theme) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Token(themes.TokenError))
 }
 

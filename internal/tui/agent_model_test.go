@@ -83,13 +83,13 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
 	m := model{
-		cfg:       cfg,
-		phase:     phaseModel,
-		agent:     agent,
-		tag:       tag,
-		models:    buildModelList(models, themes.Default, 80, 24),
-		width:     80,
-		height:    24,
+		cfg:    cfg,
+		phase:  phaseModel,
+		agent:  agent,
+		tag:    tag,
+		models: buildModelList(models, themes.Default, 80, 24),
+		width:  80,
+		height: 24,
 	}
 	// Set up the rotation snapshot for the picker's filtered list and
 	// position the cursor on the model after the last-launched one.
