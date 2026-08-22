@@ -35,20 +35,23 @@ defaulted (it always comes from `-A` or the agent+command picker).
 
 | Flag | Description |
 |------|-------------|
-| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted. |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
 | `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. The agent is never defaulted: when `-A` is omitted the agent+command picker is always shown. Supplying `-A` skips the picker. |
-| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. Skips the model picker when the eligible list contains only that model. |
+| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current repo root; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. |
+| `--cwd` | Launch in the current repo root; skip the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
 | `--yolo` | Skip permission prompts (agent-specific). |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
 With no flags, `wt` presents the worktree picker, then the agent+command
 picker, then the model picker (for agents). Multiple eligible models
-rotate on successive launches via the slot state file. `-W` and `--cwd`
-skip the worktree picker (its path is pre-resolved), but the agent+command
-picker still appears when `-A` is omitted.
+rotate on successive launches via the slot state file. Each picker is
+skipped only when its selection is already resolved: `-W`/`--cwd` skip the
+worktree picker, `-A` skips the agent+command picker, and `-M` skips the
+model picker. So `-W foo -A pi` (no `-M`) still shows the model picker, and
+`-W foo -M claude/opus` (no `-A`) shows the agent+command picker first and
+then validates the pin against the chosen agent.
 
 The agent+command picker lists every registered agent and command. Agents
 that cannot launch carry an inline indication — "not configured" (missing

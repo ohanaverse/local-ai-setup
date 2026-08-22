@@ -75,6 +75,7 @@ type model struct {
 	yolo         bool     // pass skip-permissions flag to the agent
 	extraArgs    []string // user passthrough args after --
 	initialAgent string   // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
+	pinnedModel  string   // model from --model flag; "" = no model pinned (model picker is shown)
 	resume       resumeModel
 	launchModel  config.Model // highlighted model captured when entering phaseResume; launched from the resume choices
 
@@ -274,21 +275,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			// esc is phase-aware: pop back from a nested screen, else quit.
+			// Every phase transition clears m.status so a stale error from
+			// the previous screen (e.g. invalid pinned -M) does not follow
+			// the user back to the worktree list with no way to dismiss it.
 			if m.phase == phaseAgent {
 				m.phase = phaseList
+				m.status = ""
 				return m, nil
 			}
 			if m.phase == phaseResume {
 				m.phase = phaseModel
+				m.status = ""
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn {
 				m.phase = phaseModel
+				m.status = ""
 				return m, nil
 			}
 			if m.phase == phaseNewWorktree {
 				m.phase = phaseList
 				m.newError = ""
+				m.status = ""
 				return m, nil
 			}
 			return m, tea.Quit
@@ -601,13 +609,41 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 // the global rotation recording still run — the rotation only advances
 // after the user resolves the resume prompt, so a cancel there leaves
 // rotation untouched.
+//
+// A pinned model (-M) is validated before any list construction. A match
+// builds only what's needed and proceeds to launch; a mismatch routes to
+// phaseAgent so the user can pick a different agent (the bad pin is
+// cleared so re-entry validates fresh — without that, every agent pick
+// would re-trigger the same error).
+//
 // Caller is responsible for the len(models) == 0 guard.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
+	m.tag = firstTag
+
+	// Validate the pinned model FIRST. Building the model list (which
+	// scans usage.jsonl and wraps every model with a usage badge) is
+	// wasted work when the pin is invalid — we'll just discard it.
+	if m.pinnedModel != "" {
+		if idx := indexOfModelID(models, m.pinnedModel); idx >= 0 {
+			counts := usage.NewStore().Counts(modelIDs(models))
+			m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
+			m.models.Select(idx)
+			return m.proceedToLaunch()
+		}
+		m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
+		m.pinnedModel = ""
+		items := buildAgentList(m.cfg)
+		m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
+		m.agentList.Title = "Pick an agent or command"
+		m.agentList.SetShowStatusBar(false)
+		m.phase = phaseAgent
+		return m, nil
+	}
+
 	counts := usage.NewStore().Counts(modelIDs(models))
 	m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
-	m.tag = firstTag
 	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
-		if idx := indexOfModel(models, next); idx >= 0 {
+		if idx := indexOfModelID(models, next.ID); idx >= 0 {
 			m.models.Select(idx)
 		}
 	}
@@ -770,23 +806,27 @@ func repoRootFor(path string) string {
 
 // Run starts the TUI in alternate-screen mode and returns when it quits.
 // agent is the --agent flag value ("" = no agent pinned; the agent/command
-// picker is shown). tags is the -T/--tags flag value (comma-delimited; "" =
-// no filter). family is the -F/--family flag value (comma-delimited; "" =
-// no filter). extraArgs are the user's passthrough args after --. theme is
-// the active color theme, loaded by cmd/wt. prePath, when non-empty, is a
-// pre-resolved worktree path (-W/--cwd/outside-repo): the worktree picker is
-// skipped and control starts at the agent/command picker (or model phase when
-// agent is pinned). When prePath is inside a git repo, repoRoot is seeded so
-// the new-worktree prompt has a valid directory even if it becomes reachable
-// from the pre-path entry point. cfg is the already-loaded config from
-// cmd/wt's newApp (validated before Run is called); it is not re-loaded here.
-func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+// picker is shown). pinned is the --model flag value ("" = no model pinned;
+// the model picker is shown, and a non-empty pin is validated against the
+// agent's eligible list once the agent is resolved). tags is the -T/--tags
+// flag value (comma-delimited; "" = no filter). family is the -F/--family
+// flag value (comma-delimited; "" = no filter). extraArgs are the user's
+// passthrough args after --. theme is the active color theme, loaded by
+// cmd/wt. prePath, when non-empty, is a pre-resolved worktree path
+// (-W/--cwd/outside-repo): the worktree picker is skipped and control starts
+// at the agent/command picker (or model phase when agent is pinned). When
+// prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
+// has a valid directory even if it becomes reachable from the pre-path entry
+// point. cfg is the already-loaded config from cmd/wt's newApp (validated
+// before Run is called); it is not re-loaded here.
+func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
 	p := tea.NewProgram(model{
 		status:       "loading worktrees...",
 		cfg:          cfg,
 		theme:        theme,
 		yolo:         yolo,
 		initialAgent: agent,
+		pinnedModel:  pinned,
 		activeTags:   tags,
 		activeFamily: family,
 		extraArgs:    extraArgs,

@@ -77,6 +77,49 @@ func TestUpdateQuitKeys(t *testing.T) {
 	}
 }
 
+// TestEscFromAgentPickerClearsStatus verifies that pressing Esc from
+// phaseAgent (after e.g. an invalid pinned-model error set m.status) clears
+// the status before transitioning back to phaseList. Without this, the
+// stale error text follows the user back to the worktree list and there is
+// no way to dismiss it — a stranded user has only Ctrl+C.
+func TestEscFromAgentPickerClearsStatus(t *testing.T) {
+	m := model{phase: phaseAgent, status: "model \"ollama/missing\" is not in the eligible list for agent \"claude\""}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseList {
+		t.Errorf("phase = %d, want phaseList (%d)", gotModel.phase, phaseList)
+	}
+	if gotModel.status != "" {
+		t.Errorf("status = %q, want empty (Esc must clear stale errors before transitioning)", gotModel.status)
+	}
+}
+
+// TestInvalidPinFromProceedFromSelectedPathRoutesToAgentPicker verifies
+// that when --agent is pinned via CLI (-A) and -M is also pinned but the
+// model is not in the agent's eligible list, proceedFromSelectedPath routes
+// to phaseAgent rather than leaving the user stranded on phaseList. The
+// pre-fix behavior was: m.phase stayed at whatever the caller had (phaseList
+// after a worktree pick), m.status showed the error, and the user had no
+// way to recover except Ctrl+C.
+func TestInvalidPinFromProceedFromSelectedPathRoutesToAgentPicker(t *testing.T) {
+	tempStateDir(t)
+	cfg := testConfig()
+	m := model{cfg: cfg, initialAgent: "claude", pinnedModel: "ollama/missing", phase: phaseList, width: 80, height: 24}
+	got, _ := m.proceedFromSelectedPath()
+	if got.phase != phaseAgent {
+		t.Errorf("phase = %d, want phaseAgent (%d) so the user can pick a different agent", got.phase, phaseAgent)
+	}
+	if !strings.Contains(got.status, "not in the eligible list") {
+		t.Errorf("status = %q, want it to contain \"not in the eligible list\"", got.status)
+	}
+	if got.pinnedModel != "" {
+		t.Errorf("pinnedModel = %q, want empty (clear the bad pin so re-entry validates fresh)", got.pinnedModel)
+	}
+}
+
 // TestUpdateOtherKeyIgnored asserts that pressing a non-quit key returns nil
 // (no quit) and leaves state untouched while the list is not yet ready. If
 // unknown keys accidentally quit or mutate state, behavior is

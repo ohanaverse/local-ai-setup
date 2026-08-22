@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ohanaverse/agent-worktree/internal/agents"
+	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/initseed"
 	"github.com/ohanaverse/agent-worktree/internal/session"
@@ -17,6 +19,44 @@ import (
 //
 //	go build -ldflags "-X main.version=1.2.3" ./cmd/wt
 var version = "0.1.0"
+
+// tuiRun is the entry point for the interactive TUI. It is a package-level
+// variable so tests can stub it out (the real tui.Run requires a TTY).
+var tuiRun = tui.Run
+
+// needsModelPicker reports whether the CLI must route to the interactive
+// model picker. True when:
+//   - the user did not pin an agent (no -A), OR
+//   - the user pinned an agent that is not a command AND no model is pinned
+//     (the launch path would have to pick a model itself).
+//
+// A pinned command (e.g. shell) returns false regardless of model pin
+// because commands have no model layer. A pinned agent + pinned model
+// returns false because every launch input is resolved.
+//
+// This predicate is the single source of truth for picker routing across
+// --cwd, -W, and the outside-repo path; if you change it, retest all three.
+func needsModelPicker(agent, pinned string) bool {
+	return agent == "" || (pinned == "" && !agents.IsCommand(agent))
+}
+
+// resolveModelForLaunch wraps resolveModel with a "resolved" boolean so
+// callers can short-circuit on a single resolvable model (auto-launch)
+// without conflating "model is empty" with "error". A resolved return value
+// (true, model, nil) means launchFiltered would have a unique model to use.
+// A non-resolved return (false, zero, _) means the caller should fall
+// through to the picker. err is non-nil only when resolveModel itself
+// failed; the auto-launch path treats any error as "not resolved".
+func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, error) {
+	m, err := resolveModel(agent, cfg, tags, family, pinned)
+	if err != nil {
+		return false, config.Model{}, err
+	}
+	if m.ID == "" {
+		return false, config.Model{}, nil
+	}
+	return true, m, nil
+}
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -185,6 +225,14 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
 			}
 
+			// Fast-fail on unknown agent names. Without this, a typo'd -A surfaces
+			// as "pass -M <model> to launch without it" — a hint aimed at the picker
+			// path, not the actual problem. This mirrors the pre-PR launchFiltered
+			// fast-fail: the agent picker is only useful for known agents.
+			if agent != "" && agents.ByName(agent) == nil {
+				return fmt.Errorf("unknown agent %q (known: %s)", agent, strings.Join(agents.Names(), ", "))
+			}
+
 			// -W <name>: use/create a worktree, then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
@@ -196,13 +244,22 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if agent == "" {
-					// No agent provided: show the agent/command picker with the
-					// worktree already resolved (skips the worktree picker).
-					if !isStdinTTY() {
-						return errPickerNeedsTTY
+				if needsModelPicker(agent, pinned) {
+					// Worktree resolved (-W), but the agent and/or model is still
+					// unresolved: show the picker(s) for the unresolved selection(s).
+					// A pinned agent skips the agent picker and lands on the model
+					// picker; an unpinned agent shows the agent/command picker first.
+					//
+					// Short-circuit: if resolveModel returns a single eligible model
+					// (no error, non-zero model), the user's intent is unambiguous —
+					// pre-PR-2 UX auto-launches instead of forcing a picker.
+					if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
+						return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 					}
-					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, path, a.cfg)
+					if !stdinTTY() {
+						return pickerNeedsTTYError(agent)
+					}
+					return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, path, a.cfg)
 				}
 				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
@@ -214,13 +271,16 @@ func rootCmd() *cobra.Command {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
 				maybeInstallGuard()
-				if agent == "" {
-					// No agent provided: show the picker with the current repo
-					// root pre-selected (skips the worktree picker).
-					if !isStdinTTY() {
-						return errPickerNeedsTTY
+				if needsModelPicker(agent, pinned) {
+					// Short-circuit on a single resolvable model — same rationale
+					// as the -W branch above. See resolveModelForLaunch.
+					if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
+						return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 					}
-					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, root, a.cfg)
+					if !stdinTTY() {
+						return pickerNeedsTTYError(agent)
+					}
+					return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, root, a.cfg)
 				}
 				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
@@ -229,22 +289,27 @@ func rootCmd() *cobra.Command {
 			// given, show the picker with worktree pre-selected as "." (no git
 			// enumeration needed).
 			if !inGitRepo() {
-				if agent == "" {
-					if !isStdinTTY() {
-						return errPickerNeedsTTY
+				if needsModelPicker(agent, pinned) {
+					// Short-circuit on a single resolvable model — same rationale
+					// as the -W and --cwd branches above. See resolveModelForLaunch.
+					if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
+						return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 					}
-					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, ".", a.cfg)
+					if !stdinTTY() {
+						return pickerNeedsTTYError(agent)
+					}
+					return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, ".", a.cfg)
 				}
 				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
 
 			// Interactive TUI: worktree picker first, then the agent/command
 			// picker (skipped only when -A pins an agent or command).
-			if agent == "" && !isStdinTTY() {
+			if agent == "" && !stdinTTY() {
 				return errPickerNeedsTTY
 			}
 			maybeInstallGuard()
-			return tui.Run(yolo(cmd), agent, tags, family, args, a.theme, "", a.cfg)
+			return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, "", a.cfg)
 		},
 	}
 

@@ -44,7 +44,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use/create the worktree for `<name>`; skip the worktree picker |
 | `-A <name>`, `--agent <name>` | Pin the agent or `shell`; never defaulted |
-| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; errors if not eligible |
+| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; errors if not eligible. Without `-A`, prompts for the agent first, then validates the pin |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
 | `--cwd` | Launch in the current repo root; skip the worktree picker |
@@ -227,9 +227,9 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 
 ## TUI (Go)
 
-`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → resume prompt → launch. `prePath` (from `-W`/`--cwd`/outside-repo) skips the worktree picker. Every picker uses `ThemedListDelegate` (active color theme) — production code never uses `list.NewDefaultDelegate`.
+`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → resume prompt → launch. Each picker is skipped only when its selection is already resolved: `prePath` (from `-W`/`--cwd`/outside-repo) skips the worktree picker, `-A` skips the agent+command picker, and `-M` skips the model picker (a pinned model is validated against the agent's eligible list once the agent is resolved). Every picker uses `ThemedListDelegate` (active color theme) — production code never uses `list.NewDefaultDelegate`.
 
-> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` is omitted.
+> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted (command agents like `shell` launch directly with no model layer).
 
 ## Worktree (Go)
 

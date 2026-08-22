@@ -100,6 +100,10 @@ func isStdinTTY() bool {
 	return term.IsTerminal(os.Stdin.Fd())
 }
 
+// stdinTTY is a test seam wrapping isStdinTTY. Production code uses the real
+// terminal check; tests override it to control the TTY state deterministically.
+var stdinTTY = isStdinTTY
+
 // errPickerNeedsTTY is returned by the rootCmd RunE when an unpinned launch
 // path would otherwise try to open the interactive picker (Bubble Tea's
 // WithAltScreen opens /dev/tty, which fails opaquely outside a terminal).
@@ -108,3 +112,20 @@ func isStdinTTY() bool {
 var errPickerNeedsTTY = fmt.Errorf(
 	"the agent/command picker needs a TTY; pass -A <agent> to launch without it " +
 		"(or run wt interactively from a terminal)")
+
+// errModelPickerNeedsTTY is returned when the model picker would be shown but
+// stdin is not a TTY. Unlike errPickerNeedsTTY (agent/command picker), the
+// agent is already resolved here, so the fix is to pin the model with -M.
+var errModelPickerNeedsTTY = fmt.Errorf(
+	"the model picker needs a TTY; pass -M <model> to launch without it " +
+		"(or run wt interactively from a terminal)")
+
+// pickerNeedsTTYError returns the TTY error for the picker that would be
+// shown next: the agent/command picker when no agent is pinned, or the model
+// picker when the agent is resolved but the model is not.
+func pickerNeedsTTYError(agent string) error {
+	if agent == "" {
+		return errPickerNeedsTTY
+	}
+	return errModelPickerNeedsTTY
+}

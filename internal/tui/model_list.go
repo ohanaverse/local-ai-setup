@@ -58,12 +58,13 @@ func buildModelList(models []config.Model, counts map[string]usage.UsageCounts, 
 	return l
 }
 
-// indexOfModel returns the index of target in models, or -1 if not found.
-// Used to position the list cursor on the rotation's next-to-use model
-// in selectedEntryMsg.
-func indexOfModel(models []config.Model, target config.Model) int {
+// indexOfModelID returns the index of the model with the given ID in models,
+// or -1 if not found. Used to validate a pinned -M model against the agent's
+// eligible list, and to position the list cursor on the rotation's
+// next-to-use model.
+func indexOfModelID(models []config.Model, id string) int {
 	for i, m := range models {
-		if m.ID == target.ID {
+		if m.ID == id {
 			return i
 		}
 	}

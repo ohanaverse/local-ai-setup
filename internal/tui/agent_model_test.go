@@ -79,7 +79,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		height: 24,
 	}
 	if next, ok := rotation.New().Next(cfg, agent, tag, ""); ok {
-		if idx := indexOfModel(models, next); idx >= 0 {
+		if idx := indexOfModelID(models, next.ID); idx >= 0 {
 			m.models.Select(idx)
 		}
 	}
@@ -994,5 +994,65 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	m2 = drivePhaseAgentEnter(t, m2, "claude")
 	if m2.models.Index() != 2 {
 		t.Errorf("entry 2: cursor = %d, want 2 (next after manual pick gemma4:14b)", m2.models.Index())
+	}
+}
+
+// TestPinnedModelValidSkipsPicker asserts that a pinned -M model that is in
+// the agent's eligible list skips the model picker and proceeds straight to
+// launch. This is the `-M` without `-A` flow: the agent is picked first, then
+// the pinned model is validated and, when valid, launched without a picker.
+func TestPinnedModelValidSkipsPicker(t *testing.T) {
+	tempStateDir(t)
+	cfg := testConfig()
+	m := model{cfg: cfg, agent: "claude", pinnedModel: "ollama/gemma4:9b", selectedPath: t.TempDir(), width: 80, height: 24}
+	models, err := cfg.EligibleModels("claude", "", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	got, cmd := m.enterModelPhase("claude", models, "code")
+	if cmd == nil {
+		t.Fatal("expected a launch cmd (pinned model valid, picker skipped), got nil")
+	}
+	if got.models.Index() != 0 {
+		t.Errorf("cursor index = %d, want 0 (pinned model ollama/gemma4:9b)", got.models.Index())
+	}
+}
+
+// TestPinnedModelInvalidShowsError asserts that a pinned -M model that is NOT
+// in the agent's eligible list surfaces an inline error naming the model and
+// agent, and does not launch. The user can then pick a different agent.
+func TestPinnedModelInvalidShowsError(t *testing.T) {
+	tempStateDir(t)
+	cfg := testConfig()
+	m := model{cfg: cfg, pinnedModel: "ollama/missing", width: 80, height: 24}
+	models, err := cfg.EligibleModels("claude", "", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	got, cmd := m.enterModelPhase("claude", models, "code")
+	if cmd != nil {
+		t.Errorf("expected nil cmd (pinned model invalid), got %v", cmd)
+	}
+	for _, want := range []string{"not in the eligible list", "ollama/missing", "claude"} {
+		if !strings.Contains(got.status, want) {
+			t.Errorf("status = %q, want to contain %q", got.status, want)
+		}
+	}
+}
+
+// TestPinnedModelWithoutAgentValidatesAfterAgentPick drives the full picker
+// flow (worktree pick → agent pick) with a pinned -M model and an unpinned
+// agent, asserting the invalid pin keeps the user on the agent picker with an
+// inline error. This locks the plumbing of pinnedModel through the picker.
+func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
+	tempStateDir(t)
+	cfg := testConfig()
+	m := model{cfg: cfg, pinnedModel: "ollama/missing", phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
+	if gotModel.phase != phaseAgent {
+		t.Errorf("phase = %v, want phaseAgent (invalid pinned model stays on agent picker)", gotModel.phase)
+	}
+	if !strings.Contains(gotModel.status, "not in the eligible list") {
+		t.Errorf("status = %q, want 'not in the eligible list'", gotModel.status)
 	}
 }

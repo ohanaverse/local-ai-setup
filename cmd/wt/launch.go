@@ -74,11 +74,18 @@ func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool,
 // TestBuildFilteredCmdCommandAgentUsesWorktree locks down is on the launch
 // path, instead of an ad-hoc CWD helper that silently dropped the path.
 //
+// launchFiltered is a package-level variable so tests can stub it (see
+// TestCommandAgentWithoutModelLaunchesDirectly and
+// TestAgentWithOneEligibleModelAutoLaunches). The implementation lives in
+// launchFilteredImpl — keeping it in a separate function makes the var
+// re-assignable without losing the original behavior.
+var launchFiltered = launchFilteredImpl
+
 // pinnedSupplied distinguishes "user passed -M with an empty value" from
 // "user did not pass -M". It's used to surface a stderr note when -M is
 // passed together with a command agent (where the pin would otherwise be
 // silently dropped).
-func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
 	if agents.IsCommand(agent) {
 		if pinnedSupplied {
 			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)

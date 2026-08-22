@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -158,5 +161,292 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "is removed") {
 		t.Fatalf("shell passthrough was incorrectly rejected as removed subcommand: %v", err)
+	}
+}
+
+// initTestRepo creates a minimal git repo with one commit on the default
+// branch so `git worktree add` (used by -W) succeeds. Returns the repo dir.
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	return dir
+}
+
+// TestWorktreeWithAgentWithoutModelShowsModelPicker verifies that
+// `wt -W foo -A pi` (worktree and agent resolved, model NOT resolved) routes
+// to the model picker instead of auto-launching. This is the fix for the bug
+// where -W + -A (no -M) silently skipped the model selection screen. The test
+// stubs tuiRun and stdinTTY so it runs in any environment — without the stub
+// the real tuiRun would try to open /dev/tty and hang in an interactive shell.
+func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	var gotAgent, gotPinned string
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+		gotAgent = agent
+		gotPinned = pinned
+		return nil
+	}
+	defer func() { tuiRun = oldTuiRun }()
+
+	oldStdinTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = oldStdinTTY }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-W", "my-feature", "-A", "pi"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAgent != "pi" {
+		t.Errorf("agent = %q, want pi (passed through to tuiRun)", gotAgent)
+	}
+	if gotPinned != "" {
+		t.Errorf("pinned = %q, want empty (no -M supplied)", gotPinned)
+	}
+}
+
+// TestWorktreeWithAgentAndModelLaunches verifies that `wt -W foo -A pi -M
+// claude/opus` (all three selections resolved) still auto-launches instead of
+// showing the model picker. With an empty config the launch fails on model
+// resolution, but it must NOT surface a picker TTY error.
+func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-W", "my-feature", "-A", "pi", "-M", "claude/opus"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected a launch error (empty config has no models), got nil")
+	}
+	if errors.Is(err, errModelPickerNeedsTTY) || errors.Is(err, errPickerNeedsTTY) {
+		t.Fatalf("err = %v, want a launch error, not a picker TTY error", err)
+	}
+}
+
+// TestWorktreeWithModelWithoutAgentPassesPinnedToTUI verifies that
+// `wt -W foo -M claude/opus` (model pinned, agent NOT pinned) routes to the
+// TUI with the pinned model threaded through, so the TUI can prompt for the
+// agent and then validate the pin. Without this, the -M value was silently
+// dropped on the unpinned-agent path.
+func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	var gotAgent, gotPinned string
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+		gotAgent = agent
+		gotPinned = pinned
+		return nil
+	}
+	defer func() { tuiRun = oldTuiRun }()
+
+	oldStdinTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = oldStdinTTY }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-W", "my-feature", "-M", "claude/opus"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAgent != "" {
+		t.Errorf("agent = %q, want empty (agent picker should be shown)", gotAgent)
+	}
+	if gotPinned != "claude/opus" {
+		t.Errorf("pinned = %q, want claude/opus", gotPinned)
+	}
+}
+
+// TestCommandAgentWithoutModelLaunchesDirectly verifies that a command agent
+// (shell) with no -M still launches directly rather than routing through the
+// TUI model picker. Commands have no model layer, so the "model unresolved"
+// condition must not apply to them; otherwise `shell-wt -W foo` would fail
+// with a model-picker TTY error instead of running the command.
+func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	var gotAgent string
+	var gotArgs []string
+	oldLaunchFiltered := launchFiltered
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+		gotAgent = agent
+		gotArgs = extraArgs
+		return nil
+	}
+	defer func() { launchFiltered = oldLaunchFiltered }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "shell", "true"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAgent != "shell" {
+		t.Errorf("agent = %q, want shell", gotAgent)
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "true" {
+		t.Errorf("extraArgs = %v, want [true]", gotArgs)
+	}
+}
+
+// TestNeedsModelPicker is a table test for the predicate that decides whether
+// the CLI routes to the model picker or to launchFiltered. The predicate is
+// the single source of truth for picker routing across --cwd, -W, and the
+// outside-repo path — getting it wrong causes either silent auto-launches
+// the user didn't ask for, or TTY errors when they did.
+//
+// The predicate captures the CURRENT picker-routing rule. A subsequent fix
+// layer (resolveModel short-circuit, added in a separate task) restores the
+// pre-PR auto-launch behavior for the "pinned agent, no pin" case when the
+// eligible model list has exactly one entry.
+func TestNeedsModelPicker(t *testing.T) {
+	tests := []struct {
+		name          string
+		agent, pinned string
+		want          bool
+	}{
+		{"unpinned agent, no pin", "", "", true},
+		{"pinned agent, no pin (routes to TUI; resolveModel may short-circuit)", "claude", "", true},
+		{"pinned command, no pin", "shell", "", false},
+		{"pinned agent, valid pin", "claude", "claude/opus", false},
+		{"unpinned agent, valid pin", "", "claude/opus", true},
+		{"pinned command, valid pin (no model layer)", "shell", "claude/opus", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := needsModelPicker(tt.agent, tt.pinned); got != tt.want {
+				t.Errorf("needsModelPicker(%q, %q) = %v, want %v", tt.agent, tt.pinned, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAgentWithOneEligibleModelAutoLaunches verifies that `wt --cwd -A claude`
+// with exactly one eligible model in config auto-launches via launchFiltered
+// instead of routing to the model picker. This restores the pre-PR-2 UX
+// contract: `-A` alone is sufficient when EligibleModels resolves to a
+// single entry. Without this fix, scripts and CI invocations of
+// `wt --cwd -A <agent>` force an interactive picker or fail with a TTY error.
+func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write a minimal config with one ollama model so resolveModel returns
+	// a single eligible entry, triggering the auto-launch short-circuit.
+	cfgDir := filepath.Join(home, ".config", "agent-wt")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
+		[]byte(`default_tag = "code"
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+auth = { type = "none", base_url = "http://localhost:11434" }
+[[models]]
+id = "ollama/gemma4:9b"
+provider_id = "ollama"
+model_name = "gemma4:9b"
+location = "local"
+tags = ["code"]
+[[agents]]
+name = "claude"
+supported_providers = ["ollama"]
+default_provider = "ollama"
+`),
+		0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	called := false
+	oldLaunchFiltered := launchFiltered
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+		called = true
+		return nil
+	}
+	defer func() { launchFiltered = oldLaunchFiltered }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--cwd", "-A", "claude"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("launchFiltered not called; -A claude should auto-launch when resolveModel returns a single eligible model")
+	}
+}
+
+// TestUnknownAgentFailsFast verifies that `wt -A <typo>` errors immediately
+// with "unknown agent" rather than returning a misleading model-picker TTY
+// error. Without this, a user who typos `-A claud` is told to add `-M`,
+// adds it, and gets the same error again — the real problem is the agent
+// name, and the CLI must surface that.
+func TestUnknownAgentFailsFast(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "claud"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected unknown-agent error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown agent") {
+		t.Errorf("err = %v, want an error containing \"unknown agent\"", err)
+	}
+	if errors.Is(err, errModelPickerNeedsTTY) {
+		t.Errorf("err = %v, want a fast-fail error, not the model-picker TTY error", err)
 	}
 }
