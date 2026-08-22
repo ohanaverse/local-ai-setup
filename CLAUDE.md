@@ -203,7 +203,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `
 |---|---|
 | claude | `ANTHROPIC_*` env → ollama gateway + `--model <m.ModelName>`; native: no args |
 | codex | `--model <m.ModelName>` plus four inline `-c` overrides (`model_provider=agent-wt`, `model_providers.agent-wt.{name,base_url,wire_api}`) for ollama-routed models; native: no args (see `docs/wt-agents/codex-wt.md`) |
-| copilot | `COPILOT_PROVIDER_BASE_URL`/`API_KEY`/`COPILOT_MODEL` env; never `--model` |
+| copilot | `COPILOT_PROVIDER_BASE_URL`/`API_KEY`/`WIRE_API`/`COPILOT_MODEL` env; never `--model`. **Ollama-routed models must use the OpenAI-compatible endpoint `http://localhost:11434/v1` with `WIRE_API=responses`, matching `ollama launch copilot`**. Native models clear all `COPILOT_*` provider env vars. |
 | opencode | ollama-only; `OPENCODE_CONFIG_CONTENT` inline JSON with `ollama/<m.ModelName>`; never `--model` |
 | pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); passes `--model` only when present; no yolo |
 | agy | no model passthrough (chosen in its TUI) |

@@ -151,8 +151,10 @@ func TestCodex(t *testing.T) {
 	}
 }
 
-// Copilot never receives --model on the CLI. Instead it gets three COPILOT_*
-// env vars that tell the VS Code extension which provider and model to use.
+// Copilot never receives --model on the CLI. Instead it gets the COPILOT_*
+// env vars that tell Copilot CLI which provider and model to use. For
+// Ollama-routed models the base URL must include the `/v1` path and the
+// wire API must be `responses`, matching `ollama launch copilot`.
 // Native models must produce no env vars at all.
 func TestCopilot(t *testing.T) {
 	d := ByName("copilot")
@@ -166,8 +168,11 @@ func TestCopilot(t *testing.T) {
 	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
 		t.Errorf("env missing COPILOT_MODEL: %v", lc.Env)
 	}
-	if !hasEnv(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434") {
+	if !hasEnv(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1") {
 		t.Errorf("env missing base url: %v", lc.Env)
+	}
+	if !hasEnv(lc.Env, "COPILOT_PROVIDER_WIRE_API=responses") {
+		t.Errorf("env missing wire api: %v", lc.Env)
 	}
 	if len(d.Build(nativeModel("copilot"), false).Env) != 0 {
 		t.Errorf("native build should have no env")
@@ -175,7 +180,7 @@ func TestCopilot(t *testing.T) {
 	// Native must clear the inherited COPILOT_* gateway vars so the native
 	// subscription is used instead of routing to ollama.
 	clear := d.Build(nativeModel("copilot"), false).ClearEnv
-	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL"} {
+	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_WIRE_API", "COPILOT_MODEL"} {
 		if !slices.Contains(clear, k) {
 			t.Errorf("native ClearEnv = %v, want it to include %q", clear, k)
 		}
@@ -636,7 +641,7 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 	if len(lc.Env) != 0 {
 		t.Errorf("env = %v, want none (subscription wins)", lc.Env)
 	}
-	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_MODEL"} {
+	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_WIRE_API", "COPILOT_MODEL"} {
 		if !slices.Contains(lc.ClearEnv, k) {
 			t.Errorf("ClearEnv = %v, want it to include %q", lc.ClearEnv, k)
 		}

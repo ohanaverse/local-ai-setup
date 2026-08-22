@@ -25,19 +25,20 @@ Native auth: `gh auth login` plus a Copilot subscription. Provider override: set
 Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; it handles two cases:
 
 - **`copilot/native`** — clears any inherited `COPILOT_*` env vars, so Copilot uses its native subscription.
-- **Ollama-routed models** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, and `COPILOT_MODEL` env vars pointing at the local Ollama gateway (see [Cloud models via Ollama](#cloud-models-via-ollama)).
+- **Ollama-routed models** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, and `COPILOT_MODEL` env vars pointing at the local Ollama OpenAI-compatible gateway (see [Cloud models via Ollama](#cloud-models-via-ollama)).
 
 ### Cloud models via Ollama
 
 When a non-native model (e.g., `minimax-m2.7:cloud`) is selected, `copilot-wt` sets:
 
 ```bash
-COPILOT_PROVIDER_BASE_URL="http://localhost:11434"
+COPILOT_PROVIDER_BASE_URL="http://localhost:11434/v1"
 COPILOT_PROVIDER_API_KEY=""
+COPILOT_PROVIDER_WIRE_API="responses"
 COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 ```
 
-`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`).
+`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is `config.OllamaBaseURL` (`http://localhost:11434`) with a `/v1` suffix, matching the OpenAI-compatible endpoint that Copilot CLI's BYOK provider expects.
 
 ## Agent init
 
