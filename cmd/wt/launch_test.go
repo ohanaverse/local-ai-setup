@@ -366,12 +366,9 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 		t.Errorf("got %q, want claude/opus", m.ID)
 	}
 
-	// Slot construction mirrors what launchFiltered does inside the
-	// rotation branch, and the resulting state-file name matches the
-	// expected per-slot filename format.
-	slot := rotation.SlotFromFlags("claude", "code", "")
-	expectedPath := filepath.Join(dir, "agent-wt", "rotation-claude-code-_.state")
-	gotPath := rotation.StateFileForSlot(filepath.Join(dir, "agent-wt"), slot)
+	// Global rotation state lives at rotation.state under the config dir.
+	expectedPath := filepath.Join(dir, "agent-wt", "rotation.state")
+	gotPath := filepath.Join(rotation.New().StateDir(), "rotation.state")
 	if gotPath != expectedPath {
 		t.Errorf("state file = %q, want %q", gotPath, expectedPath)
 	}
@@ -379,8 +376,8 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 
 // TestLaunchFilteredRotationAdvances verifies that when launchFiltered is
 // invoked repeatedly with multiple eligible models and no -M pin, the
-// non-TUI launch path rotates through the eligible list and records each
-// launch in the per-slot rotation state.
+// non-TUI launch path rotates through the global model list and records
+// each launch in the global rotation.state file.
 func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -410,13 +407,12 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 		},
 	}
 
-	slot := rotation.SlotFromFlags("claude", "code", "")
 	want := []string{"claude/a", "claude/b", "claude/c"}
+	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
 	for i, id := range want {
 		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil); err != nil {
 			t.Fatalf("launchFiltered run %d: %v", i+1, err)
 		}
-		statePath := rotation.StateFileForSlot(filepath.Join(dir, "agent-wt"), slot)
 		data, err := os.ReadFile(statePath)
 		if err != nil {
 			t.Fatalf("read state file run %d: %v", i+1, err)
@@ -424,6 +420,61 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 		if got := strings.TrimSpace(string(data)); got != id {
 			t.Fatalf("run %d state = %q, want %q", i+1, got, id)
 		}
+	}
+}
+
+// TestLaunchFilteredRotationRespectsTagFilter verifies that the rotation
+// fallback in launchFiltered (triggered when resolveModel's "multiple
+// models match" error fires) stays scoped to the -T filter instead of
+// walking the full agent-eligible list. Before this fix, rotation.Next
+// ignored tags/family and could select+record a model the user's -T
+// filter explicitly excluded — a regression from the pre-PR
+// EligibleModels(agent, tags, family)-scoped rotation, flagged in PR #82
+// review.
+func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+
+	binDir := t.TempDir()
+	claudeBin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Global model order interleaves a code-tagged model right after the
+	// last-launched design-tagged model, so a fallback that ignores the
+	// -T filter would land on it.
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/design-a", ProviderID: "claude", ModelName: "design-a", Tags: []string{"design"}},
+			{ID: "claude/code-a", ProviderID: "claude", ModelName: "code-a", Tags: []string{"code"}},
+			{ID: "claude/design-b", ProviderID: "claude", ModelName: "design-b", Tags: []string{"design"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+
+	if err := rotation.New().Record("claude/design-a"); err != nil {
+		t.Fatalf("seed rotation state: %v", err)
+	}
+
+	if err := launchFiltered("claude", worktree, cfg, false, "design", "", "", false, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+
+	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "claude/design-b" {
+		t.Fatalf("recorded model = %q, want claude/design-b (a code-tagged model leaked past the -T design filter)", got)
 	}
 }
 

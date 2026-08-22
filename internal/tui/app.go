@@ -23,6 +23,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/agent-worktree/internal/usage"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -56,8 +57,7 @@ type model struct {
 	phase    phase
 	agent    string             // current agent name
 	tag      string             // active rotation tag group
-	rotation *rotation.Rotation // snapshot rotation for the active (agent, tag); set on picker entry
-	cfg      *config.Config     // loaded config for the model catalog
+	cfg      *config.Config // loaded config for the model catalog
 	theme    themes.Theme       // active color theme; passed from cmd/wt
 
 	// model picker (the agent+model screen IS the picker)
@@ -244,6 +244,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = phaseList
 		return m, loadEntriesCmd()
 	case tea.KeyMsg:
+		// Model picker wrap-around: bubble/list does not wrap by default.
+		// Skip while the filter input is active (or has just been opened,
+		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
+		// typed into a filter query reach the text input instead of being
+		// swallowed as navigation.
+		if m.phase == phaseModel && m.models.FilterState() != list.Filtering {
+			switch msg.String() {
+			case "up", "k":
+				if m.models.Index() == 0 {
+					m.models.Select(len(m.models.Items()) - 1)
+					return m, nil
+				}
+			case "down", "j":
+				if m.models.Index() == len(m.models.Items())-1 {
+					m.models.Select(0)
+					return m, nil
+				}
+			}
+		}
 		switch msg.String() {
 		case "q":
 			// 'q' must type a character while the user is entering text
@@ -579,20 +598,33 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 // transitions to phaseModel (when the eligible list has more than one
 // model) or skips the picker entirely (when it has exactly one model).
 // The skip path reuses proceedToLaunch so the session-resume prompt and
-// the per-slot rotation recording still run — the rotation only advances
+// the global rotation recording still run — the rotation only advances
 // after the user resolves the resume prompt, so a cancel there leaves
-// rotation untouched. firstTag is the resolved tag for the slot key.
+// rotation untouched.
 // Caller is responsible for the len(models) == 0 guard.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
-	m.models = buildModelList(models, m.theme, m.width-2, m.height-2)
+	counts := usage.NewStore().Counts(modelIDs(models))
+	m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
 	m.tag = firstTag
-	slot := rotation.SlotFromFlags(agent, firstTag, m.activeFamily)
-	m.positionAfterLastLaunched(slot, models)
+	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
+		if idx := indexOfModel(models, next); idx >= 0 {
+			m.models.Select(idx)
+		}
+	}
 	if len(models) == 1 {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
 	return m, nil
+}
+
+// modelIDs extracts IDs from a model slice for usage-count lookups.
+func modelIDs(models []config.Model) []string {
+	ids := make([]string, len(models))
+	for i, m := range models {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // proceedToLaunch checks for a prior session and either launches the agent
@@ -646,10 +678,8 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 // rotation. The state write is best-effort: a failure surfaces in m.status
 // and the launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
-	if m.rotation != nil {
-		if err := m.rotation.RecordLaunch(m.launchModel); err != nil {
-			m.status = "rotation state not saved: " + err.Error()
-		}
+	if err := rotation.New().Record(m.launchModel.ID); err != nil {
+		m.status = "rotation state not saved: " + err.Error()
 	}
 	return m, runAndWaitCmd(cmd)
 }

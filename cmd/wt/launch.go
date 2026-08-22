@@ -92,28 +92,17 @@ func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, t
 		}
 		return runAgentCmd(cmd)
 	}
-	var rot *rotation.Rotation
 
-	// Resolve the model first. Command agents short-circuit here.
+	// Resolve the model first. Command agents short-circuit in resolveModel.
 	m, err := resolveModel(agent, cfg, tags, family, pinned)
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate
-		// through the eligible list by (agent, firstTag, family) slot.
+		// through the global model list to the next model supported by agent.
 		if pinned == "" {
-			eligible, eerr := cfg.EligibleModels(agent, tags, family)
-			if eerr != nil {
-				return eerr
-			}
-			if len(eligible) > 1 {
-				firstTag := config.FirstTag(tags, cfg.DefaultTag)
-				slot := rotation.SlotFromFlags(agent, firstTag, family)
-				rot = rotation.NewForSlot(slot, eligible, "")
-				last, _ := rot.LastLaunched()
-				next, ok := rotation.FirstAfter(eligible, last)
-				if ok {
-					m = next
-					err = nil
-				}
+			next, ok := rotation.New().Next(cfg, agent, tags, family)
+			if ok {
+				m = next
+				err = nil
 			}
 		}
 	}
@@ -136,10 +125,8 @@ func launchFiltered(agent, worktreePath string, cfg *config.Config, yolo bool, t
 	if berr != nil {
 		return berr
 	}
-	if rot != nil {
-		if rerr := rot.RecordLaunch(m); rerr != nil {
-			fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
-		}
+	if rerr := rotation.New().Record(m.ID); rerr != nil {
+		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
 	}
 	return runAgentCmd(cmd)
 }

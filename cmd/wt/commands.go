@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/spf13/cobra"
 )
@@ -19,18 +20,19 @@ func rotateCmd(a *app) *cobra.Command {
 			if len(models) == 0 {
 				return fmt.Errorf("no models tagged %q", tag)
 			}
-			// Legacy CLI shape: rotate is scoped by tag only. We use an empty
-			// agent/family so the state-file name matches legacy behavior
-			// (rotation-<tag>.state via the back-compat read path).
-			slot := rotation.Slot{Agent: "-", Tag: tag, Family: "-"}
-			r := rotation.NewForSlot(slot, models, "")
-			last, ok := r.LastLaunched()
+			// rotate is a debug helper that walks the global model list filtered
+			// by tag and prints the model after the last launched one.
+			r := rotation.New()
+			last, ok := r.Last()
 			if !ok {
-				// No prior launch; print the first model.
 				fmt.Println(models[0].ID)
 				return nil
 			}
-			next, _ := rotation.FirstAfter(models, last)
+			next, ok := rotation.FirstAfter(models, config.Model{ID: last})
+			if !ok {
+				fmt.Println(models[0].ID)
+				return nil
+			}
 			fmt.Println(next.ID)
 			return nil
 		},

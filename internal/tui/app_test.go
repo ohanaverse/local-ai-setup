@@ -1034,6 +1034,89 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 	}
 }
 
+// TestModelPickerFilterReceivesJKKeys verifies that "j"/"k" keystrokes typed
+// into the model picker's filter query reach the filter text input instead
+// of being intercepted as wrap-around navigation. bubbles/list's Filter key
+// calls GoToStart(), which resets the cursor to index 0 every time
+// filtering begins, and the wrap-around handler treated index 0 as
+// "top of list, wrap on up" for any "up"/"k" keypress — matching "k"/"j"
+// before bubbles/list's own filter input ever saw them. A query like
+// "kimi" would silently drop its leading "k". Flagged in PR #82 review.
+func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
+	models := []config.Model{
+		{ID: "ollama/kimi"},
+		{ID: "ollama/other"},
+	}
+	m := model{phase: phaseModel, width: 80, height: 24}
+	m.models = buildModelList(models, nil, themes.Default, 78, 22)
+
+	// Open the filter exactly like a user pressing '/'.
+	m.models, _ = m.models.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.models.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.models.FilterState())
+	}
+	if idx := m.models.Index(); idx != 0 {
+		t.Fatalf("cursor index = %d, want 0 (bubbles/list resets to start on filter open)", idx)
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if !strings.Contains(gotModel.models.FilterInput.Value(), "k") {
+		t.Errorf("filter input = %q, want to contain k (wrap-around hijacked the key)", gotModel.models.FilterInput.Value())
+	}
+}
+
+// TestModelPickerWrapsFromTopToBottom verifies pressing up/k at the first
+// model wraps the cursor to the last model, since bubbles/list does not
+// wrap by default. Locks down the wrap-around behavior added in PR #82,
+// which previously had no direct test (flagged in review).
+func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
+	models := []config.Model{
+		{ID: "ollama/a"},
+		{ID: "ollama/b"},
+		{ID: "ollama/c"},
+	}
+	m := model{phase: phaseModel, width: 80, height: 24}
+	m.models = buildModelList(models, nil, themes.Default, 78, 22)
+	m.models.Select(0)
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if got := gotModel.models.Index(); got != len(models)-1 {
+		t.Errorf("index after up-wrap = %d, want %d (last item)", got, len(models)-1)
+	}
+}
+
+// TestModelPickerWrapsFromBottomToTop verifies pressing down/j at the last
+// model wraps the cursor back to the first model. Locks down the
+// wrap-around behavior added in PR #82, which previously had no direct
+// test (flagged in review).
+func TestModelPickerWrapsFromBottomToTop(t *testing.T) {
+	models := []config.Model{
+		{ID: "ollama/a"},
+		{ID: "ollama/b"},
+		{ID: "ollama/c"},
+	}
+	m := model{phase: phaseModel, width: 80, height: 24}
+	m.models = buildModelList(models, nil, themes.Default, 78, 22)
+	m.models.Select(len(models) - 1)
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if got := gotModel.models.Index(); got != 0 {
+		t.Errorf("index after down-wrap = %d, want 0 (first item)", got)
+	}
+}
+
 // TestNNotHijackedWhileFiltering asserts that 'n' types into the list
 // filter instead of opening the new-worktree prompt. Before the fix,
 // the 'n' keypress was intercepted before bubbles/list saw it, so no

@@ -9,11 +9,13 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/agent-worktree/internal/usage"
 )
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
 type modelItem struct {
-	model config.Model
+	model  config.Model
+	counts usage.UsageCounts
 }
 
 // FilterValue returns the model ID so the list's built-in fuzzy filter
@@ -23,30 +25,32 @@ func (m modelItem) FilterValue() string { return m.model.ID }
 // Title renders the model ID — the primary identifier users scan for.
 func (m modelItem) Title() string { return m.model.ID }
 
-// Description renders the metadata columns: provider, location, tags.
-// Source is omitted because the picker is sourced from config.toml only
-// (every model is curated). The column is reserved for future use if
-// the picker grows a source filter.
+// Description renders the metadata columns: provider, location, tags, and
+// 1d/7d/30d usage counts. Counts are display-only and help the user spot
+// model-selection bias.
 func (m modelItem) Description() string {
 	tags := strings.Join(m.model.Tags, ",")
 	if tags == "" {
 		tags = "-"
 	}
-	return fmt.Sprintf("%-10s %-6s %s",
+	return fmt.Sprintf("%-10s %-6s %-20s  1d:%-3d 7d:%-3d 30d:%-3d",
 		m.model.ProviderID,
 		string(m.model.Location),
 		tags,
+		m.counts.OneDay,
+		m.counts.SevenDay,
+		m.counts.ThirtyDay,
 	)
 }
 
 // buildModelList builds a bubble/list from the given models. The caller
 // passes the desired width/height. The list is created with a themed
 // delegate (ThemedListDelegate) so the picker honors the active color
-// theme, and a fixed title.
-func buildModelList(models []config.Model, theme themes.Theme, width, height int) list.Model {
+// theme, and a fixed title. counts is attached to each item for display.
+func buildModelList(models []config.Model, counts map[string]usage.UsageCounts, theme themes.Theme, width, height int) list.Model {
 	items := make([]list.Item, 0, len(models))
 	for _, m := range models {
-		items = append(items, modelItem{model: m})
+		items = append(items, modelItem{model: m, counts: counts[m.ID]})
 	}
 	l := list.New(items, ThemedListDelegate(theme), width, height)
 	l.Title = "Models"

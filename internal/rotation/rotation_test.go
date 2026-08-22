@@ -4,108 +4,57 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
-// LastLaunched must return (zero, false) when no state file exists so
-// the caller (the picker entry handler) can fall back to index 0
-// without panicking or returning a zero-value model that the snapshot
-// contains.
-func TestLastLaunchedMissingFile(t *testing.T) {
-	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "alpha"}}, t.TempDir())
-	if _, ok := r.LastLaunched(); ok {
-		t.Fatal("LastLaunched on missing file returned ok=true")
+// TestLastMissingFile returns no last launch when rotation.state is absent.
+func TestLastMissingFile(t *testing.T) {
+	r := NewAt(t.TempDir())
+	if _, ok := r.Last(); ok {
+		t.Fatal("Last on missing file returned ok=true")
 	}
 }
 
-// RecordLaunch must persist the model ID and LastLaunched must read
-// it back. The state file is the on-disk contract for "what was last
-// launched in this rotation" — without the round-trip the picker
-// can't advance after a launch.
-func TestRecordLaunchRoundTrip(t *testing.T) {
+// TestRecordAndLastRoundTrip verifies Record writes the model ID and Last
+// reads it back.
+func TestRecordAndLastRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "alpha"}}, dir)
-	if err := r.RecordLaunch(config.Model{ID: "alpha"}); err != nil {
-		t.Fatalf("RecordLaunch: %v", err)
+	r := NewAt(dir)
+	if err := r.Record("alpha"); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
-	got, ok := r.LastLaunched()
+	got, ok := r.Last()
 	if !ok {
-		t.Fatal("LastLaunched returned !ok after RecordLaunch")
+		t.Fatal("Last returned !ok after Record")
 	}
-	if got.ID != "alpha" {
-		t.Errorf("LastLaunched.ID = %q, want alpha", got.ID)
-	}
-}
-
-// RecordLaunch must overwrite any prior value. The picker may launch
-// the same model multiple times in a row if the user keeps pressing
-// Enter without navigating; each launch must normalize the file to
-// the latest pick.
-func TestRecordLaunchOverwrites(t *testing.T) {
-	dir := t.TempDir()
-	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "alpha"}, {ID: "beta"}}, dir)
-	_ = r.RecordLaunch(config.Model{ID: "alpha"})
-	_ = r.RecordLaunch(config.Model{ID: "beta"})
-	got, _ := r.LastLaunched()
-	if got.ID != "beta" {
-		t.Errorf("LastLaunched.ID = %q, want beta (overwritten)", got.ID)
+	if got != "alpha" {
+		t.Errorf("Last = %q, want alpha", got)
 	}
 }
 
-// LastLaunched must read the legacy 2-line state file by taking the
-// last non-empty line. Without backward-compat the existing state
-// files on every user's machine would suddenly point at nothing
-// and the picker would fall back to index 0 — losing the rotation
-// memory they had. PR 3b removed the public StateFile helper; the
-// legacy file name is now constructed inline via filepath.Join.
-func TestLastLaunchedReadsLegacyTwoLineFile(t *testing.T) {
+// TestRecordOverwrites verifies subsequent launches update the saved model ID.
+func TestRecordOverwrites(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "rotation-code.state"), []byte("5\nollama/x:cloud\n"), 0o600); err != nil {
-		t.Fatalf("write legacy state: %v", err)
-	}
-	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "ollama/x:cloud"}}, dir)
-	got, ok := r.LastLaunched()
-	if !ok {
-		t.Fatal("LastLaunched returned !ok on legacy 2-line file")
-	}
-	if got.ID != "ollama/x:cloud" {
-		t.Errorf("LastLaunched.ID = %q, want ollama/x:cloud", got.ID)
+	r := NewAt(dir)
+	_ = r.Record("alpha")
+	_ = r.Record("beta")
+	got, _ := r.Last()
+	if got != "beta" {
+		t.Errorf("Last = %q, want beta", got)
 	}
 }
 
-// LastLaunched must return (zero, false) when the saved ID is no
-// longer in the snapshot. Config changes between launches (a model
-// was removed) should not crash or return a phantom model; the
-// caller falls back to index 0.
-func TestLastLaunchedConfigChanged(t *testing.T) {
+// TestRecordWritesSingleLineAnd0600 verifies the new state file format and
+// permissions.
+func TestRecordWritesSingleLineAnd0600(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "rotation-code.state"), []byte("ollama/removed:cloud\n"), 0o600); err != nil {
-		t.Fatal(err)
+	r := NewAt(dir)
+	if err := r.Record("alpha"); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
-	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "ollama/current:cloud"}}, dir)
-	if _, ok := r.LastLaunched(); ok {
-		t.Error("LastLaunched returned ok=true for ID not in snapshot")
-	}
-}
-
-// RecordLaunch must write a single-line file (no index prefix) and
-// the file must be 0600. The single-line format is the on-disk
-// contract; 0600 is the existing security baseline. The slot
-// {-/-/code/-} renders as rotation-_-code-_.state.
-func TestRecordLaunchWritesSingleLine(t *testing.T) {
-	dir := t.TempDir()
-	slot := Slot{Agent: "-", Tag: "code", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "alpha"}}, dir)
-	if err := r.RecordLaunch(config.Model{ID: "alpha"}); err != nil {
-		t.Fatalf("RecordLaunch: %v", err)
-	}
-	path := StateFileForSlot(dir, slot)
+	path := r.statePath()
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
@@ -119,102 +68,222 @@ func TestRecordLaunchWritesSingleLine(t *testing.T) {
 	}
 }
 
-// FirstAfter must return the model at target+1, wrapping to models[0]
-// if target is the last item. The picker uses this to compute "what
-// to show on the next entry after a launch" without knowing the
-// picker's order at the call site.
+// TestNextReturnsFirstEligibleWhenEmpty returns the first agent-eligible
+// model when there is no prior launch.
+func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "ollama/a", ProviderID: "ollama"},
+			{ID: "claude/sonnet", ProviderID: "claude"},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	r := NewAt(t.TempDir())
+	got, ok := r.Next(cfg, "claude", "", "")
+	if !ok || got.ID != "claude/sonnet" {
+		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+	}
+}
+
+// TestNextAdvancesAfterLastLaunched picks the next model in the global list
+// that the same agent supports.
+func TestNextAdvancesAfterLastLaunched(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "ollama/a", ProviderID: "ollama"},
+			{ID: "claude/sonnet", ProviderID: "claude"},
+			{ID: "claude/opus", ProviderID: "claude"},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	dir := t.TempDir()
+	r := NewAt(dir)
+	_ = r.Record("claude/sonnet")
+	got, ok := r.Next(cfg, "claude", "", "")
+	if !ok || got.ID != "claude/opus" {
+		t.Fatalf("Next = %q, %v; want claude/opus, true", got.ID, ok)
+	}
+}
+
+// TestNextWrapsAround verifies rotation wraps from the end of the global
+// model list back to the first eligible model.
+func TestNextWrapsAround(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "claude/sonnet", ProviderID: "claude"},
+			{ID: "ollama/a", ProviderID: "ollama"},
+			{ID: "claude/opus", ProviderID: "claude"},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	dir := t.TempDir()
+	r := NewAt(dir)
+	_ = r.Record("claude/opus")
+	got, ok := r.Next(cfg, "claude", "", "")
+	if !ok || got.ID != "claude/sonnet" {
+		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+	}
+}
+
+// TestNextSkipsIneligibleModels verifies models not supported by the agent
+// are skipped when searching after the last launch.
+func TestNextSkipsIneligibleModels(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "ollama/a", ProviderID: "ollama"},
+			{ID: "ollama/b", ProviderID: "ollama"},
+			{ID: "claude/sonnet", ProviderID: "claude"},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	dir := t.TempDir()
+	r := NewAt(dir)
+	_ = r.Record("ollama/b")
+	got, ok := r.Next(cfg, "claude", "", "")
+	if !ok || got.ID != "claude/sonnet" {
+		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+	}
+}
+
+// TestNextReturnsFalseWhenNoModels returns no model when the agent has no
+// supported models.
+func TestNextReturnsFalseWhenNoModels(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "ollama/a", ProviderID: "ollama"},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	r := NewAt(t.TempDir())
+	_, ok := r.Next(cfg, "claude", "", "")
+	if ok {
+		t.Fatal("Next returned ok=true with no eligible models")
+	}
+}
+
+// TestNextFallsBackToStartWhenLastUnknown starts from the beginning of the
+// global list if the saved last model is no longer in the config.
+func TestNextFallsBackToStartWhenLastUnknown(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "claude/sonnet", ProviderID: "claude"},
+			{ID: "claude/opus", ProviderID: "claude"},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	dir := t.TempDir()
+	r := NewAt(dir)
+	_ = r.Record("claude/ghost")
+	got, ok := r.Next(cfg, "claude", "", "")
+	if !ok || got.ID != "claude/sonnet" {
+		t.Fatalf("Next = %q, %v; want claude/sonnet, true", got.ID, ok)
+	}
+}
+
+// TestMigrationImportsNewestOldFile verifies the first NewAt call migrates
+// the most recent per-slot rotation file into rotation.state and removes the
+// old files.
+func TestMigrationImportsNewestOldFile(t *testing.T) {
+	dir := t.TempDir()
+	old1 := filepath.Join(dir, "rotation-claude-code-.state")
+	old2 := filepath.Join(dir, "rotation-claude-design-.state")
+	_ = os.WriteFile(old1, []byte("ollama/a\n"), 0o600)
+	_ = os.WriteFile(old2, []byte("ollama/b\n"), 0o600)
+
+	// Ensure old2 is newer.
+	future := time.Now().Add(time.Hour)
+	_ = os.Chtimes(old2, future, future)
+
+	r := NewAt(dir)
+	last, ok := r.Last()
+	if !ok || last != "ollama/b" {
+		t.Fatalf("Last = %q, %v; want ollama/b, true", last, ok)
+	}
+	if _, err := os.Stat(old1); !os.IsNotExist(err) {
+		t.Fatalf("old1 still exists after migration")
+	}
+	if _, err := os.Stat(old2); !os.IsNotExist(err) {
+		t.Fatalf("old2 still exists after migration")
+	}
+}
+
+// TestMigrationReadsLegacyTwoLineFile verifies the migration imports the
+// model ID from the last non-empty line of legacy files.
+func TestMigrationReadsLegacyTwoLineFile(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "rotation-code.state")
+	_ = os.WriteFile(legacy, []byte("5\nollama/x:cloud\n"), 0o600)
+
+	r := NewAt(dir)
+	last, ok := r.Last()
+	if !ok || last != "ollama/x:cloud" {
+		t.Fatalf("Last = %q, %v; want ollama/x:cloud, true", last, ok)
+	}
+}
+
+// TestMigrationDoesNotOverwriteExistingState verifies a second NewAt does
+// not re-run migration when rotation.state already exists.
+func TestMigrationDoesNotOverwriteExistingState(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "rotation-claude-code-.state")
+	_ = os.WriteFile(old, []byte("ollama/old\n"), 0o600)
+
+	r1 := NewAt(dir)
+	_ = r1.Record("ollama/new")
+
+	r2 := NewAt(dir)
+	last, _ := r2.Last()
+	if last != "ollama/new" {
+		t.Fatalf("Last = %q, want ollama/new", last)
+	}
+}
+
+// TestFirstAfterMiddle is retained for callers that still use FirstAfter
+// directly with an ordered snapshot.
 func TestFirstAfterMiddle(t *testing.T) {
 	models := []config.Model{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 	got, ok := FirstAfter(models, config.Model{ID: "b"})
-	if !ok {
-		t.Fatal("FirstAfter returned !ok")
-	}
-	if got.ID != "c" {
-		t.Errorf("FirstAfter = %q, want c", got.ID)
+	if !ok || got.ID != "c" {
+		t.Fatalf("FirstAfter = %q, %v; want c, true", got.ID, ok)
 	}
 }
 
-// FirstAfter must wrap to the first model when target is the last.
-// Without wrapping the picker would advance past the end of the
-// list on every cycle and the cursor would never move.
+// TestFirstAfterWraps verifies FirstAfter wraps from the last model to the
+// first.
 func TestFirstAfterWraps(t *testing.T) {
 	models := []config.Model{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 	got, ok := FirstAfter(models, config.Model{ID: "c"})
-	if !ok {
-		t.Fatal("FirstAfter returned !ok")
-	}
-	if got.ID != "a" {
-		t.Errorf("FirstAfter = %q, want a (wrap to start)", got.ID)
+	if !ok || got.ID != "a" {
+		t.Fatalf("FirstAfter = %q, %v; want a, true", got.ID, ok)
 	}
 }
 
-// FirstAfter must return models[0] when target is not in the list.
-// This is the "saved ID was removed from config" recovery path —
-// the picker falls back to the first model instead of failing.
+// TestFirstAfterMissingTarget verifies FirstAfter falls back to the first
+// model when target is not in the list.
 func TestFirstAfterMissingTarget(t *testing.T) {
 	models := []config.Model{{ID: "a"}, {ID: "b"}}
 	got, ok := FirstAfter(models, config.Model{ID: "ghost"})
-	if !ok {
-		t.Fatal("FirstAfter returned !ok")
-	}
-	if got.ID != "a" {
-		t.Errorf("FirstAfter = %q, want a (fallback to first)", got.ID)
+	if !ok || got.ID != "a" {
+		t.Fatalf("FirstAfter = %q, %v; want a, true", got.ID, ok)
 	}
 }
 
-// FirstAfter must return (zero, false) on an empty snapshot. The
-// picker's validation gate at selectedEntryMsg prevents this in
-// practice, but the helper must defend against it.
+// TestFirstAfterEmpty verifies FirstAfter returns no model on an empty
+// snapshot.
 func TestFirstAfterEmpty(t *testing.T) {
 	if _, ok := FirstAfter(nil, config.Model{ID: "x"}); ok {
 		t.Error("FirstAfter on empty snapshot returned ok=true")
-	}
-}
-
-// StateFileForSlot must return a predictable per-slot path under the
-// given directory. This is the contract between the Rotation and the
-// state file the picker reads back on next entry.
-func TestStateFileForSlotPath(t *testing.T) {
-	slot := Slot{Agent: "claude", Tag: "code", Family: "gemma4"}
-	got := StateFileForSlot("/tmp/cfg", slot)
-	want := "/tmp/cfg/rotation-claude-code-gemma4.state"
-	if got != want {
-		t.Errorf("StateFileForSlot = %q, want %q", got, want)
-	}
-}
-
-// The default state directory must respect XDG_CONFIG_HOME, matching
-// the behaviour of config.Path(). A mismatch would mean rotation
-// state and config files end up in different directories.
-func TestStateDir_DefaultDirRespectsXDG(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
-	slot := Slot{Agent: "-", Tag: "design", Family: "-"}
-	r := NewForSlot(slot, []config.Model{{ID: "x"}}, "")
-	if got, want := r.StateDir(), "/tmp/xdg-test/agent-wt"; got != want {
-		t.Errorf("StateDir with XDG = %q, want %q", got, want)
-	}
-}
-
-// SlotFromFlags must escape commas/dots to underscores in tag and
-// family so the resulting state-file name is safe. (Empty Tag/Family
-// are normalized to "-" so the filename stays free of consecutive
-// dashes; Agent is left as-is — callers always pass a real agent
-// name.) This is the construction used by both TUI and cmd/wt paths
-// to build the rotation slot.
-func TestSlotFromFlagsNormalizesComponents(t *testing.T) {
-	cases := []struct {
-		agent, tag, family string
-		want               Slot
-	}{
-		{"claude", "code", "gemma4", Slot{Agent: "claude", Tag: "code", Family: "gemma4"}},
-		{"", "code", "", Slot{Agent: "", Tag: "code", Family: "-"}},
-		{"claude", "", "", Slot{Agent: "claude", Tag: "-", Family: "-"}},
-		{"a.b", "c,d", "e.f", Slot{Agent: "a.b", Tag: "c_d", Family: "e_f"}},
-	}
-	for _, tc := range cases {
-		if got := SlotFromFlags(tc.agent, tc.tag, tc.family); got != tc.want {
-			t.Errorf("SlotFromFlags(%q, %q, %q) = %+v, want %+v",
-				tc.agent, tc.tag, tc.family, got, tc.want)
-		}
 	}
 }

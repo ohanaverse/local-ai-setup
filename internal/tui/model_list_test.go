@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/agent-worktree/internal/usage"
 )
 
 // FindAfter must return the model at target+1, wrapping to models[0]
@@ -49,5 +50,23 @@ func TestPhaseModelViewRendersStatus(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, m.status) {
 		t.Errorf("model View missing status %q in:\n%s", m.status, view)
+	}
+}
+
+// TestModelItemDescriptionShowsCounts verifies the picker description line
+// exposes the 1d/7d/30d counts so users can see their model bias.
+func TestModelItemDescriptionShowsCounts(t *testing.T) {
+	it := modelItem{
+		model: config.Model{
+			ID:         "ollama/gemma4:9b",
+			ProviderID: "ollama",
+			Location:   config.LocationLocal,
+			Tags:       []string{"code"},
+		},
+		counts: usage.UsageCounts{OneDay: 2, SevenDay: 5, ThirtyDay: 10},
+	}
+	desc := it.Description()
+	if !strings.Contains(desc, "1d:2") || !strings.Contains(desc, "7d:5") || !strings.Contains(desc, "30d:10") {
+		t.Fatalf("Description %q missing expected counts", desc)
 	}
 }

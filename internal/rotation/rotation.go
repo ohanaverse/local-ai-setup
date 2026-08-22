@@ -1,163 +1,186 @@
+// Package rotation manages the global last-launched model and computes the
+// next model to present in the picker.
 package rotation
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/usage"
 )
 
-// Slot identifies the rotation state slot for an (agent, tag, family)
-// combination. Tag and Family are normalized: empty values become "-"
-// and special characters (commas, dots) are escaped to underscores.
-// The normalization guarantees a predictable state-file name.
-type Slot struct {
-	Agent, Tag, Family string
-}
-
-// SlotFromFlags builds a Slot from the agent name and resolved
-// tag/family. Empty tag/family values become "-"; commas and dots are
-// escaped to underscores to keep state-file names safe.
-func SlotFromFlags(agent, tag, family string) Slot {
-	return Slot{
-		Agent:  agent,
-		Tag:    escapeComponent(tag),
-		Family: escapeComponent(family),
-	}
-}
-
-// escapeComponent normalizes a single slot component: empty -> "-",
-// replace commas and dots with underscores.
-func escapeComponent(s string) string {
-	if s == "" {
-		return "-"
-	}
-	s = strings.ReplaceAll(s, ",", "_")
-	s = strings.ReplaceAll(s, ".", "_")
-	return s
-}
-
-// defaultStateDir returns ~/.config/agent-wt (or $XDG_CONFIG_HOME/agent-wt).
-func defaultStateDir() string {
-	return config.Dir()
-}
-
-// Rotation remembers which model was last launched in a rotation slot.
-// The model set is fixed at construction time and must match the
-// picker's filtered snapshot. Rotation is driven by the launch
-// action: RecordLaunch persists the pick, and LastLaunched +
-// FirstAfter compute the cursor position for the next picker entry.
+// Rotation reads and writes the single global rotation.state file.
 type Rotation struct {
-	mu       sync.Mutex
-	slot     Slot
-	models   []config.Model
-	stateDir string
+	dir   string
+	store *usage.Store
 }
 
-// NewForSlot builds a Rotation for the given slot from the given
-// models. stateDir is where the per-slot state file lives; pass ""
-// to use the default (~/.config/agent-wt). This is the canonical
-// constructor; the Slot is the (agent, tag, family) identifier.
-func NewForSlot(slot Slot, models []config.Model, stateDir string) *Rotation {
-	return &Rotation{slot: slot, models: models, stateDir: stateDir}
+// New returns a Rotation using the default config directory.
+func New() *Rotation {
+	return NewAt(config.Dir())
+}
+
+// NewAt returns a Rotation using dir as the config directory.
+func NewAt(dir string) *Rotation {
+	r := &Rotation{dir: dir, store: usage.NewStoreAt(dir)}
+	_ = r.migrate()
+	return r
+}
+
+// statePath returns the path to rotation.state.
+func (r *Rotation) statePath() string {
+	return filepath.Join(r.dir, "rotation.state")
 }
 
 // StateDir returns the resolved state directory for this Rotation.
 func (r *Rotation) StateDir() string {
-	if r.stateDir != "" {
-		return r.stateDir
-	}
-	return defaultStateDir()
+	return r.dir
 }
 
-// StateFileForSlot returns the per-slot state path.
-// Format: rotation-<agent>-<tag>-<family>.state. Empty or "-" values
-// for Agent or Family are rendered as "_" so the filename stays free
-// of consecutive dashes regardless of which components a caller left
-// blank.
-func StateFileForSlot(stateDir string, slot Slot) string {
-	agent := slot.Agent
-	if agent == "" || agent == "-" {
-		agent = "_"
+// Last returns the most recently launched model ID.
+func (r *Rotation) Last() (string, bool) {
+	data, err := os.ReadFile(r.statePath())
+	if err != nil {
+		return "", false
 	}
-	family := slot.Family
-	if family == "" || family == "-" {
-		family = "_"
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", false
 	}
-	return filepath.Join(stateDir, "rotation-"+agent+"-"+slot.Tag+"-"+family+".state")
+	return id, true
 }
 
-// LastLaunched returns the model most recently recorded for this
-// rotation, or (zero, false) if the state file is missing, empty,
-// or references a model no longer in the snapshot. Backward-
-// compatible with the legacy 2-line format ("<index>\n<id>\n") —
-// the last non-empty line is treated as the model ID.
-func (r *Rotation) LastLaunched() (config.Model, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lastLaunchedLocked()
+// Record writes modelID as the new last-launched model and records a usage event.
+func (r *Rotation) Record(modelID string) error {
+	path := r.statePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := config.WriteFileAtomic(path, []byte(modelID+"\n"), 0o600); err != nil {
+		return err
+	}
+	// Usage recording is best-effort; do not fail rotation write if usage fails.
+	_ = r.store.Record(modelID)
+	return nil
 }
 
-func (r *Rotation) lastLaunchedLocked() (config.Model, bool) {
-	// Try the per-slot file first.
-	data, err := os.ReadFile(StateFileForSlot(r.StateDir(), r.slot))
-	if err == nil {
-		return matchLastLaunched(string(data), r.models)
+// Next returns the first model after the last launched one that is eligible
+// for agent under the given tags/family filters (same semantics as
+// cfg.EligibleModels). It walks cfg.Models in order and wraps to the start.
+// If no model is eligible, it returns (config.Model{}, false).
+func (r *Rotation) Next(cfg *config.Config, agent, tags, family string) (config.Model, bool) {
+	if cfg == nil || len(cfg.Models) == 0 {
+		return config.Model{}, false
 	}
-	// Back-compat: fall back to the legacy rotation-<tag>.state.
-	// The legacy public StateFile() helper was removed in PR 3b; the
-	// path is inlined here so a downgrade or shared config dir keeps
-	// the old state readable.
-	data, err = os.ReadFile(filepath.Join(r.StateDir(), "rotation-"+r.slot.Tag+".state"))
-	if err == nil {
-		return matchLastLaunched(string(data), r.models)
+	eligible, err := cfg.EligibleModels(agent, tags, family)
+	if err != nil || len(eligible) == 0 {
+		return config.Model{}, false
 	}
-	return config.Model{}, false
-}
+	allowed := map[string]bool{}
+	for _, m := range eligible {
+		allowed[m.ID] = true
+	}
 
-// matchLastLaunched parses a state-file body and returns the first
-// model ID that matches one in the snapshot. The legacy 2-line format
-// is supported by reading the last non-empty line.
-func matchLastLaunched(body string, models []config.Model) (config.Model, bool) {
-	lines := strings.Split(strings.TrimSpace(body), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		id := strings.TrimSpace(lines[i])
-		if id == "" {
-			continue
-		}
-		for _, m := range models {
-			if m.ID == id {
-				return m, true
+	start := 0
+	if last, ok := r.Last(); ok {
+		for i, m := range cfg.Models {
+			if m.ID == last {
+				start = i + 1
+				break
 			}
 		}
 	}
+
+	for offset := 0; offset < len(cfg.Models); offset++ {
+		idx := (start + offset) % len(cfg.Models)
+		m := cfg.Models[idx]
+		if allowed[m.ID] {
+			return m, true
+		}
+	}
 	return config.Model{}, false
 }
 
-// RecordLaunch writes the given model as the new last-launched.
-// The write is atomic (temp file + rename), targeted at the per-slot
-// state file. Errors are returned to the caller; the picker proceeds
-// with the launch even if the write fails (the next picker entry
-// falls back to index 0). The legacy rotation-<tag>.state file is
-// NOT touched — LastLaunched still reads it for backward
-// compatibility, so a downgrade or shared config dir keeps the old
-// state intact.
-func (r *Rotation) RecordLaunch(m config.Model) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return config.WriteFileAtomic(
-		StateFileForSlot(r.StateDir(), r.slot),
-		[]byte(m.ID+"\n"),
-		0o600,
-	)
+// migrate imports old per-slot rotation files into the new global state.
+// It runs once: when rotation.state is missing and old files exist.
+func (r *Rotation) migrate() error {
+	path := r.statePath()
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+
+	entries, err := os.ReadDir(r.dir)
+	if err != nil {
+		return err
+	}
+
+	var bestID string
+	var bestTime time.Time
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "rotation-") || !strings.HasSuffix(name, ".state") {
+			continue
+		}
+		// Skip the new global file if it somehow matches.
+		if name == "rotation.state" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(r.dir, name))
+		if err != nil {
+			continue
+		}
+		id := lastNonEmptyLine(string(data))
+		if id == "" {
+			continue
+		}
+		if bestID == "" || info.ModTime().After(bestTime) {
+			bestID = id
+			bestTime = info.ModTime()
+		}
+	}
+
+	if bestID == "" {
+		return nil
+	}
+	if err := config.WriteFileAtomic(path, []byte(bestID+"\n"), 0o600); err != nil {
+		return err
+	}
+	// Delete old files after successful migration.
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "rotation-") && strings.HasSuffix(name, ".state") && name != "rotation.state" {
+			_ = os.Remove(filepath.Join(r.dir, name))
+		}
+	}
+	return nil
+}
+
+// lastNonEmptyLine returns the last non-empty line from s, trimmed.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // FirstAfter returns the model that comes after target in the
 // snapshot, wrapping to the first item if target is the last or
 // not in the snapshot. Returns (zero, false) if the snapshot is
-// empty. This is the "what to show on next picker entry" calculation.
+// empty. Retained for callers that still manage their own ordered
+// snapshot.
 func FirstAfter(models []config.Model, target config.Model) (config.Model, bool) {
 	if len(models) == 0 {
 		return config.Model{}, false

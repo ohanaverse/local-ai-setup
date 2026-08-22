@@ -14,6 +14,7 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/agent-worktree/internal/usage"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -31,26 +32,12 @@ func tempStateDir(t *testing.T) string {
 	return dir
 }
 
-// seedState writes the legacy "rotation-<tag>.state" file (the
-// pre-PR-3a single-tag state file) so rotation.LastLaunched's
-// backward-compat fallback picks up the seeded body. The production
-// per-slot file (rotation-<agent>-<tag>-<family>.state) is also
-// tried first by LastLaunched, but tests don't have a real agent
-// name in their slot, so the legacy file is the path that lands the
-// seed.
-func seedState(t *testing.T, dir, tag, content string) {
+// seedState writes the global rotation.state file with the given last-
+// launched model ID. Tests use this to simulate prior launches.
+func seedState(t *testing.T, dir, modelID string) {
 	t.Helper()
-	// Legacy file path: rotation-<tag>.state. The per-slot format
-	// (rotation-_-<tag>-_.state) is also written so callers using the
-	// default slot ({"-", tag, "-"}) read it via the per-slot path;
-	// either path lets the test exercise LastLaunched.
-	legacyPath := filepath.Join(dir, "rotation-"+tag+".state")
-	if err := os.WriteFile(legacyPath, []byte(content), 0o600); err != nil {
-		t.Fatalf("seed %s state: %v", tag, err)
-	}
-	perSlotPath := rotation.StateFileForSlot(dir, rotation.Slot{Agent: "-", Tag: tag, Family: "-"})
-	if err := os.WriteFile(perSlotPath, []byte(content), 0o600); err != nil {
-		t.Fatalf("seed %s per-slot state: %v", tag, err)
+	if err := rotation.NewAt(dir).Record(modelID); err != nil {
+		t.Fatalf("seed rotation state: %v", err)
 	}
 }
 
@@ -68,41 +55,32 @@ func singleModelList(m config.Model) list.Model {
 }
 
 // phaseModelWithList builds a model in phaseModel with m.models populated
-// for the given agent+tag, m.current set to the rotation's next-to-use
-// model, and the list cursor on that model. Tests that exercise
-// rotation, the list, or the View use this helper instead of
-// constructing model literals (which would skip the list-build path
-// the production code uses).
+// for the given agent+tag, with the cursor on the globally rotated model.
+// Tests that exercise rotation, the list, or the View use this helper
+// instead of constructing model literals (which would skip the list-build
+// path the production code uses).
 func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
 	t.Helper()
-	models, err := cfg.ModelsForAgentAndTag(agent, tag)
+	models, err := cfg.EligibleModels(agent, tag, "")
 	if err != nil {
-		t.Fatalf("ModelsForAgentAndTag: %v", err)
+		t.Fatalf("EligibleModels: %v", err)
 	}
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
+	counts := usage.NewStore().Counts(modelIDs(models))
 	m := model{
 		cfg:    cfg,
 		phase:  phaseModel,
 		agent:  agent,
 		tag:    tag,
-		models: buildModelList(models, themes.Default, 80, 24),
+		models: buildModelList(models, counts, themes.Default, 80, 24),
 		width:  80,
 		height: 24,
 	}
-	// Set up the rotation snapshot for the picker's filtered list and
-	// position the cursor on the model after the last-launched one.
-	// The helper builds a Slot from (agent, tag, "") to mirror what
-	// the pinned-agent path in app.go does today (family defaults to
-	// empty / dash when no -F filter is active). Tests that need a
-	// non-empty family should construct the Slot directly and call
-	// positionAfterLastLaunched.
-	slot := rotation.SlotFromFlags(agent, tag, "")
-	m.rotation = rotation.NewForSlot(slot, models, "")
-	if last, ok := m.rotation.LastLaunched(); ok {
-		if next, ok := FindAfter(models, last); ok {
-			m.models.Select(indexOfModel(models, next))
+	if next, ok := rotation.New().Next(cfg, agent, tag, ""); ok {
+		if idx := indexOfModel(models, next); idx >= 0 {
+			m.models.Select(idx)
 		}
 	}
 	return m
@@ -310,7 +288,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 // change re-introduces 'm' as a keybind, this test will fail.
 func TestModelScreenMKeyIsNoOp(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	before := m
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
@@ -330,7 +308,7 @@ func TestModelScreenMKeyIsNoOp(t *testing.T) {
 // with the agent and tag in the header and the keybind hints in the footer.
 func TestViewModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "code", "0\nollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	view := m.View()
 	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[↑/↓] navigate", "[enter] launch"} {
@@ -669,7 +647,7 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 	dir := tempStateDir(t)
 	// State: next_index=1, last=ollama/gemma4:9b. With 2 code models, Next()
 	// returns models[1] (= gemma4:14b) and advances to index 0.
-	seedState(t, dir, "code", "1\nollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -689,7 +667,7 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	// reads the last non-empty line (gemma4:9b) and FindAfter returns
 	// the next model (gemma4:14b at index 1). The cursor lands on
 	// gemma4:14b.
-	seedState(t, dir, "code", "1\nollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := phaseModelWithList(t, cfg, "claude", "code")
 
@@ -761,7 +739,7 @@ func TestPhaseModelEnterStaysInApp(t *testing.T) {
 // implicit-rotation model).
 func TestNoRKeyInModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "code", "ollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	beforeCursor := m.models.Index()
 	beforeItems := len(m.models.Items())
@@ -800,7 +778,7 @@ func TestSelectedEntryNoLastLaunchedStartsAtZero(t *testing.T) {
 // so the test drives both transitions to reach phaseModel.
 func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "code", "ollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -822,7 +800,7 @@ func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
 // reach phaseModel.
 func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "code", "ollama/removed:cloud\n")
+	seedState(t, dir, "ollama/removed:cloud")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -843,7 +821,7 @@ func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
 // the snapshot; wrap from index 1 lands on index 2 (gemma4:design).
 func TestSelectedEntryLastLaunchedLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "code", "ollama/gemma4:14b\n")
+	seedState(t, dir, "ollama/gemma4:14b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -887,9 +865,8 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// The launch did not commit (the ollama warning gates it), so no
-	// rotation state must have been written. PR 3b writes go to the
-	// per-slot file (slot {claude/code/-} → rotation-claude-code-_.state).
-	if _, err := os.Stat(rotation.StateFileForSlot(dir, rotation.Slot{Agent: "claude", Tag: "code", Family: "-"})); err == nil {
+	// rotation state must have been written.
+	if _, err := os.Stat(filepath.Join(dir, "rotation.state")); err == nil {
 		t.Errorf("rotation state written on Enter without a committed launch")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat rotation state: %v", err)
@@ -898,12 +875,10 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 
 // TestLaunchAndRecordWritesLastLaunched asserts that launchAndRecord — the
 // single commit point reached only after the ollama check and resume prompt
-// are satisfied — writes the launched model's ID to the per-slot state
-// file. This is the positive counterpart to
+// are satisfied — writes the launched model's ID to the global rotation
+// state file. This is the positive counterpart to
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation advances
-// exactly when a launch commits, no sooner. PR 3b writes go to the
-// per-slot file (slot {claude/code/-} renders as
-// rotation-claude-code-_.state).
+// exactly when a launch commits, no sooner.
 func TestLaunchAndRecordWritesLastLaunched(t *testing.T) {
 	dir := tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
@@ -917,7 +892,7 @@ func TestLaunchAndRecordWritesLastLaunched(t *testing.T) {
 	m.launchModel = first.model
 	m, _ = m.launchAndRecord(exec.Command("true"))
 
-	data, err := os.ReadFile(rotation.StateFileForSlot(dir, rotation.Slot{Agent: "claude", Tag: "code", Family: "-"}))
+	data, err := os.ReadFile(filepath.Join(dir, "rotation.state"))
 	if err != nil {
 		t.Fatalf("read state after launchAndRecord: %v", err)
 	}
@@ -939,7 +914,7 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	dir := tempStateDir(t)
 	// Seed: last-launched is gemma4:9b (index 0). Picker entry 1
 	// will land on gemma4:14b (index 1).
-	seedState(t, dir, "code", "ollama/gemma4:9b\n")
+	seedState(t, dir, "ollama/gemma4:9b")
 
 	// Picker entry 1: drive the full PR-2 path (worktree pick →
 	// phaseAgent → phaseModel) so m.models is built and cursor is

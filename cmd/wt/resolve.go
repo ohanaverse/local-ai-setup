@@ -23,11 +23,12 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //   - pinned != "" and not in eligible → error
 //   - len(eligible) == 0 → error "no models match"
 //   - len(eligible) == 1 → return it
-//   - len(eligible) > 1 and pinned == "" → error "multiple models match"
 //   - len(eligible) > 1 and pinned != "" → return pinned
+//   - len(eligible) > 1 and pinned == "" → error "multiple models match"
 //
 // Note: rotation lives outside this function. launchFiltered catches
-// this error and advances through the eligible list when pinned == "".
+// the "multiple models match" error and advances through the global
+// rotation when pinned == "".
 func resolveModel(agent string, cfg *config.Config, tags, family, pinned string) (config.Model, error) {
 	if agents.IsCommand(agent) {
 		return config.Model{}, errCommandAgent
