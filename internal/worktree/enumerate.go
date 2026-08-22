@@ -182,13 +182,32 @@ func DefaultBranch(dir string) (string, error) {
 // "/<db>" (e.g. "feature/main") also matches. Callers that can distinguish a
 // local branch from a real remote-tracking ref must add that context to avoid
 // falsely refusing such branches. The hard-refusal paths do exactly that:
-// EnsureForBranch confirms the ref under refs/remotes/, buildList checks the
-// entry's group kind, and launchesOnDefaultBranch checks the entry's Path.
+// EnsureForBranch confirms the ref under refs/remotes/, and buildList checks
+// the entry's group kind.
 func IsDefaultBranchForm(branch, db string) bool {
 	if db == "" {
 		return false
 	}
 	return branch == db || strings.HasSuffix(branch, "/"+db)
+}
+
+// SkipInPicker reports whether a bare default-branch entry should be omitted
+// from the worktree picker. The default branch must never be offered as a
+// create-target for a linked worktree, so we skip bare local default branches
+// and bare remote-tracking refs that name the default branch across any
+// remote. A checked-out worktree on the default branch (Path != "") is kept so
+// it can be marked (current) or (default).
+func SkipInPicker(groupKind GroupKind, e Entry, defaultBranch string) bool {
+	if defaultBranch == "" {
+		return false
+	}
+	if e.Path != "" {
+		return false
+	}
+	if e.Branch == defaultBranch {
+		return true
+	}
+	return groupKind == GroupRemoteBranches && IsDefaultBranchForm(e.Branch, defaultBranch)
 }
 
 // Enumerate returns pickable targets grouped by kind: worktrees

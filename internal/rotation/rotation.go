@@ -64,9 +64,6 @@ func NewForSlot(slot Slot, models []config.Model, stateDir string) *Rotation {
 	return &Rotation{slot: slot, models: models, stateDir: stateDir}
 }
 
-// Slot returns the slot this Rotation serves.
-func (r *Rotation) Slot() Slot { return r.slot }
-
 // StateDir returns the resolved state directory for this Rotation.
 func (r *Rotation) StateDir() string {
 	if r.stateDir != "" {

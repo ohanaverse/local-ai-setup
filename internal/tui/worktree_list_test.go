@@ -67,15 +67,6 @@ func TestEntryItemDescriptionWithWorktree(t *testing.T) {
 	}
 }
 
-// pad must not truncate strings that already meet or exceed the target
-// length. Truncating would lose data in the list row.
-func TestPadDoesNotTruncate(t *testing.T) {
-	got := pad("verylong", 4)
-	if got != "verylong" {
-		t.Errorf("pad = %q, want verylong", got)
-	}
-}
-
 // Build an EntryGroup with a single entry for compact test setup.
 func singleGroup(kind worktree.GroupKind, e worktree.Entry) []worktree.EntryGroup {
 	return []worktree.EntryGroup{{Kind: kind, Entries: []worktree.Entry{e}}}
@@ -417,6 +408,29 @@ func TestBuildListNoSeparatorWhenRemotesEmpty(t *testing.T) {
 	for _, it := range l.Items() {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
 			t.Errorf("separator rendered despite empty remote group: %+v", ei)
+		}
+	}
+}
+
+// TestBuildListNoSeparatorWhenRemotesOnlyDefaultBranch asserts the
+// locals→remotes divider is omitted when every remote-tracking branch would
+// be filtered out as a default-branch form. The raw remote group is non-empty,
+// but only because it contains origin/main; after default-branch filtering no
+// remote entries survive, so a dangling separator must not appear.
+func TestBuildListNoSeparatorWhenRemotesOnlyDefaultBranch(t *testing.T) {
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: nil},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/main"},
+		}},
+	}
+	l := buildList(groups, "main", "/tmp/repo", themes.Default, 80, 24)
+	for _, it := range l.Items() {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
+			t.Errorf("separator rendered when all remotes filtered: %+v", ei)
 		}
 	}
 }

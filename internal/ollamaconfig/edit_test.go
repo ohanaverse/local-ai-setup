@@ -163,7 +163,7 @@ func TestDeleteModelFromConfig(t *testing.T) {
 			{ID: "ollama/kimi:cloud", Family: "kimi", ProviderID: "ollama", ModelName: "kimi:cloud", Location: config.LocationCloud},
 		},
 	}
-	deleteModelFromConfig(cfg, "ollama/kimi:cloud")
+	cfg.DeleteModel("ollama/kimi:cloud")
 	if len(cfg.Models) != 1 {
 		t.Fatalf("expected 1 model after delete, got %d", len(cfg.Models))
 	}
@@ -180,7 +180,7 @@ func TestDeleteModelFromConfigNotFound(t *testing.T) {
 			{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b"},
 		},
 	}
-	deleteModelFromConfig(cfg, "ollama/nonexistent")
+	cfg.DeleteModel("ollama/nonexistent")
 	if len(cfg.Models) != 1 {
 		t.Fatalf("expected 1 model (no-op), got %d", len(cfg.Models))
 	}

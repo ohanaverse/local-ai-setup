@@ -14,7 +14,6 @@ import (
 // Session identifies a resumable session.
 type Session struct {
 	ID    string // file stem (claude) or dir name (opencode)
-	Path  string // full path
 	MTime time.Time
 }
 
@@ -79,7 +78,6 @@ func latestByExt(dir, ext string, idOf func(os.FileInfo) string) (*Session, erro
 		}
 		sessions = append(sessions, Session{
 			ID:    idOf(info),
-			Path:  filepath.Join(dir, e.Name()),
 			MTime: info.ModTime(),
 		})
 	}

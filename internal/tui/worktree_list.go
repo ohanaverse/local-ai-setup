@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -82,16 +83,9 @@ func (e entryItem) Description() string {
 		path = "(no worktree)"
 	}
 	return strings.TrimSpace(strings.Join([]string{
-		pad("["+string(e.entry.Type)+"]", 9),
+		fmt.Sprintf("%-9s", "["+string(e.entry.Type)+"]"),
 		path,
 	}, " "))
-}
-
-func pad(s string, n int) string {
-	if len(s) >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-len(s))
 }
 
 // selectedEntryMsg is emitted when the user picks a worktree or branch.
@@ -119,25 +113,32 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 	items = append(items, entryItem{kind: kindNewWorktree})
 
 	for _, g := range groups {
-		// Render the locals→remotes divider only when there are remotes to
-		// follow; otherwise a dangling "── remote branches ──" row with
-		// nothing below it would show in repos with no remote-tracking
-		// branches.
-		if g.Kind == worktree.GroupRemoteBranches && len(g.Entries) > 0 {
-			items = append(items, entryItem{kind: kindSeparator, label: "── remote branches ──"})
+		// Render the locals→remotes divider only when at least one remote
+		// entry survives default-branch filtering; otherwise a dangling
+		// "── remote branches ──" row with nothing below it would show in
+		// repos whose only remote-tracking ref is the default branch.
+		if g.Kind == worktree.GroupRemoteBranches {
+			hasVisibleRemote := false
+			for _, e := range g.Entries {
+				if !worktree.SkipInPicker(g.Kind, e, defaultBranch) {
+					hasVisibleRemote = true
+					break
+				}
+			}
+			if hasVisibleRemote {
+				items = append(items, entryItem{kind: kindSeparator, label: "── remote branches ──"})
+			}
 		}
 		for _, e := range g.Entries {
 			// The default branch must never be a linked worktree, so skip
 			// bare default-branch rows — the picker must not offer them as
 			// create-targets. The primary checkout on the default branch
-			// still appears as (current). The remote form is matched by short
-			// name across all remotes (origin/main, upstream/main, ...) via
-			// IsDefaultBranchForm, but only for entries in the remote-branches
-			// group: a local branch whose name ends in "/main" (e.g.
-			// feature/main) is a feature branch, not the default, and must
-			// stay pickable.
-			isRemoteDefault := g.Kind == worktree.GroupRemoteBranches && worktree.IsDefaultBranchForm(e.Branch, defaultBranch)
-			if e.Path == "" && defaultBranch != "" && (e.Branch == defaultBranch || isRemoteDefault) {
+			// still appears as (current). The helper applies the same rule
+			// to local default branches and remote-tracking refs under any
+			// remote (origin/main, upstream/main, ...), while keeping a local
+			// branch whose name happens to end in "/main" (e.g. feature/main)
+			// pickable because it is not in the remote-branches group.
+			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
 				continue
 			}
 			ei := entryItem{kind: kindEntry, entry: e, groupKind: g.Kind}

@@ -34,7 +34,6 @@ const (
 	phaseAgent                    // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
 	phaseModel                    // agent+model picker (lesson 14 + lesson 15 merged)
 	phaseResume                   // resume prompt (lesson 16)
-	phaseGuardWarn                // confirm before launching on default branch
 	phaseOllamaWarn               // confirm before launching with unavailable ollama model
 	phaseNewWorktree              // create-new-worktree prompt
 )
@@ -84,10 +83,8 @@ type model struct {
 	activeTags   string // comma-delimited tag filter from -T/--tags; "" = no filter
 	activeFamily string // comma-delimited family filter from -F/--family; "" = no filter
 
-	// default-branch guard warning
-	defaultBranch  string         // repo default branch (e.g. main)
-	guardWarnModel list.Model     // confirmation choices for default-branch launch
-	guardWarnEntry worktree.Entry // the entry being confirmed
+	// default-branch guard warning (title-only; the confirm prompt was removed)
+	defaultBranch string // repo default branch (e.g. main)
 
 	// ollama availability warning
 	ollamaWarnModel list.Model // confirmation choices for unavailable model
@@ -266,10 +263,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.phase = phaseModel
 				return m, nil
 			}
-			if m.phase == phaseGuardWarn {
-				m.phase = phaseList
-				return m, nil
-			}
 			if m.phase == phaseOllamaWarn {
 				m.phase = phaseModel
 				return m, nil
@@ -391,16 +384,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.launchAndRecord(cmd)
 					}
 				}
-			case phaseGuardWarn:
-				if item, ok := m.guardWarnModel.SelectedItem().(choiceItem); ok {
-					switch item.choice {
-					case guardProceedChoice:
-						return m, func() tea.Msg { return selectedEntryMsg{entry: m.guardWarnEntry} }
-					case guardCancelChoice:
-						m.phase = phaseList
-						return m, nil
-					}
-				}
 			case phaseOllamaWarn:
 				if item, ok := m.ollamaWarnModel.SelectedItem().(choiceItem); ok {
 					switch item.choice {
@@ -456,11 +439,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resume.choices, cmd = m.resume.choices.Update(msg)
 		return m, cmd
 	}
-	if m.phase == phaseGuardWarn && m.width > 0 && m.height > 0 {
-		var cmd tea.Cmd
-		m.guardWarnModel, cmd = m.guardWarnModel.Update(msg)
-		return m, cmd
-	}
 	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {
 		var cmd tea.Cmd
 		m.ollamaWarnModel, cmd = m.ollamaWarnModel.Update(msg)
@@ -502,12 +480,6 @@ func (m model) View() string {
 			return "ollama availability warning (waiting for window size)"
 		}
 		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
-	}
-	if m.phase == phaseGuardWarn {
-		if m.width <= 0 || m.height <= 0 {
-			return "default-branch warning (waiting for window size)"
-		}
-		return m.guardWarnModel.View() + "\n[enter] choose   [esc] back"
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
@@ -705,36 +677,15 @@ func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
 	return defaultBranch != "" && e.Type == worktree.TypeCurrent && e.Branch == defaultBranch
 }
 
-// launchesOnDefaultBranch reports whether selecting this entry would land
-// the agent on the repo default branch — the situation the phaseGuardWarn
-// prompt exists to gate. A checked-out worktree (Path != "") runs a local
-// branch, so only an exact default-branch name matches there: a worktree on
-// "feature/main" is not the default branch even though its name ends in
-// /main. A bare row (Path == "") covers the local default and any
-// remote-tracking form of it (origin/main, upstream/main, ...) that
-// EnsureForBranch would turn into a local default-branch worktree; gating
-// the remote match on groupKind keeps a local branch whose name ends in
-// "/<default>" from spuriously triggering the warning.
-func launchesOnDefaultBranch(e worktree.Entry, groupKind worktree.GroupKind, defaultBranch string) bool {
-	if defaultBranch == "" {
-		return false
-	}
-	if e.Path != "" {
-		return e.Branch == defaultBranch
-	}
-	if e.Branch == defaultBranch {
-		return true
-	}
-	return groupKind == worktree.GroupRemoteBranches && worktree.IsDefaultBranchForm(e.Branch, defaultBranch)
-}
-
 // isDefaultBranchOnly reports whether the user is working directly on the
 // repo default branch with nothing else to switch to — the situation where
 // a default-branch warning in the picker title is warranted. Returns true
-// when the current worktree is on the default branch and there are no
-// other branches or worktrees to pick. Any other entry — a different
-// branch, a detached worktree, or a second worktree on main — means there is
-// something to switch to, so the warning is suppressed.
+// when the current worktree is on the default branch and the picker, after
+// default-branch filtering, contains no other pickable entries. Any other
+// surviving entry — a different branch, a detached worktree, or a second
+// worktree on main — means there is something to switch to, so the warning is
+// suppressed. Entries that buildList would filter out (bare local default
+// branch, remote-tracking default-branch refs) are ignored.
 func isDefaultBranchOnly(groups []worktree.EntryGroup, defaultBranch string) bool {
 	if defaultBranch == "" {
 		return false
@@ -742,11 +693,14 @@ func isDefaultBranchOnly(groups []worktree.EntryGroup, defaultBranch string) boo
 	onDefault := false
 	for _, g := range groups {
 		for _, e := range g.Entries {
+			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
+				continue
+			}
 			if isCurrentOnDefaultBranch(e, defaultBranch) {
 				onDefault = true
 				continue
 			}
-			// Any other entry means there's something to switch to.
+			// Any other surviving entry means there's something to switch to.
 			return false
 		}
 	}
@@ -794,12 +748,9 @@ func repoRootFor(path string) string {
 // skipped and control starts at the agent/command picker (or model phase when
 // agent is pinned). When prePath is inside a git repo, repoRoot is seeded so
 // the new-worktree prompt has a valid directory even if it becomes reachable
-// from the pre-path entry point.
-func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme, prePath string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
+// from the pre-path entry point. cfg is the already-loaded config from
+// cmd/wt's newApp (validated before Run is called); it is not re-loaded here.
+func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
 	p := tea.NewProgram(model{
 		status:       "loading worktrees...",
 		cfg:          cfg,
@@ -813,6 +764,6 @@ func Run(yolo bool, agent, tags, family string, extraArgs []string, theme themes
 		repoRoot:     repoRootFor(prePath),
 	}, tea.WithAltScreen())
 	currentProgram = p
-	_, err = p.Run()
+	_, err := p.Run()
 	return err
 }

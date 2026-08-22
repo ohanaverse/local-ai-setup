@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/registry"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
@@ -165,12 +166,6 @@ func (m model) Init() tea.Cmd {
 	return loadCmd()
 }
 
-// ollamaInstalled reports whether the ollama binary is on $PATH.
-func ollamaInstalled() bool {
-	_, err := exec.LookPath("ollama")
-	return err == nil
-}
-
 // loadCmd reads config.toml and runs ollama list, returning a loadedMsg
 // with the computed union.
 func loadCmd() tea.Cmd {
@@ -186,7 +181,7 @@ func loadCmd() tea.Cmd {
 		entries := computeUnion(cfg.Models, discovered)
 		return loadedMsg{
 			entries:     entries,
-			ollamaFound: len(discovered) > 0 || ollamaInstalled(),
+			ollamaFound: len(discovered) > 0 || agents.Installed("ollama"),
 		}
 	}
 }
@@ -529,7 +524,7 @@ func (m model) handleDelete() (tea.Model, tea.Cmd) {
 		m.listError = "config load failed: " + err.Error()
 		return m, loadCmd()
 	}
-	deleteModelFromConfig(cfg, m.editModel.ID)
+	cfg.DeleteModel(m.editModel.ID)
 	m.saving = true
 	return m, saveCmd(cfg)
 }

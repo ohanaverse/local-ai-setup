@@ -25,6 +25,7 @@ Requires Go 1.26.3 (see `go.mod`).
 ```bash
 make build        # build to bin/wt (re-seals macOS signature)
 make install      # install to ~/.local/bin/
+make uninstall    # remove installed scripts from ~/.local/bin/
 make lint         # shellcheck on bin/*-wt
 make format       # shfmt -w on bin/*-wt
 make format-check # shfmt -d (CI check)
@@ -102,11 +103,11 @@ Coverage by package:
 | `internal/initseed` | 7 | AGENTS.md seeding, idempotency |
 | `internal/session` | 7 | claude/opencode session detection |
 | `internal/themes` | 24 | builtins, themes.toml load/save/unset |
-| `internal/tui` | 144 | picker screens, theming, launch/resume |
+| `internal/tui` | 142 | picker screens, theming, launch/resume |
 | `internal/ollamaconfig` | 33 | union sync, edit/resolve screens |
 | `internal/configeditor` | 48 | viewer/editor TUI, validation, FK-blocked deletes |
 | `internal/ollamacheck` | 3 | availability before launch |
-| `cmd/wt` | 41 | flag wiring, resolveModel, launchFiltered, `wt config` |
+| `cmd/wt` | 43 | flag wiring, resolveModel, launchFiltered, `wt config` |
 
 ## Go module
 

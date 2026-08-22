@@ -3,7 +3,6 @@ package configeditor
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
@@ -36,7 +35,7 @@ func (a agentItem) Title() string {
 	default:
 		marker = "✗ not installed"
 	}
-	providers := strings.Join(a.agent.SupportedProviders, ", ")
+	providers := config.TagsToString(a.agent.SupportedProviders)
 	if providers == "" {
 		providers = "-"
 	}

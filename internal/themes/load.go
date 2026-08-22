@@ -63,7 +63,7 @@ func Load() (Theme, bool, error) {
 	if tf.Theme == "" {
 		return Default, false, &ThemeNameError{
 			msg: fmt.Sprintf("theme name in themes.toml is empty — available: %s",
-				joinNames(AvailableList())),
+				strings.Join(AvailableList(), ", ")),
 		}
 	}
 
@@ -71,7 +71,7 @@ func Load() (Theme, bool, error) {
 	if !ok {
 		return Default, false, &ThemeNameError{
 			msg: fmt.Sprintf("unknown theme %q in themes.toml — available: %s",
-				tf.Theme, joinNames(AvailableList())),
+				tf.Theme, strings.Join(AvailableList(), ", ")),
 		}
 	}
 	return theme, true, nil
@@ -131,11 +131,11 @@ func checkDuplicateThemeKey(data []byte) error {
 func Save(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("theme name cannot be empty — available: %s",
-			joinNames(AvailableList()))
+			strings.Join(AvailableList(), ", "))
 	}
 	if _, ok := Get(name); !ok {
 		return fmt.Errorf("unknown theme %q — available: %s",
-			name, joinNames(AvailableList()))
+			name, strings.Join(AvailableList(), ", "))
 	}
 	body := fmt.Sprintf("theme = %q\n", name)
 	return config.WriteFileAtomic(Path(), []byte(body), 0o644)
@@ -149,17 +149,4 @@ func Unset() error {
 		return nil
 	}
 	return err
-}
-
-// joinNames formats AvailableList() as a comma-separated string for use in
-// error messages. The order is stable (matches AvailableList's contract).
-func joinNames(names []string) string {
-	out := ""
-	for i, n := range names {
-		if i > 0 {
-			out += ", "
-		}
-		out += n
-	}
-	return out
 }

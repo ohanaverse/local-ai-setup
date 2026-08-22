@@ -45,14 +45,3 @@ func saveModelToConfig(cfg *config.Config, m config.Model, isNew bool) bool {
 	}
 	return false
 }
-
-// deleteModelFromConfig removes the model with the given ID from
-// cfg.Models. No-op if the ID is not found.
-func deleteModelFromConfig(cfg *config.Config, id string) {
-	for i, m := range cfg.Models {
-		if m.ID == id {
-			cfg.Models = append(cfg.Models[:i], cfg.Models[i+1:]...)
-			return
-		}
-	}
-}

@@ -202,7 +202,7 @@ func rootCmd() *cobra.Command {
 					if !isStdinTTY() {
 						return errPickerNeedsTTY
 					}
-					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, path)
+					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, path, a.cfg)
 				}
 				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
@@ -220,7 +220,7 @@ func rootCmd() *cobra.Command {
 					if !isStdinTTY() {
 						return errPickerNeedsTTY
 					}
-					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, root)
+					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, root, a.cfg)
 				}
 				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
@@ -233,7 +233,7 @@ func rootCmd() *cobra.Command {
 					if !isStdinTTY() {
 						return errPickerNeedsTTY
 					}
-					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, ".")
+					return tui.Run(yolo(cmd), "", tags, family, args, a.theme, ".", a.cfg)
 				}
 				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
 			}
@@ -244,7 +244,7 @@ func rootCmd() *cobra.Command {
 				return errPickerNeedsTTY
 			}
 			maybeInstallGuard()
-			return tui.Run(yolo(cmd), agent, tags, family, args, a.theme, "")
+			return tui.Run(yolo(cmd), agent, tags, family, args, a.theme, "", a.cfg)
 		},
 	}
 

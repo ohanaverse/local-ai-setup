@@ -88,26 +88,6 @@ func buildResumeChoices(sess *session.Session) []list.Item {
 	return items
 }
 
-// guardChoice identifies a choice in the default-branch guard prompt.
-type guardChoice int
-
-const (
-	guardProceedChoice guardChoice = iota
-	guardCancelChoice
-)
-
-// buildGuardChoices creates the default-branch confirmation list items.
-func buildGuardChoices(branch string, installed bool) []list.Item {
-	hint := "commits to " + branch + " are blocked"
-	if !installed {
-		hint = "WARNING: main guard is NOT installed — commits to " + branch + " are NOT blocked"
-	}
-	return []list.Item{
-		choiceItem{choice: guardProceedChoice, title: "Proceed anyway", desc: hint},
-		choiceItem{choice: guardCancelChoice, title: "Cancel", desc: "Return to worktree list"},
-	}
-}
-
 // ollamaChoice identifies a choice in the ollama availability prompt.
 type ollamaChoice int
 

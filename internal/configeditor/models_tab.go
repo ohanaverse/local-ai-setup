@@ -11,10 +11,12 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/tui"
 )
 
-// modelItem adapts config.Model to list.Item.
+// modelItem adapts config.Model to list.Item. resolvedLoc caches the
+// provider-derived location so Title() doesn't re-run ResolveLocation (a
+// linear provider scan) on every frame.
 type modelItem struct {
-	model config.Model
-	cfg   *config.Config
+	model       config.Model
+	resolvedLoc config.Location
 }
 
 func (m modelItem) FilterValue() string { return m.model.ID }
@@ -24,16 +26,14 @@ func (m modelItem) Title() string {
 		family = "-"
 	}
 	loc := m.model.Location
-	if loc == "" && m.cfg != nil {
-		if resolved, err := m.cfg.ResolveLocation(m.model); err == nil {
-			loc = resolved
-		}
+	if loc == "" {
+		loc = m.resolvedLoc
 	}
 	locStr := string(loc)
 	if locStr == "" {
 		locStr = "-"
 	}
-	tags := strings.Join(m.model.Tags, ", ")
+	tags := config.TagsToString(m.model.Tags)
 	if tags == "" {
 		tags = "-"
 	}
@@ -50,7 +50,13 @@ func (m modelItem) Description() string { return "" }
 func buildModelsList(theme themes.Theme, width, height int, cfg *config.Config) list.Model {
 	items := make([]list.Item, 0, len(cfg.Models))
 	for _, m := range cfg.Models {
-		items = append(items, modelItem{model: m, cfg: cfg})
+		loc := m.Location
+		if loc == "" {
+			if resolved, err := cfg.ResolveLocation(m); err == nil {
+				loc = resolved
+			}
+		}
+		items = append(items, modelItem{model: m, resolvedLoc: loc})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		mi := items[i].(modelItem).model

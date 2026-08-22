@@ -611,6 +611,36 @@ func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestSkipInPicker verifies the filtering predicate used by the picker.
+// Bare local default branches and bare remote default-branch forms must be
+// skipped; a checked-out worktree on the default branch, a non-default branch,
+// and a local branch whose name ends in "/main" must remain pickable.
+func TestSkipInPicker(t *testing.T) {
+	db := "main"
+	tests := []struct {
+		name    string
+		group   GroupKind
+		entry   Entry
+		wantSkip bool
+	}{
+		{"bare local default", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "main", Path: ""}, true},
+		{"bare remote origin/default", GroupRemoteBranches, Entry{Type: TypeBranch, Branch: "origin/main", Path: ""}, true},
+		{"bare remote upstream/default", GroupRemoteBranches, Entry{Type: TypeBranch, Branch: "upstream/main", Path: ""}, true},
+		{"current worktree on default", GroupWorktrees, Entry{Type: TypeCurrent, Branch: "main", Path: "/repo"}, false},
+		{"worktree on default", GroupWorktrees, Entry{Type: TypeWorktree, Branch: "main", Path: "/repo/.worktrees/main"}, false},
+		{"non-default local branch", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "feature", Path: ""}, false},
+		{"feature/main local branch", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "feature/main", Path: ""}, false},
+		{"non-default remote branch", GroupRemoteBranches, Entry{Type: TypeBranch, Branch: "origin/dev", Path: ""}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SkipInPicker(tc.group, tc.entry, db); got != tc.wantSkip {
+				t.Errorf("SkipInPicker(%v, %+v, %q) = %v, want %v", tc.group, tc.entry, db, got, tc.wantSkip)
+			}
+		})
+	}
+}
+
 // TestEnumerateOrdering verifies that within each group, entries are
 // sorted alphabetically by branch name (with remote prefix stripped
 // for the remote group).

@@ -337,9 +337,6 @@ func TestEnterOnDefaultBranchSkipsGuard(t *testing.T) {
 	m.list.Select(idx)
 	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := newM.(model)
-	if mm.phase == phaseGuardWarn {
-		t.Fatalf("current default row: phase = phaseGuardWarn, want no guard prompt (Enter must launch straight through)")
-	}
 	if cmd == nil {
 		t.Fatal("current default row: expected a cmd (selectedEntryMsg), got nil")
 	}
@@ -358,48 +355,9 @@ func TestEnterOnDefaultBranchSkipsGuard(t *testing.T) {
 		return ei.kind == kindEntry && ei.entry.Branch == "other"
 	})
 	mm.list.Select(otherIdx)
-	newM2, cmd2 := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm2 := newM2.(model)
-	if mm2.phase == phaseGuardWarn {
-		t.Fatalf("other row: phase = phaseGuardWarn, want no guard for non-default branch")
-	}
+	_, cmd2 := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd2 == nil {
 		t.Fatal("other row: expected a cmd (bare branch dispatches ensureBranchWorktreeCmd), got nil")
-	}
-}
-
-// TestLaunchesOnDefaultBranchCoversRemoteForm asserts the guard helper
-// matches both the bare local default branch and the remote-tracking form of
-// the default under ANY remote (origin/main, upstream/main, ...). The remote
-// form is what Enumerate emits when the default branch exists only as a
-// remote ref; EnsureForBranch turns it into a local main, so it must trip the
-// guard too. It also asserts the helper is precise: a branch whose name ends
-// in "/main" but is not the default — a local feature/main, or a worktree
-// checked out on feature/main — must NOT trip the guard, since launching
-// there runs the feature branch, not the default.
-func TestLaunchesOnDefaultBranchCoversRemoteForm(t *testing.T) {
-	cases := []struct {
-		name      string
-		e         worktree.Entry
-		groupKind worktree.GroupKind
-		want      bool
-	}{
-		{"current on main", worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}, worktree.GroupWorktrees, true},
-		{"worktree on main", worktree.Entry{Type: worktree.TypeWorktree, Branch: "main", Path: "/repo/.worktrees/main"}, worktree.GroupWorktrees, true},
-		{"bare local main", worktree.Entry{Type: worktree.TypeBranch, Branch: "main"}, worktree.GroupLocalBranches, true},
-		{"remote origin/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/main"}, worktree.GroupRemoteBranches, true},
-		{"remote upstream/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "upstream/main"}, worktree.GroupRemoteBranches, true},
-		{"feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"}, worktree.GroupLocalBranches, false},
-		{"remote origin/feature", worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feature"}, worktree.GroupRemoteBranches, false},
-		{"bare local feature/main", worktree.Entry{Type: worktree.TypeBranch, Branch: "feature/main"}, worktree.GroupLocalBranches, false},
-		{"worktree on feature/main", worktree.Entry{Type: worktree.TypeWorktree, Branch: "feature/main", Path: "/repo/.worktrees/main"}, worktree.GroupWorktrees, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := launchesOnDefaultBranch(tc.e, tc.groupKind, "main"); got != tc.want {
-				t.Errorf("launchesOnDefaultBranch(%+v, %v, main) = %v, want %v", tc.e, tc.groupKind, got, tc.want)
-			}
-		})
 	}
 }
 
@@ -461,6 +419,35 @@ func TestDefaultBranchWarningFiresWhenOnlyDefaultBranch(t *testing.T) {
 	mm := newM.(model)
 	if !strings.Contains(mm.list.Title, "WARNING") {
 		t.Fatalf("expected default-branch warning title, got %q", mm.list.Title)
+	}
+}
+
+// TestDefaultBranchWarningFiresWhenOnlyRemoteDefaultBranch asserts the
+// default-branch warning still fires when the only other ref is a remote form
+// of the default branch that buildList will filter out. The picker ends up
+// with just the current worktree on main, so the user has no other target and
+// the title must warn.
+func TestDefaultBranchWarningFiresWhenOnlyRemoteDefaultBranch(t *testing.T) {
+	cfg := &config.Config{DefaultTag: "code"}
+	m := model{cfg: cfg, width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/main"},
+		}},
+	}
+	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
+	mm := newM.(model)
+	if !strings.Contains(mm.list.Title, "WARNING") {
+		t.Fatalf("expected default-branch warning title, got %q", mm.list.Title)
+	}
+	// The remote default-branch entry must have been filtered from the list.
+	for _, it := range mm.list.Items() {
+		if ei, ok := it.(entryItem); ok && ei.entry.Branch == "origin/main" {
+			t.Errorf("origin/main should have been filtered out, got item %+v", ei)
+		}
 	}
 }
 
