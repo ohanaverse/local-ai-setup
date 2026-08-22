@@ -106,22 +106,48 @@ func TestClaude(t *testing.T) {
 	}
 }
 
-// Codex is a cloud-only agent that passes --model for non-native models and
-// nothing for native. It has no custom env vars. Verify both paths.
+// codex ollama-routed launches must declare the Ollama model provider via
+// inline -c overrides (see codex.go's ollamaProvider block). This helper
+// builds the exact expected args for a given bare model name so the
+// assertions stay in lockstep with the driver without hardcoding the provider
+// name/URL three times. The provider name is "agent-wt" (namespaced so a
+// user's own [model_providers.ollama-launch] can't leak into our set) and the
+// base_url uses the OpenAI-compatible /v1/ path.
+func codexProviderArgs(name string) []string {
+	return []string{
+		"-c", "model_provider=agent-wt",
+		"-c", `model_providers.agent-wt.name="Ollama"`,
+		"-c", "model_providers.agent-wt.base_url=\"" + config.OllamaBaseURL + "/v1/\"",
+		"-c", `model_providers.agent-wt.wire_api="responses"`,
+		"--model", name,
+	}
+}
+
+// Codex is a cloud-only agent. Native models pass nothing; ollama-routed
+// models declare the Ollama provider via inline -c overrides and then pass
+// --model with the bare name. Without the provider block codex defaults to
+// the "openai" provider and prompts to sign in. Verify both paths and that no
+// env vars are set, and that yolo prepends the approval-skip flag before the
+// provider block.
 func TestCodex(t *testing.T) {
 	d := ByName("codex")
 	if d == nil {
 		t.Fatal("codex driver not registered")
 	}
 	lc := d.Build(cloudModel("deepseek-v4-pro:cloud"), false)
-	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
-		t.Errorf("args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
+	if !slices.Equal(lc.Args, codexProviderArgs("deepseek-v4-pro:cloud")) {
+		t.Errorf("args = %v, want %v", lc.Args, codexProviderArgs("deepseek-v4-pro:cloud"))
 	}
 	if len(lc.Env) != 0 {
 		t.Errorf("env = %v, want none", lc.Env)
 	}
 	if d.Build(nativeModel("codex"), false).Args != nil {
 		t.Errorf("native build should have no args")
+	}
+	// yolo prepends the approval-skip flag ahead of the provider block.
+	yl := d.Build(cloudModel("deepseek-v4-pro:cloud"), true)
+	if len(yl.Args) < 1 || yl.Args[0] != "--dangerously-bypass-approvals-and-sandbox" {
+		t.Errorf("yolo args = %v, want first flag to be the approval-skip", yl.Args)
 	}
 }
 
@@ -491,17 +517,32 @@ func TestClaudeOllamaPrefix(t *testing.T) {
 // Codex must pass --model with the bare ModelName. The ollama-launch
 // profile (see docs/wt-agents/codex-wt.md) routes through Ollama; passing
 // the prefixed id causes codex to ask Ollama for an unknown model.
+// Codex must pass --model with the bare ModelName. The ollama provider block
+// (see docs/wt-agents/codex-wt.md) routes through Ollama; passing the prefixed
+// id as the --model value would make codex ask Ollama for a model it cannot
+// resolve. With the provider block inserted, --model is the last arg pair.
 func TestCodexOllamaPrefix(t *testing.T) {
 	d := ByName("codex")
 	if d == nil {
 		t.Fatal("codex driver not registered")
 	}
 	lc := d.Build(ollamaPrefixedModel(), false)
-	if len(lc.Args) != 2 || lc.Args[0] != "--model" {
-		t.Fatalf("args = %v, want [--model <name>]", lc.Args)
+	if !slices.Equal(lc.Args, codexProviderArgs("deepseek-v4-pro:cloud")) {
+		t.Fatalf("args = %v, want %v", lc.Args, codexProviderArgs("deepseek-v4-pro:cloud"))
 	}
-	if lc.Args[1] != "deepseek-v4-pro:cloud" {
-		t.Errorf("--model = %q, want %q (bare name)", lc.Args[1], "deepseek-v4-pro:cloud")
+	// The --model value must be the bare provider-side name, not the registry
+	// key.
+	idx := slices.Index(lc.Args, "--model")
+	if idx < 0 || idx+1 >= len(lc.Args) {
+		t.Fatalf("--model missing or unterminated in args %v", lc.Args)
+	}
+	if got := lc.Args[idx+1]; got != "deepseek-v4-pro:cloud" {
+		t.Errorf("--model value = %q, want %q (bare name)", got, "deepseek-v4-pro:cloud")
+	}
+	for _, a := range lc.Args {
+		if strings.Contains(a, "ollama/") {
+			t.Errorf("args leaked the prefixed id: %q", a)
+		}
 	}
 }
 
