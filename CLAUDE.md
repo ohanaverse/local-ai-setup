@@ -10,7 +10,7 @@ The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copi
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
-`bin/*-wt` are shims that forward to `wt` (`claude-wt` → `wt --agent claude`). All logic lives in Go. See `docs/go-course/` for the lesson plan.
+`bin/*-wt` are shims that forward to `wt` (`claude-wt` → `wt --agent claude`). All logic lives in Go.
 
 ## Installation
 
@@ -78,11 +78,10 @@ For agents, args append to the command; for `shell` (implements `ArgSetter`), th
 - `docs/configuration.md` — Claude Code / Codex CLI config
 - `docs/wt-config.md` — `wt config` subcommands
 - `docs/wt-agents/` — per-agent reference (one file per launcher)
-- `docs/go-course/` — 20-lesson course documenting the Go rewrite
 
 ## Go tests
 
-Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression). See [Lesson 18](docs/go-course/lesson-18-testing.md).
+Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
 ```bash
 go test ./...                        # all Go tests
@@ -135,7 +134,6 @@ Module root is the repo root.
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
 | `testdata/` | sample configs |
-| `docs/go-course/` | 20-lesson course |
 | `docs/superpowers/` | specs + plans |
 
 ## Config (Go)
@@ -225,8 +223,6 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 `internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → resume prompt → launch. `prePath` (from `-W`/`--cwd`/outside-repo) skips the worktree picker. Every picker uses `ThemedListDelegate` (active color theme) — production code never uses `list.NewDefaultDelegate`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` is omitted.
-
-Screen details and walkthroughs: `docs/go-course/lesson-13-worktree-screen.md` (worktree picker), `lesson-14-agent-model-screen.md` (agent+model), `lesson-16-launch-agent.md` (launch/resume).
 
 ## Worktree (Go)
 

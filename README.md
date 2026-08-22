@@ -2,7 +2,7 @@
 
 Launch AI coding agent CLIs in git worktrees with model rotation and session resume.
 
-The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models by tag, and launches the selected agent. The `bin/*-wt` shims are thin wrappers (`claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). See `docs/go-course/` for the lesson plan and `docs/superpowers/specs/` for design docs.
+The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models by tag, and launches the selected agent. The `bin/*-wt` shims are thin wrappers (`claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). See `docs/superpowers/specs/` for design docs.
 
 ## Supported agents
 
@@ -194,7 +194,6 @@ go vet ./...       # Vet
 | `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt |
 | `internal/ollamacheck/` | Ollama model availability check before launch |
 | `testdata/` | Sample configs for manual testing |
-| `docs/go-course/` | 20-lesson course building the Go rewrite |
 | `docs/superpowers/specs/` | Design specs |
 | `docs/superpowers/plans/` | Implementation plans |
 
