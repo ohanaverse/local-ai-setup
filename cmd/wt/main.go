@@ -61,6 +61,22 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("-w is removed; use -W or --worktree")
 			}
 
+			// Reject removed subcommands. `cobra.ArbitraryArgs` (set below)
+			// is load-bearing for shell-wt passthrough (`shell-wt ls -la` →
+			// `wt --agent shell ls -la`), so it swallows the first positional
+			// without complaining. Without this guard, `wt models -A claude`
+			// silently creates a worktree named "models" and launches claude
+			// there — a footgun for users with stale muscle-memory invocations.
+			// Keep this list in sync with removed subcommand names.
+			if len(args) > 0 {
+				switch args[0] {
+				case "models":
+					return fmt.Errorf("wt models is removed; use `wt config` to view models")
+				case "agents":
+					return fmt.Errorf("wt agents is removed; use `wt config` to view agents")
+				}
+			}
+
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
 				status, err := checkGuardStatus()
 				if err != nil {
@@ -260,6 +276,6 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), modelsCmd(a), agentsCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a))
 	return cmd
 }

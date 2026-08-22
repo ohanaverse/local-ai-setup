@@ -126,8 +126,7 @@ wt config path
 
 The `wt config theme` family manages the active color theme. Themes apply
 to every TUI picker (worktree list, agent+command list, model list, session
-resume prompt, ollama availability warning), CLI tables
-(`wt models`, `wt agents`), and the `wt config theme list` output.
+resume prompt, ollama availability warning), CLI tables, and the `wt config theme list` output.
 The TUI threads the active theme through every `list.Model` via
 `internal/tui/delegate.go`'s `themedListDelegate` — replacing the
 hardcoded `list.NewDefaultDelegate` so no picker silently bypasses the

@@ -115,7 +115,7 @@ wt config theme unset              # revert to default
 wt config path               # print the config directory
 ```
 
-Themes apply to the TUI picker, CLI tables (`wt models`, `wt agents`), and `wt config theme list` output. See `docs/wt-config.md` for the full reference, including the `themes.toml` file format and the full list of built-in palettes.
+Themes apply to the TUI picker, CLI tables, and `wt config theme list` output. See `docs/wt-config.md` for the full reference, including the `themes.toml` file format and the full list of built-in palettes.
 
 ## Model rotation
 
@@ -180,7 +180,7 @@ go vet ./...       # Vet
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
-| `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
+| `cmd/wt/commands.go` | Subcommand constructors: `rotate` (hidden) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
 | `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
