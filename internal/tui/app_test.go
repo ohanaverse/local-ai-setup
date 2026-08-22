@@ -320,6 +320,66 @@ func TestEntriesLoadedPositionsCursorOnDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestEntriesLoadedDefaultsToCurrentWorktreeOnNonDefaultBranch is the
+// regression guard for a picker where the user's current checkout sits on a
+// non-default branch and no linked worktree also holds the default branch.
+// Without the fallback the default-branch loop matches nothing, leaving the
+// cursor on the "+ New worktree…" sentinel, so a bare Enter would open the
+// new-worktree prompt instead of relaunching in the repo the user is in.
+// The cursor must instead land on the current checkout, even on that
+// non-default branch.
+func TestEntriesLoadedDefaultsToCurrentWorktreeOnNonDefaultBranch(t *testing.T) {
+	// A real, existing directory so filepath.EvalSymlinks (used by buildList
+	// to tag the (current) entry) actually resolves both sides instead of
+	// both failing on a nonexistent path and coincidentally comparing equal.
+	repoRoot := t.TempDir()
+	m := model{width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "work", Path: repoRoot},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "other"},
+		}},
+	}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: repoRoot})
+	m = got.(model)
+	selected := m.list.SelectedItem().(entryItem)
+	if selected.kind != kindEntry {
+		t.Fatalf("cursor on sentinel/separator (%v), want the current-checkout entry", selected.kind)
+	}
+	if selected.entry.Branch != "work" {
+		t.Errorf("cursor on branch %q, want the current non-default branch work", selected.entry.Branch)
+	}
+	if selected.entry.Path != repoRoot {
+		t.Errorf("cursor on path %q, want current worktree %q", selected.entry.Path, repoRoot)
+	}
+}
+
+// TestEntriesLoadedDefaultsToCurrentWorktreeWhenDefaultBranchUnknown is the
+// regression guard for repos where DefaultBranch can't be determined at all
+// (no remote, or origin/HEAD never set — worktree.DefaultBranch returns ""
+// in that non-fatal case). The fallback must still fire even though the
+// defaultBranch match loop is skipped entirely when defaultBranch == "".
+func TestEntriesLoadedDefaultsToCurrentWorktreeWhenDefaultBranchUnknown(t *testing.T) {
+	repoRoot := t.TempDir()
+	m := model{width: 80, height: 24}
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "work", Path: repoRoot},
+		}},
+	}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "", repoRoot: repoRoot})
+	m = got.(model)
+	selected := m.list.SelectedItem().(entryItem)
+	if selected.kind != kindEntry {
+		t.Fatalf("cursor on sentinel/separator (%v), want the current-checkout entry", selected.kind)
+	}
+	if selected.entry.Branch != "work" {
+		t.Errorf("cursor on branch %q, want the current-checkout branch work", selected.entry.Branch)
+	}
+}
+
 // TestEnterSelectsEntry asserts that pressing Enter when the list is ready
 // emits a selectedEntryMsg carrying the current entry. This is the primary
 // selection affordance for the worktree picker. (The list's first item is

@@ -18,7 +18,7 @@ The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copi
 go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
 ```
 
-Requires Go 1.26.3 (see `go.mod`).
+Requires Go 1.26.7 (see `go.mod`).
 
 > **macOS codesign.** `make build`/`install` re-seal the ad-hoc signature (`codesign --force --sign -`). A drifted linker signature is rejected by AMFI with "Taskgated Invalid Signature" and SIGKILLs the binary (exit 137).
 

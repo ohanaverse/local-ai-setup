@@ -189,25 +189,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the branch isn't found (shouldn't happen post-create),
 		// leave the cursor at its default.
 		if m.pendingHighlight != "" {
-			for i, it := range m.list.Items() {
-				if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && ei.entry.Branch == m.pendingHighlight {
-					m.list.Select(i)
-					break
-				}
-			}
+			selectFirstEntry(&m.list, func(ei entryItem) bool {
+				return ei.entry.Branch == m.pendingHighlight
+			})
 			m.pendingHighlight = ""
-		} else if m.defaultBranch != "" {
+		} else {
 			// Default the cursor to the repo default branch so Enter
 			// launches on main without an extra keystroke. Only
 			// checked-out worktrees on the default branch are pickable
-			// (bare default rows are filtered in buildList), so match
-			// by Branch == defaultBranch; the first hit wins because
-			// each branch appears at most once in the picker.
-			for i, it := range m.list.Items() {
-				if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && ei.entry.Branch == m.defaultBranch {
-					m.list.Select(i)
-					break
-				}
+			// (bare default rows are filtered in buildList), so match by
+			// Branch == defaultBranch; the first hit wins because each
+			// branch appears at most once in the picker. m.defaultBranch
+			// is "" when the repo has no origin/HEAD to read it from, in
+			// which case this never matches and falls through below.
+			byDefaultBranch := m.defaultBranch != "" && selectFirstEntry(&m.list, func(ei entryItem) bool {
+				return ei.entry.Branch == m.defaultBranch
+			})
+			// Fallback: when the current checkout isn't on the default
+			// branch (or the default branch couldn't be determined at
+			// all), the match above found nothing. The cursor would
+			// otherwise stay on the "+ New worktree…" sentinel, so a bare
+			// Enter would open the prompt instead of relaunching in the
+			// repo the user is already in. Select the entry buildList
+			// already tagged (current) so Enter relaunches there even
+			// from a non-default branch.
+			if !byDefaultBranch {
+				selectFirstEntry(&m.list, func(ei entryItem) bool {
+					return ei.label == "(current)"
+				})
 			}
 		}
 		return m, nil
@@ -735,6 +744,21 @@ func loadEntriesCmd() tea.Cmd {
 		defaultBranch, _ := worktree.DefaultBranch(root)
 		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
 	}
+}
+
+// selectFirstEntry selects the first kindEntry item in l matching pred and
+// reports whether a match was found. Shared by the pendingHighlight,
+// default-branch, and current-checkout cursor placements in Update so a
+// future change to the iteration shape (e.g. skipping separator rows) only
+// needs to happen once.
+func selectFirstEntry(l *list.Model, pred func(entryItem) bool) bool {
+	for i, it := range l.Items() {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && pred(ei) {
+			l.Select(i)
+			return true
+		}
+	}
+	return false
 }
 
 // isCurrentOnDefaultBranch returns true when the entry is the current

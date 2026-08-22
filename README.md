@@ -24,7 +24,7 @@ The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models
 go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
 ```
 
-Requires Go 1.26.3 (see `go.mod`).
+Requires Go 1.26.7 (see `go.mod`).
 
 ### Legacy shims
 
