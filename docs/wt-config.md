@@ -1,10 +1,108 @@
 # `wt config`
 
-User-level preferences for the `wt` launcher. Shipped subcommands:
-color themes and ollama model sync; future subcommands (registry editing,
-etc.) slot in here without breaking changes.
+User-level preferences for the `wt` launcher.
+
+- **`wt config`** (no subcommand) — interactive TUI for viewing and editing
+  `config.toml`
+- **`wt config theme`** — color theme management
+- **`wt config path`** — print the config directory
+- **`wt config ollama`** — sync ollama models with `config.toml`
+
+## Config viewer (`wt config`)
+
+Launching `wt config` with no subcommand opens a full-screen TUI that
+lets you browse and edit the three main sections of `config.toml`:
+**Agents**, **Providers**, and **Models**.
+
+### Tabs
+
+| Shortcut | Section |
+|----------|---------|
+| `1` | Agents |
+| `2` | Providers |
+| `3` | Models |
+| `Tab` | Next tab |
+| `Shift+Tab` | Previous tab |
+
+Each tab shows a scrollable list sorted for readability:
+- **Agents** — commands first, then regular agents, both groups sorted by
+  name. Each row shows `✓ installed` or `✗ not installed`.
+- **Providers** — sorted by ID.
+- **Models** — sorted by provider, then family, then model name.
+
+### Editing rows
+
+Press `Enter` on any row to open an edit form for that entry. Forms vary
+by section:
+
+- **Providers** — editable fields: `ID`, `Name`, `Auth Type`, `Base URL`;
+  toggle `Location` with `Space`.
+- **Models** — editable fields: `ID`, `Family`, `Provider ID`, `Model Name`,
+  `Tags`; toggle `Location` with `Space` (empty falls back to the provider's
+  location and is shown as derived).
+- **Agents** — editable fields: `Name`, `Supported Providers`
+  (comma-separated), `Default Provider`; `Installed` is read-only.
+
+`Tab` / `Shift+Tab` cycles form fields. `Ctrl+S` saves the changes and
+returns to the list. `Esc` cancels without saving.
+
+### Adding new entries
+
+Press `n` on any tab to open the add form for that section. The same
+validation rules apply as when editing:
+- Empty IDs are rejected.
+- Duplicate model IDs are rejected.
+- Provider IDs must reference an existing provider.
+- Agent default providers must be in the agent's supported providers list.
+
+### Deleting entries
+
+Press `d` on any row to open a delete confirmation prompt:
+- `y` — confirm deletion
+- `n` — cancel
+- `Esc` — cancel
+
+**Deletion rules:** Providers cannot be deleted while referenced by a
+model or an agent. Models and agents can always be deleted. Attempting
+to delete a referenced provider shows an error explaining which model or
+agent holds the reference.
+
+### Saving changes
+
+`Ctrl+S` from the list view writes the in-memory config to disk
+atomically (temp-file + rename). If validation fails, the save is
+blocked and an error is shown. The config is only written when dirty —
+pressing `Ctrl+S` on a clean config is a no-op.
+
+### Quitting with unsaved changes
+
+`q` or `Ctrl+C` exits immediately when the config is clean. When there
+are unsaved changes, a prompt appears:
+- `y` — save and quit
+- `n` — discard changes and quit
+- `c` or `Esc` — return to the list
 
 ## Where settings live
+
+All `wt config` settings live in `~/.config/agent-wt/` (or
+`$XDG_CONFIG_HOME/agent-wt/`). The theme subcommand writes
+`themes.toml`; other subcommands will add their own files alongside it.
+
+```
+~/.config/agent-wt/
+├── config.toml          # main agent / model registry (existing)
+├── themes.toml          # active theme (this feature)
+├── rotation-*.state     # per-slot last-launched model
+└── ...                  # future subcommands land here
+```
+
+Print the resolved config directory at any time:
+
+```bash
+wt config path
+```
+
+## Themes
 
 All `wt config` settings live in `~/.config/agent-wt/` (or
 `$XDG_CONFIG_HOME/agent-wt/`). The theme subcommand writes

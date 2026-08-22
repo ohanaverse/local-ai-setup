@@ -28,7 +28,7 @@ func main() {
 func rootCmd() *cobra.Command {
 	a, err := newApp()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "wt: config error:", err)
+		fmt.Fprintln(os.Stderr, "wt: error:", err)
 		os.Exit(1)
 	}
 
@@ -163,6 +163,12 @@ func rootCmd() *cobra.Command {
 			// is paired with a command agent.
 			pinnedSupplied := cmd.Flags().Changed("model")
 
+			// Launch paths require a valid config. The `wt config` subcommand
+			// bypasses this so it can repair a broken config.toml.
+			if a.cfgErr != nil {
+				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+			}
+
 			// -W <name>: use/create a worktree, then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
@@ -254,6 +260,6 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(modelsCmd(a), agentsCmd(a), rotateCmd(a), configCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a), modelsCmd(a), agentsCmd(a))
 	return cmd
 }

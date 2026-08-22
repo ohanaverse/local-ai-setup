@@ -106,8 +106,9 @@ shell agent (which implements `ArgSetter`), the args become argv directly
 ## Docs
 
 - `docs/configuration.md` — Claude Code and Codex CLI configuration (hooks, settings.json, environment filtering)
-- `docs/wt-config.md` — `wt config` subcommands: themes and ollama model sync
+- `docs/wt-config.md` — `wt config` subcommands: themes, ollama model sync, and the interactive config viewer/editor
 - `docs/wt-agents/` — per-agent reference docs (one file per launcher)
+- `docs/go-course/` — 20-lesson course documenting the Go rewrite
 
 ## Shim quality gates
 
@@ -148,8 +149,9 @@ Test coverage by package:
 | `internal/themes` | 24 | Registry: Builtins/Get/Token/AvailableList/AllTokens with fallback to Default; load/save/unset of `themes.toml` (missing file, empty file, valid theme, unknown theme, empty value, duplicate keys, malformed TOML, unknown keys ignored, case-insensitive, permission denied, atomic write, unknown name doesn't write, unset removes file, unset missing file no-op) |
 | `internal/tui` | 144 | Worktree list: sentinel + locals + remotes ordering, separator, footer `n` shortcut, default-branch bare-row skip; phaseAgent: agent+command picker (agents-then-commands ordering), per-row issue indication (not configured / not installed) with block-on-select, `Enter` advances to phaseModel for launchable agents, launches immediately for commands; phaseModel: filter-aware via `-T`/`-F` + EligibleModels, picker key forwarding (up/down/j/k), picker cursor positioned on last-launched + 1, Enter records launch, `r` and `d` removed, model-status rendering; prePath worktree-picker skip; Launch (lesson 16): `launchAgent`, resume flag injection, `runAndWaitCmd` stdio wiring, `phaseResume` prompt, resume/start-fresh/cancel choices, launch returns ONLY `runAndWaitCmd` (NOT batched with `tea.Quit`, which would kill the agent via process exit); Ollama warn: unavailable model warning, cancel/proceed; phaseNewWorktree: prompts for a name; **theming**: every picker list (worktree, agent+command, model, resume, ollama) is built with `ThemedListDelegate` from `delegate.go` so the active color theme applies to every screen — production code never uses `list.NewDefaultDelegate` (tests do, since they assert model state not colors); Helpers: `DefaultAgent` (config helper only, not launch defaulting), agent-list ordering, model-status rendering, prePath skip, state persistence, placeholder View |
 | `internal/ollamaconfig` | 33 | Union computation (synced/missing/untracked, sorting by family+name, non-ollama exclusion, empty edge cases); tags parsing/location toggle; save existing/new model, delete by ID; TUI phase transitions (Enter on synced→edit, missing→resolve, untracked→edit; Esc from edit/resolve→list; `r` refresh; quit keys) |
+| `internal/configeditor` | 30 | Config viewer-and-editor TUI: tab navigation, sort orders, form validation, FK-blocked deletes, atomic save with validation gating, dirty tracking, quit-with-unsaved prompt |
 | `internal/ollamacheck` | 3 | Ollama model availability check before launch (`Check`, `IsOllamaModel`, `Available`) |
-| `cmd/wt` | 38 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, prePath picker-skip for `-W`/`--cwd`/non-git-repo (agent picker still shown without `-A`), legacy `-w` short flag; `wt config` cobra subcommand: `config path`, `config theme {list,show,set,unset}` with case-insensitive theme lookup, accent-color list rendering, dark/light preview output, atomic theme writes, unset-no-op semantics; `config ollama` launches the sync TUI |
+| `cmd/wt` | 40 | Non-TUI launch: `-W`/`-A`/`-M`/`-T`/`-F` flag wiring, `resolveModel`, `launchFiltered` (rotation-by-launch + `pinnedSupplied` warn for command agents), `buildLaunch` resume-flag injection with extraArgs, `inGitRepoAt`, pi sync, ollama unavailable, prePath picker-skip for `-W`/`--cwd`/non-git-repo (agent picker still shown without `-A`), legacy `-w` short flag; `wt config` cobra subcommand: `config` (no args) launches viewer TUI, `config path`, `config theme {list,show,set,unset}` with case-insensitive theme lookup, accent-color list rendering, dark/light preview output, atomic theme writes, unset-no-op semantics; `config ollama` launches the sync TUI |
 
 ## Go module
 
@@ -168,8 +170,8 @@ go vet ./...         # vet
 | Path | Purpose |
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
-| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once (live model discovery is deferred to the `models` subcommand) |
-| `cmd/wt/commands.go` | Subcommand constructors: `models`, `agents`, `rotate` (hidden) |
+| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once |
+| `cmd/wt/commands.go` | Subcommand constructors: `rotate` (hidden), `models` (merged model list), `agents` (configured+registered agent list) |
 | `cmd/wt/commands_config.go` | `wt config` subcommand family: `config path`, `config theme {list,show,set,unset}`, `config ollama` (launches the sync TUI) |
 | `cmd/wt/resolve.go` | `resolveModel` — computes the single model for non-TUI launch (command-agent sentinel, pinned/eligible resolution, "multiple models match" error) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `renderTable` |
@@ -217,27 +219,29 @@ The `internal/registry` package queries connected providers at runtime and merge
 - **Ollama** — runs `ollama list`, parses both local models (with a size) and cloud models (size `-`).
 - **OpenRouter** — fetches `https://openrouter.ai/api/v1/models` via HTTP.
 
-Curated entries win on ID collisions; discovered entries fill gaps. The `wt models` subcommand prints the merged registry.
+Curated entries win on ID collisions; discovered entries fill gaps.
 
 Discovery is lazy: `newApp()` loads and validates config only. The full
-`registry.Discover` (including the OpenRouter HTTP call) runs on demand —
-in the `wt models` subcommand. The TUI picker sources its model list
-exclusively from `config.toml` (no live discovery) so flag-only and TUI
-paths never hit the OpenRouter API. `--version` and `--init` don't shell
-out to ollama at all; `-W` and `--cwd` run a single `ollama list` via
-`ollamacheck.Available()` for the pre-launch availability check, but skip
-the full registry discovery.
+`registry.Discover` (including the OpenRouter HTTP call) runs on demand.
+The TUI picker sources its model list exclusively from `config.toml`
+(no live discovery) so flag-only and TUI paths never hit the OpenRouter
+API. `--version` and `--init` don't shell out to ollama at all; `-W`
+and `--cwd` run a single `ollama list` via `ollamacheck.Available()` for
+the pre-launch availability check, but skip the full registry discovery.
 
 ### Config (themes)
 
 `wt config` is the user-preference surface (separate from `config.toml`,
-which holds the agent/model registry). Shipped subcommands are `wt config theme`
+which holds the agent/model registry). Subcommands include `wt config theme`
 (four built-in palettes with dark/light variants, stored in
-`~/.config/agent-wt/themes.toml`) and `wt config ollama` (interactive TUI to
-sync config.toml ollama models with `ollama list`). Themes style the TUI
-picker, CLI tables, and `wt config theme list` output. See `docs/wt-config.md`.
+`~/.config/agent-wt/themes.toml`), `wt config ollama` (interactive TUI to
+sync config.toml ollama models with `ollama list`), and `wt config` with no
+arguments (interactive viewer/editor for agents, providers, and models in
+`config.toml`). Themes style the TUI picker, CLI tables, and
+`wt config theme list` output. See `docs/wt-config.md`.
 
 ```bash
+wt config                    # interactive viewer/editor (requires a TTY)
 wt config theme              # show the active theme + available names
 wt config theme list         # list all built-in themes
 wt config theme show <name>  # show a theme's tokens with dark/light hex previews
@@ -246,6 +250,10 @@ wt config theme unset        # revert to the default theme
 wt config path               # print the config directory
 wt config ollama             # interactive TUI to sync ollama models with config.toml
 ```
+
+> **Invalid-config repair.** `wt config` launches even when `config.toml` fails
+> validation, so the interactive editor can repair a broken config. Other
+> launch paths still exit early on config errors.
 
 ### Rotation (Go)
 
@@ -310,8 +318,8 @@ Per-agent behavior:
 - **agy** — no model passthrough (model chosen inside its TUI)
 - **shell** — execs the user's passthrough args directly as argv (no shell involved), or interactive `bash` when no command is given; no model, no yolo, no session resume; implements `ArgSetter`
 
-The `wt agents` subcommand lists registered drivers, whether each binary is
-installed, and its yolo flag.
+The `wt config` subcommand (no args) launches an interactive TUI for
+viewing and editing agents, providers, and models in `config.toml`.
 
 ### Guard (Go)
 
@@ -605,4 +613,8 @@ claude-wt --cwd   # → wt --agent claude --cwd
 
 # Seed agent instruction files in a new repo (no agent binary required)
 wt --init
+
+# Live registry discovery
+wt models    # merged list of curated + discovered models
+wt agents    # merged list of configured + registered agents
 ```

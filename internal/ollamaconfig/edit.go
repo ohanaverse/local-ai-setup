@@ -1,8 +1,6 @@
 package ollamaconfig
 
 import (
-	"strings"
-
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
 
@@ -15,25 +13,16 @@ func parseTags(s string) []string {
 }
 
 // tagsToString joins a tag slice into a comma-delimited display string.
-// Returns "" for nil or empty slices.
+// Delegates to config.TagsToString so tag formatting stays consistent.
 func tagsToString(tags []string) string {
-	if len(tags) == 0 {
-		return ""
-	}
-	return strings.Join(tags, ", ")
+	return config.TagsToString(tags)
 }
 
-// toggleLocation cycles between local and cloud. An empty location
-// defaults to local (the first press on a fresh entry sets it to local).
+// toggleLocation cycles between local and cloud. Delegates to
+// config.ToggleLocation so both ollamaconfig and configeditor use the same
+// behavior.
 func toggleLocation(loc config.Location) config.Location {
-	switch loc {
-	case config.LocationLocal:
-		return config.LocationCloud
-	case config.LocationCloud:
-		return config.LocationLocal
-	default:
-		return config.LocationLocal
-	}
+	return config.ToggleLocation(loc)
 }
 
 // saveModelToConfig writes m into cfg.Models. If isNew is true, m is

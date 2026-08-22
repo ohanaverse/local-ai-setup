@@ -5,7 +5,36 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/themes"
 )
+
+// TestConfig_NoSubcommand_LaunchesEditor verifies that `wt config` with no
+// args invokes the config editor TUI. We stub configeditorRun so the test
+// does not require a TTY.
+func TestConfig_NoSubcommand_LaunchesEditor(t *testing.T) {
+	called := false
+	old := configeditorRun
+	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
+		called = true
+		return nil
+	}
+	defer func() { configeditorRun = old }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"config"})
+	err := root.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected configeditorRun to be called")
+	}
+}
 
 // TestLegacyShortFlagRejected verifies that the old `-w` arity is captured
 // and rejected with the migration message. Users coming from the bash

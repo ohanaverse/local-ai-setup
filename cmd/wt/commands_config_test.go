@@ -7,11 +7,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 )
 
@@ -37,9 +39,18 @@ func newTestApp(t *testing.T) (*app, string) {
 	return a, tmp
 }
 
-// TestConfigCmd_NoSubcommand_PrintsHelp: wt config with no args → exits 0
-// with help text on stdout.
-func TestConfigCmd_NoSubcommand_PrintsHelp(t *testing.T) {
+// TestConfigCmd_NoSubcommand_LaunchesEditor: wt config with no args now
+// launches the config editor TUI. We stub configeditorRun to avoid the
+// TTY requirement in tests.
+func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
+	called := false
+	old := configeditorRun
+	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
+		called = true
+		return nil
+	}
+	defer func() { configeditorRun = old }()
+
 	a, _ := newTestApp(t)
 	cmd := configCmd(a)
 	cmd.SetArgs([]string{})
@@ -47,6 +58,40 @@ func TestConfigCmd_NoSubcommand_PrintsHelp(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected configeditorRun to be called")
+	}
+}
+
+// TestConfigCmd_InvalidConfig_LaunchesEditor verifies that `wt config`
+// launches the repair TUI even when the loaded config has a validation
+// error. Without this, a broken config.toml would be a dead end.
+func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
+	var passedCfg *config.Config
+	var passedErr error
+	old := configeditorRun
+	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
+		passedCfg = cfg
+		passedErr = cfgErr
+		return nil
+	}
+	defer func() { configeditorRun = old }()
+
+	a, _ := newTestApp(t)
+	a.cfgErr = fmt.Errorf("validation failed")
+	cmd := configCmd(a)
+	cmd.SetArgs([]string{})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if passedCfg == nil {
+		t.Fatal("expected configeditorRun to receive the config")
+	}
+	if passedErr == nil {
+		t.Fatal("expected configeditorRun to receive the validation error")
 	}
 }
 

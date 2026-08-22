@@ -326,6 +326,145 @@ func (c *Config) ResolveLocation(m Model) (Location, error) {
 	return "", fmt.Errorf("model %q: no location on model or provider %q", m.ID, p.ID)
 }
 
+// ProviderInUse returns a list of human-readable references to provider id.
+// A model reference is shown as "model:<id>"; an agent reference as
+// "agent:<name>". An empty list means the provider can be safely deleted.
+func (c *Config) ProviderInUse(id string) []string {
+	var refs []string
+	for _, m := range c.Models {
+		if m.ProviderID == id {
+			refs = append(refs, "model:"+m.ID)
+		}
+	}
+	for _, a := range c.Agents {
+		for _, p := range a.SupportedProviders {
+			if p == id {
+				refs = append(refs, "agent:"+a.Name)
+				break
+			}
+		}
+	}
+	return refs
+}
+
+// UpsertProvider adds p when isNew is true and no provider with p.ID
+// exists, or updates the existing provider with the same ID when isNew is
+// false. It returns an error if p.ID is empty, or if isNew is true and
+// p.ID already exists.
+func (c *Config) UpsertProvider(p Provider, isNew bool) error {
+	if p.ID == "" {
+		return fmt.Errorf("provider id is empty")
+	}
+	for i := range c.Providers {
+		if c.Providers[i].ID == p.ID {
+			if isNew {
+				return fmt.Errorf("provider %q already exists", p.ID)
+			}
+			c.Providers[i] = p
+			return nil
+		}
+	}
+	c.Providers = append(c.Providers, p)
+	return nil
+}
+
+// DeleteProvider removes the provider with id. It does not enforce foreign
+// keys; callers should check ProviderInUse first.
+func (c *Config) DeleteProvider(id string) {
+	for i := range c.Providers {
+		if c.Providers[i].ID == id {
+			c.Providers = append(c.Providers[:i], c.Providers[i+1:]...)
+			return
+		}
+	}
+}
+
+// UpsertModel adds m when isNew is true, or updates the existing model
+// with the same ID when isNew is false. It returns an error if m.ID is
+// empty, the provider does not exist, or isNew is true and the ID already
+// exists.
+func (c *Config) UpsertModel(m Model, isNew bool) error {
+	if m.ID == "" {
+		return fmt.Errorf("model id is empty")
+	}
+	if c.ProviderByID(m.ProviderID) == nil {
+		return fmt.Errorf("provider %q does not exist", m.ProviderID)
+	}
+	for i := range c.Models {
+		if c.Models[i].ID == m.ID {
+			if isNew {
+				return fmt.Errorf("model %q already exists", m.ID)
+			}
+			c.Models[i] = m
+			return nil
+		}
+	}
+	c.Models = append(c.Models, m)
+	return nil
+}
+
+// DeleteModel removes the model with id.
+func (c *Config) DeleteModel(id string) {
+	for i := range c.Models {
+		if c.Models[i].ID == id {
+			c.Models = append(c.Models[:i], c.Models[i+1:]...)
+			return
+		}
+	}
+}
+
+// UpsertAgent adds a when oldName is empty, or updates the agent named
+// oldName. It validates name, supported providers, and default provider.
+func (c *Config) UpsertAgent(a Agent, oldName string) error {
+	if a.Name == "" {
+		return fmt.Errorf("agent name is empty")
+	}
+	if len(a.SupportedProviders) == 0 {
+		return fmt.Errorf("agent %q: must have at least one supported provider", a.Name)
+	}
+	for _, pid := range a.SupportedProviders {
+		if c.ProviderByID(pid) == nil {
+			return fmt.Errorf("agent %q: provider %q does not exist", a.Name, pid)
+		}
+	}
+	if a.DefaultProvider != "" {
+		found := false
+		for _, pid := range a.SupportedProviders {
+			if pid == a.DefaultProvider {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider)
+		}
+	}
+	// Rename check: if oldName differs, ensure new name is not taken.
+	if oldName != "" && oldName != a.Name {
+		if _, err := c.AgentByName(a.Name); err == nil {
+			return fmt.Errorf("agent %q already exists", a.Name)
+		}
+	}
+	for i := range c.Agents {
+		if c.Agents[i].Name == oldName {
+			c.Agents[i] = a
+			return nil
+		}
+	}
+	c.Agents = append(c.Agents, a)
+	return nil
+}
+
+// DeleteAgent removes the agent named name.
+func (c *Config) DeleteAgent(name string) {
+	for i := range c.Agents {
+		if c.Agents[i].Name == name {
+			c.Agents = append(c.Agents[:i], c.Agents[i+1:]...)
+			return
+		}
+	}
+}
+
 // WriteFileAtomic writes data to path atomically via a temp file + rename,
 // creating the parent directory if needed.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -411,6 +550,28 @@ func parseFilterList(s string) []string {
 // outside the config package (e.g. cmd/wt/launch.go). It trims whitespace,
 // drops empty entries, and returns nil for empty/whitespace-only input.
 func ParseFilterList(s string) []string { return parseFilterList(s) }
+
+// ToggleLocation cycles between local and cloud. An empty location defaults
+// to local on the first toggle.
+func ToggleLocation(loc Location) Location {
+	switch loc {
+	case LocationLocal:
+		return LocationCloud
+	case LocationCloud:
+		return LocationLocal
+	default:
+		return LocationLocal
+	}
+}
+
+// TagsToString joins a tag slice into a comma-delimited display string.
+// Returns "" for nil or empty slices.
+func TagsToString(tags []string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	return strings.Join(tags, ", ")
+}
 
 // FirstTag returns the first comma-delimited tag from s, or fallback if s is
 // empty. It is the shared form of the rotation slot's tag component: both the

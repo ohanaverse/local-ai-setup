@@ -14,24 +14,39 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/configeditor"
 	"github.com/ohanaverse/agent-worktree/internal/ollamaconfig"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/spf13/cobra"
 )
 
-// configCmd returns the `wt config` command. Subcommands are added below;
-// future subcommands (wt config ollama …, etc.) register here.
+// configeditorRun is the entry point for the config viewer TUI. It is a
+// package-level var so tests can verify it is called without needing a TTY.
+var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
+	return configeditor.Run(theme, cfg, cfgErr)
+}
+
+// configCmd returns the `wt config` command. With no subcommand, launches
+// an interactive TUI for viewing and editing config.toml. Subcommands
+// configure specific concerns without entering the TUI.
 func configCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Manage wt preferences",
-		Long: "Manage wt user preferences. Subcommands configure specific concerns:\n" +
+		Short: "Manage wt preferences and config.toml",
+		Long: "Manage wt user preferences.\n\n" +
+			"With no subcommand, launches an interactive TUI to view and edit\n" +
+			"agents, providers, and models in config.toml.\n\n" +
+			"Subcommands:\n" +
 			"  theme   active color theme\n" +
 			"  path    print the config directory\n" +
 			"  ollama  sync ollama models with config.toml",
-		// No RunE: cobra prints help when called with no subcommand.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return configeditorRun(a.theme, a.cfg, a.cfgErr)
+		},
 	}
 	cmd.AddCommand(configPathCmd(a), configThemeCmd(a), configOllamaCmd(a))
 	return cmd
@@ -243,13 +258,5 @@ func configThemeUnsetCmd() *cobra.Command {
 // joinThemeNames formats AvailableList() as a comma-separated string.
 // Used in error messages — order is stable.
 func joinThemeNames() string {
-	names := themes.AvailableList()
-	out := ""
-	for i, n := range names {
-		if i > 0 {
-			out += ", "
-		}
-		out += n
-	}
-	return out
+	return strings.Join(themes.AvailableList(), ", ")
 }

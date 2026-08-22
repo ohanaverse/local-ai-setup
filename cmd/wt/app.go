@@ -7,21 +7,24 @@ import (
 
 // app holds shared dependencies loaded once at startup.
 type app struct {
-	cfg   *config.Config
-	theme themes.Theme // active theme; populated by newApp()
+	cfg    *config.Config
+	cfgErr error        // config load/validation error, if any; surfaced by commands that can repair it
+	theme  themes.Theme // active theme; populated by newApp()
 }
 
-// newApp loads and validates the config and loads the active theme. Live
-// model discovery is deferred to the `models` subcommand so flag-only paths
-// (--version, --init, -w, --cwd) don't shell out to ollama or hit the
-// OpenRouter API.
+// newApp loads the config (best-effort) and the active theme. Config
+// validation errors are stored in the returned app rather than returned as
+// a fatal error, so `wt config` can still launch and let the user repair a
+// broken config.toml. Live model discovery is deferred to the `models`
+// subcommand so flag-only paths (--version, --init, -w, --cwd) don't shell
+// out to ollama or hit the OpenRouter API.
 func newApp() (*app, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, err
+	cfg, cfgErr := config.Load()
+	if cfg == nil {
+		cfg = &config.Config{DefaultTag: "code"}
 	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	if cfgErr == nil {
+		cfgErr = cfg.Validate()
 	}
 	// Load the active theme. I/O and TOML parse errors are hard failures.
 	// An unknown or empty theme name falls back to Default so a typo in
@@ -31,5 +34,5 @@ func newApp() (*app, error) {
 	if err != nil && !themes.IsThemeNameError(err) {
 		return nil, err
 	}
-	return &app{cfg: cfg, theme: theme}, nil
+	return &app{cfg: cfg, cfgErr: cfgErr, theme: theme}, nil
 }
