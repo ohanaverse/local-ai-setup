@@ -326,11 +326,13 @@ func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
 }
 
 // TestLaunchFilteredUsesEligibleAndSlot verifies that the non-TUI launch path
-// (a) calls cfg.EligibleModels to resolve the model list, (b) builds a rotation
-// Slot from agent+tag+family via rotation.SlotFromFlags, and (c) pins the
-// resolved model without consulting rotation when -M is supplied. This is the
-// pin path's contract; the rotation advance is exercised separately by
-// TestLaunchFilteredRotationAdvances.
+// (a) calls cfg.EligibleModels to resolve the model list, (b) consults the
+// global rotation via rotation.Last/rotation.Next (no per-slot state) to
+// pick the next-to-use model when no -M pin is supplied, and (c) honors the
+// -M pin without consulting rotation. Rotation is global, not per
+// agent+tag+family, so the eligible list is the sole source of truth for
+// which models are in play. This is the pin path's contract; the rotation
+// advance itself is exercised separately by TestLaunchFilteredRotationAdvances.
 func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

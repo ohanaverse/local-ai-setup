@@ -96,7 +96,8 @@ Coverage by package:
 |---|---|---|
 | `internal/config` | 55 | load/validate/save, migration, secrets, EligibleModels |
 | `internal/registry` | 15 | merge, ollama/OpenRouter parsing, filter |
-| `internal/rotation` | 18 | slot state, LastLaunched/RecordLaunch |
+| `internal/rotation` | 17 | global last-launched model + picker `Next`/`FirstAfter` |
+| `internal/usage` | 9 | JSONL launch history with 1d/7d/30d counts |
 | `internal/agents` | 41 | per-agent Build, BuildLaunchCmd, shell quoting |
 | `internal/guard` | 11 | install/uninstall idempotency, foreign-hook preservation |
 | `internal/worktree` | 34 | enumeration, creation, default-branch refusal |
@@ -124,7 +125,8 @@ Module root is the repo root.
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
 | `internal/config/` | config load/validate/save, migration; helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
 | `internal/registry/` | live discovery (Ollama CLI, OpenRouter API) + merge |
-| `internal/rotation/` | slot-based rotation (`Slot{Agent,Tag,Family}`) |
+| `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
+| `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model-picker badges, and the rotation module |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | enumeration + creation (`EnsureForName`/`EnsureForBranch`) |
@@ -177,15 +179,19 @@ wt config ollama             # sync config.toml ollama models with `ollama list`
 
 ## Rotation (Go)
 
-Slot-based rotation — the Go equivalent of bash `--code`/`--design`. Each successful launch records the model id; the next picker entry lands on the model *after* it.
+Global rotation — the Go equivalent of bash `--code`/`--design`. Each successful launch records a single model id; the next picker entry lands on the model *after* it. Per-slot rotation (`Slot{Agent,Tag,Family}`) was retired; only the global state file remains.
 
-- `rotation.Slot{Agent, Tag, Family}` is the key (`SlotFromFlags(agent, tag, family)`).
-- `NewForSlot` builds from the eligible (agent+tag+family-filtered) models; `LastLaunched`/`RecordLaunch`/`FirstAfter` read/write/compute.
-- State file: `~/.config/agent-wt/rotation-<agent>-<tag>-<family>.state` (atomic write); legacy `rotation-<tag>.state` still read.
+- Public API (package `rotation`):
+  - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
+  - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
+- State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model's picker footer — see `internal/usage`).
 
 ```bash
-go run ./cmd/wt rotate code    # model after the last launch in the code slot
+go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
 ```
+
+> **Migration from per-slot rotation.** On first load after upgrading, if `rotation.state` is absent and any legacy `rotation-<agent>-<tag>-<family>.state` or `rotation-<tag>.state` files exist, `Rotation.migrate` imports only the **single newest-mtime** entry and then deletes every legacy file. Distinct per-slot histories (e.g. `claude-code` vs. `claude-design`) are reduced to one global value — there is no in-repo back-compat layer for multi-slot users. Back up `~/.config/agent-wt/rotation-*.state` before upgrading if that matters.
 
 ## Agents (Go)
 
@@ -196,7 +202,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `
 | Agent | Launch behavior |
 |---|---|
 | claude | `ANTHROPIC_*` env → ollama gateway + `--model <m.ModelName>`; native: no args |
-| codex | `--model <m.ModelName>`; native: no args |
+| codex | `--model <m.ModelName>` plus four inline `-c` overrides (`model_provider=agent-wt`, `model_providers.agent-wt.{name,base_url,wire_api}`) for ollama-routed models; native: no args (see `docs/wt-agents/codex-wt.md`) |
 | copilot | `COPILOT_PROVIDER_BASE_URL`/`API_KEY`/`COPILOT_MODEL` env; never `--model` |
 | opencode | ollama-only; `OPENCODE_CONFIG_CONTENT` inline JSON with `ollama/<m.ModelName>`; never `--model` |
 | pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); passes `--model` only when present; no yolo |

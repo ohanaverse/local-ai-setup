@@ -73,9 +73,10 @@ func indexOfModel(models []config.Model, target config.Model) int {
 // FindAfter returns the model that comes after target in models,
 // wrapping to models[0] when target is the last or missing. It is a
 // thin, testable wrapper around rotation.FirstAfter shared by the
-// picker's cursor positioning (positionAfterLastLaunched) and the
-// rotation tests; model_list.go imports the rotation package for
-// exactly this call.
+// picker's cursor positioning (the picker reads rotation.Last to
+// locate the prior launch and calls FindAfter to advance past it)
+// and the rotation tests; model_list.go imports the rotation
+// package for exactly this call.
 func FindAfter(models []config.Model, target config.Model) (config.Model, bool) {
 	return rotation.FirstAfter(models, target)
 }

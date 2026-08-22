@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
@@ -57,6 +58,13 @@ var now = time.Now
 // Record appends one launch event for modelID atomically, first dropping
 // any existing events older than retentionWindow so the file doesn't grow
 // unbounded — only the trailing 30-day window is ever read by Counts.
+//
+// Concurrency: the read-prune-write critical section is guarded by a POSIX
+// advisory flock on a sidecar usage.jsonl.lock file in the same directory.
+// This serializes concurrent wt processes (e.g. two terminal launches in
+// the same config dir) so neither's just-recorded event is silently dropped
+// by the other's later rename. The sidecar pattern keeps the lock attached
+// to the file's location while the target file is renamed freely.
 func (s *Store) Record(modelID string) error {
 	e := event{ModelID: modelID, Timestamp: now().UTC()}
 	line, err := json.Marshal(e)
@@ -69,6 +77,17 @@ func (s *Store) Record(modelID string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	lockPath := filepath.Join(filepath.Dir(path), "usage.jsonl.lock")
+	lock, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
 	existing, _ := os.ReadFile(path)
 	kept, err := pruneOlderThan(existing, now().UTC(), retentionWindow)
 	if err != nil {

@@ -87,9 +87,12 @@ func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestNextAdvancesAfterLastLaunched picks the next model in the global list
-// that the same agent supports.
-func TestNextAdvancesAfterLastLaunched(t *testing.T) {
+// TestNextAdvancesAfterLast asserts that rotation.Next picks the
+// model in the global list that follows the model recorded by
+// rotation.Record (the same model returned by rotation.Last).
+// Without this advance, every launch would pick the same model
+// and rotation would be a no-op.
+func TestNextAdvancesAfterLast(t *testing.T) {
 	cfg := &config.Config{
 		Models: []config.Model{
 			{ID: "ollama/a", ProviderID: "ollama"},

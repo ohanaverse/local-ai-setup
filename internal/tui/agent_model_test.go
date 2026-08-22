@@ -663,10 +663,10 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 // shared infrastructure.
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
-	// State file: legacy 2-line "1\nollama/gemma4:9b\n". LastLaunched
-	// reads the last non-empty line (gemma4:9b) and FindAfter returns
-	// the next model (gemma4:14b at index 1). The cursor lands on
-	// gemma4:14b.
+	// State file: rotation.state holding a single model-id-per-line
+	// ("ollama/gemma4:9b\n"). Last() reads that line and FindAfter
+	// returns the next model (gemma4:14b at index 1). The cursor
+	// lands on gemma4:14b.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := phaseModelWithList(t, cfg, "claude", "code")
@@ -733,10 +733,12 @@ func TestPhaseModelEnterStaysInApp(t *testing.T) {
 }
 
 // TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
-// no-op. Rotation now advances via RecordLaunch on Enter, not via
-// an explicit key. This test guards against accidental re-
-// introduction of the r key (which would conflict with the new
-// implicit-rotation model).
+// no-op. Rotation now advances via launchAndRecord on a committed
+// launch (callers go through launchAndRecord, not on Enter or any
+// explicit key), so the picker must ignore the standalone 'r' key.
+// This test guards against accidental re-introduction of an
+// in-picker rotation key (which would conflict with the current
+// implicit-on-commit model).
 func TestNoRKeyInModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")
@@ -753,12 +755,12 @@ func TestNoRKeyInModelPhase(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryNoLastLaunchedStartsAtZero asserts the picker
-// lands the cursor at index 0 when no rotation state exists. This
-// is the cold-start path: fresh user, fresh state file. PR 2 added
-// a phaseAgent step between worktree selection and the model picker,
+// TestSelectedEntryNoLastStartsAtZero asserts the picker lands
+// the cursor at index 0 when no rotation state exists. This is the
+// cold-start path: fresh user, fresh state file. PR 2 added a
+// phaseAgent step between worktree selection and the model picker,
 // so the test now drives both transitions to reach phaseModel.
-func TestSelectedEntryNoLastLaunchedStartsAtZero(t *testing.T) {
+func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
 	tempStateDir(t) // isolates state; file doesn't exist
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
@@ -767,16 +769,17 @@ func TestSelectedEntryNoLastLaunchedStartsAtZero(t *testing.T) {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
 	if gotModel.models.Index() != 0 {
-		t.Errorf("cursor index = %d, want 0 (no last-launched)", gotModel.models.Index())
+		t.Errorf("cursor index = %d, want 0 (no rotation.Last)", gotModel.models.Index())
 	}
 }
 
-// TestSelectedEntryPositionsAfterLastLaunched asserts the picker
-// lands the cursor on the model after the last-launched one. With
-// the new model, rotation advances implicitly — every picker entry
-// is "one past where we left off". PR 2 added a phaseAgent step,
-// so the test drives both transitions to reach phaseModel.
-func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
+// TestSelectedEntryPositionsAfterLast asserts the picker lands
+// the cursor on the model after the one returned by rotation.Last.
+// Every picker entry is "one past where we left off" because the
+// rotation is global — rotation.Last reads the global state file
+// and rotation.FirstAfter advances past it. PR 2 added a phaseAgent
+// step, so the test drives both transitions to reach phaseModel.
+func TestSelectedEntryPositionsAfterLast(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
@@ -793,12 +796,12 @@ func TestSelectedEntryPositionsAfterLastLaunched(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryLastLaunchedMissingFallsBackToZero asserts the
-// picker lands on index 0 when the saved last-launched model is no
-// longer in the snapshot (config changed since last launch). PR 2
-// added a phaseAgent step, so the test drives both transitions to
-// reach phaseModel.
-func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
+// TestSelectedEntryLastMissingFallsBackToZero asserts the
+// picker lands on index 0 when the saved rotation.Last model is
+// no longer in the snapshot (config changed since last launch).
+// PR 2 added a phaseAgent step, so the test drives both
+// transitions to reach phaseModel.
+func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/removed:cloud")
 	cfg := testConfig()
@@ -808,18 +811,19 @@ func TestSelectedEntryLastLaunchedMissingFallsBackToZero(t *testing.T) {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
 	if gotModel.models.Index() != 0 {
-		t.Errorf("cursor index = %d, want 0 (fallback when last-launched missing)", gotModel.models.Index())
+		t.Errorf("cursor index = %d, want 0 (fallback when rotation.Last is missing from snapshot)", gotModel.models.Index())
 	}
 }
 
-// TestSelectedEntryLastLaunchedLastInListWrapsToZero asserts the
-// picker wraps to the next model when the saved last-launched is
-// the last item in the snapshot. Without wrap, the cursor would
-// advance past the end of the list forever. PR 3b: the picker now
-// sources models from cfg.EligibleModels without an implicit tag
-// filter, so all 3 testConfig models (2 code + 1 design) are in
-// the snapshot; wrap from index 1 lands on index 2 (gemma4:design).
-func TestSelectedEntryLastLaunchedLastInListWrapsToZero(t *testing.T) {
+// TestSelectedEntryLastLastInListWrapsToZero asserts the
+// picker wraps to the next model when rotation.Last is near the
+// end of the snapshot. Without wrap, the cursor would advance past
+// the end of the list forever. PR 3b: the picker now sources
+// models from cfg.EligibleModels without an implicit tag filter,
+// so all 3 testConfig models (2 code + 1 design) are in the
+// snapshot; wrapping past gemma4:14b (index 1) lands on
+// gemma4:design (index 2).
+func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:14b")
 	cfg := testConfig()
@@ -836,12 +840,14 @@ func TestSelectedEntryLastLaunchedLastInListWrapsToZero(t *testing.T) {
 }
 
 // TestToggleTagRebuildsRotation was removed in PR 3b Task 3 along
-// with the `d` tag-toggle key. Rotation snapshots are built once per
-// picker entry from the -T-filtered catalog (via
-// positionAfterLastLaunched in rotation_helpers.go); there is no
-// longer an in-picker path that rebuilds them. Per-slot state files
-// are exercised by TestPhaseModelWithListBuildsAndPositionsCursor,
-// TestSelectedEntryPositionsAfterLastLaunched, and
+// with the `d` tag-toggle key. The picker now builds its rotation
+// snapshot exactly once per picker entry from the -T-filtered
+// catalog (via rotation.Last to read the prior launch and
+// rotation.FirstAfter to advance past it); there is no longer an
+// in-picker path that rebuilds the snapshot on a tag toggle. The
+// global rotation state file (rotation.state) is exercised by
+// TestPhaseModelWithListBuildsAndPositionsCursor,
+// TestSelectedEntryPositionsAfterLast, and
 // TestNextEntryAfterLaunchAdvancesCursor.
 
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch asserts that pressing Enter
@@ -873,13 +879,14 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 	}
 }
 
-// TestLaunchAndRecordWritesLastLaunched asserts that launchAndRecord — the
-// single commit point reached only after the ollama check and resume prompt
-// are satisfied — writes the launched model's ID to the global rotation
-// state file. This is the positive counterpart to
-// TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation advances
-// exactly when a launch commits, no sooner.
-func TestLaunchAndRecordWritesLastLaunched(t *testing.T) {
+// TestLaunchAndRecordWritesLast asserts that launchAndRecord —
+// the single commit point reached only after the ollama check and
+// resume prompt are satisfied — writes the launched model's ID
+// via rotation.Record to the global rotation state file. This is
+// the positive counterpart to
+// TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation
+// advances exactly when a launch commits, no sooner.
+func TestLaunchAndRecordWritesLast(t *testing.T) {
 	dir := tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	first, ok := m.models.Items()[0].(modelItem)
