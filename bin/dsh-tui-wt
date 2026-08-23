@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# dsh-tui-wt — launch DeepSeek Harness (dsh) terminal TUI in a chosen worktree.
+# Usage: dsh-tui-wt [-W/--worktree <name>] [--cwd] [--] [dsh args]
+# Requires the turtle-ui plugin:
+#   dsh plugin --profile tui add github:deepseek-ai/turtle-ui
+exec wt --agent dsh-tui "$@"

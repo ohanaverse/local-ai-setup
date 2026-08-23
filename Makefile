@@ -42,7 +42,8 @@ endif
 
 uninstall:              # Remove installed scripts from ~/.local/bin/
 	rm -f $(BINDIR)/agy-wt $(BINDIR)/claude-wt $(BINDIR)/codex-wt \
-	      $(BINDIR)/copilot-wt $(BINDIR)/opencode-wt $(BINDIR)/pi-wt \
+	      $(BINDIR)/copilot-wt $(BINDIR)/dsh-headless-wt $(BINDIR)/dsh-tui-wt \
+	      $(BINDIR)/dsh-webui-wt $(BINDIR)/opencode-wt $(BINDIR)/pi-wt \
 	      $(BINDIR)/shell-wt
 	@echo "Uninstalled agent-worktree scripts from $(BINDIR)"
 
@@ -68,7 +69,7 @@ check:                  # Run all quality checks
 
 test:                   # Run smoke tests
 	@echo "Smoke testing launcher flags..."
-	@for launcher in agy-wt claude-wt codex-wt copilot-wt opencode-wt pi-wt shell-wt; do \
+	@for launcher in agy-wt claude-wt codex-wt copilot-wt dsh-headless-wt dsh-tui-wt dsh-webui-wt opencode-wt pi-wt shell-wt; do \
 		echo "Testing $$launcher --help..."; \
 		$(BINDIR)/$$launcher --help >/dev/null 2>&1 || echo "  $$launcher --help: skipped (agent may not be installed)"; \
 	done

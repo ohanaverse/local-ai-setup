@@ -38,7 +38,7 @@ func TestBuildAgentList(t *testing.T) {
 		},
 	}
 	items := buildAgentList(cfg)
-	if len(items) < 3 { // 2 agents + 1 command (shell)
+	if len(items) < 3 { // 2 configured agents + at least the shell command
 		t.Fatalf("expected at least 3 items, got %d", len(items))
 	}
 	var sawShell, sawClaude, sawCodex bool
@@ -71,8 +71,8 @@ func TestBuildAgentList(t *testing.T) {
 // deterministically: agents alphabetically, then commands alphabetically.
 // Without sorting, the picker would follow config order and the
 // nondeterministic agents.Names() map iteration, so the same config could
-// render a different menu on every launch. shell (the only command today)
-// must always be last.
+// render a different menu on every launch. The commands (dsh-headless,
+// dsh-tui, shell) must always come last, after the agents.
 func TestBuildAgentListOrdering(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
@@ -88,9 +88,10 @@ func TestBuildAgentListOrdering(t *testing.T) {
 		}
 		names = append(names, ai.name)
 	}
-	// All registered agents (agy, claude, codex, copilot, opencode, pi) plus
-	// the shell command, sorted: agents alphabetically, then commands.
-	want := []string{"agy", "claude", "codex", "copilot", "opencode", "pi", "shell"}
+	// All registered agents (agy, claude, codex, copilot, dsh-webui, opencode,
+	// pi) plus the commands (dsh-headless, dsh-tui, shell), sorted: agents
+	// alphabetically, then commands alphabetically.
+	want := []string{"agy", "claude", "codex", "copilot", "dsh-webui", "opencode", "pi", "dsh-headless", "dsh-tui", "shell"}
 	if len(names) != len(want) {
 		t.Fatalf("got %d items %v, want %d: %v", len(names), names, len(want), want)
 	}
