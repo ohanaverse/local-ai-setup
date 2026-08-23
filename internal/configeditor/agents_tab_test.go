@@ -9,8 +9,10 @@ import (
 )
 
 // TestAgentsTab_Sort_CommandsFirst verifies that command agents (e.g. shell)
-// appear before regular agents, and that both groups are sorted by name.
-// This matches the agent+command picker ordering in the main TUI.
+// appear before regular agents, and that both groups are sorted by name. The
+// configeditor keeps commands grouped first (unlike the main TUI's
+// agent+command picker, which now sorts agents and commands together
+// alphabetically).
 func TestAgentsTab_Sort_CommandsFirst(t *testing.T) {
 	cleanup := agents.RegisterTest("shell", func() agents.Driver {
 		return &stubCommandDriver{}

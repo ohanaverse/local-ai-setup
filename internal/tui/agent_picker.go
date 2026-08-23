@@ -60,14 +60,15 @@ func agentIssue(name string, cfg *config.Config) string {
 }
 
 // buildAgentList constructs the agent+command picker rows. Each configured
-// agent and each registered command appears once. The list is ordered
-// deterministically — agents alphabetically, then commands alphabetically —
-// regardless of config order or the nondeterministic agents.Names() map
-// iteration. Callers wrap the result in a bubbles/list picker; tests range
-// over the items directly.
+// agent and each registered command appears once. The list is sorted purely
+// by name — agents and commands interleaved alphabetically — regardless of
+// config order or the nondeterministic agents.Names() map iteration. The
+// agent/command distinction is preserved on each row (for its title and
+// description) but does not affect ordering. Callers wrap the result in a
+// bubbles/list picker; tests range over the items directly.
 func buildAgentList(cfg *config.Config) []list.Item {
 	seen := map[string]bool{}
-	var agentRows, commandRows []agentItem
+	var rows []agentItem
 
 	// Collect every configured agent and registered driver once each.
 	add := func(name string) {
@@ -76,12 +77,10 @@ func buildAgentList(cfg *config.Config) []list.Item {
 		}
 		seen[name] = true
 		it := agentItem{name: name, command: agents.IsCommand(name)}
-		if it.command {
-			commandRows = append(commandRows, it)
-		} else {
+		if !it.command {
 			it.issue = agentIssue(name, cfg)
-			agentRows = append(agentRows, it)
 		}
+		rows = append(rows, it)
 	}
 	for _, a := range cfg.Agents {
 		add(a.Name)
@@ -90,16 +89,12 @@ func buildAgentList(cfg *config.Config) []list.Item {
 		add(n)
 	}
 
-	// Agents first, then commands; each group sorted by name.
-	sort.Slice(agentRows, func(i, j int) bool { return agentRows[i].name < agentRows[j].name })
-	sort.Slice(commandRows, func(i, j int) bool { return commandRows[i].name < commandRows[j].name })
+	// Single alphabetical pass over agents and commands together.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 
-	items := make([]list.Item, 0, len(agentRows)+len(commandRows))
-	for _, a := range agentRows {
-		items = append(items, a)
-	}
-	for _, c := range commandRows {
-		items = append(items, c)
+	items := make([]list.Item, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, r)
 	}
 	return items
 }

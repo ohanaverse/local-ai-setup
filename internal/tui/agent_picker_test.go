@@ -68,11 +68,12 @@ func TestBuildAgentList(t *testing.T) {
 }
 
 // TestBuildAgentListOrdering asserts the agent+command picker is ordered
-// deterministically: agents alphabetically, then commands alphabetically.
-// Without sorting, the picker would follow config order and the
-// nondeterministic agents.Names() map iteration, so the same config could
-// render a different menu on every launch. The commands (dsh-headless,
-// dsh-tui, shell) must always come last, after the agents.
+// purely alphabetically — agents and commands interleaved by name, with no
+// grouping by kind. Without sorting, the picker would follow config order
+// and the nondeterministic agents.Names() map iteration, so the same config
+// could render a different menu on every launch. Commands (dsh-headless,
+// dsh-tui, shell) sort in among the agents rather than being pinned to the
+// bottom.
 func TestBuildAgentListOrdering(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
@@ -88,10 +89,9 @@ func TestBuildAgentListOrdering(t *testing.T) {
 		}
 		names = append(names, ai.name)
 	}
-	// All registered agents (agy, claude, codex, copilot, dsh-webui, opencode,
-	// pi) plus the commands (dsh-headless, dsh-tui, shell), sorted: agents
-	// alphabetically, then commands alphabetically.
-	want := []string{"agy", "claude", "codex", "copilot", "dsh-webui", "opencode", "pi", "dsh-headless", "dsh-tui", "shell"}
+	// All registered drivers (agy, claude, codex, copilot, dsh-headless,
+	// dsh-tui, dsh-webui, opencode, pi, shell) sorted purely by name.
+	want := []string{"agy", "claude", "codex", "copilot", "dsh-headless", "dsh-tui", "dsh-webui", "opencode", "pi", "shell"}
 	if len(names) != len(want) {
 		t.Fatalf("got %d items %v, want %d: %v", len(names), names, len(want), want)
 	}
