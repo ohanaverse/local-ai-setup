@@ -45,7 +45,7 @@ func ollamaCloudModel(name string) config.Model {
 // one or more agents.
 func TestNames(t *testing.T) {
 	names := Names()
-	want := map[string]bool{"claude": true, "codex": true, "copilot": true, "opencode": true, "pi": true, "agy": true, "shell": true, "dsh-webui": true, "dsh-tui": true, "dsh-headless": true}
+	want := map[string]bool{"claude": true, "codex": true, "copilot": true, "opencode": true, "pi": true, "agy": true, "shell": true}
 	if len(names) != len(want) {
 		t.Fatalf("Names() = %v, want %d agents", names, len(want))
 	}

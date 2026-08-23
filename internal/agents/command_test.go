@@ -2,12 +2,11 @@ package agents
 
 import "testing"
 
-// TestIsCommand verifies the agent/command distinction: shell, dsh-tui, and
-// dsh-headless are commands (no model layer); every other registered driver
+// TestIsCommand verifies the agent/command distinction: shell is a command (no model layer); every other registered driver
 // is an agent. This matters because the picker shows a different screen for
 // commands (skip the model layer) vs. agents (show the model list).
 func TestIsCommand(t *testing.T) {
-	commands := map[string]bool{"shell": true, "dsh-tui": true, "dsh-headless": true}
+	commands := map[string]bool{"shell": true}
 	for _, n := range Names() {
 		if commands[n] {
 			if !IsCommand(n) {

@@ -4,9 +4,7 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 
 ## Scope
 
-These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, `dsh-webui-wt`, `dsh-tui-wt`, and `dsh-headless-wt`.
-
-The launcher contract (flags, rotation, install) now lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
+These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, rotation, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
 
 ## Agents
 
@@ -20,9 +18,6 @@ Quick reference (homepage, GitHub, install): [supported-agents.md](supported-age
 | pi-coding-agent | [pi-wt.md](pi-wt.md) | Verified on this machine, 2026-06-01 — includes NYT LiteLLM worked example |
 | Antigravity CLI | [agy-wt.md](agy-wt.md) | Convention only (not installed on this machine) |
 | OpenCode | [opencode-wt.md](opencode-wt.md) | Verified on this machine, 2026-06-11 |
-| DeepSeek Harness (browser) | [dsh-webui-wt.md](dsh-webui-wt.md) | Convention only (not verified on this machine) |
-| DeepSeek Harness (terminal) | [dsh-tui-wt.md](dsh-tui-wt.md) | Convention only (not verified on this machine) |
-| DeepSeek Harness (headless) | [dsh-headless-wt.md](dsh-headless-wt.md) | Convention only (not verified on this machine) |
 | Shell command | [shell-wt.md](shell-wt.md) | Verified on this machine, 2026-07-22 |
 
 ## Verification convention
@@ -39,7 +34,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 | Flag | Description |
 |------|-------------|
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted, and the model picker still appears when `-M` is omitted. |
-| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`, `dsh-webui`) or command (`shell`, `dsh-tui`, `dsh-headless`) to launch. The agent is never defaulted: when `-A` is omitted the agent+command picker is always shown. Supplying `-A` skips the picker. |
+| `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. The agent is never defaulted: when `-A` is omitted the agent+command picker is always shown. Supplying `-A` skips the picker. |
 | `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). Errors if not in the eligible list. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |

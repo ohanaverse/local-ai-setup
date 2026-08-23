@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# dsh-webui-wt — launch DeepSeek Harness (dsh) browser TUI in a chosen worktree.
-# Usage: dsh-webui-wt [-W/--worktree <name>] [--cwd] [-M <model>] [--] [dsh args]
-# dsh args after `--` are forwarded to dsh (e.g. `--port 3081`).
-exec wt --agent dsh-webui "$@"

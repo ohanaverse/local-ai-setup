@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# dsh-headless-wt — run DeepSeek Harness (dsh) headless one-shot in a chosen worktree.
-# Usage: dsh-headless-wt [-W/--worktree <name>] [--cwd] [--] <task>
-# The task string is forwarded to dsh, which prints the answer and exits.
-exec wt --agent dsh-headless "$@"
