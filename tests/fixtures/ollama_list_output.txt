@@ -1,0 +1,4 @@
+NAME                          ID            SIZE      MODIFIED
+ornith-1.5:9b                 e5df7dcdd8a2  6.6 GB    4 days ago
+qwen3.8:27b-mlx              5642e97495e1  18 GB     2 days ago
+gemma4:26b-mlx               c8656f50f0a6  17 GB     1 week ago
