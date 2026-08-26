@@ -12,8 +12,6 @@ from ..manifest import ManifestError, get_family_dir, load_manifest, save_manife
 from ..providers.registry import ProviderRegistry
 from ._common import console, relpath, render_picker
 
-app = typer.Typer(help="Download missing model variants for a family.")
-
 
 def _detect_statuses(manifest, config: Config) -> dict[str, bool]:
     statuses: dict[str, bool] = {}
@@ -45,14 +43,8 @@ def _download_one(variant_id: str, manifest, config: Config) -> Optional[str]:
     return path
 
 
-@app.callback(invoke_without_command=True)
-def download(
-    ctx: typer.Context,
-    family: str = typer.Argument(..., help="Family name (filename under ~/.config/local-ai/families/)"),
-    all_missing: bool = typer.Option(False, "--all", help="Download all missing variants without prompting"),
-    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation (used with --all)"),
-):
-    """Download missing model variants for a family."""
+def _do_download(family: str, all_missing: bool, yes: bool) -> None:
+    """Core download logic — called by the Typer command in main.py."""
     try:
         config = load_config()
     except ConfigError as e:

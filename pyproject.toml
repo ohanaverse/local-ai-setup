@@ -31,8 +31,21 @@ dev = [
     "pytest-mock>=3.14.0",
     "pytest-cov>=5.0.0",
     "mypy>=1.10.0",
+    "types-pyyaml>=6.0.12.20260815",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src/modelman"]
+omit = ["*/tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

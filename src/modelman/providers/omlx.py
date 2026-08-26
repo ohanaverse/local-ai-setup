@@ -29,9 +29,10 @@ class OMLXProvider(Provider):
     name = "omlx"
 
     def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
-        if not variant.get("repo"):
+        repo = variant.get("repo")
+        if not repo:
             return False
-        target = _model_dir(self.config) / _basename(variant["repo"])
+        target = _model_dir(self.config) / _basename(repo)
         return target.is_dir() and any(target.iterdir())
 
     def download(self, variant: VariantSpec, runner: _Runner | None = None) -> str:

@@ -35,6 +35,13 @@ def test_download_calls_pull(provider, mock_runner):
     runner.assert_called_with(["ollama", "pull", "ornith-1.5:9b"])
 
 
+def test_download_failure_raises(provider, mock_runner):
+    runner = mock_runner(returncode=1, stdout="", stderr="error")
+    variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "fail:7b"}
+    with pytest.raises(RuntimeError, match="failed"):
+        provider.download(variant, runner=runner)
+
+
 def test_list_local_parses_output(provider, mock_runner, tmp_path):
     fixture = open("tests/fixtures/ollama_list_output.txt").read()
     runner = mock_runner(returncode=0, stdout=fixture, stderr="")

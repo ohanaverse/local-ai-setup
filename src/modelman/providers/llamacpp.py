@@ -37,7 +37,9 @@ class LlamaCppProvider(Provider):
     def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
         if not variant.get("repo") or not variant.get("files"):
             return False
-        return _files_in_hf_cache(variant["repo"], variant["files"])
+        repo: str = variant["repo"]  # type: ignore[assignment]
+        files: list[str] = variant["files"]  # type: ignore[assignment]
+        return _files_in_hf_cache(repo, files)
 
     def download(self, variant: VariantSpec, runner: _Runner | None = None) -> str:
         repo = variant.get("repo")

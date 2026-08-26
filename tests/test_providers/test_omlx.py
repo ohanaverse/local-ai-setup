@@ -49,6 +49,27 @@ def test_is_downloaded_false_when_dir_empty(provider, tmp_path, monkeypatch):
     assert provider.is_downloaded(variant) is False
 
 
+def test_list_local_finds_model_dirs(provider, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    model_dir = tmp_path / ".omlx" / "models"
+    model_dir.mkdir(parents=True)
+    (model_dir / "Model-A").mkdir()
+    (model_dir / "Model-A" / "config.json").write_text("{}")
+    (model_dir / "Model-B").mkdir()
+    (model_dir / "Model-B" / "config.json").write_text("{}")
+
+    models = provider.list_local()
+    assert len(models) == 2
+    ids = [m["variant_id"] for m in models]
+    assert "Model-A" in ids
+    assert "Model-B" in ids
+
+
+def test_list_local_empty_when_no_dir(provider, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert provider.list_local() == []
+
+
 def test_download_calls_snapshot_download_with_local_dir(provider, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     model_dir = tmp_path / ".omlx" / "models"
