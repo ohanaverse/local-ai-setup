@@ -14,7 +14,7 @@ class _Runner(Protocol):
 
 def _default_runner(args: list[str], **kwargs: Any):
     import subprocess
-    return subprocess.run(args, capture_output=True, text=True, **kwargs)
+    return subprocess.run(args, **kwargs)
 
 
 class OllamaProvider(Provider):
