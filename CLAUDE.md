@@ -22,17 +22,7 @@ Requires Go 1.26.7 (see `go.mod`).
 
 > **macOS codesign.** `make build`/`install` re-seal the ad-hoc signature (`codesign --force --sign -`). A drifted linker signature is rejected by AMFI with "Taskgated Invalid Signature" and SIGKILLs the binary (exit 137).
 
-```bash
-make build        # build to bin/wt (re-seals macOS signature)
-make install      # install to ~/.local/bin/
-make uninstall    # remove installed scripts from ~/.local/bin/
-make lint         # shellcheck on bin/*-wt
-make format       # shfmt -w on bin/*-wt
-make format-check # shfmt -d (CI check)
-make check        # lint + format-check
-make test         # smoke tests (requires make install first)
-make clean        # remove build artifacts
-```
+Run `make help` for the full target list. `make test` requires `make install` first — it exercises the installed binary, not just the build.
 
 The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH`.
 
@@ -72,12 +62,6 @@ For agents, args append to the command; for `shell` (implements `ArgSetter`), th
 
 After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
 
-## Adding a new agent
-
-1. Add a driver in `internal/agents/<name>.go` implementing `Build`/`YoloFlag`, registered via `register("<name>", ...)`.
-2. Add a shim `bin/<name>-wt`: `exec wt --agent <name> "$@"`.
-3. Add a doc to `docs/wt-agents/`.
-
 ## Docs
 
 - `docs/configuration.md` — Claude Code / Codex CLI config
@@ -94,25 +78,7 @@ go test ./internal/worktree -v       # verbose, one package
 go vet ./...                         # static analysis
 ```
 
-Coverage by package:
-
-| Package | Tests | Focus |
-|---|---|---|
-| `internal/config` | 55 | load/validate/save, migration, secrets, EligibleModels |
-| `internal/registry` | 15 | merge, ollama/OpenRouter parsing, filter |
-| `internal/rotation` | 17 | global last-launched model + picker `Next`/`FirstAfter` |
-| `internal/usage` | 9 | JSONL launch history with 1d/7d/30d counts |
-| `internal/agents` | 45 | per-agent Build, BuildLaunchCmd, shell quoting, `Summary` post-run formatter |
-| `internal/guard` | 11 | install/uninstall idempotency, foreign-hook preservation |
-| `internal/worktree` | 35 | enumeration, creation, default-branch refusal |
-| `internal/initseed` | 7 | AGENTS.md seeding, idempotency |
-| `internal/session` | 7 | claude/opencode session detection |
-| `internal/themes` | 24 | builtins, themes.toml load/save/unset |
-| `internal/tui` | 157 | picker screens, theming, launch/resume, post-run summary emit |
-| `internal/ollamaconfig` | 33 | union sync, edit/resolve screens |
-| `internal/configeditor` | 48 | viewer/editor TUI, validation, FK-blocked deletes |
-| `internal/ollamacheck` | 3 | availability before launch |
-| `cmd/wt` | 53 | flag wiring, resolveModel, launchFiltered, `wt config`, non-TUI post-run summary emit |
+Package list: `internal/{config,registry,rotation,usage,agents,guard,worktree,initseed,session,themes,tui,ollamaconfig,configeditor,ollamacheck}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
