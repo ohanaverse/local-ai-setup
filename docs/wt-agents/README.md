@@ -57,6 +57,37 @@ from `config.toml`) or "not installed" (no binary on PATH) — and selecting
 one is blocked with a clear error rather than advancing to a model screen
 that can never succeed.
 
+## Post-run summary line
+
+After the launched subprocess exits, `wt` prints a single summary line to
+**stdout** so the user can see what just ran and how long it took. The
+summary fires on both success and non-zero exit; it is informational and
+never changes the exit code. Both the TUI and non-TUI launch paths emit it
+through a shared `agents.Summary` formatter so the two paths can't drift.
+
+```
+wt: <agent> · <model-id> · <duration>
+```
+
+- `<agent>` — the `-A` value (`claude`, `codex`, `copilot`, `pi`, `agy`,
+  `opencode`, `shell`, …).
+- `<model-id>` — the model's full ID (e.g. `claude/sonnet`,
+  `ollama/gemma4:9b`). Omitted for command agents (`shell`), which have no
+  model layer.
+- `<duration>` — subprocess wall-clock time, rounded to seconds when ≥1s
+  (e.g. `3m42s`, `850ms` for sub-second runs).
+
+Examples:
+
+```
+wt: claude · claude/sonnet · 3m42s
+wt: shell · 1s
+```
+
+On the TUI path the summary prints **after** the alt-screen is restored,
+so the line lands on a clean line in the parent terminal rather than inside
+the Bubble Tea frame.
+
 ### Legacy bash flags
 
 The original bash launchers supported `-w`/`--worktree`, `--code`,

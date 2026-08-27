@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +22,14 @@ type launchDoneMsg struct {
 // release/restore the terminal. It is set in Run().
 var currentProgram *tea.Program
 
+// pendingSummary is populated by runAndWaitCmd after the agent subprocess
+// exits. Run() reads it after p.Run() returns and prints it to the parent
+// terminal — the only point in the TUI lifecycle where stdout is the parent
+// terminal rather than the alt-screen buffer. Printing inside runAndWaitCmd
+// lands in the alt-screen and is discarded when the TUI shuts down, so the
+// capture-then-emit pattern is required. Reset by Run() before launch.
+var pendingSummary string
+
 // launchAgent builds the command for agent/model in worktreePath, optionally
 // appending passthrough args and a resume flag for claude or opencode. It
 // delegates to agents.BuildLaunchCmd so the launch construction logic lives
@@ -30,19 +39,33 @@ func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, s
 }
 
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
-// terminal, restores the TUI, and returns a launchDoneMsg.
-func runAndWaitCmd(cmd *exec.Cmd) tea.Cmd {
+// terminal, restores the TUI, captures the post-run summary line into
+// pendingSummary (consumed by Run() after p.Run() returns), and returns a
+// launchDoneMsg.
+func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 	return func() tea.Msg {
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
+			// defer the restore so a panic in cmd.Run() still returns
+			// the terminal to the alt-screen state; otherwise the user's
+			// shell is left in raw mode with no TUI frame.
+			defer func() {
+				if currentProgram != nil {
+					_ = currentProgram.RestoreTerminal()
+				}
+			}()
 		}
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		start := time.Now()
 		err := cmd.Run()
-		if currentProgram != nil {
-			currentProgram.RestoreTerminal()
-		}
+		// Capture (do not print) the summary line. Printing here would
+		// land inside the alt-screen buffer, which bubbletea discards at
+		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()
+		// returns and prints it to the parent terminal — the only point
+		// in the TUI lifecycle where stdout reaches the user's terminal.
+		pendingSummary = agents.Summary(agent, m, time.Since(start))
 		return launchDoneMsg{err: err}
 	}
 }

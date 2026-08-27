@@ -22,7 +22,7 @@ func TestRunAndWaitCmdBlocksUntilAgentExits(t *testing.T) {
 		t.Skip("shell sleep differs on windows")
 	}
 	cmd := exec.Command("sleep", "1")
-	msg := runAndWaitCmd(cmd)()
+	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
 	_, ok := msg.(launchDoneMsg)
 	if !ok {
 		t.Fatalf("msg = %T, want launchDoneMsg", msg)
@@ -37,7 +37,7 @@ func TestRunAndWaitCmdReturnsErrorOnFailure(t *testing.T) {
 		t.Skip("`false` not available")
 	}
 	cmd := exec.Command(falsePath)
-	msg := runAndWaitCmd(cmd)()
+	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
 	done := msg.(launchDoneMsg)
 	if done.err == nil {
 		t.Fatal("expected error from 'false'")
@@ -73,7 +73,7 @@ func TestEnterInModelPhaseDoesNotQuitImmediately(t *testing.T) {
 	agentCmd := exec.Command("sh", "-c", "sleep 0.3 && touch "+shQuote(marker))
 
 	// Drive the same code path the Enter handler uses.
-	returnedCmd := runAndWaitCmd(agentCmd)
+	returnedCmd := runAndWaitCmd(agentCmd, "shell", config.Model{})
 	if returnedCmd == nil {
 		t.Fatal("runAndWaitCmd returned nil")
 	}

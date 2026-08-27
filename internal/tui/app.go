@@ -555,7 +555,7 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m, runAndWaitCmd(cmd)
+	return m, runAndWaitCmd(cmd, name, config.Model{})
 }
 
 // proceedFromSelectedPath continues the launch flow once m.selectedPath is
@@ -726,7 +726,7 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	if err := rotation.New().Record(m.launchModel.ID); err != nil {
 		m.status = "rotation state not saved: " + err.Error()
 	}
-	return m, runAndWaitCmd(cmd)
+	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
 }
 
 // loadEntriesCmd returns a command that enumerates worktrees/branches
@@ -858,6 +858,20 @@ func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, them
 		repoRoot:     repoRootFor(prePath),
 	}, tea.WithAltScreen())
 	currentProgram = p
+	// Reset any summary captured by a previous run (e.g. from a test
+	// invocation sharing the process).
+	pendingSummary = ""
 	_, err := p.Run()
+	// Print the post-run summary line on the parent terminal. The
+	// alt-screen is now torn down (p.Run() has returned and bubbletea
+	// has called exitAltScreen), so stdout reaches the user's terminal
+	// rather than a discarded buffer.
+	if pendingSummary != "" {
+		// Leading "\n" guards against the agent's last byte being
+		// non-newline so the summary always lands on a fresh line.
+		// Println adds the trailing newline itself.
+		fmt.Println("\n" + pendingSummary)
+		pendingSummary = ""
+	}
 	return err
 }

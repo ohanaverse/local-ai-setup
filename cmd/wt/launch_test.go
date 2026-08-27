@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -308,6 +309,69 @@ func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 // The -M-with-command warning now lives in launchFiltered (where the
 // pinnedSupplied signal is available); see
 // TestLaunchFilteredWarnWhenModelPassedToCommand below for the contract test.)
+
+// TestRunAgentCmdPrintsSummary asserts the non-TUI launch path prints the
+// summary line to stdout after the subprocess exits.
+func TestRunAgentCmdPrintsSummary(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	cmd := exec.Command(truePath)
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}); err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
+		t.Errorf("stdout = %q, want summary line", string(out))
+	}
+}
+
+// TestRunAgentCmdLeadingNewlineBeforeSummary pins the leading "\n"
+// before the summary line. Without it, an agent whose last byte was
+// not a newline (e.g. a bare prompt or a SIGINT-truncated line) would
+// have the summary glued to that partial output — the user would see
+// "…thinking about itwt: claude · claude/sonnet · 12s" instead of two
+// clean lines.
+func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	cmd := exec.Command(truePath)
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}); err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	w.Close()
+	out, _ := io.ReadAll(r)
+	// The summary line must be preceded by a newline so the user's
+	// prior output (which may lack a trailing newline) doesn't glue
+	// to it. Find the summary and check the byte immediately before.
+	idx := strings.Index(string(out), "wt: claude · claude/sonnet ·")
+	if idx <= 0 {
+		t.Fatalf("stdout = %q, want summary line", string(out))
+	}
+	if out[idx-1] != '\n' {
+		t.Errorf("stdout[%d-1] = %q, want '\\n' before summary line. Full output: %q", idx, out[idx-1], string(out))
+	}
+}
 
 // TestOllamaUnavailableErrorIncludesPullHint verifies the user-facing error
 // text for unavailable local ollama models.

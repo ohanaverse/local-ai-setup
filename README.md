@@ -162,6 +162,16 @@ Launchers auto-install a `block-main-commit` pre-commit hook on every invocation
 
 When a prior Claude Code or OpenCode session exists for the worktree path, the launcher prompts whether to resume it. Skipped when `--cwd` is used.
 
+## Post-run summary line
+
+After every agent or command subprocess exits, `wt` prints a single line to stdout summarizing the run:
+
+```
+wt: <agent> · <model-id> · <duration>
+```
+
+The line is emitted on both success and non-zero exit and never affects the exit code. Model agents show the full `<provider>/<name>` model ID; command agents (`shell`) omit the model segment. Durations round to seconds when ≥1s, otherwise they are shown in milliseconds (e.g. `850ms`). See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-run-summary-line) for details and the rationale.
+
 ## Development
 
 ### Go module (`wt`)

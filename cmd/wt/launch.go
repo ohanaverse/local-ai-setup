@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
@@ -97,7 +98,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if err != nil {
 			return err
 		}
-		return runAgentCmd(cmd)
+		return runAgentCmd(cmd, agent, config.Model{})
 	}
 
 	// Resolve the model first. Command agents short-circuit in resolveModel.
@@ -122,9 +123,14 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	// don't waste work on a model we can't launch.
 	ok, oerr := ollamacheck.Check(m)
 	if oerr != nil {
+		// Print the summary before returning so the user sees the same
+		// post-run line on pre-launch config errors as on a real exit.
+		// Duration is 0 — the subprocess never started.
+		fmt.Println("\n" + agents.Summary(agent, m, 0))
 		return fmt.Errorf("ollama check failed: %w", oerr)
 	}
 	if !ok {
+		fmt.Println("\n" + agents.Summary(agent, m, 0))
 		return ollamaUnavailableError(m.ModelName)
 	}
 
@@ -135,16 +141,23 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if rerr := rotation.New().Record(m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
 	}
-	return runAgentCmd(cmd)
+	return runAgentCmd(cmd, agent, m)
 }
 
-// runAgentCmd wires stdio through to the agent and runs it. The agent's exit
-// code propagates to the caller.
-func runAgentCmd(cmd *exec.Cmd) error {
+// runAgentCmd wires stdio through to the agent, runs it, prints the post-run
+// summary line, and propagates the agent's exit code to the caller.
+func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	start := time.Now()
+	err := cmd.Run()
+	// Leading "\n" guards against the agent's last byte being non-newline
+	// (e.g. a bare prompt or a SIGINT-truncated line) — without it the
+	// summary would glue to that partial output. Println adds the trailing
+	// newline itself, so the line is always self-terminated.
+	fmt.Println("\n" + agents.Summary(agent, m, time.Since(start)))
+	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			os.Exit(ee.ExitCode())

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,21 +69,110 @@ func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
 	}
 }
 
-// TestRunAndWaitCmdWiresStdio uses a no-op command (true) to verify that
-// runAndWaitCmd wires Stdin/Stdout/Stderr and returns a launchDoneMsg.
+// TestRunAndWaitCmdWiresStdio uses a no-op command (true) to verify
+// that runAndWaitCmd wires Stdin/Stdout/Stderr and returns a
+// launchDoneMsg. Without stdio wiring, the agent would see no input
+// and write to /dev/null — a regression here would silently break
+// every interactive agent invocation while passing all the picker
+// tests above.
 func TestRunAndWaitCmdWiresStdio(t *testing.T) {
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("true not available")
 	}
 	cmd := exec.Command(truePath)
-	msg := runAndWaitCmd(cmd)()
+	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
 	done, ok := msg.(launchDoneMsg)
 	if !ok {
 		t.Fatalf("msg = %T, want launchDoneMsg", msg)
 	}
 	if done.err != nil {
 		t.Errorf("true exited with error: %v", done.err)
+	}
+}
+
+// TestRunAndWaitCmdCapturesSummaryOnSuccess asserts the TUI launch path
+// captures the summary line via pendingSummary rather than printing it
+// directly. The previous design called fmt.Println inside the closure,
+// which landed inside the alt-screen buffer that bubbletea discards at
+// tea.Quit shutdown — so the user never saw the summary. Without this
+// test, a regression that re-introduced a direct fmt.Println here
+// would silently break the user-visible "wt: agent · model · 1s"
+// line on every TUI launch.
+func TestRunAndWaitCmdCapturesSummaryOnSuccess(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	prev := pendingSummary
+	pendingSummary = ""
+	t.Cleanup(func() { pendingSummary = prev })
+
+	cmd := exec.Command(truePath)
+	msg := runAndWaitCmd(cmd, "claude", config.Model{ID: "claude/sonnet"})()
+	if _, ok := msg.(launchDoneMsg); !ok {
+		t.Fatalf("msg = %T, want launchDoneMsg", msg)
+	}
+	w.Close()
+	out, _ := io.ReadAll(r)
+
+	// runAndWaitCmd must NOT print the summary itself — that goes into
+	// the alt-screen buffer, which is discarded. It must populate the
+	// package variable instead.
+	if strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
+		t.Errorf("runAndWaitCmd printed to stdout directly; summary must be captured into pendingSummary, not printed. stdout = %q", string(out))
+	}
+	if !strings.Contains(pendingSummary, "wt: claude · claude/sonnet ·") {
+		t.Errorf("pendingSummary = %q, want it to contain the formatted line", pendingSummary)
+	}
+}
+
+// TestRunAndWaitCmdCapturesSummaryOnFailure asserts the summary is
+// captured even when the subprocess exits non-zero. The post-run line
+// is supposed to fire on every exit, success or failure — a regression
+// that only emitted on success would hide what just failed.
+func TestRunAndWaitCmdCapturesSummaryOnFailure(t *testing.T) {
+	falsePath, err := exec.LookPath("false")
+	if err != nil {
+		t.Skip("`false` not available")
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	prev := pendingSummary
+	pendingSummary = ""
+	t.Cleanup(func() { pendingSummary = prev })
+
+	cmd := exec.Command(falsePath)
+	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
+	done, ok := msg.(launchDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want launchDoneMsg", msg)
+	}
+	if done.err == nil {
+		t.Fatal("expected error from `false`")
+	}
+	w.Close()
+	out, _ := io.ReadAll(r)
+
+	if strings.Contains(string(out), "wt: shell ·") {
+		t.Errorf("runAndWaitCmd printed to stdout directly on failure; summary must be captured. stdout = %q", string(out))
+	}
+	if !strings.Contains(pendingSummary, "wt: shell ·") {
+		t.Errorf("pendingSummary = %q, want it to contain the formatted line on failure", pendingSummary)
 	}
 }
 

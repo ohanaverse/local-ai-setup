@@ -68,6 +68,10 @@ shell-wt -W test -- npm test    # → exec npm test in .worktrees/test
 
 For agents, args append to the command; for `shell` (implements `ArgSetter`), they become argv directly (`d.args[0]` = binary).
 
+## Post-run summary line
+
+After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
+
 ## Adding a new agent
 
 1. Add a driver in `internal/agents/<name>.go` implementing `Build`/`YoloFlag`, registered via `register("<name>", ...)`.
@@ -98,17 +102,17 @@ Coverage by package:
 | `internal/registry` | 15 | merge, ollama/OpenRouter parsing, filter |
 | `internal/rotation` | 17 | global last-launched model + picker `Next`/`FirstAfter` |
 | `internal/usage` | 9 | JSONL launch history with 1d/7d/30d counts |
-| `internal/agents` | 41 | per-agent Build, BuildLaunchCmd, shell quoting |
+| `internal/agents` | 45 | per-agent Build, BuildLaunchCmd, shell quoting, `Summary` post-run formatter |
 | `internal/guard` | 11 | install/uninstall idempotency, foreign-hook preservation |
-| `internal/worktree` | 34 | enumeration, creation, default-branch refusal |
+| `internal/worktree` | 35 | enumeration, creation, default-branch refusal |
 | `internal/initseed` | 7 | AGENTS.md seeding, idempotency |
 | `internal/session` | 7 | claude/opencode session detection |
 | `internal/themes` | 24 | builtins, themes.toml load/save/unset |
-| `internal/tui` | 142 | picker screens, theming, launch/resume |
+| `internal/tui` | 157 | picker screens, theming, launch/resume, post-run summary emit |
 | `internal/ollamaconfig` | 33 | union sync, edit/resolve screens |
 | `internal/configeditor` | 48 | viewer/editor TUI, validation, FK-blocked deletes |
 | `internal/ollamacheck` | 3 | availability before launch |
-| `cmd/wt` | 43 | flag wiring, resolveModel, launchFiltered, `wt config` |
+| `cmd/wt` | 53 | flag wiring, resolveModel, launchFiltered, `wt config`, non-TUI post-run summary emit |
 
 ## Go module
 
