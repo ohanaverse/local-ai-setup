@@ -89,6 +89,24 @@ class Registry:
                 return m
         raise KeyError(f"Unknown model: {model_id}")
 
+    def families(self) -> list[str]:
+        return sorted({m.family for m in self.models})
+
+    def models_by_family(self, family: str) -> list[ModelEntry]:
+        return [m for m in self.models if m.family == family]
+
+
+def provider_config(entry: ProviderEntry) -> dict[str, Any]:
+    """Build the config dict `ProviderRegistry.get()` expects from a
+    registry ProviderEntry. Only `model_dir` is read by any provider today
+    (OMLXProvider) — kept minimal rather than mirroring every ProviderEntry
+    field so providers stay decoupled from the registry schema.
+    """
+    config: dict[str, Any] = {}
+    if entry.model_dir is not None:
+        config["model_dir"] = entry.model_dir
+    return config
+
 
 def load_registry(path: Path | None = None) -> Registry:
     registry_path = Path(path) if path else _default_registry_path()

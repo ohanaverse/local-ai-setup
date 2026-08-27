@@ -15,6 +15,7 @@ from modelman.registry import (
     Registry,
     RegistryError,
     load_registry,
+    provider_config,
     save_registry,
 )
 
@@ -117,3 +118,55 @@ def test_registry_lookup_helpers_raise_keyerror_for_unknown_id():
         registry.provider("nope")
     with pytest.raises(KeyError):
         registry.model("nope")
+
+
+def test_families_returns_sorted_distinct_family_names():
+    # The family list drives the TUI's left pane; it must be sorted and
+    # deduplicated so a family spanning multiple providers appears once.
+    registry = Registry(
+        models=[
+            ModelEntry(id="ollama/a", family="zeta", provider_id="ollama", model_name="a"),
+            ModelEntry(id="ollama/b", family="alpha", provider_id="ollama", model_name="b"),
+            ModelEntry(id="llamacpp/c", family="alpha", provider_id="llamacpp", model_name="c"),
+        ]
+    )
+    assert registry.families() == ["alpha", "zeta"]
+
+
+def test_families_on_empty_registry_returns_empty_list():
+    # A fresh registry has no models; families() must return [] rather than
+    # raise, so the TUI renders an empty family list on first run.
+    assert Registry().families() == []
+
+
+def test_models_by_family_filters_and_preserves_order():
+    # Grouping models by family must keep only that family's models and
+    # preserve registry order, since the TUI renders them in that order.
+    a = ModelEntry(id="ollama/a", family="alpha", provider_id="ollama", model_name="a")
+    z = ModelEntry(id="ollama/z", family="zeta", provider_id="ollama", model_name="z")
+    b = ModelEntry(id="llamacpp/b", family="alpha", provider_id="llamacpp", model_name="b")
+    registry = Registry(models=[a, z, b])
+    assert registry.models_by_family("alpha") == [a, b]
+
+
+def test_models_by_family_unknown_family_returns_empty_list():
+    # Asking for a family with no models must return [] rather than raise,
+    # so callers can iterate the result without an existence check.
+    assert Registry().models_by_family("nope") == []
+
+
+def test_provider_config_includes_model_dir_when_set():
+    # provider_config adapts a registry ProviderEntry into the kwargs the
+    # provider constructor expects; model_dir must be passed through when
+    # present or oMLX would download into the wrong directory.
+    entry = ProviderEntry(
+        id="omlx", name="oMLX", model_dir="~/.omlx/models", auth=AuthConfig(type="none")
+    )
+    assert provider_config(entry) == {"model_dir": "~/.omlx/models"}
+
+
+def test_provider_config_omits_model_dir_when_unset():
+    # Providers that don't take model_dir (e.g. ollama) must not receive it
+    # as a kwarg, or their constructors would raise on an unexpected arg.
+    entry = ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+    assert provider_config(entry) == {}
