@@ -1,0 +1,32 @@
+#!/opt/homebrew/bin/bash
+# ornith-1.5-benchmark-multi — Run ornith-1.5-benchmark N times
+#
+# Usage:
+#   ornith-1.5-benchmark-multi 3          # 3 passes (default)
+#   ornith-1.5-benchmark-multi 5 200      # 5 passes, 200 max_tokens each
+#   ornith-1.5-benchmark-multi 3 200 30   # 3 passes, 200 max_tokens, 30s cool-down
+
+set -e
+
+PASSES="${1:-3}"
+MAX_TOKENS="${2:-200}"
+COOLDOWN="${3:-15}"
+
+echo "Running $PASSES passes with max_tokens=$MAX_TOKENS, ${COOLDOWN}s cool-down between passes"
+echo
+
+for i in $(seq 1 "$PASSES"); do
+    echo "===== Pass $i / $PASSES ====="
+    /Users/keith/.local/bin/ornith-1.5-benchmark "$MAX_TOKENS"
+    echo
+    if [ "$i" -lt "$PASSES" ]; then
+        echo "Cooling down for ${COOLDOWN}s..."
+        sleep "$COOLDOWN"
+    fi
+done
+
+echo
+echo "===== All $PASSES passes complete ====="
+echo "Latest result: $(ls -t /tmp/ornith-1.5-benchmark-*.md | head -1)"
+echo "All results:"
+ls -lt /tmp/ornith-1.5-benchmark-*.md | head -"$PASSES"

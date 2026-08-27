@@ -1,0 +1,330 @@
+#!/opt/homebrew/bin/bash
+# ornith-1.5-benchmark — Compare the four Ornith-1.5-35B variants (ISOLATED runs)
+#
+# Strategy: local MLX/GGUF models share Apple Silicon GPU/RAM and would
+# distort each other's benchmarks. So:
+#   - Ollama: `ollama stop <model>` unloads the model from RAM
+#   - oMLX:   `omlx stop` halts the service entirely (serves 4-bit + 6-bit)
+#   - llama.cpp: `launchctl unload` halts the LaunchAgent
+#
+# Measures: TTFT, total time, tokens, throughput — direct and via LiteLLM.
+#
+# Usage:
+#   ornith-1.5-benchmark             # default: 200-token generation
+#   ornith-1.5-benchmark 100         # custom max_tokens
+
+set -e
+
+MAX_TOKENS="${1:-200}"
+PROMPT="${2:-Explain in detail the differences between REST and GraphQL APIs, including trade-offs in caching, partial responses, and tooling. Be thorough.}"
+
+build_payload() {
+    local model="$1"
+    local stream="$2"
+    python3 - "$model" "$stream" "$MAX_TOKENS" "$PROMPT" <<'PYEOF'
+import json, sys
+model, stream, max_tokens, prompt = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+stream_bool = stream == "true"
+payload = {
+    "model": model,
+    "messages": [{"role": "user", "content": prompt}],
+    "max_tokens": max_tokens,
+    "stream": stream_bool,
+    "temperature": 0.0
+}
+if stream_bool:
+    payload["stream_options"] = {"include_usage": True}
+print(json.dumps(payload))
+PYEOF
+}
+
+declare -A DIRECT_URLS
+declare -A DIRECT_MODELS
+declare -A LITELLM_MODELS
+DIRECT_URLS[ollama]="http://localhost:11434/api/chat"
+DIRECT_URLS[omlx_4bit]="http://localhost:8000/v1/chat/completions"
+DIRECT_URLS[omlx_6bit]="http://localhost:8000/v1/chat/completions"
+DIRECT_URLS[llama_cpp]="http://localhost:8080/v1/chat/completions"
+DIRECT_MODELS[ollama]="ornith-1.5:35b"
+DIRECT_MODELS[omlx_4bit]="Ornith-1.5-35B-A3B-MLX-4bit"
+DIRECT_MODELS[omlx_6bit]="Ornith-1.5-35B-A3B-MLX-6bit"
+DIRECT_MODELS[llama_cpp]="local-llama"
+LITELLM_MODELS[ollama]="ollama/ornith-1.5:35b"
+LITELLM_MODELS[omlx_4bit]="omlx/Ornith-1.5-35B-A3B-MLX-4bit"
+LITELLM_MODELS[omlx_6bit]="omlx/Ornith-1.5-35B-A3B-MLX-6bit"
+LITELLM_MODELS[llama_cpp]="llama.cpp/ornith-1.5-35b"
+
+LITELLM_URL="http://localhost:4000/v1/chat/completions"
+
+display_key() {
+    case "$1" in
+        llama_cpp) echo "llama.cpp" ;;
+        omlx_4bit) echo "omlx 4-bit" ;;
+        omlx_6bit) echo "omlx 6-bit" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+stop_all_local() {
+    echo "  [isolation] unloading all local models..."
+
+    if curl -s -m 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
+        ollama stop ornith-1.5:35b 2>/dev/null || true
+        echo "    ollama: model ornith-1.5:35b unloaded (daemon still on :11434)"
+    fi
+
+    if curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
+        omlx stop 2>/dev/null || true
+        echo "    omlx: stopped"
+    fi
+
+    if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+        launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+        echo "    llama.cpp: LaunchAgent unloaded"
+    fi
+
+    sleep 3
+
+    local bound=$(lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | grep -cE ":(11434|8000|8080)\b")
+    echo "    local service ports still bound: $bound (Ollama :11434 daemon is expected to remain)"
+}
+
+start_one_local() {
+    local key="$1"
+    case "$key" in
+        ollama)
+            echo "  [isolation] loading ollama model..."
+            local warmup='{"model":"ornith-1.5:35b","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":1,"temperature":0}'
+            local resp
+            resp=$(curl -s -m 120 "${DIRECT_URLS[ollama]}" \
+                -H "Content-Type: application/json" \
+                -d "$warmup" 2>/dev/null)
+            if echo "$resp" | grep -q '"done":true'; then
+                echo "    ollama: model loaded"
+                return 0
+            fi
+            echo "    WARNING: ollama model load failed (warmup response: ${resp:0:200})"
+            return 1
+            ;;
+        omlx_4bit|omlx_6bit)
+            local model="${DIRECT_MODELS[$key]}"
+            echo "  [isolation] starting omlx ($model)..."
+            omlx start > /dev/null 2>&1 || true
+            local warmup="{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false,\"max_tokens\":1,\"temperature\":0}"
+            for i in {1..90}; do
+                if curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
+                    local resp=$(curl -s -m 120 "${DIRECT_URLS[$key]}" \
+                        -H "Content-Type: application/json" \
+                        -d "$warmup" 2>/dev/null)
+                    if echo "$resp" | grep -q '"object":"chat.completion"'; then
+                        echo "    omlx: service up, model $model loaded"
+                        return 0
+                    fi
+                fi
+                sleep 1
+            done
+            echo "    WARNING: omlx model load timeout"
+            return 1
+            ;;
+        llama_cpp)
+            echo "  [isolation] starting llama.cpp..."
+            launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+            local warmup='{"model":"local-llama","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":1,"temperature":0}'
+            for i in {1..90}; do
+                if curl -s -m 2 http://localhost:8080/v1/models > /dev/null 2>&1; then
+                    local resp
+                    resp=$(curl -s -m 120 "${DIRECT_URLS[llama_cpp]}" \
+                        -H "Content-Type: application/json" \
+                        -d "$warmup" 2>/dev/null)
+                    if echo "$resp" | grep -q '"object":"chat.completion"'; then
+                        echo "    llama.cpp: model loaded"
+                        return 0
+                    fi
+                fi
+                sleep 1
+            done
+            echo "    WARNING: llama.cpp model load timeout"
+            return 1
+            ;;
+    esac
+}
+
+ensure_all_local_started() {
+    echo "[setup] ensuring all local services are running..."
+    if ! curl -s -m 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
+    fi
+    if ! curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
+        omlx start > /dev/null 2>&1 || true
+    fi
+    if ! curl -s -m 2 http://localhost:8080/v1/models > /dev/null 2>&1; then
+        if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+            launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+        fi
+    fi
+    if ! curl -s -m 2 http://localhost:4000/v1/models > /dev/null 2>&1; then
+        if [ -f ~/Library/LaunchAgents/local.litellm.proxy.plist ]; then
+            launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null || true
+        fi
+    fi
+
+    echo "[setup] waiting for services..."
+    for i in {1..30}; do
+        ok=true
+        curl -s -m 1 http://localhost:11434/api/tags > /dev/null 2>&1 || ok=false
+        curl -s -m 1 http://localhost:8000/v1/models > /dev/null 2>&1 || ok=false
+        curl -s -m 1 http://localhost:8080/v1/models > /dev/null 2>&1 || ok=false
+        curl -s -m 1 http://localhost:4000/v1/models > /dev/null 2>&1 || ok=false
+        [ "$ok" = "true" ] && break
+        sleep 2
+    done
+}
+
+run_streaming() {
+    local label="$1"
+    local url="$2"
+    local model="$3"
+
+    local payload
+    payload=$(build_payload "$model" "true")
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    local start_ns
+    start_ns=$(date +%s%N)
+    local first_token_ns=""
+
+    curl -s -m 600 -N "$url" \
+        -H "Content-Type: application/json" \
+        -d "$payload" > "$tmpfile" 2>&1 &
+    local pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        local current_size
+        current_size=$(wc -c < "$tmpfile" 2>/dev/null | tr -d ' ' || echo 0)
+        if [ -z "$first_token_ns" ] && [ "$current_size" -gt 50 ]; then
+            first_token_ns=$(date +%s%N)
+        fi
+        sleep 0.02
+    done
+
+    wait "$pid" || true
+    local end_ns
+    end_ns=$(date +%s%N)
+
+    local duration_ms=$(( (end_ns - start_ns) / 1000000 ))
+    local ttft_ms="N/A"
+    if [ -n "$first_token_ns" ]; then
+        ttft_ms=$(( (first_token_ns - start_ns) / 1000000 ))
+    fi
+
+    local token_count
+    token_count=$(grep -oE '"completion_tokens":[0-9]+' "$tmpfile" | tail -1 | grep -oE '[0-9]+' || echo "0")
+
+    if [ "$token_count" = "0" ]; then
+        token_count=$(grep -E '"content":"[^"]' "$tmpfile" | wc -l | tr -d ' ')
+    fi
+
+    local throughput="N/A"
+    if [ "${token_count:-0}" -gt 0 ] 2>/dev/null && [ "$duration_ms" -gt 0 ]; then
+        local gen_time_ms=$(( duration_ms - ttft_ms ))
+        if [ "$gen_time_ms" -gt 0 ]; then
+            throughput=$(python3 -c "print(f'{int($token_count) / ($gen_time_ms/1000):.2f}')")
+        fi
+    fi
+
+    echo "  $label: TTFT=${ttft_ms}ms, total=${duration_ms}ms, tokens=${token_count}, throughput=${throughput} tok/s"
+    echo "| $label | $ttft_ms | $duration_ms | $token_count | $throughput |" >> "$OUTFILE"
+
+    rm -f "$tmpfile"
+}
+
+OUTFILE="/tmp/ornith-1.5-benchmark-$(date +%Y%m%d-%H%M%S).md"
+{
+    echo "# Ornith-1.5 Benchmark Results (ISOLATED runs)"
+    echo
+    echo "**Date**: $(date)"
+    echo "**max_tokens**: $MAX_TOKENS"
+    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX, llama.cpp). Only the one being tested has its model loaded."
+    echo
+    echo "## Prompt"
+    echo
+    echo '```'
+    echo "$PROMPT"
+    echo '```'
+    echo
+} > "$OUTFILE"
+
+ensure_all_local_started
+
+echo ""
+echo "=== Ornith-1.5 Benchmark — max_tokens=$MAX_TOKENS ==="
+echo "    (isolated local runs)"
+echo ""
+
+{
+    echo "## Isolated local runs (bypassing LiteLLM)"
+    echo
+    echo "| Backend | TTFT (ms) | Total (ms) | Tokens | Throughput (tok/s) |"
+    echo "|---------|----------:|-----------:|-------:|-------------------:|"
+} >> "$OUTFILE"
+
+echo "## Direct backend (ISOLATED, one model loaded at a time):"
+for backend in ollama omlx_4bit omlx_6bit llama_cpp; do
+    display_name=$(display_key "$backend")
+    echo ""
+    stop_all_local
+    start_one_local "$backend"
+    echo ""
+    echo "Testing ${display_name} directly..."
+    run_streaming "$display_name (direct)" "${DIRECT_URLS[$backend]}" "${DIRECT_MODELS[$backend]}"
+done
+
+{
+    echo
+    echo "## Isolated local runs (via LiteLLM)"
+    echo
+    echo "| Backend | TTFT (ms) | Total (ms) | Tokens | Throughput (tok/s) |"
+    echo "|---------|----------:|-----------:|-------:|-------------------:|"
+} >> "$OUTFILE"
+
+echo ""
+echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"
+for backend in ollama omlx_4bit omlx_6bit llama_cpp; do
+    display_name=$(display_key "$backend")
+    echo ""
+    stop_all_local
+    start_one_local "$backend"
+    if ! curl -s -m 2 http://localhost:4000/v1/models > /dev/null 2>&1; then
+        launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null || true
+        sleep 2
+    fi
+    echo ""
+    echo "Testing ${display_name} via LiteLLM..."
+    run_streaming "$display_name (litellm)" "$LITELLM_URL" "${LITELLM_MODELS[$backend]}"
+done
+
+{
+    echo
+    echo "## Notes"
+    echo
+    echo "- **Local backends are run in isolation**: before each test, all local models are unloaded from RAM."
+    echo "  - **Ollama**: \`ollama stop ornith-1.5:35b\` — daemon keeps :11434 bound but no model in GPU/RAM"
+    echo "  - **oMLX**: \`omlx stop\` — service halts entirely (serves 4-bit and 6-bit variants)"
+    echo "  - **llama.cpp**: \`launchctl unload\` — LaunchAgent halts, frees the ~29 GB Metal allocation"
+    echo "- All backends use the **same prompt** with \`temperature=0.0\`."
+    echo "- \`throughput\` excludes TTFT (prefill) — it's generation-only."
+    echo "- Run multiple times and average to reduce variance from cold caches."
+    echo
+    echo "Results saved to: $OUTFILE"
+} >> "$OUTFILE"
+
+echo ""
+echo "  [cleanup] restoring all local services..."
+launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
+omlx start > /dev/null 2>&1 || true
+launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+
+echo ""
+echo "Results saved to: $OUTFILE"
+echo "All local services restored to running state."
