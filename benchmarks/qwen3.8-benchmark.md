@@ -12,8 +12,8 @@ The LiteLLM proxy at `localhost:4000` routes the same `model_name` to four diffe
 |---|---|---|---|
 | **Ollama** | `ollama/qwen3.8:27b-mlx` | MLX (nvfp4, 18 GB) | `~/.ollama/models/` |
 | **oMLX** | `omlx/Qwen3.8-27B-4bit` | MLX 4-bit | `~/.omlx/models/mlx-community/Qwen3.8-27B-4bit/` |
-| **llama.cpp** | `llama.cpp/local-llama` (Qwen3.8-27B-UD-Q4_K_XL.gguf) | GGUF (Q4_K_XL, 16 GB) | `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/...` |
-| **OpenRouter** | `openrouter/qwen/qwen3.8-27b` | cloud API | `https://openrouter.ai/api/v1` |
+| **llama.cpp** | `llama.cpp/local-llama` (Qwen3.8-27B-UD-Q4_K_M.gguf) | GGUF (Q4_K_M, 16 GB) | `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/...` |
+| **OpenRouter** | `openrouter/qwen/qwen3.8-{flash,27b,2.4t-a95b,max}` | cloud API | `https://openrouter.ai/api/v1` |
 
 These are *different quantizations and runtimes* of the same Qwen3.8 27B model. Benchmarking them side-by-side tells us:
 - Which backend is fastest on this Apple Silicon hardware
@@ -77,62 +77,62 @@ Plus `temperature=0.0` for reproducibility.
 
 ## Latest Results
 
-Captured 2026-08-26 with **3 passes at `max_tokens=200`** (20s cool-down between passes, full isolation between local backends). Each cell is the **median of 3 runs**.
+Captured 2026-08-27 with **3 passes at `max_tokens=200`** (15s cool-down between passes, full isolation between local backends). Each cell is the **median of 3 runs**. OpenRouter now covers all four qwen3.8 variants, each tested both directly against the OpenRouter API and via LiteLLM.
 
 ### Throughput (tokens/sec) — median of 3 passes
 
-| Backend | Direct | Via LiteLLM | LiteLLM overhead |
-|---|---:|---:|---:|
-| **ollama** (qwen3.8:27b-mlx, MLX) | 18.57 | 16.80 | -1.77 |
-| **omlx** (Qwen3.8-27B-4bit, MLX) | 14.32 | 11.98 | -2.34 |
-| **llama.cpp** (Qwen3.8-27B-UD-Q4_K_XL.gguf) | 6.97 | 7.27 | +0.30 |
-| **openrouter** (cloud) | n/a | 61.44 | — |
+| Backend | Direct | Via LiteLLM |
+|---|---:|---:|
+| **ollama** (qwen3.8:27b-mlx, MLX) | 20.53 | 20.40 |
+| **omlx** (Qwen3.8-27B-4bit, MLX) | 14.19 | 13.47 |
+| **llama.cpp** (Qwen3.8-27B-UD-Q4_K_M.gguf) | 8.58 | 9.43 |
+| **openrouter flash** | 66.71* | 74.79 |
+| **openrouter 27b** | 53.85 | 35.87 |
+| **openrouter 2.4t-a95b** | 91.83 | 78.55 |
+| **openrouter max** | 39.47 | 40.11 |
+
+\* `flash` direct: n=1 (rate-limited upstream in 2 of 3 passes).
 
 ### TTFT (ms) — median of 3 passes
 
 | Backend | Direct | Via LiteLLM |
 |---|---:|---:|
-| **ollama** | 533 | 664 |
-| **omlx** | 42 | 71 |
-| **llama.cpp** | 823 | 808 |
-| **openrouter** | n/a | 878 |
+| **ollama** | 629 | 581 |
+| **omlx** | 42 | 34 |
+| **llama.cpp** | 675 | 683 |
+| **openrouter flash** | 918* | 13,808 |
+| **openrouter 27b** | 611 | 1,136 |
+| **openrouter 2.4t-a95b** | 1,172 | 1,243 |
+| **openrouter max** | 1,376 | 1,411 |
 
 ### Total time (ms) — median of 3 passes
 
 | Backend | Direct | Via LiteLLM |
 |---|---:|---:|
-| **ollama** | 193,322 | 12,570 |
-| **omlx** | 14,008 | 16,743 |
-| **llama.cpp** | 29,497 | 28,354 |
-| **openrouter** | n/a | 3,781 |
-
-### Raw per-pass numbers
-
-| Backend | Pass 1 | Pass 2 | Pass 3 | Median | StDev |
-|---|---:|---:|---:|---:|---:|
-| **Throughput (tok/s)** | | | | | |
-| ollama (direct) | 17.29 | 18.57 | 19.46 | **18.57** | 1.09 |
-| ollama (litellm) | 13.26 | 16.80 | 25.65 | **16.80** | 6.38 |
-| omlx (direct) | 5.46 | 14.32 | 16.90 | **14.32** | 6.00 |
-| omlx (litellm) | 10.67 | 11.98 | 14.26 | **11.98** | 1.82 |
-| llama.cpp (direct) | 3.93 | 6.97 | 9.81 | **6.97** | 2.94 |
-| llama.cpp (litellm) | 7.27 | 7.01 | 10.77 | **7.27** | 2.10 |
-| openrouter (litellm) | 61.44 | 97.09 | 43.27 | **61.44** | 27.38 |
+| **ollama** | 219,134 | 10,384 |
+| **omlx** | 14,138 | 14,881 |
+| **llama.cpp** | 23,964 | 21,881 |
+| **openrouter flash** | 3,916* | 16,482 |
+| **openrouter 27b** | 4,410 | 16,278 |
+| **openrouter 2.4t-a95b** | 3,350 | 4,231 |
+| **openrouter max** | 6,887 | 6,408 |
 
 ### Observations
 
-- **Ollama wins among local backends** — median 18.57 tok/s direct, 16.80 via LiteLLM. The MLX nvfp4 quantization has the best speed/quality trade-off for this 27B model.
-- **oMLX surprisingly slow** — median 14.32 tok/s direct, much lower than Ollama. This is unexpected since oMLX is purpose-built for MLX; possible the MLX 4-bit quantization is slower on this hardware than the nvfp4 variant in Ollama. Worth investigating whether the model is using ANE vs GPU.
-- **llama.cpp is consistently slowest** — median 6.97 tok/s direct. The Q4_K_XL GGUF is a heavier quantization than the MLX 4-bit, and the CPU/GPU offload overhead is higher.
-- **OpenRouter throughput is highly variable** — 43–97 tok/s across passes (StDev 27.38). This reflects upstream provider variability: each request lands on a different provider (Alibaba, Chutes, AkashML, etc.) with different hardware.
-- **LiteLLM overhead is small but real** — 1.8-2.3 tok/s penalty on the MLX backends. For llama.cpp the overhead is negligible because the backend itself is slow.
-- **oMLX has the lowest TTFT** — 42ms direct vs 533ms for Ollama and 823ms for llama.cpp. This makes oMLX the best choice for low-latency interactive use, even though its throughput is middle-of-the-pack.
+- **Ollama still wins among local backends** — median 20.53 tok/s direct, 20.40 via LiteLLM. The MLX nvfp4 quantization has the best speed/quality trade-off for this 27B model.
+- **oMLX second** — 14.19 tok/s direct. Still slower than Ollama despite being purpose-built for MLX; the 4-bit quantization is slower than Ollama's nvfp4 on this hardware.
+- **llama.cpp slowest local** — 8.58 tok/s direct. The Q4_K_M GGUF is a heavier quantization than the MLX 4-bit, and CPU/GPU offload overhead is higher.
+- **OpenRouter 2.4t-a95b is the fastest overall** — 91.83 tok/s direct (MoE with 95B active params on cloud hardware). Flash is close behind at 74.79 via LiteLLM.
+- **OpenRouter 27b and max are mid-pack** — 35–54 tok/s, comparable to or faster than the local backends but with cloud latency.
+- **LiteLLM overhead is small** — for local backends the direct-vs-LiteLLM gap is within noise (ollama 20.53 vs 20.40, omlx 14.19 vs 13.47). For OpenRouter the gap varies by provider routing.
+- **oMLX has the lowest TTFT** — 42ms direct vs 629ms for Ollama and 675ms for llama.cpp. Best choice for low-latency interactive use.
+- **OpenRouter TTFT is dominated by cloud round-trip** — 600ms–1.4s direct, and flash via LiteLLM spiked to 13.8s (upstream provider variability).
 
 ### Caveats
 
-- Three passes is the bare minimum for stable medians; StDev for some backends (omlx direct at 6.00, openrouter at 27.38) is still high. Run 5+ passes for tighter bounds.
-- The Ollama token counts in `tokens=4345/3580/3612` are dominated by reasoning tokens (the model thinks extensively). Divide by visible content tokens for fairer comparison.
-- OpenRouter upstream provider is non-deterministic — the same prompt can hit Alibaba, Chutes, or AkashML on different runs, with different latencies. `temperature=0.0` doesn't help here.
+- Three passes is the bare minimum for stable medians; OpenRouter numbers are especially variable (upstream provider is non-deterministic — the same prompt can hit different providers with different hardware).
+- `flash` direct was rate-limited upstream (429 from Alibaba's shared pool) in 2 of 3 passes, so its direct numbers are n=1 and unreliable.
+- The Ollama token counts (`tokens=3981/4485/4701`) are dominated by reasoning tokens (the model thinks extensively despite `max_tokens=200`). Divide by visible content tokens for fairer comparison.
 - The bench ran on Apple Silicon; numbers will differ on NVIDIA/CUDA hardware.
 
 
@@ -304,6 +304,8 @@ For a totally new provider (say, vLLM), add it to:
 - The main `for backend in` loop
 - `stop_all_local` (if it has a model to unload)
 - `start_one_local` (with appropriate service-start + model-warmup logic)
+
+For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and a matching `openrouter/<slug>` entry to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
 
 ---
 
