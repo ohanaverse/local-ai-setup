@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -14,13 +14,49 @@ from textual.coordinate import Coordinate
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..config import load_config
-from ..providers.registry import ProviderRegistry
 from ..queue import PendingChanges
+from ..registry import Fetch, ModelEntry, Registry, provider_config
+from ..state import ModelState, StateStore
 
 if TYPE_CHECKING:
-    from ..manifest import FamilyManifest
     from ..providers.base import VariantSpec
+
+
+def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -> ModelEntry:
+    """Convert a ModelForm VariantSpec-shaped dict to a ModelEntry.
+
+    The dialog still emits the legacy TypedDict shape (provider, name,
+    repo, files, model_info); the screen needs a ModelEntry to insert
+    into registry.models. This adapter keeps the form simple and
+    isolates the shape translation here.
+
+    Edit mode preserves `variant["id"]` (the immutable key the user
+    sees in the picker); add mode derives the same `provider/name`
+    shape ModelForm produced. We don't need a separate "id derivation"
+    step — the form already gave us one.
+    """
+    provider_id = variant["provider"]
+    # Sanity: provider must exist in the registry. Defends against a
+    # malformed dialog result that snuck past form validation.
+    registry.provider(provider_id)  # raises KeyError if unknown
+
+    name = variant.get("name") or variant["id"]
+    repo = variant.get("repo")
+    files = variant.get("files")
+    quantizations = variant.get("quantizations")
+    fetch = None
+    if repo or files or quantizations:
+        fetch = Fetch(repo=repo, files=files, quantizations=quantizations)
+
+    model_info = dict(variant.get("model_info") or {})
+    return ModelEntry(
+        id=variant["id"],
+        family=family,
+        provider_id=provider_id,
+        model_name=name,
+        model_info=model_info,
+        fetch=fetch,
+    )
 
 
 def _human_size(n) -> str:
@@ -33,6 +69,40 @@ def _human_size(n) -> str:
         if n < 1024:
             return f"{n:.1f} {unit}"
     return f"{n:.1f} PB"
+
+
+def _entry_kwargs(m: ModelEntry) -> dict:
+    """Deep-copy a ModelEntry to kwargs so snapshot copies don't share
+    nested Fetch/Cost objects with the live registry."""
+    from copy import deepcopy
+    return deepcopy(m).__dict__
+
+
+def _state_kwargs(s: ModelState) -> dict:
+    from dataclasses import asdict
+    return asdict(s)
+
+
+def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
+    """Build a VariantSpec-shaped dict from a ModelEntry for provider APIs.
+
+    Providers still consume the legacy TypedDict (provider, name, repo,
+    files, model_info). ModelEntry stores repo/files in `fetch`. We
+    don't carry `model_info` from the registry into the provider call
+    (providers read what they need from their own state).
+    """
+    repo = entry.fetch.repo if entry.fetch else None
+    files = entry.fetch.files if entry.fetch else None
+    quantizations = entry.fetch.quantizations if entry.fetch else None
+    return {
+        "id": entry.id,
+        "provider": entry.provider_id,
+        "name": entry.model_name,
+        "repo": repo,
+        "files": files,
+        "quantizations": quantizations,
+        "model_info": dict(entry.model_info),
+    }
 
 
 class ModelScreen(Screen[None]):
@@ -48,16 +118,22 @@ class ModelScreen(Screen[None]):
 
     def __init__(
         self,
-        manifest: FamilyManifest,
-        manifest_path: Path,
+        registry: Registry,
+        state: StateStore,
+        family: str,
+        registry_path: Path,
+        state_path: Path,
         available_providers: list[str] | None = None,
     ) -> None:
         super().__init__()
-        self.manifest = manifest
-        self.manifest_path = manifest_path
+        self.registry = registry
+        self.state = state
+        self.family = family
+        self.registry_path = registry_path
+        self.state_path = state_path
         # The list of providers configured in ~/.config/local-ai/config.yaml.
         # The provider-table on the left always shows every entry here, even
-        # when the family has no variants at all — otherwise an empty family
+        # when the family has no models at all — otherwise an empty family
         # would show no providers and the user would have nowhere to click
         # 'a' to add the first one. Order is preserved as given (config
         # insertion order) and falls back to a stable default only if no
@@ -76,17 +152,21 @@ class ModelScreen(Screen[None]):
             self.selected_provider = self.available_providers[0]
         else:
             self.selected_provider = None
+        # queued_downloads / queued_deletes map model_id -> VariantSpec
+        # (the VariantSpec is what provider APIs still consume; model_id
+        # is the registry/state key).
         self.queued_downloads: dict[str, VariantSpec] = {}
         self.queued_deletes: dict[str, VariantSpec] = {}
-        # Reconcile overlay: per-variant reality from the provider, populated by
-        # action_reconcile / on_mount. Rendering prefers this over manifest.
+        # Reconcile overlay: per-model-id reality from the provider.
         self.reconciled: dict[str, dict] = {}
         # Snapshot for discard: restore if the user exits without applying.
-        self._snapshot_variants: list[VariantSpec] = [
-            cast("VariantSpec", dict(v)) for v in manifest.variants
+        self._snapshot_models: list[ModelEntry] = [
+            ModelEntry(**_entry_kwargs(m)) for m in registry.models if m.family == family
         ]
-        self._snapshot_downloaded: dict[str, dict] = {
-            k: dict(v) for k, v in manifest.downloaded.items()
+        self._snapshot_state_entries: dict[str, ModelState] = {
+            mid: ModelState(**_state_kwargs(s))
+            for mid, s in state.models.items()
+            if any(m.id == mid and m.family == family for m in registry.models)
         }
 
     def compose(self) -> ComposeResult:
@@ -118,36 +198,31 @@ class ModelScreen(Screen[None]):
             pt.cursor_coordinate = Coordinate(0, 0)
         pt.focus()
         # Reconcile with the world so the UI shows reality even when the
-        # manifest is stale. In-memory only; nothing is written to disk
+        # registry is stale. In-memory only; nothing is written to disk
         # until the user applies.
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def _run_reconcile(self) -> None:
-        """Ask each provider whether its variants are on disk; cache results.
+        """Ask each provider whether its models are on disk; cache results."""
+        from ..providers.registry import ProviderRegistry
 
-        Uses size_of (cheap; queries ollama list / HF cache / model dir) as
-        the source of truth for "downloaded", avoiding the slower is_downloaded
-        path which loads the model.
-        """
-        try:
-            config = load_config()
-        except Exception:
-            return
-        # Group variants by provider so we can reuse a single size_of call.
-        by_provider: dict[str, list[VariantSpec]] = defaultdict(list)
-        for v in self.manifest.variants:
-            by_provider[v["provider"]].append(v)
-        for provider_name, variants in by_provider.items():
+        family_models = self.registry.models_by_family(self.family)
+        by_provider: dict[str, list[ModelEntry]] = defaultdict(list)
+        for m in family_models:
+            by_provider[m.provider_id].append(m)
+        for provider_name, entries in by_provider.items():
             try:
-                provider = ProviderRegistry.get(provider_name, config.provider(provider_name))
+                entry = self.registry.provider(provider_name)
+                provider = ProviderRegistry.get(provider_name, provider_config(entry))
             except Exception:
                 continue
-            # Build a name -> size map per provider when possible. Not all
-            # providers expose this (ollama does, llamacpp/omlx work per-variant).
-            for v in variants:
+            for m in entries:
                 size: int | None = None
+                # Providers consume VariantSpec; build a minimal one
+                # from the ModelEntry's stored Fetch.
+                spec = _model_entry_to_variant(m)
                 try:
-                    raw = provider.size_of(v)
+                    raw = provider.size_of(spec)  # type: ignore[attr-defined]
                     if isinstance(raw, int):
                         size = raw
                 except Exception:
@@ -158,14 +233,14 @@ class ModelScreen(Screen[None]):
                     try:
                         for lm in provider.list_local():
                             lm_name = lm.get("name") or lm.get("variant_id")
-                            if lm_name == v.get("name") or lm_name == v["id"]:
+                            if lm_name == m.model_name or lm_name == m.id:
                                 lp = lm.get("local_path") or lm.get("path")
                                 if isinstance(lp, str):
                                     local_path = lp
                                 break
                     except Exception:
                         pass
-                self.reconciled[v["id"]] = {
+                self.reconciled[m.id] = {
                     "downloaded": downloaded,
                     "size": size,
                     "local_path": local_path,
@@ -181,11 +256,12 @@ class ModelScreen(Screen[None]):
         pt.clear()
         # Always render a row for every configured provider so an empty
         # family still shows ollama/llamacpp/omlx in the left pane and
-        # the user has somewhere to add their first variant. Counts
-        # come from the variants list (0 when none).
+        # the user has somewhere to add their first model. Counts
+        # come from the registry.models filtered to this family (0
+        # when none).
         counts: dict[str, int] = defaultdict(int)
-        for v in self.manifest.variants:
-            counts[v["provider"]] += 1
+        for m in self.registry.models_by_family(self.family):
+            counts[m.provider_id] += 1
         for provider in self.available_providers:
             pt.add_row(provider, str(counts.get(provider, 0)), key=provider)
         # If the previously selected provider disappeared from the
@@ -204,51 +280,54 @@ class ModelScreen(Screen[None]):
                 self.selected_provider = str(row_key.value)
                 self._load_models_for_provider(self.selected_provider)
 
-    def _is_downloaded(self, vid: str) -> bool:
-        """Truth about whether a variant is on disk.
+    def _is_downloaded(self, model_id: str) -> bool:
+        """Truth about whether a model is on disk.
 
-        Prefers the reconcile overlay (reality); falls back to the manifest
-        when reconcile hasn't run for this variant yet.
+        Prefers the reconcile overlay (reality); falls back to state
+        when reconcile hasn't run for this model yet.
         """
-        rec = self.reconciled.get(vid)
+        rec = self.reconciled.get(model_id)
         if rec is not None:
             return bool(rec.get("downloaded"))
-        return vid in self.manifest.downloaded
+        return self.state.get(model_id).downloaded
 
     def _load_models_for_provider(self, provider: str) -> None:
+        from ..providers.registry import ProviderRegistry
+
         mt = self.query_one("#model-table", DataTable)
         mt.clear()
-        for v in self.manifest.variants:
-            if v["provider"] != provider:
+        for m in self.registry.models_by_family(self.family):
+            if m.provider_id != provider:
                 continue
-            rec = self.reconciled.get(v["id"])
+            rec = self.reconciled.get(m.id)
             if rec is not None:
                 downloaded = bool(rec.get("downloaded"))
                 size_str = _human_size(rec.get("size")) if downloaded else "—"
                 path = rec.get("local_path") or (
-                    self.manifest.downloaded.get(v["id"], {}).get("local_path", "—")
+                    self.state.get(m.id).disk_path or "—"
                 )
             else:
-                downloaded = v["id"] in self.manifest.downloaded
+                state_entry = self.state.get(m.id)
+                downloaded = state_entry.downloaded
                 size_str = "—"
-                path = self.manifest.downloaded.get(v["id"], {}).get("local_path", "—")
+                path = state_entry.disk_path or "—"
                 if downloaded:
                     try:
-                        cfg = load_config()
-                        p = ProviderRegistry.get(provider, cfg.provider(provider))
-                        size_str = _human_size(p.size_of(v))
+                        entry = self.registry.provider(provider)
+                        prov = ProviderRegistry.get(provider, provider_config(entry))
+                        size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
                     except Exception:
                         pass
             # Four-state status: takes precedence over current disk state.
-            if v["id"] in self.queued_deletes:
+            if m.id in self.queued_deletes:
                 status = "[red]✗[/red]"
-            elif v["id"] in self.queued_downloads:
+            elif m.id in self.queued_downloads:
                 status = "[yellow]↓[/yellow]"
             elif downloaded:
                 status = "[green]✓[/green]"
             else:
                 status = "[dim]○[/dim]"
-            mt.add_row(v["name"], status, size_str, path, key=v["id"])
+            mt.add_row(m.model_name, status, size_str, path, key=m.id)
 
     def _refresh_pending_bar(self) -> None:
         bar = self.query_one("#pending-bar", Static)
@@ -261,27 +340,28 @@ class ModelScreen(Screen[None]):
         if mt.row_count == 0:
             return
         row_key = list(mt.rows.keys())[mt.cursor_row]
-        vid = str(row_key.value)
-        variant = self.manifest.variant_by_id(vid)
-        if variant is None:
+        mid = str(row_key.value)
+        entry = next((m for m in self.registry.models if m.id == mid), None)
+        if entry is None:
             return
-        if self._is_downloaded(vid):
+        if self._is_downloaded(mid):
             return  # already downloaded
-        if vid in self.queued_downloads:
-            self.queued_downloads.pop(vid)
+        spec = _model_entry_to_variant(entry)
+        if mid in self.queued_downloads:
+            self.queued_downloads.pop(mid)
         else:
-            self.queued_downloads[vid] = variant
+            self.queued_downloads[mid] = spec
         self._refresh_pending_bar()
         if self.selected_provider is not None:
             self._load_models_for_provider(self.selected_provider)
 
     def _provider_list(self) -> list[str]:
         # Use the full configured-provider list, not just the providers
-        # currently used by variants, so the user can add the first
-        # model for a fresh family via the 'a' dialog.
+        # currently used by models in the family, so the user can add
+        # the first model for a fresh family via the 'a' dialog.
         if self.available_providers:
             return list(self.available_providers)
-        return sorted({v["provider"] for v in self.manifest.variants})
+        return sorted({m.provider_id for m in self.registry.models_by_family(self.family)})
 
     def action_add_model(self) -> None:
         from .forms import ModelForm
@@ -303,10 +383,13 @@ class ModelScreen(Screen[None]):
     def _on_add_model(self, variant) -> None:
         if variant is None:
             return
-        if self.manifest.variant_by_id(variant["id"]):
+        if any(m.id == variant["id"] for m in self.registry.models):
             self.app.notify("Model ID already exists")
             return
-        self.manifest.variants.append(variant)
+        entry = _variant_to_model_entry(
+            variant, family=self.family, registry=self.registry
+        )
+        self.registry.models.append(entry)
         self.queued_downloads[variant["id"]] = variant
         self.reload()
         self._refresh_pending_bar()
@@ -316,19 +399,20 @@ class ModelScreen(Screen[None]):
         if mt.row_count == 0:
             return
         row_key = list(mt.rows.keys())[mt.cursor_row]
-        vid = str(row_key.value)
-        variant = self.manifest.variant_by_id(vid)
-        if variant is None:
+        mid = str(row_key.value)
+        entry = next((m for m in self.registry.models if m.id == mid), None)
+        if entry is None:
             return
-        # Only allow queuing a delete for variants that are actually on
+        # Only allow queuing a delete for models that are actually on
         # disk; otherwise the delete has nothing to remove.
-        if not self._is_downloaded(vid):
+        if not self._is_downloaded(mid):
             return
-        if vid in self.queued_deletes:
-            self.queued_deletes.pop(vid)
+        spec = _model_entry_to_variant(entry)
+        if mid in self.queued_deletes:
+            self.queued_deletes.pop(mid)
         else:
-            self.queued_deletes[vid] = variant
-        self.queued_downloads.pop(vid, None)
+            self.queued_deletes[mid] = spec
+        self.queued_downloads.pop(mid, None)
         self._refresh_pending_bar()
         if self.selected_provider is not None:
             self._load_models_for_provider(self.selected_provider)
@@ -342,14 +426,15 @@ class ModelScreen(Screen[None]):
         if mt.cursor_row >= mt.row_count:
             return
         row_key = list(mt.rows.keys())[mt.cursor_row]
-        vid = str(row_key.value)
-        variant = self.manifest.variant_by_id(vid)
-        if variant is None:
+        mid = str(row_key.value)
+        entry = next((m for m in self.registry.models if m.id == mid), None)
+        if entry is None:
             return
         from .forms import ModelForm
 
+        spec = _model_entry_to_variant(entry)
         self.app.push_screen(
-            ModelForm(providers=self._provider_list(), variant=variant),
+            ModelForm(providers=self._provider_list(), variant=spec),
             self._on_edit_model,
         )
 
@@ -404,13 +489,15 @@ class ModelScreen(Screen[None]):
         # Fallback for rare states where neither table has focus:
         # do nothing rather than guessing.
 
-
     def _on_edit_model(self, updated) -> None:
         if updated is None:
             return
-        for i, v in enumerate(self.manifest.variants):
-            if v["id"] == updated["id"]:
-                self.manifest.variants[i] = updated
+        new_entry = _variant_to_model_entry(
+            updated, family=self.family, registry=self.registry
+        )
+        for i, m in enumerate(self.registry.models):
+            if m.id == updated["id"]:
+                self.registry.models[i] = new_entry
                 break
         if updated["id"] in self.queued_downloads:
             self.queued_downloads[updated["id"]] = updated
@@ -436,6 +523,8 @@ class ModelScreen(Screen[None]):
             return
         if choice == "discard":
             self._restore_snapshot()
+            self.queued_downloads.clear()
+            self.queued_deletes.clear()
             self.app.pop_screen()
             return
         # "cancel" or None: stay on the model screen, queue preserved.
@@ -450,7 +539,7 @@ class ModelScreen(Screen[None]):
         from .status import StatusScreen
 
         self.app.pop_screen()
-        self.app.push_screen(StatusScreen(family=self.manifest.family, run_apply=self._run_apply))
+        self.app.push_screen(StatusScreen(family=self.family, run_apply=self._run_apply))
 
     def _run_apply(
         self,
@@ -460,37 +549,44 @@ class ModelScreen(Screen[None]):
     ) -> None:
         """Construct a PendingChanges and drive apply().
 
-        Passed as a closure to StatusScreen. Mutates self.manifest in place
-        (mark_downloaded, remove deleted variants). The on_event callable
-        receives lifecycle tags; on_progress receives per-line provider
-        output forwarded verbatim into the log.
+        Passed as a closure to StatusScreen. Mutates self.registry and
+        self.state in place (mark_downloaded, remove deleted models).
+        The on_event callable receives lifecycle tags; on_progress
+        receives per-line provider output forwarded verbatim into the
+        log.
         """
-        try:
-            config = load_config()
-        except Exception:
-            on_event("apply:done")
-            return
+        from ..providers.registry import ProviderRegistry
+
         providers: dict[str, object] = {}
-        for v in list(self.queued_downloads.values()) + list(self.queued_deletes.values()):
+        for spec in list(self.queued_downloads.values()) + list(self.queued_deletes.values()):
             try:
-                providers[v["provider"]] = ProviderRegistry.get(
-                    v["provider"], config.provider(v["provider"])
+                entry = self.registry.provider(spec["provider"])
+                providers[spec["provider"]] = ProviderRegistry.get(
+                    spec["provider"], provider_config(entry)
                 )
             except Exception:
                 continue
-        # Merge any reconciled entries that the manifest didn't know about,
-        # so the saved manifest reflects reality. Never remove existing
+        # Merge any reconciled entries that state didn't know about,
+        # so the saved state reflects reality. Never remove existing
         # entries; the user can queue a delete (d) for that.
-        for vid, rec in self.reconciled.items():
-            if rec.get("downloaded") and vid not in self.manifest.downloaded:
-                local_path = rec.get("local_path") or ""
-                self.manifest.mark_downloaded(vid, local_path)
+        for mid, rec in self.reconciled.items():
+            if rec.get("downloaded") and not self.state.get(mid).downloaded:
+                self.state.set(
+                    mid,
+                    ModelState(
+                        downloaded=True,
+                        disk_path=rec.get("local_path") or "",
+                    ),
+                )
         pending = PendingChanges(
-            manifest=self.manifest,
-            manifest_path=self.manifest_path,
+            registry=self.registry,
+            state=self.state,
+            family=self.family,
+            registry_path=self.registry_path,
+            state_path=self.state_path,
             providers=providers,
-            downloads=list(self.queued_downloads.values()),
-            deletes=list(self.queued_deletes.values()),
+            downloads=[(mid, spec) for mid, spec in self.queued_downloads.items()],
+            deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()],
         )
         register(pending)
         pending.apply(on_event=on_event, on_progress=on_progress)
@@ -501,5 +597,20 @@ class ModelScreen(Screen[None]):
         self.queued_deletes.clear()
 
     def _restore_snapshot(self) -> None:
-        self.manifest.variants = [cast("VariantSpec", dict(v)) for v in self._snapshot_variants]
-        self.manifest.downloaded = {k: dict(v) for k, v in self._snapshot_downloaded.items()}
+        """Restore the in-memory registry/state to the snapshot taken on
+        mount, dropping any queued mutations."""
+        # Replace this family's models in registry with the snapshot.
+        keep = [m for m in self.registry.models if m.family != self.family]
+        self.registry.models = keep + self._snapshot_models
+        # Replace state entries that were in the snapshot.
+        for mid in self._snapshot_state_entries:
+            self.state.set(mid, self._snapshot_state_entries[mid])
+        # Drop state entries that were added during this session but
+        # weren't in the snapshot, scoped to this family.
+        for mid in list(self.state.models):
+            if (
+                mid in self.state.models
+                and mid not in self._snapshot_state_entries
+                and any(m.id == mid and m.family == self.family for m in self.registry.models)
+            ):
+                self.state.models.pop(mid, None)

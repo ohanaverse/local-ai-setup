@@ -341,6 +341,11 @@ class ModelForm(ModalScreen[VariantSpec | None]):
         else:
             vid = f"{provider}/{name.replace('/', '--')}"  # type: ignore[union-attr]
 
+        # Carry over existing quantizations in edit mode; add mode has
+        # none because the single model input cannot express them.
+        existing_quantizations = (
+            (self._variant or {}).get("quantizations") if self._variant is not None else None
+        )
         spec: VariantSpec = {
             "id": vid,
             "provider": provider,
@@ -350,7 +355,7 @@ class ModelForm(ModalScreen[VariantSpec | None]):
             # empty filename => no file filter => files=None. A
             # non-empty filename => single-element list.
             "files": [filename] if filename else None,
-            "quantizations": None,
+            "quantizations": existing_quantizations,
         }
         if provider == "ollama" and self._variant is None and name:
             spec["model_info"] = auto_detect_model_info(name)

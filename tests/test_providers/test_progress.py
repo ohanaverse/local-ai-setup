@@ -148,13 +148,26 @@ def test_snapshot_download_real_call_no_typeerror(tmp_path, monkeypatch):
 
 def test_pending_changes_forwards_on_progress(tmp_path):
     """apply() must pass on_progress to provider.download()."""
-    from modelman.manifest import FamilyManifest
     from modelman.queue import PendingChanges
-
-    m = FamilyManifest(
-        family="ornith",
-        variants=[{"id": "x", "provider": "ollama", "name": "x:7b"}],
+    from modelman.registry import (
+        AuthConfig,
+        ModelEntry,
+        ProviderEntry,
+        Registry,
+        save_registry,
     )
+    from modelman.state import StateStore
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    entry = ModelEntry(
+        id="x", family="ornith", provider_id="ollama", model_name="x:7b",
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[entry],
+    )
+    save_registry(reg, reg_path)
 
     provider = MagicMock()
     provider.name = "ollama"
@@ -164,10 +177,13 @@ def test_pending_changes_forwards_on_progress(tmp_path):
     progress_lines: list[str] = []
 
     pending = PendingChanges(
-        manifest=m,
-        manifest_path=tmp_path / "fam.yaml",
+        registry=reg,
+        state=StateStore(),
+        family="ornith",
+        registry_path=reg_path,
+        state_path=state_path,
         providers={"ollama": provider},
-        downloads=[m.variants[0]],
+        downloads=[(entry.id, {"id": entry.id, "provider": "ollama", "name": "x:7b"})],
     )
     pending.apply(on_progress=progress_lines.append)
 

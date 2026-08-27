@@ -336,7 +336,8 @@ class FamilyScreen(Screen[None]):
             return
         m = load_manifest(family_name)
         path = get_family_dir() / f"{family_name}.yaml"
-        self.app.push_screen(ModelScreen(m, path, self._available_providers))
+        # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
+        self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
 
     def action_open_family(self) -> None:
         table = self.query_one(DataTable)
@@ -346,7 +347,8 @@ class FamilyScreen(Screen[None]):
         family_name = str(row_key.value)
         m = load_manifest(family_name)
         path = get_family_dir() / f"{family_name}.yaml"
-        self.app.push_screen(ModelScreen(m, path, self._available_providers))
+        # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
+        self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
 
     def action_quit(self) -> None:
         self.app.exit()

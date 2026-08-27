@@ -1,4 +1,10 @@
-"""In-memory change queue applied on exit of the TUI model screen."""
+"""In-memory change queue applied on exit of the TUI model screen.
+
+The on-disk targets are registry.toml (canonical model/provider definitions)
+and modelman.toml (per-machine mutable state: download markers, family
+display names). The legacy families/<family>.yaml manifest is no longer
+written by the TUI; it survives as a migrate-time input only.
+"""
 
 from __future__ import annotations
 
@@ -8,23 +14,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .manifest import save_manifest
 from .providers._progress import DownloadCancelled
+from .registry import save_registry
+from .state import ModelState, save_state
 
 if TYPE_CHECKING:
-    from .manifest import FamilyManifest
     from .providers.base import VariantSpec
+    from .registry import Registry
+    from .state import StateStore
 
 
 # Event tags fired via the optional on_event callback during apply(). The
-# StatusScreen consumes these to render live progress.
-#
-# Tags are pipe-delimited:
+# StatusScreen consumes these to render live progress. Format is unchanged
+# from the legacy FamilyManifest-based implementation so StatusScreen can
+# keep consuming pipe-delimited tags without modification:
 #   "verb:status|vid|label" for per-item events,
 #   "verb:status" for global events (save:*, apply:*),
-#   "verb:status|vid|label|reason" for per-item failures (carries the
-#     first line of the exception so the StatusScreen can show WHY it
-#     failed, not just THAT it failed),
+#   "verb:status|vid|label|reason" for per-item failures,
 #   "verb:status|reason" for global failures.
 EventFn = Callable[[str], None]
 
@@ -40,9 +46,7 @@ def _label(variant: VariantSpec) -> str:
 
 def _reason(exc: BaseException) -> str:
     """First line of an exception, capped so a giant traceback doesn't
-    drown the StatusScreen. Newlines inside the message would otherwise
-    confuse the pipe-delimited tag format; take only the first line.
-    """
+    drown the StatusScreen."""
     text = str(exc) or exc.__class__.__name__
     first = text.splitlines()[0] if text else ""
     if len(first) > 200:
@@ -52,11 +56,17 @@ def _reason(exc: BaseException) -> str:
 
 @dataclass
 class PendingChanges:
-    manifest: FamilyManifest
-    manifest_path: Path
+    registry: Registry
+    state: StateStore
+    family: str
+    registry_path: Path
+    state_path: Path
     providers: dict[str, object]
-    downloads: list[VariantSpec] = field(default_factory=list)
-    deletes: list[VariantSpec] = field(default_factory=list)
+    # Each queued item carries (model_id, VariantSpec). model_id is the
+    # ModelEntry.id used to key Registry/StateStore mutations; VariantSpec
+    # is what the provider APIs (download, size_of, delete) still consume.
+    downloads: list[tuple[str, VariantSpec]] = field(default_factory=list)
+    deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     cancelled: bool = False
 
@@ -82,21 +92,18 @@ class PendingChanges:
         on_event: EventFn | None = None,
         on_progress: EventFn | None = None,
     ) -> None:
-        """Apply deletes first, then downloads, then save the manifest once.
+        """Apply deletes first, then downloads, then save registry+state once.
 
         On failure of any single step, capture it in self.failures and continue
         with the remaining steps. If `on_event` is provided, it is called for
         each lifecycle transition (start/done/fail) and at apply:done.
 
         If `on_progress` is provided, it is forwarded to each provider's
-        download method as a line-emitting callback. Providers stream their
-        native progress (ollama subprocess output, huggingface_hub tqdm
-        bars) through it. Progress callbacks fire from worker threads;
-        the StatusScreen marshals to the UI thread.
+        download method as a line-emitting callback.
 
         If `self.cancelled` is set, the loop stops between steps; already-
-        completed steps remain applied, the manifest is not saved, and the
-        run ends with apply:cancelled.
+        completed steps remain applied, the registry/state are not saved,
+        and the run ends with apply:cancelled.
         """
 
         def emit(tag: str) -> None:
@@ -113,64 +120,75 @@ class PendingChanges:
             emit("apply:done")
             return
 
-        for variant in self.deletes:
+        for model_id, variant in self.deletes:
             if aborted():
                 return
-            vid = variant["id"]
+            assert variant["id"] == model_id, (
+                f"variant id {variant['id']!r} != queued model_id {model_id!r}"
+            )
             label = _label(variant)
-            emit(f"delete:start|{vid}|{label}")
+            emit(f"delete:start|{model_id}|{label}")
             try:
                 self._delete(variant)
             except Exception as exc:  # noqa: BLE001
                 reason = _reason(exc)
-                self.failures.append(f"delete {vid}: {exc}")
-                emit(f"delete:fail|{vid}|{label}|{reason}")
+                self.failures.append(f"delete {model_id}: {exc}")
+                emit(f"delete:fail|{model_id}|{label}|{reason}")
                 continue
-            self.manifest.variants = [v for v in self.manifest.variants if v["id"] != vid]
-            self.manifest.downloaded.pop(vid, None)
-            emit(f"delete:done|{vid}|{label}")
+            # Remove from in-memory registry.
+            self.registry.models = [m for m in self.registry.models if m.id != model_id]
+            # Clear any state entry so modelman.toml doesn't carry a
+            # stale downloaded=True after the user removed the file.
+            self.state.models.pop(model_id, None)
+            emit(f"delete:done|{model_id}|{label}")
 
-        for variant in self.downloads:
+        for model_id, variant in self.downloads:
             if aborted():
                 return
-            vid = variant["id"]
+            assert variant["id"] == model_id, (
+                f"variant id {variant['id']!r} != queued model_id {model_id!r}"
+            )
             label = _label(variant)
-            emit(f"download:start|{vid}|{label}")
+            emit(f"download:start|{model_id}|{label}")
             try:
                 local_path = self._download(variant, on_progress)
             except DownloadCancelled:
-                # User pressed Cancel mid-download. Bubble out of the
-                # loop; do not record this as a failure (the user
-                # intended to abort).
-                emit(f"download:cancelled|{vid}|{label}")
+                emit(f"download:cancelled|{model_id}|{label}")
                 emit("apply:cancelled")
                 return
             except Exception as exc:  # noqa: BLE001
                 reason = _reason(exc)
-                self.failures.append(f"download {vid}: {exc}")
-                emit(f"download:fail|{vid}|{label}|{reason}")
+                self.failures.append(f"download {model_id}: {exc}")
+                emit(f"download:fail|{model_id}|{label}|{reason}")
                 continue
-            self.manifest.mark_downloaded(vid, local_path)
-            # Show the actual on-disk size in the success line so the
-            # user has direct, trustworthy confirmation that the
-            # download landed (a 0-byte "Downloaded" message looks
-            # like an empty file; a "21.7 GB" message looks real).
+            # Record download in state.
+            existing = self.state.get(model_id)
+            self.state.set(
+                model_id,
+                ModelState(
+                    downloaded=True,
+                    disk_path=local_path,
+                    size_bytes=existing.size_bytes,
+                    litellm_exposed=existing.litellm_exposed,
+                ),
+            )
             try:
                 size = Path(local_path).stat().st_size
             except OSError:
                 size = 0
             if size > 0:
                 from .providers._progress import human_bytes
-                emit(f"download:done|{vid}|{label}|{human_bytes(size)}")
+                emit(f"download:done|{model_id}|{label}|{human_bytes(size)}")
             else:
-                emit(f"download:done|{vid}|{label}")
+                emit(f"download:done|{model_id}|{label}")
 
         if aborted():
             return
 
         emit("save:start")
         try:
-            save_manifest(self.manifest, self.manifest_path)
+            save_registry(self.registry, self.registry_path)
+            save_state(self.state, self.state_path)
             emit("save:done")
         except Exception as exc:  # noqa: BLE001
             reason = _reason(exc)
@@ -181,8 +199,6 @@ class PendingChanges:
 
     def _download(self, variant: VariantSpec, on_progress: EventFn | None = None) -> str:
         provider = self.providers[variant["provider"]]
-        # Providers expose an optional on_progress kwarg; if not accepted
-        # (e.g. test stubs), fall back to the plain download() signature.
         try:
             return provider.download(variant, on_progress=on_progress)  # type: ignore[attr-defined]
         except TypeError:
@@ -193,17 +209,18 @@ class PendingChanges:
         if hasattr(provider, "delete"):
             provider.delete(variant)  # type: ignore[attr-defined]
             return
-        local_path = self.manifest.downloaded.get(variant["id"], {}).get("local_path")
-        if local_path:
-            from pathlib import Path as _P
+        # Fallback: providers without delete() just unlink the file.
+        # Locate the local path from state (the legacy code read
+        # self.manifest.downloaded[vid]["local_path"]; the equivalent
+        # here is state.models[vid].disk_path).
+        import os
+        import shutil
+        from pathlib import Path as _P
 
+        local_path = self.state.get(variant["id"]).disk_path
+        if local_path:
             p = _P(local_path)
             if p.is_file():
                 p.unlink()
-            elif p.is_dir():
-                # Fallback: only remove if empty. Providers that share directories
-                # (like oMLX) must implement their own delete() to be safe.
-                import os
-                if not os.listdir(p):
-                    import shutil
-                    shutil.rmtree(p)
+            elif p.is_dir() and not os.listdir(p):
+                shutil.rmtree(p)

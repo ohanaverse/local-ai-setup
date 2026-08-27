@@ -6,11 +6,23 @@ import contextlib
 
 from textual.app import App
 
-from .config import load_config
-from .manifest import get_family_dir, load_manifest
+from .registry import load_registry
 from .screens.families import FamilyScreen
 from .screens.models import ModelScreen
 from .settings import Settings, load_settings, save_settings
+from .state import load_state
+
+
+def _configured_providers() -> list[str]:
+    """Read provider names from registry.toml; on any failure return [].
+
+    Kept here (rather than in registry.py) so `app.py` doesn't grow a
+    hard dependency on a modelman-side parser for legacy config.yaml.
+    """
+    try:
+        return [p.id for p in load_registry().providers]
+    except Exception:
+        return []
 
 
 class ModelmanApp(App[None]):
@@ -31,19 +43,28 @@ class ModelmanApp(App[None]):
             self.theme = settings.theme
 
     def on_mount(self) -> None:
-        # Compute configured providers once and forward to whichever
-        # screens need them. Keeps ModelScreen's provider pane showing
-        # every entry from config.yaml, even when the family on disk
-        # has zero variants. Order is config-file insertion order.
-        try:
-            configured = list(load_config().providers.keys())
-        except Exception:
-            configured = []
+        configured = _configured_providers()
         self.push_screen(FamilyScreen())
         if self._initial_family is not None:
-            manifest = load_manifest(self._initial_family)
-            path = get_family_dir() / f"{self._initial_family}.yaml"
-            self.push_screen(ModelScreen(manifest, path, configured))
+            try:
+                registry = load_registry()
+            except Exception:
+                registry = None
+            if registry is None:
+                return
+            from .registry import _default_registry_path
+            from .state import _default_state_path
+
+            self.push_screen(
+                ModelScreen(
+                    registry=registry,
+                    state=load_state(),
+                    family=self._initial_family,
+                    registry_path=_default_registry_path(),
+                    state_path=_default_state_path(),
+                    available_providers=configured,
+                )
+            )
 
     def watch_theme(self, old_theme: str | None, new_theme: str) -> None:
         """Persist the theme whenever the user picks a new one via
@@ -60,8 +81,5 @@ class ModelmanApp(App[None]):
         if current.theme == new_theme:
             return
         current.theme = new_theme
-        # Persistence is best-effort: don't crash the TUI on a disk
-        # error. The user can still see and use their theme for the
-        # current session.
         with contextlib.suppress(Exception):
             save_settings(current)
