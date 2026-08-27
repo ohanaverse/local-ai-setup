@@ -1,4 +1,5 @@
 """Provider registry for pluggable dispatch."""
+
 from __future__ import annotations
 
 from .base import Provider

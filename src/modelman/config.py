@@ -1,4 +1,5 @@
 """Load ~/.config/local-ai/config.yaml."""
+
 from __future__ import annotations
 
 import os
@@ -9,7 +10,7 @@ from typing import Any
 import yaml
 
 
-def _default_config_path() -> Path:
+def default_config_path() -> Path:
     """Compute the config path lazily so env overrides work in tests."""
     return Path(os.environ.get("MODELMAN_CONFIG", "~/.config/local-ai/config.yaml")).expanduser()
 
@@ -21,6 +22,7 @@ class ConfigError(Exception):
 @dataclass
 class Config:
     """Loaded configuration."""
+
     providers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def provider(self, name: str) -> dict[str, Any]:
@@ -31,7 +33,7 @@ class Config:
 
 def load_config(path: Path | None = None) -> Config:
     """Load and validate the config file."""
-    config_path = Path(path) if path else _default_config_path()
+    config_path = Path(path) if path else default_config_path()
     if not config_path.exists():
         raise ConfigError(
             f"Config file not found: {config_path}. "

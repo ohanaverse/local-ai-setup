@@ -33,6 +33,15 @@ def test_registry_register_and_get():
 
 def test_registry_get_unknown_raises():
     import pytest
+
     ProviderRegistry._providers.pop("does-not-exist", None)
     with pytest.raises(KeyError):
         ProviderRegistry.get("does-not-exist", {})
+
+
+def test_provider_size_of_default_is_none():
+    from modelman.providers.ollama import OllamaProvider
+
+    p = FakeProvider({})
+    assert p.size_of({"id": "x", "provider": "fake", "name": "x"}) is None
+    assert hasattr(OllamaProvider({}), "size_of")

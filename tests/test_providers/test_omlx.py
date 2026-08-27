@@ -1,14 +1,15 @@
-import pytest
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
+from modelman.providers._progress import ProgressTqdm
+from modelman.providers.base import VariantSpec
 from modelman.providers.omlx import OMLXProvider
 from modelman.providers.registry import ProviderRegistry
-from modelman.providers.base import VariantSpec
 
 
 @pytest.fixture
 def provider():
-    from modelman.providers import omlx as _mod
     return OMLXProvider({"model_dir": "~/.omlx/models"})
 
 
@@ -23,7 +24,9 @@ def test_is_downloaded_true(provider, tmp_path, monkeypatch):
     (model_dir / "config.json").write_text("{}")
 
     variant: VariantSpec = {
-        "id": "4bit", "provider": "omlx", "name": "Ornith-1.5-35B-A3B-MLX-4bit",
+        "id": "4bit",
+        "provider": "omlx",
+        "name": "Ornith-1.5-35B-A3B-MLX-4bit",
         "repo": "ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit",
     }
     assert provider.is_downloaded(variant) is True
@@ -32,7 +35,9 @@ def test_is_downloaded_true(provider, tmp_path, monkeypatch):
 def test_is_downloaded_false_when_dir_missing(provider, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     variant: VariantSpec = {
-        "id": "x", "provider": "omlx", "name": "x",
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
         "repo": "foo/Bar-MLX",
     }
     assert provider.is_downloaded(variant) is False
@@ -43,7 +48,9 @@ def test_is_downloaded_false_when_dir_empty(provider, tmp_path, monkeypatch):
     model_dir = tmp_path / ".omlx" / "models" / "Bar-MLX"
     model_dir.mkdir(parents=True)
     variant: VariantSpec = {
-        "id": "x", "provider": "omlx", "name": "x",
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
         "repo": "foo/Bar-MLX",
     }
     assert provider.is_downloaded(variant) is False
@@ -75,7 +82,9 @@ def test_download_calls_snapshot_download_with_local_dir(provider, tmp_path, mon
     model_dir = tmp_path / ".omlx" / "models"
 
     variant: VariantSpec = {
-        "id": "4bit", "provider": "omlx", "name": "Ornith-1.5-35B-A3B-MLX-4bit",
+        "id": "4bit",
+        "provider": "omlx",
+        "name": "Ornith-1.5-35B-A3B-MLX-4bit",
         "repo": "ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit",
     }
     with patch("modelman.providers.omlx.snapshot_download") as mock_dl:
@@ -84,3 +93,76 @@ def test_download_calls_snapshot_download_with_local_dir(provider, tmp_path, mon
         kwargs = mock_dl.call_args.kwargs
         assert kwargs["local_dir"] == str(model_dir / "Ornith-1.5-35B-A3B-MLX-4bit")
         assert path == str(model_dir / "Ornith-1.5-35B-A3B-MLX-4bit")
+
+
+def test_size_of_sums_model_dir(tmp_path):
+    md = tmp_path / "models"
+    target = md / "Ornith-1.5"
+    target.mkdir(parents=True)
+    (target / "a.safetensors").write_bytes(b"a" * 50)
+    (target / "b.safetensors").write_bytes(b"b" * 30)
+
+    p = OMLXProvider({"model_dir": str(md)})
+    size = p.size_of(
+        {
+            "id": "x",
+            "provider": "omlx",
+            "name": "x",
+            "repo": "ornith/Ornith-1.5",
+            "files": None,
+        }
+    )
+    assert size == 80
+
+
+def test_size_of_returns_none_when_missing(tmp_path):
+    p = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    assert (
+        p.size_of(
+            {
+                "id": "x",
+                "provider": "omlx",
+                "name": "x",
+                "repo": "ornith/missing",
+                "files": None,
+            }
+        )
+        is None
+    )
+
+
+def test_download_passes_should_cancel_to_tqdm(provider):
+    """Provider wires should_cancel into ProgressTqdm so the Cancel
+    button can interrupt snapshot_download via DownloadCancelled.
+
+    huggingface_hub doesn't let callers pass kwargs to a user-supplied
+    tqdm_class, so the provider sets a class-level active context on
+    ProgressTqdm that every bar created during snapshot_download reads.
+    """
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "omlx",
+        "name": "x-mlx",
+        "repo": "foo/bar",
+    }
+    progress_lines: list[str] = []
+    with patch("modelman.providers.omlx.snapshot_download") as mock_dl:
+        provider.download(variant, on_progress=progress_lines.append)
+        kwargs = mock_dl.call_args.kwargs
+        assert kwargs.get("tqdm_class") is ProgressTqdm
+        assert ProgressTqdm._active_on_progress is None
+        assert ProgressTqdm._active_should_cancel is None
+
+
+def test_cancel_current_resets_on_next_download(provider):
+    provider.cancel_current()
+    assert provider._cancel_requested is True
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "omlx",
+        "name": "x-mlx",
+        "repo": "foo/bar",
+    }
+    with patch("modelman.providers.omlx.snapshot_download"):
+        provider.download(variant)
+        assert provider._cancel_requested is False

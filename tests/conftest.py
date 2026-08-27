@@ -1,6 +1,8 @@
 """Shared pytest fixtures."""
-import pytest
+
 from unittest.mock import MagicMock
+
+import pytest
 
 
 @pytest.fixture
@@ -13,6 +15,7 @@ def mock_runner():
             # ... call code that uses `runner` ...
             runner.assert_called_with(["some", "command"])
     """
+
     def _factory(returncode: int = 0, stdout: str = "", stderr: str = ""):
         runner = MagicMock()
         result = MagicMock()
@@ -21,4 +24,5 @@ def mock_runner():
         result.stderr = stderr
         runner.return_value = result
         return runner
+
     return _factory

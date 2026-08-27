@@ -1,6 +1,8 @@
-import pytest
 from pathlib import Path
-from modelman.config import Config, load_config, ConfigError
+
+import pytest
+
+from modelman.config import ConfigError, load_config
 
 
 def test_load_config_from_file(tmp_path):

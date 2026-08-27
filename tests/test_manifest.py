@@ -1,11 +1,11 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from modelman.manifest import (
-    FamilyManifest,
+    ManifestError,
     load_manifest,
     save_manifest,
-    ManifestError,
-    get_family_dir,
 )
 
 
@@ -62,3 +62,21 @@ def test_mark_downloaded(tmp_path):
     manifest.mark_downloaded("omlx-35b-4bit", "~/.omlx/models/Foo")
     assert "omlx-35b-4bit" in manifest.downloaded
     assert manifest.downloaded["omlx-35b-4bit"]["local_path"] == "~/.omlx/models/Foo"
+
+
+def test_model_info_round_trip(tmp_path):
+    family_file = tmp_path / "ornith-1.5.yaml"
+    family_file.write_text(Path("tests/fixtures/sample_family.yaml").read_text())
+    manifest = load_manifest("ornith-1.5", family_dir=tmp_path)
+
+    manifest.variants[0]["model_info"] = {  # type: ignore[typeddict-unknown-key]
+        "supports_function_calling": True,
+        "mode": "chat",
+    }
+    save_manifest(manifest, family_file)
+
+    reloaded = load_manifest("ornith-1.5", family_dir=tmp_path)
+    assert reloaded.variants[0]["model_info"] == {  # type: ignore[typeddict-unknown-key]
+        "supports_function_calling": True,
+        "mode": "chat",
+    }

@@ -1,22 +1,27 @@
 """Abstract base class for model providers."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import TypedDict
 
 
-class VariantSpec(TypedDict):
-    """A single model variant within a family manifest."""
-    id: str                           # stable id within the family
-    provider: str                     # "ollama" | "llamacpp" | "omlx"
-    name: str                         # provider-specific (e.g. "ornith-1.5:35b" for ollama)
-    repo: str | None                  # HF repo id (for llamacpp/omlx)
-    files: list[str] | None           # files in repo (for llamacpp)
-    quantizations: list[str] | None   # quant tags (for omlx)
+class VariantSpec(TypedDict, total=False):
+    """A single model variant within a family manifest. All fields optional
+    in the TypedDict sense, but providers require specific ones at runtime."""
+
+    id: str  # stable id within the family
+    provider: str  # "ollama" | "llamacpp" | "omlx"
+    name: str  # provider-specific (e.g. "ornith-1.5:35b" for ollama)
+    repo: str | None  # HF repo id (for llamacpp/omlx)
+    files: list[str] | None  # files in repo (for llamacpp)
+    quantizations: list[str] | None  # quant tags (for omlx)
+    model_info: dict | None  # freeform LiteLLM model_info keys
 
 
 class LocalModel(TypedDict):
     """A model that exists on the local machine."""
+
     variant_id: str
     path: str
     size_bytes: int | None
@@ -40,3 +45,11 @@ class Provider(ABC):
 
     @abstractmethod
     def list_local(self) -> list[LocalModel]: ...
+
+    def size_of(self, variant: VariantSpec) -> int | None:
+        """Return the on-disk size in bytes for this variant, or None if unknown.
+
+        Providers override this when they can determine a size. Default is None
+        so unknown providers don't crash the size columns.
+        """
+        return None

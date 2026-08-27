@@ -1,9 +1,10 @@
 """Family manifest: list of variants and which are downloaded."""
+
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ class FamilyManifest:
 
     def mark_downloaded(self, variant_id: str, local_path: str) -> None:
         self.downloaded[variant_id] = {
-            "downloaded_at": datetime.now(timezone.utc).isoformat(),
+            "downloaded_at": datetime.now(UTC).isoformat(),
             "local_path": local_path,
         }
 
@@ -65,6 +66,7 @@ def _coerce_variant(raw: dict) -> VariantSpec:
         repo=raw.get("repo"),
         files=raw.get("files"),
         quantizations=raw.get("quantizations"),
+        model_info=raw.get("model_info"),
     )
 
 

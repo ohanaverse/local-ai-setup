@@ -1,0 +1,1262 @@
+import pytest
+
+from modelman.app import ModelmanApp
+
+
+@pytest.mark.asyncio
+async def test_app_launches_into_family_screen():
+    app = ModelmanApp()
+    async with app.run_test():
+        from modelman.screens.families import FamilyScreen
+
+        assert isinstance(app.screen, FamilyScreen)
+
+
+@pytest.mark.asyncio
+async def test_q_exits_app_from_family_screen(tmp_path, monkeypatch):
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+        # After action_quit, the app should no longer be running.
+        assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_app_with_initial_family_launches_into_model_screen(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.screens.models import ModelScreen
+
+    app = ModelmanApp(family="ornith")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ModelScreen)
+
+
+@pytest.mark.asyncio
+async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        display_name="Ornith",
+        variants=[{"id": "a", "provider": "ollama", "name": "o:35b"}],
+    )
+    m.mark_downloaded("a", str(tmp_path / "downloaded-a"))
+    save_manifest(m, fam_dir / "ornith.yaml")
+
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("DataTable")
+        assert table.row_count == 1
+
+
+@pytest.mark.asyncio
+async def test_add_family_creates_manifest(tmp_path, monkeypatch):
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        for ch in "mamba":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert (fam_dir / "mamba.yaml").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_family_when_empty(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(FamilyManifest(family="mamba"), fam_dir / "mamba.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert not (fam_dir / "mamba.yaml").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_family_blocked_when_downloaded(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "a", "provider": "ollama", "name": "o:35b"}],
+    )
+    m.mark_downloaded("a", str(tmp_path / "downloaded"))
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert (fam_dir / "ornith.yaml").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_family_blocked_when_variants_present_even_without_downloads(
+    tmp_path, monkeypatch,
+):
+    """A family with variant definitions but no completed downloads
+    still has work-in-progress that the user might care about: at
+    minimum, the variant spec (provider / repo / files / model name)
+    would be lost on delete. The previous check only protected
+    against downloaded entries, which silently dropped such families
+    when the user pressed d. We now require explicit confirmation."""
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[
+            {"id": "q4", "provider": "ollama", "name": "ornith:q4"},
+            {"id": "q6", "provider": "ollama", "name": "ornith:q6"},
+        ],
+        # No mark_downloaded; m.downloaded is empty.
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        # ConfirmModal opens with the variants warning. Say No.
+        await pilot.press("n")
+        await pilot.pause()
+        assert (fam_dir / "ornith.yaml").exists()
+        # And on disk, the variants are still there.
+        from modelman.manifest import load_manifest
+
+        on_disk = load_manifest("ornith", family_dir=fam_dir)
+        assert len(on_disk.variants) == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_family_prompts_for_explicit_confirmation_with_variants(
+    tmp_path, monkeypatch,
+):
+    """The variants-but-no-downloads state must require the user to
+    type Yes (not just any key) before the file is removed."""
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "q4", "provider": "ollama", "name": "ornith:q4"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        # Confirm "lose the variant definitions"
+        await pilot.press("y")
+        await pilot.pause()
+        assert not (fam_dir / "ornith.yaml").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_family_cancel_keeps_empty_family(
+    tmp_path, monkeypatch,
+):
+    """A truly empty family can be deleted, but only after explicit
+    Yes. No must always be a no-op regardless of state.
+
+    Pins down a previously-confusing UX bug where the 'No' button
+    seemed to wipe the family anyway: it didn't actually wipe, but
+    it looked like it did because the prompt text didn't explain
+    why the family was empty (the user had previously deleted its
+    models through the ModelScreen)."""
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        # Decide No.
+        await pilot.press("n")
+        await pilot.pause()
+        assert (fam_dir / "ornith.yaml").exists(), (
+            "Selecting 'No' on the empty-family delete prompt must "
+            "preserve the manifest; only 'Yes' deletes."
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_family_cancel_keyword_preserves_file(
+    tmp_path, monkeypatch,
+):
+    """Same as above but using the 'n' keyword binding instead of
+    the focused No button; both paths must preserve the file."""
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        # Use the binding-style keypress (not click).
+        await pilot.press("escape")
+        await pilot.pause()
+        assert (fam_dir / "ornith.yaml").exists(), (
+            "Escape on the delete-family confirm modal must dismiss "
+            "with False and preserve the manifest."
+        )
+
+
+@pytest.mark.asyncio
+async def test_enter_opens_model_screen(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.models import ModelScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ModelScreen)
+
+
+@pytest.mark.asyncio
+async def test_model_screen_two_pane_lists_providers_and_models(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[
+            {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
+            {"id": "q4", "provider": "llamacpp", "name": "q4", "repo": "o/r", "files": ["x.gguf"]},
+        ],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n  ollama:\n    type: ollama\n  llamacpp:\n    type: llamacpp\n"
+    )
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        tables = app.screen.query("DataTable")
+        assert len(tables) == 2
+
+
+@pytest.mark.asyncio
+async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        pending = app.screen.queued_downloads
+        assert "o35" in pending
+
+
+@pytest.mark.asyncio
+async def test_status_shows_four_states(tmp_path, monkeypatch):
+    """Status column reflects: downloaded, not downloaded, queued for
+    download, queued for delete."""
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[
+            {"id": "downloaded", "provider": "ollama", "name": "dl"},
+            {"id": "missing", "provider": "ollama", "name": "missing"},
+        ],
+    )
+    m.mark_downloaded("downloaded", "/fake/path")
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    # Reconcile: only 'downloaded' reports a size.
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+
+    def fake_size_of(v):
+        return 10 if v["id"] == "downloaded" else None
+
+    stub.size_of.side_effect = fake_size_of
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from textual.widgets import DataTable
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Initial: downloaded ✓, missing ○
+        mt = app.screen.query_one("#model-table", DataTable)
+        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "✓" in rows["dl"][1]
+        assert "○" in rows["missing"][1]
+
+        # Toggle download on missing → ↓
+        # Cursor is on the first row (downloaded). Move down then x.
+        mt.cursor_coordinate = (1, 0)
+        await pilot.press("x")
+        await pilot.pause()
+        mt = app.screen.query_one("#model-table", DataTable)
+        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "↓" in rows["missing"][1]
+
+        # Toggle delete on downloaded → ✗
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")
+        await pilot.pause()
+        mt = app.screen.query_one("#model-table", DataTable)
+        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "✗" in rows["dl"][1]
+
+
+@pytest.mark.asyncio
+async def test_delete_action_noop_on_not_downloaded(tmp_path, monkeypatch):
+    """Pressing 'd' on a not-downloaded variant must not queue a delete."""
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "missing", "provider": "ollama", "name": "missing"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert app.screen.queued_deletes == {}
+
+
+@pytest.mark.asyncio
+async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from textual.widgets import Input
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    m.mark_downloaded("o35", str(tmp_path / "downloaded"))
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = 10 * 1024**3
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert "o35" in app.screen.queued_deletes
+        await pilot.press("a")
+        await pilot.pause()
+        # Single-input dialog: focus the model field and type the
+        # ollama tag. New id scheme derives from provider+name.
+        app.screen.query_one("#model", Input).focus()
+        for ch in "ornith:8b":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+        added_ids = [v["id"] for v in app.screen.manifest.variants]
+        assert "ollama/ornith:8b" in added_ids
+
+
+@pytest.mark.asyncio
+async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monkeypatch):
+    """If a model is actually downloaded on disk but the manifest doesn't know,
+    the model screen should show it as downloaded (✓) and show its real size."""
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    # Note: manifest has NO downloaded entry, but the model is on disk.
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 22 * 1024**3
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp(family="ornith")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import DataTable
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        row = mt.get_row_at(0)
+        assert row[1] == "[green]✓[/green]"  # status
+        assert row[2] == "22.0 GB"  # size
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatch):
+    """Reconcile is in-memory only until Apply. Cancelling out of the dialog
+    (or having no queue at all) must not write the manifest."""
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, load_manifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 22 * 1024**3
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp(family="ornith")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # No queue, so escape pops without dialog. Manifest must stay untouched.
+        await pilot.press("escape")
+        await pilot.pause()
+    m2 = load_manifest("ornith")
+    assert "o35" not in m2.downloaded
+
+
+@pytest.mark.asyncio
+async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch):
+    """When the user Applies, reconciled entries that aren't yet in the manifest
+    get written to disk. The existing apply path also runs queued downloads."""
+    from unittest.mock import MagicMock
+
+    from textual.widgets import Button, DataTable
+
+    from modelman.manifest import FamilyManifest, load_manifest, save_manifest
+    from modelman.screens.status import StatusScreen
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[
+            # o35 is on disk per reconcile but not in the manifest.
+            {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
+            # q8 is missing entirely — use this to trigger the queue + apply.
+            {"id": "q8", "provider": "ollama", "name": "ornith:8b"},
+        ],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+
+    def fake_size_of(v):
+        return 22 * 1024**3 if v["id"] == "o35" else None
+
+    stub.size_of.side_effect = fake_size_of
+    stub.download.return_value = "ollama:ornith:8b"
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp(family="ornith")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let reconcile settle
+        # Queue a download for q8 (which is not downloaded), so escape triggers
+        # the apply dialog.
+        mt = app.screen.query_one("#model-table", DataTable)
+        # Click on the q8 row.
+        mt.cursor_coordinate = (1, 0)
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        # StatusScreen takes over; wait for it to finish applying.
+        for _ in range(50):
+            await pilot.pause()
+            cur = app.screen
+            if isinstance(cur, StatusScreen) and cur.done:
+                break
+    m2 = load_manifest("ornith")
+    assert "o35" in m2.downloaded
+
+
+@pytest.mark.asyncio
+async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    original_get = registry.ProviderRegistry.get
+    stub = MagicMock()
+    stub.download.return_value = "/tmp/fake"
+    stub.name = "ollama"
+
+    def fake_get(name, cfg):
+        if name == "ollama":
+            return stub
+        return original_get(name, cfg)
+
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(fake_get))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.press("escape")
+        await pilot.pause()
+        from textual.widgets import Button
+
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        # Wait for the StatusScreen worker to finish.
+        from modelman.screens.status import StatusScreen
+        for _ in range(50):
+            await pilot.pause()
+            cur = app.screen
+            if isinstance(cur, StatusScreen) and cur.done:
+                break
+        stub.download.assert_called()
+        from modelman.manifest import load_manifest
+
+        m2 = load_manifest("ornith")
+        assert "o35" in m2.downloaded
+
+
+@pytest.mark.asyncio
+async def test_family_screen_reconciles_size_from_provider(tmp_path, monkeypatch):
+    """A family with no downloaded entries in the manifest should still show
+    a non-zero size on the family screen if the provider reports the model
+    is on disk."""
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    # No downloaded entry, but the model is actually on disk.
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = 22 * 1024**3
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Let the reconcile worker finish.
+        await pilot.pause()
+        await pilot.pause()
+        table = app.screen.query_one("DataTable")
+        row = table.get_row_at(0)
+        # Family, Display, Variants, Downloaded, Size
+        assert row[3] == "1"  # downloaded count reflects reality
+        assert row[4] == "22.0 GB"
+
+
+@pytest.mark.asyncio
+async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
+    from modelman.manifest import FamilyManifest, load_manifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    from textual.widgets import Button
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # Queue a download on the existing variant.
+        await pilot.press("x")
+        await pilot.pause()
+        assert "o35" in app.screen.queued_downloads
+        # Open the exit dialog.
+        await pilot.press("escape")
+        await pilot.pause()
+        # Press the Discard button.
+        for btn in app.screen.query(Button):
+            if btn.id == "discard":
+                btn.press()
+                break
+        await pilot.pause()
+        # We should be back on the family screen.
+        from modelman.screens.families import FamilyScreen
+
+        assert isinstance(app.screen, FamilyScreen)
+        # Manifest on disk should be unchanged: no downloaded entry for o35.
+        m2 = load_manifest("ornith")
+        assert "o35" not in m2.downloaded
+
+
+@pytest.mark.asyncio
+async def test_family_screen_reconciles_on_resume_after_apply(tmp_path, monkeypatch):
+    """After popping back from StatusScreen (apply completed), the
+    FamilyScreen should re-reconcile so the SIZE and DOWNLOADED columns
+    reflect the new on-disk state. Without this, deleting a model left
+    the family row showing the pre-delete size until the user pressed 'r'.
+    """
+    from unittest.mock import MagicMock
+
+    from modelman.manifest import FamilyManifest, save_manifest
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    # Pre-condition: model is on disk per the manifest, with a size entry.
+    m = FamilyManifest(
+        family="ornith",
+        variants=[
+            {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
+            {"id": "o70", "provider": "ollama", "name": "ornith:70b"},
+        ],
+    )
+    m.mark_downloaded("o35", "/tmp/ollama/ornith:35b")
+    m.downloaded["o35"]["size_bytes"] = 22 * 1024**3
+    m.mark_downloaded("o70", "/tmp/ollama/ornith:70b")
+    m.downloaded["o70"]["size_bytes"] = 44 * 1024**3
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
+
+    # Initial stub: both models present, both at their original sizes.
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+
+    def fake_size_of(variant):
+        if variant["id"] == "o35":
+            return 22 * 1024**3
+        if variant["id"] == "o70":
+            return 44 * 1024**3
+        return None
+
+    stub.size_of.side_effect = fake_size_of
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        # Wait for the initial reconcile to complete on mount.
+        for _ in range(15):
+            await pilot.pause()
+            table = app.screen.query_one("DataTable")
+            if table.get_row_at(0)[4] != "—":
+                break
+        table = app.screen.query_one("DataTable")
+        assert table.get_row_at(0)[4] == "66.0 GB"  # 22 + 44
+
+        # Now simulate: o35 was deleted on disk. Reload the manifest to
+        # match, and stub size_of to return None for o35.
+        m_after = FamilyManifest(
+            family="ornith",
+            variants=[{"id": "o70", "provider": "ollama", "name": "ornith:70b"}],
+        )
+        m_after.mark_downloaded("o70", "/tmp/ollama/ornith:70b")
+        m_after.downloaded["o70"]["size_bytes"] = 44 * 1024**3
+        save_manifest(m_after, fam_dir / "ornith.yaml")
+
+        def post_delete_size(variant):
+            return 44 * 1024**3 if variant["id"] == "o70" else None
+
+        stub.size_of.side_effect = post_delete_size
+
+        # Push and pop a dummy screen to fire on_screen_resume on
+        # FamilyScreen (mirrors what popping from StatusScreen does).
+        from textual.screen import Screen
+        from textual.widgets import Static
+
+        class _Interstitial(Screen):
+            def compose(self):
+                yield Static("interstitial")
+
+        app.push_screen(_Interstitial())
+        await pilot.pause()
+        app.pop_screen()
+        # Reconcile is a worker; let it finish.
+        for _ in range(40):
+            await pilot.pause()
+            table = app.screen.query_one("DataTable")
+            if table.get_row_at(0)[3] == "1":
+                break
+
+        row = app.screen.query_one("DataTable").get_row_at(0)
+        # downloaded count: 1 (o35 deleted, o70 still present)
+        assert row[3] == "1"
+        # size: only o70's 44 GB
+        assert row[4] == "44.0 GB"
+
+
+@pytest.mark.asyncio
+async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
+    """Pressing Enter while a model row is highlighted must open the
+    add/edit dialog for that model, so the user can change the model
+    name without first pressing 'e'."""
+    from modelman.manifest import FamilyManifest, save_manifest
+    from modelman.screens.forms import ModelForm
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[{"id": "o35", "provider": "ollama", "name": "ornith:35b"}],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n  ollama: {type: ollama}\n"
+    )
+
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    monkeypatch.setattr(
+        registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
+    )
+
+    app = ModelmanApp()
+    captured: list[ModelForm] = []
+    original_push = app.push_screen
+
+    def tracking_push(screen, *args, **kwargs):
+        if isinstance(screen, ModelForm):
+            captured.append(screen)
+        return original_push(screen, *args, **kwargs)
+
+    monkeypatch.setattr(app, "push_screen", tracking_push)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Drill into the family.
+        await pilot.press("enter")
+        await pilot.pause()
+        # By default the provider-table has focus on mount, so Tab
+        # into the model pane; the first model row is already
+        # highlighted. Press Enter to open the edit dialog for o35.
+        await pilot.press("tab")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert captured, "ModelForm was not pushed on Enter"
+        form = captured[0]
+        # Edit-mode pre-fill: model_input field has the ollama tag.
+        from textual.widgets import Input
+        model_input = form.query_one("#model", Input)
+        assert model_input.value == "ornith:35b"
+
+
+@pytest.mark.asyncio
+async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeypatch):
+    """Enter on a provider row (left pane) only changes the right
+    pane; it must NOT open the edit dialog."""
+    from textual.widgets import DataTable
+
+    from modelman.manifest import FamilyManifest, save_manifest
+    from modelman.screens.forms import ModelForm
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    m = FamilyManifest(
+        family="ornith",
+        variants=[
+            {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
+            {"id": "q8", "provider": "llamacpp", "name": "x.gguf",
+             "repo": "foo/bar", "files": ["x.gguf"]},
+        ],
+    )
+    save_manifest(m, fam_dir / "ornith.yaml")
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n  ollama: {type: ollama}\n"
+        "  llamacpp: {type: llamacpp}\n"
+    )
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    monkeypatch.setattr(
+        registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
+    )
+
+    app = ModelmanApp()
+    captured: list[ModelForm] = []
+    original_push = app.push_screen
+
+    def tracking_push(screen, *args, **kwargs):
+        if isinstance(screen, ModelForm):
+            captured.append(screen)
+        return original_push(screen, *args, **kwargs)
+
+    monkeypatch.setattr(app, "push_screen", tracking_push)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")  # into family
+        await pilot.pause()
+        # Tab to the provider-table (left pane) before pressing Enter,
+        # so the test is checking what happens when Enter is pressed
+        # while the provider-table has focus.
+        provider_table = app.screen.query_one("#provider-table", DataTable)
+        provider_table.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert captured == [], (
+            "Enter on provider-table row should not open the edit dialog"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Always-show-every-configured-provider behavior
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_model_screen_shows_all_providers_for_empty_family(
+    tmp_path, monkeypatch,
+):
+    """The provider-table on the left of the model screen must show
+    every configured provider, even when the family has zero
+    variants. Otherwise an empty family would render an empty pane
+    and the user can't add the first model via 'a' (which depends on
+    the picker to choose provider)."""
+    from textual.widgets import DataTable
+
+    from modelman.manifest import FamilyManifest, save_manifest
+    from modelman.screens.models import ModelScreen
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(
+        FamilyManifest(family="ornith-1.5", display_name="Ornith 1.5"),
+        fam_dir / "ornith-1.5.yaml",
+    )
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "providers:\n"
+        "  ollama:\n    type: ollama\n"
+        "  llamacpp:\n    type: llamacpp\n"
+        "  omlx:\n    type: omlx\n"
+    )
+    monkeypatch.setenv("MODELMAN_CONFIG", str(cfg_path))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    ms = ModelScreen(
+        FamilyManifest(family="ornith-1.5", display_name="Ornith 1.5"),
+        fam_dir / "ornith-1.5.yaml",
+        available_providers=["ollama", "llamacpp", "omlx"],
+    )
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        pt = ms.query_one("#provider-table", DataTable)
+        keys = sorted(str(rk.value) for rk in pt.rows)
+        assert keys == ["llamacpp", "ollama", "omlx"], (
+            f"provider table should list every configured provider "
+            f"(got {keys}); an empty family must not hide them"
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_screen_provider_table_count_zero_for_empty(
+    tmp_path, monkeypatch,
+):
+    """When the family has 0 variants, each provider row should show
+    count '0' (not blank). Confirmation that the empty case is
+    rendered explicitly rather than skipped."""
+    from textual.widgets import DataTable
+
+    from modelman.app import ModelmanApp
+    from modelman.manifest import FamilyManifest
+    from modelman.screens.models import ModelScreen
+
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n"
+        "  ollama:\n    type: ollama\n"
+        "  llamacpp:\n    type: llamacpp\n"
+        "  omlx:\n    type: omlx\n"
+    )
+
+    app = ModelmanApp()
+    ms = ModelScreen(
+        FamilyManifest(family="x", display_name="X"),
+        tmp_path / "x.yaml",
+        available_providers=["ollama", "llamacpp", "omlx"],
+    )
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        pt = ms.query_one("#provider-table", DataTable)
+        # All configured providers must show up, even if the family
+        # has zero variants — and the count column must be "0".
+        provider_cells = list(pt.get_column_at(0))
+        count_cells = [str(c) for c in pt.get_column_at(1)]
+        assert sorted(str(c) for c in provider_cells) == [
+            "llamacpp",
+            "ollama",
+            "omlx",
+        ], provider_cells
+        for c in count_cells:
+            assert c == "0", f"empty family: count column must be 0, got {c!r}"
+
+
+@pytest.mark.asyncio
+async def test_model_screen_add_form_offers_all_providers_for_empty_family(
+    tmp_path, monkeypatch,
+):
+    """The AddModel form's provider Label must reflect the full
+    configured-provider list when the user presses 'a' from an empty
+    family's model screen. Previously the form fell back to
+    ['ollama', 'llamacpp', 'omlx'] only when there were no variants;
+    with the family open it would offer just whatever providers its
+    variants used."""
+    from modelman.app import ModelmanApp
+    from modelman.manifest import FamilyManifest
+    from modelman.screens.forms import ModelForm
+    from modelman.screens.models import ModelScreen
+
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n"
+        "  ollama:\n    type: ollama\n"
+        "  llamacpp:\n    type: llamacpp\n"
+        "  omlx:\n    type: omlx\n"
+    )
+
+    app = ModelmanApp()
+    ms = ModelScreen(
+        FamilyManifest(family="x", display_name="X"),
+        tmp_path / "x.yaml",
+        available_providers=["ollama", "llamacpp", "omlx"],
+    )
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        captured: list[ModelForm] = []
+        original_push = ms.app.push_screen
+
+        def tracking_push(screen, *args, **kwargs):
+            if isinstance(screen, ModelForm):
+                captured.append(screen)
+            return original_push(screen, *args, **kwargs)
+
+        ms.app.push_screen = tracking_push
+        ms.action_add_model()
+        await pilot.pause()
+
+    assert len(captured) == 1, f"expected ModelForm push; got {captured}"
+    assert captured[0]._initial_provider == "ollama"
+
+
+# ---------------------------------------------------------------------------
+# Cursor / focus on entry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_model_screen_starts_with_cursor_on_first_provider(
+    tmp_path, monkeypatch,
+):
+    """When the model screen mounts, the cursor must be on row 0 of
+    the provider-table (the first configured provider) AND that
+    table must have focus, so the user sees a visible cursor
+    highlight on ollama and can navigate the left pane immediately
+    without an extra Tab."""
+    from textual.widgets import DataTable
+
+    from modelman.app import ModelmanApp
+    from modelman.manifest import FamilyManifest, save_manifest
+    from modelman.screens.models import ModelScreen
+
+    fam_dir = tmp_path / "families"
+    fam_dir.mkdir()
+    save_manifest(
+        FamilyManifest(family="ornith-1.5", display_name="Ornith 1.5"),
+        fam_dir / "ornith-1.5.yaml",
+    )
+    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "providers:\n"
+        "  ollama:\n    type: ollama\n"
+        "  llamacpp:\n    type: llamacpp\n"
+        "  omlx:\n    type: omlx\n"
+    )
+    monkeypatch.setenv("MODELMAN_CONFIG", str(cfg_path))
+
+    app = ModelmanApp()
+    ms = ModelScreen(
+        FamilyManifest(family="ornith-1.5", display_name="Ornith 1.5"),
+        fam_dir / "ornith-1.5.yaml",
+        available_providers=["ollama", "llamacpp", "omlx"],
+    )
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        pt = ms.query_one("#provider-table", DataTable)
+        assert pt.cursor_row == 0, (
+            f"provider-table cursor must be on row 0 (first provider); "
+            f"got {pt.cursor_row}"
+        )
+        assert pt.has_focus, (
+            "provider-table must have focus on mount so the row "
+            "highlight is visible without an extra Tab"
+        )
