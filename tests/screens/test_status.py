@@ -72,8 +72,6 @@ def app_with_apply(monkeypatch, tmp_path):
     reg, state, reg_path, state_path, _ = _setup(tmp_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
     yield reg, state, reg_path, state_path
 
 
@@ -153,8 +151,6 @@ async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
     reg, state, reg_path, state_path, [o35, q8] = _setup(tmp_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     gate = __import__("threading").Event()
     captured_pending: list = []
@@ -235,8 +231,6 @@ async def test_status_screen_cancel_writes_immediate_feedback(tmp_path, monkeypa
     reg, state, reg_path, state_path, [o35, _q8] = _setup(tmp_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     gate = threading.Event()
     captured_pending: list = []

@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -12,25 +10,21 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="app.py no longer imports load_manifest/get_family_dir — rewrites in PR 3")
 @pytest.mark.asyncio
 async def test_app_loads_saved_theme_on_startup(tmp_path, monkeypatch):
     """If settings.yaml has a theme, the app should set self.theme
-    to that value during construction."""
+    to that value during construction.
+
+    ModelmanApp.__init__ only loads settings (theme) — it does not
+    touch registry.toml/modelman.toml at all (that's on_mount, which
+    this test never triggers by calling .run()), so no
+    registry/family mocking is needed here."""
     from modelman.app import ModelmanApp
     from modelman.settings import Settings, save_settings
 
     settings_path = tmp_path / "settings.yaml"
     save_settings(Settings(theme="nord"), settings_path)
     monkeypatch.setenv("MODELMAN_SETTINGS", str(settings_path))
-
-    # Mock load_manifest so we don't need a real family.
-    monkeypatch.setattr(
-        "modelman.app.load_manifest", lambda *a, **kw: MagicMock()
-    )
-    monkeypatch.setattr(
-        "modelman.app.get_family_dir", lambda: tmp_path / "families"
-    )
 
     app = ModelmanApp()
     assert app.theme == "nord"

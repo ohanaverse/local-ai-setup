@@ -54,13 +54,10 @@ async def test_app_launches_into_family_screen():
 
 
 @pytest.mark.asyncio
-async def test_q_exits_app_from_family_screen(tmp_path, monkeypatch):
-    fam_dir = tmp_path / "families"
-    fam_dir.mkdir()
-    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
-
+async def test_q_exits_app_from_family_screen():
+    """No registry.toml/modelman.toml fixture needed: FamilyScreen
+    tolerates a missing registry (falls back to an empty Registry, see
+    families.py::_load_from_disk), and this test only exercises quit."""
     from modelman.app import ModelmanApp
 
     app = ModelmanApp()
@@ -92,8 +89,6 @@ async def test_app_with_initial_family_launches_into_model_screen(tmp_path, monk
     save_registry(reg, reg_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text("providers:\n  ollama: {type: ollama}\n")
 
     from modelman.app import ModelmanApp
 
@@ -944,7 +939,6 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
 
 # ---------------------------------------------------------------------------
 # ModelScreen constructed directly (no FamilyScreen / app.py round-trip).
-# PR 3 migrates the integration tests that go through FamilyScreen.
 # ---------------------------------------------------------------------------
 
 
@@ -965,13 +959,6 @@ def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=()):
     save_registry(reg, reg_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
-    )
 
     from modelman.screens.models import ModelScreen
 
@@ -1034,13 +1021,6 @@ async def test_model_screen_provider_table_count_zero_for_empty(
     save_registry(reg, reg_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
-    )
 
     ms = ModelScreen(
         registry=reg,
@@ -1089,13 +1069,6 @@ async def test_model_screen_add_form_offers_all_providers_for_empty_family(
     save_registry(reg, reg_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
-    )
 
     from modelman.screens.models import ModelScreen
 

@@ -2,23 +2,17 @@
 
 from unittest.mock import patch
 
-import pytest
 from typer.testing import CliRunner
 
 from modelman.main import app
 
 
-@pytest.mark.skip(reason="FamilyScreen migrates in PR 3")
-def test_download_launches_tui_at_family(tmp_path, monkeypatch):
-    from modelman.manifest import FamilyManifest, save_manifest
-
-    fam_dir = tmp_path / "families"
-    fam_dir.mkdir()
-    save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
-    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
-
+def test_download_launches_tui_at_family():
+    """`modelman download <family>` is a thin CLI wrapper around
+    run_tui(family); it never touches registry.toml/modelman.toml
+    itself (ModelmanApp.on_mount does, later, when .run() is called —
+    which run_tui does, but run_tui is mocked here). No registry/state
+    fixture is needed."""
     with patch("modelman.main.run_tui") as run_tui:
         runner = CliRunner()
         result = runner.invoke(app, ["download", "ornith"])
@@ -26,12 +20,7 @@ def test_download_launches_tui_at_family(tmp_path, monkeypatch):
         run_tui.assert_called_once_with("ornith")
 
 
-def test_no_args_launches_tui_at_family_list(tmp_path, monkeypatch):
-    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(tmp_path / "f"))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "c"))
-    (tmp_path / "f").mkdir()
-    (tmp_path / "c").write_text("providers:\n  ollama:\n    type: ollama\n")
-
+def test_no_args_launches_tui_at_family_list():
     with patch("modelman.main.run_tui") as run_tui:
         runner = CliRunner()
         result = runner.invoke(app, [])

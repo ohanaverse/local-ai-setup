@@ -1,4 +1,12 @@
-"""Family manifest: list of variants and which are downloaded."""
+"""Family manifest: list of variants and which are downloaded.
+
+As of Phase 2 (see docs/superpowers/specs/2026-08-27-shared-model-
+registry-design.md), families/*.yaml and MODELMAN_FAMILY_DIR are read
+only by `modelman migrate` (src/modelman/main.py, migrate.py) — every
+TUI code path was migrated onto registry.toml/modelman.toml
+(registry.py/state.py) by Phase 2 PR 2/PR 3. Do not add a new caller
+of load_manifest()/get_family_dir() outside the migrate path.
+"""
 
 from __future__ import annotations
 

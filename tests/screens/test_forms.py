@@ -14,9 +14,10 @@ import pytest
 from textual.widgets import Input, Label
 
 from modelman.app import ModelmanApp
-from modelman.manifest import FamilyManifest, save_manifest
 from modelman.providers.base import VariantSpec
+from modelman.registry import AuthConfig, Fetch, ModelEntry, ProviderEntry, Registry, save_registry
 from modelman.screens.forms import ModelForm
+from modelman.state import StateStore, save_state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -526,29 +527,31 @@ async def test_submit_in_edit_mode_preserves_quantizations():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="FamilyScreen migrates to Registry in PR 3")
 @pytest.mark.asyncio
 async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch):
-    fam_dir = tmp_path / "families"
-    fam_dir.mkdir()
-    m = FamilyManifest(
-        family="ornith",
-        variants=[
-            {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
-            {"id": "q8", "provider": "llamacpp", "name": "x.gguf",
-             "repo": "foo/bar", "files": ["x.gguf"]},
-            {"id": "m8", "provider": "omlx", "name": "x-mlx",
-             "repo": "foo/bar"},
+    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    q8 = ModelEntry(
+        id="llamacpp/q8", family="ornith", provider_id="llamacpp", model_name="x.gguf",
+        fetch=Fetch(repo="foo/bar", files=["x.gguf"]),
+    )
+    m8 = ModelEntry(
+        id="omlx/m8", family="ornith", provider_id="omlx", model_name="x-mlx",
+        fetch=Fetch(repo="foo/bar"),
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
+            ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none")),
+            ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx")),
         ],
+        models=[o35, q8, m8],
     )
-    save_manifest(m, fam_dir / "ornith.yaml")
-    monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
-    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
     from modelman.providers import registry
 

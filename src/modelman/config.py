@@ -1,4 +1,12 @@
-"""Load ~/.config/local-ai/config.yaml."""
+"""Load ~/.config/local-ai/config.yaml.
+
+As of Phase 2 (see docs/superpowers/specs/2026-08-27-shared-model-
+registry-design.md), this legacy config file and MODELMAN_CONFIG are
+read only by `modelman migrate` (src/modelman/main.py, migrate.py) —
+every TUI code path was migrated onto registry.toml (registry.py) by
+Phase 2 PR 2/PR 3. Do not add a new caller of load_config() outside
+the migrate path; add to registry.toml instead.
+"""
 
 from __future__ import annotations
 
