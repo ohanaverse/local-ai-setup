@@ -7,7 +7,8 @@ brainstorm → spec → plan cycle in the repo it lands in; this doc just
 tracks where each one stands so a fresh session doesn't have to
 re-derive it from `git log` across three repos.
 
-**Last verified:** 2026-08-28, against `modelman`'s `gh pr view` directly
+**Last verified:** 2026-08-28, against `modelman`'s `gh pr view` and
+`agent-worktree`'s PR #94 directly
 (not from memory — status here goes stale fast; re-verify before trusting
 it).
 
@@ -40,7 +41,7 @@ Spec: `modelman/docs/superpowers/specs/2026-08-27-shared-model-registry-design.m
 | Phase 2 PR 3 | Migrate `FamilyScreen` + `AddFamilyModal`/`EditFamilyModal` off globbing `families/*.yaml` onto `Registry`/`StateStore` | ✅ Merged — `modelman` PR #5 (`9ba6714`, 2026-08-28) |
 | Phase 2 PR 4 | Clean up `app.py`'s `--initial-family` path off the legacy manifest; drop `MODELMAN_CONFIG`/`MODELMAN_FAMILY_DIR` env-vars | ✅ Merged — `modelman` PR #6 (`d32390e`) |
 | Phase 3 | LiteLLM exposure — `expose`/`unexpose` CLI + TUI `l` key; write/remove `model_list` entries in LiteLLM `config.yaml` | ✅ Merged — `modelman` PR #11 (`2b2d146`, 2026-08-28) |
-| Phase 4 | wt consumer — read `registry.toml` read-only, join it in memory with `config.toml`, delete `internal/registry` and the `wt config ollama` subcommand | ✅ Implemented on `agent-worktree` branch `feat/wt-registry-consumer`; PR not yet opened |
+| Phase 4 | wt consumer — read `registry.toml` read-only, join it in memory with `config.toml`, delete `internal/registry` and the `wt config ollama` subcommand | ✅ Merged — `agent-worktree` PR #94 (`79d620f`, 2026-08-28) |
 
 Phase 2 PR 3 also fixed a live regression: `FamilyScreen` was still
 constructing `ModelScreen` with PR 2's removed legacy positional
@@ -58,12 +59,14 @@ Side spec (deferred out of Phase 2 PR 2's scope, tracked separately):
 — collapse the 6-field add-model dialog to one HF-paste-style `model`
 field. Status: approved in chat, no plan written, not implemented.
 
-**Phase 4 — wt consumer** (in `agent-worktree`) is implemented: `wt` reads
+**Phase 4 — wt consumer** (in `agent-worktree`) is merged: `wt` reads
 `registry.toml` read-only, joins it in memory with its own `config.toml`,
 and `internal/registry` + the `wt config ollama` subcommand are deleted.
 Spec: `agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`;
 plan: `agent-worktree/docs/superpowers/plans/2026-08-28-wt-registry-consumer.md`.
-Landed on branch `feat/wt-registry-consumer`; not yet merged (PR pending).
+Merged as PR #94 (squash `79d620f`) — note the PR's base was this tracker
+branch (`docs/model-management-consolidation-status`), so the code reaches
+`main` only when that branch is next merged/PR'd to `main`.
 Sub-projects 2 and 3 remain unbrainstormed.
 
 ## Sub-project 2 — Benchmark tooling
