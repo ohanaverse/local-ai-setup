@@ -38,21 +38,29 @@ Spec: `modelman/docs/superpowers/specs/2026-08-27-shared-model-registry-design.m
 | Phase 2 PR 1 | Additive `Registry.families()`/`models_by_family()`/`provider_config()` + `modelman.toml` family-display-name overlay; zero consumers changed | ✅ Merged — `modelman` PR #3 (`5959bc0`) |
 | Phase 2 PR 2 | `queue.py` `PendingChanges` + `screens/models.py` `ModelScreen` rewritten onto `Registry`/`StateStore` (the big one) | ✅ Merged — `modelman` PR #4 (`e535dc2`) |
 | Phase 2 PR 3 | Migrate `FamilyScreen` + `AddFamilyModal`/`EditFamilyModal` off globbing `families/*.yaml` onto `Registry`/`StateStore` | ✅ Merged — `modelman` PR #5 (`9ba6714`, 2026-08-28) |
-| Phase 2 PR 4 | Clean up `app.py`'s `--initial-family` path off the legacy manifest; drop `MODELMAN_CONFIG`/`MODELMAN_FAMILY_DIR` env-vars | ⬜ Not yet planned or written — **next open step** |
+| Phase 2 PR 4 | Clean up `app.py`'s `--initial-family` path off the legacy manifest; drop `MODELMAN_CONFIG`/`MODELMAN_FAMILY_DIR` env-vars | ✅ Merged — `modelman` PR #6 (`d32390e`) |
+| Phase 3 | LiteLLM exposure — `expose`/`unexpose` CLI + TUI `l` key; write/remove `model_list` entries in LiteLLM `config.yaml` | ✅ Merged — `modelman` PR #11 (`2b2d146`, 2026-08-28) |
 
 Phase 2 PR 3 also fixed a live regression: `FamilyScreen` was still
 constructing `ModelScreen` with PR 2's removed legacy positional
 signature, so every "open family" action was broken at runtime (masked
 by tests that were marked skip pending this PR) until it landed.
 
+After Phase 2 PR 4, `modelman` also shipped the provider-reconcile `sync`
+work (`modelman` PRs #8/9/10: `sync` discovers/merges and reconciles
+configured ollama + llamacpp/omlx models, keyed by model id) — part of
+sub-project 1's provider-sync capability, not tracked as a separate row
+above.
+
 Side spec (deferred out of Phase 2 PR 2's scope, tracked separately):
 `modelman/docs/superpowers/specs/2026-09-02-modelman-add-dialog-simplification.md`
 — collapse the 6-field add-model dialog to one HF-paste-style `model`
 field. Status: approved in chat, no plan written, not implemented.
 
-`agent-worktree`'s own side of sub-project 1 (becoming a read-only registry
-consumer) has no work started yet — it's blocked on this sub-project
-reaching at least Phase 2 PR 4.
+The next open step is **Phase 4 — wt consumer** (in `agent-worktree`):
+read `registry.toml` read-only, join it in memory with its own
+`config.toml`, delete `internal/registry` and the `wt config ollama`
+subcommand. Not yet brainstormed.
 
 ## Sub-project 2 — Benchmark tooling
 
