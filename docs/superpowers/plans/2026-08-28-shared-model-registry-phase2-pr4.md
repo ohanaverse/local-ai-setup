@@ -416,9 +416,9 @@ git commit -m "test(download): un-skip test_download_launches_tui_at_family; dro
 ### Task 4: Drop vestigial `MODELMAN_FAMILY_DIR`/`MODELMAN_CONFIG` setup in `test_app_navigation.py`
 
 **Files:**
-- Modify: `tests/screens/test_app_navigation.py:56-63` (`test_q_exits_app_from_family_screen`), `:91-97` (`test_app_with_initial_family_launches_into_model_screen`), `:945-948` (stale section comment)
+- Modify: `tests/screens/test_app_navigation.py:56-63` (`test_q_exits_app_from_family_screen`), `:91-97` (`test_app_with_initial_family_launches_into_model_screen`), `:945-948` (stale section comment), `:968` (`_make_screen` helper), `:1037` (`test_model_screen_provider_table_count_zero_for_empty_family`), `:1092` (`test_model_screen_add_form_offers_all_providers_for_empty_family`)
 
-**Interfaces:** none — cleanup only, no behavior change (these two tests already pass; the env vars they set are read by nothing in `FamilyScreen`/`ModelmanApp.on_mount` since PR 3).
+**Interfaces:** none — cleanup only, no behavior change (these tests already pass; the env vars they set are read by nothing in `FamilyScreen`/`ModelmanApp.on_mount` or directly-constructed `ModelScreen` since PR 3).
 
 - [ ] **Step 1: Clean `test_q_exits_app_from_family_screen`**
 
@@ -512,12 +512,42 @@ with:
 # ---------------------------------------------------------------------------
 ```
 
-- [ ] **Step 4: Run the file**
+- [ ] **Step 4: Clean the `_make_screen` helper and its callers**
+
+`_make_screen` still writes a scratch `config.yaml` and points `MODELMAN_CONFIG` at it, but the helper constructs `ModelScreen` directly with `registry=reg` and `state=StateStore()` — nothing on that path reads `config.py`. Remove the env var and config write from the helper:
+
+```python
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n"
+        "  ollama: {type: ollama}\n"
+        "  llamacpp: {type: llamacpp}\n"
+        "  omlx: {type: omlx}\n"
+    )
+```
+
+→
+
+```python
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+```
+
+This single helper edit removes the dead setup for both `test_model_screen_provider_table_count_zero_for_empty_family` and `test_model_screen_add_form_offers_all_providers_for_empty_family`, since they both call `_make_screen`.
+
+- [ ] **Step 5: Verify the file is clean**
+
+Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "MODELMAN_CONFIG\|MODELMAN_FAMILY_DIR" tests/screens/test_app_navigation.py`
+Expected: no matches.
+
+- [ ] **Step 6: Run the file**
 
 Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_app_navigation.py -v`
 Expected: all tests PASS (same count as before this task — this is a pure cleanup, no test added/removed/skipped).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add tests/screens/test_app_navigation.py
