@@ -54,6 +54,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         family=family,
         provider_id=provider_id,
         model_name=name,
+        source="curated",
         model_info=model_info,
         fetch=fetch,
     )

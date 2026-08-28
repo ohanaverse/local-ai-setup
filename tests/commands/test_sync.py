@@ -1,0 +1,51 @@
+"""`modelman sync` discovers ollama models and merges them into
+registry.toml + modelman.toml. The sync logic itself is covered by
+tests/test_sync.py; this covers the command wiring (load -> sync ->
+save -> report)."""
+
+from unittest.mock import patch
+
+from typer.testing import CliRunner
+
+from modelman.main import app
+from modelman.registry import AuthConfig, ProviderEntry, Registry, save_registry
+from modelman.sync import SyncError, SyncResult
+
+
+def _seed_registry(tmp_path, monkeypatch):
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    save_registry(
+        Registry(
+            providers=[
+                ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+            ]
+        ),
+        registry_path,
+    )
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    return registry_path, state_path
+
+
+def test_sync_command_saves_and_reports(tmp_path, monkeypatch):
+    registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
+    with patch("modelman.main.run_sync") as run_sync:
+        run_sync.return_value = SyncResult(
+            added=["ollama/x"], refreshed=[], skipped=[]
+        )
+        runner = CliRunner()
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "added 1" in result.stdout
+        assert state_path.exists()  # modelman.toml written
+
+
+def test_sync_command_reports_error_on_failure(tmp_path, monkeypatch):
+    _seed_registry(tmp_path, monkeypatch)
+    with patch("modelman.main.run_sync") as run_sync:
+        run_sync.side_effect = SyncError("`ollama list` failed (exit 1)")
+        runner = CliRunner()
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "ollama list" in result.output

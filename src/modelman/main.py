@@ -12,8 +12,10 @@ from .app import ModelmanApp
 from .config import default_config_path
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
-from .registry import save_registry
-from .state import save_state
+from .registry import load_registry, save_registry
+from .state import load_state, save_state
+from .sync import SyncError
+from .sync import sync as run_sync
 
 app = typer.Typer(help="Manage local LLM model families across providers.")
 
@@ -63,6 +65,24 @@ def migrate(
     typer.echo(
         f"Migrated {len(result.registry.providers)} providers and "
         f"{len(result.registry.models)} models."
+    )
+
+
+@app.command()
+def sync() -> None:
+    """Discover ollama models and merge them into registry.toml."""
+    registry = load_registry()
+    state = load_state()
+    try:
+        result = run_sync(registry, state)
+    except SyncError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    save_registry(registry)
+    save_state(state)
+    typer.echo(
+        f"Synced ollama: added {len(result.added)}, "
+        f"refreshed {len(result.refreshed)}, skipped {len(result.skipped)}."
     )
 
 
