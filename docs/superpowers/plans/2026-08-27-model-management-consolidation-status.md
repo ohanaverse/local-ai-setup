@@ -74,10 +74,10 @@ Sub-projects 2 and 3 remain unbrainstormed.
 Formalize `local-ai-setup`'s ad hoc bash scripts (LiteLLM proxy +
 benchmarking) into an actual tool.
 
-- **Status:** Brainstormed; design spec approved and merged.
+- **Status:** Implementation merged (`modelman` PR, `local-ai-setup` PR).
 - **Spec:** `modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
   (`modelman` PR #14, `1c44ee2`).
-- **Plan:** In progress.
+- **Plan:** Implemented.
 - **Notes:**
   - Lives in `modelman` as a new `benchmark` subcommand.
   - Consumes `registry.toml` + `modelman.toml` for model discovery and
