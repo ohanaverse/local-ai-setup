@@ -153,6 +153,7 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 	var buf bytes.Buffer
 	root := rootCmd()
 	root.SetOut(&buf)
@@ -196,6 +197,7 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 	writeEmptyRegistry(t, home)
 
 	var gotAgent, gotPinned string
@@ -241,6 +243,7 @@ func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	var buf bytes.Buffer
 	root := rootCmd()
@@ -271,6 +274,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 	writeEmptyRegistry(t, home)
 
 	var gotAgent, gotPinned string
@@ -316,6 +320,7 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 	writeEmptyRegistry(t, home)
 
 	var gotAgent string
@@ -392,6 +397,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	// Write a minimal config with one ollama model so resolveModel returns
 	// a single eligible entry, triggering the auto-launch short-circuit.

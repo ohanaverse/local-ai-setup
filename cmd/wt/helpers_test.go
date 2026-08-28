@@ -30,7 +30,7 @@ func gitInit(t *testing.T, dir string) {
 // it even when they don't care about specific models.
 func writeEmptyRegistry(t *testing.T, home string) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	withCleanConfigEnv(t, home)
 	regDir := filepath.Join(home, ".config", "local-ai")
 	if err := os.MkdirAll(regDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -39,6 +39,18 @@ func writeEmptyRegistry(t *testing.T, home string) {
 		[]byte("providers = []\nmodels = []\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// withCleanConfigEnv sets XDG_CONFIG_HOME to a fixture path and clears any
+// inherited MODELMAN_REGISTRY so RegistryPath() cannot short-circuit on the
+// developer's shell environment. All tests that exercise the launch path must
+// call this before touching config.Load or RegistryPath() — otherwise a stray
+// `export MODELMAN_REGISTRY=...` in the dev's env makes the test read their
+// real registry instead of the temp fixture.
+func withCleanConfigEnv(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MODELMAN_REGISTRY", "")
 }
 
 // TestMaybeInstallGuardInRepo installs the guard in a temp repo and verifies

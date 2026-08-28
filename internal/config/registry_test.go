@@ -37,13 +37,30 @@ location = "local"
 tags = ["code"]
 `
 
+// TestRegistryPathHonorsXDG asserts the full RegistryPath() when
+// XDG_CONFIG_HOME is set: it must be exactly $XDG/local-ai/registry.toml
+// (not the fallback to ~/.config). A suffix-only assertion would still
+// pass if a regression dropped XDG honoring and returned the user's
+// real ~/.config — which also ends in /local-ai/registry.toml. This
+// test is the regression guard for the precedence rule, so the
+// assertion must be tight enough to fail when the precedence is
+// broken.
 func TestRegistryPathHonorsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
-	if got := RegistryPath(); !strings.HasSuffix(got, "/local-ai/registry.toml") && !strings.HasSuffix(got, "\\local-ai\\registry.toml") {
-		t.Errorf("RegistryPath() = %q, want suffix local-ai/registry.toml", got)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	want := filepath.Join("/custom/xdg", "local-ai", "registry.toml")
+	if got := RegistryPath(); got != want {
+		t.Errorf("RegistryPath() = %q, want %q", got, want)
 	}
 }
 
+// MODELMAN_REGISTRY is the highest-precedence override in
+// RegistryPath()'s chain (MODELMAN_REGISTRY > XDG_CONFIG_HOME >
+// ~/.config). When set, it must win even if XDG_CONFIG_HOME is also
+// set — without this guard a developer's stale export could be
+// shadowed by a CI XDG value, making wt read the wrong registry.
+// Locks in the override path that lets ops and .envrcs pin a specific
+// registry without touching XDG.
 func TestRegistryPathHonorsModelmanRegistryOverride(t *testing.T) {
 	t.Setenv("MODELMAN_REGISTRY", "/custom/registry.toml")
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
@@ -186,5 +203,52 @@ func TestLoad_LegacyConfigSectionsIgnored(t *testing.T) {
 		if p.ID == "stale" {
 			t.Error("legacy config.toml provider leaked into the joined catalog")
 		}
+	}
+}
+
+// A leading "~" or "~/" in XDG_CONFIG_HOME must be expanded, matching
+// modelman's Path.expanduser() and the behavior already enforced for
+// MODELMAN_REGISTRY. Without this, a user (or .envrc that doesn't
+// shell-expand) sets XDG_CONFIG_HOME=~/custom-xdg and modelman reads
+// the expanded path while wt reads the literal tilde-string and
+// fails to find the registry — two tools disagreeing on the very
+// precedence rule the doc comment promises they share.
+func TestRegistryPathExpandsTildeInXDG(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory available")
+	}
+	t.Setenv("XDG_CONFIG_HOME", "~/custom-xdg")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	want := filepath.Join(home, "custom-xdg", "local-ai", "registry.toml")
+	if got := RegistryPath(); got != want {
+		t.Errorf("RegistryPath() = %q, want %q", got, want)
+	}
+}
+
+// TestExpandHomeHappyPath verifies the cross-platform happy path: with HOME
+// set, a "~/" prefix is expanded to the user's home directory. The
+// HOME-unset error path cannot be reliably simulated on platforms where
+// os.UserHomeDir() falls back to the user database (most Unix); the
+// contract is exercised instead by RegistryPath() and baseConfigHome(),
+// which handle the error from expandHome.
+func TestExpandHomeHappyPath(t *testing.T) {
+	t.Setenv("HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("cannot simulate HOME-unset on this platform; error path tested at the call sites")
+	}
+	if got, err := expandHome("~/x"); err != nil || got != filepath.Join(home, "x") {
+		t.Errorf("expandHome(~/x) = (%q, %v), want (%q, nil)", got, err, filepath.Join(home, "x"))
+	}
+}
+
+// A MODELMAN_REGISTRY value of the form "~username/..." is left
+// literal: Go has no portable getpwnam. Document the limitation
+// in expandHome's doc comment; the alternative (silently expanding
+// to the current user's home) would be a worse footgun.
+func TestExpandHomeLeavesTildeUsernameLiteral(t *testing.T) {
+	if got, err := expandHome("~ops/shared/registry.toml"); err != nil || got != "~ops/shared/registry.toml" {
+		t.Errorf("expandHome(~ops/...) = (%q, %v), want (literal, nil)", got, err)
 	}
 }

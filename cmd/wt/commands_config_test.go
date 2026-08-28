@@ -31,6 +31,7 @@ func newTestApp(t *testing.T) (*app, string) {
 	themes.SetDirFuncForTest(func() string { return tmp })
 	t.Cleanup(func() { themes.SetDirFuncForTest(origDirFunc) })
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)

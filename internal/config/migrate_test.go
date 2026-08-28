@@ -164,6 +164,7 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 `
 	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -247,6 +248,7 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 func TestMigrate_NoLegacyFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -271,6 +273,7 @@ func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 	`
 	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -330,6 +333,7 @@ func TestMigrateConfigSchema(t *testing.T) {
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	writeCfg := func(t *testing.T, body string) {
 		t.Helper()

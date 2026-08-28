@@ -270,6 +270,7 @@ func TestBuildFilteredCmdCommandAgentUsesWorktree(t *testing.T) {
 func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Recorder script: write its real CWD (via pwd) to an output file passed
@@ -400,6 +401,7 @@ func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
 func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -447,6 +449,7 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Install a fake claude binary so launchFiltered can execute without
@@ -500,6 +503,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	binDir := t.TempDir()
@@ -560,6 +564,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	cfg := &config.Config{
 		DefaultTag: "code",

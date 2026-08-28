@@ -85,12 +85,28 @@ type Config struct {
 // Dir returns the base config directory (~/.config/agent-wt, or
 // $XDG_CONFIG_HOME/agent-wt), honoring XDG_CONFIG_HOME like wt-core.sh.
 func Dir() string {
+	return filepath.Join(baseConfigHome(), "agent-wt")
+}
+
+// baseConfigHome returns the XDG base config directory honoring
+// XDG_CONFIG_HOME (with a leading "~" or "~/" expanded via expandHome,
+// matching Python's Path.expanduser() used by modelman). Falls back to
+// ~/.config when XDG_CONFIG_HOME is unset. Shared by Dir() and
+// RegistryPath() so the two agree on the XDG precedence rule.
+func baseConfigHome() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".config")
+		if home == "" {
+			return ""
+		}
+		return filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "agent-wt")
+	expanded, err := expandHome(base)
+	if err != nil {
+		return base
+	}
+	return expanded
 }
 
 // Path returns the config file location.

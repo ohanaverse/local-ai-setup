@@ -57,11 +57,13 @@ func TestFileSecretStore_Get_EmptyFile(t *testing.T) {
 // mean SecretRef values resolve to a different directory than the user expects.
 func TestDefaultSecretsDir(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
+	t.Setenv("MODELMAN_REGISTRY", "")
 	if got := DefaultSecretsDir(); got != "/custom/xdg/agent-wt/secrets" {
 		t.Errorf("DefaultSecretsDir() = %q, want %q", got, "/custom/xdg/agent-wt/secrets")
 	}
 
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
 	home, _ := os.UserHomeDir()
 	want := filepath.Join(home, ".config", "agent-wt", "secrets")
 	if got := DefaultSecretsDir(); got != want {

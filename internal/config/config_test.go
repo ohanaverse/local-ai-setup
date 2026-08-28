@@ -13,12 +13,14 @@ import (
 func TestPath(t *testing.T) {
 	// With XDG_CONFIG_HOME set
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
+	t.Setenv("MODELMAN_REGISTRY", "")
 	if got := Path(); got != "/custom/xdg/agent-wt/config.toml" {
 		t.Errorf("Path() = %q, want %q", got, "/custom/xdg/agent-wt/config.toml")
 	}
 
 	// Without XDG_CONFIG_HOME — falls back to ~/.config
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
 	home, _ := os.UserHomeDir()
 	want := filepath.Join(home, ".config", "agent-wt", "config.toml")
 	if got := Path(); got != want {
@@ -133,6 +135,7 @@ func TestLoad_BadTOML(t *testing.T) {
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`this is not toml {{{`), 0644)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("MODELMAN_REGISTRY", "")
 
 	_, err := Load()
 	if err == nil {

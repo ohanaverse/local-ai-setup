@@ -15,36 +15,45 @@ import (
 // uses, so the two tools agree on the registry location. wt reads this file
 // read-only.
 func RegistryPath() string {
+	// MODELMAN_REGISTRY is the only branch with a side effect: it writes to
+	// stderr on expandHome failure. Acceptable because the path-resolution
+	// failure must be visible to the user, and there is no logger to inject
+	// at this layer. See expandHome's docstring for the literal-fallback contract.
 	if override := os.Getenv("MODELMAN_REGISTRY"); override != "" {
-		return expandHome(override)
-	}
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = home
-		if base != "" {
-			base = filepath.Join(base, ".config")
+		if expanded, err := expandHome(override); err == nil {
+			return expanded
+		} else {
+			fmt.Fprintf(os.Stderr, "wt: cannot expand MODELMAN_REGISTRY (%v); using literal path\n", err)
+			return override
 		}
 	}
-	return filepath.Join(base, "local-ai", "registry.toml")
+	return filepath.Join(baseConfigHome(), "local-ai", "registry.toml")
 }
 
 // expandHome expands a leading "~" or "~/" in path to the user's home
 // directory, matching Python's Path.expanduser() semantics used by
 // modelman's _default_registry_path so MODELMAN_REGISTRY behaves the same
 // in both tools. Paths that don't start with "~" are returned unchanged.
-func expandHome(path string) string {
+//
+// "~username/..." forms are NOT expanded: Go has no portable equivalent
+// of Python's pwd.getpwnam. Returning the literal keeps the failure mode
+// loud (wt will report "registry not found" rather than silently reading
+// the current user's home).
+//
+// Returns the error from os.UserHomeDir() so callers can surface a
+// clearer message than "file not found" when HOME is unset.
+func expandHome(path string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {
-		return path
+		return path, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return path
+		return path, err
 	}
 	if path == "~" {
-		return home
+		return home, nil
 	}
-	return filepath.Join(home, path[2:])
+	return filepath.Join(home, path[2:]), nil
 }
 
 // loadRegistry decodes modelman-owned registry.toml into providers and
