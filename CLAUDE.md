@@ -123,6 +123,13 @@ See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for 
 ## Registry (modelman-owned)
 
 `~/.config/local-ai/registry.toml` holds the canonical Providers/Models.
+The location is resolved with the same precedence as modelman's
+`_default_registry_path`: `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` >
+`~/.config` — keep the two in sync when changing either side. A
+`MODELMAN_REGISTRY` value starting with `~/` (or exactly `~`) is expanded
+via `expandHome`, matching Python's `Path.expanduser()` used by modelman's
+resolver — Go/the OS never expand `~` on their own, so this parity is
+deliberate, not incidental.
 wt loads it read-only via `config.Load` (fail-closed: missing/malformed
 registry is an error; seed with `modelman migrate`) and joins it in memory
 with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
@@ -133,13 +140,15 @@ are ignored by wt's parser.
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt
 > bug** — e.g. a `registry.toml` with models referencing `provider_id`s but
 > `providers = []`. Fix is `modelman sync`/`modelman migrate` on that machine,
-> not a code change here.
+> not a code change here. (`modelman sync` now repairs a `providers = []`
+> registry by creating default entries for reconcilable providers.)
 
 **Lazy:** `newApp()` only loads config. wt never shells out for discovery;
 `-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`.
 
 > **Fixture gotcha.** `Dir()` and `RegistryPath()` both honor `XDG_CONFIG_HOME`
-> but write to *different* subdirs: `config.toml` → `$XDG_CONFIG_HOME/agent-wt/`,
+> (and `RegistryPath()` also honors `MODELMAN_REGISTRY`) but write to
+> *different* subdirs: `config.toml` → `$XDG_CONFIG_HOME/agent-wt/`,
 > `registry.toml` → `$XDG_CONFIG_HOME/local-ai/`. Test/smoke fixtures must
 > populate both. Also: `migrateConfigSchema` (runs on every `Load`)
 > unconditionally ensures an `agy` agent — any registry fixture with agents

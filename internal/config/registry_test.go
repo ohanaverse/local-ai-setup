@@ -44,6 +44,30 @@ func TestRegistryPathHonorsXDG(t *testing.T) {
 	}
 }
 
+func TestRegistryPathHonorsModelmanRegistryOverride(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "/custom/registry.toml")
+	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
+	if got := RegistryPath(); got != "/custom/registry.toml" {
+		t.Errorf("RegistryPath() = %q, want MODELMAN_REGISTRY override", got)
+	}
+}
+
+// A MODELMAN_REGISTRY value starting with "~/" must expand to the real home
+// directory, matching modelman's Python resolver (Path.expanduser()) — a
+// literal "~" segment is never expanded by the OS or os.ReadFile, so without
+// this wt would fail to find a registry that modelman itself can read.
+func TestRegistryPathExpandsTildeInModelmanRegistryOverride(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory available")
+	}
+	t.Setenv("MODELMAN_REGISTRY", "~/custom-registry.toml")
+	want := filepath.Join(home, "custom-registry.toml")
+	if got := RegistryPath(); got != want {
+		t.Errorf("RegistryPath() = %q, want %q", got, want)
+	}
+}
+
 func TestLoad_JoinsRegistry(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

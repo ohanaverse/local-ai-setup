@@ -4,14 +4,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
 
 // RegistryPath returns the modelman-owned registry.toml location. It honors
-// XDG_CONFIG_HOME the same way Dir() does; modelman writes the registry to
-// ~/.config/local-ai/registry.toml by default. wt reads this file read-only.
+// MODELMAN_REGISTRY as an explicit override, then XDG_CONFIG_HOME, falling
+// back to ~/.config — the same precedence modelman's _default_registry_path
+// uses, so the two tools agree on the registry location. wt reads this file
+// read-only.
 func RegistryPath() string {
+	if override := os.Getenv("MODELMAN_REGISTRY"); override != "" {
+		return expandHome(override)
+	}
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, _ := os.UserHomeDir()
@@ -21,6 +27,24 @@ func RegistryPath() string {
 		}
 	}
 	return filepath.Join(base, "local-ai", "registry.toml")
+}
+
+// expandHome expands a leading "~" or "~/" in path to the user's home
+// directory, matching Python's Path.expanduser() semantics used by
+// modelman's _default_registry_path so MODELMAN_REGISTRY behaves the same
+// in both tools. Paths that don't start with "~" are returned unchanged.
+func expandHome(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }
 
 // loadRegistry decodes modelman-owned registry.toml into providers and
