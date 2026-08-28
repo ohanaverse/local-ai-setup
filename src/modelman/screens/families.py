@@ -8,11 +8,17 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header
 
-from ..config import load_config
-from ..manifest import FamilyManifest, get_family_dir, load_manifest
 from ..providers.registry import ProviderRegistry
+from ..registry import (
+    Registry,
+    RegistryError,
+    load_registry,
+    provider_config,
+    save_registry,
+)
+from ..state import StateStore, load_state, save_state
 from .forms import AddFamilyModal, ConfirmModal, EditFamilyModal
-from .models import ModelScreen
+from .models import ModelScreen, _model_entry_to_variant
 
 
 def _human_size(n) -> str:
@@ -39,15 +45,23 @@ class FamilyScreen(Screen[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        # Per-(family, variant) reconcile overlay: {downloaded: bool, size: int|None}.
+        # Per-model-id reconcile overlay: {downloaded: bool, size: int|None}.
         # Populated by the background reconcile worker; read by reload() when
-        # computing the downloaded count and size column.
-        self._reconciled: dict[tuple[str, str], dict] = {}
-        # Names of providers configured in ~/.config/local-ai/config.yaml,
-        # loaded once on mount and forwarded to ModelScreen on Open so
-        # the model screen's provider pane always shows every configured
-        # provider, even when the family has zero variants.
+        # computing the downloaded count and size column. Keyed by
+        # ModelEntry.id (globally unique), matching ModelScreen.reconciled.
+        self._reconciled: dict[str, dict] = {}
+        # Providers from registry.toml, loaded once on mount and forwarded
+        # to ModelScreen on Open so the model screen's provider pane always
+        # shows every configured provider, even when the family has zero
+        # models.
         self._available_providers: list[str] = []
+        # Registry/StateStore + the paths they were loaded from — set in
+        # on_mount(), reloaded in _refresh_from_disk() so edits made on
+        # ModelScreen (which saves on apply) are picked up on resume.
+        self.registry: Registry = Registry()
+        self.state: StateStore = StateStore()
+        self.registry_path: Path = Path()
+        self.state_path: Path = Path()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -57,32 +71,45 @@ class FamilyScreen(Screen[None]):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE")
-        # Cache the configured providers so opening a family shows a
-        # full provider pane even if the family is empty. Preserve
-        # config-file insertion order so the left pane's column order
-        # matches what the user wrote in config.yaml.
-        try:
-            cfg = load_config()
-            self._available_providers = list(cfg.providers.keys())
-        except Exception:
-            self._available_providers = []
+        self._load_from_disk()
         self.reload()
         # Reconcile against provider state so the size and downloaded columns
-        # reflect reality even when the manifest is stale. In-memory only.
+        # reflect reality even when modelman.toml is stale. In-memory only.
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
+    def _load_from_disk(self) -> None:
+        """(Re)load registry.toml + modelman.toml and the derived
+        available-providers list. A missing/invalid registry.toml is
+        not fatal here (an empty Registry just means an empty family
+        table) — ModelScreen's own on_mount has the same tolerance."""
+        from ..registry import _default_registry_path
+        from ..state import _default_state_path
+
+        self.registry_path = _default_registry_path()
+        self.state_path = _default_state_path()
+        try:
+            self.registry = load_registry(self.registry_path)
+        except RegistryError:
+            self.registry = Registry()
+        self.state = load_state(self.state_path)
+        # Preserve registry.toml's provider insertion order so the left
+        # pane's column order matches what the user wrote there (mirrors
+        # app.py's _configured_providers()).
+        self._available_providers = [p.id for p in self.registry.providers]
+
     def _refresh_from_disk(self) -> None:
-        """Clear the cached reconcile overlay and re-run reconcile.
+        """Reload registry.toml/modelman.toml, clear the cached reconcile
+        overlay, and re-run reconcile.
 
         Used both on screen resume (after popping back from a child
-        screen that may have mutated the on-disk manifest) and on
-        explicit 'r'. Without clearing, stale (family, vid) entries
-        from deleted variants would remain in memory forever and the
-        reload() fallback path could pick them up if a new variant
-        were later added with the same id.
+        screen that may have mutated the on-disk files — ModelScreen
+        saves on apply) and on explicit 'r'. Without clearing the
+        overlay, stale entries for deleted models would remain in
+        memory forever.
         """
+        self._load_from_disk()
         self._reconciled.clear()
-        self.reload()  # show manifest-truth immediately
+        self.reload()  # show state-truth immediately
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def on_screen_resume(self, event) -> None:
@@ -101,61 +128,49 @@ class FamilyScreen(Screen[None]):
         self._refresh_from_disk()
 
     def _run_reconcile(self) -> None:
-        try:
-            config = load_config()
-        except Exception:
-            return
-        family_dir: Path = get_family_dir()
-        if not family_dir.exists():
-            return
-        # Cache provider instances per provider name.
+        """Ask each provider whether its models are on disk; cache
+        results keyed by model id. Mirrors ModelScreen._run_reconcile
+        but across every model in the registry (not one family)."""
         providers: dict[str, object] = {}
-        for path in sorted(family_dir.glob("*.yaml")):
-            try:
-                m = load_manifest(path.stem, family_dir=family_dir)
-            except Exception:
-                continue
-            for v in m.variants:
-                pname = v["provider"]
-                if pname not in providers:
-                    try:
-                        providers[pname] = ProviderRegistry.get(pname, config.provider(pname))
-                    except Exception:
-                        continue
-                provider = providers[pname]
-                size: int | None = None
+        for m in self.registry.models:
+            pname = m.provider_id
+            if pname not in providers:
                 try:
-                    raw = provider.size_of(v)  # type: ignore[attr-defined]
-                    if isinstance(raw, int):
-                        size = raw
+                    entry = self.registry.provider(pname)
+                    providers[pname] = ProviderRegistry.get(pname, provider_config(entry))
                 except Exception:
-                    size = None
-                self._reconciled[(m.family, v["id"])] = {
-                    "downloaded": size is not None,
-                    "size": size,
-                }
+                    continue
+            provider = providers[pname]
+            spec = _model_entry_to_variant(m)
+            size: int | None = None
+            try:
+                raw = provider.size_of(spec)  # type: ignore[attr-defined]
+                if isinstance(raw, int):
+                    size = raw
+            except Exception:
+                size = None
+            self._reconciled[m.id] = {
+                "downloaded": size is not None,
+                "size": size,
+            }
         self.app.call_from_thread(self.reload)
 
     def reload(self) -> None:
         table = self.query_one(DataTable)
         table.clear()
-        family_dir: Path = get_family_dir()
-        if not family_dir.exists():
-            return
-
-        for path in sorted(family_dir.glob("*.yaml")):
-            try:
-                m = load_manifest(path.stem, family_dir=family_dir)
-            except Exception:
-                continue
-            variants = len(m.variants)
-            # Compute downloaded count and total size from the reconcile
-            # overlay if available, else from the manifest.
+        # A family is "known" if it has models in the registry, or was
+        # explicitly touched in state (e.g. AddFamilyModal for a family
+        # with zero models yet) — mirrors the legacy per-family manifest
+        # file's existence, which didn't require any variants either.
+        families = sorted(set(self.registry.families()) | set(self.state.families.keys()))
+        for family in families:
+            models = self.registry.models_by_family(family)
+            variants = len(models)
             downloaded_count = 0
             total_size = 0
             unknown = False
-            for v in m.variants:
-                rec = self._reconciled.get((m.family, v["id"]))
+            for m in models:
+                rec = self._reconciled.get(m.id)
                 if rec is not None:
                     if rec["downloaded"]:
                         downloaded_count += 1
@@ -164,52 +179,37 @@ class FamilyScreen(Screen[None]):
                             unknown = True
                         else:
                             total_size += sz
-                    # If rec says not downloaded, don't fall through to the
-                    # manifest (it could be stale on either side).
-                else:
-                    # No reconcile info yet; trust the manifest for this
-                    # family/variant.
-                    if v["id"] in m.downloaded:
-                        downloaded_count += 1
-                        lp = m.downloaded[v["id"]].get("local_path")
-                        if lp:
-                            # Heuristic: if the path is a real filesystem
-                            # path that exists, leave size to the next
-                            # reconcile. If we know it's a stub (e.g.
-                            # "ollama:<name>"), count as 0 with unknown.
-                            from ..providers.registry import ProviderRegistry as _PR
-
-                            try:
-                                cfg = load_config()
-                                prov = _PR.get(v["provider"], cfg.provider(v["provider"]))
-                                raw = prov.size_of(v)  # type: ignore[attr-defined]
-                                if isinstance(raw, int) and raw > 0:
-                                    total_size += raw
-                                elif raw is None:
-                                    unknown = True
-                            except Exception:
-                                unknown = True
+                    # If rec says not downloaded, don't fall through to
+                    # state (it could be stale on either side).
+                elif self.state.get(m.id).downloaded:
+                    # No reconcile info yet; trust state for this model.
+                    downloaded_count += 1
+                    unknown = True  # size unknown until reconcile runs
             size_str = (
                 "—"
                 if downloaded_count == 0
                 else _human_size(total_size if (total_size > 0 or not unknown) else None)
             )
             table.add_row(
-                m.family,
-                m.display_name or "",
+                family,
+                self.state.family_display_name(family) if family in self.state.families else "",
                 str(variants),
                 str(downloaded_count),
                 size_str,
-                key=m.family,
+                key=family,
             )
 
     def action_reconcile(self) -> None:
         self._refresh_from_disk()
 
     def action_add_family(self) -> None:
-        def _on_close(result: FamilyManifest | None) -> None:
-            if result is not None:
-                self.reload()
+        def _on_close(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            family, display_name = result
+            self.state.touch_family(family, display_name)
+            save_state(self.state, self.state_path)
+            self.reload()
 
         self.app.push_screen(AddFamilyModal(), _on_close)
 
@@ -219,26 +219,21 @@ class FamilyScreen(Screen[None]):
             return
         row_key = list(table.rows.keys())[table.cursor_row]
         family_name = str(row_key.value)
-        try:
-            m = load_manifest(family_name)
-        except Exception:
-            return
 
-        def _on_close(result: FamilyManifest | None) -> None:
-            if result is None:
+        def _on_close(display_name: str | None) -> None:
+            if display_name is None:
                 return
-            # Reload from disk so the table picks up the new
-            # display_name. _refresh_from_disk also clears the
-            # reconcile overlay, which is correct because variant
-            # ids didn't change — the keys stay valid — but matching
-            # add/delete (which already do this) keeps behavior
-            # uniform.
+            self.state.touch_family(family_name, display_name)
+            save_state(self.state, self.state_path)
+            # _refresh_from_disk also clears the reconcile overlay; model
+            # ids didn't change so the keys stay valid, but matching
+            # add/delete (which already do this) keeps behavior uniform.
             self._refresh_from_disk()
 
         self.app.push_screen(
             EditFamilyModal(
-                family=m.family,
-                display_name=m.display_name,
+                family=family_name,
+                display_name=self.state.family_display_name(family_name),
             ),
             _on_close,
         )
@@ -249,22 +244,14 @@ class FamilyScreen(Screen[None]):
             return
         row_key = list(table.rows.keys())[table.cursor_row]
         family_name = str(row_key.value)
-        try:
-            m = load_manifest(family_name)
-        except Exception:
-            return
-
-        variants_count = len(m.variants)
-        downloaded_count = len(m.downloaded)
+        models = self.registry.models_by_family(family_name)
+        variants_count = len(models)
+        downloaded_count = sum(1 for m in models if self.state.get(m.id).downloaded)
 
         # Deletion is only safe when the family has nothing to lose.
-        # The previous check only protected against downloaded entries,
-        # which silently dropped families with queued-but-not-yet-
-        # downloaded variants when they got bulk-queued for delete and
-        # then the user pressed d on the family row. Now we protect
-        # against any variants, queued or downloaded. The dialog
-        # messages spell out the current state so the user knows which
-        # path they're on.
+        # Protect against any models, queued-download or downloaded.
+        # The dialog messages spell out the current state so the user
+        # knows which path they're on.
         if downloaded_count > 0:
             self.app.push_screen(
                 ConfirmModal(
@@ -277,14 +264,14 @@ class FamilyScreen(Screen[None]):
             )
             return
         if variants_count > 0:
-            # Family has variant definitions but none have been
-            # downloaded yet. Deleting would lose the variant
+            # Family has model definitions but none have been
+            # downloaded yet. Deleting would lose the model
             # definitions entirely; require explicit confirmation.
             self.app.push_screen(
                 ConfirmModal(
                     f"Family '{family_name}' has {variants_count} variant"
                     f"{'s' if variants_count != 1 else ''} (none downloaded). "
-                    f"Delete anyway? This loses the variant definitions."
+                    f"Delete anyway? This loses the model definitions."
                 ),
                 self._on_delete_family_with_variants,
             )
@@ -299,18 +286,20 @@ class FamilyScreen(Screen[None]):
     def _on_delete_confirm(self, confirmed: bool | None) -> None:
         if not confirmed:
             return
-        self._delete_family_file()
+        self._delete_family()
 
     def _on_delete_family_with_variants(self, confirmed: bool | None) -> None:
         if not confirmed:
             return
-        self._delete_family_file()
+        self._delete_family()
 
-    def _delete_family_file(self) -> None:
-        """Unlink the manifest file for the family currently under
-        the cursor, then reload. Shared between the empty-family
-        confirmation and the variants-no-download confirmation so
-        both paths go through the same destructive code.
+    def _delete_family(self) -> None:
+        """Remove every model in the currently-selected family from
+        the registry, drop its state entries and its `families` state
+        entry, save both files, then reload. Shared between the
+        empty-family confirmation and the variants-no-download
+        confirmation so both paths go through the same destructive
+        code.
 
         The cursor_row is re-read here rather than cached at modal
         open: while the modal was up the table did not change, so
@@ -322,9 +311,13 @@ class FamilyScreen(Screen[None]):
         table = self.query_one(DataTable)
         row_key = list(table.rows.keys())[table.cursor_row]
         family_name = str(row_key.value)
-        path = get_family_dir() / f"{family_name}.yaml"
-        if path.exists():
-            path.unlink()
+        removed_ids = {m.id for m in self.registry.models if m.family == family_name}
+        self.registry.models = [m for m in self.registry.models if m.family != family_name]
+        for mid in removed_ids:
+            self.state.models.pop(mid, None)
+        self.state.forget_family(family_name)
+        save_registry(self.registry, self.registry_path)
+        save_state(self.state, self.state_path)
         self.reload()
 
     def _on_blocked_confirm(self, _confirmed: bool | None) -> None:
@@ -334,21 +327,26 @@ class FamilyScreen(Screen[None]):
         family_name = str(event.row_key.value) if event.row_key else ""
         if not family_name:
             return
-        m = load_manifest(family_name)
-        path = get_family_dir() / f"{family_name}.yaml"
-        # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
-        self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
+        self._open_family(family_name)
 
     def action_open_family(self) -> None:
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return
         row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        m = load_manifest(family_name)
-        path = get_family_dir() / f"{family_name}.yaml"
-        # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
-        self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
+        self._open_family(str(row_key.value))
+
+    def _open_family(self, family_name: str) -> None:
+        self.app.push_screen(
+            ModelScreen(
+                registry=self.registry,
+                state=self.state,
+                family=family_name,
+                registry_path=self.registry_path,
+                state_path=self.state_path,
+                available_providers=self._available_providers,
+            )
+        )
 
     def action_quit(self) -> None:
         self.app.exit()

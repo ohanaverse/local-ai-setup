@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal, cast
 
 from textual.app import ComposeResult
@@ -10,7 +9,6 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
-from ..manifest import FamilyManifest, get_family_dir, save_manifest
 from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
 
@@ -59,8 +57,15 @@ def parse_model(
     return (model, repo_id, filename)
 
 
-class AddFamilyModal(ModalScreen[FamilyManifest | None]):
-    """Prompt for a family name and optional display name."""
+class AddFamilyModal(ModalScreen[tuple[str, str] | None]):
+    """Prompt for a family name and optional display name.
+
+    Returns `(family, display_name)` on Create — display_name falls
+    back to family when left blank. FamilyScreen owns the StateStore
+    mutation + save after this dismisses; the modal itself performs
+    no disk I/O (mirrors ModelForm returning a VariantSpec dict for
+    ModelScreen to apply to the Registry).
+    """
 
     DEFAULT_CSS = """
     AddFamilyModal { align: center middle; }
@@ -95,24 +100,20 @@ class AddFamilyModal(ModalScreen[FamilyManifest | None]):
         display = self.query_one("#display-name", Input).value.strip()
         if not name:
             return
-        manifest = FamilyManifest(family=name, display_name=display or name)
-        path: Path = get_family_dir() / f"{name}.yaml"
-        save_manifest(manifest, path)
-        self.dismiss(manifest)
+        self.dismiss((name, display or name))
 
 
-class EditFamilyModal(ModalScreen[FamilyManifest | None]):
+class EditFamilyModal(ModalScreen[str | None]):
     """Edit the display_name of an existing family.
 
-    The family slug (the manifest filename key) is intentionally
-    NOT editable: changing it would orphan the on-disk manifest or
-    break cross-references from variants, downloaded entries, and the
-    user's muscle memory. The slug is shown read-only so the user
-    knows which family they're editing.
+    The family slug is intentionally NOT editable here — changing it
+    would orphan cross-references from models keyed by family. The
+    slug is shown read-only so the user knows which family they're
+    editing.
 
-    Returns the updated FamilyManifest on Save; None on Cancel.
-    Falls back to the family slug if the user blanks the display
-    name (matches AddFamilyModal's behavior).
+    Returns the new display_name on Save (falls back to the family
+    slug if blanked, matching AddFamilyModal); None on Cancel.
+    FamilyScreen owns the StateStore mutation + save.
     """
 
     DEFAULT_CSS = """
@@ -126,9 +127,6 @@ class EditFamilyModal(ModalScreen[FamilyManifest | None]):
 
     def __init__(self, family: str, display_name: str) -> None:
         super().__init__()
-        # The slug is read-only in the modal; carry it so _submit()
-        # can build the updated FamilyManifest without round-tripping
-        # to disk.
         self._family = family
         self._display_name = display_name
 
@@ -167,13 +165,7 @@ class EditFamilyModal(ModalScreen[FamilyManifest | None]):
 
     def _submit(self) -> None:
         display = self.query_one("#display-name", Input).value.strip()
-        # Empty display_name falls back to the slug (matches AddFamilyModal).
-        manifest = FamilyManifest(
-            family=self._family, display_name=display or self._family
-        )
-        path: Path = get_family_dir() / f"{self._family}.yaml"
-        save_manifest(manifest, path)
-        self.dismiss(manifest)
+        self.dismiss(display or self._family)
 
 
 class ConfirmModal(ModalScreen[bool]):
