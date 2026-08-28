@@ -643,3 +643,18 @@ For comparing the four backends (Ollama, oMLX, llama.cpp, OpenRouter) under cont
 - Latest benchmark results
 - Problems encountered while getting the script to work (bash version traps, array subscript gotchas, model-load detection issues)
 - How to extend the benchmark for new models/providers
+
+### Benchmark isolation helpers
+
+`modelman benchmark` delegates service isolation to two helpers in this
+repo's `bin/` directory:
+
+- **`bin/llm-isolate-provider <provider-id>`** — stops the other local
+  providers, starts + warms up the requested one (ollama / llamacpp /
+  omlx), and prints a JSON result with the provider, model, and direct
+  backend URL.
+- **`bin/llm-restore-providers`** — brings all local providers (and the
+  LiteLLM proxy) back up after a benchmark run.
+
+Ensure `local-ai-setup/bin` is on `PATH` so `modelman benchmark` can find
+them. Model names and URLs are overridable via `LLM_ISOLATE_*` env vars.
