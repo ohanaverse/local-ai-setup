@@ -64,9 +64,9 @@ field. Status: approved in chat, no plan written, not implemented.
 and `internal/registry` + the `wt config ollama` subcommand are deleted.
 Spec: `agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`;
 plan: `agent-worktree/docs/superpowers/plans/2026-08-28-wt-registry-consumer.md`.
-Merged as PR #94 (squash `79d620f`) — note the PR's base was this tracker
-branch (`docs/model-management-consolidation-status`), so the code reaches
-`main` only when that branch is next merged/PR'd to `main`.
+Merged as PR #94 (squash `79d620f`) onto this tracker branch, then brought
+to `main` via PR #93 (merge commit `1ac5e8b`, 2026-08-28) — `main` has the
+full Phase 4 code.
 Sub-projects 2 and 3 remain unbrainstormed.
 
 ## Sub-project 2 — Benchmark tooling
