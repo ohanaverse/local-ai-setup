@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI for managing local LLM model families across multiple providers (Ollama, llama.cpp, oMLX). A *family* is a YAML manifest that groups related model variants; the TUI lets you browse families, drill into per-provider model lists, and queue changes (add/edit/delete/download) that are applied on exit. `download` is a Typer subcommand that opens the TUI at a family's model screen.
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, llama.cpp, oMLX) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list).
 
 ## Common development commands
 
@@ -12,6 +12,7 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 
 - **Install dependencies:** `make install` (runs `uv sync`)
 - **Run the CLI during development:** `uv run modelman` (TUI) or `uv run modelman download <family>`
+- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
 - **Lint / format / typecheck:** `make lint`, `make format`, `make typecheck` (or `make check` to run lint+typecheck together)
@@ -23,18 +24,28 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 ### Entry point
 
-- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; the `download <family>` subcommand calls `run_tui(family)`, which launches the Textual app and pushes a `ModelScreen` for that family.
+- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `download <family>` (pushes `ModelScreen`), `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list).
 
 ### Textual TUI
 
 - `src/modelman/app.py` — `ModelmanApp(App[None])`. `on_mount` pushes `FamilyScreen`.
 - `src/modelman/screens/families.py` — `FamilyScreen`: DataTable of families (family · display · variants · downloaded · size). Actions: `action_add_family` (`a`), `action_delete_family` (`d`, blocked if any downloaded models), `action_open_family` (Enter / `DataTable.RowSelected`).
-- `src/modelman/screens/models.py` — `ModelScreen`: two-pane layout (providers DataTable left, models DataTable right with name · status · size · path). Holds `queued_downloads` / `queued_deletes` dicts. Actions: `a` add model, `e` edit (id/provider fixed), `d` queue delete, `x` toggle download, `escape` back/apply. Provider selection drives a `RowHighlighted` handler that reloads the right pane.
+- `src/modelman/screens/models.py` — `ModelScreen`: two-pane layout (providers DataTable left, models DataTable right with name · status · size · path · EXPOSED). Holds `queued_downloads` / `queued_deletes` / `queued_exposes` dicts. Actions: `a` add model, `e` edit (id/provider fixed), `d` queue delete, `x` toggle download, `l` toggle LiteLLM expose, `escape` back/apply. Provider selection drives a `RowHighlighted` handler that reloads the right pane.
+- `src/modelman/screens/status.py` — `StatusScreen`: read-only view of registry state (last sync, downloaded count, exposed count). Opened from the family screen.
 - `src/modelman/screens/forms.py` — modal screens: `AddFamilyModal`, `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with `disabled=editing` on provider/id for immutability), `ConfirmExitDialog` (shows pending set, applies on confirm).
 
 ### Pending changes queue
 
-- `src/modelman/queue.py` — `PendingChanges(manifest, manifest_path, providers, downloads, deletes, failures)`. `apply()` runs deletes first (so downloads free up disk), then downloads (each calls `provider.download(variant)` → `manifest.mark_downloaded(...)`), then a single `save_manifest()`. Failures are captured per-step, processing continues.
+- `src/modelman/queue.py` — `PendingChanges(registry, state, providers, downloads, deletes, exposes, failures)`. `apply()` runs deletes first (so downloads free up disk), then downloads (each calls `provider.download(variant)` → `state.mark_downloaded(...)`), then exposes (each writes a LiteLLM `model_list` entry), then a single `save_registry()` + `save_state()`. Failures are captured per-step, processing continues.
+
+### Registry and state
+
+- `src/modelman/registry.py` — `Registry` dataclass: providers + models. Loaded from/saved to `registry.toml` (path overridable via `MODELMAN_REGISTRY`).
+- `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. Loaded from `modelman.toml` (`MODELMAN_STATE`).
+- `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. Run once via `uv run modelman migrate`.
+- `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.
+- `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate).
+- `src/modelman/_toml_io.py` — minimal `tomllib`/`tomli_w` helpers (read/write dict-shaped TOML without external config libs).
 
 ### Provider plugin system
 
@@ -49,8 +60,10 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 ### Config and manifests
 
-- `src/modelman/config.py` loads `~/.config/local-ai/config.yaml` into a `Config` dataclass. Path overridable with `MODELMAN_CONFIG`.
-- `src/modelman/manifest.py` loads/saves family manifests from `~/.config/local-ai/families/<family>.yaml` as `FamilyManifest`. Directory overridable with `MODELMAN_FAMILY_DIR`. `FamilyManifest.variant_by_id(vid)` looks up a variant. `downloaded` is a dict keyed by variant id; `mark_downloaded` stores an ISO timestamp and local path. `save_manifest` rewrites the whole YAML file with `sort_keys=False`. `load_manifest` derives a variant `name` from `files[0]` or the repo basename if not provided.
+- `src/modelman/registry.py` loads/saves `registry.toml` (providers + model definitions) into a `Registry` dataclass. Path overridable with `MODELMAN_REGISTRY`.
+- `src/modelman/state.py` loads/saves `modelman.toml` (per-model state: downloaded, exposed, paths) into a `StateStore`. Path overridable with `MODELMAN_STATE`.
+- `src/modelman/migrate.py` is the one-time path: imports legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. The TUI/CLI expect the new layout after migration.
+- `src/modelman/manifest.py` still exists for the legacy path — `FamilyManifest.variant_by_id(vid)` looks up a variant; `downloaded` is a dict keyed by variant id; `mark_downloaded` stores an ISO timestamp and local path; `save_manifest` rewrites the whole YAML file with `sort_keys=False`. Not used by the new TUI screens.
 
 ### Adding a new provider
 
@@ -59,6 +72,7 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 3. Add the provider to `~/.config/local-ai/config.yaml` under `providers:`.
 4. Use `provider: <name>` in family manifests.
 5. (Optional) Override `size_of` so the size column is populated for downloaded variants.
+6. Add a `ProviderPolicy` entry to `PROVIDER_POLICIES` in `src/modelman/litellm.py` (prefix, api_key, cloud flag). This table is the single source of truth for LiteLLM exposure — both the config writer and the TUI's expose gate read it, and an unmapped provider cannot be exposed.
 
 No changes to `main.py` are required unless a new CLI subcommand is also added.
 
@@ -66,22 +80,24 @@ No changes to `main.py` are required unless a new CLI subcommand is also added.
 
 - TUI tests use `pytest-asyncio` (`asyncio_mode = "auto"` in pyproject) and `ModelmanApp.run_test()` with a `pilot`. Drive interactions with `await pilot.press("a")` etc. and assert on `app.screen` / `query_one(DataTable)`. Modal text-input flows explicitly focus the target `Input` before pressing characters (Tab cycling is unreliable in tests).
 - Provider unit tests inject a `runner` callable (commonly the `mock_runner` fixture in `tests/conftest.py`) so subprocess behavior can be mocked without shelling out.
-- CLI entry-point tests use `typer.testing.CliRunner` and `unittest.mock.patch("modelman.main.run_tui")` to assert the TUI is invoked with the right argument.
-- Tests redirect config/manifest paths via `MODELMAN_CONFIG` and `MODELMAN_FAMILY_DIR`.
+- CLI entry-point tests use `typer.testing.CliRunner` and `unittest.mock.patch("modelman.main.run_tui")` to assert the TUI is invoked with the right argument. Every subcommand has two layers: the orchestration helpers are tested directly with `tmp_path`-based registry/state fixtures (e.g. `tests/test_expose.py`, `tests/test_sync.py`), and the command wiring (load → run → save → report) is covered by `tests/commands/test_*.py` driving the CLI runner against env-var-redirected paths.
+- Tests redirect config/registry/state paths via `MODELMAN_REGISTRY`, `MODELMAN_STATE` (new) and the legacy `MODELMAN_CONFIG` / `MODELMAN_FAMILY_DIR` (still honored by `migrate` tests). LiteLLM config paths redirect via `MODELMAN_LITELLM_CONFIG`.
 
 ## Important implementation notes
 
 - The `OllamaProvider` methods accept an optional `runner` argument so tests can substitute a mock. The default runner just calls `subprocess.run`.
-- `FamilyManifest.mark_downloaded` stores an ISO timestamp and local path; `save_manifest` rewrites the whole YAML file with `sort_keys=False`.
-- `load_manifest` derives a variant `name` from `files[0]` or the repo basename if `name` is not explicitly provided.
+- `StateStore.mark_downloaded` stores an ISO timestamp and local path under the registry model id (replaces the legacy `FamilyManifest.mark_downloaded`).
+- `Registry`/`StateStore` save helpers rewrite the whole TOML file (`tomli_w`) — preserve unknown keys on round-trip so user-edited fields survive.
 - `llamacpp` checks the Hugging Face cache (`HF_HOME/hub`) for the requested files; `omlx` downloads into `model_dir/<repo-basename>`.
 - `size_of` is implemented per provider: Ollama parses the `ollama list` SIZE column (two-token `<number> <UNIT>`), llamacpp stats the primary file in the HF cache snapshot dir, omlx sums files in the model directory.
-- `PendingChanges.apply()` is the single integration point between the TUI queue and the providers. It deliberately reorders to deletes-before-downloads so a queued delete frees disk before a queued download fills it.
+- `PendingChanges.apply()` is the single integration point between the TUI queue and the providers. It deliberately reorders to deletes-before-downloads so a queued delete frees disk before a queued download fills it, and runs exposes last so any queued download is visible to the LiteLLM writer.
+- Deleting an exposed model auto-queues its unexpose inside `apply()` (keyed on the state's `litellm_exposed` flag), so config.yaml never keeps a route to a deleted file.
+- `save_litellm_config` preserves the existing config.yaml's permission bits on rewrite (mkstemp's 0600 would otherwise silently tighten them); malformed or non-dict `model_list` content is preserved or refused, never crashed on.
 - The TUI's `action_back` (`escape` from ModelScreen) shows the exit confirmation only if the queue is non-empty; otherwise it pops immediately.
 
 ## Configuration for end users
 
-See `README.md` for the exact YAML schemas for `~/.config/local-ai/config.yaml`, family manifests, and the variant field reference.
+See `README.md` for the exact TOML schemas for `registry.toml` and `modelman.toml`, the LiteLLM `model_list` format, and the provider config field reference. Legacy `config.yaml`/`families/*.yaml` schemas are still documented for users on the pre-migration layout — run `uv run modelman migrate` to upgrade.
 
 ## Foreign agent configs
 

@@ -17,9 +17,7 @@ def _seed_registry(tmp_path, monkeypatch):
     state_path = tmp_path / "modelman.toml"
     save_registry(
         Registry(
-            providers=[
-                ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-            ]
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
         ),
         registry_path,
     )
@@ -31,9 +29,7 @@ def _seed_registry(tmp_path, monkeypatch):
 def test_sync_command_saves_state_and_reports(tmp_path, monkeypatch):
     registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
     with patch("modelman.main.run_sync") as run_sync:
-        run_sync.return_value = SyncResult(
-            downloaded=["ollama/x"], not_downloaded=["ollama/y"]
-        )
+        run_sync.return_value = SyncResult(downloaded=["ollama/x"], not_downloaded=["ollama/y"])
         runner = CliRunner()
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0

@@ -28,7 +28,7 @@ def _write_modelman_config(path: Path) -> None:
 
 def _write_wt_config(path: Path) -> None:
     path.write_text(
-        '[[providers]]\n'
+        "[[providers]]\n"
         '  id = "ollama"\n'
         '  name = "Ollama"\n'
         '  location = "local"\n'

@@ -277,9 +277,7 @@ class FamilyScreen(Screen[None]):
             )
             return
         self.app.push_screen(
-            ConfirmModal(
-                f"Family '{family_name}' is empty. Delete?"
-            ),
+            ConfirmModal(f"Family '{family_name}' is empty. Delete?"),
             self._on_delete_confirm,
         )
 

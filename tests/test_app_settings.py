@@ -1,4 +1,3 @@
-
 """App integration: load + persist the saved theme."""
 
 from __future__ import annotations
@@ -85,9 +84,7 @@ async def test_app_watch_theme_persists_change(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_app_startup_does_not_rewrite_unrelated_settings(
-    tmp_path, monkeypatch
-):
+async def test_app_startup_does_not_rewrite_unrelated_settings(tmp_path, monkeypatch):
     """On startup, watch_theme fires once with the loaded theme. The
     dedup check should keep us from rewriting the file when nothing
     has actually changed."""

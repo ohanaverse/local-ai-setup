@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .litellm import apply_expose_queue
 from .providers._progress import DownloadCancelled
 from .registry import save_registry
-from .state import ModelState, save_state
+from .state import save_state
 
 if TYPE_CHECKING:
     from .providers.base import VariantSpec
@@ -67,6 +68,9 @@ class PendingChanges:
     # is what the provider APIs (download, size_of, delete) still consume.
     downloads: list[tuple[str, VariantSpec]] = field(default_factory=list)
     deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
+    # (model_id, target_exposed) pairs applied after downloads, before save.
+    exposes: list[tuple[str, bool]] = field(default_factory=list)
+    litellm_path: Path = field(default_factory=Path)
     failures: list[str] = field(default_factory=list)
     cancelled: bool = False
 
@@ -116,7 +120,7 @@ class PendingChanges:
                 return True
             return False
 
-        if not self.downloads and not self.deletes:
+        if not self.downloads and not self.deletes and not self.exposes:
             emit("apply:done")
             return
 
@@ -137,6 +141,14 @@ class PendingChanges:
                 continue
             # Remove from in-memory registry.
             self.registry.models = [m for m in self.registry.models if m.id != model_id]
+            # If the model was exposed through LiteLLM, queue an unexpose
+            # so config.yaml doesn't keep routing to a model whose file
+            # is gone. Any queued expose toggle for the same id is moot
+            # now that the model is being removed.
+            was_exposed = self.state.get(model_id).litellm_exposed
+            self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
+            if was_exposed:
+                self.exposes.append((model_id, False))
             # Clear any state entry so modelman.toml doesn't carry a
             # stale downloaded=True after the user removed the file.
             self.state.models.pop(model_id, None)
@@ -162,15 +174,9 @@ class PendingChanges:
                 emit(f"download:fail|{model_id}|{label}|{reason}")
                 continue
             # Record download in state.
-            existing = self.state.get(model_id)
             self.state.set(
                 model_id,
-                ModelState(
-                    downloaded=True,
-                    disk_path=local_path,
-                    size_bytes=existing.size_bytes,
-                    litellm_exposed=existing.litellm_exposed,
-                ),
+                replace(self.state.get(model_id), downloaded=True, disk_path=local_path),
             )
             try:
                 size = Path(local_path).stat().st_size
@@ -178,12 +184,42 @@ class PendingChanges:
                 size = 0
             if size > 0:
                 from .providers._progress import human_bytes
+
                 emit(f"download:done|{model_id}|{label}|{human_bytes(size)}")
             else:
                 emit(f"download:done|{model_id}|{label}")
 
         if aborted():
             return
+
+        if self.exposes:
+            # One config load + one atomic save for the whole queue:
+            # per-model expose_model calls would reparse and re-rename
+            # config.yaml once per model, and a crash between them would
+            # leave it half-updated.
+            for model_id, exposed in self.exposes:
+                verb = "expose" if exposed else "unexpose"
+                emit(f"{verb}:start|{model_id}|{model_id}")
+            try:
+                outcomes = apply_expose_queue(
+                    self.registry, self.state, self.exposes, self.litellm_path
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Config-level failure (missing/unwritable config.yaml):
+                # nothing in the queue applied.
+                reason = _reason(exc)
+                self.failures.append(f"expose batch: {exc}")
+                for model_id, exposed in self.exposes:
+                    verb = "expose" if exposed else "unexpose"
+                    emit(f"{verb}:fail|{model_id}|{model_id}|{reason}")
+            else:
+                for model_id, exposed, error in outcomes:
+                    verb = "expose" if exposed else "unexpose"
+                    if error is None:
+                        emit(f"{verb}:done|{model_id}|{model_id}")
+                    else:
+                        self.failures.append(f"{verb} {model_id}: {error}")
+                        emit(f"{verb}:fail|{model_id}|{model_id}|{error}")
 
         emit("save:start")
         try:

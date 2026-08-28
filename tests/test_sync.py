@@ -62,7 +62,6 @@ def test_list_ollama_raises_on_failure(mock_runner):
         list_ollama(runner)
 
 
-
 def test_model_entry_to_variant_builds_spec_from_fetch():
     entry = ModelEntry(
         id="llamacpp/q4",
@@ -118,7 +117,10 @@ def test_reconcile_downloaded_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -136,7 +138,10 @@ def test_reconcile_not_downloaded_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -154,7 +159,10 @@ def test_reconcile_skips_non_reconcilable_models():
     registry = Registry(
         models=[
             ModelEntry(
-                id="openrouter/x", family="x", provider_id="openrouter", model_name="x",
+                id="openrouter/x",
+                family="x",
+                provider_id="openrouter",
+                model_name="x",
             ),
         ]
     )
@@ -169,7 +177,10 @@ def test_reconcile_preserves_litellm_exposed():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -324,12 +335,16 @@ def test_sync_reconciles_configured_models():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/ornith-1.5:9b", family="ornith-1.5:9b",
-                provider_id="ollama", model_name="ornith-1.5:9b",
+                id="ollama/ornith-1.5:9b",
+                family="ornith-1.5:9b",
+                provider_id="ollama",
+                model_name="ornith-1.5:9b",
             ),
             ModelEntry(
-                id="ollama/other", family="other",
-                provider_id="ollama", model_name="other",
+                id="ollama/other",
+                family="other",
+                provider_id="ollama",
+                model_name="other",
             ),
         ]
     )

@@ -53,9 +53,7 @@ def test_parse_model_hf_one_file_three_segments():
 
 def test_parse_model_hf_deep_path():
     """Subdirectory paths work: more than 3 segments."""
-    name, repo, filename = parse_model(
-        "llamacpp", "org/repo/sub/dir/file.gguf"
-    )
+    name, repo, filename = parse_model("llamacpp", "org/repo/sub/dir/file.gguf")
     assert repo == "org/repo"
     assert filename == "sub/dir/file.gguf"
 

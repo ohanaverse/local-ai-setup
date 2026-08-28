@@ -69,9 +69,7 @@ class OMLXProvider(Provider):
         self._cancel_requested = False
         target = _model_dir(self.config) / _basename(repo)
         kwargs: dict[str, Any] = {"repo_id": repo, "local_dir": str(target)}
-        ProgressTqdm.set_active_context(
-            on_progress, lambda: self._cancel_requested
-        )
+        ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
         try:
             if on_progress is not None:
                 kwargs["tqdm_class"] = ProgressTqdm

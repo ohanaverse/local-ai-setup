@@ -87,9 +87,7 @@ class LlamaCppProvider(Provider):
         # active context on ProgressTqdm. Set BEFORE snapshot_download and
         # cleared in finally so a stray bar from a previous call can
         # never pick up the wrong callbacks.
-        ProgressTqdm.set_active_context(
-            on_progress, lambda: self._cancel_requested
-        )
+        ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
         try:
             if on_progress is not None:
                 kwargs["tqdm_class"] = ProgressTqdm

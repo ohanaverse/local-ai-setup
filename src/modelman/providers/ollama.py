@@ -133,6 +133,7 @@ class OllamaProvider(Provider):
             return
         with contextlib.suppress(Exception):
             proc.terminate()
+
         # Watchdog: if SIGTERM doesn't take effect within a short window,
         # escalate to SIGKILL so the user actually sees the download stop.
         def _watchdog() -> None:

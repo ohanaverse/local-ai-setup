@@ -10,6 +10,13 @@ import typer
 from . import providers  # noqa: F401
 from .app import ModelmanApp
 from .config import default_config_path
+from .litellm import (
+    ExposeError,
+    LiteLLMConfigError,
+    default_litellm_config_path,
+    expose_model,
+    unexpose_model,
+)
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
 from .registry import load_registry, save_registry
@@ -80,9 +87,39 @@ def sync() -> None:
         raise typer.Exit(1) from exc
     save_state(state)
     typer.echo(
-        f"Synced: {len(result.downloaded)} downloaded, "
-        f"{len(result.not_downloaded)} not downloaded."
+        f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )
+
+
+@app.command()
+def expose(
+    model_id: str = typer.Argument(..., help="Registry model id to expose"),
+) -> None:
+    """Expose a model through LiteLLM (writes a model_list entry)."""
+    registry = load_registry()
+    state = load_state()
+    try:
+        expose_model(registry, state, model_id, default_litellm_config_path())
+    except (ExposeError, LiteLLMConfigError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    save_state(state)
+    typer.echo(f"Exposed {model_id} through LiteLLM.")
+
+
+@app.command()
+def unexpose(
+    model_id: str = typer.Argument(..., help="Registry model id to stop exposing"),
+) -> None:
+    """Remove a model's LiteLLM model_list entry."""
+    state = load_state()
+    try:
+        unexpose_model(state, model_id, default_litellm_config_path())
+    except (ExposeError, LiteLLMConfigError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    save_state(state)
+    typer.echo(f"Unexposed {model_id}.")
 
 
 if __name__ == "__main__":

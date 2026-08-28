@@ -108,7 +108,9 @@ def test_cancel_current_terminates_running_proc():
     p.cancel_current()
 
     fake_proc.terminate.assert_called_once()
-    assert isinstance(p._current_proc, MagicMock)  # not auto-cleared; cleared by _tracked_popen_runner
+    assert isinstance(
+        p._current_proc, MagicMock
+    )  # not auto-cleared; cleared by _tracked_popen_runner
 
 
 def test_cancel_current_kills_proc_that_ignores_sigterm():

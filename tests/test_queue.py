@@ -61,25 +61,41 @@ def _make_state() -> StateStore:
     return StateStore()
 
 
-def _entry(*, id: str, family: str, provider: str, name: str, repo: str | None = None,
-           files: list[str] | None = None) -> ModelEntry:
+def _entry(
+    *,
+    id: str,
+    family: str,
+    provider: str,
+    name: str,
+    repo: str | None = None,
+    files: list[str] | None = None,
+) -> ModelEntry:
     """Build a ModelEntry from a legacy VariantSpec-shaped dict."""
     from modelman.registry import Fetch
+
     fetch = None
     if repo or files:
         fetch = Fetch(repo=repo, files=files, quantizations=None)
     return ModelEntry(
-        id=id, family=family, provider_id=provider, model_name=name,
+        id=id,
+        family=family,
+        provider_id=provider,
+        model_name=name,
         fetch=fetch,
     )
 
 
-def _variant(*, id: str, provider: str, name: str, repo: str | None = None,
-             files: list[str] | None = None) -> dict:
+def _variant(
+    *, id: str, provider: str, name: str, repo: str | None = None, files: list[str] | None = None
+) -> dict:
     """The VariantSpec TypedDict the providers still consume."""
     return {
-        "id": id, "provider": provider, "name": name,
-        "repo": repo, "files": files, "quantizations": None,
+        "id": id,
+        "provider": provider,
+        "name": name,
+        "repo": repo,
+        "files": files,
+        "quantizations": None,
     }
 
 
@@ -91,8 +107,12 @@ def _setup_apply_test(tmp_path: Path):
     state_path = tmp_path / "modelman.toml"
     a = _entry(id="ollama/a", family="f", provider="ollama", name="f:a")
     b = _entry(
-        id="llamacpp/b", family="f", provider="llamacpp", name="f:b",
-        repo="org/repo", files=["x.gguf"],
+        id="llamacpp/b",
+        family="f",
+        provider="llamacpp",
+        name="f:b",
+        repo="org/repo",
+        files=["x.gguf"],
     )
     reg = Registry(
         providers=[
@@ -111,10 +131,18 @@ def _setup_apply_test(tmp_path: Path):
     provider_llama.name = "llamacpp"
     provider_llama.delete.return_value = None
 
-    return reg, state, reg_path, state_path, {
-        "ollama": provider_ollama,
-        "llamacpp": provider_llama,
-    }, a, b
+    return (
+        reg,
+        state,
+        reg_path,
+        state_path,
+        {
+            "ollama": provider_ollama,
+            "llamacpp": provider_llama,
+        },
+        a,
+        b,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +178,18 @@ def test_apply_deletes_before_downloads(tmp_path):
         state_path=state_path,
         providers=providers,
         deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
-        downloads=[("llamacpp/b", _variant(
-            id="llamacpp/b", provider="llamacpp", name="f:b",
-            repo="org/repo", files=["x.gguf"]))],
+        downloads=[
+            (
+                "llamacpp/b",
+                _variant(
+                    id="llamacpp/b",
+                    provider="llamacpp",
+                    name="f:b",
+                    repo="org/repo",
+                    files=["x.gguf"],
+                ),
+            )
+        ],
     )
     pending.apply()
 
@@ -222,8 +259,12 @@ def test_apply_download_cancelled_is_not_a_failure(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     b = _entry(
-        id="llamacpp/b", family="f", provider="llamacpp", name="f:b",
-        repo="org/repo", files=["x.gguf"],
+        id="llamacpp/b",
+        family="f",
+        provider="llamacpp",
+        name="f:b",
+        repo="org/repo",
+        files=["x.gguf"],
     )
     reg = Registry(
         providers=[ProviderEntry(id="llamacpp", name="llama.cpp", auth=AuthConfig(type="none"))],
@@ -246,9 +287,18 @@ def test_apply_download_cancelled_is_not_a_failure(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"llamacpp": provider},
-        downloads=[("llamacpp/b", _variant(
-            id="llamacpp/b", provider="llamacpp", name="f:b",
-            repo="org/repo", files=["x.gguf"]))],
+        downloads=[
+            (
+                "llamacpp/b",
+                _variant(
+                    id="llamacpp/b",
+                    provider="llamacpp",
+                    name="f:b",
+                    repo="org/repo",
+                    files=["x.gguf"],
+                ),
+            )
+        ],
     )
     pending.apply(on_event=events.append, on_progress=progress_lines.append)
 
@@ -415,9 +465,16 @@ def test_apply_writes_state_for_each_downloaded_model(tmp_path):
         providers=providers,
         downloads=[
             ("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a")),
-            ("llamacpp/b", _variant(
-                id="llamacpp/b", provider="llamacpp", name="f:b",
-                repo="org/repo", files=["x.gguf"])),
+            (
+                "llamacpp/b",
+                _variant(
+                    id="llamacpp/b",
+                    provider="llamacpp",
+                    name="f:b",
+                    repo="org/repo",
+                    files=["x.gguf"],
+                ),
+            ),
         ],
     )
     pending.apply()
@@ -476,6 +533,213 @@ def test_apply_clear_state_for_deleted_model(tmp_path):
     assert "ollama/a" not in reloaded_state.models
 
 
+def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
+    """Deleting a model that is exposed through LiteLLM must also remove
+    its model_list row — otherwise LiteLLM keeps routing requests to a
+    model whose file no longer exists (500s) and the stale row persists
+    forever, since sync doesn't own litellm_exposed."""
+    from modelman.litellm import load_litellm_config, save_litellm_config
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(downloaded=True, litellm_exposed=True))
+    save_state(state, state_path)
+    save_litellm_config(
+        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
+        litellm_path,
+    )
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        family="f",
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={"ollama": MagicMock()},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    config = load_litellm_config(litellm_path)
+    assert config["model_list"] == []
+    # The model is gone from registry and state, with no failure recorded.
+    assert pending.failures == []
+    assert all(m.id != "ollama/a" for m in load_registry(registry_path).models)
+    assert "ollama/a" not in load_state(state_path).models
+
+
+def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
+    """A queued delete wins over a queued expose toggle for the same
+    model: the expose is dropped and the config row is removed instead."""
+    from modelman.litellm import load_litellm_config, save_litellm_config
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(downloaded=True))
+    save_state(state, state_path)
+    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        family="f",
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={"ollama": MagicMock()},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        # The user queued expose-then-delete; exposing a deleted model
+        # would fail, so the delete step replaces it with an unexpose.
+        exposes=[("ollama/a", True)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    assert pending.failures == []
+    config = load_litellm_config(litellm_path)
+    assert config["model_list"] == []
+
+
+def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
+    """Applying N queued exposes must parse and rewrite config.yaml once,
+    not once per model — N full-file rewrites cost O(N) I/O and widen the
+    window for a crash leaving the config half-updated."""
+    import modelman.litellm as litellm_mod
+
+    real_load = litellm_mod.load_litellm_config
+    real_save = litellm_mod.save_litellm_config
+    calls = {"load": 0, "save": 0}
+
+    def counting_load(path):
+        calls["load"] += 1
+        return real_load(path)
+
+    def counting_save(config, path):
+        calls["save"] += 1
+        real_save(config, path)
+
+    monkeypatch.setattr(litellm_mod, "load_litellm_config", counting_load)
+    monkeypatch.setattr(litellm_mod, "save_litellm_config", counting_save)
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
+        ],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(downloaded=True))
+    state.set("ollama/b", ModelState(downloaded=True))
+    real_save({"model_list": [], "general_settings": {}}, litellm_path)
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        family="f",
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={},
+        exposes=[("ollama/a", True), ("ollama/b", True)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    # One parse + one atomic rewrite for the whole queue (plus the seed
+    # write above, which used real_save directly).
+    assert calls == {"load": 1, "save": 1}
+    config = real_load(litellm_path)
+    assert {r["model_name"] for r in config["model_list"]} == {"ollama/a", "ollama/b"}
+    assert state.get("ollama/a").litellm_exposed is True
+    assert state.get("ollama/b").litellm_exposed is True
+
+
+def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
+    """A per-model validation failure (not downloaded) must not block the
+    other queued exposes, and must not prevent the config save."""
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
+        ],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(downloaded=True))
+    # ollama/b is NOT downloaded — its expose must fail per-item.
+    state.set("ollama/b", ModelState(downloaded=False))
+    from modelman.litellm import save_litellm_config
+
+    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        family="f",
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={},
+        exposes=[("ollama/a", True), ("ollama/b", True)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    from modelman.litellm import load_litellm_config
+
+    config = load_litellm_config(litellm_path)
+    assert [r["model_name"] for r in config["model_list"]] == ["ollama/a"]
+    assert state.get("ollama/a").litellm_exposed is True
+    # The failed item got no flag flip and is reported with its reason.
+    assert state.get("ollama/b").litellm_exposed is False
+    assert any("ollama/b" in f and "not downloaded" in f for f in pending.failures)
+
+
 def test_apply_asserts_download_twin_keys_agree(tmp_path):
     """A queued (model_id, variant) pair must have matching ids — otherwise
     a future caller in Tasks 2-4 could desync them silently and emit the
@@ -511,3 +775,43 @@ def test_apply_asserts_delete_twin_keys_agree(tmp_path):
     )
     with pytest.raises(AssertionError, match="wrong-id"):
         pending.apply()
+
+
+def test_apply_runs_expose_changes(tmp_path):
+    from modelman.litellm import load_litellm_config, save_litellm_config
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry, save_registry
+    from modelman.state import ModelState, StateStore, save_state
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    litellm_path = tmp_path / "config.yaml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(downloaded=True))
+    save_state(state, state_path)
+    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        family="f",
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={},
+        exposes=[("ollama/a", True)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+    assert state.get("ollama/a").litellm_exposed is True
+    config = load_litellm_config(litellm_path)
+    assert config["model_list"][0]["model_name"] == "ollama/a"

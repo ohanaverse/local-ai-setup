@@ -98,9 +98,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     }
 
 
-def _ollama_downloaded(
-    registry: Registry, sizes: dict[str, int]
-) -> dict[str, tuple[str, int]]:
+def _ollama_downloaded(registry: Registry, sizes: dict[str, int]) -> dict[str, tuple[str, int]]:
     """Map ollama list output to {model_id: (disk_path, size_bytes)}.
 
     Only configured ollama models are returned; unconfigured models in `sizes`

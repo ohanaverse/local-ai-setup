@@ -138,7 +138,8 @@ async def test_pending_changes_fires_lifecycle_events(app_with_apply, tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """While the apply is still running, Escape must open the cancel-or-wait
     dialog; choosing Cancel must set the cancellation flag on the

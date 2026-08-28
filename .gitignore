@@ -10,3 +10,5 @@ build/
 htmlcov/
 .superpowers/
 .worktrees/
+# Machine-local Claude context (personal only)
+.claude.local.md

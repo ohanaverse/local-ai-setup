@@ -13,9 +13,7 @@ from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
 
 
-def parse_model(
-    provider: str, model: str
-) -> tuple[str | None, str | None, str | None]:
+def parse_model(provider: str, model: str) -> tuple[str | None, str | None, str | None]:
     """Parse the dialog's single `model` input into provider-specific fields.
 
     Returns a (variant_name, repo_id, filename) tuple. Exactly one of
@@ -47,9 +45,7 @@ def parse_model(
         raise ValueError(f"{provider} model is required")
     parts = model.split("/")
     if len(parts) < 2:
-        raise ValueError(
-            f"{provider} model must be 'org/repo' (or 'org/repo/file')"
-        )
+        raise ValueError(f"{provider} model must be 'org/repo' (or 'org/repo/file')")
     if not parts[0]:
         raise ValueError("repo org must not be empty")
     repo_id = "/".join(parts[:2])
@@ -263,9 +259,7 @@ class ModelForm(ModalScreen[VariantSpec | None]):
         model_val = self._reconstruct_model(v) if editing else ""
 
         placeholder = (
-            "e.g. ornith-1.5:35b"
-            if initial_provider == "ollama"
-            else "org/repo[/path/to/file]"
+            "e.g. ornith-1.5:35b" if initial_provider == "ollama" else "org/repo[/path/to/file]"
         )
 
         with Vertical():
@@ -378,18 +372,30 @@ class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
         ("d", "answer('discard')"),
     ]
 
-    def __init__(self, downloads: list, deletes: list) -> None:
+    def __init__(
+        self,
+        downloads: list,
+        deletes: list,
+        exposes: list[tuple[str, bool]] | None = None,
+    ) -> None:
         super().__init__()
         self._downloads = downloads
         self._deletes = deletes
+        self._exposes = exposes or []
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(f"Pending: download {len(self._downloads)} · delete {len(self._deletes)}")
+            yield Label(
+                f"Pending: download {len(self._downloads)} · delete {len(self._deletes)}"
+                f" · expose {len(self._exposes)}"
+            )
             for v in self._downloads:
                 yield Label(f"  ↓ {v['id']} ({v['provider']})")
             for v in self._deletes:
                 yield Label(f"  × {v['id']} ({v['provider']})")
+            for model_id, exposed in self._exposes:
+                mark = "L" if exposed else "–"
+                yield Label(f"  {mark} {model_id}")
             yield Label("Apply, cancel, or discard these changes?")
             with Horizontal():
                 yield Button("Cancel", id="cancel", variant="default")

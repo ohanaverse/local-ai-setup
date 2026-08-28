@@ -161,7 +161,10 @@ def test_pending_changes_forwards_on_progress(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     entry = ModelEntry(
-        id="x", family="ornith", provider_id="ollama", model_name="x:7b",
+        id="x",
+        family="ornith",
+        provider_id="ollama",
+        model_name="x:7b",
     )
     reg = Registry(
         providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],

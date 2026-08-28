@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,7 @@ from textual.coordinate import Coordinate
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from ..litellm import default_litellm_config_path, is_cloud
 from ..queue import PendingChanges
 from ..registry import Fetch, ModelEntry, Registry, provider_config
 from ..state import ModelState, StateStore
@@ -76,11 +78,13 @@ def _entry_kwargs(m: ModelEntry) -> dict:
     """Deep-copy a ModelEntry to kwargs so snapshot copies don't share
     nested Fetch/Cost objects with the live registry."""
     from copy import deepcopy
+
     return deepcopy(m).__dict__
 
 
 def _state_kwargs(s: ModelState) -> dict:
     from dataclasses import asdict
+
     return asdict(s)
 
 
@@ -115,6 +119,7 @@ class ModelScreen(Screen[None]):
         ("e", "edit_model", "Edit"),
         Binding("enter", "select_row", "Edit", priority=True),
         ("r", "reconcile", "Reconcile"),
+        ("l", "toggle_expose", "Toggle LiteLLM"),
     ]
 
     def __init__(
@@ -158,6 +163,8 @@ class ModelScreen(Screen[None]):
         # is the registry/state key).
         self.queued_downloads: dict[str, VariantSpec] = {}
         self.queued_deletes: dict[str, VariantSpec] = {}
+        # model_id -> target exposed state (True to expose, False to unexpose).
+        self.queued_exposes: dict[str, bool] = {}
         # Reconcile overlay: per-model-id reality from the provider.
         self.reconciled: dict[str, dict] = {}
         # Snapshot for discard: restore if the user exits without applying.
@@ -184,7 +191,7 @@ class ModelScreen(Screen[None]):
         pt = self.query_one("#provider-table", DataTable)
         pt.add_columns("PROVIDER", "MODELS")
         mt = self.query_one("#model-table", DataTable)
-        mt.add_columns("NAME", "STATUS", "SIZE", "PATH")
+        mt.add_columns("NAME", "STATUS", "SIZE", "PATH", "EXPOSED")
         self.reload()
         self._refresh_pending_bar()
         # Put the cursor and focus on the first provider row so the
@@ -304,9 +311,7 @@ class ModelScreen(Screen[None]):
             if rec is not None:
                 downloaded = bool(rec.get("downloaded"))
                 size_str = _human_size(rec.get("size")) if downloaded else "—"
-                path = rec.get("local_path") or (
-                    self.state.get(m.id).disk_path or "—"
-                )
+                path = rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
             else:
                 state_entry = self.state.get(m.id)
                 downloaded = state_entry.downloaded
@@ -328,12 +333,17 @@ class ModelScreen(Screen[None]):
                 status = "[green]✓[/green]"
             else:
                 status = "[dim]○[/dim]"
-            mt.add_row(m.model_name, status, size_str, path, key=m.id)
+            exposed = self.state.get(m.id).litellm_exposed
+            if m.id in self.queued_exposes:
+                exposed = self.queued_exposes[m.id]
+            exposed_str = "L" if exposed else "–"
+            mt.add_row(m.model_name, status, size_str, path, exposed_str, key=m.id)
 
     def _refresh_pending_bar(self) -> None:
         bar = self.query_one("#pending-bar", Static)
         bar.update(
             f"Pending: download {len(self.queued_downloads)} · delete {len(self.queued_deletes)}"
+            f" · expose {len(self.queued_exposes)}"
         )
 
     def action_toggle_download(self) -> None:
@@ -356,6 +366,26 @@ class ModelScreen(Screen[None]):
         if self.selected_provider is not None:
             self._load_models_for_provider(self.selected_provider)
 
+    def action_toggle_expose(self) -> None:
+        mt = self.query_one("#model-table", DataTable)
+        if mt.row_count == 0:
+            return
+        row_key = list(mt.rows.keys())[mt.cursor_row]
+        mid = str(row_key.value)
+        entry = next((m for m in self.registry.models if m.id == mid), None)
+        if entry is None:
+            return
+        if not is_cloud(entry.provider_id) and not self._is_downloaded(mid):
+            self.app.notify("Model must be downloaded before exposing")
+            return
+        current = self.state.get(mid).litellm_exposed
+        if mid in self.queued_exposes:
+            current = self.queued_exposes[mid]
+        self.queued_exposes[mid] = not current
+        self._refresh_pending_bar()
+        if self.selected_provider is not None:
+            self._load_models_for_provider(self.selected_provider)
+
     def _provider_list(self) -> list[str]:
         # Use the full configured-provider list, not just the providers
         # currently used by models in the family, so the user can add
@@ -371,11 +401,7 @@ class ModelScreen(Screen[None]):
         # Pre-select the provider the user is currently looking at, so
         # adding "another llamacpp model" doesn't make them switch the
         # dropdown back. Fall back to None if no provider is selected.
-        default_provider = (
-            self.selected_provider
-            if self.selected_provider in providers
-            else None
-        )
+        default_provider = self.selected_provider if self.selected_provider in providers else None
         self.app.push_screen(
             ModelForm(providers=providers, default_provider=default_provider),
             self._on_add_model,
@@ -387,9 +413,7 @@ class ModelScreen(Screen[None]):
         if any(m.id == variant["id"] for m in self.registry.models):
             self.app.notify("Model ID already exists")
             return
-        entry = _variant_to_model_entry(
-            variant, family=self.family, registry=self.registry
-        )
+        entry = _variant_to_model_entry(variant, family=self.family, registry=self.registry)
         self.registry.models.append(entry)
         self.queued_downloads[variant["id"]] = variant
         self.reload()
@@ -493,9 +517,7 @@ class ModelScreen(Screen[None]):
     def _on_edit_model(self, updated) -> None:
         if updated is None:
             return
-        new_entry = _variant_to_model_entry(
-            updated, family=self.family, registry=self.registry
-        )
+        new_entry = _variant_to_model_entry(updated, family=self.family, registry=self.registry)
         for i, m in enumerate(self.registry.models):
             if m.id == updated["id"]:
                 self.registry.models[i] = new_entry
@@ -505,7 +527,7 @@ class ModelScreen(Screen[None]):
         self.reload()
 
     def action_back(self) -> None:
-        if not self.queued_downloads and not self.queued_deletes:
+        if not self.queued_downloads and not self.queued_deletes and not self.queued_exposes:
             self.app.pop_screen()
             return
         from .forms import ConfirmExitDialog
@@ -514,6 +536,7 @@ class ModelScreen(Screen[None]):
             ConfirmExitDialog(
                 downloads=list(self.queued_downloads.values()),
                 deletes=list(self.queued_deletes.values()),
+                exposes=list(self.queued_exposes.items()),
             ),
             self._on_exit_confirm,
         )
@@ -526,6 +549,7 @@ class ModelScreen(Screen[None]):
             self._restore_snapshot()
             self.queued_downloads.clear()
             self.queued_deletes.clear()
+            self.queued_exposes.clear()
             self.app.pop_screen()
             return
         # "cancel" or None: stay on the model screen, queue preserved.
@@ -569,16 +593,20 @@ class ModelScreen(Screen[None]):
                 continue
         # Merge any reconciled entries that state didn't know about,
         # so the saved state reflects reality. Never remove existing
-        # entries; the user can queue a delete (d) for that.
+        # entries; the user can queue a delete (d) for that. This also
+        # bridges the expose gate: the TUI accepts an expose based on
+        # the reconcile overlay, while the apply-time check reads
+        # state.downloaded — without this merge a model on disk with a
+        # stale downloaded=False would fail at apply with a spurious
+        # "not downloaded".
         for mid, rec in self.reconciled.items():
             if rec.get("downloaded") and not self.state.get(mid).downloaded:
-                self.state.set(
-                    mid,
-                    ModelState(
-                        downloaded=True,
-                        disk_path=rec.get("local_path") or "",
-                    ),
-                )
+                updated = replace(self.state.get(mid), downloaded=True)
+                # Only overwrite the path when reconcile actually found
+                # one; a blank local_path must not blank a known one.
+                if rec.get("local_path"):
+                    updated.disk_path = rec["local_path"]
+                self.state.set(mid, updated)
         pending = PendingChanges(
             registry=self.registry,
             state=self.state,
@@ -588,6 +616,8 @@ class ModelScreen(Screen[None]):
             providers=providers,
             downloads=[(mid, spec) for mid, spec in self.queued_downloads.items()],
             deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()],
+            exposes=list(self.queued_exposes.items()),
+            litellm_path=default_litellm_config_path(),
         )
         register(pending)
         pending.apply(on_event=on_event, on_progress=on_progress)
@@ -596,6 +626,7 @@ class ModelScreen(Screen[None]):
         # screen see an empty queue.
         self.queued_downloads.clear()
         self.queued_deletes.clear()
+        self.queued_exposes.clear()
 
     def _restore_snapshot(self) -> None:
         """Restore the in-memory registry/state to the snapshot taken on

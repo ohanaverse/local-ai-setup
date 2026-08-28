@@ -43,8 +43,7 @@ def migrate(
         _import_wt_config(wt_config_path, registry)
     else:
         warnings.append(
-            f"wt config not found at {wt_config_path}; skipped "
-            "(fine for a modelman-only install)"
+            f"wt config not found at {wt_config_path}; skipped (fine for a modelman-only install)"
         )
 
     _import_modelman_providers(legacy_config_path, registry)

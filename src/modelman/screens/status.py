@@ -97,7 +97,12 @@ class StatusScreen(Screen[None]):
         # Progress lines from providers arrive without the verb:status
         # prefix. They are written as indented, dim lines so the lifecycle
         # markers remain the visual spine of the log.
-        if not tag.startswith("delete:") and not tag.startswith("download:") and not tag.startswith("save:") and not tag.startswith("apply:"):
+        if (
+            not tag.startswith("delete:")
+            and not tag.startswith("download:")
+            and not tag.startswith("save:")
+            and not tag.startswith("apply:")
+        ):
             log.write(f"    [dim]{tag}[/dim]")
             return
         # Per-item tags are pipe-delimited:

@@ -30,6 +30,12 @@ Toggle `litellm_exposed`; write/remove `model_list` entries in LiteLLM's
 `config.yaml` (keyed by registry model id, using the provider's
 `base_url`). `general_settings` is never touched.
 
+| PR | Scope | Status |
+|---|---|---|
+| — | `expose`/`unexpose` CLI + TUI `l` key; write/remove `model_list` entries | ✅ done |
+
+Spec: `docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
+
 ## Phase 4 — wt consumer (cross-repo)
 
 wt reads `registry.toml` read-only and joins it in memory with its own

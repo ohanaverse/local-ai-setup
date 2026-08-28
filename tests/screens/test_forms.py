@@ -324,9 +324,7 @@ async def test_submit_hf_repo_and_file_produces_correct_spec():
     assert spec["repo"] == "unsloth/Ornith-1.5-35B-GGUF"
     assert spec["files"] == ["Ornith-1.5-35B-Q8_0.gguf"]
     # id escapes the slashes in the model so the key is unambiguous.
-    assert spec["id"] == (
-        "llamacpp/unsloth--Ornith-1.5-35B-GGUF--Ornith-1.5-35B-Q8_0.gguf"
-    )
+    assert spec["id"] == ("llamacpp/unsloth--Ornith-1.5-35B-GGUF--Ornith-1.5-35B-Q8_0.gguf")
 
 
 # ---------------------------------------------------------------------------
@@ -529,13 +527,21 @@ async def test_submit_in_edit_mode_preserves_quantizations():
 
 @pytest.mark.asyncio
 async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch):
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     q8 = ModelEntry(
-        id="llamacpp/q8", family="ornith", provider_id="llamacpp", model_name="x.gguf",
+        id="llamacpp/q8",
+        family="ornith",
+        provider_id="llamacpp",
+        model_name="x.gguf",
         fetch=Fetch(repo="foo/bar", files=["x.gguf"]),
     )
     m8 = ModelEntry(
-        id="omlx/m8", family="ornith", provider_id="omlx", model_name="x-mlx",
+        id="omlx/m8",
+        family="ornith",
+        provider_id="omlx",
+        model_name="x-mlx",
         fetch=Fetch(repo="foo/bar"),
     )
     reg_path = tmp_path / "registry.toml"
@@ -571,6 +577,7 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
+
         assert isinstance(app.screen, ModelScreen)
 
         from textual.widgets import DataTable
