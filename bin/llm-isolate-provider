@@ -1,0 +1,115 @@
+#!/opt/homebrew/bin/bash
+# llm-isolate-provider — stop other local providers, start+warmup one.
+# Usage: llm-isolate-provider <provider-id>
+# Supported: ollama, llamacpp, omlx
+# On success, print JSON with provider/model/direct_url.
+
+set -e
+
+PROVIDER="$1"
+if [ -z "$PROVIDER" ]; then
+    echo "usage: llm-isolate-provider <provider-id>" >&2
+    exit 1
+fi
+
+# Default model names / URLs. Override via env for non-standard setups.
+OLLAMA_MODEL="${LLM_ISOLATE_OLLAMA_MODEL:-ornith-1.5:35b}"
+LLAMACPP_MODEL="${LLM_ISOLATE_LLAMACPP_MODEL:-local-llama}"
+OMLX_4BIT_MODEL="${LLM_ISOLATE_OMLX_4BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-4bit}"
+OMLX_6BIT_MODEL="${LLM_ISOLATE_OMLX_6BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-6bit}"
+OMLX_MODEL="$OMLX_4BIT_MODEL"
+
+warmup_payload() {
+    local model="$1"
+    python3 - "$model" <<'PYEOF'
+import json, sys
+m = sys.argv[1]
+print(json.dumps({"model": m, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1, "temperature": 0, "stream": False}))
+PYEOF
+}
+
+stop_all_local() {
+    ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
+    omlx stop 2>/dev/null || true
+    if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+        launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+    fi
+    sleep 3
+}
+
+start_ollama() {
+    if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
+    fi
+    local payload
+    payload=$(warmup_payload "$OLLAMA_MODEL")
+    local resp
+    resp=$(curl -s -m 120 http://localhost:11434/v1/chat/completions \
+        -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
+    if ! echo "$resp" | grep -q '"object":"chat.completion"'; then
+        echo "failed to warm up ollama model $OLLAMA_MODEL" >&2
+        exit 1
+    fi
+    echo "ollama|$OLLAMA_MODEL|http://localhost:11434/v1/chat/completions"
+}
+
+start_llamacpp() {
+    if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+        launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+    fi
+    local payload
+    payload=$(warmup_payload "$LLAMACPP_MODEL")
+    for i in {1..90}; do
+        if curl -s -m 2 http://localhost:8080/v1/models >/dev/null 2>&1; then
+            local resp
+            resp=$(curl -s -m 120 http://localhost:8080/v1/chat/completions \
+                -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
+            if echo "$resp" | grep -q '"object":"chat.completion"'; then
+                echo "llamacpp|$LLAMACPP_MODEL|http://localhost:8080/v1/chat/completions"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    echo "failed to warm up llamacpp model $LLAMACPP_MODEL" >&2
+    exit 1
+}
+
+start_omlx() {
+    omlx start >/dev/null 2>&1 || true
+    local payload
+    payload=$(warmup_payload "$OMLX_MODEL")
+    for i in {1..90}; do
+        if curl -s -m 2 http://localhost:8000/v1/models >/dev/null 2>&1; then
+            local resp
+            resp=$(curl -s -m 120 http://localhost:8000/v1/chat/completions \
+                -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
+            if echo "$resp" | grep -q '"object":"chat.completion"'; then
+                echo "omlx|$OMLX_MODEL|http://localhost:8000/v1/chat/completions"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    echo "failed to warm up omlx model $OMLX_MODEL" >&2
+    exit 1
+}
+
+stop_all_local
+
+case "$PROVIDER" in
+    ollama)    OUT=$(start_ollama) ;;
+    llamacpp)  OUT=$(start_llamacpp) ;;
+    omlx)      OUT=$(start_omlx) ;;
+    *)
+        echo "unknown provider: $PROVIDER" >&2
+        exit 1
+        ;;
+esac
+
+IFS='|' read -r provider model direct_url <<< "$OUT"
+python3 - "$provider" "$model" "$direct_url" <<'PYEOF'
+import json, sys
+provider, model, direct_url = sys.argv[1:4]
+print(json.dumps({"provider": provider, "model": model, "direct_url": direct_url, "ok": True, "error": None}))
+PYEOF

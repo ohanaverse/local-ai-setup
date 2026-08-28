@@ -1,0 +1,32 @@
+#!/bin/bash
+# llm-restore-providers — bring all local providers back up after a benchmark.
+
+set -e
+
+LOG_PREFIX="[llm-restore-providers]"
+
+if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "$LOG_PREFIX restarting ollama..."
+    launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
+fi
+
+if ! curl -s -m 2 http://localhost:8000/v1/models >/dev/null 2>&1; then
+    echo "$LOG_PREFIX restarting omlx..."
+    omlx start >/dev/null 2>&1 || true
+fi
+
+if ! curl -s -m 2 http://localhost:8080/v1/models >/dev/null 2>&1; then
+    if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+        echo "$LOG_PREFIX restarting llama.cpp..."
+        launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+    fi
+fi
+
+if ! curl -s -m 2 http://localhost:4000/v1/models >/dev/null 2>&1; then
+    if [ -f ~/Library/LaunchAgents/local.litellm.proxy.plist ]; then
+        echo "$LOG_PREFIX restarting litellm proxy..."
+        launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null || true
+    fi
+fi
+
+echo "$LOG_PREFIX providers restored"
