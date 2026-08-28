@@ -1,0 +1,132 @@
+#!/bin/bash
+# llm-isolate-provider — stop other local providers, start+warmup one.
+# Usage: llm-isolate-provider <provider-id>
+# Supported: ollama, llamacpp, omlx, omlx-6bit
+# On success, print JSON with provider/model/direct_url.
+
+set -e
+
+PROVIDER="$1"
+if [ -z "$PROVIDER" ]; then
+    echo "usage: llm-isolate-provider <provider-id>" >&2
+    exit 1
+fi
+
+# Default model names / URLs. Override via env for non-standard setups.
+OLLAMA_MODEL="${LLM_ISOLATE_OLLAMA_MODEL:-ornith-1.5:35b}"
+LLAMACPP_MODEL="${LLM_ISOLATE_LLAMACPP_MODEL:-local-llama}"
+OMLX_4BIT_MODEL="${LLM_ISOLATE_OMLX_4BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-4bit}"
+OMLX_6BIT_MODEL="${LLM_ISOLATE_OMLX_6BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-6bit}"
+
+warmup_payload() {
+    local model="$1"
+    python3 - "$model" <<'PYEOF'
+import json, sys
+m = sys.argv[1]
+print(json.dumps({"model": m, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1, "temperature": 0, "stream": False}))
+PYEOF
+}
+
+# Stop every provider except the one being isolated so the target has the
+# GPU/RAM to itself. Skipping the target avoids an unload+reload cycle.
+stop_all_local() {
+    local keep="$1"
+    if [ "$keep" != "ollama" ]; then
+        ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
+    fi
+    if [ "$keep" != "omlx" ]; then
+        omlx stop 2>/dev/null || true
+    fi
+    if [ "$keep" != "llamacpp" ] && [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+        launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+    fi
+    sleep 3
+}
+
+# Warm up a model on a running server, retrying until it answers or we give up.
+# The liveness check and the warmup are separate: the server can be up while
+# the model is still loading into GPU/RAM.
+warmup() {
+    local url="$1" model="$2" health_url="$3"
+    local payload resp
+    payload=$(warmup_payload "$model")
+    for _ in {1..90}; do
+        if curl -s -m 2 "$health_url" >/dev/null 2>&1; then
+            resp=$(curl -s -m 120 "$url" \
+                -H "Content-Type: application/json" -d "$payload" 2>/dev/null || true)
+            if echo "$resp" | grep -q '"object":"chat.completion"'; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Warm up a provider's model, printing "model|url" on success or exiting with
+# a clear error on failure.
+warmup_or_die() {
+    local name="$1" model="$2" url="$3" health_url="$4"
+    if warmup "$url" "$model" "$health_url"; then
+        echo "$model|$url"
+        return 0
+    fi
+    echo "failed to warm up $name model $model at $url" >&2
+    exit 1
+}
+
+start_ollama() {
+    if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
+    fi
+    warmup_or_die ollama "$OLLAMA_MODEL" http://localhost:11434/v1/chat/completions http://localhost:11434/api/tags
+}
+
+start_llamacpp() {
+    if [ ! -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
+        echo "llamacpp service not configured: ~/Library/LaunchAgents/local.llamacpp.server.plist missing" >&2
+        exit 1
+    fi
+    launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+    warmup_or_die llamacpp "$LLAMACPP_MODEL" http://localhost:8080/v1/chat/completions http://localhost:8080/v1/models
+}
+
+start_omlx() {
+    local model="$1"
+    if ! command -v omlx >/dev/null 2>&1; then
+        echo "omlx binary not found on PATH" >&2
+        exit 1
+    fi
+    omlx start >/dev/null 2>&1 || true
+    warmup_or_die omlx "$model" http://localhost:8000/v1/chat/completions http://localhost:8000/v1/models
+}
+
+case "$PROVIDER" in
+    ollama)
+        stop_all_local ollama
+        OUT=$(start_ollama)
+        ;;
+    llamacpp)
+        stop_all_local llamacpp
+        OUT=$(start_llamacpp)
+        ;;
+    omlx)
+        stop_all_local omlx
+        OUT=$(start_omlx "$OMLX_4BIT_MODEL")
+        ;;
+    omlx-6bit)
+        stop_all_local omlx
+        OUT=$(start_omlx "$OMLX_6BIT_MODEL")
+        ;;
+    *)
+        echo "unknown provider: $PROVIDER" >&2
+        exit 1
+        ;;
+esac
+
+IFS='|' read -r model direct_url <<< "$OUT"
+python3 - "$PROVIDER" "$model" "$direct_url" <<'PYEOF'
+import json, sys
+provider, model, direct_url = sys.argv[1:4]
+print(json.dumps({"provider": provider, "model": model, "direct_url": direct_url, "ok": True, "error": None}))
+PYEOF

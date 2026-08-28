@@ -1,0 +1,65 @@
+#!/bin/bash
+# llm-restore-providers — bring all local providers back up after a benchmark.
+
+set -e
+
+LOG_PREFIX="[llm-restore-providers]"
+
+# Wait up to N seconds for a service to answer on its health URL.
+wait_for() {
+    local url="$1" name="$2" tries="${3:-30}"
+    local i
+    for ((i = 0; i < tries; i++)); do
+        if curl -s -m 2 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "$LOG_PREFIX $name did not come back up ($url)" >&2
+    return 1
+}
+
+restart_ollama() {
+    curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1 && return 0
+    echo "$LOG_PREFIX restarting ollama..."
+    launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
+    wait_for http://localhost:11434/api/tags ollama
+}
+
+restart_omlx() {
+    curl -s -m 2 http://localhost:8000/v1/models >/dev/null 2>&1 && return 0
+    echo "$LOG_PREFIX restarting omlx..."
+    omlx start >/dev/null 2>&1 || true
+    wait_for http://localhost:8000/v1/models omlx
+}
+
+# Restart a launchd-managed service (llama.cpp / LiteLLM proxy).
+restart_launchd() {
+    local plist="$1" url="$2" name="$3"
+    curl -s -m 2 "$url" >/dev/null 2>&1 && return 0
+    if [ ! -f "$plist" ]; then
+        echo "$LOG_PREFIX $name not configured ($plist missing); skipping" >&2
+        return 0
+    fi
+    echo "$LOG_PREFIX restarting $name..."
+    launchctl load -w "$plist" 2>/dev/null || true
+    wait_for "$url" "$name"
+}
+
+# Restart all providers in parallel — they are independent, so wall time is
+# the slowest service, not the sum.
+FAILED=0
+restart_ollama & p1=$!
+restart_omlx & p2=$!
+restart_launchd ~/Library/LaunchAgents/local.llamacpp.server.plist http://localhost:8080/v1/models llamacpp & p3=$!
+restart_launchd ~/Library/LaunchAgents/local.litellm.proxy.plist http://localhost:4000/v1/models litellm & p4=$!
+wait $p1 || FAILED=1
+wait $p2 || FAILED=1
+wait $p3 || FAILED=1
+wait $p4 || FAILED=1
+
+if [ "$FAILED" -ne 0 ]; then
+    echo "$LOG_PREFIX one or more providers failed to restore" >&2
+    exit 1
+fi
+echo "$LOG_PREFIX providers restored"
