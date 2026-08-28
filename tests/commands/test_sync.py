@@ -1,7 +1,7 @@
-"""`modelman sync` discovers ollama models and merges them into
-registry.toml + modelman.toml. The sync logic itself is covered by
-tests/test_sync.py; this covers the command wiring (load -> sync ->
-save -> report)."""
+"""`modelman sync` reconciles configured ollama models against
+`ollama list` and writes modelman.toml. The sync logic itself is covered
+by tests/test_sync.py; this covers the command wiring (load -> sync ->
+save state -> report)."""
 
 from unittest.mock import patch
 
@@ -28,16 +28,16 @@ def _seed_registry(tmp_path, monkeypatch):
     return registry_path, state_path
 
 
-def test_sync_command_saves_and_reports(tmp_path, monkeypatch):
+def test_sync_command_saves_state_and_reports(tmp_path, monkeypatch):
     registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
     with patch("modelman.main.run_sync") as run_sync:
         run_sync.return_value = SyncResult(
-            added=["ollama/x"], refreshed=[], skipped=[]
+            downloaded=["ollama/x"], not_downloaded=["ollama/y"]
         )
         runner = CliRunner()
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0
-        assert "added 1" in result.stdout
+        assert "1 downloaded, 1 not downloaded" in result.stdout
         assert state_path.exists()  # modelman.toml written
 
 

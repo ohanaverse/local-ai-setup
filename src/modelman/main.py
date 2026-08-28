@@ -70,7 +70,7 @@ def migrate(
 
 @app.command()
 def sync() -> None:
-    """Discover ollama models and merge them into registry.toml."""
+    """Reconcile configured ollama models against `ollama list`."""
     registry = load_registry()
     state = load_state()
     try:
@@ -78,11 +78,10 @@ def sync() -> None:
     except SyncError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
-    save_registry(registry)
     save_state(state)
     typer.echo(
-        f"Synced ollama: added {len(result.added)}, "
-        f"refreshed {len(result.refreshed)}, skipped {len(result.skipped)}."
+        f"Synced ollama: {len(result.downloaded)} downloaded, "
+        f"{len(result.not_downloaded)} not downloaded."
     )
 
 

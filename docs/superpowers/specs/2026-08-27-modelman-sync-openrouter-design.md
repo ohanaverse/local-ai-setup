@@ -1,25 +1,29 @@
-# Spec: `modelman sync` — openrouter discovery (PLACEHOLDER)
+# Spec: `modelman sync` — openrouter discovery (DROPPED)
 
 **Date:** 2026-08-27
-**Status:** placeholder — NOT yet brainstormed. Do not implement.
+**Status:** dropped — no-op. Do not implement.
 
-## What this will do
+## Decision
 
-Extend `modelman sync` to discover cloud models from the OpenRouter
-REST API (`https://openrouter.ai/api/v1/models`), mirroring wt's
-`OpenRouter.Discover()`. Adds a `discover_openrouter()` to `sync.py`
-and wires it into the `sync()` orchestrator.
+OpenRouter models are **explicitly configured** in `registry.toml`; the
+config already holds their model info. OpenRouter does not download
+models, so there is no downloaded state to reconcile. `modelman sync`
+does nothing for openrouter.
 
-## Open questions (brainstorm before implementing)
+Per the reconcile-not-discover principle (see
+`2026-08-28-modelman-sync-ollama-reconcile-design.md`), sync never lists
+all available models for any provider — so there is no openrouter
+discovery step either.
 
-- API key handling — OpenRouter's `/models` endpoint is public, but
-  which models to include (all? filtered by capability?) is undecided.
-- Pagination / rate limiting.
-- Family assignment for cloud models (wt uses the last `/`-segment).
-- Whether discovery failures are non-fatal (multi-provider sync needs
-  this, unlike the ollama-only first PR).
+## What this means
+
+- No `discover_openrouter()` in `sync.py`.
+- No openrouter branch in the `sync()` orchestrator.
+- The `openrouter` provider entry in `registry.toml` (added by `migrate`)
+  is sufficient; its models are added/edited manually in the TUI.
 
 ## Sequence
 
-This is PR 2 of the provider-sync effort, after the ollama PR
-(`2026-08-27-modelman-sync-ollama-design.md`).
+This was PR 2 of the provider-sync effort. It is removed from the
+roadmap (see `docs/ROADMAP.md`). The remaining provider-reconcile PRs are
+ollama reconcile-only (PR #9) and modeldir reconcile (PR #10).

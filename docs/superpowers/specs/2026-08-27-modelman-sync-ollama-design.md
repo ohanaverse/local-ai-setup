@@ -1,7 +1,7 @@
 # Spec: `modelman sync` — ollama discovery
 
 **Date:** 2026-08-27
-**Status:** approved (in chat)
+**Status:** superseded by `2026-08-28-modelman-sync-ollama-reconcile-design.md` (PR #9)
 **Branch:** (created at implementation time)
 
 ## Problem
