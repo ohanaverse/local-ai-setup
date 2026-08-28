@@ -72,9 +72,24 @@ Sub-projects 2 and 3 remain unbrainstormed.
 ## Sub-project 2 — Benchmark tooling
 
 Formalize `local-ai-setup`'s ad hoc bash scripts (LiteLLM proxy +
-benchmarking) into an actual tool. **Not yet brainstormed.**
+benchmarking) into an actual tool.
 
-Note: `local-ai-setup` has two one-off benchmark runs landing in parallel
+- **Status:** Brainstormed; design spec approved and merged.
+- **Spec:** `modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
+  (`modelman` PR #14, `1c44ee2`).
+- **Plan:** In progress.
+- **Notes:**
+  - Lives in `modelman` as a new `benchmark` subcommand.
+  - Consumes `registry.toml` + `modelman.toml` for model discovery and
+    LiteLLM exposure state.
+  - Delegates service isolation to new `local-ai-setup` helpers.
+  - Pluggable workloads: `short`, `chat`, `long`, `code`.
+  - Results as JSON + Markdown on disk; only a latest-run pointer in
+    `modelman.toml`.
+  - Old `ornith-1.5-benchmark` and `qwen3.8-benchmark` scripts remain in
+    `local-ai-setup` until the new tool is verified; then they can be retired.
+
+`local-ai-setup` has two one-off benchmark runs landing in parallel
 (`2026-08-26-ornith-1.5-benchmark`, `2026-08-27-qwen3.8-openrouter-benchmark`)
 that use the *existing* ad hoc scripts — that's normal usage, not this
 formalization effort. Don't conflate the two when checking status.
