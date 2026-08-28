@@ -121,7 +121,7 @@ func (d *stubCommandDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
 	return agents.LaunchCmd{}
 }
 func (d *stubCommandDriver) YoloFlag() string { return "" }
-func (d *stubCommandDriver) IsCommand() bool { return true }
+func (d *stubCommandDriver) IsCommand() bool  { return true }
 
 // stubAgentDriver is a normal (non-command) test driver.
 type stubAgentDriver struct{}

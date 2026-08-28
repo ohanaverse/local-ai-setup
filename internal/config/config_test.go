@@ -27,11 +27,12 @@ func TestPath(t *testing.T) {
 }
 
 // First-run experience: when no config file exists, Load must return a usable
-// default Config (not an error). Without this, the tool crashes on first use
-// and forces users to manually create a config before they can do anything.
+// default Config (not an error). The modelman-owned registry.toml must exist
+// (seeded by `modelman migrate`); with an empty registry, Load returns an
+// empty catalog.
 func TestLoad_FileNotExist(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
+	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg, err := Load()
 	if err != nil {
@@ -45,9 +46,10 @@ func TestLoad_FileNotExist(t *testing.T) {
 	}
 }
 
-// End-to-end parse check: a valid TOML file with all three entity types
-// (providers, models, agents) must deserialize correctly into the typed
-// structs. This is the happy path that every real config file follows.
+// End-to-end parse check: a valid config.toml (agents + default tag) joined
+// with a valid registry.toml (providers + models) must deserialize correctly
+// into the typed structs. This is the happy path that every real config
+// follows.
 func TestLoad_ValidConfig(t *testing.T) {
 	tmp := t.TempDir()
 	cfgDir := filepath.Join(tmp, "agent-wt")
@@ -55,10 +57,22 @@ func TestLoad_ValidConfig(t *testing.T) {
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
 default_tag = "design"
 
+[[agents]]
+name = "claude"
+supported_providers = ["ollama"]
+default_provider = "ollama"
+`), 0644)
+	writeRegistry(t, tmp, `
 [[providers]]
 id = "ollama"
 name = "Ollama"
 auth = { type = "none", base_url = "http://localhost:11434" }
+
+[[providers]]
+id = "agy"
+name = "Antigravity"
+location = "cloud"
+auth = { type = "native" }
 
 [[models]]
 id = "ollama/test:1"
@@ -68,12 +82,14 @@ model_name = "test:1"
 location = "local"
 tags = ["code"]
 
-[[agents]]
-name = "claude"
-supported_providers = ["ollama"]
-default_provider = "ollama"
-`), 0644)
-	t.Setenv("XDG_CONFIG_HOME", tmp)
+[[models]]
+id = "agy/native"
+family = "agy"
+provider_id = "agy"
+model_name = "native"
+location = "cloud"
+tags = ["code", "design"]
+`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -83,7 +99,7 @@ default_provider = "ollama"
 		t.Errorf("DefaultTag = %q, want %q", cfg.DefaultTag, "design")
 	}
 	if len(cfg.Providers) != 2 {
-		t.Fatalf("expected 2 providers (ollama + agy from schema migration), got %d", len(cfg.Providers))
+		t.Fatalf("expected 2 providers (ollama + agy from registry), got %d", len(cfg.Providers))
 	}
 	if cfg.Providers[0].ID != "ollama" {
 		t.Errorf("provider ID = %q, want %q", cfg.Providers[0].ID, "ollama")
@@ -95,7 +111,7 @@ default_provider = "ollama"
 		t.Errorf("auth base_url = %q, want %q", cfg.Providers[0].Auth.BaseURL, "http://localhost:11434")
 	}
 	if len(cfg.Models) != 2 {
-		t.Fatalf("expected 2 models (test + agy/native from schema migration), got %d", len(cfg.Models))
+		t.Fatalf("expected 2 models (test + agy/native from registry), got %d", len(cfg.Models))
 	}
 	if cfg.Models[0].Family != "test" {
 		t.Errorf("model family = %q, want %q", cfg.Models[0].Family, "test")
@@ -379,58 +395,9 @@ func TestModelsWithTag(t *testing.T) {
 	}
 }
 
-// ModelsByFamily groups variants of the same base model across providers.
-// This powers the TUI family grouping and the rotation skip logic (skip all
-// gemma4 variants if one was just used). An empty family must only match
-// models that also have an empty family.
-func TestModelsByFamily(t *testing.T) {
-	cfg := &Config{
-		Models: []Model{
-			{ID: "a", Family: "gemma4"},
-			{ID: "b", Family: "gemma4"},
-			{ID: "c", Family: "kimi"},
-			{ID: "d", Family: ""},
-		},
-	}
-	gemma := cfg.ModelsByFamily("gemma4")
-	if len(gemma) != 2 {
-		t.Fatalf("expected 2 gemma4 models, got %d", len(gemma))
-	}
-
-	empty := cfg.ModelsByFamily("")
-	if len(empty) != 1 {
-		t.Fatalf("expected 1 empty-family model, got %d", len(empty))
-	}
-	if empty[0].ID != "d" {
-		t.Errorf("unexpected model: %v", empty[0])
-	}
-}
-
-// ModelsByProvider filters models by their provider. This is used in the
-// cascading filter: after selecting an agent and its supported providers,
-// only models from those providers are shown.
-func TestModelsByProvider(t *testing.T) {
-	cfg := &Config{
-		Models: []Model{
-			{ID: "a", ProviderID: "ollama"},
-			{ID: "b", ProviderID: "ollama"},
-			{ID: "c", ProviderID: "openrouter"},
-		},
-	}
-	ollama := cfg.ModelsByProvider("ollama")
-	if len(ollama) != 2 {
-		t.Fatalf("expected 2 ollama models, got %d", len(ollama))
-	}
-
-	none := cfg.ModelsByProvider("nonexistent")
-	if len(none) != 0 {
-		t.Errorf("expected 0 models, got %d", len(none))
-	}
-}
-
 // ProviderByID is the primary foreign-key lookup. It must return a pointer
 // for found providers (so callers can check nil) and nil for missing ones.
-// Used by ResolveLocation, ProvidersForAgent, and validation.
+// Used by ResolveLocation and validation.
 func TestProviderByID(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{
@@ -452,9 +419,9 @@ func TestProviderByID(t *testing.T) {
 	}
 }
 
-// AgentByName looks up an agent by its name. Used by ProvidersForAgent and
-// the CLI to resolve which agent config to use. Must return a clear error
-// for unknown agents so the caller can surface it to the user.
+// AgentByName looks up an agent by its name. Used by the CLI to resolve
+// which agent config to use. Must return a clear error for unknown agents so
+// the caller can surface it to the user.
 func TestAgentByName(t *testing.T) {
 	cfg := &Config{
 		Agents: []Agent{
@@ -473,50 +440,6 @@ func TestAgentByName(t *testing.T) {
 	_, err = cfg.AgentByName("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
-	}
-}
-
-// ProvidersForAgent enforces the hard constraint: an agent can only use
-// providers listed in its SupportedProviders. It must also catch the case
-// where a supported provider ID doesn't exist in the config (dangling
-// reference). This is the first step in the cascading filter.
-func TestProvidersForAgent(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{
-			{ID: "ollama", Name: "Ollama"},
-			{ID: "claude", Name: "Claude"},
-			{ID: "openrouter", Name: "OpenRouter"},
-		},
-		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"claude", "ollama"}},
-		},
-	}
-	providers, err := cfg.ProvidersForAgent("claude")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(providers) != 2 {
-		t.Fatalf("expected 2 providers, got %d", len(providers))
-	}
-	if providers[0].ID != "claude" || providers[1].ID != "ollama" {
-		t.Errorf("unexpected providers: %v", providers)
-	}
-
-	// Unknown agent
-	_, err = cfg.ProvidersForAgent("nonexistent")
-	if err == nil {
-		t.Fatal("expected error for unknown agent")
-	}
-
-	// Agent references provider not in config
-	cfg2 := &Config{
-		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"ghost"}},
-		},
-	}
-	_, err = cfg2.ProvidersForAgent("claude")
-	if err == nil {
-		t.Fatal("expected error for missing provider")
 	}
 }
 
@@ -588,12 +511,12 @@ func TestHasTag(t *testing.T) {
 	}
 }
 
-// Save writes config.toml atomically via temp file + rename. If the write
-// fails partway through (e.g. disk full), the original file must remain
-// intact. A regression here would corrupt the user's configuration on save.
+// Save writes config.toml atomically via temp file + rename. Providers and
+// models are modelman-owned (registry.toml) and are never persisted by wt, so
+// a Save of a config carrying providers must not write them to disk.
 func TestSave(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
+	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg := &Config{
 		DefaultTag: "code",
@@ -611,12 +534,10 @@ func TestSave(t *testing.T) {
 	if loaded.DefaultTag != "code" {
 		t.Errorf("DefaultTag = %q, want %q", loaded.DefaultTag, "code")
 	}
-	// migrateConfigSchema adds the agy provider on Load, so expect 2.
-	if len(loaded.Providers) != 2 {
-		t.Errorf("Providers = %v, want 2 (ollama + agy from schema migration)", loaded.Providers)
-	}
-	if loaded.Providers[0].ID != "ollama" {
-		t.Errorf("first provider = %q, want ollama", loaded.Providers[0].ID)
+	// Save trims providers/models (modelman owns registry.toml), so the
+	// saved config.toml has no providers and Load returns an empty catalog.
+	if len(loaded.Providers) != 0 {
+		t.Errorf("Providers = %v, want 0 (providers are modelman-owned, not saved by wt)", loaded.Providers)
 	}
 }
 

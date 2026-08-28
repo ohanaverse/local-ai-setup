@@ -15,76 +15,6 @@ func testTheme() themes.Theme {
 	return t
 }
 
-// TestTab_Cycles verifies that Tab advances through sections in order
-// and Shift+Tab moves backward. Tab navigation is the primary way users
-// switch between Agents, Providers, and Models.
-func TestTab_Cycles(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{}
-
-	// Tab: Agents → Providers
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m2 := got.(model)
-	if m2.section != sectionProviders {
-		t.Errorf("Tab from Agents: got section %d, want Providers", m2.section)
-	}
-
-	// Tab: Providers → Models
-	got, _ = m2.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m3 := got.(model)
-	if m3.section != sectionModels {
-		t.Errorf("Tab from Providers: got section %d, want Models", m3.section)
-	}
-
-	// Tab: Models → Agents (wrap)
-	got, _ = m3.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m4 := got.(model)
-	if m4.section != sectionAgents {
-		t.Errorf("Tab from Models: got section %d, want Agents", m4.section)
-	}
-
-	// Shift+Tab: Agents → Models (wrap backward)
-	got, _ = m4.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	m5 := got.(model)
-	if m5.section != sectionModels {
-		t.Errorf("Shift+Tab from Agents: got section %d, want Models", m5.section)
-	}
-
-	// Shift+Tab: Models → Providers
-	got, _ = m5.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	m6 := got.(model)
-	if m6.section != sectionProviders {
-		t.Errorf("Shift+Tab from Models: got section %d, want Providers", m6.section)
-	}
-}
-
-// TestTab_NumberKeys_Jump verifies that pressing 1, 2, or 3 jumps directly
-// to the corresponding section. This is a keyboard shortcut for users who
-// know exactly which tab they want.
-func TestTab_NumberKeys_Jump(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{}
-	m.section = sectionModels // start away from default
-
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
-	m2 := got.(model)
-	if m2.section != sectionAgents {
-		t.Errorf("'1': got section %d, want Agents", m2.section)
-	}
-
-	got, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
-	m3 := got.(model)
-	if m3.section != sectionProviders {
-		t.Errorf("'2': got section %d, want Providers", m3.section)
-	}
-
-	got, _ = m3.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
-	m4 := got.(model)
-	if m4.section != sectionModels {
-		t.Errorf("'3': got section %d, want Models", m4.section)
-	}
-}
-
 // TestInitReturnsLoadCmd verifies that Init dispatches config loading.
 // Without this command the TUI would hang at "Loading config..." forever.
 func TestInitReturnsLoadCmd(t *testing.T) {
@@ -96,52 +26,22 @@ func TestInitReturnsLoadCmd(t *testing.T) {
 }
 
 // TestLoadedMsg_BuildsLists verifies that a successful loadedMsg
-// populates all three tab lists from the config. Without this, switching
-// to any tab would show an empty list.
+// populates the agents list from the config. Without this, the list
+// would be empty.
 func TestLoadedMsg_BuildsLists(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
 	m.width, m.height = 80, 24
 
 	cfg := &config.Config{
-		Agents:    []config.Agent{{Name: "claude"}},
-		Providers: []config.Provider{{ID: "ollama"}},
-		Models:    []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama"}},
+		Agents: []config.Agent{{Name: "claude"}},
 	}
 	got, _ := m.Update(loadedMsg{cfg: cfg})
 	m2 := got.(model)
 	if !m2.ready {
 		t.Fatal("expected ready=true after loadedMsg")
 	}
-	if len(m2.lists[sectionAgents].Items()) == 0 {
-		t.Errorf("agents list: expected at least 1 item, got %d", len(m2.lists[sectionAgents].Items()))
-	}
-	if len(m2.lists[sectionProviders].Items()) != 1 {
-		t.Errorf("providers list: expected 1 item, got %d", len(m2.lists[sectionProviders].Items()))
-	}
-	if len(m2.lists[sectionModels].Items()) != 1 {
-		t.Errorf("models list: expected 1 item, got %d", len(m2.lists[sectionModels].Items()))
-	}
-}
-
-// TestSwitchSection_RebuildsList verifies that switching to the Providers
-// tab renders the providers list that was built from cfg.Providers.
-func TestSwitchSection_RebuildsList(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.width, m.height = 80, 24
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "alpha"}, {ID: "beta"}},
-	}
-	got, _ := m.Update(loadedMsg{cfg: cfg})
-	m2 := got.(model)
-
-	// Switch to providers tab.
-	got, _ = m2.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m3 := got.(model)
-	if m3.section != sectionProviders {
-		t.Fatalf("expected sectionProviders, got %d", m3.section)
-	}
-	if len(m3.lists[sectionProviders].Items()) != 2 {
-		t.Errorf("providers list: expected 2 items, got %d", len(m3.lists[sectionProviders].Items()))
+	if len(m2.list.Items()) == 0 {
+		t.Errorf("agents list: expected at least 1 item, got %d", len(m2.list.Items()))
 	}
 }
 
@@ -163,28 +63,20 @@ func TestUpdateWindowSizeMsg(t *testing.T) {
 	}
 }
 
-// TestNewKey_OpensAddForm verifies that pressing 'n' on a tab opens the
-// add form for the current section. This wires the documented add
-// functionality to a keybinding.
+// TestNewKey_OpensAddForm verifies that pressing 'n' opens the add form
+// for an agent. This wires the documented add functionality to a keybinding.
 func TestNewKey_OpensAddForm(t *testing.T) {
-	for _, sec := range []section{sectionAgents, sectionProviders, sectionModels} {
-		t.Run(sec.String(), func(t *testing.T) {
-			m := newModel(testTheme(), &config.Config{DefaultTag: "code"}, nil)
-			m.ready = true
-			m.section = sec
-			m.lists[sectionAgents] = buildAgentsList(testTheme(), 80, 24, m.cfg)
-			m.lists[sectionProviders] = buildProvidersList(testTheme(), 80, 24, m.cfg)
-			m.lists[sectionModels] = buildModelsList(testTheme(), 80, 24, m.cfg)
+	m := newModel(testTheme(), &config.Config{DefaultTag: "code"}, nil)
+	m.ready = true
+	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
-			got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-			m2 := got.(model)
-			if m2.phase != phaseForm {
-				t.Fatalf("expected phaseForm after 'n', got %d", m2.phase)
-			}
-			if !m2.formIsNew {
-				t.Fatal("expected formIsNew=true for add form")
-			}
-		})
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m2 := got.(model)
+	if m2.phase != phaseForm {
+		t.Fatalf("expected phaseForm after 'n', got %d", m2.phase)
+	}
+	if !m2.formIsNew {
+		t.Fatal("expected formIsNew=true for add form")
 	}
 }
 
@@ -207,9 +99,9 @@ func TestLoadedMsg_Error_SetsReadyAndStatus(t *testing.T) {
 	if !strings.Contains(m2.status, "bad config") {
 		t.Fatalf("status %q should mention the underlying error", m2.status)
 	}
-	// Lists should still be built so the UI is usable.
-	if len(m2.lists) != 3 {
-		t.Fatalf("expected 3 built lists, got %d", len(m2.lists))
+	// The list should still be built so the UI is usable.
+	if len(m2.list.Items()) == 0 {
+		t.Fatal("expected a built agents list")
 	}
 }
 
@@ -220,24 +112,25 @@ func TestEnterKey_OpensEditFormForSelectedItem(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
 	// Config has zeta first, alpha second.
 	m.cfg = &config.Config{
-		Providers: []config.Provider{
-			{ID: "zeta", Name: "Zeta"},
-			{ID: "alpha", Name: "Alpha"},
+		Agents: []config.Agent{
+			{Name: "zeta", SupportedProviders: []string{"ollama"}},
+			{Name: "alpha", SupportedProviders: []string{"ollama"}},
 		},
 	}
 	m.ready = true
-	m.section = sectionProviders
-	m.lists[sectionProviders] = buildProvidersList(testTheme(), 80, 24, m.cfg)
+	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
-	// List is sorted by ID, so index 0 is "alpha".
-	// Pressing Enter should open the edit form for "alpha".
+	// List is sorted by name (commands first, then alphabetical), so among
+	// the configured agents "alpha" sorts before "zeta". Select "alpha" and
+	// press Enter to open the edit form for it, not "zeta" (cfg.Agents[0]).
+	selectAgentItem(&m, "alpha")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m2 := got.(model)
 	if m2.phase != phaseForm {
 		t.Fatalf("expected phaseForm after Enter, got %d", m2.phase)
 	}
-	if m2.provEdit.ID != "alpha" {
-		t.Errorf("provEdit.ID = %q, want alpha", m2.provEdit.ID)
+	if m2.agEdit.Name != "alpha" {
+		t.Errorf("agEdit.Name = %q, want alpha", m2.agEdit.Name)
 	}
 }
 
@@ -248,15 +141,14 @@ func TestEnterKey_UnconfiguredAgent_OpensAddForm(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
 	m.cfg = &config.Config{Agents: []config.Agent{}}
 	m.ready = true
-	m.section = sectionAgents
-	m.lists[sectionAgents] = buildAgentsList(testTheme(), 80, 24, m.cfg)
+	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
 	// Find an unconfigured agent in the list items (skip commands).
-	items := m.lists[sectionAgents].Items()
+	items := m.list.Items()
 	for i, it := range items {
 		ai := it.(agentItem)
 		if !ai.command && !ai.configured {
-			m.lists[sectionAgents].Select(i)
+			m.list.Select(i)
 			got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			m2 := got.(model)
 			if m2.phase != phaseForm {
@@ -268,6 +160,16 @@ func TestEnterKey_UnconfiguredAgent_OpensAddForm(t *testing.T) {
 			if m2.agName.Value() != ai.agent.Name {
 				t.Errorf("form name = %q, want %q", m2.agName.Value(), ai.agent.Name)
 			}
+			return
+		}
+	}
+}
+
+// selectAgentItem selects the list item whose agent name matches name.
+func selectAgentItem(m *model, name string) {
+	for i, it := range m.list.Items() {
+		if ai, ok := it.(agentItem); ok && ai.agent.Name == name {
+			m.list.Select(i)
 			return
 		}
 	}

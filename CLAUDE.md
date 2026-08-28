@@ -78,7 +78,7 @@ go test ./internal/worktree -v       # verbose, one package
 go vet ./...                         # static analysis
 ```
 
-Package list: `internal/{config,registry,rotation,usage,agents,guard,worktree,initseed,session,themes,tui,ollamaconfig,configeditor,ollamacheck}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
+Package list: `internal/{config,rotation,usage,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
@@ -93,8 +93,7 @@ Module root is the repo root.
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable` |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
-| `internal/config/` | config load/validate/save, migration; helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
-| `internal/registry/` | live discovery (Ollama CLI, OpenRouter API) + merge |
+| `internal/config/` | config load/validate/save (agents + joined registry catalog); helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
 | `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
 | `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model-picker badges, and the rotation module |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
@@ -102,7 +101,6 @@ Module root is the repo root.
 | `internal/worktree/` | enumeration + creation (`EnsureForName`/`EnsureForBranch`) |
 | `internal/initseed/` | `--init` seeding |
 | `internal/session/` | resume detection (claude/opencode) |
-| `internal/ollamaconfig/` | `wt config ollama` TUI |
 | `internal/ollamacheck/` | availability check before launch |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
@@ -111,24 +109,42 @@ Module root is the repo root.
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) with three entity types:
+`~/.config/agent-wt/config.toml` (TOML) holds wt-owned state only:
 
-- **Provider** — model source (ollama, agy, claude, codex, copilot). Native providers match their agent name; `opencode` and `pi` are ollama-only (no native provider).
-- **Model** — a variant from a provider, grouped by family. `Source` is `curated` (config file) or `discovered` (live).
 - **Agent** — tool with ≥1 supported provider and optional default.
+- **DefaultTag** — the default rotation tag group.
+
+Providers and Models are no longer stored here — see [Registry (modelman-owned)](#registry-modelman-owned) below.
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
-## Live discovery
+## Registry (modelman-owned)
 
-`internal/registry` queries connected providers at runtime and merges with curated config (curated wins on ID collisions):
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models.
+wt loads it read-only via `config.Load` (fail-closed: missing/malformed
+registry is an error; seed with `modelman migrate`) and joins it in memory
+with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
+persists Agents + DefaultTag only — wt never writes providers/models. Extra
+registry fields (cost, model_info, fetch, model_dir, auth secret_ref/base_url)
+are ignored by wt's parser.
 
-- **Ollama** — `ollama list` (local + cloud models).
-- **OpenRouter** — `https://openrouter.ai/api/v1/models` (HTTP).
+> **`unknown provider "X"` errors are usually a registry data gap, not a wt
+> bug** — e.g. a `registry.toml` with models referencing `provider_id`s but
+> `providers = []`. Fix is `modelman sync`/`modelman migrate` on that machine,
+> not a code change here.
 
-**Lazy:** `newApp()` only loads config. Full `registry.Discover` (incl. the OpenRouter HTTP call) runs on demand. The TUI picker sources models only from `config.toml` (no live discovery), so flag-only and TUI paths never hit OpenRouter. `--version`/`--init` never shell out to ollama; `-W`/`--cwd` run one `ollama list` via `ollamacheck.Available()`.
+**Lazy:** `newApp()` only loads config. wt never shells out for discovery;
+`-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`.
+
+> **Fixture gotcha.** `Dir()` and `RegistryPath()` both honor `XDG_CONFIG_HOME`
+> but write to *different* subdirs: `config.toml` → `$XDG_CONFIG_HOME/agent-wt/`,
+> `registry.toml` → `$XDG_CONFIG_HOME/local-ai/`. Test/smoke fixtures must
+> populate both. Also: `migrateConfigSchema` (runs on every `Load`)
+> unconditionally ensures an `agy` agent — any registry fixture with agents
+> needs a matching `agy` provider or `Load`/`Validate` fails with
+> `unknown provider "agy"`.
 
 ## Config (themes)
 
@@ -142,7 +158,6 @@ wt config theme show <name>  # tokens with dark/light hex previews
 wt config theme set <name>   # activate (effective next launch)
 wt config theme unset        # revert to default
 wt config path               # print the config directory
-wt config ollama             # sync config.toml ollama models with `ollama list`
 ```
 
 > **Invalid-config repair.** `wt config` launches even when `config.toml` fails validation, so the editor can repair it. Other launch paths exit early on config errors.
@@ -209,7 +224,7 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 
 ## Migration (Go)
 
-On first run, `wt` migrates legacy `~/.config/agent-wt/models.conf` → `config.toml` (parses `CODE_MODELS`/`DESIGN_MODELS`, skips comments, seeds native providers, merges tag unions). Runs once. `migrateConfigSchema` runs on every `Load()`: renames `google`→`agy`, ensures agy entries, removes `opencode` native provider, no-op if current.
+On first run, `wt` migrates legacy `~/.config/agent-wt/models.conf` → `config.toml` (parses `CODE_MODELS`/`DESIGN_MODELS`, skips comments, seeds native providers, merges tag unions). Runs once, and writes the full legacy shape — including Providers/Models — via `saveFull` so `modelman migrate` can later import them into `registry.toml`; `Load`'s normal path still overwrites in-memory Providers/Models with the joined registry. `migrateConfigSchema` runs on every `Load()`, but only its **agent** fixups still matter (renames `google`→`agy`, ensures agy entries, removes `opencode` native provider) — its provider/model fixups are dead code now that `Load` overwrites those fields from the registry.
 
 ## Smoke test
 

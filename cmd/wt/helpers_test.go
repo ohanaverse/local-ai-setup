@@ -24,6 +24,23 @@ func gitInit(t *testing.T, dir string) {
 	}
 }
 
+// writeEmptyRegistry writes a minimal modelman-owned registry.toml (no
+// providers/models) under $home/.config/local-ai/ so config.Load succeeds.
+// wt fail-closes without this file; tests that exercise the launch path need
+// it even when they don't care about specific models.
+func writeEmptyRegistry(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	regDir := filepath.Join(home, ".config", "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
+		[]byte("providers = []\nmodels = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestMaybeInstallGuardInRepo installs the guard in a temp repo and verifies
 // that a subsequent Check reports Installed. Without this, the launcher would
 // silently skip guard protection on normal launches.
@@ -167,7 +184,9 @@ func TestPickerSkippedOutsideTTY(t *testing.T) {
 	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeEmptyRegistry(t, home)
 
 	// Pipe stdin from /dev/null so isStdinTTY returns false.
 	devnull, err := os.Open(os.DevNull)

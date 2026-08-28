@@ -13,7 +13,7 @@ func TestQuit_CleanExits(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
 	m.cfg = &config.Config{}
 	m.ready = true
-	m.lists[sectionAgents] = buildAgentsList(testTheme(), 80, 24, m.cfg)
+	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("expected tea.Quit cmd, got nil")
@@ -26,7 +26,7 @@ func TestQuit_DirtyPrompts(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{}, nil)
 	m.cfg = &config.Config{}
 	m.ready = true
-	m.lists[sectionAgents] = buildAgentsList(testTheme(), 80, 24, m.cfg)
+	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 	m.dirty = true
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd != nil {

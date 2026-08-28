@@ -64,3 +64,16 @@ func TestAvailableNotInstalled(t *testing.T) {
 		t.Error("expected false when ollama not installed")
 	}
 }
+
+func TestParseOllamaNames(t *testing.T) {
+	out := "NAME              ID    SIZE      MODIFIED\n" +
+		"gemma4:9b         abc   5.0 GB    2 days ago\n" +
+		"kimi-k2.6:cloud   def   -         3 days ago\n"
+	names := parseOllamaNames(out)
+	if len(names) != 2 {
+		t.Fatalf("parseOllamaNames: got %v, want 2 names", names)
+	}
+	if names[0] != "gemma4:9b" || names[1] != "kimi-k2.6:cloud" {
+		t.Errorf("parseOllamaNames: got %v, want [gemma4:9b kimi-k2.6:cloud]", names)
+	}
+}
