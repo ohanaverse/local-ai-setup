@@ -9,6 +9,7 @@ import typer
 # Import providers package to trigger registration of all providers.
 from . import providers  # noqa: F401
 from .app import ModelmanApp
+from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .litellm import (
     ExposeError,
@@ -25,6 +26,7 @@ from .sync import SyncError
 from .sync import sync as run_sync
 
 app = typer.Typer(help="Manage local LLM model families across providers.")
+app.add_typer(benchmark_app, name="benchmark")
 
 
 def run_tui(family: str | None) -> None:

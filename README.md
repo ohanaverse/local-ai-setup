@@ -156,6 +156,21 @@ explicitly and are not reconciled.
 `config.toml` via `--wt-config`) into `registry.toml` + `modelman.toml`.
 The legacy files are read-only inputs and are not written by the TUI.
 
+### Benchmarking
+
+Compare local model backends side-by-side:
+
+```bash
+modelman benchmark run
+modelman benchmark run --workload short
+modelman benchmark run --model ollama/ornith-1.5:35b --direct
+modelman benchmark list-workloads
+modelman benchmark show-results --latest
+```
+
+Results are written to `~/.config/local-ai/benchmarks/<run_id>/` as JSON and
+Markdown.
+
 ## Development
 
 The project uses a Makefile to wrap the common dev tasks:
