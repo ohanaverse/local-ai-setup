@@ -45,3 +45,11 @@ def test_provider_size_of_default_is_none():
     p = FakeProvider({})
     assert p.size_of({"id": "x", "provider": "fake", "name": "x"}) is None
     assert hasattr(OllamaProvider({}), "size_of")
+
+
+def test_provider_path_of_default_is_none():
+    from modelman.providers.ollama import OllamaProvider
+
+    p = FakeProvider({})
+    assert p.path_of({"id": "x", "provider": "fake", "name": "x"}) is None
+    assert hasattr(OllamaProvider({}), "path_of")

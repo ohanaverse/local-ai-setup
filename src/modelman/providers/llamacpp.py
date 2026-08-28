@@ -114,6 +114,23 @@ class LlamaCppProvider(Provider):
                 return candidate.stat().st_size
         return None
 
+    def path_of(self, variant: VariantSpec) -> str | None:
+        """Return the primary file path in the HF cache, or None if missing."""
+        repo = variant.get("repo")
+        files = variant.get("files")
+        if not repo or not files:
+            return None
+        hf_org, hf_name = repo.split("/", 1)
+        repo_dir = _hf_cache_dir() / f"models--{hf_org}--{hf_name}" / "snapshots"
+        if not repo_dir.exists():
+            return None
+        primary = files[0]
+        for snap in repo_dir.iterdir():
+            candidate = snap / primary
+            if candidate.exists():
+                return str(candidate)
+        return None
+
     def list_local(self, runner: _Runner | None = None) -> list[LocalModel]:
         models: list[LocalModel] = []
         hub = _hf_cache_dir()

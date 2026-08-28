@@ -1,6 +1,6 @@
-"""`modelman sync` reconciles configured ollama models against
-`ollama list` and writes modelman.toml. The sync logic itself is covered
-by tests/test_sync.py; this covers the command wiring (load -> sync ->
+"""`modelman sync` reconciles configured models against their providers
+and writes modelman.toml. The sync logic itself is covered by
+tests/test_sync.py; this covers the command wiring (load -> sync ->
 save state -> report)."""
 
 from unittest.mock import patch

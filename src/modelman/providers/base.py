@@ -53,3 +53,11 @@ class Provider(ABC):
         so unknown providers don't crash the size columns.
         """
         return None
+
+    def path_of(self, variant: VariantSpec) -> str | None:
+        """Return the on-disk path for this variant, or None if not downloaded.
+
+        Providers override this when they can locate a downloaded model. Default
+        is None so unknown providers don't crash path columns.
+        """
+        return None

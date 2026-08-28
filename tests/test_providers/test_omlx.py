@@ -166,3 +166,57 @@ def test_cancel_current_resets_on_next_download(provider):
     with patch("modelman.providers.omlx.snapshot_download"):
         provider.download(variant)
         assert provider._cancel_requested is False
+
+
+def test_path_of_returns_model_dir(tmp_path):
+    md = tmp_path / "models"
+    target = md / "Ornith-1.5"
+    target.mkdir(parents=True)
+    (target / "config.json").write_text("{}")
+
+    p = OMLXProvider({"model_dir": str(md)})
+    path = p.path_of(
+        {
+            "id": "x",
+            "provider": "omlx",
+            "name": "x",
+            "repo": "ornith/Ornith-1.5",
+            "files": None,
+        }
+    )
+    assert path == str(target)
+
+
+def test_path_of_returns_none_when_dir_missing(tmp_path):
+    p = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    assert (
+        p.path_of(
+            {
+                "id": "x",
+                "provider": "omlx",
+                "name": "x",
+                "repo": "ornith/missing",
+                "files": None,
+            }
+        )
+        is None
+    )
+
+
+def test_path_of_returns_none_when_dir_empty(tmp_path):
+    md = tmp_path / "models"
+    target = md / "Empty-MLX"
+    target.mkdir(parents=True)
+    p = OMLXProvider({"model_dir": str(md)})
+    assert (
+        p.path_of(
+            {
+                "id": "x",
+                "provider": "omlx",
+                "name": "x",
+                "repo": "ornith/Empty-MLX",
+                "files": None,
+            }
+        )
+        is None
+    )

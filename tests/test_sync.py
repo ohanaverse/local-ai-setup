@@ -1,14 +1,19 @@
-"""Provider sync — reconcile configured ollama models against `ollama list`."""
+"""Provider sync — reconcile configured models against provider state."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from modelman.registry import ModelEntry, Registry
+from modelman.providers.base import Provider, VariantSpec
+from modelman.registry import Fetch, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
 from modelman.sync import (
     SyncError,
+    _model_entry_to_variant,
+    _modeldir_providers,
+    _ollama_downloaded,
     _parse_ollama_list_sizes,
+    list_modeldir,
     list_ollama,
     reconcile,
     sync,
@@ -57,6 +62,58 @@ def test_list_ollama_raises_on_failure(mock_runner):
         list_ollama(runner)
 
 
+
+def test_model_entry_to_variant_builds_spec_from_fetch():
+    entry = ModelEntry(
+        id="llamacpp/q4",
+        family="ornith-1.5",
+        provider_id="llamacpp",
+        model_name="Ornith-1.5-35B-Q4_K_M.gguf",
+        fetch=Fetch(repo="ornith-ai/Ornith-1.5-35B-A3B-GGUF", files=["Ornith-1.5-35B-Q4_K_M.gguf"]),
+        model_info={"supports_function_calling": True},
+    )
+    spec = _model_entry_to_variant(entry)
+    assert spec == {
+        "id": "llamacpp/q4",
+        "provider": "llamacpp",
+        "name": "Ornith-1.5-35B-Q4_K_M.gguf",
+        "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+        "files": ["Ornith-1.5-35B-Q4_K_M.gguf"],
+        "quantizations": None,
+        "model_info": {"supports_function_calling": True},
+    }
+
+
+def test_model_entry_to_variant_handles_empty_fetch():
+    entry = ModelEntry(
+        id="ollama/a",
+        family="a",
+        provider_id="ollama",
+        model_name="a",
+    )
+    spec = _model_entry_to_variant(entry)
+    assert spec["repo"] is None
+    assert spec["files"] is None
+    assert spec["quantizations"] is None
+    assert spec["model_info"] == {}
+
+
+def test_ollama_downloaded_maps_configured_models():
+    registry = Registry(
+        models=[
+            ModelEntry(id="ollama/a", family="a", provider_id="ollama", model_name="a"),
+            ModelEntry(id="ollama/b", family="b", provider_id="ollama", model_name="b"),
+        ]
+    )
+    result = _ollama_downloaded(registry, {"a": 1024, "c": 2048})
+    assert result == {"ollama/a": ("ollama:a", 1024)}
+
+
+def test_ollama_downloaded_ignores_unconfigured_models():
+    registry = Registry(models=[])
+    assert _ollama_downloaded(registry, {"a": 1024}) == {}
+
+
 def test_reconcile_downloaded_model():
     registry = Registry(
         models=[
@@ -66,7 +123,7 @@ def test_reconcile_downloaded_model():
         ]
     )
     state = StateStore()
-    result = reconcile(registry, state, {"a": 1024})
+    result = reconcile(registry, state, {"ollama/a": ("ollama:a", 1024)})
     assert result.downloaded == ["ollama/a"]
     assert result.not_downloaded == []
     s = state.get("ollama/a")
@@ -93,7 +150,7 @@ def test_reconcile_not_downloaded_model():
     assert s.size_bytes is None
 
 
-def test_reconcile_skips_non_ollama_models():
+def test_reconcile_skips_non_reconcilable_models():
     registry = Registry(
         models=[
             ModelEntry(
@@ -102,7 +159,7 @@ def test_reconcile_skips_non_ollama_models():
         ]
     )
     state = StateStore()
-    result = reconcile(registry, state, {"x": 1024})
+    result = reconcile(registry, state, {"openrouter/x": ("path", 1024)})
     assert result.downloaded == []
     assert result.not_downloaded == []
     assert state.get("openrouter/x").downloaded is False
@@ -118,8 +175,137 @@ def test_reconcile_preserves_litellm_exposed():
     )
     state = StateStore()
     state.set("ollama/a", ModelState(downloaded=False, litellm_exposed=True))
-    reconcile(registry, state, {"a": 1024})
+    reconcile(registry, state, {"ollama/a": ("ollama:a", 1024)})
     assert state.get("ollama/a").litellm_exposed is True
+
+
+def test_reconcile_handles_modeldir_providers():
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="ornith-1.5",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+            ),
+            ModelEntry(
+                id="omlx/4bit",
+                family="ornith-1.5",
+                provider_id="omlx",
+                model_name="4bit",
+                fetch=Fetch(repo="foo/MLX"),
+            ),
+        ]
+    )
+    state = StateStore()
+    result = reconcile(
+        registry,
+        state,
+        {
+            "llamacpp/q4": ("/cache/q4.gguf", 100),
+            "omlx/4bit": ("/models/MLX", 200),
+        },
+    )
+    assert sorted(result.downloaded) == ["llamacpp/q4", "omlx/4bit"]
+    assert result.not_downloaded == []
+    assert state.get("llamacpp/q4").size_bytes == 100
+    assert state.get("omlx/4bit").size_bytes == 200
+
+
+class _FakeProvider(Provider):
+    name = "fake"
+
+    def __init__(self, downloaded: bool, path: str | None, size: int | None):
+        super().__init__({})
+        self._downloaded = downloaded
+        self._path = path
+        self._size = size
+
+    def is_downloaded(self, variant: VariantSpec) -> bool:
+        return self._downloaded
+
+    def path_of(self, variant: VariantSpec) -> str | None:
+        return self._path
+
+    def size_of(self, variant: VariantSpec) -> int | None:
+        return self._size
+
+    def download(self, variant: VariantSpec) -> str:
+        return self._path or ""
+
+    def list_local(self) -> list[dict]:
+        return []
+
+
+def test_list_modeldir_records_downloaded_models():
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="f",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+            ),
+        ]
+    )
+    providers = {"llamacpp": _FakeProvider(True, "/cache/q4.gguf", 100)}
+    result = list_modeldir(registry, providers)
+    assert result == {"llamacpp/q4": ("/cache/q4.gguf", 100)}
+
+
+def test_list_modeldir_skips_not_downloaded_models():
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="f",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+            ),
+        ]
+    )
+    providers = {"llamacpp": _FakeProvider(False, None, None)}
+    result = list_modeldir(registry, providers)
+    assert result == {}
+
+
+def test_list_modeldir_requires_path_and_size():
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="f",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+            ),
+        ]
+    )
+    providers = {"llamacpp": _FakeProvider(True, None, 100)}
+    result = list_modeldir(registry, providers)
+    assert result == {}
+
+
+def test_modeldir_providers_builds_configured_providers(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="llamacpp", name="Llama.cpp"),
+            ProviderEntry(id="omlx", name="oMLX", model_dir=str(tmp_path / "models")),
+        ]
+    )
+    providers = _modeldir_providers(registry)
+    assert set(providers) == {"llamacpp", "omlx"}
+    assert providers["llamacpp"].name == "llamacpp"
+    assert providers["omlx"].name == "omlx"
+
+
+def test_modeldir_providers_omits_missing_providers():
+    registry = Registry(providers=[])
+    assert _modeldir_providers(registry) == {}
 
 
 def _result(returncode: int, stdout: str) -> MagicMock:
@@ -173,3 +359,68 @@ def test_sync_ignores_ollama_models_not_in_registry():
     assert result.not_downloaded == []
     assert len(registry.models) == 0
     assert state.models == {}
+
+
+def test_sync_includes_modeldir_results():
+    runner = MagicMock()
+    runner.side_effect = [
+        _result(0, "NAME  ID  SIZE  MODIFIED\n"),
+    ]
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="ornith-1.5",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+            ),
+        ],
+        providers=[ProviderEntry(id="llamacpp", name="Llama.cpp")],
+    )
+    state = StateStore()
+
+    with patch("modelman.sync.list_modeldir") as mock_modeldir:
+        mock_modeldir.return_value = {"llamacpp/q4": ("/cache/q4.gguf", 100)}
+        result = sync(registry, state, runner)
+
+    assert result.downloaded == ["llamacpp/q4"]
+    assert result.not_downloaded == []
+    assert state.get("llamacpp/q4").downloaded is True
+    assert state.get("llamacpp/q4").disk_path == "/cache/q4.gguf"
+    assert state.get("llamacpp/q4").size_bytes == 100
+
+
+def test_sync_combines_ollama_and_modeldir_results():
+    runner = MagicMock()
+    runner.side_effect = [
+        _result(0, "NAME  ID  SIZE  MODIFIED\nollama-model  abc  6.6 GB  4 days ago\n"),
+    ]
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="ollama/ollama-model",
+                family="ollama-family",
+                provider_id="ollama",
+                model_name="ollama-model",
+            ),
+            ModelEntry(
+                id="llamacpp/q4",
+                family="ornith-1.5",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+            ),
+        ],
+        providers=[ProviderEntry(id="llamacpp", name="Llama.cpp")],
+    )
+    state = StateStore()
+
+    with patch("modelman.sync.list_modeldir") as mock_modeldir:
+        mock_modeldir.return_value = {"llamacpp/q4": ("/cache/q4.gguf", 100)}
+        result = sync(registry, state, runner)
+
+    assert sorted(result.downloaded) == ["llamacpp/q4", "ollama/ollama-model"]
+    assert result.not_downloaded == []
+    assert state.get("ollama/ollama-model").size_bytes == int(6.6 * 1024**3)
+    assert state.get("llamacpp/q4").disk_path == "/cache/q4.gguf"

@@ -109,5 +109,15 @@ class OMLXProvider(Provider):
                 total += f.stat().st_size
         return total or None
 
+    def path_of(self, variant: VariantSpec) -> str | None:
+        """Return the model directory path, or None if not downloaded."""
+        repo = variant.get("repo")
+        if not repo:
+            return None
+        target = _model_dir(self.config) / _basename(repo)
+        if not target.is_dir() or not any(target.iterdir()):
+            return None
+        return str(target)
+
 
 ProviderRegistry.register(OMLXProvider)

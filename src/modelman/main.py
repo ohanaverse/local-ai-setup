@@ -70,7 +70,7 @@ def migrate(
 
 @app.command()
 def sync() -> None:
-    """Reconcile configured ollama models against `ollama list`."""
+    """Reconcile configured models against their providers."""
     registry = load_registry()
     state = load_state()
     try:
@@ -80,7 +80,7 @@ def sync() -> None:
         raise typer.Exit(1) from exc
     save_state(state)
     typer.echo(
-        f"Synced ollama: {len(result.downloaded)} downloaded, "
+        f"Synced: {len(result.downloaded)} downloaded, "
         f"{len(result.not_downloaded)} not downloaded."
     )
 

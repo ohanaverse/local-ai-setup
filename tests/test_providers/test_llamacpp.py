@@ -165,3 +165,41 @@ def test_cancel_current_resets_on_next_download(provider):
         mock_dl.return_value = "/tmp/x.gguf"
         provider.download(variant)
         assert provider._cancel_requested is False
+
+
+def test_path_of_returns_primary_file_path(tmp_path, monkeypatch):
+    hf = tmp_path / "hf"
+    snap = hf / "hub" / "models--ornith--test" / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    f = snap / "model.gguf"
+    f.write_bytes(b"x" * 100)
+
+    monkeypatch.setenv("HF_HOME", str(hf))
+    p = LlamaCppProvider({})
+    path = p.path_of(
+        {
+            "id": "x",
+            "provider": "llamacpp",
+            "name": "x",
+            "repo": "ornith/test",
+            "files": ["model.gguf"],
+        }
+    )
+    assert path == str(f)
+
+
+def test_path_of_returns_none_when_not_in_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "empty"))
+    p = LlamaCppProvider({})
+    assert (
+        p.path_of(
+            {
+                "id": "x",
+                "provider": "llamacpp",
+                "name": "x",
+                "repo": "ornith/missing",
+                "files": ["model.gguf"],
+            }
+        )
+        is None
+    )

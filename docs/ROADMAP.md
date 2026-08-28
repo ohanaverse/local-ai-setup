@@ -8,15 +8,21 @@ models already configured in `registry.toml`; it never adds new models.
 | PR | Scope | Status |
 |---|---|---|
 | #8 | ollama discover (superseded by #9) | merged |
-| #9 | ollama reconcile-only revision | next |
-| #10 | modeldir reconcile (llamacpp/omlx) | planned |
+| #9 | ollama reconcile-only revision | merged |
+| #10 | modeldir reconcile (llamacpp/omlx) | next |
 | — | openrouter | dropped — no-op (models explicitly configured) |
 
 Specs:
 
 - `docs/superpowers/specs/2026-08-28-modelman-sync-ollama-reconcile-design.md` (PR #9)
-- `docs/superpowers/specs/2026-08-27-modelman-sync-modeldir-design.md` (PR #10, placeholder)
+- `docs/superpowers/specs/2026-08-28-modelman-sync-modeldir-reconcile-design.md` (PR #10)
+- `docs/superpowers/specs/2026-08-27-modelman-sync-modeldir-design.md` (superseded)
 - `docs/superpowers/specs/2026-08-27-modelman-sync-openrouter-design.md` (dropped)
+
+Plans:
+
+- `docs/superpowers/plans/2026-08-28-modelman-sync-ollama-reconcile.md` (PR #9)
+- `docs/superpowers/plans/2026-08-28-modelman-sync-modeldir-reconcile.md` (PR #10)
 
 ## Phase 3 — LiteLLM exposure
 
