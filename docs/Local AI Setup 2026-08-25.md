@@ -651,8 +651,9 @@ repo's `bin/` directory:
 
 - **`bin/llm-isolate-provider <provider-id>`** — stops the other local
   providers, starts + warms up the requested one (ollama / llamacpp /
-  omlx), and prints a JSON result with the provider, model, and direct
-  backend URL.
+  omlx / omlx-6bit), and prints a JSON result with the provider, model,
+  and direct backend URL. `omlx` warms up the 4-bit variant and
+  `omlx-6bit` the 6-bit variant.
 - **`bin/llm-restore-providers`** — brings all local providers (and the
   LiteLLM proxy) back up after a benchmark run.
 
