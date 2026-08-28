@@ -2,8 +2,11 @@
 package ollamacheck
 
 import (
+	"fmt"
+	"os/exec"
+	"strings"
+
 	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/registry"
 )
 
 // IsOllamaModel returns true if the model is from the ollama provider.
@@ -23,15 +26,40 @@ func Check(m config.Model) (bool, error) {
 // Available checks whether modelName appears in `ollama list` output.
 // Returns false with a nil error when ollama is not installed.
 // Returns an error when `ollama list` exits non-zero.
+//
+// Deliberately self-contained (no internal/registry import): this is a
+// runtime availability probe, not model discovery — modelman owns discovery.
 func Available(modelName string) (bool, error) {
-	models, err := registry.Ollama{}.Discover()
-	if err != nil {
-		return false, err
+	if _, err := exec.LookPath("ollama"); err != nil {
+		return false, nil // ollama not installed — nothing is available
 	}
-	for _, m := range models {
-		if m.ModelName == modelName {
+	out, err := exec.Command("ollama", "list").Output()
+	if err != nil {
+		return false, fmt.Errorf("ollama list: %w", err)
+	}
+	for _, name := range parseOllamaNames(string(out)) {
+		if name == modelName {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// parseOllamaNames extracts the NAME column from `ollama list` output.
+// Mirrors the row shape the old registry parser accepted: header line
+// skipped, rows with fewer than 3 fields skipped, cloud rows (SIZE "-")
+// included since a cloud model is "available" to ollama.
+func parseOllamaNames(output string) []string {
+	var names []string
+	for i, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if i == 0 {
+			continue // header row: NAME  ID  SIZE  MODIFIED
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] == "" {
+			continue
+		}
+		names = append(names, fields[0])
+	}
+	return names
 }

@@ -19,7 +19,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/configeditor"
-	"github.com/ohanaverse/agent-worktree/internal/ollamaconfig"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/spf13/cobra"
 )
@@ -31,24 +30,23 @@ var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error)
 }
 
 // configCmd returns the `wt config` command. With no subcommand, launches
-// an interactive TUI for viewing and editing config.toml. Subcommands
-// configure specific concerns without entering the TUI.
+// an interactive TUI for viewing and editing agents in config.toml.
+// Subcommands configure specific concerns without entering the TUI.
 func configCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage wt preferences and config.toml",
 		Long: "Manage wt user preferences.\n\n" +
 			"With no subcommand, launches an interactive TUI to view and edit\n" +
-			"agents, providers, and models in config.toml.\n\n" +
+			"agents in config.toml.\n\n" +
 			"Subcommands:\n" +
 			"  theme   active color theme\n" +
-			"  path    print the config directory\n" +
-			"  ollama  sync ollama models with config.toml",
+			"  path    print the config directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return configeditorRun(a.theme, a.cfg, a.cfgErr)
 		},
 	}
-	cmd.AddCommand(configPathCmd(a), configThemeCmd(a), configOllamaCmd(a))
+	cmd.AddCommand(configPathCmd(a), configThemeCmd(a))
 	return cmd
 }
 
@@ -60,21 +58,6 @@ func configPathCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), filepath.Dir(themes.Path()))
 			return nil
-		},
-	}
-}
-
-// configOllamaCmd returns the `wt config ollama` command. Launches an
-// interactive TUI for syncing config.toml ollama models with `ollama list`.
-func configOllamaCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:   "ollama",
-		Short: "Sync ollama models between config.toml and `ollama list`",
-		Long: "Launch an interactive TUI to sync ollama models between config.toml\n" +
-			"and the local Ollama instance. Shows a union of both sources with\n" +
-			"status indicators, and lets you edit, add, pull, or delete entries.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return ollamaconfig.Run(a.theme)
 		},
 	}
 }

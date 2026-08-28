@@ -84,22 +84,15 @@ Model rotation happens inside the TUI — there are no `--code`/`--design`/`--na
 
 ## Configuration
 
-The Go tool uses `~/.config/agent-wt/config.toml` (TOML) with three entity types:
+The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag.
 
-- **Provider** — model source with auth config (ollama, openrouter, claude, copilot)
-- **Model** — specific variant from a provider, grouped by family and tagged (e.g. `code`, `design`)
-- **Agent** — AI coding tool with supported providers and optional default
+Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`, owned by `modelman` and seeded with `modelman migrate`. `wt` loads that file read-only and joins it in memory with `config.toml`; `wt config` never writes providers or models.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
 ### Migration from legacy `models.conf`
 
-On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically. The migration:
-
-- Parses `CODE_MODELS`/`DESIGN_MODELS` bash arrays
-- Creates `Provider`/`Agent` entries for each `native:X` model
-- Merges models in both code and design rotations (union of tags)
-- Runs only once — skipped if `config.toml` already exists
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, so that a subsequent `modelman migrate` can import them into `registry.toml`; `wt` itself only ever reads Providers/Models back out of the registry.
 
 ## User preferences (`wt config`)
 
@@ -193,8 +186,7 @@ go vet ./...       # Vet
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (hidden) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
 | `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
-| `internal/config/` | Config loading, model registry types, validation, secrets, legacy migration |
-| `internal/registry/` | Live model discovery (Ollama CLI, OpenRouter API) and registry merge |
+| `internal/config/` | Config loading, model registry types (joined from modelman's `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |

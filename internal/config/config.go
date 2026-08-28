@@ -72,7 +72,9 @@ type Agent struct {
 
 // ── Config ────────────────────────────────────────────────
 
-// Config is the on-disk configuration for wt.
+// Config is wt's in-memory configuration: Agents + DefaultTag come from
+// wt-owned config.toml; Providers + Models come from modelman-owned
+// registry.toml and are never persisted by wt (see Save).
 type Config struct {
 	DefaultTag string     `toml:"default_tag"`
 	Providers  []Provider `toml:"providers"`
@@ -96,8 +98,12 @@ func Path() string {
 	return filepath.Join(Dir(), "config.toml")
 }
 
-// Load reads the config file at Path(). Runs legacy migration first if needed.
-// Returns an empty Config if the file does not exist yet.
+// Load reads config.toml (Agents + DefaultTag — wt-owned) and joins it with
+// modelman-owned registry.toml (Providers + Models) into one in-memory
+// Config. The registry is checked before any schema-migration save so a
+// missing registry fails closed before wt rewrites config.toml: legacy
+// provider/model sections must survive on disk for `modelman migrate` to
+// import them. Returns an empty Config if config.toml does not exist yet.
 func Load() (*Config, error) {
 	if _, err := Migrate(); err != nil {
 		return nil, fmt.Errorf("migration: %w", err)
@@ -106,6 +112,11 @@ func Load() (*Config, error) {
 	cfg := &Config{DefaultTag: "code"}
 	data, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
+		providers, models, regErr := loadRegistry()
+		if regErr != nil {
+			return nil, regErr
+		}
+		cfg.Providers, cfg.Models = providers, models
 		return cfg, nil
 	}
 	if err != nil {
@@ -113,6 +124,11 @@ func Load() (*Config, error) {
 	}
 	if _, err := toml.Decode(string(data), cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	providers, models, err := loadRegistry()
+	if err != nil {
+		return nil, err
 	}
 
 	changed, err := migrateConfigSchema(cfg)
@@ -125,6 +141,12 @@ func Load() (*Config, error) {
 		}
 		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, removed opencode native)")
 	}
+
+	// Join modelman-owned registry LAST so wt never mutates registry data
+	// in memory (schema fixups above only ever see wt-owned config.toml
+	// content). Providers/Models from a pre-Phase-4 config.toml are
+	// overwritten here — registry.toml is the source of truth.
+	cfg.Providers, cfg.Models = providers, models
 	return cfg, nil
 }
 
@@ -259,29 +281,6 @@ func (c *Config) ProviderByID(id string) *Provider {
 	return nil
 }
 
-// ModelsByFamily returns models whose Family matches the given family.
-// An empty family matches models that also have an empty family.
-func (c *Config) ModelsByFamily(family string) []Model {
-	var out []Model
-	for _, m := range c.Models {
-		if m.Family == family {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-// ModelsByProvider returns models from the given provider.
-func (c *Config) ModelsByProvider(providerID string) []Model {
-	var out []Model
-	for _, m := range c.Models {
-		if m.ProviderID == providerID {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
 // AgentByName returns the agent with the given name, or an error if not found.
 func (c *Config) AgentByName(name string) (*Agent, error) {
 	for i := range c.Agents {
@@ -290,23 +289,6 @@ func (c *Config) AgentByName(name string) (*Agent, error) {
 		}
 	}
 	return nil, fmt.Errorf("agent %q not found", name)
-}
-
-// ProvidersForAgent returns the providers supported by the named agent.
-func (c *Config) ProvidersForAgent(agentName string) ([]Provider, error) {
-	a, err := c.AgentByName(agentName)
-	if err != nil {
-		return nil, err
-	}
-	var out []Provider
-	for _, pid := range a.SupportedProviders {
-		p := c.ProviderByID(pid)
-		if p == nil {
-			return nil, fmt.Errorf("agent %q: provider %q not found in config", agentName, pid)
-		}
-		out = append(out, *p)
-	}
-	return out, nil
 }
 
 // ResolveLocation returns the effective location for a model.
@@ -324,93 +306,6 @@ func (c *Config) ResolveLocation(m Model) (Location, error) {
 		return p.Location, nil
 	}
 	return "", fmt.Errorf("model %q: no location on model or provider %q", m.ID, p.ID)
-}
-
-// ProviderInUse returns a list of human-readable references to provider id.
-// A model reference is shown as "model:<id>"; an agent reference as
-// "agent:<name>". An empty list means the provider can be safely deleted.
-func (c *Config) ProviderInUse(id string) []string {
-	var refs []string
-	for _, m := range c.Models {
-		if m.ProviderID == id {
-			refs = append(refs, "model:"+m.ID)
-		}
-	}
-	for _, a := range c.Agents {
-		for _, p := range a.SupportedProviders {
-			if p == id {
-				refs = append(refs, "agent:"+a.Name)
-				break
-			}
-		}
-	}
-	return refs
-}
-
-// UpsertProvider adds p when isNew is true and no provider with p.ID
-// exists, or updates the existing provider with the same ID when isNew is
-// false. It returns an error if p.ID is empty, or if isNew is true and
-// p.ID already exists.
-func (c *Config) UpsertProvider(p Provider, isNew bool) error {
-	if p.ID == "" {
-		return fmt.Errorf("provider id is empty")
-	}
-	for i := range c.Providers {
-		if c.Providers[i].ID == p.ID {
-			if isNew {
-				return fmt.Errorf("provider %q already exists", p.ID)
-			}
-			c.Providers[i] = p
-			return nil
-		}
-	}
-	c.Providers = append(c.Providers, p)
-	return nil
-}
-
-// DeleteProvider removes the provider with id. It does not enforce foreign
-// keys; callers should check ProviderInUse first.
-func (c *Config) DeleteProvider(id string) {
-	for i := range c.Providers {
-		if c.Providers[i].ID == id {
-			c.Providers = append(c.Providers[:i], c.Providers[i+1:]...)
-			return
-		}
-	}
-}
-
-// UpsertModel adds m when isNew is true, or updates the existing model
-// with the same ID when isNew is false. It returns an error if m.ID is
-// empty, the provider does not exist, or isNew is true and the ID already
-// exists.
-func (c *Config) UpsertModel(m Model, isNew bool) error {
-	if m.ID == "" {
-		return fmt.Errorf("model id is empty")
-	}
-	if c.ProviderByID(m.ProviderID) == nil {
-		return fmt.Errorf("provider %q does not exist", m.ProviderID)
-	}
-	for i := range c.Models {
-		if c.Models[i].ID == m.ID {
-			if isNew {
-				return fmt.Errorf("model %q already exists", m.ID)
-			}
-			c.Models[i] = m
-			return nil
-		}
-	}
-	c.Models = append(c.Models, m)
-	return nil
-}
-
-// DeleteModel removes the model with id.
-func (c *Config) DeleteModel(id string) {
-	for i := range c.Models {
-		if c.Models[i].ID == id {
-			c.Models = append(c.Models[:i], c.Models[i+1:]...)
-			return
-		}
-	}
 }
 
 // UpsertAgent adds a when oldName is empty, or updates the agent named
@@ -479,9 +374,14 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 // Save writes cfg to the config path using an atomic temp-file + rename.
+// Only wt-owned fields are persisted: Providers/Models live in
+// modelman-owned registry.toml and are never written by wt.
 func Save(cfg *Config) error {
+	trimmed := *cfg
+	trimmed.Providers = nil
+	trimmed.Models = nil
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(&trimmed); err != nil {
 		return err
 	}
 	return WriteFileAtomic(Path(), buf.Bytes(), 0o644)

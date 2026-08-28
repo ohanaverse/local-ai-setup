@@ -4,10 +4,20 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/config"
 )
+
+// newTextInput builds a textinput.Model pre-filled with value and the given
+// placeholder.
+func newTextInput(value, placeholder string) textinput.Model {
+	inp := textinput.New()
+	inp.SetValue(value)
+	inp.Placeholder = placeholder
+	return inp
+}
 
 // enterAgentForm transitions the model into the agent edit/add form.
 func enterAgentForm(m *model, ag config.Agent, isNew bool) {
@@ -114,7 +124,7 @@ func (m model) saveAgentForm() (tea.Model, tea.Cmd) {
 	m.dirty = true
 	m.phase = phaseList
 	m.formKind = formNone
-	m.lists[sectionAgents] = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
+	m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 	return m, nil
 }
 

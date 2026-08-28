@@ -81,7 +81,9 @@ func TestPickerSkippedOnWorktreeFlag(t *testing.T) {
 	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeEmptyRegistry(t, home)
 	var buf bytes.Buffer
 	root := rootCmd()
 	root.SetOut(&buf)
@@ -148,7 +150,9 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	var buf bytes.Buffer
 	root := rootCmd()
 	root.SetOut(&buf)
@@ -189,7 +193,10 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	writeEmptyRegistry(t, home)
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
@@ -231,7 +238,9 @@ func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 
 	var buf bytes.Buffer
 	root := rootCmd()
@@ -259,7 +268,10 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	writeEmptyRegistry(t, home)
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
@@ -301,7 +313,10 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	writeEmptyRegistry(t, home)
 
 	var gotAgent string
 	var gotArgs []string
@@ -376,6 +391,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 
 	// Write a minimal config with one ollama model so resolveModel returns
 	// a single eligible entry, triggering the auto-launch short-circuit.
@@ -384,25 +400,19 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
-		[]byte(`default_tag = "code"
-[[providers]]
-id = "ollama"
-name = "Ollama"
-location = "local"
-auth = { type = "none", base_url = "http://localhost:11434" }
-[[models]]
-id = "ollama/gemma4:9b"
-provider_id = "ollama"
-model_name = "gemma4:9b"
-location = "local"
-tags = ["code"]
-[[agents]]
-name = "claude"
-supported_providers = ["ollama"]
-default_provider = "ollama"
-`),
+		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\ndefault_provider = \"ollama\"\n"),
 		0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+	// Providers/models now live in modelman-owned registry.toml.
+	regDir := filepath.Join(home, ".config", "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
+		[]byte("[[providers]]\nid = \"ollama\"\nname = \"Ollama\"\nlocation = \"local\"\nauth = { type = \"none\", base_url = \"http://localhost:11434\" }\n[[providers]]\nid = \"agy\"\nname = \"Antigravity\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n[[models]]\nid = \"ollama/gemma4:9b\"\nprovider_id = \"ollama\"\nmodel_name = \"gemma4:9b\"\nlocation = \"local\"\ntags = [\"code\"]\n"),
+		0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
 	}
 
 	called := false
@@ -432,7 +442,9 @@ default_provider = "ollama"
 // adds it, and gets the same error again — the real problem is the agent
 // name, and the CLI must surface that.
 func TestUnknownAgentFailsFast(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeEmptyRegistry(t, home)
 
 	var buf bytes.Buffer
 	root := rootCmd()

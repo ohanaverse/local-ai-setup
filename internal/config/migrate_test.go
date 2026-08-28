@@ -6,7 +6,26 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
+
+// loadConfigFile reads and decodes config.toml directly (bypassing Load's
+// registry join) so migration tests can assert the raw migration output — the
+// providers/models Migrate seeds are for `modelman migrate` to import, not
+// for wt's Load to read.
+func loadConfigFile(t *testing.T, dir string) *Config {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "agent-wt", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	return &cfg
+}
 
 // parseBashArray extracts the array name and quoted values from a single-line
 // bash array assignment. This is the core parser for the legacy format.
@@ -159,11 +178,9 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		t.Fatalf("config.toml not written: %v", err)
 	}
 
-	// Load and validate
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
+	// Read the migrated config.toml directly (providers/models are for
+	// modelman to import; wt's Load joins them from registry.toml).
+	cfg := loadConfigFile(t, tmp)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -263,10 +280,7 @@ func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 		t.Fatal("expected migration to run")
 	}
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
+	cfg := loadConfigFile(t, tmp)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -328,58 +342,24 @@ func TestMigrateConfigSchema(t *testing.T) {
 		writeCfg(t, `
 default_tag = "code"
 
-[[providers]]
-id = "google"
-name = "Google"
-location = "cloud"
-[providers.auth]
-type = "native"
-
-[[models]]
-id = "google/native"
-family = "google"
-provider_id = "google"
-model_name = "native"
-location = "cloud"
-tags = ["code", "design"]
-
 [[agents]]
 name = "agy"
 supported_providers = ["google"]
 default_provider = "google"
+`)
+		writeRegistry(t, tmp, `
+[[providers]]
+id = "agy"
+name = "Antigravity"
+location = "cloud"
+auth = { type = "native" }
 `)
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
 
-		// Provider renamed.
-		var agy *Provider
-		for i := range cfg.Providers {
-			if cfg.Providers[i].ID == "agy" {
-				agy = &cfg.Providers[i]
-				break
-			}
-		}
-		if agy == nil {
-			t.Fatalf("agy provider missing after fixup: %+v", cfg.Providers)
-		}
-		if agy.Name != "Antigravity" {
-			t.Errorf("agy provider Name = %q, want %q", agy.Name, "Antigravity")
-		}
-		if got := countProviders(cfg.Providers, "google"); got != 0 {
-			t.Errorf("google provider still present: %d", got)
-		}
-
-		// Model renamed.
-		if got := countModels(cfg.Models, "agy/native"); got != 1 {
-			t.Errorf("agy/native models = %d, want 1", got)
-		}
-		if got := countModels(cfg.Models, "google/native"); got != 0 {
-			t.Errorf("google/native models = %d, want 0", got)
-		}
-
-		// Agent rewired.
+		// Agent rewired: google → agy.
 		a, err := cfg.AgentByName("agy")
 		if err != nil {
 			t.Fatalf("agy agent missing: %v", err)
@@ -393,51 +373,22 @@ default_provider = "google"
 		writeCfg(t, `
 default_tag = "code"
 
-[[providers]]
-id = "ollama"
-name = "Ollama"
-[providers.auth]
-type = "none"
-
-[[providers]]
-id = "opencode"
-name = "OpenCode"
-location = "cloud"
-[providers.auth]
-type = "native"
-
-[[models]]
-id = "opencode/native"
-family = "opencode"
-provider_id = "opencode"
-model_name = "native"
-location = "cloud"
-tags = ["code"]
-
-[[models]]
-id = "ollama/deepseek-v4-pro:cloud"
-family = "deepseek-v4-pro"
-provider_id = "ollama"
-model_name = "deepseek-v4-pro:cloud"
-location = "cloud"
-tags = ["code"]
-
 [[agents]]
 name = "opencode"
 supported_providers = ["opencode"]
 default_provider = "opencode"
+`)
+		writeRegistry(t, tmp, `
+[[providers]]
+id = "ollama"
+name = "Ollama"
+auth = { type = "none", base_url = "http://localhost:11434" }
 `)
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
 
-		if got := countProviders(cfg.Providers, "opencode"); got != 0 {
-			t.Errorf("opencode provider still present: %d", got)
-		}
-		if got := countModels(cfg.Models, "opencode/native"); got != 0 {
-			t.Errorf("opencode/native model still present: %d", got)
-		}
 		a, err := cfg.AgentByName("opencode")
 		if err != nil {
 			t.Fatalf("opencode agent missing: %v", err)
@@ -445,29 +396,24 @@ default_provider = "opencode"
 		if !slices.Equal(a.SupportedProviders, []string{"ollama"}) || a.DefaultProvider != "ollama" {
 			t.Errorf("opencode agent = %+v, want supported=[ollama] default=ollama", a)
 		}
-
-		// Ollama model survives.
-		if got := countModels(cfg.Models, "ollama/deepseek-v4-pro:cloud"); got != 1 {
-			t.Errorf("ollama model removed: %d", got)
-		}
 	})
 
 	t.Run("idempotent", func(t *testing.T) {
 		writeCfg(t, `
 default_tag = "code"
 
+[[agents]]
+name = "claude"
+supported_providers = ["ollama"]
+default_provider = "ollama"
+`)
+		writeRegistry(t, tmp, `
 [[providers]]
 id = "ollama"
 name = "Ollama"
-[providers.auth]
-type = "none"
-
-[[agents]]
-name = "claude"
-supported_providers = ["claude", "ollama"]
-default_provider = "claude"
+auth = { type = "none", base_url = "http://localhost:11434" }
 `)
-		// First Load applies any fixups (no-op for this clean config).
+		// First Load applies any fixups (adds the agy agent).
 		if _, err := Load(); err != nil {
 			t.Fatalf("first Load: %v", err)
 		}
@@ -475,8 +421,7 @@ default_provider = "claude"
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Second Load must not rewrite the file. With no fixups applied, the
-		// file should be byte-identical.
+		// Second Load must not rewrite the file.
 		if _, err := Load(); err != nil {
 			t.Fatalf("second Load: %v", err)
 		}
@@ -488,26 +433,4 @@ default_provider = "claude"
 			t.Errorf("config.toml rewritten on second Load:\nbefore: %s\nafter:  %s", firstData, secondData)
 		}
 	})
-}
-
-// countProviders returns the number of providers whose ID matches id.
-func countProviders(providers []Provider, id string) int {
-	n := 0
-	for _, p := range providers {
-		if p.ID == id {
-			n++
-		}
-	}
-	return n
-}
-
-// countModels returns the number of models whose ID matches id.
-func countModels(models []Model, id string) int {
-	n := 0
-	for _, m := range models {
-		if m.ID == id {
-			n++
-		}
-	}
-	return n
 }

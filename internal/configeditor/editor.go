@@ -1,9 +1,9 @@
-// Package configeditor provides a TUI for viewing and editing config.toml.
+// Package configeditor provides a TUI for viewing and editing the agent
+// section of config.toml. Providers and models live in modelman-owned
+// registry.toml and are read-only for wt, so the editor only manages agents.
 package configeditor
 
 import (
-	"fmt"
-
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,33 +20,10 @@ const (
 	phaseQuit
 )
 
-type section int
-
-const (
-	sectionAgents section = iota
-	sectionProviders
-	sectionModels
-)
-
-func (s section) String() string {
-	switch s {
-	case sectionAgents:
-		return "agents"
-	case sectionProviders:
-		return "providers"
-	case sectionModels:
-		return "models"
-	default:
-		return "unknown"
-	}
-}
-
 type formKind int
 
 const (
 	formNone formKind = iota
-	formProvider
-	formModel
 	formAgent
 )
 
@@ -63,13 +40,12 @@ type model struct {
 	dirty  bool
 	width  int
 	height int
-	ready   bool
-	status  string // shown above the list
-	saving  bool   // prevents duplicate save dispatches
-	cfgErr  error  // captured at construction for the initial loadedMsg
+	ready  bool
+	status string // shown above the list
+	saving bool   // prevents duplicate save dispatches
+	cfgErr error  // captured at construction for the initial loadedMsg
 
-	section section
-	lists   [3]list.Model
+	list list.Model
 
 	// delete state
 	deleteTarget deleteTarget
@@ -83,24 +59,6 @@ type model struct {
 	formIsNew  bool
 	formCursor int
 	formError  string
-
-	// Provider form fields
-	provEdit    config.Provider
-	provID      textinput.Model
-	provName    textinput.Model
-	provAuth    textinput.Model
-	provBaseURL textinput.Model
-	provLoc     config.Location
-
-	// Model form fields
-	modEdit        config.Model
-	modID          textinput.Model
-	modFamily      textinput.Model
-	modProv        textinput.Model
-	modName        textinput.Model
-	modTags        textinput.Model
-	modLoc         config.Location
-	modResolvedLoc config.Location // cached to avoid ResolveLocation per frame
 
 	// Agent form fields
 	agEdit                 config.Agent
@@ -130,9 +88,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		if m.ready {
-			for i := range m.lists {
-				m.lists[i].SetSize(msg.Width-2, msg.Height-4)
-			}
+			m.list.SetSize(msg.Width-2, msg.Height-4)
 		}
 		if m.phase == phaseForm {
 			m.resizeFormInputs()
@@ -146,9 +102,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "config load/validation error: " + msg.err.Error()
 		}
-		m.lists[sectionAgents] = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
-		m.lists[sectionProviders] = buildProvidersList(m.theme, m.width-2, m.height-4, m.cfg)
-		m.lists[sectionModels] = buildModelsList(m.theme, m.width-2, m.height-4, m.cfg)
+		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 		return m, nil
 	case saveMsg:
 		m.saving = false
@@ -177,31 +131,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
-		// Delegate to the active list while it is filtering so single-key
-		// global shortcuts (n, d, q, 1/2/3) don't intercept filter input.
-		if m.ready && m.lists[m.section].FilterState() == list.Filtering {
+		// Delegate to the list while it is filtering so single-key global
+		// shortcuts (n, d, q) don't intercept filter input.
+		if m.ready && m.list.FilterState() == list.Filtering {
 			var cmd tea.Cmd
-			m.lists[m.section], cmd = m.lists[m.section].Update(msg)
+			m.list, cmd = m.list.Update(msg)
 			return m, cmd
 		}
 
 		// Global shortcuts take precedence over list delegation.
 		switch msg.String() {
-		case "tab":
-			m.section = (m.section + 1) % 3
-			return m, nil
-		case "shift+tab":
-			m.section = (m.section + 2) % 3
-			return m, nil
-		case "1":
-			m.section = sectionAgents
-			return m, nil
-		case "2":
-			m.section = sectionProviders
-			return m, nil
-		case "3":
-			m.section = sectionModels
-			return m, nil
 		case "ctrl+s":
 			return m.handleSave()
 		case "q", "ctrl+c":
@@ -213,63 +152,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "d":
 			if m.ready {
-				switch m.section {
-				case sectionAgents:
-					if it, ok := m.lists[sectionAgents].SelectedItem().(agentItem); ok {
-						if !it.command && it.configured {
-							enterDelete(&m, sectionAgents, it.agent.Name)
-						}
-					}
-				case sectionProviders:
-					if it, ok := m.lists[sectionProviders].SelectedItem().(providerItem); ok {
-						enterDelete(&m, sectionProviders, it.provider.ID)
-					}
-				case sectionModels:
-					if it, ok := m.lists[sectionModels].SelectedItem().(modelItem); ok {
-						enterDelete(&m, sectionModels, it.model.ID)
+				if it, ok := m.list.SelectedItem().(agentItem); ok {
+					if !it.command && it.configured {
+						enterDelete(&m, it.agent.Name)
 					}
 				}
 			}
 			return m, nil
 		case "n":
 			if m.ready {
-				switch m.section {
-				case sectionAgents:
-					enterAgentForm(&m, config.Agent{}, true)
-				case sectionProviders:
-					enterProviderForm(&m, config.Provider{}, true)
-				case sectionModels:
-					enterModelForm(&m, config.Model{}, true)
-				}
+				enterAgentForm(&m, config.Agent{}, true)
 			}
 			return m, nil
 		case "enter":
 			if m.ready {
-				switch m.section {
-				case sectionAgents:
-					if it, ok := m.lists[sectionAgents].SelectedItem().(agentItem); ok {
-						if it.command {
-							return m, nil
-						}
-						enterAgentForm(&m, it.agent, !it.configured)
+				if it, ok := m.list.SelectedItem().(agentItem); ok {
+					if it.command {
+						return m, nil
 					}
-				case sectionProviders:
-					if it, ok := m.lists[sectionProviders].SelectedItem().(providerItem); ok {
-						enterProviderForm(&m, it.provider, false)
-					}
-				case sectionModels:
-					if it, ok := m.lists[sectionModels].SelectedItem().(modelItem); ok {
-						enterModelForm(&m, it.model, false)
-					}
+					enterAgentForm(&m, it.agent, !it.configured)
 				}
 			}
 			return m, nil
 		}
 
-		// Not a global shortcut — delegate to the active list.
+		// Not a global shortcut — delegate to the list.
 		if m.ready {
 			var cmd tea.Cmd
-			m.lists[m.section], cmd = m.lists[m.section].Update(msg)
+			m.list, cmd = m.list.Update(msg)
 			if cmd != nil {
 				return m, cmd
 			}
@@ -308,13 +218,11 @@ func (m model) View() string {
 	case phaseQuit:
 		return "You have unsaved changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel\n"
 	default:
-		header := fmt.Sprintf("  [1] Agents    [2] Providers    [3] Models\n\n")
-		activeList := m.lists[m.section].View()
 		var status string
 		if m.status != "" {
 			status = m.status + "\n\n"
 		}
-		return header + status + activeList
+		return "Agents (providers/models are managed by modelman)\n\n" + status + m.list.View()
 	}
 }
 
@@ -324,51 +232,25 @@ func (m *model) resizeFormInputs() {
 	if w < 10 {
 		w = 10
 	}
-	switch m.formKind {
-	case formProvider:
-		m.provID.Width = w
-		m.provName.Width = w
-		m.provAuth.Width = w
-		m.provBaseURL.Width = w
-	case formModel:
-		m.modID.Width = w
-		m.modFamily.Width = w
-		m.modProv.Width = w
-		m.modName.Width = w
-		m.modTags.Width = w
-	case formAgent:
-		m.agName.Width = w
-		m.agProvidersInput.Width = w
-		m.agDefaultProviderInput.Width = w
-	}
+	m.agName.Width = w
+	m.agProvidersInput.Width = w
+	m.agDefaultProviderInput.Width = w
 }
 
 // formView dispatches to the appropriate form renderer.
 func (m model) formView() string {
-	switch m.formKind {
-	case formProvider:
-		return m.providerFormView()
-	case formModel:
-		return m.modelFormView()
-	case formAgent:
+	if m.formKind == formAgent {
 		return m.agentFormView()
-	default:
-		return ""
 	}
+	return ""
 }
 
 // handleFormUpdate dispatches to the appropriate form update handler.
 func (m model) handleFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch m.formKind {
-	case formProvider:
-		return m.handleProviderFormUpdate(msg)
-	case formModel:
-		return m.handleModelFormUpdate(msg)
-	case formAgent:
+	if m.formKind == formAgent {
 		return m.handleAgentFormUpdate(msg)
-	default:
-		return m, nil
 	}
+	return m, nil
 }
 
 // Run starts the config editor TUI with the config already loaded by the

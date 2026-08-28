@@ -1,12 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // legacyPaths returns the paths to the legacy models.conf and state directory.
@@ -209,7 +212,7 @@ func Migrate() (bool, error) {
 		})
 	}
 
-	if err := Save(cfg); err != nil {
+	if err := saveFull(cfg); err != nil {
 		return false, err
 	}
 
@@ -218,6 +221,19 @@ func Migrate() (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// saveFull writes the complete cfg — including Providers/Models — to the
+// config path. Only the legacy models.conf migration uses it: the
+// provider/model sections it seeds must survive on disk so `modelman
+// migrate` can import them into registry.toml. Regular saves use Save,
+// which persists wt-owned fields only.
+func saveFull(cfg *Config) error {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return err
+	}
+	return WriteFileAtomic(Path(), buf.Bytes(), 0o644)
 }
 
 // convertModels maps legacy model strings to new Model entries.

@@ -19,6 +19,7 @@ func TestSave_AtomicWrite(t *testing.T) {
 	m.cfg = &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "ollama"}},
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
 	m.dirty = true
 
@@ -49,8 +50,8 @@ func TestSave_AtomicWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.toml not found: %v", err)
 	}
-	if !strings.Contains(string(data), "ollama") {
-		t.Errorf("config.toml does not contain provider:\n%s", string(data))
+	if !strings.Contains(string(data), "claude") {
+		t.Errorf("config.toml does not contain agent:\n%s", string(data))
 	}
 
 	// Verify no temp file remains.
@@ -190,4 +191,3 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 		t.Error("expected error status after failed save")
 	}
 }
-

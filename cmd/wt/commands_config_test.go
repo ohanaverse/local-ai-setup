@@ -20,16 +20,32 @@ import (
 // newTestApp returns an app with both config and theme loaded from a temp
 // dir. Tests that need to assert file state use the returned tmp path.
 //
-// We point themes' dirFunc at the tmp dir and write a minimal config.toml
-// so config.Load succeeds. The seam is restored via t.Cleanup.
+// We point themes' dirFunc at the tmp dir and set XDG_CONFIG_HOME to tmp so
+// config.Load reads a minimal config.toml (agents + default tag) and a
+// modelman-owned registry.toml (empty providers/models) from the temp dir.
+// The seam is restored via t.Cleanup.
 func newTestApp(t *testing.T) (*app, string) {
 	t.Helper()
 	tmp := t.TempDir()
 	origDirFunc := themes.DirFuncForTest()
 	themes.SetDirFuncForTest(func() string { return tmp })
 	t.Cleanup(func() { themes.SetDirFuncForTest(origDirFunc) })
-	if err := os.WriteFile(filepath.Join(tmp, "config.toml"),
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	cfgDir := filepath.Join(tmp, "agent-wt")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
 		[]byte("default_tag = \"code\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Load fail-closes without modelman-owned registry.toml.
+	regDir := filepath.Join(tmp, "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
+		[]byte("providers = []\nmodels = []\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a, err := newApp()
