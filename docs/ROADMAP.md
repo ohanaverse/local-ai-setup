@@ -42,6 +42,8 @@ wt reads `registry.toml` read-only and joins it in memory with its own
 `config.toml`; deletes its `internal/registry` package and
 `wt config ollama` subcommand.
 
+**Status:** ✅ merged — `agent-worktree` PR #94 (`79d620f`, 2026-08-28).
+
 ## Future cleanups
 
 - Remove the vestigial `source` field — with no discovery, every model is
