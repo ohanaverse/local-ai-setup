@@ -16,15 +16,25 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from ._toml_io import atomic_write_toml, drop_none
+from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 
 
 def _default_state_path() -> Path:
-    """Compute the state path lazily so env overrides work in tests."""
-    return Path(os.environ.get("MODELMAN_STATE", "~/.config/local-ai/modelman.toml")).expanduser()
+    """Compute the state path lazily so env overrides work in tests.
+
+    Precedence: MODELMAN_STATE > XDG_CONFIG_HOME > ~/.config, matching
+    registry.py's `_default_registry_path` so registry.toml and modelman.toml
+    land in the same directory (migrate/sync write them together).
+    """
+    override = os.environ.get("MODELMAN_STATE")
+    if override:
+        return Path(override).expanduser()
+    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    return Path(base, "local-ai", "modelman.toml").expanduser()
 
 
 @dataclass
@@ -33,17 +43,20 @@ class ModelState:
     disk_path: str | None = None
     size_bytes: int | None = None
     litellm_exposed: bool = False
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass
 class FamilyState:
     display_name: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass
 class StateStore:
     models: dict[str, ModelState] = field(default_factory=dict)
     families: dict[str, FamilyState] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def get(self, model_id: str) -> ModelState:
         return self.models.get(model_id, ModelState())
@@ -89,20 +102,42 @@ def load_state(path: Path | None = None) -> StateStore:
             disk_path=entry.get("disk_path"),
             size_bytes=entry.get("size_bytes"),
             litellm_exposed=entry.get("litellm_exposed", False),
+            extra=unknown_keys(entry, {"downloaded", "disk_path", "size_bytes", "litellm_exposed"}),
         )
         for model_id, entry in raw.get("model_state", {}).items()
     }
     families = {
-        family: FamilyState(display_name=entry.get("display_name"))
+        family: FamilyState(
+            display_name=entry.get("display_name"),
+            extra=unknown_keys(entry, {"display_name"}),
+        )
         for family, entry in raw.get("families", {}).items()
     }
-    return StateStore(models=models, families=families)
+    return StateStore(
+        models=models,
+        families=families,
+        extra=unknown_keys(raw, {"model_state", "families"}),
+    )
 
 
 def save_state(store: StateStore, path: Path | None = None) -> None:
     state_path = Path(path) if path else _default_state_path()
     payload = {
-        "model_state": {model_id: drop_none(asdict(s)) for model_id, s in store.models.items()},
-        "families": {family: drop_none(asdict(s)) for family, s in store.families.items()},
+        "model_state": {
+            model_id: drop_none(
+                {
+                    **s.extra,
+                    "downloaded": s.downloaded,
+                    "disk_path": s.disk_path,
+                    "size_bytes": s.size_bytes,
+                    "litellm_exposed": s.litellm_exposed,
+                }
+            )
+            for model_id, s in store.models.items()
+        },
+        "families": {
+            family: drop_none({**s.extra, "display_name": s.display_name})
+            for family, s in store.families.items()
+        },
     }
-    atomic_write_toml(payload, state_path)
+    atomic_write_toml({**store.extra, **payload}, state_path)

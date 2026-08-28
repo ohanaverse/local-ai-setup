@@ -86,6 +86,16 @@ def sync() -> None:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     save_state(state)
+    if result.providers_added:
+        try:
+            save_registry(registry)
+        except OSError as exc:
+            # The state sync already succeeded; report the registry repair
+            # failure cleanly instead of a traceback. The repair is idempotent
+            # and re-runs on the next sync.
+            typer.echo(f"error: failed to save registry: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"Added provider entries: {', '.join(result.providers_added)}")
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )

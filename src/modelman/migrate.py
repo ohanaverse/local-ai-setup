@@ -19,7 +19,15 @@ from pathlib import Path
 import yaml
 
 from .manifest import load_manifest
-from .registry import AuthConfig, Fetch, ModelEntry, ProviderEntry, Registry
+from .registry import (
+    DEFAULT_PROVIDER_IDS,
+    AuthConfig,
+    Fetch,
+    ModelEntry,
+    ProviderEntry,
+    Registry,
+    default_provider_entry,
+)
 from .state import ModelState, StateStore
 
 
@@ -104,15 +112,21 @@ def _import_modelman_providers(config_path: Path, registry: Registry) -> None:
     for provider_id, cfg in (raw.get("providers") or {}).items():
         if _has_provider(registry, provider_id):
             continue
-        registry.providers.append(
-            ProviderEntry(
+        if provider_id in DEFAULT_PROVIDER_IDS:
+            # Use the canonical default (name + auth base_url) so a migrated
+            # registry exposes identically to a sync-repaired one; model_dir
+            # still comes from the legacy config.
+            entry = default_provider_entry(provider_id)
+            entry.model_dir = cfg.get("model_dir")
+        else:
+            entry = ProviderEntry(
                 id=provider_id,
                 name=provider_id.title(),
                 location="local",
                 model_dir=cfg.get("model_dir"),
                 auth=AuthConfig(type="none"),
             )
-        )
+        registry.providers.append(entry)
 
 
 def _import_modelman_families(family_dir: Path, registry: Registry, state: StateStore) -> None:

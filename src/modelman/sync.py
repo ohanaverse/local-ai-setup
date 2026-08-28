@@ -17,7 +17,13 @@ from typing import Any, Protocol
 from . import providers  # noqa: F401
 from .providers.base import Provider, VariantSpec
 from .providers.registry import ProviderRegistry
-from .registry import ModelEntry, Registry, provider_config
+from .registry import (
+    DEFAULT_PROVIDER_IDS,
+    ModelEntry,
+    Registry,
+    default_provider_entry,
+    provider_config,
+)
 from .state import ModelState, StateStore
 
 _SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
@@ -114,6 +120,26 @@ def _ollama_downloaded(registry: Registry, sizes: dict[str, int]) -> dict[str, t
     return downloaded
 
 
+def _ensure_provider_entries(registry: Registry) -> list[str]:
+    """Create default entries for reconcilable providers referenced by models
+    but missing from the registry.
+
+    Repairs a `providers = []` registry (models referencing a provider with
+    no entry) so wt's fail-closed validation accepts it. Returns the ids of
+    the provider entries added. Each entry is a fresh instance (via
+    registry.default_provider_entry) so mutating one registry never corrupts
+    the shared default.
+    """
+    referenced = {m.provider_id for m in registry.models}
+    existing = {p.id for p in registry.providers}
+    added: list[str] = []
+    for pid in DEFAULT_PROVIDER_IDS:
+        if pid in referenced and pid not in existing:
+            registry.providers.append(default_provider_entry(pid))
+            added.append(pid)
+    return added
+
+
 def _modeldir_providers(registry: Registry) -> dict[str, Provider]:
     """Build llamacpp/omlx provider instances from registry provider entries."""
     provider_instances: dict[str, Provider] = {}
@@ -152,6 +178,7 @@ def list_modeldir(
 class SyncResult:
     downloaded: list[str] = field(default_factory=list)
     not_downloaded: list[str] = field(default_factory=list)
+    providers_added: list[str] = field(default_factory=list)
 
 
 def reconcile(
@@ -200,6 +227,9 @@ def sync(
     runner: _Runner | None = None,
 ) -> SyncResult:
     """Reconcile configured ollama and model-dir models against their providers."""
+    providers_added = _ensure_provider_entries(registry)
     downloaded = _ollama_downloaded(registry, list_ollama(runner))
     downloaded.update(list_modeldir(registry, _modeldir_providers(registry)))
-    return reconcile(registry, state, downloaded)
+    result = reconcile(registry, state, downloaded)
+    result.providers_added = providers_added
+    return result

@@ -27,6 +27,15 @@ def drop_none(value: Any) -> Any:
     return value
 
 
+def unknown_keys(raw: dict[str, Any], known: set[str]) -> dict[str, Any]:
+    """Return the subset of `raw` whose keys are not in `known`.
+
+    Used to capture hand-edited fields that aren't part of the typed schema
+    so they survive a load/save round-trip instead of being silently dropped.
+    """
+    return {k: v for k, v in raw.items() if k not in known}
+
+
 def atomic_write_toml(payload: dict[str, Any], path: Path) -> None:
     """Write `payload` to `path` as TOML via temp file + rename.
 

@@ -40,7 +40,7 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 ### Registry and state
 
-- `src/modelman/registry.py` — `Registry` dataclass: providers + models. Loaded from/saved to `registry.toml` (path overridable via `MODELMAN_REGISTRY`).
+- `src/modelman/registry.py` — `Registry` dataclass: providers + models. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching agent-worktree's `config.RegistryPath`).
 - `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. Loaded from `modelman.toml` (`MODELMAN_STATE`).
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. Run once via `uv run modelman migrate`.
 - `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.

@@ -146,3 +146,23 @@ def test_migrate_records_downloaded_state_from_modelman_manifest(tmp_path):
     state = result.state.get("llamacpp/qwen3.8-27b-q4")
     assert state.downloaded is True
     assert state.disk_path == "/models/qwen3.8-27b-q4.gguf"
+
+
+def test_migrate_uses_canonical_provider_defaults(tmp_path):
+    # A migrated reconcilable provider must carry the same display name and
+    # auth base_url as a sync-repaired one, or exposing an ollama model after
+    # migrate would emit api_base: None and produce a broken LiteLLM route.
+    config_path = tmp_path / "config.yaml"
+    family_dir = tmp_path / "families"
+    family_dir.mkdir()
+    _write_modelman_config(config_path)
+
+    result = migrate(config_path, family_dir, wt_config_path=tmp_path / "absent.toml")
+
+    ollama = result.registry.provider("ollama")
+    assert ollama.name == "Ollama"
+    assert ollama.auth.base_url == "http://localhost:11434"
+    assert result.registry.provider("llamacpp").name == "llama.cpp"
+    omlx = result.registry.provider("omlx")
+    assert omlx.name == "oMLX"
+    assert omlx.model_dir == "~/.omlx/models"  # still read from legacy config

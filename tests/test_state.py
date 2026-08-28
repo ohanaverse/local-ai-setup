@@ -6,7 +6,16 @@ file is optional: a fresh install has no state yet, so a missing file
 returns an empty store rather than raising (matching settings.py's
 existing convention for optional per-machine files)."""
 
-from modelman.state import FamilyState, ModelState, StateStore, load_state, save_state
+from pathlib import Path
+
+from modelman.state import (
+    FamilyState,
+    ModelState,
+    StateStore,
+    _default_state_path,
+    load_state,
+    save_state,
+)
 
 
 def test_load_state_missing_file_returns_empty_store(tmp_path):
@@ -131,3 +140,44 @@ def test_save_then_load_round_trips_family_overlay(tmp_path):
     assert loaded.family_display_name("qwen3.8") == "Qwen 3.8"
     assert "empty-family" in loaded.families
     assert loaded.family_display_name("empty-family") == "empty-family"
+
+
+def test_default_state_path_honors_xdg(monkeypatch):
+    # modelman.toml must land in the same directory as registry.toml, so it
+    # honors XDG_CONFIG_HOME the same way registry.py does.
+    monkeypatch.delenv("MODELMAN_STATE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg")
+    assert _default_state_path() == Path("/custom/xdg/local-ai/modelman.toml")
+
+
+def test_default_state_path_modelman_state_override_wins(monkeypatch):
+    # The explicit MODELMAN_STATE override must beat XDG_CONFIG_HOME, matching
+    # registry.py's MODELMAN_REGISTRY precedence.
+    monkeypatch.setenv("MODELMAN_STATE", "/custom/modelman.toml")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg")
+    assert _default_state_path() == Path("/custom/modelman.toml")
+
+
+def test_save_then_load_preserves_unknown_keys(tmp_path):
+    # Hand-edited fields in modelman.toml (per-model, per-family, and
+    # top-level) must survive a save/load round-trip rather than being
+    # silently dropped.
+    path = tmp_path / "modelman.toml"
+    path.write_text(
+        '[model_state."ollama/x"]\n'
+        "downloaded = true\n"
+        'custom_field = "keep-me"\n'
+        "\n"
+        '[families."f"]\n'
+        'display_name = "F"\n'
+        "family_extra = 1\n"
+        "\n"
+        "[settings]\n"
+        'top_level = "keep"\n'
+    )
+    store = load_state(path)
+    save_state(store, path)
+    loaded = load_state(path)
+    assert loaded.get("ollama/x").extra == {"custom_field": "keep-me"}
+    assert loaded.families["f"].extra == {"family_extra": 1}
+    assert loaded.extra == {"settings": {"top_level": "keep"}}

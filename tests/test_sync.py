@@ -9,6 +9,7 @@ from modelman.registry import Fetch, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
 from modelman.sync import (
     SyncError,
+    _ensure_provider_entries,
     _model_entry_to_variant,
     _modeldir_providers,
     _ollama_downloaded,
@@ -439,3 +440,52 @@ def test_sync_combines_ollama_and_modeldir_results():
     assert result.not_downloaded == []
     assert state.get("ollama/ollama-model").size_bytes == int(6.6 * 1024**3)
     assert state.get("llamacpp/q4").disk_path == "/cache/q4.gguf"
+
+
+def test_ensure_provider_entries_repairs_empty_providers():
+    registry = Registry(
+        providers=[],
+        models=[ModelEntry(id="ollama/x", family="x", provider_id="ollama", model_name="x")],
+    )
+    added = _ensure_provider_entries(registry)
+    assert added == ["ollama"]
+    assert [p.id for p in registry.providers] == ["ollama"]
+    assert registry.providers[0].auth.base_url == "http://localhost:11434"
+
+
+def test_ensure_provider_entries_keeps_existing():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama")],
+        models=[ModelEntry(id="ollama/x", family="x", provider_id="ollama", model_name="x")],
+    )
+    assert _ensure_provider_entries(registry) == []
+    assert len(registry.providers) == 1
+
+
+def test_ensure_provider_entries_ignores_non_reconcilable():
+    registry = Registry(
+        providers=[],
+        models=[
+            ModelEntry(id="openrouter/x", family="x", provider_id="openrouter", model_name="x")
+        ],
+    )
+    assert _ensure_provider_entries(registry) == []
+    assert registry.providers == []
+
+
+def test_ensure_provider_entries_returns_fresh_instances():
+    # Each repaired registry must get its own ProviderEntry (and nested
+    # AuthConfig) instance; mutating one registry's entry must not corrupt
+    # the shared default used by the next sync.
+    registry1 = Registry(
+        providers=[],
+        models=[ModelEntry(id="ollama/x", family="x", provider_id="ollama", model_name="x")],
+    )
+    registry2 = Registry(
+        providers=[],
+        models=[ModelEntry(id="ollama/y", family="y", provider_id="ollama", model_name="y")],
+    )
+    _ensure_provider_entries(registry1)
+    _ensure_provider_entries(registry2)
+    registry1.providers[0].auth.base_url = "http://mutated:9999"
+    assert registry2.providers[0].auth.base_url == "http://localhost:11434"

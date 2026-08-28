@@ -4,6 +4,8 @@ save round trip and the minimal validation that catches a hand-edited file
 missing a field code elsewhere assumes exists (id, provider_id, model_name,
 cost.kind)."""
 
+from pathlib import Path
+
 import pytest
 
 from modelman.registry import (
@@ -14,10 +16,23 @@ from modelman.registry import (
     ProviderEntry,
     Registry,
     RegistryError,
+    _default_registry_path,
     load_registry,
     provider_config,
     save_registry,
 )
+
+
+def test_default_registry_path_honors_xdg(monkeypatch):
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg")
+    assert _default_registry_path() == Path("/custom/xdg/local-ai/registry.toml")
+
+
+def test_default_registry_path_modelman_registry_override_wins(monkeypatch):
+    monkeypatch.setenv("MODELMAN_REGISTRY", "/custom/registry.toml")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/custom/xdg")
+    assert _default_registry_path() == Path("/custom/registry.toml")
 
 
 def test_load_registry_missing_file_raises(tmp_path):
@@ -170,3 +185,51 @@ def test_provider_config_omits_model_dir_when_unset():
     # as a kwarg, or their constructors would raise on an unexpected arg.
     entry = ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
     assert provider_config(entry) == {}
+
+
+def test_load_registry_falls_back_to_legacy_location(tmp_path, monkeypatch):
+    # A user who created a registry before the XDG alignment and has
+    # XDG_CONFIG_HOME set should still load their existing ~/.config file
+    # rather than getting "Registry file not found".
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    legacy = home / ".config" / "local-ai" / "registry.toml"
+    save_registry(
+        Registry(
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+        ),
+        legacy,
+    )
+    loaded = load_registry()
+    assert loaded.provider("ollama").id == "ollama"
+
+
+def test_save_then_load_preserves_unknown_keys(tmp_path):
+    # Hand-edited fields that aren't part of the typed schema must survive a
+    # save/load round-trip, or a user's custom fields are silently dropped.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        "[[providers]]\n"
+        'id = "ollama"\n'
+        'name = "Ollama"\n'
+        'custom_field = "keep-me"\n'
+        "[providers.auth]\n"
+        'type = "none"\n'
+        'base_url = "http://localhost:11434"\n'
+        "auth_extra = true\n"
+        "\n"
+        "[[models]]\n"
+        'id = "ollama/x"\n'
+        'family = "x"\n'
+        'provider_id = "ollama"\n'
+        'model_name = "x"\n'
+        'model_extra = "keep-too"\n'
+    )
+    registry = load_registry(path)
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    assert loaded.provider("ollama").extra == {"custom_field": "keep-me"}
+    assert loaded.provider("ollama").auth.extra == {"auth_extra": True}
+    assert loaded.model("ollama/x").extra == {"model_extra": "keep-too"}
