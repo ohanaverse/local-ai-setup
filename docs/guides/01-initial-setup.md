@@ -427,7 +427,7 @@ Point the proxy at both services — `general_settings` in `~/.config/litellm/co
 
 One-time Prisma setup (the `prisma` package is **not** in the `litellm[proxy]` extra):
 
-<!-- UNVERIFIED — already done on this machine; commands from docs/litellm-admin-ui-setup.md §8–9. -->
+<!-- UNVERIFIED — already done on this machine; commands from docs/reference/litellm-admin-ui-setup.md §8–9. -->
 
 ```bash
 uv pip install --python ~/.local/share/uv/tools/litellm/bin/python prisma

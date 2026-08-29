@@ -22,7 +22,7 @@ api:401
 ui:307
 ```
 
-(PID differs per boot. 401 = proxy up and demanding the master key. 307 = admin UI redirecting to login.)
+(PID differs per boot. 401 = proxy up and demanding the master key. 307 = admin UI redirecting to login. The `launchctl list` middle column may read `0` or `-15` right after a `kickstart -k` (SIGTERM residue).)
 
 ## TL;DR
 
@@ -53,7 +53,7 @@ kickstart OK
 
 ### 1. config.yaml anatomy
 
-One file drives the proxy; the LaunchAgent starts `litellm` with it and the env block in the same plist carries the secrets (`LITELLM_MASTER_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `OPENROUTER_API_KEY`, `DATABASE_URL`, `LITELLM_SALT_KEY` — 6 keys, verified live; **values never printed here**). modelman reads/writes the same file (override with `MODELMAN_LITELLM_CONFIG`, default `/Users/keith/.config/litellm/config.yaml`).
+One file drives the proxy; the LaunchAgent starts `litellm` with it and the env block in the same plist carries the secrets (`LITELLM_MASTER_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `OPENROUTER_API_KEY`, `DATABASE_URL`, `LITELLM_SALT_KEY` — 6 secret keys (plus `PATH`); **values never printed here**). modelman reads/writes the same file (override with `MODELMAN_LITELLM_CONFIG`, default `/Users/keith/.config/litellm/config.yaml`).
 
 Shape — current file, redacted (`api_key` on the OpenRouter row is a **real key on disk**; shown as `sk-or-v1-…`):
 
@@ -177,6 +177,7 @@ When to hand-edit vs modelman:
 | Edit | Tool |
 |---|---|
 | `model_list` rows (expose a model) | modelman — `expose`/`unexpose`/TUI `l` (keeps `modelman.toml` flags honest) |
+| One-off tweak inside an existing `model_list` row | hand-edit (temporary: next `expose`/`unexpose` of that id replaces the row) — see Gotchas |
 | `general_settings`, `litellm_settings`, logging, router/callback settings, any non-`model_list` section | hand-edit — modelman never rewrites these, so the edits survive indefinitely |
 
 Hand-edit flow — always back up, edit, validate, restart:
@@ -250,15 +251,15 @@ Auth is live and the exposed model is in the served list:
 
 ```bash
 LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)
-curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://localhost:4000/v1/models | python3 -m json.tool | grep '"id"' | head
+curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://localhost:4000/v1/models | python3 -m json.tool | grep '"id"' | head -5
 ```
 
 ```text
-        "id": "ollama/qwen3.8:27b-mlx",
-        "id": "omlx/Qwen3.8-27B-4bit",
-        "id": "openrouter/qwen/qwen3.8-27b",
-        "id": "openrouter/qwen/qwen3.8-flash",
-        "id": "openrouter/qwen/qwen3.8-2.4t-a95b",
+            "id": "ollama/qwen3.8:27b-mlx",
+            "id": "omlx/Qwen3.8-27B-4bit",
+            "id": "openrouter/qwen/qwen3.8-27b",
+            "id": "openrouter/qwen/qwen3.8-flash",
+            "id": "openrouter/qwen/qwen3.8-2.4t-a95b",
 ```
 
 (expected ≥1 id; 11 total here — `| grep -c '"id"'` confirms. Your list differs.)
@@ -285,6 +286,7 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 - **modelman's bookkeeping can drift from disk.** Right now every `modelman.toml` row says `litellm_exposed = false` while config.yaml serves 11 entries — the non-ollama entries and the two in-registry ollama ones were seeded outside modelman (this machine's `registry.toml` currently carries only the `ollama` provider). `/v1/models` is the truth for what LiteLLM serves; `modelman.toml` only tracks what modelman would rewrite. First modelman write also strips the comment banners (above).
 - **4000 is the proxy; backends live elsewhere.** `api_base` targets are oMLX `:8000`, llama.cpp `:8080`, ollama `:11434` — never `:4000` (that loops back into LiteLLM). Also: an omlx row in `model_list` doesn't mean that quant variant is loaded on the oMLX server — see guide 01 Gotchas (`bin/llm-isolate-provider`).
 - **Syntax errors take the proxy down on restart.** Validate YAML before bouncing (§3 command); a dead start shows up as repeated respawns with errors in `~/.litellm.err.log`.
+- **Postgres/Redis down ⇒ proxy fails to boot.** KeepAlive turns a dead dependency into a crash loop — respawns with connection errors in the plist's `StandardErrorPath` log (`~/.litellm.err.log`, per `~/Library/LaunchAgents/local.litellm.proxy.plist`). Pre-flight with guide 01 §6's `pg_isready -h localhost` and `redis-cli ping`.
 
 ## Going deeper
 
@@ -292,5 +294,5 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
 - modelman's LiteLLM exposure design (writer contract, upsert semantics): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
 - Source of the writer/policies on this machine: `~/github/ohanaverse/modelman/src/modelman/litellm.py` (policies ~54–58, entry builder ~96–125, save semantics ~215–219)
-- Benchmarks through the proxy: `docs/guides/05-benchmarks.md`
-- When :4000 misbehaves: `docs/guides/08-maintenance-and-troubleshooting.md`
+- Benchmarks through the proxy: `docs/guides/05-benchmarks.md` (not yet created)
+- When :4000 misbehaves: `docs/guides/08-maintenance-and-troubleshooting.md` (not yet created)

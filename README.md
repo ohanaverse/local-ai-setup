@@ -43,7 +43,7 @@ It covers:
 
 For the Admin UI / web dashboard:
 
-- [`docs/litellm-admin-ui-setup.md`](docs/litellm-admin-ui-setup.md)
+- [`docs/litellm-admin-ui-setup.md`](docs/reference/litellm-admin-ui-setup.md)
 
 ---
 
