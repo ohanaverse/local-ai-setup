@@ -17,7 +17,7 @@
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
 - `bin/` — standalone isolation helpers for the external `modelman benchmark` tool (must be on PATH)
 - `Makefile` — lint target for shell scripts
-- `docs/` — setup guides, reference docs, superpowers plans/specs
+- `docs/` — guides/ (user playbooks — see Docs above), reference/, archive/ (dated docs), superpowers/ (plans+specs)
 - LiteLLM config: `~/.config/litellm/config.yaml`
 - LaunchAgent plists: `~/Library/LaunchAgents/local.llamacpp.server.plist` (llama.cpp), `local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers
 
