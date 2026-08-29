@@ -2,6 +2,7 @@
 
 ## Docs
 - User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance). Read `docs/guides/00-config-map.md` first for config-file ownership.
+- Follow-up issues: `issues.md` — open items from the guide-set review (master-key rotation, wt README drift, litellm_exposed bookkeeping). Check before touching those areas.
 
 ## Commands
 - `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (4 qwen3.8 backends)
