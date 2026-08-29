@@ -42,10 +42,10 @@ wt 0.1.0 (both the installed binary and repo source at `bf98d14`):
 - also `:47`/`:74` — `-w` short form removed; `-W` is the real flag
 
 - [x] Fix the README lines in the agent-worktree repo
-- [ ] Then prune the corresponding caveats: `docs/guides/03-model-families.md:233`,
+- [x] Then prune the corresponding caveats: `docs/guides/03-model-families.md:233`,
       `docs/guides/06-wt-agents-and-models.md:36, :71, :130, :171`
 
-README fixed in agent-worktree PR; caveats pruned skipped pending merge.
+README fixed in agent-worktree PR; caveats pruned in commit 271455e.
 
 ## 3. Converge `litellm_exposed` bookkeeping — FIXED (2026-08-29)
 

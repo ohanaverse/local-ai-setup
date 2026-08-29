@@ -127,7 +127,7 @@ Unexposed ollama/gemma4:12b-mlx.
 
 TUI — same toggle from the interactive UI (bare `uv run modelman`): press `l` on a model row; it queues the change and applies it on exit; the EXPOSED column shows `L` (see [02-providers-and-models](02-providers-and-models.md)).
 
-Before/after, using the real files read-only. Current state on this machine — the entry exists in config.yaml but modelman's own flag says false (state drift, see Gotchas):
+Before/after, using the real files read-only. This replays the `expose` operation that was actually run on this machine (see issue 3 / guide 00): the entry already existed in config.yaml, but modelman's own flag still said `false` (state drift, see Gotchas) until the command below was run:
 
 ```bash
 grep -n -A6 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config.yaml
@@ -167,6 +167,8 @@ model_list:                                       # banners/comments gone — Py
 [model_state."ollama/qwen3.8:27b-mlx"]
 litellm_exposed = true                            # ← only field modelman flips; downloaded/disk_path/size_bytes untouched
 ```
+
+This has already been run on this machine — the live `modelman.toml` now shows `litellm_exposed = true` for this model, matching the "after" block above.
 
 modelman does **not** restart LiteLLM — the new row is invisible to clients until the restart in §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
 

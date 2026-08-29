@@ -19,7 +19,7 @@ for p in TARGETS:
     text = p.read_text()
     for m in re.finditer(r"]\(([^)#\s]+)(?:#[^)]*)?\)", text):
         target = urllib.parse.unquote(m.group(1))
-        if target.startswith(("http", "mailto", "https")):
+        if target.startswith(("http", "mailto")):
             continue
         if not (p.parent / target).exists():
             broken.append(f"{p}: {target}")

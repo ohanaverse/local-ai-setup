@@ -165,15 +165,15 @@ grep -A5 '^\[model_state."ollama/qwen3.8:27b-mlx"\]' /Users/keith/.config/local-
 ```
 
 ```text
-0
+2
 [model_state."ollama/qwen3.8:27b-mlx"]
 downloaded = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
-litellm_exposed = false
+litellm_exposed = true
 ```
 
-Live proof of state drift (historical): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The two in-registry ollama models are now modelman-exposed; the nine omlx/openrouter/llama.cpp entries remain hand-managed by design. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing; a `true` with no `config.yaml` row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
+Historical note: `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The two in-registry ollama models are now modelman-exposed (as shown above); the nine omlx/openrouter/llama.cpp entries remain hand-managed by design and will still show `litellm_exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing; a `true` with no `config.yaml` row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
 
 **Step 4 — not exposed anywhere: expose it.** modelman writes the `model_list` row and flips the flag (local models must be downloaded first):
 

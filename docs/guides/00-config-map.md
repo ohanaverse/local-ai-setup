@@ -65,13 +65,13 @@ tags = []
 downloaded = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
-litellm_exposed = false
+litellm_exposed = true
 
 [model_state."ollama/ornith-1.5:35b"]
 downloaded = true
 disk_path = "ollama:ornith-1.5:35b"
 size_bytes = 23622320128
-litellm_exposed = false
+litellm_exposed = true
 ```
 
 ### `~/.config/local-ai/settings.yaml`

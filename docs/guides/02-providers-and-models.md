@@ -258,10 +258,10 @@ grep -c "litellm_exposed = true" ~/.config/local-ai/modelman.toml
 ```
 
 ```text
-0
+2
 ```
 
-> **Historical note (2026-08-29):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The two in-registry ollama models are now modelman-exposed; the nine omlx/openrouter/llama.cpp entries remain hand-managed by design.
+> **Historical note (2026-08-29):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` are now modelman-exposed (the count above); other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the nine omlx/openrouter/llama.cpp entries remain hand-managed by design and keep `litellm_exposed = false`.
 
 Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
 
