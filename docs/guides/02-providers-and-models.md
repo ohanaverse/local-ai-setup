@@ -27,6 +27,8 @@ modelman reads three files under `~/.config/local-ai/` (table copied from the mo
 | `modelman.toml` | Per-machine mutable state: download markers, family display names, LiteLLM exposure flags | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 
+Full map including wt and LaunchAgent surfaces: `docs/guides/00-config-map.md`
+
 LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_LITELLM_CONFIG` overrides it).
 
 ## TL;DR
@@ -155,6 +157,8 @@ uv run modelman download --help
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+(Options box with --help elided.)
+
 <!-- UNVERIFIED — interactive launch not driven from this session; run it and confirm downloads queue, then apply on exit. -->
 
 ```bash
@@ -185,7 +189,7 @@ What it did / didn't do, as observed:
 - It did **not** add models, did not touch `registry.toml`, and printed no `Added provider entries:` line — that line only appears when sync has to repair a missing provider entry.
 - Cloud providers (OpenRouter) are never reconciled. Documented reconcilable set is `("ollama", "llamacpp", "omlx")` (`src/modelman/sync.py:31`).
 
-Semantics summary: `sync` = read-only over providers (`ollama list`, HF cache, oMLX model dir), writes only `~/.config/local-ai/modelman.toml`, never adds models.
+Semantics summary: `sync` = read-only over providers (`ollama list`, HF cache, oMLX model dir), writes `~/.config/local-ai/modelman.toml` always; touches `registry.toml` only to repair missing provider entries (prints `Added provider entries: …`), never adds models.
 
 ### 7. Expose / unexpose through LiteLLM (CLI)
 
@@ -214,6 +218,8 @@ On success `expose` writes a `model_list` entry into `~/.config/litellm/config.y
 ## Verification
 
 Confirm a model is exposed — two independent greps, and both must agree:
+
+(Current machine fails this pair-check — see the drift note below.)
 
 ```bash
 grep -n "model_name" ~/.config/litellm/config.yaml
@@ -256,6 +262,19 @@ grep -c "litellm_exposed = true" ~/.config/local-ai/modelman.toml
 ```
 
 The pair-check: a **modelman-exposed** model has its `model_name` (the registry model id) under `model_list:` in `config.yaml` **and** `litellm_exposed = true` in its `[model_state."<model-id>"]` block in `modelman.toml`. Observed drift on this machine: the config carries 11 entries (two of which — `ollama/qwen3.8:27b-mlx`, `ollama/ornith-1.5:35b` — match registry model ids) while `modelman.toml` has zero `litellm_exposed = true`; those entries predate modelman's flag bookkeeping. Treat disagreement between the two greps as drift, not proof of exposure.
+
+Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
+
+```bash
+grep -n 'id = "<new-model>"' ~/.config/local-ai/registry.toml
+```
+
+```text
+id = "ollama/ornith-1.5:35b"
+family = "ornith-1.5:35b"
+provider_id = "ollama"
+model_name = "ornith-1.5:35b"
+```
 
 End-to-end confirm: the model also answers through the proxy — `curl http://localhost:4000/v1/models` with the master key from the LaunchAgent plist (full steps in `docs/guides/01-initial-setup.md` §Verification).
 
