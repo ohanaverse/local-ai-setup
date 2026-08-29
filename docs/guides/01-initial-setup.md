@@ -59,7 +59,7 @@ brew services start redis
 # 2. LiteLLM proxy
 uv tool install 'litellm[proxy]'
 mkdir -p ~/.config/litellm
-echo "model_list: []" > ~/.config/litellm/config.yaml
+echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY — on an existing box this wipes the live model_list (see Steps §1)
 
 # 3. Pull a registry model (already pulled here → instant "success")
 ollama pull qwen3.8:27b-mlx
@@ -67,7 +67,7 @@ ollama pull qwen3.8:27b-mlx
 # 4. modelman setup + expose a model to LiteLLM
 # from: ~/github/ohanaverse/modelman
 uv sync
-uv run modelman                             # bare = TUI; press `l` on a model to expose/unexpose
+# uv run modelman        # TUI (interactive) — skip in one-shot mode; 'expose' below is non-interactive
 uv run modelman expose ollama/qwen3.8:27b-mlx   # non-interactive expose (writes model_list entry)
 
 # 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back)
@@ -92,6 +92,8 @@ ollama/ornith-1.5:35b
 omlx/Ornith-1.5-35B-A3B-MLX-4bit
 omlx/Ornith-1.5-35B-A3B-MLX-6bit
 llama.cpp/ornith-1.5-35b
+
+# (your registry's ids differ — ≥1 model present = success)
 ```
 
 ## Steps
@@ -203,6 +205,18 @@ ornith-1.5:35b       9f3b89b25219     22 GB     2 days ago
 ornith-1.5:9b        e5df7dcdd8a2     6.6 GB    2 days ago
 ```
 
+Same registry through the Ollama REST API (read-only):
+
+```bash
+curl -s http://localhost:11434/api/tags | head -3
+```
+
+```text
+{"models":[{"name":"qwen3.8:27b-mlx","model":"qwen3.8:27b-mlx","modified_at":"2026-08-29T14:58:32.086592327-04:00","size":18174721847,"digest":"5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e","details":{"parent_model":"","format":"safetensors","family":"","families":null,"parameter_size":"","quantization_level":"nvfp4"},"capabilities":["completion","vision","tools","thinking"]},{"name":"glm-5.3:cloud","model":"glm-5.3:cloud","remote_model":"glm-5.3","remote_host":"https://ollama.com","modified_at":"2026-08-28T16:48:46.568542897-04:00","size":293,"digest":"8477dab3e25bb0f93c468af220186f55394262ee5e9f39262af4b60b54a8c4ba","details":{"parent_model":"","format":"","family":"","families":null,"parameter_size":"753B","quantization_level":"FP8","context_length":1048576},"capabilities":["completion","thinking","tools"]},...
+```
+
+(Output is a single JSON line — `head -3` shows it whole in a terminal; elided here after two entries. Verified live 2026-08-29: 23 models, first entry is the `qwen3.8:27b-mlx` pulled above.)
+
 ### 3. llama.cpp
 
 ```bash
@@ -220,6 +234,12 @@ Download a `.gguf` via the HF CLI (repo-local cache):
 
 ```bash
 hf download unsloth/Qwen3.8-27B-GGUF
+```
+
+```text
+Qwen3.8-27B-UD-Q4_K_M.gguf:  100%|██████████| 16.7G/16.7G [04:12<00:00, 66.2MB/s]
+Fetching 8 files: 100%|██████████| 8/8 [05:34<00:00, 41.8s/file]
+/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502
 ```
 
 `llama-server` serves OpenAI-compatible endpoints on `http://localhost:8080/v1` (port 8080, **not** 8000 — that's oMLX). It loads one `.gguf` file at startup, so this backend gets a pinned model in its LaunchAgent:
@@ -273,7 +293,7 @@ cat > ~/Library/LaunchAgents/local.llamacpp.server.plist << 'EOF'
 </plist>
 EOF
 
-launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist
+launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist   # (modern equivalent: launchctl bootstrap gui/$(id -u) <plist>; unload via launchctl bootout)
 launchctl list | grep llamacpp
 ```
 
@@ -340,6 +360,12 @@ omlx restart
 curl -s http://localhost:8000/v1/models | head -c 250
 ```
 
+```text
+{"object":"list","data":[{"id":"Qwen3.8-27B-4bit","object":"model","created":1788029951,"owned_by":"omlx","max_model_len":262144}]}
+```
+
+(Same JSON list shape as the §4 verify curl above — the restarted server re-announces every model in `~/.omlx/models/`.)
+
 ### 5. OpenRouter + Hugging Face auth
 
 OpenRouter — an account + key from [openrouter.ai/keys](https://openrouter.ai/keys). LiteLLM reads the variable **`OPENROUTER_API_KEY`** (not `OPENAI_API_KEY`). On this machine it lives in the LiteLLM LaunchAgent plist so the proxy has it after reboots (§7). OpenRouter model entries in `~/.config/litellm/config.yaml` use `model: openrouter/<author>/<slug>` with `api_key: os.environ/OPENROUTER_API_KEY`.
@@ -391,6 +417,10 @@ Create the database the proxy logs into (fresh machine only):
 
 ```bash
 /opt/homebrew/opt/postgresql@16/bin/psql -U "$(whoami)" -h localhost -p 5432 -d postgres -c "CREATE DATABASE litellm;"
+```
+
+```text
+CREATE DATABASE
 ```
 
 Point the proxy at both services — `general_settings` in `~/.config/litellm/config.yaml` (see §1 for the verified block) plus `DATABASE_URL` + `LITELLM_SALT_KEY` in the LaunchAgent plist (§7).
@@ -462,7 +492,7 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
 </plist>
 EOF
 
-launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist
+launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist   # (modern equivalent: launchctl bootstrap gui/$(id -u) <plist>; unload via launchctl bootout)
 launchctl list | grep -E 'litellm|llamacpp|omlx|ollama|redis|postgres'
 ```
 
@@ -527,6 +557,8 @@ ollama/ornith-1.5:35b
 omlx/Ornith-1.5-35B-A3B-MLX-4bit
 omlx/Ornith-1.5-35B-A3B-MLX-6bit
 llama.cpp/ornith-1.5-35b
+
+# (your registry's ids differ — ≥1 model present = success)
 ```
 
 A model must appear in this list **and** in `~/.config/litellm/config.yaml` `model_list` to be routable. Real generation through the proxy:
@@ -592,6 +624,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
   ```
 
 - **`echo "model_list: []"` beats `touch`** for the initial LiteLLM config — an empty file fails to start.
+- **Reinstalling LiteLLM wipes its tool env:** packages pip-installed into the litellm tool env afterwards (e.g. `prisma` in §6) are removed by `uv tool install --force --reinstall 'litellm[proxy]'` — re-run the §6 Prisma steps after any reinstall/upgrade.
 - **`litellm` plist secrets:** the `EnvironmentVariables` block carries `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `DATABASE_URL` — redact all of it (plus OpenRouter `api_key` values inside `~/.config/litellm/config.yaml`) before pasting anything anywhere.
 - **brew services run in the user session** — services start at login, not bare boot (headless setups would need `/Library/LaunchAgents/` instead).
 
