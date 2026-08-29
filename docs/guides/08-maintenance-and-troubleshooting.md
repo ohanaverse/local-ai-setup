@@ -47,6 +47,7 @@ Reading it fast:
 - `launchctl list` columns are PID / last-exit-status / label. `local.llamacpp.server` has `RunAtLoad` and `KeepAlive` both `true` in its plist (verified) — **:8080 is expected to be up at every login**, and launchd respawns it if it dies. Same two keys are `true` in all five plists.
 - `local.litellm.proxy` shows status `-15` here because it was SIGTERMed by a `kickstart -k` earlier that day (see Gotchas — `0`/`-15` are the only healthy readings for the middle column).
 - Ollama row has no PID (`-`) and no LaunchAgent plist exists for it — the `com.ollama.ollama` login item (Ollama.app) owns the daemon; the `application.com.electron.ollama.*` row appears only while the app window is open.
+- Any line that differs → §1 for restart mechanics, §3 for logs.
 
 ## Steps
 
@@ -109,7 +110,7 @@ Whole stack in one shot (post-download, post-upgrade): `~/.local/bin/llm-restart
 
 ### 2. "Model missing from LiteLLM" — ordered debug flow
 
-Worked on a model you expect on `:4000` but don't see (or a client gets 404/`model not found` for). Every read-only step below (1–3, 5–8) ran live on 2026-08-29 against a healthy model (`ollama/qwen3.8:27b-mlx`), so the outputs show what clean looks like at each stage; step 4 is the only mutating one (UNVERIFIED, success line from the live-verified source).
+Worked on a model you expect on `:4000` but don't see (or a client gets 404/`model not found` for). Steps (1–3, 5–7) ran live read-only on 2026-08-29 against a healthy model (`ollama/qwen3.8:27b-mlx`), so the outputs show what clean looks like at each stage; step 4 is mutating (not run; marked UNVERIFIED); step 8 restarts the proxy — the one mutating step run, measured below.
 
 **Step 1 — is it in the proxy at all?** Without auth you learn nothing (`401`); pull the master key from the plist env (value stays un-printed) and list model ids:
 
@@ -172,7 +173,7 @@ size_bytes = 19327352832
 litellm_exposed = false
 ```
 
-Live proof of state drift: `litellm_exposed = true` count is **0** while `ollama/qwen3.8:27b-mlx` (flag `false`) demonstrably routes through the proxy — its 11 config.yaml entries pre-date modelman bookkeeping. **config.yaml is the routing source of truth; `litellm_exposed` is bookkeeping.** A `false` here does not prove the model is missing; a `true` with no config.yaml row does mean modelman expects it and the row was lost. (Drift is a known guide 04 gotcha.)
+Live proof of state drift: `litellm_exposed = true` count is **0** while `ollama/qwen3.8:27b-mlx` (flag `false`) demonstrably routes through the proxy — its 11 config.yaml entries pre-date modelman bookkeeping. **config.yaml is the routing source of truth; `litellm_exposed` is bookkeeping.** A `false` here does not prove the model is missing; a `true` with no config.yaml row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
 
 **Step 4 — not exposed anywhere: expose it.** modelman writes the `model_list` row and flips the flag (local models must be downloaded first):
 
@@ -298,12 +299,12 @@ Startup-fault lines worth reacting to: repeated `Error loading config`, YAML par
 
 **modelman** (repo-local; the PATH binary is stale — guide 02):
 
+<!-- UNVERIFIED — upgrade not run in this session (mutates the repo + tool env); checkout was d93f5b9, 2026-08-29. Under-way output depends on how far behind the checkout is; when current: `Already up to date.` plus uv's install line. -->
+
 ```bash
 # from: /Users/keith/github/ohanaverse/modelman
 git pull && uv sync
 ```
-
-<!-- UNVERIFIED — upgrade not run in this session (mutates the repo + tool env); checkout was d93f5b9, 2026-08-29. Under-way output depends on how far behind the checkout is; when current: `Already up to date.` plus uv's install line. -->
 
 Verify — these commands ran live, 2026-08-29, on current checkout `d93f5b9`:
 
@@ -320,7 +321,7 @@ Usage: modelman sync [OPTIONS]
   Reconcile configured models against their providers.
 ```
 
-(A `VIRTUAL_ENV does not match the project environment` warning from pyenv is normal noise; see guide 02.)
+(A `VIRTUAL_ENV does not match the project environment` warning from pyenv is normal noise; see guide 07.)
 
 **wt** — the rebuild command writes into the Go bin dir; **mind the PATH shadowing gotcha** below before declaring victory:
 
@@ -341,7 +342,7 @@ wt --version
 wt 0.1.0
 ```
 
-**Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/keith/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so the fresh binary lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/keith/.local/bin/wt`, because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). The stale binary is dated 2026-08-27 (guide 06's pre-registry-generation build). After rebuilding into GOPATH the shadowed stale binary keeps answering `wt` — this is exactly what guide 06's "the installed binary is STALE" caveat describes. The fix that actually changes what runs: build straight over the shadowing copy (`go build -o /Users/keith/.local/bin/wt ./cmd/wt`) or delete the stale one and ensure the asdf GOPATH bin is on PATH; then re-check `which wt` and `wt --version` **and** `ls -la` the file mtime.
+**Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/keith/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so the fresh binary lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/keith/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). The stale binary is dated 2026-08-27 (guide 06's pre-registry-generation build). After rebuilding into GOPATH the shadowed stale binary keeps answering `wt` — this is exactly what guide 06's "the installed binary is STALE" caveat describes. The fix that actually changes what runs: build straight over the shadowing copy (`go build -o /Users/keith/.local/bin/wt ./cmd/wt`) or delete the stale one and ensure the asdf GOPATH bin is on PATH; then re-check `which wt` and `wt --version` **and** `ls -la` the file mtime.
 
 **LiteLLM** — real syntax verified via `uv tool upgrade --help` (the tool accepts a package spec, so the extra-quoted name is valid):
 
@@ -369,6 +370,11 @@ Two things upgrade can break (guide 01 §6/§7):
 
    ```bash
    ls /Users/keith/.local/share/uv/tools/litellm/bin/ | grep prisma
+   ```
+
+   ```text
+   prisma
+   prisma-client-py
    ```
 
    Empty → re-run the Prisma steps in guide 01 §6, then kickstart the proxy.
@@ -429,7 +435,7 @@ bin/llm-restore-providers
 
 It restarts all four providers in parallel, skips the ones already answering, and exits 1 if any fails to come back.
 
-**Isolation residue fingerprint:** after a benchmark (or a hard-killed run), exactly **one** local backend answers and the other two local ports refuse connections — TL;DR block shows e.g. `8000(omlx):200` but `8080(llama.cpp)` and `11434(ollama)` dead/curl-erroring while `4000(litellm):401` still answers. The surviving backend = the one that was last isolated (`omlx`/`omlx-6bit` → :8000 alive; `llamacpp` → :8080 alive; `ollama` → :11434 alive). Secondary tell: a model still resident in ollama after an ollama-isolation — `ollama ps` lists a loaded row instead of the bare header (run live, 2026-08-29, on the healthy stack: header only). Cure: `bin/llm-restore-providers`, then re-run the TL;DR block. One asymmetry: a llama.cpp residue won't self-heal — the job was `launchctl unload`ed deliberately (it disappears from `launchctl list` entirely), so there is nothing for launchd to restart; only a restore or `launchctl load -w /Users/keith/Library/LaunchAgents/local.llamacpp.server.plist` brings :8080 back.
+**Isolation residue fingerprint:** after a benchmark (or a hard-killed run), ALL THREE ports answer — `4000(litellm):401` still answers, :11434 always answers 200 (the ollama daemon stays up; `ollama ps` is header-only unless an ollama isolation loaded a model), and the isolated target is whichever of :8000/:8080 is alive; only the non-isolated one of :8000/:8080 goes dark (TL;DR block shows e.g. `8000(omlx):200` with `8080(llama.cpp)` dead/curl-erroring and `11434(ollama):200`). The discriminator: `local.llamacpp.server` missing from `launchctl list` = ollama/omlx residue (llamacpp's plist was unloaded); present = llamacpp residue. For an `ollama` isolation: :11434 answers with a loaded row in `ollama ps` (that's the residue) while :8000/:8080 both refuse — the healthy stack's `ollama ps` prints the bare header only (run live, 2026-08-29). Cure: `bin/llm-restore-providers`, then re-run the TL;DR block. One asymmetry: a llama.cpp residue won't self-heal — the job was `launchctl unload`ed deliberately (it disappears from `launchctl list` entirely), so there is nothing for launchd to restart; only a restore or `launchctl load -w /Users/keith/Library/LaunchAgents/local.llamacpp.server.plist` brings :8080 back.
 
 <!-- UNVERIFIED — the residue states above were not induced in this session (inducing them means stopping live backends); the detection commands and the loaded-header `ollama ps` output are the same ones verified live in the healthy state (header only, no rows). -->
 
