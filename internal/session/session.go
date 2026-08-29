@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -25,14 +24,6 @@ func Slug(path string) string {
 	return nonSlug.ReplaceAllString(path, "-")
 }
 
-// LatestClaude returns the most recently modified claude session for path.
-func LatestClaude(path string) (*Session, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".claude", "projects", Slug(path))
-	return latestByExt(dir, ".jsonl", func(f os.FileInfo) string {
-		return strings.TrimSuffix(f.Name(), ".jsonl")
-	})
-}
-
 // OpenCodeProjectID returns the repo's root commit hash (opencode's project id).
 // It runs git inside path so the id matches the worktree being resumed.
 func OpenCodeProjectID(path string) (string, error) {
@@ -43,22 +34,8 @@ func OpenCodeProjectID(path string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// LatestOpenCode returns the most recently modified opencode session for path.
-// OpenCode stores sessions as .json files (not .jsonl) under the project id.
-func LatestOpenCode(path string) (*Session, error) {
-	projectID, err := OpenCodeProjectID(path)
-	if err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode",
-		"storage", "session", projectID)
-	return latestByExt(dir, ".json", func(f os.FileInfo) string {
-		return f.Name()
-	})
-}
-
-// latestByExt finds the newest file with the given extension in dir.
-func latestByExt(dir, ext string, idOf func(os.FileInfo) string) (*Session, error) {
+// LatestByExt finds the newest file with the given extension in dir.
+func LatestByExt(dir, ext string, idOf func(os.FileInfo) string) (*Session, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil // no sessions
@@ -107,14 +84,4 @@ func RelativeTime(t time.Time) string {
 	}
 }
 
-// LatestForAgent returns the newest session for agent in worktreePath.
-func LatestForAgent(agent, worktreePath string) (*Session, error) {
-	switch agent {
-	case "claude":
-		return LatestClaude(worktreePath)
-	case "opencode":
-		return LatestOpenCode(worktreePath)
-	default:
-		return nil, nil
-	}
-}
+

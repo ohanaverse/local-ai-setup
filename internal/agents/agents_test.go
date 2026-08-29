@@ -706,3 +706,32 @@ func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
 		t.Errorf("args = %q, want --resume abc-123", got)
 	}
 }
+
+// TestResumerCapability asserts which drivers implement the Resumer
+// optional capability. claude and opencode support session resume; the
+// other agents do not. This is the contract that lets shared code stop
+// switching on the agent name.
+func TestResumerCapability(t *testing.T) {
+	cases := []struct {
+		agent     string
+		resumable bool
+	}{
+		{"claude", true},
+		{"opencode", true},
+		{"codex", false},
+		{"copilot", false},
+		{"pi", false},
+		{"agy", false},
+		{"shell", false},
+	}
+	for _, c := range cases {
+		d := ByName(c.agent)
+		if d == nil {
+			t.Fatalf("unknown agent: %s", c.agent)
+		}
+		_, got := d.(Resumer)
+		if got != c.resumable {
+			t.Errorf("agent %q Resumer = %v, want %v", c.agent, got, c.resumable)
+		}
+	}
+}

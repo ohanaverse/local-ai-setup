@@ -171,7 +171,16 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				s, err := session.LatestForAgent(agent, root)
+				d := agents.ByName(agent)
+				if d == nil {
+					return fmt.Errorf("unknown agent: %s", agent)
+				}
+				r, ok := d.(agents.Resumer)
+				if !ok {
+					fmt.Printf("%s: no resume support\n", agent)
+					return nil
+				}
+				s, err := r.LatestSession(root)
 				if err != nil {
 					return err
 				}

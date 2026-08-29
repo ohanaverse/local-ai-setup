@@ -53,6 +53,21 @@ type Commanded interface {
 	IsCommand() bool
 }
 
+// Resumer is an optional Driver capability for agents that support
+// resuming a previous session. Drivers that do not implement Resumer are
+// assumed to have no session-resume support.
+type Resumer interface {
+	// ResumeFlag is the CLI flag the agent expects before the session ID.
+	// Examples: "--resume" for claude, "--session" for opencode.
+	ResumeFlag() string
+
+	// LatestSession returns the most recently modified resumable session
+	// for the worktree at path, or nil if none exists. Errors indicate
+	// a lookup failure (e.g. unreadable session directory); callers decide
+	// whether to surface or swallow them.
+	LatestSession(path string) (*session.Session, error)
+}
+
 // Installed reports whether bin resolves on PATH.
 func Installed(bin string) bool {
 	_, err := exec.LookPath(bin)
@@ -170,11 +185,8 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	// user's "native" choice (for claude, routing a gateway model at the
 	// real Anthropic API). Skip the resume flag for native models.
 	if sess != nil && !m.Native {
-		switch agent {
-		case "claude":
-			cmd.Args = append(cmd.Args, "--resume", sess.ID)
-		case "opencode":
-			cmd.Args = append(cmd.Args, "--session", sess.ID)
+		if r, ok := d.(Resumer); ok {
+			cmd.Args = append(cmd.Args, r.ResumeFlag(), sess.ID)
 		}
 	}
 	return cmd, nil

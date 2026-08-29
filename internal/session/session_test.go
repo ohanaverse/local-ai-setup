@@ -42,7 +42,7 @@ func TestRelativeTime(t *testing.T) {
 
 // TestLatestByExtNoDir asserts a missing session dir yields nil, not an error.
 func TestLatestByExtNoDir(t *testing.T) {
-	s, err := latestByExt(filepath.Join(t.TempDir(), "nope"), ".jsonl", func(os.FileInfo) string { return "" })
+	s, err := LatestByExt(filepath.Join(t.TempDir(), "nope"), ".jsonl", func(os.FileInfo) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestLatestByExtRanking(t *testing.T) {
 	oldInfo, _ := os.Stat(old)
 	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
 
-	s, err := latestByExt(dir, ".jsonl", func(f os.FileInfo) string {
+	s, err := LatestByExt(dir, ".jsonl", func(f os.FileInfo) string {
 		return f.Name()
 	})
 	if err != nil {
@@ -108,75 +108,5 @@ func TestOpenCodeProjectID(t *testing.T) {
 	}
 	if len(id) != 40 {
 		t.Fatalf("expected a 40-char commit hash, got %q", id)
-	}
-}
-
-// TestLatestClaude asserts the newest .jsonl under the slug dir is returned.
-// It overrides HOME so the test never touches the real ~/.claude. A wrong
-// slug or extension would silently miss sessions.
-func TestLatestClaude(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	worktree := "/some/worktree/path"
-	dir := filepath.Join(home, ".claude", "projects", Slug(worktree))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := filepath.Join(dir, "old.jsonl")
-	new := filepath.Join(dir, "new.jsonl")
-	if err := os.WriteFile(old, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(new, []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldInfo, _ := os.Stat(old)
-	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
-
-	s, err := LatestClaude(worktree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s == nil || s.ID != "new" {
-		t.Fatalf("expected newest claude session, got %+v", s)
-	}
-}
-
-// TestLatestOpenCode asserts the newest .json under the project-id dir is
-// returned. It overrides HOME and builds a real git repo so the project id
-// resolves. A wrong extension (.jsonl) or project id would miss sessions.
-func TestLatestOpenCode(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	repo := t.TempDir()
-	gitInit(t, repo)
-	id, err := OpenCodeProjectID(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dir := filepath.Join(home, ".local", "share", "opencode", "storage", "session", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := filepath.Join(dir, "old.json")
-	new := filepath.Join(dir, "new.json")
-	if err := os.WriteFile(old, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(new, []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldInfo, _ := os.Stat(old)
-	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
-
-	s, err := LatestOpenCode(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s == nil || s.ID != "new.json" {
-		t.Fatalf("expected newest opencode session, got %+v", s)
 	}
 }

@@ -1,7 +1,12 @@
 package agents
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
 func init() {
@@ -11,6 +16,15 @@ func init() {
 type claudeDriver struct{}
 
 func (claudeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
+
+func (claudeDriver) ResumeFlag() string { return "--resume" }
+
+func (claudeDriver) LatestSession(path string) (*session.Session, error) {
+	dir := filepath.Join(os.Getenv("HOME"), ".claude", "projects", session.Slug(path))
+	return session.LatestByExt(dir, ".jsonl", func(f os.FileInfo) string {
+		return strings.TrimSuffix(f.Name(), ".jsonl")
+	})
+}
 
 func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	args := []string{}

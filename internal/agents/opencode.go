@@ -2,8 +2,11 @@ package agents
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
 func init() { register("opencode", func() Driver { return opencodeDriver{} }) }
@@ -11,6 +14,20 @@ func init() { register("opencode", func() Driver { return opencodeDriver{} }) }
 type opencodeDriver struct{}
 
 func (opencodeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
+
+func (opencodeDriver) ResumeFlag() string { return "--session" }
+
+func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
+	projectID, err := session.OpenCodeProjectID(path)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode",
+		"storage", "session", projectID)
+	return session.LatestByExt(dir, ".json", func(f os.FileInfo) string {
+		return f.Name()
+	})
+}
 
 // OpenCode is ollama-only after the native-provider alignment. The
 // OPENCODE_CONFIG_CONTENT env var routes through the ollama gateway with

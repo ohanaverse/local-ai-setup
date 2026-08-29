@@ -31,7 +31,9 @@ func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg
 	// the session lookup so no --resume/--session flag is ever appended.
 	var sess *session.Session
 	if !m.Native {
-		sess, _ = session.LatestForAgent(agent, worktreePath)
+		if r, ok := agents.ByName(agent).(agents.Resumer); ok {
+			sess, _ = r.LatestSession(worktreePath)
+		}
 	}
 	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 }

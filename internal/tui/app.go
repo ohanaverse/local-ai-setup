@@ -693,11 +693,13 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// Look up a prior session only for non-native models.
 	var sess *session.Session
 	if !highlighted.model.Native {
-		var err error
-		sess, err = session.LatestForAgent(m.agent, m.selectedPath)
-		if err != nil {
-			m.status = "session check failed: " + err.Error()
-			return m, nil
+		if r, ok := agents.ByName(m.agent).(agents.Resumer); ok {
+			var err error
+			sess, err = r.LatestSession(m.selectedPath)
+			if err != nil {
+				m.status = "session check failed: " + err.Error()
+				return m, nil
+			}
 		}
 	}
 	if sess == nil {
