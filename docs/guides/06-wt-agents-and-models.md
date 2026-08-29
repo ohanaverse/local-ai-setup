@@ -172,4 +172,4 @@ Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx
 - `/Users/keith/github/ohanaverse/agent-worktree/docs/configuration.md` and `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md` — config.toml and themes.toml reference
 - Specs (all verified present): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-native-unification-design.md`
 - `docs/guides/00-config-map.md` — who owns which `~/.config` file; `docs/guides/02-providers-and-models.md` — registry content; `docs/guides/03-model-families.md` — families/tags that feed the picker
-- Launch-log consumers and spend: `docs/guides/07-usage-and-spend.md` (not yet created)
+- Launch-log consumers and spend: `docs/guides/07-usage-and-spend.md`

@@ -207,4 +207,4 @@ ls /Users/keith/.config/local-ai/benchmarks/
 - Legacy benchmark docs + archived numbers: `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
 - modelman source: `~/github/ohanaverse/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` helper adapter)
 - Launching `wt` agents against the benchmarked models: `docs/guides/06-wt-agents-and-models.md` (not yet created)
-- Spend/usage data the proxy logs per benchmark request: `docs/guides/07-usage-and-spend.md` (not yet created)
+- Spend/usage data the proxy logs per benchmark request: `docs/guides/07-usage-and-spend.md`
