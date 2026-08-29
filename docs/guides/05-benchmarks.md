@@ -7,8 +7,7 @@
 ## Prerequisites
 
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
-- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/modelman/src/modelman/benchmark/runner.py`); today that is no models, hence:
-  `uv run modelman benchmark run` → `error: no benchmark targets found` (live, exit 1). Pass `--model`/`--family` to bypass the exposure filter, or `expose` first (guide 04 §2).
+- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b`. If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
 - Backends healthy: the four-port block in Verification answers (llama.cpp `:8080`, oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`).
 - modelman from its repo, not PATH (`uv run modelman` under `/Users/keith/github/ohanaverse/modelman` — the PATH-installed `modelman` is stale, guide 02 Gotchas). Isolation helpers callable:
   `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` and `bin/llm-restore-providers` from `/Users/keith/github/ohanaverse/local-ai-setup`.
@@ -93,7 +92,7 @@ Flag semantics (from `uv run modelman benchmark run --help` and `src/modelman/be
 
 - `--workload <name>` — default `chat`; `MODELMAN_BENCHMARK_WORKLOAD` envvar overrides.
 - `--model <id>` (repeatable) — registry ids, e.g. `ollama/qwen3.8:27b-mlx`.
-- `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — they currently mirror per-model tags (`qwen3.8:27b-mlx`, `ornith-1.5:35b`, …), so a bare `--family qwen3.8` matches nothing.
+- `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — they currently mirror per-model ids (`qwen3.8:27b-mlx`, `ornith-1.5:35b`, …), so a bare `--family qwen3.8` matches nothing.
 - `--direct` / `--litellm` — scope to one route; default benchmarks BOTH (direct URL + `http://localhost:4000/v1`), meaning every pass issues two requests per target.
 - `--passes N` (default 1), `--cooldown <seconds>` (default 15.0) — sleep between passes, not between routes.
 - `--results-dir <path>` — default `/Users/keith/.config/local-ai/benchmarks`.
@@ -159,8 +158,8 @@ Backends back after a restore — four-port block (consistent with guides 01/04;
 
 ```bash
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
-curl -s -m 2 http://localhost:8000/v1/models -o /dev/null -w "8000(omlx):%{http_code}\n"
-curl -s -m 2 http://localhost:8080/v1/models -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
+curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
+curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"
 ```
 

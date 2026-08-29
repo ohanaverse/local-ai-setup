@@ -127,7 +127,7 @@ Unexposed ollama/gemma4:12b-mlx.
 
 TUI — same toggle from the interactive UI (bare `uv run modelman`): press `l` on a model row; it queues the change and applies it on exit; the EXPOSED column shows `L` (see [02-providers-and-models](02-providers-and-models.md)).
 
-Before/after, using the real files read-only. Current state on this machine — the entry exists in config.yaml but modelman's own flag says false (state drift, see Gotchas):
+Before/after, using the real files read-only. This replays the `expose` operation that was actually run on this machine (see issue 3 / guide 00): the entry already existed in config.yaml, but modelman's own flag still said `false` (state drift, see Gotchas) until the command below was run:
 
 ```bash
 grep -n -A6 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config.yaml
@@ -167,6 +167,8 @@ model_list:                                       # banners/comments gone — Py
 [model_state."ollama/qwen3.8:27b-mlx"]
 litellm_exposed = true                            # ← only field modelman flips; downloaded/disk_path/size_bytes untouched
 ```
+
+This has already been run on this machine — the live `modelman.toml` now shows `litellm_exposed = true` for this model, matching the "after" block above.
 
 modelman does **not** restart LiteLLM — the new row is invisible to clients until the restart in §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
 
@@ -283,7 +285,7 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 - **modelman manages ONLY `model_list`.** Hand-edits to a `model_list` row are silently replaced the next time you `expose` the same id (`set_exposed` replaces by `model_name`, else appends — `src/modelman/litellm.py`). Hand-edits to `general_settings` and any other section survive every modelman write.
 - **Comments don't survive modelman writes.** The save path is a PyYAML round-trip (`save_litellm_config` docstring, `src/modelman/litellm.py:215-219`): the current `# ---- Ollama (local) ----`-style banners disappear on the first `expose`/`unexpose`. Keep structural notes in this guide, not the YAML.
 - **`config.yaml` carries literal api_key values on this machine.** The OpenRouter entries hold the real `sk-or-v1-…` key inline — **not** `os.environ/OPENROUTER_API_KEY` indirection. modelman writes `provider.auth.secret_ref` verbatim into `api_key` (`src/modelman/litellm.py:110`), so anything put in the registry surfaces in plaintext here. Treat `config.yaml` (and the plist) as secret material; redact before pasting anywhere.
-- **modelman's bookkeeping can drift from disk.** Right now every `modelman.toml` row says `litellm_exposed = false` while config.yaml serves 11 entries — the non-ollama entries and the two in-registry ollama ones were seeded outside modelman (this machine's `registry.toml` currently carries only the `ollama` provider). `/v1/models` is the truth for what LiteLLM serves; `modelman.toml` only tracks what modelman would rewrite. First modelman write also strips the comment banners (above).
+- **modelman's bookkeeping drift (historical):** `modelman.toml` flags were out of sync because non-ollama entries were seeded outside modelman. The two in-registry ollama models are now modelman-exposed; the nine omlx/openrouter/llama.cpp entries remain hand-managed by design. First modelman write also strips the comment banners (above).
 - **4000 is the proxy; backends live elsewhere.** `api_base` targets are oMLX `:8000`, llama.cpp `:8080`, ollama `:11434` — never `:4000` (that loops back into LiteLLM). Also: an omlx row in `model_list` doesn't mean that quant variant is loaded on the oMLX server — see guide 01 Gotchas (`bin/llm-isolate-provider`).
 - **Syntax errors take the proxy down on restart.** Validate YAML before bouncing (§3 command); a dead start shows up as repeated respawns with errors in `~/.litellm.err.log`.
 - **Postgres/Redis down ⇒ proxy fails to boot.** KeepAlive turns a dead dependency into a crash loop — respawns with connection errors in the plist's `StandardErrorPath` log (`~/.litellm.err.log`, per `~/Library/LaunchAgents/local.litellm.proxy.plist`). Pre-flight with guide 01 §6's `pg_isready -h localhost` and `redis-cli ping`.

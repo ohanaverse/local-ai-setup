@@ -258,10 +258,10 @@ grep -c "litellm_exposed = true" ~/.config/local-ai/modelman.toml
 ```
 
 ```text
-0
+2
 ```
 
-The pair-check: a **modelman-exposed** model has its `model_name` (the registry model id) under `model_list:` in `config.yaml` **and** `litellm_exposed = true` in its `[model_state."<model-id>"]` block in `modelman.toml`. Observed drift on this machine: the config carries 11 entries (two of which — `ollama/qwen3.8:27b-mlx`, `ollama/ornith-1.5:35b` — match registry model ids) while `modelman.toml` has zero `litellm_exposed = true`; those entries predate modelman's flag bookkeeping. Treat disagreement between the two greps as drift, not proof of exposure.
+> **Historical note (2026-08-29):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` are now modelman-exposed (the count above); other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the nine omlx/openrouter/llama.cpp entries remain hand-managed by design and keep `litellm_exposed = false`.
 
 Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
 

@@ -65,13 +65,13 @@ tags = []
 downloaded = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
-litellm_exposed = false
+litellm_exposed = true
 
 [model_state."ollama/ornith-1.5:35b"]
 downloaded = true
 disk_path = "ollama:ornith-1.5:35b"
 size_bytes = 23622320128
-litellm_exposed = false
+litellm_exposed = true
 ```
 
 ### `~/.config/local-ai/settings.yaml`
@@ -127,6 +127,7 @@ variants:
 ### `~/.config/litellm/config.yaml`
 
 - **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
+- **Hand-managed entries:** modelman owns only the two in-registry `ollama/*` models; the 9 omlx/openrouter/llama.cpp entries are deliberately hand-managed.
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
 - **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, llama.cpp, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
 - **Env override:** `MODELMAN_LITELLM_CONFIG`.

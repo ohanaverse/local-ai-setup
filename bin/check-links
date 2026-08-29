@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Check repo-relative markdown links across all doc directories."""
+import re
+import pathlib
+import sys
+import urllib.parse
+
+TARGETS = [
+    pathlib.Path("README.md"),
+    pathlib.Path("CLAUDE.md"),
+    *pathlib.Path("docs/guides").glob("*.md"),
+    *pathlib.Path("docs/reference").glob("*.md"),
+    *pathlib.Path("docs/archive").glob("*.md"),
+    *pathlib.Path("benchmarks").glob("*.md"),
+]
+
+broken = []
+for p in TARGETS:
+    text = p.read_text()
+    for m in re.finditer(r"]\(([^)#\s]+)(?:#[^)]*)?\)", text):
+        target = urllib.parse.unquote(m.group(1))
+        if target.startswith(("http", "mailto")):
+            continue
+        if not (p.parent / target).exists():
+            broken.append(f"{p}: {target}")
+
+if broken:
+    print("\n".join(broken))
+    sys.exit(1)
+print("ALL LINKS OK")

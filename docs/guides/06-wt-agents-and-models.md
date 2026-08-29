@@ -33,7 +33,7 @@ claude-wt -W my-feature      # skip worktree picker
 claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything
 ```
 
-`-W` (uppercase) is the real worktree flag — confirmed by `wt --help` (both the installed binary and repo source, which agree). A `README.md` example showing `-w my-feature` is stale: the short form was removed and is rejected.
+`-W` (uppercase) is the real worktree flag — confirmed by `wt --help` (both the installed binary and repo source, which agree).
 
 ## Steps
 
@@ -68,7 +68,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
   The tag slot defaults to `default_tag = "code"` (see §5) unless `-T` narrows it. Model rows carry usage badges (launch counts from `usage.jsonl`), and the cursor starts on the rotation's next model (see §4).
 - **On the model screen:** `j`/`k`/arrows navigate (with wrap-around), `enter` launches, `q` quits, `esc` pops back. Footer reads `[↑/↓] navigate   [enter] launch   [q] quit`.
 - **Session resume:** for agents with resume (claude, opencode) the picker offers to resume the newest session or go fresh; `esc`/cancel returns to the model screen without launching or advancing rotation.
-- **There is NO `d` tag-toggle key** — the README lists one, but no source version has a `"d"` handler (checked current HEAD `bf98d14` AND the stale binary's source `264cb74`; picker footer has no `[d]`). See [03-model-families](03-model-families.md) Gotchas. Use `-T code`/`-T design` instead — on a rebuilt binary this currently lists nothing; tags are latent until set in modelman (see Gotchas).
+- **There is no `d` tag-toggle key.** Use `-T code` / `-T design` instead; picker footer is `[↑/↓] navigate [enter] launch [q] quit`.
 
 ### 3. Model selection
 
@@ -163,12 +163,12 @@ Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx
 - **Tag rotation is currently latent:** every registry model has `tags = []`, so `-T`-less rotation walks the whole list and the header's tag slot shows `code` without meaning a filter is active. Wire tags in modelman first ([03-model-families](03-model-families.md)).
 - **Stale PATH binary:** `/Users/keith/.local/bin/wt` (2026-08-27) reads its model catalog from `config.toml`, missing registry-only models; rebuild with the Prerequisites command. After a rebuild, expect `wt rotate code`'s pair-check behavior to change until tags exist in the registry (also flagged in [03-model-families](03-model-families.md)).
 - **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
-- **`-w` is gone.** It errors with `-w is removed; use -W or --worktree`. README examples showing `-w` are wrong for both the installed binary and current source.
+- **`-W` is the real flag.** The `-w` short form was removed and now errors with `-w is removed; use -W or --worktree`.
 - **`rotation.state` is written by launches only** (`Record()`); the `wt rotate <tag>` probe and `esc`/canceled prompts never touch it. One global slot — per-tag/agent state files are legacy migration inputs.
 
 ## Going deeper
 
-- `/Users/keith/github/ohanaverse/agent-worktree/README.md` — agents, install, guard, copilot passthrough env vars (mind the stale `-w`/`d`/rotation-file spots called out above — and the `--cwd` row at `README.md:75`, which wrongly claims it skips session resume)
+- `/Users/keith/github/ohanaverse/agent-worktree/README.md` — agents, install, guard, copilot passthrough env vars
 - `/Users/keith/github/ohanaverse/agent-worktree/docs/configuration.md` and `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md` — config.toml and themes.toml reference
 - Specs (all verified present): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-native-unification-design.md`
 - [00-config-map](00-config-map.md) — who owns which `~/.config` file; [02-providers-and-models](02-providers-and-models.md) — registry content; [03-model-families](03-model-families.md) — families/tags that feed the picker

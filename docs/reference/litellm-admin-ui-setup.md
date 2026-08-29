@@ -1,6 +1,13 @@
 # LiteLLM Admin UI Setup
 
 **Date:** 2026-08-27
+**Rotated 2026-08-29.** The original master key, salt key, and UI password were
+committed in this document and in `issues.md`. They were rotated on the
+machine via the LaunchAgent plist, and the repo now uses placeholders. Git
+history was accepted rather than rewritten: the leaked values are dead after
+rotation, and rewriting would have orphaned the checkout-SHA stamps in the
+maintenance guide.
+
 **Prerequisite:** LiteLLM proxy installed and running (see `docs/archive/Local AI Setup 2026-08-25.md`)
 
 ---
@@ -23,11 +30,11 @@ Add `UI_USERNAME`, `UI_PASSWORD`, and `LITELLM_MASTER_KEY` to the LaunchAgent's 
 
 ```xml
 <key>LITELLM_MASTER_KEY</key>
-<string>sk-litellm-ui-master-key-4000</string>
+<string>sk-litellm-<rotate-me></string>
 <key>UI_USERNAME</key>
 <string>admin</string>
 <key>UI_PASSWORD</key>
-<string>admin</string>
+<string><strong-password></string>
 ```
 
 > **Change the password.** `admin/admin` is a placeholder. Edit the plist and restart the service.
@@ -140,7 +147,7 @@ Generate a salt key (used to encrypt/decrypt LLM API keys stored in the DB — c
 
 ```bash
 openssl rand -base64 32 | tr -d '\n/=' | head -c 40
-# e.g. Q+UYcqB0bcYn3x6pzLLrxctpcApcRuMNKk9zk1yV
+# e.g. <generated-salt>
 ```
 
 Add both to the plist's `EnvironmentVariables` block:
@@ -149,7 +156,7 @@ Add both to the plist's `EnvironmentVariables` block:
 <key>DATABASE_URL</key>
 <string>postgresql://keith@localhost:5432/litellm</string>
 <key>LITELLM_SALT_KEY</key>
-<string>Q+UYcqB0bcYn3x6pzLLrxctpcApcRuMNKk9zk1yV</string>
+<string><generated-salt></string>
 ```
 
 ---
@@ -212,7 +219,7 @@ pgrep -f '[l]itellm.*config' && echo "running" || echo "not running"
 
 # API responds (was 500 before DB was configured, now 200 with auth)
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/v1/models \
-  -H "Authorization: Bearer sk-litellm-ui-master-key-4000"
+  -H "Authorization: Bearer sk-litellm-<rotate-me>"
 # 200
 
 # UI redirects to login
@@ -230,7 +237,7 @@ tail -5 ~/.litellm.err.log
 Open http://localhost:4000/ui in a browser and log in with:
 
 - **Username:** `admin`
-- **Password:** `admin`
+- **Password:** `<strong-password>`
 
 The dashboard provides:
 
@@ -266,17 +273,17 @@ The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
         <key>PATH</key>
         <string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>LITELLM_MASTER_KEY</key>
-        <string>sk-litellm-ui-master-key-4000</string>
+        <string>sk-litellm-<rotate-me></string>
         <key>UI_USERNAME</key>
         <string>admin</string>
         <key>UI_PASSWORD</key>
-        <string>admin</string>
+        <string><strong-password></string>
         <key>OPENROUTER_API_KEY</key>
         <string>sk-or-v1-REPLACE_WITH_YOUR_KEY</string>
         <key>DATABASE_URL</key>
         <string>postgresql://keith@localhost:5432/litellm</string>
         <key>LITELLM_SALT_KEY</key>
-        <string>Q+UYcqB0bcYn3x6pzLLrxctpcApcRuMNKk9zk1yV</string>
+        <string><generated-salt></string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -329,7 +336,7 @@ Database isn't connected. Check that PostgreSQL is running (`pg_isready -h local
 
 ### `/v1/models` returns 401
 
-This is correct behavior — the master key is now set, so API calls require `Authorization: Bearer sk-litellm-ui-master-key-4000`. Before the DB was configured, it returned 500 because the proxy couldn't function without a database.
+This is correct behavior — the master key is now set, so API calls require `Authorization: Bearer sk-litellm-<rotate-me>`. Before the DB was configured, it returned 500 because the proxy couldn't function without a database.
 
 ### Proxy doesn't pick up new env vars after plist edit
 

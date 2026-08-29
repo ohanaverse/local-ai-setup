@@ -44,22 +44,7 @@ Conventions (from spec, mandatory):
 
 **Link check** — run after any task that creates or moves files (also used in the final task). From repo root:
 
-```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
-python3 - <<'EOF'
-import re, pathlib, urllib.parse
-targets = ["README.md", "CLAUDE.md", *pathlib.Path("docs/guides").glob("*.md")]
-broken = []
-for p in map(pathlib.Path, targets):
-    for m in re.finditer(r'\]\(([^)#\s]+)(?:#[^)]*)?\)', p.read_text()):
-        t = urllib.parse.unquote(m.group(1))
-        if t.startswith(("http", "mailto")):
-            continue
-        if not (p.parent / t).exists():
-            broken.append(f"{p}: {t}")
-print("\n".join(broken) or "ALL LINKS OK")
-EOF
-```
+Run `make check-links` from repo root. Expected: `ALL LINKS OK`.
 
 Expected: `ALL LINKS OK`. If broken links print, fix paths (URL-encode spaces as `%20` in markdown links) and rerun.
 
