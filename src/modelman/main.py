@@ -24,9 +24,11 @@ from .registry import load_registry, save_registry
 from .state import load_state, save_state
 from .sync import SyncError
 from .sync import sync as run_sync
+from .usage.cli import usage_app
 
 app = typer.Typer(help="Manage local LLM model families across providers.")
 app.add_typer(benchmark_app, name="benchmark")
+app.add_typer(usage_app, name="usage")
 
 
 def run_tui(family: str | None) -> None:

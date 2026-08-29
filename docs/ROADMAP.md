@@ -3,13 +3,13 @@
 Provider sync is **reconcile, not discover**: sync updates the state of
 models already configured in `registry.toml`; it never adds new models.
 
-## Phase 2 — provider reconcile (in progress)
+## Phase 2 — provider reconcile (complete)
 
 | PR | Scope | Status |
 |---|---|---|
 | #8 | ollama discover (superseded by #9) | merged |
 | #9 | ollama reconcile-only revision | merged |
-| #10 | modeldir reconcile (llamacpp/omlx) | next |
+| #10 | modeldir reconcile (llamacpp/omlx) | merged |
 | — | openrouter | dropped — no-op (models explicitly configured) |
 
 Specs:
@@ -43,6 +43,27 @@ wt reads `registry.toml` read-only and joins it in memory with its own
 `wt config ollama` subcommand.
 
 **Status:** ✅ merged — `agent-worktree` PR #94 (`79d620f`, 2026-08-28).
+
+## Phase 5 — usage/spend tracking (consolidation sub-project 3)
+
+`modelman usage report` joins `wt`'s local launch history (`usage.jsonl`
++ `rotation.state`) with LiteLLM's Postgres spend logs and prints a
+Markdown report: per-model summary, matched / WT-only launches /
+LiteLLM-only spend reconciliation, and last launch. Read-only on both
+sources.
+
+| PR | Scope | Status |
+|---|---|---|
+| #17 | design spec | merged |
+| #18 | implementation plan | merged |
+| #19 | `usage` subcommand (`src/modelman/usage/`), `psycopg2-binary`, `__main__.py` | ✅ this PR |
+
+Spec: `docs/superpowers/specs/2026-08-28-modelman-usage-design.md`
+
+Plan: `docs/superpowers/plans/2026-08-28-modelman-usage.md`
+
+Cross-repo status:
+`agent-worktree/docs/superpowers/plans/2026-08-27-model-management-consolidation-status.md`
 
 ## Future cleanups
 

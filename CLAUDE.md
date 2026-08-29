@@ -24,7 +24,7 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 ### Entry point
 
-- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `download <family>` (pushes `ModelScreen`), `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list).
+- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `download <family>` (pushes `ModelScreen`), `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list). Two sub-Typer apps are also mounted: `app.add_typer(benchmark_app, name="benchmark")` and `app.add_typer(usage_app, name="usage")`.
 
 ### Textual TUI
 
@@ -58,12 +58,35 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 - `src/modelman/ollama_caps.py` — `parse_ollama_show(stdout)` translates `Capabilities` section entries into `model_info` (e.g. `tools` → `supports_function_calling: True`). `auto_detect_model_info(name, runner)` runs `ollama show <name>` and returns the parsed dict (or `{}` on failure). `ModelForm` calls this on add for ollama variants.
 
+### Benchmark subsystem
+
+- `src/modelman/benchmark/cli.py` — `benchmark_app` (mounted as `modelman benchmark`): `list-workloads`, `run` (executes a workload against a model, optionally isolated), `show-results` (reads persisted run output).
+- `src/modelman/benchmark/isolation.py` — process/resource isolation for a benchmark run so results aren't skewed by concurrent load.
+- `src/modelman/benchmark/runner.py` — drives a workload against a target model and times/scores it.
+- `src/modelman/benchmark/results.py` — persists and loads benchmark run results.
+- `src/modelman/benchmark/workloads/` — workload definitions `run` selects between.
+- Tests: `tests/benchmark/` (cli, errors, isolation, results, runner, state_pointer, workload_registry, workloads — one file per module above).
+
+### Usage/spend tracking
+
+`modelman usage report` (mounted as `modelman usage`) joins `wt`'s local launch history with LiteLLM's Postgres spend logs into a Markdown report — read-only on both sources. See `docs/ROADMAP.md` Phase 5 for the design rationale.
+
+- `src/modelman/usage/cli.py` — `usage_app`; `report` command reads `wt`'s `usage.jsonl` + `rotation.state` (`MODELMAN_WT_DIR`, default `~/.config/agent-wt`), the registry, and LiteLLM's Postgres spend table, then prints `format_report()`'s output.
+- `src/modelman/usage/wt_state.py` — `read_usage_counts()` parses `usage.jsonl` into 1d/7d/30d launch counts per model id (malformed lines are skipped, not fatal); `read_last_launched()` reads `rotation.state`.
+- `src/modelman/usage/db.py` — `SpendStore` protocol; `PostgresSpendStore` queries LiteLLM's `LiteLLM_SpendLogs` table via `psycopg2` (connection is explicitly closed — psycopg2's `with conn:` only manages the transaction, not the connection lifetime); `InMemorySpendStore` is the test fake. `_reverse_model_index()` maps `litellm_params.model` → `model_name` for spend rows with a NULL `model_name` (first `model_list` entry wins on a duplicate `litellm_params.model`).
+- `src/modelman/usage/reconcile.py` — `reconcile()` joins wt counts + spend by registry model id into `matched` / `wt_only` / `litellm_only`; `--model`/`--family` filters apply to every observed id, not just registry-known ones.
+- `src/modelman/usage/report.py` — `format_report()` renders the `ReconcileResult` as Markdown.
+- `src/modelman/usage/errors.py` — `UsageError` (subclasses `RuntimeError`), caught by `report_cmd` in cli.py for a clean CLI error instead of a traceback.
+- Tests: `tests/usage/` (cli, db, errors, reconcile, report, wt_state).
+
 ### Config and manifests
 
 - `src/modelman/registry.py` loads/saves `registry.toml` (providers + model definitions) into a `Registry` dataclass. Path overridable with `MODELMAN_REGISTRY`.
 - `src/modelman/state.py` loads/saves `modelman.toml` (per-model state: downloaded, exposed, paths) into a `StateStore`. Path overridable with `MODELMAN_STATE`.
 - `src/modelman/migrate.py` is the one-time path: imports legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. The TUI/CLI expect the new layout after migration.
 - `src/modelman/manifest.py` still exists for the legacy path — `FamilyManifest.variant_by_id(vid)` looks up a variant; `downloaded` is a dict keyed by variant id; `mark_downloaded` stores an ISO timestamp and local path; `save_manifest` rewrites the whole YAML file with `sort_keys=False`. Not used by the new TUI screens.
+- `src/modelman/config.py` — loads legacy `~/.config/local-ai/config.yaml`; used **only** by the `migrate` path (see its module docstring) — do not add new callers, add to `registry.toml` instead.
+- `src/modelman/settings.py` — persists TUI user preferences (currently just theme) to `~/.config/local-ai/settings.yaml` (`MODELMAN_SETTINGS` override); missing file = defaults, corrupted file raises rather than silently falling back.
 
 ### Adding a new provider
 
