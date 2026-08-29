@@ -12,7 +12,8 @@
 - `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
-- `make lint` — umbrella target (currently just `lint-shell`)
+- `make lint` — umbrella target (`lint-shell` + `check-links`)
+- `bin/check-links` (or `make check-links`) — validates repo-relative markdown links across README, CLAUDE.md, docs/guides, docs/reference, docs/archive, benchmarks
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
@@ -29,6 +30,7 @@
 - **Shebang split**: benchmark scripts use `#!/opt/homebrew/bin/bash` (Homebrew bash); `bin/` helpers use `#!/bin/bash`. Exception: `bin/check-links` uses `#!/usr/bin/env python3` — regex/URL-decoding markdown link parsing isn't reasonable in bash.
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
 - **OpenRouter rows are skipped (N/A) without an API key**: the benchmark reads `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`; missing key → OpenRouter rows written as N/A.
+- **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all five go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift.
 
 ## Adding a New Benchmark Backend
 The isolation logic exists in **two places** (legacy + CLI helper). Both must
