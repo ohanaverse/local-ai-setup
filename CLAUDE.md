@@ -206,7 +206,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `
 
 | Capability | Consumer | Drivers that implement it |
 |---|---|---|
-| `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, codex, copilot, opencode, pi, agy, shell (none yet — empty seed) |
+| `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, copilot (only drivers implementing `InstructionPointers()`; others skip seeding entirely) |
 | `OllamaURLer` | Per-driver ollama gateway URL (overrides `config.OllamaBaseURL`) | claude, codex, copilot, opencode |
 | `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
 | `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |

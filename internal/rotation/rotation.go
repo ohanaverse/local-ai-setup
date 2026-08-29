@@ -35,11 +35,6 @@ func (r *Rotation) statePath() string {
 	return filepath.Join(r.dir, "rotation.state")
 }
 
-// StateDir returns the resolved state directory for this Rotation.
-func (r *Rotation) StateDir() string {
-	return r.dir
-}
-
 // Last returns the most recently launched model ID.
 func (r *Rotation) Last() (string, bool) {
 	data, err := os.ReadFile(r.statePath())
@@ -67,16 +62,32 @@ func (r *Rotation) Record(modelID string) error {
 	return nil
 }
 
+// cfgHasModels reports whether cfg is safe to rotate against, i.e. non-nil
+// with at least one model. Shared by Next and NextFromEligible so the guard
+// can't drift between the two copies.
+func cfgHasModels(cfg *config.Config) bool {
+	return cfg != nil && len(cfg.Models) > 0
+}
+
 // Next returns the first model after the last launched one that is eligible
-// for agent under the given tags/family filters (same semantics as
-// cfg.EligibleModels). It walks cfg.Models in order and wraps to the start.
-// If no model is eligible, it returns (config.Model{}, false).
+// for agent under the given tags/family filters. It computes the eligible
+// list and delegates to NextFromEligible.
 func (r *Rotation) Next(cfg *config.Config, agent, tags, family string) (config.Model, bool) {
-	if cfg == nil || len(cfg.Models) == 0 {
+	if !cfgHasModels(cfg) {
 		return config.Model{}, false
 	}
 	eligible, err := cfg.EligibleModels(agent, tags, family)
 	if err != nil || len(eligible) == 0 {
+		return config.Model{}, false
+	}
+	return r.NextFromEligible(eligible, cfg)
+}
+
+// NextFromEligible is the rotation core without the expensive
+// cfg.EligibleModels call. The caller (launchFilteredImpl) already has the
+// eligible slice from resolveModel, so this avoids computing it twice.
+func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config) (config.Model, bool) {
+	if len(eligible) == 0 || !cfgHasModels(cfg) {
 		return config.Model{}, false
 	}
 	allowed := map[string]bool{}

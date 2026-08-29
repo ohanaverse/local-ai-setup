@@ -16,33 +16,6 @@ import (
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
-// TestDefaultAgentFromConfig asserts that when the config lists agents, the
-// first one is the default. This is the non-TUI equivalent of the TUI's
-// default-agent resolution: the launch path must pick a sensible agent
-// without --agent.
-func TestDefaultAgentFromConfig(t *testing.T) {
-	cfg := &config.Config{
-		Agents: []config.Agent{
-			{Name: "codex"},
-			{Name: "claude"},
-		},
-	}
-	if got := cfg.DefaultAgent(); got != "codex" {
-		t.Errorf("DefaultAgent = %q, want %q", got, "codex")
-	}
-}
-
-// TestDefaultAgentFallback asserts that an empty or nil config falls back to
-// "claude". Without this, a first run with no config would launch nothing.
-func TestDefaultAgentFallback(t *testing.T) {
-	if got := (&config.Config{}).DefaultAgent(); got != "claude" {
-		t.Errorf("DefaultAgent(empty) = %q, want %q", got, "claude")
-	}
-	if got := (*config.Config)(nil).DefaultAgent(); got != "claude" {
-		t.Errorf("DefaultAgent(nil) = %q, want %q", got, "claude")
-	}
-}
-
 // TestBuildLaunchUnknownAgent asserts that an unregistered agent returns a
 // clear error rather than a nil command. Without this the launch path could
 // dereference a nil driver.
@@ -206,12 +179,12 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 	// Two models, no -M → resolveModel errors with "multiple models match".
 	// Any ambiguous eligible list errors so callers can route through
 	// rotation rather than silently picking one.
-	if _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
+	if _, _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
 		t.Fatal("expected error for ambiguous eligible list, got nil")
 	}
 
 	// With -M claude/opus → resolves correctly.
-	m, err := resolveModel("claude", cfg, "", "", "claude/opus")
+	m, _, err := resolveModel("claude", cfg, "", "", "claude/opus")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +246,7 @@ func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "pwd.txt")
-	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{recorder, out}); err != nil {
+	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{recorder, out}, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 	got, err := os.ReadFile(out)
@@ -404,12 +377,12 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 	// match". The defaultModel fallback is gone, so any ambiguous eligible
 	// list surfaces a clear error. The rotation advance in launchFiltered's
 	// run path wraps resolveModel so callers see the rotated model instead.
-	if _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
+	if _, _, err := resolveModel("claude", cfg, "", "", ""); err == nil {
 		t.Fatal("expected error for ambiguous eligible list")
 	}
 
 	// Pinned → resolves to claude/opus.
-	m, err := resolveModel("claude", cfg, "", "", "claude/opus")
+	m, _, err := resolveModel("claude", cfg, "", "", "claude/opus")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +392,7 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 
 	// Global rotation state lives at rotation.state under the config dir.
 	expectedPath := filepath.Join(dir, "agent-wt", "rotation.state")
-	gotPath := filepath.Join(rotation.New().StateDir(), "rotation.state")
+	gotPath := filepath.Join(config.Dir(), "rotation.state")
 	if gotPath != expectedPath {
 		t.Errorf("state file = %q, want %q", gotPath, expectedPath)
 	}
@@ -462,7 +435,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	want := []string{"claude/a", "claude/b", "claude/c"}
 	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
 	for i, id := range want {
-		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil); err != nil {
+		if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
 			t.Fatalf("launchFiltered run %d: %v", i+1, err)
 		}
 		data, err := os.ReadFile(statePath)
@@ -517,7 +490,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 
-	if err := launchFiltered("claude", worktree, cfg, false, "design", "", "", false, nil); err != nil {
+	if err := launchFiltered("claude", worktree, cfg, false, "design", "", "", false, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
 	}
 
@@ -568,7 +541,7 @@ func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	// launchFiltered with -A shell -M claude/opus. The actual exec may
 	// fail (no TTY, no args), but the stderr note is printed before the
 	// exec, so it lands in our pipe regardless of the outcome.
-	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil)
+	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil)
 
 	// Close the writer to flush the pipe and read.
 	_ = w.Close()

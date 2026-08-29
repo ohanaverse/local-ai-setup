@@ -36,9 +36,16 @@ func enterAgentForm(m *model, ag config.Agent, isNew bool) {
 }
 
 // refreshAgentInstalled updates the cached installation status from the
-// current agent name.
+// current agent name. The lookup is skipped when the name is unchanged since
+// the last refresh, so typing in the name field does not trigger a PATH
+// lookup per keystroke.
 func (m *model) refreshAgentInstalled() {
-	m.agInstalled = agents.Installed(strings.TrimSpace(m.agName.Value()))
+	name := strings.TrimSpace(m.agName.Value())
+	if name == m.agInstalledName {
+		return
+	}
+	m.agInstalledName = name
+	m.agInstalled = agents.Installed(name)
 }
 
 // handleAgentFormUpdate processes keys in the agent form.

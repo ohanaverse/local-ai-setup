@@ -159,7 +159,7 @@ func Load() (*Config, error) {
 		if err := Save(cfg); err != nil {
 			return nil, fmt.Errorf("save migrated config: %w", err)
 		}
-		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, removed opencode native)")
+		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
 	}
 
 	// Join modelman-owned registry LAST so wt never mutates registry data
@@ -169,15 +169,6 @@ func Load() (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
 	return cfg, nil
-}
-
-// DefaultAgent returns the agent to launch when none is specified: the first
-// configured agent, falling back to "claude".
-func (c *Config) DefaultAgent() string {
-	if c == nil || len(c.Agents) == 0 {
-		return "claude"
-	}
-	return c.Agents[0].Name
 }
 
 // Validate returns an error describing the first invalid entry.
@@ -433,22 +424,6 @@ func (c *Config) ModelsForAgent(agentName string) ([]Model, error) {
 	var out []Model
 	for _, m := range c.Models {
 		if allowed[m.ProviderID] {
-			out = append(out, m)
-		}
-	}
-	return out, nil
-}
-
-// ModelsForAgentAndTag intersects ModelsForAgent with HasTag(tag).
-// tag == "" returns all agent-compatible models (no tag filter).
-func (c *Config) ModelsForAgentAndTag(agentName, tag string) ([]Model, error) {
-	ms, err := c.ModelsForAgent(agentName)
-	if err != nil {
-		return nil, err
-	}
-	var out []Model
-	for _, m := range ms {
-		if tag == "" || m.HasTag(tag) {
 			out = append(out, m)
 		}
 	}

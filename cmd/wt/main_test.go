@@ -327,7 +327,7 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	var gotAgent string
 	var gotArgs []string
 	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
 		gotAgent = agent
 		gotArgs = extraArgs
 		return nil
@@ -424,7 +424,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 
 	called := false
 	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
 		called = true
 		return nil
 	}
@@ -518,7 +518,7 @@ func TestRunLaunchPath(t *testing.T) {
 				gotPath = c.launchPath
 				return nil
 			}
-			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
 				gotLaunch = true
 				gotPath = worktreePath
 				return nil

@@ -387,10 +387,13 @@ var noNativeAgents = map[string]bool{
 }
 
 // migrateConfigSchema applies idempotent fixups to an already-decoded cfg:
-//  1. Rename the legacy "google" provider/model/agent references to "agy".
-//  2. Ensure an agy provider, agy/native model, and agy agent exist.
-//  3. Remove the opencode native provider/model and rewire the opencode
-//     agent to ollama only.
+//  1. Rename the legacy "google" agent references to "agy".
+//  2. Ensure an agy agent exists.
+//  3. Rewire the opencode agent to ollama only.
+//
+// Provider and model data are owned by the registry and are reloaded from
+// it after migration, so provider/model-level fixups are intentionally
+// omitted here.
 //
 // Each fixup is self-extinguishing — once applied, the old pattern no longer
 // exists in cfg, so subsequent calls are no-ops. The boolean return is true
@@ -398,59 +401,7 @@ var noNativeAgents = map[string]bool{
 func migrateConfigSchema(cfg *Config) (bool, error) {
 	changed := false
 
-	// ── Fixup 1: rename "google" → "agy" everywhere ──────────────────
-	// If "agy" already exists, drop the legacy "google" provider to avoid
-	// creating a duplicate provider ID that would fail validation.
-	{
-		hasAgy := cfg.ProviderByID("agy") != nil
-		filtered := make([]Provider, 0, len(cfg.Providers))
-		for _, p := range cfg.Providers {
-			if p.ID == "google" {
-				if !hasAgy {
-					p.ID = "agy"
-					p.Name = "Antigravity"
-					filtered = append(filtered, p)
-				}
-				// else: drop the legacy google provider — agy already exists
-				changed = true
-				continue
-			}
-			filtered = append(filtered, p)
-		}
-		cfg.Providers = filtered
-	}
-	for i := range cfg.Models {
-		if cfg.Models[i].ProviderID == "google" {
-			cfg.Models[i].ProviderID = "agy"
-			changed = true
-		}
-	}
-	// If "agy/native" already exists, drop the legacy "google/native" model
-	// to avoid a duplicate model ID that would fail validation.
-	{
-		hasAgyNative := false
-		for _, m := range cfg.Models {
-			if m.ID == "agy/native" {
-				hasAgyNative = true
-				break
-			}
-		}
-		filtered := make([]Model, 0, len(cfg.Models))
-		for _, m := range cfg.Models {
-			if m.ID == "google/native" {
-				if !hasAgyNative {
-					m.ID = "agy/native"
-					m.Family = "agy"
-					filtered = append(filtered, m)
-				}
-				// else: drop the legacy google/native model — agy/native already exists
-				changed = true
-				continue
-			}
-			filtered = append(filtered, m)
-		}
-		cfg.Models = filtered
-	}
+	// ── Fixup 1: rename "google" → "agy" in agent references ────────
 	for i := range cfg.Agents {
 		a := &cfg.Agents[i]
 		rewired := false
@@ -469,27 +420,7 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 		}
 	}
 
-	// ── Fixup 2: ensure agy provider/model/agent exist ───────────────
-	if cfg.ProviderByID("agy") == nil {
-		cfg.Providers = append(cfg.Providers, Provider{
-			ID:       "agy",
-			Name:     "Antigravity",
-			Location: LocationCloud,
-			Auth:     AuthConfig{Type: "native"},
-		})
-		changed = true
-	}
-	if !hasModel(cfg.Models, "agy/native") {
-		cfg.Models = append(cfg.Models, Model{
-			ID:         "agy/native",
-			Family:     "agy",
-			ProviderID: "agy",
-			ModelName:  "native",
-			Location:   LocationCloud,
-			Tags:       []string{"code", "design"},
-		})
-		changed = true
-	}
+	// ── Fixup 2: ensure an agy agent exists ──────────────────────────
 	agyAgentFound := false
 	for i := range cfg.Agents {
 		if cfg.Agents[i].Name == "agy" {
@@ -512,29 +443,7 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 		changed = true
 	}
 
-	// ── Fixup 3: remove opencode native provider/model ───────────────
-	newProviders := make([]Provider, 0, len(cfg.Providers))
-	opencodeRemoved := false
-	for _, p := range cfg.Providers {
-		if p.ID == "opencode" {
-			opencodeRemoved = true
-			continue
-		}
-		newProviders = append(newProviders, p)
-	}
-	cfg.Providers = newProviders
-
-	newModels := make([]Model, 0, len(cfg.Models))
-	opencodeModelRemoved := false
-	for _, m := range cfg.Models {
-		if m.ProviderID == "opencode" {
-			opencodeModelRemoved = true
-			continue
-		}
-		newModels = append(newModels, m)
-	}
-	cfg.Models = newModels
-
+	// ── Fixup 3: rewire the opencode agent to ollama only ────────────
 	for i := range cfg.Agents {
 		if cfg.Agents[i].Name != "opencode" {
 			continue
@@ -547,19 +456,5 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 		}
 	}
 
-	if opencodeRemoved || opencodeModelRemoved {
-		changed = true
-	}
-
 	return changed, nil
-}
-
-// hasModel reports whether a model with the given id exists in models.
-func hasModel(models []Model, id string) bool {
-	for _, m := range models {
-		if m.ID == id {
-			return true
-		}
-	}
-	return false
 }

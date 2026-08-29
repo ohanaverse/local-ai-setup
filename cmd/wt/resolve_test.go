@@ -53,7 +53,7 @@ func TestResolveModel(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := resolveModel(tc.agent, cfg, tc.tags, tc.family, tc.pinned)
+			m, _, err := resolveModel(tc.agent, cfg, tc.tags, tc.family, tc.pinned)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
 			}
@@ -69,7 +69,32 @@ func TestResolveModel(t *testing.T) {
 	// A command agent returns the errCommandAgent sentinel specifically, so
 	// launchFiltered's errors.Is(err, errCommandAgent) dispatch matches. This
 	// locks the sentinel identity the dispatch depends on.
-	if _, err := resolveModel("shell", cfg, "", "", ""); !errors.Is(err, errCommandAgent) {
+	if _, _, err := resolveModel("shell", cfg, "", "", ""); !errors.Is(err, errCommandAgent) {
 		t.Errorf("resolveModel(shell) err = %v, want errCommandAgent", err)
+	}
+}
+
+// TestResolveModelReturnsEligible verifies resolveModel returns the full
+// eligible list even when it returns an error, so callers can reuse it
+// instead of calling cfg.EligibleModels a second time.
+func TestResolveModelReturnsEligible(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama"}},
+		Models: []config.Model{
+			{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/design", ProviderID: "ollama", Tags: []string{"design"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+
+	m, eligible, err := resolveModel("claude", cfg, "", "", "")
+	if err == nil {
+		t.Fatal("expected multiple-models error")
+	}
+	if m.ID != "" {
+		t.Errorf("model = %q, want zero", m.ID)
+	}
+	if len(eligible) != 2 {
+		t.Fatalf("eligible = %d, want 2", len(eligible))
 	}
 }

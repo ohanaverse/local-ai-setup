@@ -113,67 +113,6 @@ func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
 	return got.(model)
 }
 
-// TestFirstAgentDefaultsToClaude asserts DefaultAgent falls back to "claude"
-// when there is no config or no agents are configured. The TUI must still
-// show a sensible default even against an empty catalog.
-func TestFirstAgentDefaultsToClaude(t *testing.T) {
-	for _, cfg := range []*config.Config{nil, {DefaultTag: "code"}} {
-		if got := cfg.DefaultAgent(); got != "claude" {
-			t.Errorf("DefaultAgent(%v) = %q, want claude", cfg, got)
-		}
-	}
-}
-
-// TestFirstAgentPicksFirst asserts DefaultAgent returns the first configured
-// agent. This is the initial agent shown on the agent+model screen.
-func TestFirstAgentPicksFirst(t *testing.T) {
-	cfg := &config.Config{Agents: []config.Agent{{Name: "codex"}, {Name: "claude"}}}
-	if got := cfg.DefaultAgent(); got != "codex" {
-		t.Errorf("DefaultAgent = %q, want codex", got)
-	}
-}
-
-// TestModelsForAgentAndTagEmptyConfig asserts the helper returns an
-// empty list (not the legacy (none) placeholder) when the agent exists
-// but has no models for the requested tag. Validation happens at the
-// phaseList → phaseModel transition, not in a placeholder model.
-func TestModelsForAgentAndTagEmptyConfig(t *testing.T) {
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-		Providers:  []config.Provider{{ID: "ollama"}},
-		// No models — ModelsForAgentAndTag should return an empty list.
-	}
-	got, err := cfg.ModelsForAgentAndTag("claude", "code")
-	if err != nil {
-		t.Fatalf("ModelsForAgentAndTag: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("len = %d, want 0 (validation gate, not placeholder)", len(got))
-	}
-}
-
-// TestModelsForAgentAndTagReturnsFirstInTag asserts ModelsForAgentAndTag
-// preserves config-order, so the picker can use index 0 as the
-// "first model in this group" without further sorting.
-func TestModelsForAgentAndTagReturnsFirstInTag(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama"}},
-		Models: []config.Model{
-			{ID: "design-first", ProviderID: "ollama", Tags: []string{"design"}},
-			{ID: "code-first", ProviderID: "ollama", Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
-	got, err := cfg.ModelsForAgentAndTag("claude", "code")
-	if err != nil {
-		t.Fatalf("ModelsForAgentAndTag: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != "code-first" {
-		t.Errorf("got = %+v, want [code-first]", got)
-	}
-}
-
 // TestSelectedEntryMsgEmptyListStaysOnList asserts that when the agent+tag
 // has no compatible models, pressing Enter on the agent row in the new
 // phaseAgent picker does NOT enter the model phase. The validation gate

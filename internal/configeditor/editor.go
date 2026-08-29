@@ -65,7 +65,8 @@ type model struct {
 	agName                 textinput.Model
 	agProvidersInput       textinput.Model // comma-separated provider IDs
 	agDefaultProviderInput textinput.Model
-	agInstalled            bool // cached to avoid PATH lookup per frame
+	agInstalledName        string // name we last looked up
+	agInstalled            bool   // cached result for agInstalledName
 }
 
 func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) model {

@@ -106,28 +106,34 @@ func listWorktrees(dir, cwdRoot string) ([]Entry, error) {
 	return entries, nil
 }
 
-// listLocalBranches returns short names of all local branches.
-func listLocalBranches(dir string) ([]string, error) {
-	out, err := runGit(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+// listBranches returns local and remote-tracking branch short names in one
+// git for-each-ref call. Remote entries skip the synthetic */HEAD ref.
+func listBranches(dir string) (local, remote []string, err error) {
+	// NUL-separated: git ref names can legally contain "|" (and most other
+	// punctuation), but never NUL, so %00 is the only delimiter guaranteed
+	// not to collide with a branch name.
+	out, err := runGit(dir, "for-each-ref", "--format=%(refname:short)%00%(refname)", "refs/heads", "refs/remotes/")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return splitLines(out), nil
-}
-
-// listRemoteBranches returns remote-tracking branches, skipping */HEAD.
-func listRemoteBranches(dir string) ([]string, error) {
-	out, err := runGit(dir, "for-each-ref", "--format=%(refname:short)", "refs/remotes/")
-	if err != nil {
-		return nil, err
-	}
-	var remotes []string
-	for _, b := range splitLines(out) {
-		if strings.Contains(b, "/") && !strings.HasSuffix(b, "/HEAD") {
-			remotes = append(remotes, b)
+	for _, line := range splitLines(out) {
+		parts := strings.SplitN(line, "\x00", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		short, full := parts[0], parts[1]
+		switch {
+		case strings.HasPrefix(full, "refs/heads/"):
+			local = append(local, short)
+		case strings.HasPrefix(full, "refs/remotes/"):
+			// The synthetic */HEAD symbolic ref shortens to the bare remote
+			// name (e.g. "origin"), so detect it via the full refname.
+			if !strings.HasSuffix(full, "/HEAD") {
+				remote = append(remote, short)
+			}
 		}
 	}
-	return remotes, nil
+	return local, remote, nil
 }
 
 // IsRepo reports whether dir is inside a git repository. It uses
@@ -237,7 +243,7 @@ func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	}
 	used := inUse(worktreeEntries)
 
-	local, err := listLocalBranches(dir)
+	local, remotes, err := listBranches(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -250,10 +256,6 @@ func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 		}
 	}
 
-	remotes, err := listRemoteBranches(dir)
-	if err != nil {
-		return nil, err
-	}
 	var remoteEntries []Entry
 	for _, r := range remotes {
 		short := r[strings.IndexByte(r, '/')+1:]

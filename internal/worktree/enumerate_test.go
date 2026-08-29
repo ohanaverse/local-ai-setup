@@ -56,10 +56,10 @@ func TestListWorktrees(t *testing.T) {
 	}
 }
 
-// listLocalBranches must return every branch in refs/heads, including
+// listBranches must return every local branch in refs/heads, including
 // branches created after init. A missing branch means the for-each-ref
 // parsing or the git command is broken.
-func TestListLocalBranches(t *testing.T) {
+func TestListBranches(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
@@ -69,18 +69,47 @@ func TestListLocalBranches(t *testing.T) {
 		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
 	}
 
-	branches, err := listLocalBranches(dir)
+	local, _, err := listBranches(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
-	for _, b := range branches {
+	for _, b := range local {
 		if b == "feature" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected feature branch, got %v", branches)
+		t.Fatalf("expected feature branch, got %v", local)
+	}
+}
+
+// listBranches must not drop a branch whose name contains "|". A "|"-joined
+// for-each-ref format collides with such names (git ref names may legally
+// contain "|"), silently vanishing the branch from both local and remote
+// lists; the NUL-separated format must survive this without special-casing.
+func TestListBranchesPipeInName(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	cmd := exec.Command("git", "checkout", "-b", "weird|name")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b weird|name: %v\n%s", err, out)
+	}
+
+	local, _, err := listBranches(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, b := range local {
+		if b == "weird|name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected weird|name branch, got %v", local)
 	}
 }
 
@@ -603,7 +632,7 @@ func setupTestRepoWithManyBranches(t *testing.T) string {
 	if out, err := runGitCmd(dir, "branch", "-D", "zzz"); err != nil {
 		t.Fatalf("git branch -D zzz: %v\n%s", err, out)
 	}
-	// Bring remote-tracking refs into the local repo so listRemoteBranches sees them.
+	// Bring remote-tracking refs into the local repo so listBranches sees them.
 	if out, err := runGitCmd(dir, "fetch", "origin"); err != nil {
 		t.Fatalf("git fetch origin: %v\n%s", err, out)
 	}

@@ -290,3 +290,29 @@ func TestFirstAfterEmpty(t *testing.T) {
 		t.Error("FirstAfter on empty snapshot returned ok=true")
 	}
 }
+
+// TestRotationNextFromEligible verifies the rotation core can operate on
+// a precomputed eligible slice without recomputing it from cfg.EligibleModels.
+func TestRotationNextFromEligible(t *testing.T) {
+	dir := t.TempDir()
+	r := NewAt(dir)
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "a"},
+			{ID: "b"},
+			{ID: "c"},
+		},
+	}
+	if err := r.Record("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	eligible := []config.Model{{ID: "b"}, {ID: "c"}}
+	m, ok := r.NextFromEligible(eligible, cfg)
+	if !ok {
+		t.Fatal("expected a next model")
+	}
+	if m.ID != "b" {
+		t.Errorf("next = %q, want b (first after a)", m.ID)
+	}
+}

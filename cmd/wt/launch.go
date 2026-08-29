@@ -54,7 +54,7 @@ func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo
 // Note: the ollama availability check lives in launchFiltered, not here, so
 // tests can build commands without requiring a local ollama server.
 func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, extraArgs []string) (config.Model, *exec.Cmd, error) {
-	m, err := resolveModel(agent, cfg, tags, family, pinned)
+	m, _, err := resolveModel(agent, cfg, tags, family, pinned)
 	if errors.Is(err, errCommandAgent) {
 		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, extraArgs)
 		return config.Model{}, cmd, berr
@@ -88,7 +88,7 @@ var launchFiltered = launchFilteredImpl
 // "user did not pass -M". It's used to surface a stderr note when -M is
 // passed together with a command agent (where the pin would otherwise be
 // silently dropped).
-func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
 	if agents.IsCommand(agent) {
 		if pinnedSupplied {
 			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
@@ -103,13 +103,22 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		return runAgentCmd(cmd, agent, config.Model{})
 	}
 
-	// Resolve the model first. Command agents short-circuit in resolveModel.
-	m, err := resolveModel(agent, cfg, tags, family, pinned)
+	// Resolve the model. If the caller precomputed the eligible list, reuse
+	// it; otherwise resolveModel computes it (and returns it for rotation).
+	// nil (not len == 0) signals "not precomputed" so a caller that legitimately
+	// passes an empty-but-non-nil slice isn't silently recomputed against.
+	var m config.Model
+	var err error
+	if eligible == nil {
+		m, eligible, err = resolveModel(agent, cfg, tags, family, pinned)
+	} else {
+		m, err = resolveModelFromEligible(agent, eligible, pinned)
+	}
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate
 		// through the global model list to the next model supported by agent.
 		if pinned == "" {
-			next, ok := rotation.New().Next(cfg, agent, tags, family)
+			next, ok := rotation.New().NextFromEligible(eligible, cfg)
 			if ok {
 				m = next
 				err = nil

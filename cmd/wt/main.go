@@ -43,19 +43,23 @@ func needsModelPicker(agent, pinned string) bool {
 // resolveModelForLaunch wraps resolveModel with a "resolved" boolean so
 // callers can short-circuit on a single resolvable model (auto-launch)
 // without conflating "model is empty" with "error". A resolved return value
-// (true, model, nil) means launchFiltered would have a unique model to use.
-// A non-resolved return (false, zero, _) means the caller should fall
-// through to the picker. err is non-nil only when resolveModel itself
+// (true, model, eligible, nil) means launchFiltered would have a unique model
+// to use. A non-resolved return (false, zero, _, _) means the caller should
+// fall through to the picker. err is non-nil only when resolveModel itself
 // failed; the auto-launch path treats any error as "not resolved".
-func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, error) {
-	m, err := resolveModel(agent, cfg, tags, family, pinned)
+//
+// The eligible list is returned so the caller can hand it to launchFiltered
+// without recomputing it (the auto-launch path would otherwise call
+// EligibleModels twice: once here and once inside launchFiltered).
+func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, []config.Model, error) {
+	m, eligible, err := resolveModel(agent, cfg, tags, family, pinned)
 	if err != nil {
-		return false, config.Model{}, err
+		return false, config.Model{}, eligible, err
 	}
 	if m.ID == "" {
-		return false, config.Model{}, nil
+		return false, config.Model{}, eligible, nil
 	}
-	return true, m, nil
+	return true, m, eligible, nil
 }
 
 func main() {
@@ -99,8 +103,8 @@ func runLaunchPath(
 	pinnedSupplied := cmd.Flags().Changed("model")
 
 	if needsModelPicker(agent, pinned) {
-		if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
-			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+		if resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
+			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible)
 		}
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
@@ -108,7 +112,7 @@ func runLaunchPath(
 		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
 	}
 
-	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil)
 }
 
 func rootCmd() *cobra.Command {

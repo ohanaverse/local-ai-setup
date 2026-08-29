@@ -590,35 +590,6 @@ func TestModelsForAgentUnknownAgent(t *testing.T) {
 	}
 }
 
-// TestModelsForAgentAndTagIntersectsBoth asserts the helper composes the
-// agent filter and the tag filter. A model that passes the agent filter
-// but is tagged with a different group must be excluded.
-func TestModelsForAgentAndTagIntersectsBoth(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{ID: "ollama"}},
-		Models: []Model{
-			{ID: "ollama/code-1", ProviderID: "ollama", Tags: []string{"code"}},
-			{ID: "ollama/design-1", ProviderID: "ollama", Tags: []string{"design"}},
-			{ID: "ollama/both", ProviderID: "ollama", Tags: []string{"code", "design"}},
-		},
-		Agents: []Agent{
-			{Name: "codex", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	got, err := cfg.ModelsForAgentAndTag("codex", "code")
-	if err != nil {
-		t.Fatalf("ModelsForAgentAndTag: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2 (ollama/code-1, ollama/both)", len(got))
-	}
-	for _, m := range got {
-		if !m.HasTag("code") {
-			t.Errorf("got %q without code tag", m.ID)
-		}
-	}
-}
-
 // TestDeriveNative marks models whose provider authenticates natively
 // (auth.type == "native") as Native, and leaves others non-native. This is
 // the single source of truth for native-ness: a model is native iff its
