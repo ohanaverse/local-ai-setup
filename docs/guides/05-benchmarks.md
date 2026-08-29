@@ -93,7 +93,7 @@ Flag semantics (from `uv run modelman benchmark run --help` and `src/modelman/be
 
 - `--workload <name>` — default `chat`; `MODELMAN_BENCHMARK_WORKLOAD` envvar overrides.
 - `--model <id>` (repeatable) — registry ids, e.g. `ollama/qwen3.8:27b-mlx`.
-- `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — they currently mirror per-model tags (`qwen3.8:27b-mlx`, `ornith-1.5:35b`, …), so a bare `--family qwen3.8` matches nothing.
+- `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — they currently mirror per-model ids (`qwen3.8:27b-mlx`, `ornith-1.5:35b`, …), so a bare `--family qwen3.8` matches nothing.
 - `--direct` / `--litellm` — scope to one route; default benchmarks BOTH (direct URL + `http://localhost:4000/v1`), meaning every pass issues two requests per target.
 - `--passes N` (default 1), `--cooldown <seconds>` (default 15.0) — sleep between passes, not between routes.
 - `--results-dir <path>` — default `/Users/keith/.config/local-ai/benchmarks`.
@@ -159,8 +159,8 @@ Backends back after a restore — four-port block (consistent with guides 01/04;
 
 ```bash
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
-curl -s -m 2 http://localhost:8000/v1/models -o /dev/null -w "8000(omlx):%{http_code}\n"
-curl -s -m 2 http://localhost:8080/v1/models -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
+curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
+curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"
 ```
 

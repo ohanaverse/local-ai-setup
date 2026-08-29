@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell
+.PHONY: lint lint-shell check-links
 
 SHELL_SCRIPTS := \
 	bin/llm-isolate-provider \
@@ -21,3 +21,6 @@ lint-shell:
 	else \
 		echo "shellcheck not installed; skipping"; \
 	fi
+
+check-links:
+	@bin/check-links
