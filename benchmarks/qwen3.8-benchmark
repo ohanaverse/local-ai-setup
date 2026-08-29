@@ -60,13 +60,15 @@ LITELLM_MODELS[omlx]="omlx/Qwen3.8-27B-4bit"
 LITELLM_MODELS[llama_cpp]="llama.cpp/local-llama"
 
 LITELLM_URL="http://localhost:4000/v1/chat/completions"
-# LiteLLM proxy now requires its master key (added to the LaunchAgent plist 2026-08-27)
-LITELLM_API_KEY="sk-litellm-ui-master-key-4000"
+# Prefer the LaunchAgent-exported env var; fall back to reading the plist directly
+# so the script still works when invoked from a shell that doesn't inherit the
+# LaunchAgent environment (e.g., a manual `bash` from the terminal).
+LITELLM_API_KEY="${LITELLM_API_KEY:-$(grep -m1 -A1 'LITELLM_MASTER_KEY' ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null | tail -1 | sed -E 's/.*<string>(.*)<\/string>.*/\1/')}"
 
 # OpenRouter (cloud) — direct API access
 OPENROUTER_DIRECT_URL="https://openrouter.ai/api/v1/chat/completions"
-# Prefer env var; fall back to reading the key from the LiteLLM config
-OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(grep -m1 'api_key: sk-or-v1-' ~/.config/litellm/config.yaml 2>/dev/null | sed 's/.*api_key: *//')}"
+# Same pattern: env var first, plist as fallback.
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(grep -m1 -A1 'OPENROUTER_API_KEY' ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null | tail -1 | sed -E 's/.*<string>(.*)<\/string>.*/\1/')}"
 
 declare -a OPENROUTER_MODELS=(
     "qwen/qwen3.8-flash"

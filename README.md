@@ -179,11 +179,12 @@ One-off benchmark write-ups (legacy ad hoc scripts):
 │   ├── Local AI Setup 2026-08-25.md
 │   ├── litellm-admin-ui-setup.md
 │   └── reference/
-├── launch-agents/                 # macOS LaunchAgent plists
-├── litellm/
-│   └── config.yaml                 # LiteLLM proxy configuration
 └── README.md                       # this file
 ```
+
+> Note: LaunchAgent plists and the LiteLLM config live outside the repo at
+> `~/Library/LaunchAgents/*.plist` and `~/.config/litellm/config.yaml`. The
+> setup guide in `docs/` walks through creating them.
 
 ---
 
