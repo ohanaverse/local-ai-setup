@@ -1,200 +1,95 @@
 # local-ai-setup
 
-Entry point for running local and routed LLMs on macOS.
+Entry point for running local and routed LLMs on macOS. This repo orchestrates
+three repos — fresh install starts at
+[docs/guides/01-initial-setup.md](docs/guides/01-initial-setup.md).
 
-This repo is the orchestration layer. It contains the LiteLLM proxy
-configuration, provider setup scripts, and the high-level glue between
-three related tools:
-
-| Repo | Role | You use it to |
-|---|---|---|
-| `local-ai-setup` (this repo) | Install and run the local AI infrastructure | Configure LiteLLM, Ollama, llama.cpp, oMLX, and OpenRouter backends |
-| `modelman` | Manage the shared model registry | Add/edit models, expose/unexpose them to LiteLLM, run benchmarks, print usage reports |
-| `agent-worktree` (`wt`) | Launch AI coding agents in git worktrees | Pick a worktree, rotate models, and start Claude, Codex, Copilot, OpenCode, pi, agy, or a shell |
-
----
-
-## Quick overview
-
-The stack works like this:
-
-1. `local-ai-setup` gets the backends running and the LiteLLM proxy up.
-2. `modelman` becomes the single source of truth for which models exist on
-   which providers and whether they are exposed through LiteLLM.
-3. `wt` reads that registry, rotates through models, and launches an agent
-   pointing at the right provider/LiteLLM endpoint.
-
----
-
-## Install
-
-Start with the main setup guide:
-
-- [`docs/Local AI Setup 2026-08-25.md`](docs/Local%20AI%20Setup%202026-08-25.md)
-
-It covers:
-
-- Installing the LiteLLM proxy (`uv tool install 'litellm[proxy]'`)
-- Ollama
-- llama.cpp
-- oMLX (Apple Silicon)
-- OpenRouter
-- PostgreSQL + Redis + the LiteLLM LaunchAgent
-
-For the Admin UI / web dashboard:
-
-- [`docs/litellm-admin-ui-setup.md`](docs/litellm-admin-ui-setup.md)
-
----
-
-## Configure models with `modelman`
-
-After the proxy is running, use `modelman` to register, download, and expose
-models.
-
-```bash
-# Run the interactive TUI
-uv run --package modelman modelman
-
-# Or, from a local clone of the modelman repo:
-uv run modelman
-```
-
-`modelman` reads and writes:
-
-| File | Purpose |
+| Repo | Role |
 |---|---|
-| `~/.config/local-ai/registry.toml` | Canonical providers and models (shared, read-only by `wt`) |
-| `~/.config/local-ai/modelman.toml` | Per-machine mutable state: downloads, LiteLLM exposure flags |
-| `~/.config/local-ai/settings.yaml` | User preferences |
+| `local-ai-setup` (this) | backends (LiteLLM proxy, Ollama, llama.cpp, oMLX) + LaunchAgents + benchmarks + user guides |
+| `modelman` (`~/github/ohanaverse/modelman`) | model registry TUI/CLI — canonical source of truth for providers/models, exposure, benchmarks, usage |
+| `agent-worktree` (`wt`, `~/github/ohanaverse/agent-worktree`) | worktree agent launcher with model rotation |
 
-Key workflows:
+## User guides (docs/guides/)
 
-- Add or edit providers/models in the TUI.
-- Press `l` on a model to expose/unexpose it to LiteLLM (writes `model_list`
-  entries in `~/.config/litellm/config.yaml`).
-- Run `modelman sync` to reconcile ollama/llama.cpp/oMLX state with the
-  registry.
+The how-to lives in the guides now; this README is just the index. Read
+[00-config-map.md](docs/guides/00-config-map.md) first for config-file ownership.
 
-See `modelman/README.md` and `modelman/docs/ROADMAP.md` for the full tool
-reference.
+| Guide | Use when |
+|---|---|
+| [`00-config-map.md`](docs/guides/00-config-map.md) | which tool owns, writes, reads each config file |
+| [`01-initial-setup.md`](docs/guides/01-initial-setup.md) | fresh-machine install; smoke-test the stack |
+| [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register, download, expose providers and models |
+| [`03-model-families.md`](docs/guides/03-model-families.md) | families, tags, and wt model rotation |
+| [`04-litellm-config.md`](docs/guides/04-litellm-config.md) | audit proxy config, exposure, admin UI |
+| [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated modelman benchmark runs |
+| [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |
+| [`07-usage-and-spend.md`](docs/guides/07-usage-and-spend.md) | reconcile wt launches vs LiteLLM spend |
+| [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades |
 
----
+## 60-second health check
 
-## Launch an agent with `wt`
-
-`wt` is the worktree-aware launcher in `agent-worktree`.
-
-```bash
-# Build and install the Go binary
-cd ../agent-worktree
-go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
-
-# Or use the shims from this repo once wt is on $PATH:
-#   claude-wt, codex-wt, copilot-wt, opencode-wt, pi-wt, agy-wt, shell-wt
-
-# Launch the TUI to pick a worktree and model
-claude-wt
-
-# Skip the worktree picker
-claude-wt -W my-feature
-
-# Skip both worktree and model picker
-claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx
-```
-
-`wt` reads `~/.config/local-ai/registry.toml` read-only and shows models by
-tag/family. It records launches in `~/.config/agent-wt/usage.jsonl` and
-`~/.config/agent-wt/rotation.state`.
-
-See `agent-worktree/README.md` for all flags and TUI behavior.
-
----
-
-## Benchmark models
-
-After exposing models to LiteLLM, run benchmarks:
+From [08-maintenance-and-troubleshooting.md](docs/guides/08-maintenance-and-troubleshooting.md)
+TL;DR — all read-only, safe to run any time:
 
 ```bash
-modelman benchmark run --family qwen3.8
-modelman benchmark run --model ollama/ornith-1.5:35b
+curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"   # 401 = proxy up, demanding key
+curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
+curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
+curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
+launchctl list | grep -E 'litellm|llamacpp|omlx|postgresql|redis|ollama'
+pg_isready -h localhost
+redis-cli ping
 ```
 
-Results are written as JSON + Markdown artifacts on disk; only a latest-run
-pointer lives in `modelman.toml`.
+Expected: `401` on :4000 = proxy up (correctly demanding a key); `200` on the
+other three. `launchctl list` columns are PID / last-exit-status / label —
+`0` or `-15` in the middle column is healthy.
 
-Design: `modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
-Plan: `modelman/docs/superpowers/plans/2026-09-05-modelman-benchmark.md`
+Any line that differs → [08-maintenance-and-troubleshooting.md](docs/guides/08-maintenance-and-troubleshooting.md)
+§1 (restarts) / §3 (logs).
 
----
+## Reference docs (docs/reference/)
 
-## Track usage and spend
-
-`modelman` can reconcile `wt` launches with LiteLLM's Postgres spend logs:
-
-```bash
-modelman usage report --days 7
-```
-
-Output is a Markdown report with:
-
-- Per-model WT launch counts (1d/7d/30d)
-- LiteLLM request counts, prompt/completion tokens, and spend
-- Reconciliation sections: matched, WT-only launches, LiteLLM-only spend
-- Last launched model from `rotation.state`
-
-Design: `modelman/docs/superpowers/specs/2026-08-28-modelman-usage-design.md`
-Plan: `modelman/docs/superpowers/plans/2026-08-28-modelman-usage.md`
-
----
-
-## Reference docs
-
-Backend-specific guides:
-
-- [LiteLLM Proxy on macOS: Unifying Ollama, llama.cpp, and OpenRouter](docs/reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
-- [Adding MLX (Apple Silicon) as a Fourth Backend to Your LiteLLM macOS Proxy](docs/reference/Adding%20MLX%20(Apple%20Silicon)%20as%20a%20Fourth%20Backend%20to%20Your%20LiteLLM%20macOS%20Proxy.md)
+- [litellm-admin-ui-setup.md](docs/reference/litellm-admin-ui-setup.md) — admin dashboard install
+- [LiteLLM Proxy on macOS_ Unifying Ollama, llama_cpp, and OpenRouter](docs/reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
+- [Adding MLX (Apple Silicon) as a Fourth Backend to Your LiteLLM macOS Proxy](docs/reference/Adding%20MLX%20%28Apple%20Silicon%29%20as%20a%20Fourth%20Backend%20to%20Your%20LiteLLM%20macOS%20Proxy.md)
 - [oMLX Download and Run](docs/reference/oMLX%20Download%20and%20Run.md)
-- [Downloading and Managing Hugging Face Models on macOS for Local LLM Inference (2026)](docs/reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20(2026).md)
+- [Downloading and Managing Hugging Face Models on macOS for Local LLM Inference (2026)](docs/reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
 
-One-off benchmark write-ups (legacy ad hoc scripts):
+## Legacy
 
-- [Ornith-1.5 Benchmark](benchmarks/ornith-1.5-benchmark.md)
-- [Qwen3.8 OpenRouter Benchmark](benchmarks/qwen3.8-benchmark.md)
-
----
+One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/ornith-1.5-benchmark.md),
+[qwen3.8](benchmarks/qwen3.8-benchmark.md). Archived full-setup doc, superseded by the guides:
+[Local AI Setup 2026-08-25.md](docs/archive/Local%20AI%20Setup%202026-08-25.md).
 
 ## Repo layout
 
 ```
 .
-├── bin/
-│   ├── llm-isolate-provider      # isolate one provider for benchmarking
-│   └── llm-restore-providers     # restore providers after isolation
-├── benchmarks/
-│   ├── ornith-1.5-benchmark      # legacy bash benchmark script
-│   ├── qwen3.8-benchmark          # legacy bash benchmark script
-│   └── results/                   # benchmark outputs
+├── bin/                # llm-isolate-provider, llm-restore-providers (benchmark isolation)
+├── benchmarks/         # legacy benchmark scripts + write-ups
+│   └── results/        # benchmark output artifacts
 ├── docs/
-│   ├── Local AI Setup 2026-08-25.md
-│   ├── litellm-admin-ui-setup.md
-│   └── reference/
-└── README.md                       # this file
+│   ├── guides/         # user playbooks — index above
+│   ├── reference/      # backend-specific guides
+│   ├── archive/        # superseded docs
+│   └── superpowers/    # plans + specs
+├── CLAUDE.md           # agent entry point
+├── Makefile            # make lint (shellcheck)
+└── README.md           # this file — index only
 ```
 
-> Note: LaunchAgent plists and the LiteLLM config live outside the repo at
-> `~/Library/LaunchAgents/*.plist` and `~/.config/litellm/config.yaml`. The
-> setup guide in `docs/` walks through creating them.
-
----
+> LiteLLM proxy config and the five LaunchAgent plists live outside the repo
+> (`~/.config/litellm/config.yaml`, `~/Library/LaunchAgents/*.plist`) — who
+> owns what: [00-config-map.md](docs/guides/00-config-map.md).
 
 ## Status
 
 Cross-repo tracker:
 `agent-worktree/docs/superpowers/plans/2026-08-27-model-management-consolidation-status.md`
 
-All three sub-projects of the model-management consolidation are merged:
+All three model-management consolidation sub-projects are merged (shared model
+registry, benchmark tooling, usage/spend tracking).
 
-1. Shared model registry (`modelman` registry owner, `wt` read-only consumer)
-2. Benchmark tooling (`modelman benchmark` + isolation helpers here)
-3. Usage/spend tracking (`modelman usage report`)
+Follow-up items from the guide-set review: [issues.md](issues.md).

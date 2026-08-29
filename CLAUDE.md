@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Docs
+- User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance). Read `docs/guides/00-config-map.md` first for config-file ownership.
+- Follow-up issues: `issues.md` — open items from the guide-set review (master-key rotation, wt README drift, litellm_exposed bookkeeping). Check before touching those areas.
+
 ## Commands
 - `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (4 qwen3.8 backends)
 - `./benchmarks/qwen3.8-benchmark-multi N [max_tokens] [cooldown]` — multi-pass for stable medians
@@ -14,7 +18,7 @@
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
 - `bin/` — standalone isolation helpers for the external `modelman benchmark` tool (must be on PATH)
 - `Makefile` — lint target for shell scripts
-- `docs/` — setup guides, reference docs, superpowers plans/specs
+- `docs/` — guides/ (user playbooks — see Docs above), reference/, archive/ (dated docs), superpowers/ (plans+specs)
 - LiteLLM config: `~/.config/litellm/config.yaml`
 - LaunchAgent plists: `~/Library/LaunchAgents/local.llamacpp.server.plist` (llama.cpp), `local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers
 

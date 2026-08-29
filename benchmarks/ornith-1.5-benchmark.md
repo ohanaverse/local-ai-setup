@@ -155,6 +155,6 @@ ls -t /tmp/ornith-1.5-benchmark-*.md | head -1
 ## Related
 
 - **qwen3.8 benchmark**: [`qwen3.8-benchmark.md`](./qwen3.8-benchmark.md) — the original benchmark this mirrors.
-- **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/Local%20AI%20Setup%202026-08-25.md)
+- **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/archive/Local%20AI%20Setup%202026-08-25.md)
 - **Service management**: `~/.local/bin/llm-restart`
 - **LiteLLM config**: `~/.config/litellm/config.yaml` — includes the four Ornith entries.
