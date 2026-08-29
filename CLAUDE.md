@@ -8,6 +8,7 @@
 - `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
+- `make lint` — umbrella target (currently just `lint-shell`)
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
@@ -15,6 +16,7 @@
 - `Makefile` — lint target for shell scripts
 - `docs/` — setup guides, reference docs, superpowers plans/specs
 - LiteLLM config: `~/.config/litellm/config.yaml`
+- LaunchAgent plists: `~/Library/LaunchAgents/local.llamacpp.server.plist` (llama.cpp), `local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers
 
 ## Key Gotchas
 - **Isolation is mandatory**: local MLX/GGUF models share Apple Silicon GPU/RAM and distort each other's benchmarks. Only one local model loaded at a time.
@@ -22,6 +24,7 @@
 - **oMLX serves both 4-bit and 6-bit variants** — warmup must name the exact variant (`omlx` vs `omlx-6bit`).
 - **Shebang split**: benchmark scripts use `#!/opt/homebrew/bin/bash` (Homebrew bash); `bin/` helpers use `#!/bin/bash`.
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
+- **OpenRouter rows are skipped (N/A) without an API key**: the benchmark reads `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`; missing key → OpenRouter rows written as N/A.
 
 ## Adding a New Benchmark Backend
 The isolation logic exists in **two places** (legacy + CLI helper). Both must
