@@ -30,7 +30,7 @@ The stack works like this:
 
 Start with the main setup guide:
 
-- [`docs/Local AI Setup 2026-08-25.md`](docs/Local%20AI%20Setup%202026-08-25.md)
+- [`docs/Local AI Setup 2026-08-25.md`](docs/archive/Local%20AI%20Setup%202026-08-25.md)
 
 It covers:
 
