@@ -56,7 +56,7 @@ sources.
 |---|---|---|
 | #17 | design spec | merged |
 | #18 | implementation plan | merged |
-| #19 | `usage` subcommand (`src/modelman/usage/`), `psycopg2-binary`, `__main__.py` | ✅ this PR |
+| #19 | `usage` subcommand (`src/modelman/usage/`), `psycopg2-binary`, `__main__.py` | ✅ merged (`033674b`) |
 
 Spec: `docs/superpowers/specs/2026-08-28-modelman-usage-design.md`
 
