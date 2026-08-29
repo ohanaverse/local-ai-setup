@@ -91,3 +91,5 @@ Cross-repo tracker:
 
 All three model-management consolidation sub-projects are merged (shared model
 registry, benchmark tooling, usage/spend tracking).
+
+Follow-up items from the guide-set review: [issues.md](issues.md).
