@@ -10,10 +10,10 @@
 - **`wt` built and on PATH** (`/Users/keith/.local/bin/wt`):
 
   ```bash
-  cd /Users/keith/github/ohanaverse/agent-worktree && go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
+  cd /Users/keith/github/ohanaverse/agent-worktree && go build -o /Users/keith/.local/bin/wt ./cmd/wt
   ```
 
-  **Caveat (2026-08-29):** the installed binary is STALE — built 2026-08-27 12:15, one commit before the registry-consumer merge (`79d620f`, 2026-08-28, "wt: consume modelman's registry.toml (Phase 4)"). The rebuild command above is the fix. Differences are cataloged in Steps §3 and Gotchas.
+  **Caveat (2026-08-29):** the installed binary is STALE — built 2026-08-27 12:15, one commit before the registry-consumer merge (`79d620f`, 2026-08-28, "wt: consume modelman's registry.toml (Phase 4)"). The rebuild command above is the fix — it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4). Differences are cataloged in Steps §3 and Gotchas.
 - **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/agent-worktree` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```

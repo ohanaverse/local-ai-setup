@@ -323,13 +323,13 @@ Usage: modelman sync [OPTIONS]
 
 (A `VIRTUAL_ENV does not match the project environment` warning from pyenv is normal noise; see guide 07.)
 
-**wt** — the rebuild command writes into the Go bin dir; **mind the PATH shadowing gotcha** below before declaring victory:
+**wt** — rebuild over the PATH copy (`~/.local/bin/wt`), not GOPATH; the gotcha below explains why:
 
 <!-- UNVERIFIED — build not run in this session (writes a binary); checkout was bf98d14, 2026-08-29. -->
 
 ```bash
 # from: /Users/keith/github/ohanaverse/agent-worktree
-git pull && go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
+git pull && go build -o /Users/keith/.local/bin/wt ./cmd/wt
 ```
 
 Verify — `wt --version` ran live, 2026-08-29:
@@ -470,7 +470,7 @@ model_list entries: 11
 - **The `launchctl list` middle column reads `0` or `-15` here — both healthy.** `0` = last exit was clean; `-15` = last exit was from SIGTERM, i.e. normal residue after a `kickstart -k` (live example above). What's *not* healthy: `-` PID with a non-zero status, or a PID that changes while the port stays dead (§3).
 - **There is no Ollama LaunchAgent.** `launchctl list | grep ollama` shows `-	0	com.ollama.ollama` because the row comes from the app's login item — you cannot `kickstart` Ollama back; relaunch Ollama.app. (The `application.com.electron.ollama.*` row appears only while the app window lives — don't grep for it in scripts.)
 - **The `modelman` on PATH is stale** (only `download`; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/modelman` + `uv run modelman …`.
-- **`wt`'s GOPATH build vs PATH binary.** The verified rebuild command writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
+- **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
 - **Upgrades recreate the LiteLLM tool env** — recheck `prisma` in `/Users/keith/.local/share/uv/tools/litellm/bin/` after `uv tool upgrade` or `--force --reinstall`, or the Postgres-backed UI/auth features die on the next kickstart (guide 01 §6).
 
 ## Going deeper

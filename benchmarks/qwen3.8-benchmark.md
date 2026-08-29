@@ -311,6 +311,6 @@ For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the
 
 ## Related
 
-- **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/Local%20AI%20Setup%202026-08-25.md) — covers LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter setup and auto-start
+- **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/archive/Local%20AI%20Setup%202026-08-25.md) — covers LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter setup and auto-start
 - **Service management**: `~/.local/bin/llm-restart` — restart all providers in one command
 - **LiteLLM config**: `~/.config/litellm/config.yaml` — the four model entries

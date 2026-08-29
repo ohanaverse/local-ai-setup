@@ -636,7 +636,7 @@ curl http://localhost:4000/v1/models   # shows all litellm-routed models
 
 ### Benchmarking the four qwen3.8 variants
 
-For comparing the four backends (Ollama, oMLX, llama.cpp, OpenRouter) under controlled conditions, see **[`benchmarks/qwen3.8-benchmark.md`](../benchmarks/qwen3.8-benchmark.md)**. That doc covers:
+For comparing the four backends (Ollama, oMLX, llama.cpp, OpenRouter) under controlled conditions, see **[`benchmarks/qwen3.8-benchmark.md`](../../benchmarks/qwen3.8-benchmark.md)**. That doc covers:
 
 - The isolation strategy (only one local model loaded at a time)
 - The `~/.local/bin/qwen3.8-benchmark` script

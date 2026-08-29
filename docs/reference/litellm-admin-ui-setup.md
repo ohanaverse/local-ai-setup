@@ -1,7 +1,7 @@
 # LiteLLM Admin UI Setup
 
 **Date:** 2026-08-27
-**Prerequisite:** LiteLLM proxy installed and running (see `docs/Local AI Setup 2026-08-25.md`)
+**Prerequisite:** LiteLLM proxy installed and running (see `docs/archive/Local AI Setup 2026-08-25.md`)
 
 ---
 

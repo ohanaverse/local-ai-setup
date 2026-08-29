@@ -57,6 +57,6 @@ For new model variants or providers:
 
 ## Related
 
-- **[docs/Local AI Setup 2026-08-25.md](../docs/Local%20AI%20Setup%202026-08-25.md)** — Main setup doc covering LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter configuration, auto-start, and restart scripts.
+- **[docs/Local AI Setup 2026-08-25.md](../docs/archive/Local%20AI%20Setup%202026-08-25.md)** — Main setup doc covering LiteLLM, Ollama, oMLX, llama.cpp, OpenRouter configuration, auto-start, and restart scripts.
 - **Service management**: `~/.local/bin/llm-restart` — restart all four providers in one command.
 - **LiteLLM config**: `~/.config/litellm/config.yaml` — the four model entries.

@@ -56,9 +56,56 @@ The guides treat `config.yaml` as routing truth and document the drift
       `ollama/ornith-1.5:35b`) so flag state matches disk
 - [ ] Downshift the drift notes in guides 02/04/08 to a historical footnote
 
+## 4. Fix broken links from the archive move — FIXED (links); script widening open
+
+The move of `docs/Local AI Setup 2026-08-25.md` → `docs/archive/` (commit
+`5980f0a`) left five stale references. The plan's link-check script only
+scanned `README.md`, `CLAUDE.md`, and `docs/guides/*.md`, so these were missed:
+
+- `benchmarks/README.md:60` — `../docs/Local AI Setup 2026-08-25.md` (404)
+- `benchmarks/ornith-1.5-benchmark.md:158` — same link (404)
+- `benchmarks/qwen3.8-benchmark.md:314` — same link (404)
+- `docs/archive/Local AI Setup 2026-08-25.md:639` — `../benchmarks/qwen3.8-benchmark.md`
+  now resolves to `docs/benchmarks/` (nonexistent); needs `../../benchmarks/`
+- `docs/reference/litellm-admin-ui-setup.md:4` — plain-text path
+  `docs/Local AI Setup 2026-08-25.md` (not a link, so the checker never flagged it)
+
+- [x] Repoint the three `benchmarks/` links to `../docs/archive/Local AI Setup 2026-08-25.md`
+- [x] Fix the archive doc's own `../benchmarks/` → `../../benchmarks/`
+- [x] Update the plain-text path in `litellm-admin-ui-setup.md:4`
+- [ ] Widen the link-check script to cover `benchmarks/`, `docs/reference/`, `docs/archive/`
+      (the script is an inline snippet in `docs/superpowers/plans/2026-08-29-user-guides.md`
+      §"Verification tooling" — no standalone file; widen its `targets` list or extract it)
+
+## 5. Reconcile the wt rebuild command across guides — FIXED (2026-08-29)
+
+Guides 03 and 06 present `go build -o "$(go env GOPATH)/bin/wt"` as "the fix"
+for the stale wt binary, but guide 08 §4 (verified live) shows that command
+leaves the stale binary in charge: `go env GOPATH` is asdf-managed
+(`/Users/keith/.asdf/installs/golang/1.26.7/packages`), its `bin/` holds no
+`wt`, and `~/.local/bin` shadows it on PATH. The real fix is
+`go build -o /Users/keith/.local/bin/wt ./cmd/wt`.
+
+- `docs/guides/06-wt-agents-and-models.md:13` — "The rebuild command above is the fix"
+- `docs/guides/03-model-families.md:234` — same ineffective command
+- `docs/guides/08-maintenance-and-troubleshooting.md:345, :473` — the correct story
+
+- [x] Rewrite the rebuild command in guides 03/06 to build over `~/.local/bin/wt`
+      (or point at guide 08 §4 instead of restating the GOPATH command) — also
+      fixed guide 08's own code block (`:332`) and intro (`:326`), which still
+      showed the GOPATH command; the gotchas at `:345`/`:473` now read as the
+      "why" behind the corrected command.
+
 ## Minor / already handled notes
 
 - wt PATH shadowing (stale `~/.local/bin/wt` hides GOPATH builds): documented in
   `docs/guides/08` §4 — close by rebuilding over the PATH copy or aliasing.
 - Machine-specific expected outputs (model counts, PIDs, checkout SHAs) in the
   guides are dated stamps and hedged as drift-aware — accepted format property.
+- Health-check endpoint drift: the canonical block (README:37-38, guide 08:20-21)
+  probes omlx/llama.cpp via `/health`, while guides 01/04/05 use `/v1/models` for
+  the same backends. Both return 200, but the two blocks should converge on one
+  endpoint.
+- Guide 05:96 wording: "they currently mirror per-model tags" should be
+  "per-model ids" — the examples (`qwen3.8:27b-mlx`, `ornith-1.5:35b`) are model
+  ids, not the separate `tags` registry field.
