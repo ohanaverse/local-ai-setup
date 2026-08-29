@@ -296,34 +296,6 @@ func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
 	}
 }
 
-// TestAgentIssue verifies agentIssue reports the right problem for each
-// launchability state: configured+installed (launchable), not configured,
-// not installed, and commands (always launchable). This is the single source
-// of truth the picker rows and the Enter handler both rely on, so a
-// regression here would either hide a real problem or block a valid launch.
-func TestAgentIssue(t *testing.T) {
-	cfg := &config.Config{
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	t.Cleanup(stubInstalled("claude"))
-
-	if got := agentIssue("claude", cfg); got != "" {
-		t.Errorf("agentIssue(claude) = %q, want \"\" (configured + installed)", got)
-	}
-	if got := agentIssue("definitely-not-installed", cfg); !strings.Contains(got, "not installed") {
-		t.Errorf("agentIssue(definitely-not-installed) = %q, want to mention not installed", got)
-	}
-	if got := agentIssue("opencode", cfg); !strings.Contains(got, "not configured") {
-		t.Errorf("agentIssue(opencode) = %q, want to mention not configured", got)
-	}
-	if got := agentIssue("shell", cfg); got != "" {
-		t.Errorf("agentIssue(shell) = %q, want \"\" (command)", got)
-	}
-}
-
 // TestBuildAgentListShowsIssues verifies the picker rows carry a non-empty
 // issue for agents that cannot launch (not configured, not installed) and an
 // empty issue for launchable agents and commands. Without this, the picker
@@ -424,5 +396,33 @@ func TestPhaseAgentEnterBlocksUninstalledAgent(t *testing.T) {
 	}
 	if !strings.Contains(nm.status, "not installed") {
 		t.Errorf("status = %q, want to mention not installed", nm.status)
+	}
+}
+
+// TestBuildAgentListAdapter verifies buildAgentList is a thin wrapper around
+// agents.ListEntries, preserving command classification and issue text.
+func TestBuildAgentListAdapter(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude"))
+
+	items := buildAgentList(cfg)
+	if len(items) == 0 {
+		t.Fatal("expected items")
+	}
+
+	// Every item must be an agentItem derived from an AgentListEntry.
+	for _, it := range items {
+		ai, ok := it.(agentItem)
+		if !ok {
+			t.Fatalf("item %T is not an agentItem", it)
+		}
+		// Commands have no issue; non-commands may have an issue.
+		if ai.command && ai.issue != "" {
+			t.Errorf("command %q has issue %q", ai.name, ai.issue)
+		}
 	}
 }

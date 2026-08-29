@@ -65,6 +65,52 @@ func main() {
 	}
 }
 
+// runLaunchPath installs the guard when inside a git repo and either
+// auto-launches or routes to the picker/TUI. launchPath is the resolved
+// worktree path for -W, the repo root for --cwd, "." for outside-a-repo
+// passthrough, and "" when the worktree picker should be shown. root is the
+// repo root that owns launchPath ("" when not inside a git repo, or when the
+// worktree picker will resolve it); it gates the guard install. Callers pass
+// the root they already resolved so no git subprocess is spawned twice.
+//
+// Callers must install the guard themselves when launchPath == "" (the TUI
+// branch), because the repo root is not known until the user selects a
+// worktree inside the TUI.
+func runLaunchPath(
+	cmd *cobra.Command,
+	a *app,
+	agent, pinned, tags, family string,
+	args []string,
+	launchPath, root string,
+) error {
+	// Install the guard once when inside any git repo.
+	if root != "" {
+		maybeInstallGuard()
+	}
+
+	// launchPath == "" means the worktree picker should be shown; the launch
+	// directory is not known until the user picks inside the TUI, so never
+	// short-circuit to launchFiltered here — a pinned agent or command must
+	// still pick a worktree.
+	if launchPath == "" {
+		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+	}
+
+	pinnedSupplied := cmd.Flags().Changed("model")
+
+	if needsModelPicker(agent, pinned) {
+		if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
+			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+		}
+		if !stdinTTY() {
+			return pickerNeedsTTYError(agent)
+		}
+		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+	}
+
+	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+}
+
 func rootCmd() *cobra.Command {
 	a, err := newApp()
 	if err != nil {
@@ -223,10 +269,6 @@ func rootCmd() *cobra.Command {
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
-			// cmd.Flags().Changed("model") is true only when -M was passed
-			// (regardless of value). Used to surface a stderr note when -M
-			// is paired with a command agent.
-			pinnedSupplied := cmd.Flags().Changed("model")
 
 			// Launch paths require a valid config. The `wt config` subcommand
 			// bypasses this so it can repair a broken config.toml.
@@ -248,29 +290,11 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				maybeInstallGuard()
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
 					return err
 				}
-				if needsModelPicker(agent, pinned) {
-					// Worktree resolved (-W), but the agent and/or model is still
-					// unresolved: show the picker(s) for the unresolved selection(s).
-					// A pinned agent skips the agent picker and lands on the model
-					// picker; an unpinned agent shows the agent/command picker first.
-					//
-					// Short-circuit: if resolveModel returns a single eligible model
-					// (no error, non-zero model), the user's intent is unambiguous —
-					// pre-PR-2 UX auto-launches instead of forcing a picker.
-					if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
-						return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
-					}
-					if !stdinTTY() {
-						return pickerNeedsTTYError(agent)
-					}
-					return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, path, a.cfg)
-				}
-				return launchFiltered(agent, path, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
 
 			// --cwd: launch in the current repo root.
@@ -279,37 +303,14 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				maybeInstallGuard()
-				if needsModelPicker(agent, pinned) {
-					// Short-circuit on a single resolvable model — same rationale
-					// as the -W branch above. See resolveModelForLaunch.
-					if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
-						return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
-					}
-					if !stdinTTY() {
-						return pickerNeedsTTYError(agent)
-					}
-					return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, root, a.cfg)
-				}
-				return launchFiltered(agent, root, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
 			}
 
 			// Outside a git repo: pure passthrough to the agent. With no agent
 			// given, show the picker with worktree pre-selected as "." (no git
 			// enumeration needed).
-			if !inGitRepo() {
-				if needsModelPicker(agent, pinned) {
-					// Short-circuit on a single resolvable model — same rationale
-					// as the -W and --cwd branches above. See resolveModelForLaunch.
-					if resolved, _, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned); err == nil && resolved {
-						return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
-					}
-					if !stdinTTY() {
-						return pickerNeedsTTYError(agent)
-					}
-					return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, ".", a.cfg)
-				}
-				return launchFiltered(agent, ".", a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args)
+			if !worktree.IsRepo(".") {
+				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, ".", "")
 			}
 
 			// Interactive TUI: worktree picker first, then the agent/command
@@ -318,7 +319,7 @@ func rootCmd() *cobra.Command {
 				return errPickerNeedsTTY
 			}
 			maybeInstallGuard()
-			return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, "", a.cfg)
+			return runLaunchPath(cmd, a, agent, pinned, tags, family, args, "", "")
 		},
 	}
 

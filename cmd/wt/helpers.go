@@ -3,13 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/agent-worktree/internal/guard"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/agent-worktree/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -24,18 +24,6 @@ func mustGetString(cmd *cobra.Command, name string) string {
 func yolo(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("yolo")
 	return v
-}
-
-// inGitRepo reports whether the current directory is inside a git repo.
-func inGitRepo() bool {
-	return inGitRepoAt(".")
-}
-
-// inGitRepoAt reports whether dir is inside a git repo. Separated from
-// inGitRepo so tests can point it at a temp repo without chdir'ing the
-// process.
-func inGitRepoAt(dir string) bool {
-	return exec.Command("git", "-C", dir, "rev-parse", "--git-dir").Run() == nil
 }
 
 // borderStyle returns the table border style for the active theme.
@@ -59,8 +47,10 @@ func renderTable(headers []string, rows [][]string, theme themes.Theme) string {
 // current directory is inside a git repo before invoking this helper. Errors
 // are written to stderr and ignored so that a guard-install failure does not
 // block the agent launch. This matches the bash engine's best-effort
-// behavior.
-func maybeInstallGuard() {
+// behavior. It is a package-level var so tests can stub it out — the real
+// guard.Install operates on the test process's cwd, which would otherwise
+// install the hook into the repo under test.
+var maybeInstallGuard = func() {
 	if _, err := guard.Install(); err != nil {
 		fmt.Fprintf(os.Stderr, "wt: failed to auto-install main guard: %v\n", err)
 	}
@@ -69,7 +59,7 @@ func maybeInstallGuard() {
 // checkGuardStatus returns the guard status in the current repo. It returns
 // an error when not inside a git repo so callers can report a clear message.
 func checkGuardStatus() (guard.Status, error) {
-	if !inGitRepo() {
+	if !worktree.IsRepo(".") {
 		return guard.Err, fmt.Errorf("not inside a git repository")
 	}
 	return guard.Check(), nil
@@ -78,7 +68,7 @@ func checkGuardStatus() (guard.Status, error) {
 // removeGuard uninstalls the guard in the current repo. It returns an error
 // when not inside a git repository.
 func removeGuard() error {
-	if !inGitRepo() {
+	if !worktree.IsRepo(".") {
 		return fmt.Errorf("not inside a git repository")
 	}
 	return guard.Uninstall()

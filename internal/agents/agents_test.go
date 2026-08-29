@@ -818,3 +818,107 @@ func TestOllamaURLerCapability(t *testing.T) {
 		}
 	}
 }
+
+// TestListEntries verifies the neutral agent-list builder merges configured
+// agents and registered drivers, deduplicates, classifies commands, and
+// reports issues. This is the shared helper that replaces near-identical
+// list construction in the TUI and configeditor.
+func TestListEntries(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+		},
+	}
+
+	// Stub the installed check so the test is deterministic regardless of
+	// which binaries happen to be on the host's PATH.
+	installed := func(bin string) bool { return bin == "claude" }
+
+	entries := ListEntries(cfg, installed)
+	byName := map[string]AgentListEntry{}
+	for _, e := range entries {
+		if _, ok := byName[e.Name]; ok {
+			t.Errorf("duplicate entry for %q", e.Name)
+		}
+		byName[e.Name] = e
+	}
+
+	if _, ok := byName["claude"]; !ok {
+		t.Fatal("missing claude entry")
+	}
+	if !byName["claude"].Configured {
+		t.Error("claude should be configured")
+	}
+	if !byName["claude"].Installed {
+		t.Error("claude should be installed (stubbed installed check)")
+	}
+	if byName["claude"].Issue != "" {
+		t.Errorf("claude issue = %q, want empty", byName["claude"].Issue)
+	}
+
+	if e, ok := byName["shell"]; !ok {
+		t.Fatal("missing shell command entry")
+	} else {
+		if !e.Command {
+			t.Error("shell should be marked as a command")
+		}
+		if !e.Installed {
+			t.Error("commands are always installed")
+		}
+		if e.Issue != "" {
+			t.Errorf("shell issue = %q, want empty", e.Issue)
+		}
+	}
+
+	if e, ok := byName["definitely-not-installed"]; !ok {
+		t.Fatal("missing definitely-not-installed entry")
+	} else {
+		if !strings.Contains(e.Issue, "not installed") {
+			t.Errorf("definitely-not-installed issue = %q, want not installed", e.Issue)
+		}
+	}
+
+	if e, ok := byName["opencode"]; !ok {
+		t.Fatal("missing opencode entry")
+	} else {
+		if !strings.Contains(e.Issue, "not configured") {
+			t.Errorf("opencode issue = %q, want not configured", e.Issue)
+		}
+	}
+
+	// Sorted alphabetically.
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Name < entries[i-1].Name {
+			t.Errorf("entries not sorted: %q before %q", entries[i-1].Name, entries[i].Name)
+		}
+	}
+}
+
+// TestIssueFor verifies the single-agent launch blocker: configured+installed
+// is launchable, a missing config or binary produces the right message, and
+// commands are always launchable. This is the shared helper behind both the
+// picker rows and the TUI's pinned-agent path, so a regression here would
+// either hide a real problem or block a valid launch.
+func TestIssueFor(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	installed := func(bin string) bool { return bin == "claude" }
+
+	if got := IssueFor(cfg, "claude", installed); got != "" {
+		t.Errorf("IssueFor(claude) = %q, want \"\" (configured + installed)", got)
+	}
+	if got := IssueFor(cfg, "definitely-not-installed", installed); !strings.Contains(got, "not installed") {
+		t.Errorf("IssueFor(definitely-not-installed) = %q, want to mention not installed", got)
+	}
+	if got := IssueFor(cfg, "opencode", installed); !strings.Contains(got, "not configured") {
+		t.Errorf("IssueFor(opencode) = %q, want to mention not configured", got)
+	}
+	if got := IssueFor(cfg, "shell", installed); got != "" {
+		t.Errorf("IssueFor(shell) = %q, want \"\" (command)", got)
+	}
+}

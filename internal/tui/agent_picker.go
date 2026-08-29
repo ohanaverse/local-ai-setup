@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/agent-worktree/internal/agents"
@@ -42,59 +41,20 @@ func (a agentItem) Description() string {
 	return "agent: launches with a model"
 }
 
-// agentIssue returns a short, human-readable problem that prevents name from
-// launching, or "" if it is launchable. An agent must be both configured (so
-// it has a model catalog) and installed (so its binary can be exec'd).
-// Commands (e.g. shell) are always launchable.
-func agentIssue(name string, cfg *config.Config) string {
-	if agents.IsCommand(name) {
-		return ""
-	}
-	if _, err := cfg.AgentByName(name); err != nil {
-		return "not configured — add it to config.toml"
-	}
-	if !installed(name) {
-		return "not installed — install the binary"
-	}
-	return ""
-}
-
-// buildAgentList constructs the agent+command picker rows. Each configured
-// agent and each registered command appears once. The list is sorted purely
-// by name — agents and commands interleaved alphabetically — regardless of
-// config order or the nondeterministic agents.Names() map iteration. The
-// agent/command distinction is preserved on each row (for its title and
-// description) but does not affect ordering. Callers wrap the result in a
-// bubbles/list picker; tests range over the items directly.
+// buildAgentList constructs the agent+command picker rows from the shared
+// agents.ListEntries helper. Each configured agent and registered command
+// appears once, sorted alphabetically; command classification and issue text
+// are preserved on each row. The installed check is threaded through the
+// tui.installed seam so tests can stub it deterministically.
 func buildAgentList(cfg *config.Config) []list.Item {
-	seen := map[string]bool{}
-	var rows []agentItem
-
-	// Collect every configured agent and registered driver once each.
-	add := func(name string) {
-		if seen[name] {
-			return
+	entries := agents.ListEntries(cfg, installed)
+	items := make([]list.Item, 0, len(entries))
+	for _, e := range entries {
+		it := agentItem{name: e.Name, command: e.Command}
+		if !e.Command {
+			it.issue = e.Issue
 		}
-		seen[name] = true
-		it := agentItem{name: name, command: agents.IsCommand(name)}
-		if !it.command {
-			it.issue = agentIssue(name, cfg)
-		}
-		rows = append(rows, it)
-	}
-	for _, a := range cfg.Agents {
-		add(a.Name)
-	}
-	for _, n := range agents.Names() {
-		add(n)
-	}
-
-	// Single alphabetical pass over agents and commands together.
-	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
-
-	items := make([]list.Item, 0, len(rows))
-	for _, r := range rows {
-		items = append(items, r)
+		items = append(items, it)
 	}
 	return items
 }

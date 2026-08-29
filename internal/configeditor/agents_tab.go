@@ -28,7 +28,7 @@ func (a agentItem) Title() string {
 	switch {
 	case a.command:
 		marker = "command"
-	case a.issue == "not configured":
+	case !a.configured:
 		marker = "✗ not configured"
 	case a.installed:
 		marker = "✓ installed"
@@ -51,44 +51,31 @@ func (a agentItem) Description() string {
 	return ""
 }
 
-// buildAgentsList constructs the agents list. It merges configured agents
-// with every registered driver (e.g. opencode may be registered but not
-// configured), skips installed checks for commands, and sorts commands
-// first then alphabetically.
+// buildAgentsList constructs the agents list from the shared
+// agents.ListEntries helper. It merges configured agents with registered
+// drivers, preserves command classification and issue state, and applies the
+// configeditor-specific commands-first display order.
 func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) list.Model {
-	seen := map[string]bool{}
-	items := make([]list.Item, 0)
-
-	// Collect every configured agent and registered driver once each.
-	add := func(name string) {
-		if seen[name] {
-			return
+	entries := agents.ListEntries(cfg, agents.Installed)
+	items := make([]list.Item, 0, len(entries))
+	for _, e := range entries {
+		ag, err := cfg.AgentByName(e.Name)
+		if err != nil {
+			ag = &config.Agent{Name: e.Name}
 		}
-		seen[name] = true
-		ag, err := cfg.AgentByName(name)
-		configured := err == nil
-		if !configured {
-			// AgentByName returns an error when missing; create a placeholder.
-			ag = &config.Agent{Name: name}
-		}
-		it := agentItem{agent: *ag, command: agents.IsCommand(name), configured: configured}
-		if it.command {
-			// No installed check for commands.
-		} else if !configured {
-			it.issue = "not configured"
-		} else {
-			it.installed = agents.Installed(name)
+		it := agentItem{
+			agent:      *ag,
+			command:    e.Command,
+			configured: e.Configured,
+			installed:  e.Installed,
+			issue:      e.Issue,
 		}
 		items = append(items, it)
 	}
-	for _, a := range cfg.Agents {
-		add(a.Name)
-	}
-	for _, n := range agents.Names() {
-		add(n)
-	}
 
-	// Sort: commands first, then alphabetical.
+	// Sort: commands first, then alphabetical. agents.ListEntries returns
+	// a purely alphabetical list; the configeditor applies its own display
+	// order here.
 	sort.SliceStable(items, func(i, j int) bool {
 		ai := items[i].(agentItem)
 		aj := items[j].(agentItem)
@@ -97,6 +84,7 @@ func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) 
 		}
 		return ai.agent.Name < aj.agent.Name
 	})
+
 	l := list.New(items, tui.ThemedListDelegate(theme), width, height)
 	l.Title = "Agents"
 	l.SetShowStatusBar(false)

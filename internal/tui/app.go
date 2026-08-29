@@ -12,7 +12,6 @@ package tui
 import (
 	"fmt"
 	"os/exec"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -578,7 +577,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 		// A pinned agent that is not configured or not installed cannot
 		// launch; surface the reason instead of a cryptic "agent not found"
 		// from EligibleModels or a late "not installed" from the launch path.
-		if issue := agentIssue(m.agent, m.cfg); issue != "" {
+		if issue := agents.IssueFor(m.cfg, m.agent, installed); issue != "" {
 			m.status = "cannot launch " + m.agent + ": " + issue
 			return m, nil
 		}
@@ -812,24 +811,6 @@ type entriesLoadedMsg struct {
 	err           error
 }
 
-// repoRootFor resolves the git repository root that owns path. path is a
-// worktree or repo-root directory; the result is the primary repo root (the
-// parent of any .worktrees subdir), or "" if path is not inside a git repo.
-//
-// Used by Run() to seed model.repoRoot when prePath is set so the new-worktree
-// prompt (currently gated on m.ready, but reachable via any future UI
-// restoration to the worktree list) has a valid directory to pass to git.
-func repoRootFor(path string) string {
-	if path == "" || path == "." {
-		return ""
-	}
-	out, err := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 // Run starts the TUI in alternate-screen mode and returns when it quits.
 // agent is the --agent flag value ("" = no agent pinned; the agent/command
 // picker is shown). pinned is the --model flag value ("" = no model pinned;
@@ -857,7 +838,16 @@ func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, them
 		activeFamily: family,
 		extraArgs:    extraArgs,
 		prePath:      prePath,
-		repoRoot:     repoRootFor(prePath),
+		repoRoot: func() string {
+			if prePath == "" || prePath == "." {
+				return ""
+			}
+			root, err := worktree.RepoRootAt(prePath)
+			if err != nil {
+				return ""
+			}
+			return root
+		}(),
 	}, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary captured by a previous run (e.g. from a test

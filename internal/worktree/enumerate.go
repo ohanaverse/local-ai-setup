@@ -130,13 +130,29 @@ func listRemoteBranches(dir string) ([]string, error) {
 	return remotes, nil
 }
 
-// RepoRoot returns the absolute path of the current git repository root.
-func RepoRoot() (string, error) {
-	out, err := runGit("", "rev-parse", "--show-toplevel")
+// IsRepo reports whether dir is inside a git repository. It uses
+// `rev-parse --git-dir` (not --show-toplevel) so bare repositories and
+// directories inside .git still count, matching the previous behavior of
+// cmd/wt/helpers.go:inGitRepoAt. Returns false for any git error.
+func IsRepo(dir string) bool {
+	_, err := runGit(dir, "rev-parse", "--git-dir")
+	return err == nil
+}
+
+// RepoRootAt returns the absolute path of the git repository root that owns
+// dir. It reuses runGit so working-directory handling and error behavior
+// are consistent with the rest of the package.
+func RepoRootAt(dir string) (string, error) {
+	out, err := runGit(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// RepoRoot is shorthand for RepoRootAt(".") — kept for existing callers.
+func RepoRoot() (string, error) {
+	return RepoRootAt(".")
 }
 
 func splitLines(b []byte) []string {

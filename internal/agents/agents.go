@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 
@@ -89,6 +90,81 @@ type OllamaURLer interface {
 	// free to include path suffixes such as "/v1" or "/v1/" because each
 	// agent's wire protocol is different.
 	OllamaURL() string
+}
+
+// AgentListEntry is one row returned by ListEntries. Callers convert it to
+// their own list.Item / bubbletea item type.
+type AgentListEntry struct {
+	Name       string
+	Command    bool // true for commands like shell (no model layer)
+	Configured bool // present in config.toml
+	Installed  bool // binary found on PATH (always true for commands)
+	Issue      string // human-readable launch blocker ("" if ready)
+}
+
+// ListEntries returns every configured agent and every registered driver
+// exactly once, deduplicated and sorted alphabetically by name. Commands are
+// classified by IsCommand; non-commands are marked configured/installed and
+// receive an issue string if they cannot launch. installed reports whether a
+// binary is on PATH; callers pass agents.Installed in production and a stub
+// in tests so the result is deterministic regardless of the host's binaries.
+func ListEntries(cfg *config.Config, installed func(string) bool) []AgentListEntry {
+	seen := map[string]bool{}
+	var entries []AgentListEntry
+
+	add := func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+
+		_, err := cfg.AgentByName(name)
+		configured := err == nil
+
+		command := IsCommand(name)
+		entry := AgentListEntry{
+			Name:       name,
+			Command:    command,
+			Configured: configured,
+			Installed:  command || installed(name),
+			Issue:      IssueFor(cfg, name, installed),
+		}
+
+		entries = append(entries, entry)
+	}
+
+	for _, a := range cfg.Agents {
+		add(a.Name)
+	}
+	for _, n := range Names() {
+		add(n)
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+
+	return entries
+}
+
+// IssueFor returns the launch blocker for a single agent, or "" if it can
+// launch. An agent must be both configured (so it has a model catalog) and
+// installed (so its binary can be exec'd). Commands (e.g. shell) are always
+// launchable. installed reports whether a binary is on PATH; callers pass
+// agents.Installed in production and a stub in tests. This is the single
+// source of truth for the issue strings that ListEntries and the TUI's
+// pinned-agent path both surface.
+func IssueFor(cfg *config.Config, name string, installed func(string) bool) string {
+	if IsCommand(name) {
+		return ""
+	}
+	if _, err := cfg.AgentByName(name); err != nil {
+		return "not configured — add it to config.toml"
+	}
+	if !installed(name) {
+		return "not installed — install the binary"
+	}
+	return ""
 }
 
 // Installed reports whether bin resolves on PATH.

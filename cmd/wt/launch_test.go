@@ -122,23 +122,6 @@ func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
 	}
 }
 
-// TestInGitRepoAt asserts that inGitRepoAt reports true inside a git repo and
-// false outside one. This gates the passthrough path: outside a repo the
-// agent launches directly with no picker, so a wrong answer here would either
-// drop the user into the TUI or skip the picker unexpectedly.
-func TestInGitRepoAt(t *testing.T) {
-	dir := t.TempDir()
-	if inGitRepoAt(dir) {
-		t.Fatal("inGitRepoAt = true for a non-repo directory")
-	}
-	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
-		t.Fatalf("git init: %v", err)
-	}
-	if !inGitRepoAt(dir) {
-		t.Fatal("inGitRepoAt = false for a git repo")
-	}
-}
-
 // TestInitUsesAgentFlag verifies that the --init path passes the explicit
 // --agent value to initseed.Seed so that agent-specific pointer files
 // (e.g. CLAUDE.md) are created. This mirrors the bash wrapper behavior where

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/spf13/cobra"
 )
 
 // TestConfig_NoSubcommand_LaunchesEditor verifies that `wt config` with no
@@ -466,5 +467,89 @@ func TestUnknownAgentFailsFast(t *testing.T) {
 	}
 	if errors.Is(err, errModelPickerNeedsTTY) {
 		t.Errorf("err = %v, want a fast-fail error, not the model-picker TTY error", err)
+	}
+}
+
+// TestRunLaunchPath verifies the shared dispatcher routes each entry point
+// to the right outcome: inside-repo branches install the guard and launch;
+// the outside-repo branch skips the guard; and the TUI branch
+// (launchPath == "") always shows the worktree picker — even when the agent
+// and model are already pinned, a pinned agent or command must still pick a
+// worktree. The guard is stubbed because the real guard.Install operates on
+// the test process's cwd and would install the hook into the repo under test.
+func TestRunLaunchPath(t *testing.T) {
+	repo := t.TempDir()
+	if err := exec.Command("git", "-C", repo, "init", "-q").Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Agents: []config.Agent{{Name: "shell", SupportedProviders: nil}},
+	}
+	a := &app{cfg: cfg}
+
+	cases := []struct {
+		name       string
+		agent      string
+		pinned     string
+		launchPath string
+		root       string
+		wantPath   string
+		wantTUI    bool // true: expect tuiRun; false: expect launchFiltered
+		wantGuard  bool // true: expect maybeInstallGuard called
+	}{
+		{"cwd", "shell", "", repo, repo, repo, false, true},
+		{"outside", "shell", "", ".", "", ".", false, false},
+		{"tui", "shell", "", "", "", "", true, false},
+		{"tui-pinned-model", "claude", "ollama/x", "", "", "", true, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Stub tuiRun, launchFiltered, and maybeInstallGuard to capture
+			// the dispatched path and guard behavior.
+			oldTUI := tuiRun
+			oldLaunch := launchFiltered
+			oldGuard := maybeInstallGuard
+			var gotPath string
+			var gotTUI, gotLaunch, gotGuard bool
+			tuiRun = func(bool, string, string, string, string, []string, themes.Theme, string, *config.Config) error {
+				gotTUI = true
+				gotPath = c.launchPath
+				return nil
+			}
+			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string) error {
+				gotLaunch = true
+				gotPath = worktreePath
+				return nil
+			}
+			maybeInstallGuard = func() { gotGuard = true }
+			defer func() {
+				tuiRun = oldTUI
+				launchFiltered = oldLaunch
+				maybeInstallGuard = oldGuard
+			}()
+
+			cmd := &cobra.Command{}
+			cmd.Flags().StringP("model", "M", "", "")
+			cmd.Flags().Bool("yolo", false, "")
+
+			err := runLaunchPath(cmd, a, c.agent, c.pinned, "", "", nil, c.launchPath, c.root)
+			if err != nil {
+				t.Fatalf("runLaunchPath: %v", err)
+			}
+			if gotPath != c.wantPath {
+				t.Errorf("dispatched path = %q, want %q", gotPath, c.wantPath)
+			}
+			if gotTUI != c.wantTUI {
+				t.Errorf("tuiRun called = %v, want %v", gotTUI, c.wantTUI)
+			}
+			if gotLaunch != !c.wantTUI {
+				t.Errorf("launchFiltered called = %v, want %v", gotLaunch, !c.wantTUI)
+			}
+			if gotGuard != c.wantGuard {
+				t.Errorf("maybeInstallGuard called = %v, want %v", gotGuard, c.wantGuard)
+			}
+		})
 	}
 }

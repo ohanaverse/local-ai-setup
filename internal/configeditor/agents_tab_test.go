@@ -101,14 +101,16 @@ func TestAgentsTab_CommandsSkipInstalledCheck(t *testing.T) {
 
 // TestAgentsTab_InstalledAnnotation verifies that the Title() method
 // renders the correct installed marker regardless of the actual PATH
-// state. This ensures the UI communicates launchability clearly.
+// state. This ensures the UI communicates launchability clearly. The
+// fixtures are configured agents (configured: true) so the marker reflects
+// the installed check rather than the not-configured state.
 func TestAgentsTab_InstalledAnnotation(t *testing.T) {
-	installed := agentItem{agent: config.Agent{Name: "foo"}, installed: true}
+	installed := agentItem{agent: config.Agent{Name: "foo"}, configured: true, installed: true}
 	if !strings.Contains(installed.Title(), "✓") {
 		t.Errorf("installed agent Title() = %q, want ✓ marker", installed.Title())
 	}
 
-	notInstalled := agentItem{agent: config.Agent{Name: "bar"}, installed: false}
+	notInstalled := agentItem{agent: config.Agent{Name: "bar"}, configured: true, installed: false}
 	if !strings.Contains(notInstalled.Title(), "✗") {
 		t.Errorf("not-installed agent Title() = %q, want ✗ marker", notInstalled.Title())
 	}
@@ -130,3 +132,33 @@ func (d *stubAgentDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
 	return agents.LaunchCmd{}
 }
 func (d *stubAgentDriver) YoloFlag() string { return "" }
+
+// TestBuildAgentsListAdapter verifies buildAgentsList is a wrapper around
+// agents.ListEntries that preserves commands-first sorting and issue state.
+func TestBuildAgentsListAdapter(t *testing.T) {
+	cleanup := agents.RegisterTest("shell", func() agents.Driver {
+		return &stubCommandDriver{}
+	})
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	l := buildAgentsList(testTheme(), 80, 24, cfg)
+
+	var sawCommand bool
+	for _, it := range l.Items() {
+		ai := it.(agentItem)
+		if ai.command {
+			sawCommand = true
+			if ai.issue != "" {
+				t.Errorf("command %q has issue %q", ai.agent.Name, ai.issue)
+			}
+		}
+	}
+	if !sawCommand {
+		t.Error("expected at least one command item (shell)")
+	}
+}

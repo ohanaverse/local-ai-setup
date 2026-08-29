@@ -74,6 +74,11 @@ After the launched subprocess exits, both the TUI and non-TUI paths print a sing
 
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
+**Test seams.** TTY, installed-check, guard, and TUI behavior are stubbed via
+package-level var seams (`tuiRun`, `launchFiltered`, `stdinTTY`, `installed`,
+`maybeInstallGuard`) — production code calls the var, tests swap it. When adding
+a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
+
 ```bash
 go test ./...                        # all Go tests
 go test ./internal/worktree -v       # verbose, one package
@@ -97,14 +102,14 @@ Module root is the repo root.
 | `cmd/wt/commands.go` | hidden `rotate` subcommand |
 | `cmd/wt/commands_config.go` | `wt config` subcommand family |
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch |
-| `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable` |
+| `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers (`maybeInstallGuard`, `checkGuardStatus`, `removeGuard`); TTY seams (`isStdinTTY`/`stdinTTY`) and picker-TTY errors |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog); helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
 | `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
 | `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model-picker badges, and the rotation module |
-| `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
+| `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
-| `internal/worktree/` | enumeration + creation (`EnsureForName`/`EnsureForBranch`) |
+| `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
 | `internal/initseed/` | `--init` seeding |
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
@@ -246,6 +251,10 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 ## Worktree (Go)
 
 `internal/worktree` handles enumeration (`Enumerate` → worktrees / local branches / remote-only branches) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
+
+> **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and
+> directories inside `.git` have no worktree, so `--show-toplevel` fails there;
+> `--git-dir` succeeds. Don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
 > **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it, and the picker skips bare default-branch rows.
 

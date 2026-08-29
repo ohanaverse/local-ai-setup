@@ -344,7 +344,62 @@ func TestRepoRootNotARepo(t *testing.T) {
 	}
 }
 
-// Remote branches whose short name matches a local branch must be excluded.
+// IsRepo must report true for a repo root and false for an arbitrary
+// directory. This replaces the cmd/wt-level inGitRepoAt test and keeps the
+// contract in the package that actually owns git interaction.
+func TestIsRepo(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	if !IsRepo(repo) {
+		t.Errorf("IsRepo(repo root) = false, want true")
+	}
+	if IsRepo(t.TempDir()) {
+		t.Errorf("IsRepo(non-repo) = true, want false")
+	}
+
+	// Bare repos and directories inside .git are still "inside a git repo"
+	// (`git rev-parse --git-dir` succeeds there). IsRepo must not regress to
+	// --show-toplevel semantics, which fail in both — the pre-refactor
+	// inGitRepoAt routed these to the TUI, and losing that would silently
+	// launch agents in the current directory instead of showing the picker.
+	bare := t.TempDir()
+	if out, err := exec.Command("git", "init", "--bare", "-q", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	if !IsRepo(bare) {
+		t.Errorf("IsRepo(bare repo) = false, want true")
+	}
+	if !IsRepo(filepath.Join(repo, ".git")) {
+		t.Errorf("IsRepo(.git dir) = false, want true")
+	}
+}
+
+// RepoRootAt must return the repo root for a subdirectory, matching
+// RepoRoot when run from inside the repo.
+func TestRepoRootAt(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	sub := filepath.Join(repo, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RepoRootAt(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotResolved != want {
+		t.Errorf("RepoRootAt(subdir) = %q, want %q", got, want)
+	}
+}
+
 // This prevents duplicate entries like "feature" and "origin/feature" when
 // both resolve to the same worktree target. The local branch takes priority.
 func TestEnumerateRemoteBranchShadowedByLocal(t *testing.T) {
