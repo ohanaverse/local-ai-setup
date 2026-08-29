@@ -22,8 +22,11 @@
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
 
 ## Adding a New Benchmark Backend
+The isolation logic exists in **two places** (legacy + CLI helper). Both must
+be updated, otherwise `modelman benchmark` and the bash script will drift.
 1. Add to `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS` associative arrays in the benchmark script
 2. Add the model to `~/.config/litellm/config.yaml`
-3. Add stop/start logic to `stop_all_local` / `start_one_local`
-4. Smoke test: `./qwen3.8-benchmark 30`
-5. Update the benchmark doc with new numbers
+3. Add stop/start logic to `stop_all_local` / `start_one_local` in the benchmark script
+4. Add a new branch in `bin/llm-isolate-provider`'s case statement (and matching `*_MODEL` env var) so `modelman benchmark` can isolate it
+5. Smoke test: `./benchmarks/qwen3.8-benchmark 30` (and `bin/llm-isolate-provider <new-backend>`)
+6. Update the benchmark doc with new numbers

@@ -659,3 +659,11 @@ repo's `bin/` directory:
 
 Ensure `local-ai-setup/bin` is on `PATH` so `modelman benchmark` can find
 them. Model names and URLs are overridable via `LLM_ISOLATE_*` env vars.
+
+> **Note:** These helpers are invoked by `modelman benchmark`, not by the
+> bash benchmark scripts in `benchmarks/`. The bash scripts (`qwen3.8-benchmark`,
+> `ornith-1.5-benchmark`) have their own in-script `stop_all_local` and
+> `start_one_local` functions. The two isolation systems are intentionally
+> parallel for now — the bash scripts predate the `modelman` integration
+> and have not been refactored to call the helpers. See `CLAUDE.md` →
+> "Adding a New Benchmark Backend" for the implications.

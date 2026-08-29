@@ -29,18 +29,55 @@ PYEOF
 
 # Stop every provider except the one being isolated so the target has the
 # GPU/RAM to itself. Skipping the target avoids an unload+reload cycle.
+# After each stop, poll (bounded) until the provider actually lets go instead
+# of sleeping a fixed 3s. Timeouts warn but are not fatal — a stuck stop must
+# not abort the whole isolation (the pre-poll `sleep 3` never did).
 stop_all_local() {
     local keep="$1"
     if [ "$keep" != "ollama" ]; then
         ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
+        # `ollama stop` unloads the model but keeps the daemon (port 11434) up,
+        # so poll `ollama ps` for an empty model list, not the port.
+        wait_for_ollama_unloaded 5 \
+            || echo "warning: ollama still has $OLLAMA_MODEL loaded" >&2
     fi
     if [ "$keep" != "omlx" ]; then
         omlx stop 2>/dev/null || true
+        wait_for_port_closed http://localhost:8000/v1/models 5 \
+            || echo "warning: omlx still listening on port 8000" >&2
     fi
     if [ "$keep" != "llamacpp" ] && [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
         launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+        wait_for_port_closed http://localhost:8080/v1/models 5 \
+            || echo "warning: llama.cpp still listening on port 8080" >&2
     fi
-    sleep 3
+}
+
+# Poll until `ollama ps` lists no loaded models (model unload ≈ GPU/RAM freed).
+wait_for_ollama_unloaded() {
+    local tries="${1:-5}"
+    local i
+    for ((i = 0; i < tries; i++)); do
+        if [ -z "$(ollama ps 2>/dev/null | tail -n +2)" ]; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+# Poll until `url` stops responding or we hit the deadline (tries × 0.2s).
+# Used after issuing a stop to confirm the OS reclaimed the port.
+wait_for_port_closed() {
+    local url="$1" tries="${2:-5}"
+    local i
+    for ((i = 0; i < tries; i++)); do
+        if ! curl -s -m 1 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
 }
 
 # Warm up a model on a running server, retrying until it answers or we give up.
@@ -63,12 +100,10 @@ warmup() {
     return 1
 }
 
-# Warm up a provider's model, printing "model|url" on success or exiting with
-# a clear error on failure.
+# Warm up a provider's model, exiting with a clear error on failure.
 warmup_or_die() {
     local name="$1" model="$2" url="$3" health_url="$4"
     if warmup "$url" "$model" "$health_url"; then
-        echo "$model|$url"
         return 0
     fi
     echo "failed to warm up $name model $model at $url" >&2
@@ -104,19 +139,27 @@ start_omlx() {
 case "$PROVIDER" in
     ollama)
         stop_all_local ollama
-        OUT=$(start_ollama)
+        start_ollama
+        model="$OLLAMA_MODEL"
+        direct_url="http://localhost:11434/v1/chat/completions"
         ;;
     llamacpp)
         stop_all_local llamacpp
-        OUT=$(start_llamacpp)
+        start_llamacpp
+        model="$LLAMACPP_MODEL"
+        direct_url="http://localhost:8080/v1/chat/completions"
         ;;
     omlx)
         stop_all_local omlx
-        OUT=$(start_omlx "$OMLX_4BIT_MODEL")
+        start_omlx "$OMLX_4BIT_MODEL"
+        model="$OMLX_4BIT_MODEL"
+        direct_url="http://localhost:8000/v1/chat/completions"
         ;;
     omlx-6bit)
         stop_all_local omlx
-        OUT=$(start_omlx "$OMLX_6BIT_MODEL")
+        start_omlx "$OMLX_6BIT_MODEL"
+        model="$OMLX_6BIT_MODEL"
+        direct_url="http://localhost:8000/v1/chat/completions"
         ;;
     *)
         echo "unknown provider: $PROVIDER" >&2
@@ -124,9 +167,15 @@ case "$PROVIDER" in
         ;;
 esac
 
-IFS='|' read -r model direct_url <<< "$OUT"
+# Build the JSON envelope. Args are well-defined strings (no shell quoting
+# concerns), so one Python call handles the encoding.
 python3 - "$PROVIDER" "$model" "$direct_url" <<'PYEOF'
 import json, sys
-provider, model, direct_url = sys.argv[1:4]
-print(json.dumps({"provider": provider, "model": model, "direct_url": direct_url, "ok": True, "error": None}))
+print(json.dumps({
+    "provider": sys.argv[1],
+    "model": sys.argv[2],
+    "direct_url": sys.argv[3],
+    "ok": True,
+    "error": None,
+}))
 PYEOF
