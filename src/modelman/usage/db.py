@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-import yaml
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-from modelman.litellm import default_litellm_config_path
+from modelman.litellm import (
+    LiteLLMConfigError,
+    _database_url_from_config,
+    default_litellm_config_path,
+    load_litellm_config,
+)
 from modelman.usage.errors import UsageError
 
 
@@ -73,9 +80,6 @@ class PostgresSpendStore:
         end: datetime,
         model_names: list[str] | None = None,
     ) -> list[SpendLogRow]:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-
         sql = """
             SELECT
                 request_id,
@@ -99,42 +103,20 @@ class PostgresSpendStore:
             params.append(model_names)
         sql += ' ORDER BY "startTime" DESC'
 
-        conn = psycopg2.connect(self.dsn)
-        try:
-            with conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(sql, params)
-                return [SpendLogRow(**dict(row)) for row in cur.fetchall()]
-        finally:
-            conn.close()
+        with (
+            contextlib.closing(psycopg2.connect(self.dsn)) as conn,
+            conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(sql, params)
+            return [SpendLogRow(**row) for row in cur.fetchall()]
 
 
-def _read_litellm_database_url(config_path: Path) -> str | None:
-    """Read general_settings.database_url from a LiteLLM config file."""
-    if not config_path.exists():
-        return None
-    with open(config_path) as f:
-        raw = yaml.safe_load(f) or {}
-    general = raw.get("general_settings") or {}
-    return general.get("database_url")
-
-
-def _reverse_model_index(model_list: list[dict[str, Any]]) -> dict[str, str]:
-    """Map litellm_params.model -> model_list.model_name.
-
-    Used to recover the registry model id when LiteLLM_SpendLogs.model_name
-    is NULL but the litellm_model field is present. If two entries share the
-    same litellm_params.model, the first one in the list wins.
-    """
-    index: dict[str, str] = {}
-    for entry in model_list:
-        model_name = entry.get("model_name")
-        litellm_model = entry.get("litellm_params", {}).get("model")
-        if model_name and litellm_model and litellm_model not in index:
-            index[litellm_model] = model_name
-    return index
-
-
-def database_url(config_path: Path | None = None) -> str:
+def database_url(
+    config_path: Path | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> str:
     """Resolve the LiteLLM database URL.
 
     Precedence:
@@ -144,8 +126,14 @@ def database_url(config_path: Path | None = None) -> str:
     env_url = os.environ.get("MODELMAN_LITELLM_DATABASE_URL")
     if env_url:
         return env_url
+    if config is None:
+        path = config_path or default_litellm_config_path()
+        try:
+            config = load_litellm_config(path)
+        except LiteLLMConfigError as exc:
+            raise UsageError(str(exc)) from exc
+    file_url = _database_url_from_config(config)
+    if file_url:
+        return file_url
     path = config_path or default_litellm_config_path()
-    file_url = _read_litellm_database_url(path)
-    if not file_url:
-        raise UsageError(f"Could not find LiteLLM database_url in {path}")
-    return file_url
+    raise UsageError(f"Could not find LiteLLM database_url in {path}")

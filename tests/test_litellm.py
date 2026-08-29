@@ -4,6 +4,8 @@ import pytest
 
 from modelman.litellm import (
     LiteLLMConfigError,
+    _database_url_from_config,
+    _reverse_model_index,
     build_model_list_entry,
     load_litellm_config,
     remove_exposed,
@@ -220,3 +222,67 @@ def test_save_creates_new_file_with_mkstemp_mode(tmp_path):
     path = tmp_path / "config.yaml"
     save_litellm_config({"model_list": []}, path)
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_database_url_from_config_reads_general_settings():
+    config = {
+        "model_list": [],
+        "general_settings": {"database_url": "postgresql://user@localhost/db"},
+    }
+    assert _database_url_from_config(config) == "postgresql://user@localhost/db"
+
+
+def test_database_url_from_config_missing_returns_none():
+    assert _database_url_from_config({"model_list": []}) is None
+
+
+def test_reverse_model_index():
+    # The reverse index must map each model_list entry's litellm_params.model
+    # back to its registry model_name, since that's how NULL-model_name spend
+    # rows get resolved.
+    model_list = [
+        {
+            "model_name": "ollama/qwen3.8:27b-mlx",
+            "litellm_params": {"model": "ollama_chat/qwen3.8:27b-mlx"},
+        },
+        {
+            "model_name": "openrouter/qwen/qwen3.8-27b",
+            "litellm_params": {"model": "openrouter/qwen/qwen3.8-27b"},
+        },
+        {
+            "model_name": "omlx/Qwen3.8-27B-4bit",
+            "litellm_params": {"model": "openai/Qwen3.8-27B-4bit"},
+        },
+    ]
+    index = _reverse_model_index(model_list)
+    assert index["ollama_chat/qwen3.8:27b-mlx"] == "ollama/qwen3.8:27b-mlx"
+    assert index["openrouter/qwen/qwen3.8-27b"] == "openrouter/qwen/qwen3.8-27b"
+    assert index["openai/Qwen3.8-27B-4bit"] == "omlx/Qwen3.8-27B-4bit"
+
+
+def test_reverse_model_index_first_entry_wins_on_duplicate():
+    # Two model_list entries can point at the same litellm_params.model; the
+    # first entry must win deterministically.
+    model_list = [
+        {
+            "model_name": "ollama/a",
+            "litellm_params": {"model": "shared/target"},
+        },
+        {
+            "model_name": "ollama/b",
+            "litellm_params": {"model": "shared/target"},
+        },
+    ]
+    index = _reverse_model_index(model_list)
+    assert index["shared/target"] == "ollama/a"
+
+
+def test_reverse_model_index_skips_non_dict_rows():
+    # Hand-edited scalar rows in model_list must be ignored, not crash.
+    model_list = [
+        "just-a-string",
+        {"model_name": "ollama/a", "litellm_params": {"model": "m"}},
+        {"model_name": "ollama/b"},
+    ]
+    index = _reverse_model_index(model_list)
+    assert index == {"m": "ollama/a"}

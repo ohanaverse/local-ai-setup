@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from modelman.usage.db import SpendLogRow, SpendStore, _reverse_model_index
+from modelman.litellm import _reverse_model_index
+from modelman.registry import ModelEntry, Registry
+from modelman.usage.db import SpendLogRow, SpendStore
 from modelman.usage.wt_state import LaunchCounts
 
 
@@ -32,18 +34,17 @@ def reconcile(
     *,
     wt_counts: dict[str, LaunchCounts],
     spend_store: SpendStore,
-    registry: dict[str, Any],
+    registry: Registry,
     start: datetime,
     end: datetime,
-    as_of: datetime,
     model_filter: str | None = None,
     family_filter: str | None = None,
     litellm_model_list: list[dict[str, Any]] | None = None,
 ) -> ReconcileResult:
     """Join wt launch counts with LiteLLM spend logs over a date window.
 
-    `registry` is the raw registry.toml dict; `registry.models[].id` is the
-    canonical registry model id and `registry.models[].family` is its family.
+    `registry` is the parsed registry; `registry.models[].id` is the canonical
+    registry model id and `registry.models[].family` is its family.
     """
     reverse_index = _reverse_model_index(litellm_model_list or [])
     spend_rows = spend_store.query(start=start, end=end)
@@ -62,10 +63,10 @@ def reconcile(
 
     # Registry model lookup (unfiltered; model_filter/family_filter are applied
     # below to every observed id, not just registry-known ones).
-    models = _registry_models(registry)
+    registry_by_id: dict[str, ModelEntry] = {m.id: m for m in registry.models}
 
     # Build combined set of observed model ids.
-    all_ids = set(models.keys()) | set(wt_counts.keys()) | set(spend_by_model.keys())
+    all_ids = set(registry_by_id.keys()) | set(wt_counts.keys()) | set(spend_by_model.keys())
 
     matched: list[ModelUsage] = []
     wt_only: list[ModelUsage] = []
@@ -74,15 +75,10 @@ def reconcile(
     for model_id in sorted(all_ids):
         counts = wt_counts.get(model_id)
         spend_group = spend_by_model.get(model_id, [])
-        registry_entry = models.get(model_id)
+        registry_entry = registry_by_id.get(model_id)
 
-        if registry_entry is not None:
-            family = str(registry_entry["family"])
-        elif spend_group:
-            # No registry metadata; use the provider prefix as family.
-            family = model_id.split("/", 1)[0] if "/" in model_id else "unknown"
-        else:
-            # Unknown to both the registry and LiteLLM; nothing to report.
+        family = _family_for(model_id, registry_entry, spend_group)
+        if family is None:
             continue
 
         if model_filter and model_id != model_filter:
@@ -112,5 +108,16 @@ def reconcile(
     return ReconcileResult(matched=matched, wt_only=wt_only, litellm_only=litellm_only)
 
 
-def _registry_models(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {m["id"]: m for m in registry.get("models", [])}
+def _family_for(
+    model_id: str,
+    registry_entry: ModelEntry | None,
+    spend_group: list[SpendLogRow],
+) -> str | None:
+    """Resolve a model family from the registry or from spend data."""
+    if registry_entry is not None:
+        return str(registry_entry.family)
+    if spend_group:
+        # No registry metadata; use the provider prefix as family.
+        return model_id.split("/", 1)[0] if "/" in model_id else "unknown"
+    # Unknown to both the registry and LiteLLM; nothing to report.
+    return None

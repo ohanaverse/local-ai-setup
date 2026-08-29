@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,21 +14,22 @@ class LaunchCounts:
     _30d: int
 
 
-def read_usage_counts(
-    path: Path,
-    as_of: datetime,
-    windows: tuple[timedelta, timedelta, timedelta] = (
-        timedelta(days=1),
-        timedelta(days=7),
-        timedelta(days=30),
-    ),
-) -> dict[str, LaunchCounts]:
+def wt_dir() -> Path:
+    """Directory where agent-worktree keeps usage.jsonl and rotation.state."""
+    env = os.environ.get("MODELMAN_WT_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".config" / "agent-wt"
+
+
+def read_usage_counts(path: Path, as_of: datetime) -> dict[str, LaunchCounts]:
     """Read usage.jsonl and return per-model launch counts for 1d/7d/30d.
 
     `as_of` is the reference time; counts include events strictly after
     `as_of - window` and on or before `as_of`. Models with no events inside
     the largest window are omitted from the result.
     """
+    windows = (timedelta(days=1), timedelta(days=7), timedelta(days=30))
     raw: dict[str, list[datetime]] = {}
     if not path.exists():
         return {}
@@ -52,18 +54,18 @@ def read_usage_counts(
             raw.setdefault(model_id, []).append(ts)
 
     counts: dict[str, LaunchCounts] = {}
+    cutoffs = tuple(as_of - w for w in windows)
     for model_id, timestamps in raw.items():
-        counts[model_id] = LaunchCounts(
-            _1d=_count_in_window(timestamps, as_of, windows[0]),
-            _7d=_count_in_window(timestamps, as_of, windows[1]),
-            _30d=_count_in_window(timestamps, as_of, windows[2]),
-        )
+        d1 = d7 = d30 = 0
+        for ts in timestamps:
+            if cutoffs[0] < ts <= as_of:
+                d1 += 1
+            if cutoffs[1] < ts <= as_of:
+                d7 += 1
+            if cutoffs[2] < ts <= as_of:
+                d30 += 1
+        counts[model_id] = LaunchCounts(_1d=d1, _7d=d7, _30d=d30)
     return counts
-
-
-def _count_in_window(timestamps: list[datetime], as_of: datetime, window: timedelta) -> int:
-    cutoff = as_of - window
-    return sum(1 for ts in timestamps if cutoff < ts <= as_of)
 
 
 def read_last_launched(path: Path) -> str | None:

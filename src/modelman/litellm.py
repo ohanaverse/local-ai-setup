@@ -152,6 +152,33 @@ def _model_list_rows(config: dict[str, Any]) -> list[Any] | None:
     return rows
 
 
+def _database_url_from_config(config: dict[str, Any]) -> str | None:
+    """Read general_settings.database_url from a parsed LiteLLM config."""
+    general = config.get("general_settings") or {}
+    return general.get("database_url")
+
+
+def _reverse_model_index(model_list: list[dict[str, Any]]) -> dict[str, str]:
+    """Map litellm_params.model -> model_list.model_name.
+
+    Used to recover the registry model id when LiteLLM_SpendLogs.model_name
+    is NULL but the litellm_model field is present. If two entries share the
+    same litellm_params.model, the first one in the list wins.
+    """
+    index: dict[str, str] = {}
+    for entry in model_list:
+        if not isinstance(entry, dict):
+            continue
+        model_name = entry.get("model_name")
+        litellm_params = entry.get("litellm_params")
+        if not isinstance(litellm_params, dict):
+            continue
+        litellm_model = litellm_params.get("model")
+        if model_name and litellm_model and litellm_model not in index:
+            index[litellm_model] = model_name
+    return index
+
+
 def set_exposed(config: dict[str, Any], model_id: str, entry: dict[str, Any]) -> None:
     """Add or replace the model_list row keyed by `model_id`.
 

@@ -2,24 +2,25 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from modelman.registry import ModelEntry, Registry
 from modelman.usage.db import InMemorySpendStore, SpendLogRow
 from modelman.usage.reconcile import reconcile
 from modelman.usage.wt_state import LaunchCounts
 
 
-def _make_registry(models: list[tuple[str, str]]) -> dict:
-    return {
-        "models": [
-            {
-                "id": model_id,
-                "family": family,
-                "provider_id": model_id.split("/")[0],
-                "model_name": model_id.split("/", 1)[1],
-                "tags": [],
-            }
+def _make_registry(models: list[tuple[str, str]]) -> Registry:
+    return Registry(
+        models=[
+            ModelEntry(
+                id=model_id,
+                family=family,
+                provider_id=model_id.split("/")[0],
+                model_name=model_id.split("/", 1)[1],
+                tags=[],
+            )
             for model_id, family in models
         ]
-    }
+    )
 
 
 # A model with both wt launches and LiteLLM spend in the window should land
@@ -45,7 +46,6 @@ def test_reconcile_matched_model() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
     )
     assert len(result.matched) == 1
     usage = result.matched[0]
@@ -60,6 +60,35 @@ def test_reconcile_matched_model() -> None:
     assert usage.spend == 0.01
 
 
+# Regression test: a hand-edited registry.toml can carry a non-string family
+# (e.g. `family = 123`); _family_for must coerce it to str so format_report's
+# sort key never mixes int and str families (which would raise TypeError).
+def test_reconcile_coerces_non_string_family() -> None:
+    now = datetime.fromisoformat("2026-08-28T12:00:00+00:00")
+    wt_counts = {"ollama/a": LaunchCounts(_1d=1, _7d=1, _30d=1)}
+    registry = Registry(
+        models=[
+            ModelEntry(
+                id="ollama/a",
+                # Simulate a hand-edited registry.toml with a non-string family.
+                family=123,  # type: ignore[arg-type]
+                provider_id="ollama",
+                model_name="a",
+                tags=[],
+            )
+        ]
+    )
+    result = reconcile(
+        wt_counts=wt_counts,
+        spend_store=InMemorySpendStore([]),
+        registry=registry,
+        start=now,
+        end=now,
+    )
+    assert len(result.wt_only) == 1
+    assert result.wt_only[0].family == "123"
+
+
 # A registry model launched via wt but with no matching LiteLLM spend should
 # surface in `wt_only` so a user can spot local-only usage never proxied through LiteLLM.
 def test_reconcile_wt_only() -> None:
@@ -72,7 +101,6 @@ def test_reconcile_wt_only() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
     )
     assert len(result.wt_only) == 1
     assert result.wt_only[0].registry_model_id == "ollama/a"
@@ -100,7 +128,6 @@ def test_reconcile_litellm_only() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
     )
     assert len(result.litellm_only) == 1
     assert result.litellm_only[0].registry_model_id == "ollama/b"
@@ -137,7 +164,6 @@ def test_reconcile_filters_by_time_window() -> None:
         registry=registry,
         start=datetime.fromisoformat("2026-08-25T00:00:00+00:00"),
         end=now,
-        as_of=now,
     )
     assert len(result.litellm_only) == 1
     assert result.litellm_only[0].litellm_requests == 1
@@ -171,7 +197,6 @@ def test_reconcile_uses_reverse_index_for_null_model_name() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
         litellm_model_list=model_list,
     )
     assert len(result.litellm_only) == 1
@@ -200,7 +225,6 @@ def test_reconcile_skips_rows_without_identifiable_model() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
     )
     assert result.matched == []
     assert result.wt_only == []
@@ -222,7 +246,6 @@ def test_reconcile_model_filter() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
         model_filter="ollama/a",
     )
     assert len(result.wt_only) == 1
@@ -242,7 +265,6 @@ def test_reconcile_family_filter() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
         family_filter="foo",
     )
     assert len(result.wt_only) == 1
@@ -273,7 +295,6 @@ def test_reconcile_family_filter_excludes_spend_only_model() -> None:
         registry=registry,
         start=now,
         end=now,
-        as_of=now,
         family_filter="foo",
     )
     assert result.matched == []
