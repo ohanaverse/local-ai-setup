@@ -27,6 +27,7 @@
 ## TL;DR
 
 ```bash
+# from: any git repo, e.g. ~/github/ohanaverse/local-ai-setup
 claude-wt                    # TUI: pick worktree/branch + model (advances rotation)
 claude-wt -W my-feature      # skip worktree picker
 claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything
@@ -50,6 +51,8 @@ Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent
 | `agy-wt` | Antigravity CLI | No | No |
 | `shell-wt` | Shell command | No | No |
 
+Interactive behaviors (key feel, resume prompt) are not driven here — see the UNVERIFIED note in Verification.
+
 ### 2. TUI flow
 
 Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the agent screen). Phases in `internal/tui/app.go`: worktree list → agent/command picker (only when no `-A` was supplied) → agent+model screen → launch.
@@ -65,7 +68,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
   The tag slot defaults to `default_tag = "code"` (see §5) unless `-T` narrows it. Model rows carry usage badges (launch counts from `usage.jsonl`), and the cursor starts on the rotation's next model (see §4).
 - **On the model screen:** `j`/`k`/arrows navigate (with wrap-around), `enter` launches, `q` quits, `esc` pops back. Footer reads `[↑/↓] navigate   [enter] launch   [q] quit`.
 - **Session resume:** for agents with resume (claude, opencode) the picker offers to resume the newest session or go fresh; `esc`/cancel returns to the model screen without launching or advancing rotation.
-- **There is NO `d` tag-toggle key** — the README lists one, but no source version has a `"d"` handler (checked current HEAD `bf98d14` AND the stale binary's source `264cb74`; picker footer has no `[d]`). See `docs/guides/03-model-families.md` Gotchas. Use `-T code`/`-T design` instead.
+- **There is NO `d` tag-toggle key** — the README lists one, but no source version has a `"d"` handler (checked current HEAD `bf98d14` AND the stale binary's source `264cb74`; picker footer has no `[d]`). See `docs/guides/03-model-families.md` Gotchas. Use `-T code`/`-T design` instead — on a rebuilt binary this currently lists nothing; tags are latent until set in modelman (see Gotchas).
 
 ### 3. Model selection
 
@@ -86,7 +89,7 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
 ### 4. Rotation
 
 - Launching a model **advances rotation**: the picker cursor (and any model-less launch) lands on the next eligible model after the last-launched one. There is no key or command to advance manually.
-- State is a **single global file**, `~/.config/agent-wt/rotation.state`, one line, bare model id (`internal/rotation/rotation.go`: `Rotation reads and writes the single global rotation.state file.`). Old per-tag/per-agent `rotation-*.state` files are one-shot migration inputs — the newest one is folded in once and the files deleted (two legacy leftovers, `rotation-claude-code-_.state` and `rotation-pi-code-_.state`, still sat in `~/.config/agent-wt/` on 2026-08-29). See `docs/guides/03-model-families.md`.
+- State is a **single global file**, `~/.config/agent-wt/rotation.state`, one line, bare model id (`internal/rotation/rotation.go`: `Rotation reads and writes the single global rotation.state file.`). Old per-tag/per-agent `rotation-*.state` files are one-shot migration inputs — the newest one is folded in once and the files deleted; migration only runs when `rotation.state` is missing — it exists, so the legacy files simply remain (two legacy leftovers, `rotation-claude-code-_.state` and `rotation-pi-code-_.state`, still sat in `~/.config/agent-wt/` on 2026-08-29). See `docs/guides/03-model-families.md`.
 - Hidden read-only probe:
 
   ```bash
@@ -124,7 +127,7 @@ Available Commands:
 
   Observed: `wt: main guard is installed in this repo.`
 - `--yolo` — exists in 0.1.0, verified in `wt --help` and `cmd/wt/main.go`; prepends the agent's skip-permissions flag (claude: `--dangerously-skip-permissions`). Source-verified caveat: pi has no such flag, so `--yolo` is a no-op there (`internal/agents/agents_test.go`: "Pi has no yolo flag").
-- `--cwd` — launch in the current repo root with no pickers (also skips resume).
+- `--cwd` — launch in the current repo root with no pickers; it skips the TUI (and its interactive resume prompt), but a prior resume-capable session for the directory is still resumed automatically at launch — `cmd/wt/launch.go:28-44` looks up the newest session for the worktree (unless the model is native) and `buildLaunch` appends the resume flag when one exists.
 - `--debug-worktrees` / `--debug-session <agent>` — test helpers printing worktrees/branches and the newest claude/opencode session respectively; not for daily use, one line, moving on.
 - Removed subcommands now fail loudly instead of creating a worktree named "models": `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt/main.go`).
 
@@ -159,12 +162,13 @@ Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx
 - **codex, copilot, and pi have no session resume** — only claude-wt and opencode-wt offer the resume/fresh prompt.
 - **Tag rotation is currently latent:** every registry model has `tags = []`, so `-T`-less rotation walks the whole list and the header's tag slot shows `code` without meaning a filter is active. Wire tags in modelman first (`docs/guides/03-model-families.md`).
 - **Stale PATH binary:** `/Users/keith/.local/bin/wt` (2026-08-27) reads its model catalog from `config.toml`, missing registry-only models; rebuild with the Prerequisites command. After a rebuild, expect `wt rotate code`'s pair-check behavior to change until tags exist in the registry (also flagged in `docs/guides/03-model-families.md`).
+- **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
 - **`-w` is gone.** It errors with `-w is removed; use -W or --worktree`. README examples showing `-w` are wrong for both the installed binary and current source.
 - **`rotation.state` is written by launches only** (`Record()`); the `wt rotate <tag>` probe and `esc`/canceled prompts never touch it. One global slot — per-tag/agent state files are legacy migration inputs.
 
 ## Going deeper
 
-- `/Users/keith/github/ohanaverse/agent-worktree/README.md` — agents, install, guard, copilot passthrough env vars (mind the stale `-w`/`d`/rotation-file spots called out above)
+- `/Users/keith/github/ohanaverse/agent-worktree/README.md` — agents, install, guard, copilot passthrough env vars (mind the stale `-w`/`d`/rotation-file spots called out above — and the `--cwd` row at `README.md:75`, which wrongly claims it skips session resume)
 - `/Users/keith/github/ohanaverse/agent-worktree/docs/configuration.md` and `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md` — config.toml and themes.toml reference
 - Specs (all verified present): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-native-unification-design.md`
 - `docs/guides/00-config-map.md` — who owns which `~/.config` file; `docs/guides/02-providers-and-models.md` — registry content; `docs/guides/03-model-families.md` — families/tags that feed the picker
