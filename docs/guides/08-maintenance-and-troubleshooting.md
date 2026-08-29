@@ -173,7 +173,7 @@ size_bytes = 19327352832
 litellm_exposed = false
 ```
 
-Live proof of state drift: `litellm_exposed = true` count is **0** while `ollama/qwen3.8:27b-mlx` (flag `false`) demonstrably routes through the proxy — its 11 config.yaml entries pre-date modelman bookkeeping. **config.yaml is the routing source of truth; `litellm_exposed` is bookkeeping.** A `false` here does not prove the model is missing; a `true` with no config.yaml row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
+Live proof of state drift (historical): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The two in-registry ollama models are now modelman-exposed; the nine omlx/openrouter/llama.cpp entries remain hand-managed by design. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing; a `true` with no `config.yaml` row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
 
 **Step 4 — not exposed anywhere: expose it.** modelman writes the `model_list` row and flips the flag (local models must be downloaded first):
 

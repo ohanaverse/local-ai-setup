@@ -127,6 +127,7 @@ variants:
 ### `~/.config/litellm/config.yaml`
 
 - **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
+- **Hand-managed entries:** modelman owns only the two in-registry `ollama/*` models; the 9 omlx/openrouter/llama.cpp entries are deliberately hand-managed.
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
 - **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, llama.cpp, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
 - **Env override:** `MODELMAN_LITELLM_CONFIG`.
