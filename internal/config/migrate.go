@@ -119,7 +119,7 @@ func Migrate() (bool, error) {
 			// duplicate (google/native → agy/native).
 			filtered := models[:0]
 			for _, m := range models {
-				if m.IsNative() && (m.Family == "google" || noNativeAgents[m.Family]) {
+				if m.ModelName == "native" && (m.Family == "google" || noNativeAgents[m.Family]) {
 					continue
 				}
 				filtered = append(filtered, m)

@@ -382,7 +382,7 @@ func TestEnterInModelPhaseNativeSkipsResume(t *testing.T) {
 	}
 
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
-		selectedPath: repo, models: singleModelList(config.Model{ID: "claude/native", ModelName: "native"})}
+		selectedPath: repo, models: singleModelList(config.Model{ID: "claude/native", ModelName: "native", Native: true})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gotModel := got.(model)
 	if gotModel.phase == phaseResume {

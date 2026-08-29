@@ -41,7 +41,7 @@ func TestPiSyncModelsAddsMissing(t *testing.T) {
 	writeFile(t, path, emptyPiModels)
 	cfg := &config.Config{Models: []config.Model{
 		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-		{ID: "claude/native", ModelName: "native"},
+		{ID: "claude/native", ModelName: "native", Native: true},
 	}}
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)

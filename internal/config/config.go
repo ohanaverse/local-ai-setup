@@ -59,6 +59,7 @@ type Model struct {
 	Location   Location `toml:"location,omitempty"`
 	Tags       []string `toml:"tags"`             // e.g. ["code", "design"]
 	Source     Source   `toml:"source,omitempty"` // curated or discovered
+	Native     bool     `toml:"-"`                // derived: provider auth.type == "native"; not persisted
 }
 
 // ── Agent ─────────────────────────────────────────────────
@@ -133,6 +134,7 @@ func Load() (*Config, error) {
 			return nil, regErr
 		}
 		cfg.Providers, cfg.Models = providers, models
+		deriveNative(cfg)
 		return cfg, nil
 	}
 	if err != nil {
@@ -163,6 +165,7 @@ func Load() (*Config, error) {
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
 	cfg.Providers, cfg.Models = providers, models
+	deriveNative(cfg)
 	return cfg, nil
 }
 
@@ -260,12 +263,6 @@ func (c *Config) validate() []error {
 	return errs
 }
 
-// IsNative reports whether this model is an agent's native model
-// (e.g. "claude/native"), as opposed to a provider-hosted model.
-func (m Model) IsNative() bool {
-	return m.ModelName == "native"
-}
-
 // HasTag returns true if the model has the given tag.
 func (m Model) HasTag(tag string) bool {
 	for _, t := range m.Tags {
@@ -285,6 +282,18 @@ func (c *Config) ModelsWithTag(tag string) []Model {
 		}
 	}
 	return out
+}
+
+// deriveNative marks each model whose provider authenticates natively
+// (auth.type == "native") as Native. It runs after the registry join so the
+// in-memory Native field reflects the registry's auth data — the single
+// source of truth for native-ness. A model whose provider is missing (or has
+// a non-native auth type) is left non-native.
+func deriveNative(cfg *Config) {
+	for i := range cfg.Models {
+		p := cfg.ProviderByID(cfg.Models[i].ProviderID)
+		cfg.Models[i].Native = p != nil && p.Auth.Type == "native"
+	}
 }
 
 // ProviderByID returns the provider with the given id, or nil if not found.
@@ -466,19 +475,6 @@ func parseFilterList(s string) []string {
 // outside the config package (e.g. cmd/wt/launch.go). It trims whitespace,
 // drops empty entries, and returns nil for empty/whitespace-only input.
 func ParseFilterList(s string) []string { return parseFilterList(s) }
-
-// ToggleLocation cycles between local and cloud. An empty location defaults
-// to local on the first toggle.
-func ToggleLocation(loc Location) Location {
-	switch loc {
-	case LocationLocal:
-		return LocationCloud
-	case LocationCloud:
-		return LocationLocal
-	default:
-		return LocationLocal
-	}
-}
 
 // TagsToString joins a tag slice into a comma-delimited display string.
 // Returns "" for nil or empty slices.

@@ -14,14 +14,14 @@ import (
 )
 
 func nativeModel(agent string) config.Model {
-	return config.Model{ID: agent + "/native", ProviderID: agent, ModelName: "native", Location: config.LocationCloud}
+	return config.Model{ID: agent + "/native", ProviderID: agent, ModelName: "native", Location: config.LocationCloud, Native: true}
 }
 
 // namedNativeModel returns a non-sentinel native-provider model (e.g.
 // "claude/opus"): same provider key as the sentinel but with a real
 // model name that should be passed via --model.
 func namedNativeModel(provider, name string) config.Model {
-	return config.Model{ID: provider + "/" + name, ProviderID: provider, ModelName: name, Location: config.LocationCloud}
+	return config.Model{ID: provider + "/" + name, ProviderID: provider, ModelName: name, Location: config.LocationCloud, Native: true}
 }
 
 func cloudModel(id string) config.Model {
@@ -648,10 +648,10 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 	}
 }
 
-// TestBuildLaunchCmdNativeSkipsResume pins the !m.IsNative() defense-in-depth
+// TestBuildLaunchCmdNativeSkipsResume pins the !m.Native defense-in-depth
 // guard at the package level. The wrapper-level TestBuildLaunchNativeSkipsResume
 // in cmd/wt covers the same contract end-to-end, but if a refactor drops the
-// `!m.IsNative()` clause from BuildLaunchCmd itself, this test is the only
+// `!m.Native` clause from BuildLaunchCmd itself, this test is the only
 // direct pin — without it the bug could regress silently if the wrapper test
 // is later deleted or rewritten as a perceived duplicate. Without this guard,
 // resuming a session would restore the session's stored model and silently
@@ -669,10 +669,30 @@ func TestBuildLaunchCmdNativeSkipsResume(t *testing.T) {
 	}
 }
 
+// TestBuildLaunchCmdNamedNativeSkipsResume pins the broadened §5 resume-skip
+// predicate for a *named* native-provider model (claude/opus, ModelName
+// "opus", Native true), not just the claude/native sentinel. The sentinel
+// tests (TestBuildLaunchCmdNativeSkipsResume and its cmd/wt + tui wrappers)
+// would still pass if the predicate regressed from !m.Native back to
+// !m.IsNative() — which only checks ModelName == "native" — so this test is
+// the guard that a named native model, which the old IsNative() would have
+// missed, is not resumed.
+func TestBuildLaunchCmdNamedNativeSkipsResume(t *testing.T) {
+	cmd, err := BuildLaunchCmd("claude", namedNativeModel("claude", "opus"), "/tmp/repo", false,
+		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	got := strings.Join(cmd.Args, " ")
+	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
+		t.Errorf("args = %q, named native model must not resume", got)
+	}
+}
+
 // TestBuildLaunchCmdResumeNonNative pins the inverse: a non-native model with
 // a non-nil session must append --resume. Together with
 // TestBuildLaunchCmdNativeSkipsResume, this locks both halves of the
-// `sess != nil && !m.IsNative()` guard so neither clause can drift.
+// `sess != nil && !m.Native` guard so neither clause can drift.
 func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
 	cmd, err := BuildLaunchCmd("claude",
 		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},

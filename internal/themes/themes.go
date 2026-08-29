@@ -144,6 +144,13 @@ func AvailableList() []string {
 	return out
 }
 
+// Names returns the available theme names as a comma-separated string, the
+// single source of truth for the "available: …" list shown in error messages
+// and `wt config theme` output.
+func Names() string {
+	return strings.Join(AvailableList(), ", ")
+}
+
 // Get returns the theme with the given name. Name matching is
 // case-insensitive (canonical form is lowercase, hyphenated). Returns
 // (zero, false) if no theme matches.

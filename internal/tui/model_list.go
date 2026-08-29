@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/rotation"
 	"github.com/ohanaverse/agent-worktree/internal/themes"
 	"github.com/ohanaverse/agent-worktree/internal/usage"
 )
@@ -69,17 +68,6 @@ func indexOfModelID(models []config.Model, id string) int {
 		}
 	}
 	return -1
-}
-
-// FindAfter returns the model that comes after target in models,
-// wrapping to models[0] when target is the last or missing. It is a
-// thin, testable wrapper around rotation.FirstAfter shared by the
-// picker's cursor positioning (the picker reads rotation.Last to
-// locate the prior launch and calls FindAfter to advance past it)
-// and the rotation tests; model_list.go imports the rotation
-// package for exactly this call.
-func FindAfter(models []config.Model, target config.Model) (config.Model, bool) {
-	return rotation.FirstAfter(models, target)
 }
 
 // phaseModelView renders the model picker screen: the list of

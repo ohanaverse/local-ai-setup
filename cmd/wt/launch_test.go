@@ -79,7 +79,7 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 // "native" choice — the exact bug where selecting claude/native launched
 // claude with a prior session's kimi-k2.7-code:cloud model.
 func TestBuildLaunchNativeSkipsResume(t *testing.T) {
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native"}, "/tmp/repo", false,
+	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native", Native: true}, "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
@@ -110,7 +110,7 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 // the sess==nil short-circuit. Native-model behavior is pinned separately:
 // TestBuildLaunchNativeSkipsResume covers native+session, and
 // TestBuildLaunchCmdNativeSkipsResume in the agents package pins the
-// defense-in-depth `!m.IsNative()` guard directly.
+// defense-in-depth `!m.Native` guard directly.
 func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, nil, nil)
 	if err != nil {

@@ -45,7 +45,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 | `--debug-worktrees` | List worktrees and branches (test helper) |
 | `--debug-session <agent>` | Print newest resumable session (test helper) |
 
-Legacy `-w` is removed — use `-W`. Legacy bash `--code`/`--design`/`--native` are unsupported; rotation is slot-based (see [Rotation (Go)](#rotation-go)), the main guard is `internal/guard`.
+Legacy bash `--code`/`--design`/`--native` are unsupported; rotation is global, not slot-based (see [Rotation (Go)](#rotation-go)), the main guard is `internal/guard`.
 
 ## Passthrough args
 

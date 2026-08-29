@@ -692,7 +692,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// (and, for claude, routing a gateway model at the real Anthropic API).
 	// Look up a prior session only for non-native models.
 	var sess *session.Session
-	if !highlighted.model.IsNative() {
+	if !highlighted.model.Native {
 		var err error
 		sess, err = session.LatestForAgent(m.agent, m.selectedPath)
 		if err != nil {

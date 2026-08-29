@@ -618,3 +618,110 @@ func TestModelsForAgentAndTagIntersectsBoth(t *testing.T) {
 		}
 	}
 }
+
+// TestDeriveNative marks models whose provider authenticates natively
+// (auth.type == "native") as Native, and leaves others non-native. This is
+// the single source of truth for native-ness: a model is native iff its
+// provider's auth type is "native", regardless of the model name. Without
+// this, a future named native-provider model (e.g. claude/opus) would be
+// misrouted through the ollama gateway.
+func TestDeriveNative(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{
+			{ID: "claude", Auth: AuthConfig{Type: "native"}},
+			{ID: "ollama", Auth: AuthConfig{Type: "none"}},
+		},
+		Models: []Model{
+			{ID: "claude/native", ProviderID: "claude", ModelName: "native"},
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus"},
+			{ID: "ollama/gemma4", ProviderID: "ollama", ModelName: "gemma4"},
+			{ID: "orphan/x", ProviderID: "missing", ModelName: "x"},
+		},
+	}
+	deriveNative(cfg)
+	want := []bool{true, true, false, false}
+	for i, m := range cfg.Models {
+		if m.Native != want[i] {
+			t.Errorf("model %q Native = %v, want %v", m.ID, m.Native, want[i])
+		}
+	}
+}
+
+// TestLoad_DerivesNativeFromRegistryAuth asserts that Load() marks each model
+// Native from its provider's auth.type in the registry — the end-to-end wiring
+// of deriveNative through the registry join. TestDeriveNative calls the helper
+// directly, so a regression that drops the deriveNative(cfg) call from Load()
+// would leave every model non-native and silently misroute a named
+// native-provider model (e.g. claude/opus) through the ollama gateway. This
+// test pins the Load()-level wiring.
+func TestLoad_DerivesNativeFromRegistryAuth(t *testing.T) {
+	tmp := t.TempDir()
+	cfgDir := filepath.Join(tmp, "agent-wt")
+	os.MkdirAll(cfgDir, 0755)
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
+default_tag = "code"
+
+[[agents]]
+name = "claude"
+supported_providers = ["ollama"]
+default_provider = "ollama"
+`), 0644)
+	writeRegistry(t, tmp, `
+[[providers]]
+id = "ollama"
+name = "Ollama"
+auth = { type = "none", base_url = "http://localhost:11434" }
+
+[[providers]]
+id = "claude"
+name = "Claude"
+location = "cloud"
+auth = { type = "native" }
+
+[[providers]]
+id = "agy"
+name = "Antigravity"
+location = "cloud"
+auth = { type = "native" }
+
+[[models]]
+id = "ollama/test:1"
+family = "test"
+provider_id = "ollama"
+model_name = "test:1"
+location = "local"
+tags = ["code"]
+
+[[models]]
+id = "claude/opus"
+family = "claude"
+provider_id = "claude"
+model_name = "opus"
+location = "cloud"
+tags = ["code", "design"]
+
+[[models]]
+id = "agy/native"
+family = "agy"
+provider_id = "agy"
+model_name = "native"
+location = "cloud"
+tags = ["code", "design"]
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	native := map[string]bool{}
+	for _, m := range cfg.Models {
+		native[m.ID] = m.Native
+	}
+	if !native["claude/opus"] {
+		t.Errorf("claude/opus Native = false, want true (provider auth.type == \"native\")")
+	}
+	if native["ollama/test:1"] {
+		t.Errorf("ollama/test:1 Native = true, want false (provider auth.type == \"none\")")
+	}
+}

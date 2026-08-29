@@ -63,7 +63,7 @@ func syncModels(cfg *config.Config, path string) error {
 
 	added := 0
 	for _, m := range cfg.Models {
-		if m.IsNative() || m.ModelName == "" {
+		if m.Native || m.ModelName == "" {
 			continue
 		}
 		if existing[m.ModelName] {

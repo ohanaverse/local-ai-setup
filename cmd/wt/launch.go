@@ -30,7 +30,7 @@ func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg
 	// session's stored model, overriding the user's "native" choice. Skip
 	// the session lookup so no --resume/--session flag is ever appended.
 	var sess *session.Session
-	if !m.IsNative() {
+	if !m.Native {
 		sess, _ = session.LatestForAgent(agent, worktreePath)
 	}
 	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)

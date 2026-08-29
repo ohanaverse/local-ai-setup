@@ -33,7 +33,7 @@ func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	// expected behavior for an explicit native choice). Ollama-routed models get
 	// the Ollama endpoint declared inline so codex never falls back to "openai"
 	// auth and prompts to sign in.
-	if !m.IsNative() {
+	if !m.Native {
 		lc.Args = append(lc.Args,
 			"-c", "model_provider="+ollamaProvider,
 			"-c", "model_providers."+ollamaProvider+".name=\"Ollama\"",

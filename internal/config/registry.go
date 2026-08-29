@@ -59,7 +59,8 @@ func expandHome(path string) (string, error) {
 // loadRegistry decodes modelman-owned registry.toml into providers and
 // models. Registry fields wt doesn't consume (cost, model_info, fetch, and
 // model_dir) are ignored by the decoder; auth fields are parsed into the
-// provider data but are not consumed by launch behavior.
+// provider data, and auth.type drives Model.Native — the single source of
+// truth for native-ness, consumed by driver dispatch and resume-skip.
 //
 // Fail-closed: a missing or malformed registry is an error — wt has no
 // editor for this file; seed it once with `modelman migrate`.

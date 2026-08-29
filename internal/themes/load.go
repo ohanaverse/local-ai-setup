@@ -63,7 +63,7 @@ func Load() (Theme, bool, error) {
 	if tf.Theme == "" {
 		return Default, false, &ThemeNameError{
 			msg: fmt.Sprintf("theme name in themes.toml is empty — available: %s",
-				strings.Join(AvailableList(), ", ")),
+				Names()),
 		}
 	}
 
@@ -71,7 +71,7 @@ func Load() (Theme, bool, error) {
 	if !ok {
 		return Default, false, &ThemeNameError{
 			msg: fmt.Sprintf("unknown theme %q in themes.toml — available: %s",
-				tf.Theme, strings.Join(AvailableList(), ", ")),
+				tf.Theme, Names()),
 		}
 	}
 	return theme, true, nil
@@ -131,11 +131,11 @@ func checkDuplicateThemeKey(data []byte) error {
 func Save(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("theme name cannot be empty — available: %s",
-			strings.Join(AvailableList(), ", "))
+			Names())
 	}
 	if _, ok := Get(name); !ok {
 		return fmt.Errorf("unknown theme %q — available: %s",
-			name, strings.Join(AvailableList(), ", "))
+			name, Names())
 	}
 	body := fmt.Sprintf("theme = %q\n", name)
 	return config.WriteFileAtomic(Path(), []byte(body), 0o644)

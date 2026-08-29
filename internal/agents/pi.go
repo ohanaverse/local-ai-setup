@@ -28,7 +28,7 @@ func (piDriver) SyncModels(cfg *config.Config) error {
 // default model and surfaces a warning.
 func (piDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
-	if m.IsNative() {
+	if m.Native {
 		return lc
 	}
 	path, err := piModelsPath()

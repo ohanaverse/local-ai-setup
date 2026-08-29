@@ -12,9 +12,7 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/agent-worktree/internal/config"
@@ -56,7 +54,7 @@ func configPathCmd(a *app) *cobra.Command {
 		Use:   "path",
 		Short: "Print the config directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), filepath.Dir(themes.Path()))
+			fmt.Fprintln(cmd.OutOrStdout(), config.Dir())
 			return nil
 		},
 	}
@@ -79,7 +77,7 @@ func configThemeCmd(a *app) *cobra.Command {
 			// No subcommand: show active theme. Use cobra's output stream
 			// so callers can capture it (tests, scripts).
 			accentStyle := lipgloss.NewStyle().Foreground(a.theme.Token(themes.TokenAccent))
-			available := joinThemeNames()
+			available := themes.Names()
 			fmt.Fprintf(cmd.OutOrStdout(), "active: %s\navailable: %s\n",
 				accentStyle.Render(a.theme.Name), available)
 			return nil
@@ -165,7 +163,7 @@ func configThemeShowCmd(a *app) *cobra.Command {
 				th, ok := themes.Get(args[0])
 				if !ok {
 					return fmt.Errorf("unknown theme %q — available: %s",
-						args[0], joinThemeNames())
+						args[0], themes.Names())
 				}
 				theme = th
 			}
@@ -238,8 +236,3 @@ func configThemeUnsetCmd() *cobra.Command {
 	}
 }
 
-// joinThemeNames formats AvailableList() as a comma-separated string.
-// Used in error messages — order is stable.
-func joinThemeNames() string {
-	return strings.Join(themes.AvailableList(), ", ")
-}
