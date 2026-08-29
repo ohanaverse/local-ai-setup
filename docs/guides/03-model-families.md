@@ -95,7 +95,7 @@ The families screen keys, copied from the modelman README (§TUI):
 | `r` | Reconcile |
 | `q` | Quit |
 
-(Note `d` deletes here — modelman's TUI. The wt README's `d` means tag-group toggle; different tool, and that one doesn't exist in the current build — see Gotchas. Fix: drop the `d` toggle from `~/github/ohanaverse/agent-worktree/README.md:119-120`.)
+(Note `d` deletes here — modelman's TUI. The wt README's `d` means tag-group toggle; different tool, and that one doesn't exist in the current build — see Gotchas.)
 
 ### 3. Tag groups (`code`/`design`) and how `wt` consumes them
 
@@ -230,7 +230,7 @@ ollama/glm-5.3-flash:cloud
 - **Display names are per-machine mutable state (`modelman.toml`), consumed by modelman only.** They never change what `wt` shows or rotates.
 - **Family/tag structure is canonical in `registry.toml` (modelman-owned).** `wt` reads it read-only; change families/tags through modelman (or hand-edit knowing modelman owns it).
 - **`~/.config/local-ai/families/` is LEGACY** (`ornith-1.5.yaml`, `qwen3.8.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per [00-config-map](00-config-map.md): don't resurrect it.
-- **The wt README is stale in two places vs wt 0.1.0 as shipped:** the `d` "toggle between code and design tag groups" key has no handler in the TUI source (picker footer is `[↑/↓] navigate [enter] launch [q] quit`), and rotation state is the single global `rotation.state`, not per-tag `rotation-<tag>.state` files (legacy files are one-shot migration inputs, deleted after). Fix `~/github/ohanaverse/agent-worktree/README.md:119-120`: drop the `d` toggle; replace per-tag state references with `rotation.state`.
+- **TUI behavior:** there is no `d` tag-toggle key, `rotation.state` is a single global slot, and per-tag `rotation-<tag>.state` files are legacy migration inputs that are deleted after migration.
 - **The installed `wt` binary (built 2026-08-27) predates the registry-consumer merge (2026-08-28).** Observed: `wt rotate code`/`design` return models although `registry.toml` has zero tags — the old build still serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks (its catalog is missing `medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`, which registry has). A rebuild from `~/github/ohanaverse/agent-worktree` (`go build -o /Users/keith/.local/bin/wt ./cmd/wt` — build over the PATH copy, not GOPATH, which `~/.local/bin` shadows; see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4) makes `registry.toml` authoritative — expected to fail the `wt rotate code/design` pair-check above until tags exist.
 
 ## Going deeper
