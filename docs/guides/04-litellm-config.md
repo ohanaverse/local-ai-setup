@@ -6,8 +6,8 @@
 
 ## Prerequisites
 
-- `docs/guides/01-initial-setup.md` complete: proxy running under the `local.litellm.proxy` LaunchAgent with `--config /Users/keith/.config/litellm/config.yaml --port 4000`, master key in the plist's `EnvironmentVariables`, Postgres + Redis up (health checks: guide 01 §6).
-- modelman runnable from its repo (the PATH-installed `modelman` is stale — guide 02 Gotchas). Exposure context (providers, registry): `docs/guides/02-providers-and-models.md`.
+- [01-initial-setup](01-initial-setup.md) complete: proxy running under the `local.litellm.proxy` LaunchAgent with `--config /Users/keith/.config/litellm/config.yaml --port 4000`, master key in the plist's `EnvironmentVariables`, Postgres + Redis up (health checks: guide 01 §6).
+- modelman runnable from its repo (the PATH-installed `modelman` is stale — guide 02 Gotchas). Exposure context (providers, registry): [02-providers-and-models](02-providers-and-models.md).
 - Live pre-flight — all three lines must match before relying on anything below:
 
 ```bash
@@ -125,7 +125,7 @@ Exposed ollama/gemma4:12b-mlx through LiteLLM.
 Unexposed ollama/gemma4:12b-mlx.
 ```
 
-TUI — same toggle from the interactive UI (bare `uv run modelman`): press `l` on a model row; it queues the change and applies it on exit; the EXPOSED column shows `L` (see `docs/guides/02-providers-and-models.md`).
+TUI — same toggle from the interactive UI (bare `uv run modelman`): press `l` on a model row; it queues the change and applies it on exit; the EXPOSED column shows `L` (see [02-providers-and-models](02-providers-and-models.md)).
 
 Before/after, using the real files read-only. Current state on this machine — the entry exists in config.yaml but modelman's own flag says false (state drift, see Gotchas):
 
@@ -294,5 +294,5 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
 - modelman's LiteLLM exposure design (writer contract, upsert semantics): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
 - Source of the writer/policies on this machine: `~/github/ohanaverse/modelman/src/modelman/litellm.py` (policies ~54–58, entry builder ~96–125, save semantics ~215–219)
-- Benchmarks through the proxy: `docs/guides/05-benchmarks.md` (not yet created)
-- When :4000 misbehaves: `docs/guides/08-maintenance-and-troubleshooting.md` (not yet created)
+- Benchmarks through the proxy: [05-benchmarks](05-benchmarks.md)
+- When :4000 misbehaves: [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md)

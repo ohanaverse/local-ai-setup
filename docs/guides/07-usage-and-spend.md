@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- **LiteLLM proxy running with Postgres spend logging** — the stack from `docs/guides/01-initial-setup.md` / `docs/guides/04-litellm-config.md`. Spend rows land in the Postgres `LiteLLM_SpendLogs` table; without it, the Requests/tokens/Spend columns and the reconciliation have nothing to read (launch counts still work).
+- **LiteLLM proxy running with Postgres spend logging** — the stack from [01-initial-setup](01-initial-setup.md) / [04-litellm-config](04-litellm-config.md). Spend rows land in the Postgres `LiteLLM_SpendLogs` table; without it, the Requests/tokens/Spend columns and the reconciliation have nothing to read (launch counts still work).
 - **wt launch history exists**: `/Users/keith/.config/agent-wt/usage.jsonl` — wt appends one JSON line per TUI launch (guide 06 §7). First line here:
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
@@ -94,7 +94,7 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 - **`## Reconciliation`** has exactly two subsections:
   - `### WT-only launches` — models with launches in the fixed 7-day bucket but zero `LiteLLM_SpendLogs` rows inside the `--days` window.
   - `### LiteLLM-only spend` — models LiteLLM logged spend for with no wt launch.
-- **`## Last wt launch`** — the bare model id from `/Users/keith/.config/agent-wt/rotation.state` (single global slot, written only by the wt TUI launch path — see `docs/guides/06-wt-agents-and-models.md`). Live both read `ollama/glm-5.3-flash:cloud`.
+- **`## Last wt launch`** — the bare model id from `/Users/keith/.config/agent-wt/rotation.state` (single global slot, written only by the wt TUI launch path — see [06-wt-agents-and-models](06-wt-agents-and-models.md)). Live both read `ollama/glm-5.3-flash:cloud`.
 
 ### 3. Interpreting mismatches
 
@@ -126,7 +126,7 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
   psql litellm -tAc 'select count(*) from "LiteLLM_SpendLogs"'
   ```
 
-  Expected: `77` rows (live 2026-08-29 — rerun it yourself; the current count grows with every LiteLLM-routed request). Stack setup: `docs/guides/01-initial-setup.md`, `docs/guides/04-litellm-config.md`.
+  Expected: `77` rows (live 2026-08-29 — rerun it yourself; the current count grows with every LiteLLM-routed request). Stack setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
 
 ## Verification
 
@@ -153,6 +153,6 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 ## Going deeper
 
 - Design of the whole reconciliation: `/Users/keith/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-usage-design.md` — data sources, window rules, non-goals (read-only), and the SQL it runs against `LiteLLM_SpendLogs`.
-- Launch/rotation side of the data: `docs/guides/06-wt-agents-and-models.md` (picker, `rotation.state` life cycle, `usage.jsonl` writer).
-- LiteLLM wiring and spend logging setup: `docs/guides/01-initial-setup.md`, `docs/guides/04-litellm-config.md`.
+- Launch/rotation side of the data: [06-wt-agents-and-models](06-wt-agents-and-models.md) (picker, `rotation.state` life cycle, `usage.jsonl` writer).
+- LiteLLM wiring and spend logging setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
 - This is a leaf guide — nothing further builds on it in `docs/guides/`.

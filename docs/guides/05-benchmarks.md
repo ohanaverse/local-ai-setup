@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
-- Models exposed through LiteLLM per [`04-litellm-config.md`](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/modelman/src/modelman/benchmark/runner.py`); today that is no models, hence:
+- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/modelman/src/modelman/benchmark/runner.py`); today that is no models, hence:
   `uv run modelman benchmark run` → `error: no benchmark targets found` (live, exit 1). Pass `--model`/`--family` to bypass the exposure filter, or `expose` first (guide 04 §2).
 - Backends healthy: the four-port block in Verification answers (llama.cpp `:8080`, oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`).
 - modelman from its repo, not PATH (`uv run modelman` under `/Users/keith/github/ohanaverse/modelman` — the PATH-installed `modelman` is stale, guide 02 Gotchas). Isolation helpers callable:
@@ -206,5 +206,5 @@ ls /Users/keith/.config/local-ai/benchmarks/
 - Isolation helpers, stop/start/warmup per backend: `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-isolate-provider`, `.../bin/llm-restore-providers`, and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
 - Legacy benchmark docs + archived numbers: `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
 - modelman source: `~/github/ohanaverse/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` helper adapter)
-- Launching `wt` agents against the benchmarked models: `docs/guides/06-wt-agents-and-models.md` (not yet created)
-- Spend/usage data the proxy logs per benchmark request: `docs/guides/07-usage-and-spend.md`
+- Launching `wt` agents against the benchmarked models: [06-wt-agents-and-models](06-wt-agents-and-models.md)
+- Spend/usage data the proxy logs per benchmark request: [07-usage-and-spend](07-usage-and-spend.md)

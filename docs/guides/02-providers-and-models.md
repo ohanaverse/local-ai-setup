@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- `docs/guides/01-initial-setup.md` complete: LiteLLM proxy running on :4000, Ollama up, services healthy. Guides 03–08 of this set (`docs/guides/03-model-families.md` onward) continue from here.
+- [01-initial-setup](01-initial-setup.md) complete: LiteLLM proxy running on :4000, Ollama up, services healthy. Guides 03–08 of this set ([03-model-families](03-model-families.md) onward) continue from here.
 - modelman runnable from its repo (the PATH-installed `modelman` is stale — see Gotchas):
 
 ```bash
@@ -27,7 +27,7 @@ modelman reads three files under `~/.config/local-ai/` (table copied from the mo
 | `modelman.toml` | Per-machine mutable state: download markers, family display names, LiteLLM exposure flags | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 
-Full map including wt and LaunchAgent surfaces: `docs/guides/00-config-map.md`
+Full map including wt and LaunchAgent surfaces: [00-config-map](00-config-map.md)
 
 LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_LITELLM_CONFIG` overrides it).
 
@@ -213,7 +213,7 @@ uv run modelman unexpose ollama/gpt-oss:20b
 Unexposed ollama/gpt-oss:20b.
 ```
 
-On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restart LiteLLM afterwards (`launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, see `docs/guides/01-initial-setup.md` §7). In the TUI the same toggle is `l` on a model row (queued, applied on exit; the EXPOSED column shows `L`).
+On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restart LiteLLM afterwards (`launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `l` on a model row (queued, applied on exit; the EXPOSED column shows `L`).
 
 ## Verification
 
@@ -276,7 +276,7 @@ provider_id = "ollama"
 model_name = "ornith-1.5:35b"
 ```
 
-End-to-end confirm: the model also answers through the proxy — `curl http://localhost:4000/v1/models` with the master key from the LaunchAgent plist (full steps in `docs/guides/01-initial-setup.md` §Verification).
+End-to-end confirm: the model also answers through the proxy — `curl http://localhost:4000/v1/models` with the master key from the LaunchAgent plist (full steps in [01-initial-setup](01-initial-setup.md) §Verification).
 
 ## Gotchas
 
@@ -289,7 +289,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 
 ## Going deeper
 
-- Family concepts and per-provider variants: `docs/guides/03-model-families.md` (next in this set)
+- Family concepts and per-provider variants: [03-model-families](03-model-families.md) (next in this set)
 - modelman README (TUI keys, TOML shapes, all commands): `~/github/ohanaverse/modelman/README.md`
 - TUI screens and apply-queue design: `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-26-modelman-tui-design.md`
 - LiteLLM exposure design (provider policies, `model_list` writes): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`

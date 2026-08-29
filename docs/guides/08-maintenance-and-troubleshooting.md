@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- Full stack installed and initially configured per `docs/guides/01-initial-setup.md` — the five LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `local.llamacpp.server.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`).
+- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the five LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `local.llamacpp.server.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`).
 - modelman runnable from its repo, not PATH (the PATH-installed `modelman` is stale — guide 02 Gotchas).
 - This repo checked out — `bin/llm-isolate-provider` / `bin/llm-restore-providers` live here (guide 05), and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
@@ -475,7 +475,7 @@ model_list entries: 11
 
 ## Going deeper
 
-- Full install, plist templates, and the secret-redaction rules (plist `EnvironmentVariables`, config.yaml `api_key`s): `docs/guides/01-initial-setup.md`
-- config.yaml anatomy, modelman exposure mechanics, and the same kickstart with measured recovery: `docs/guides/04-litellm-config.md`
-- Benchmark isolation/restore contracts behind §5, and what a clean restore guarantees: `docs/guides/05-benchmarks.md`
+- Full install, plist templates, and the secret-redaction rules (plist `EnvironmentVariables`, config.yaml `api_key`s): [01-initial-setup](01-initial-setup.md)
+- config.yaml anatomy, modelman exposure mechanics, and the same kickstart with measured recovery: [04-litellm-config](04-litellm-config.md)
+- Benchmark isolation/restore contracts behind §5, and what a clean restore guarantees: [05-benchmarks](05-benchmarks.md)
 - The actual source of truth for everything §1 asserts (start-at-load, keep-alive, log paths, env keys): `~/Library/LaunchAgents/` — read the plist before guessing about any service

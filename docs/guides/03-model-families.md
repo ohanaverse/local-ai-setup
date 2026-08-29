@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- `docs/guides/02-providers-and-models.md` complete.
+- [02-providers-and-models](02-providers-and-models.md) complete.
 - ≥2 models in the registry:
 
 ```bash
@@ -17,7 +17,7 @@ grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml
 22
 ```
 
-- modelman runnable from its repo (PATH-installed binary is stale — see `docs/guides/02-providers-and-models.md` Gotchas):
+- modelman runnable from its repo (PATH-installed binary is stale — see [02-providers-and-models](02-providers-and-models.md) Gotchas):
 
 ```bash
 # from: ~/github/ohanaverse/modelman
@@ -229,7 +229,7 @@ ollama/glm-5.3-flash:cloud
 - **Tags and families drive agent rotation — editing them changes what `wt` offers next launch.** The picker cursor starts after `rotation.state`'s last-launched id; narrow the tag/family sets too far and you get `no models for agent "…" in tag "…" — edit your config`.
 - **Display names are per-machine mutable state (`modelman.toml`), consumed by modelman only.** They never change what `wt` shows or rotates.
 - **Family/tag structure is canonical in `registry.toml` (modelman-owned).** `wt` reads it read-only; change families/tags through modelman (or hand-edit knowing modelman owns it).
-- **`~/.config/local-ai/families/` is LEGACY** (`ornith-1.5.yaml`, `qwen3.8.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per `docs/guides/00-config-map.md`: don't resurrect it.
+- **`~/.config/local-ai/families/` is LEGACY** (`ornith-1.5.yaml`, `qwen3.8.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per [00-config-map](00-config-map.md): don't resurrect it.
 - **The wt README is stale in two places vs wt 0.1.0 as shipped:** the `d` "toggle between code and design tag groups" key has no handler in the TUI source (picker footer is `[↑/↓] navigate [enter] launch [q] quit`), and rotation state is the single global `rotation.state`, not per-tag `rotation-<tag>.state` files (legacy files are one-shot migration inputs, deleted after). Fix `~/github/ohanaverse/agent-worktree/README.md:119-120`: drop the `d` toggle; replace per-tag state references with `rotation.state`.
 - **The installed `wt` binary (built 2026-08-27) predates the registry-consumer merge (2026-08-28).** Observed: `wt rotate code`/`design` return models although `registry.toml` has zero tags — the old build still serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks (its catalog is missing `medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`, which registry has). A rebuild from `~/github/ohanaverse/agent-worktree/README.md` (`go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt`) makes `registry.toml` authoritative — expected to fail the `wt rotate code/design` pair-check above until tags exist.
 
@@ -239,4 +239,4 @@ ollama/glm-5.3-flash:cloud
 - wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
 - Model registry data model (family/tags/agents, cascading filters): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - modelman README (TUI keys, `modelman.toml` shapes): `/Users/keith/github/ohanaverse/modelman/README.md`
-- Previous/next in this set: `docs/guides/02-providers-and-models.md`, `docs/guides/04-litellm-config.md` (not yet created)
+- Previous/next in this set: [02-providers-and-models](02-providers-and-models.md), [04-litellm-config](04-litellm-config.md)

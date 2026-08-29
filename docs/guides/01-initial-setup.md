@@ -35,7 +35,7 @@ You need:
 - macOS Apple Silicon (Homebrew's llama.cpp build enables Metal automatically).
 - Homebrew (`brew --version`).
 - `uv` (`brew install uv` — LiteLLM is installed through it).
-- Go — only to build `wt` (`docs/guides/06-wt-agents-and-models.md`).
+- Go — only to build `wt` ([06-wt-agents-and-models](06-wt-agents-and-models.md)).
 - OpenRouter API key from openrouter.ai/keys (starts with `sk-or-v1-`).
 - Hugging Face account (only for pulling HF-hosted models; gated ones need a token).
 
@@ -635,4 +635,4 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
 - oMLX backend reference: [`../reference/oMLX%20Download%20and%20Run.md`](../reference/oMLX%20Download%20and%20Run.md)
 - Hugging Face downloads (`hf download`, cache layout): [`../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md`](../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
-- Next in this set — register/expose models via modelman: `docs/guides/02-providers-and-models.md`
+- Next in this set — register/expose models via modelman: [02-providers-and-models](02-providers-and-models.md)
