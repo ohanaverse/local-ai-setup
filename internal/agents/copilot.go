@@ -10,6 +10,14 @@ type copilotDriver struct{}
 
 func (copilotDriver) YoloFlag() string { return "--yolo" }
 
+func (copilotDriver) InstructionPointers() []InstructionPointer {
+	return []InstructionPointer{
+		{Path: ".github/copilot-instructions.md", Content: "Read AGENTS.md and follow all instructions in it.\n"},
+	}
+}
+
+func (copilotDriver) OllamaURL() string { return "http://localhost:11434/v1" }
+
 func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc := LaunchCmd{Bin: "copilot"}
 	if yolo {
@@ -25,7 +33,7 @@ func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		return lc
 	}
 	lc.Env = append(lc.Env,
-		"COPILOT_PROVIDER_BASE_URL="+config.OllamaBaseURL+"/v1",
+		"COPILOT_PROVIDER_BASE_URL="+copilotDriver{}.OllamaURL(),
 		"COPILOT_PROVIDER_API_KEY=",
 		"COPILOT_PROVIDER_WIRE_API=responses",
 		"COPILOT_MODEL="+m.ModelName,

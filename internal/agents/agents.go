@@ -68,6 +68,29 @@ type Resumer interface {
 	LatestSession(path string) (*session.Session, error)
 }
 
+// InstructionPointer describes a single file created by `wt --init`.
+type InstructionPointer struct {
+	Path    string // relative to the repo root, e.g. "CLAUDE.md"
+	Content string // file body, e.g. "@AGENTS.md\n"
+}
+
+// Seeder is an optional Driver capability for agents that need a
+// project-level instruction pointer file created by `wt --init`.
+type Seeder interface {
+	// InstructionPointers returns the pointer files to create. Each pointer
+	// is written only if it does not already exist.
+	InstructionPointers() []InstructionPointer
+}
+
+// OllamaURLer is an optional Driver capability for agents that route
+// non-native models through a local Ollama-compatible gateway.
+type OllamaURLer interface {
+	// OllamaURL returns the full gateway URL the agent expects. Drivers are
+	// free to include path suffixes such as "/v1" or "/v1/" because each
+	// agent's wire protocol is different.
+	OllamaURL() string
+}
+
 // Installed reports whether bin resolves on PATH.
 func Installed(bin string) bool {
 	_, err := exec.LookPath(bin)

@@ -188,3 +188,17 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// TestSeedShell creates only AGENTS.md for the shell command agent, which
+// lacks the Seeder capability.
+func TestSeedShell(t *testing.T) {
+	root := t.TempDir()
+
+	res, err := Seed("shell", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Created) != 1 || res.Created[0] != "AGENTS.md" {
+		t.Fatalf("expected only AGENTS.md created, got %v", res.Created)
+	}
+}

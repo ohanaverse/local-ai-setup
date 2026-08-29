@@ -17,6 +17,14 @@ type claudeDriver struct{}
 
 func (claudeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
 
+func (claudeDriver) InstructionPointers() []InstructionPointer {
+	return []InstructionPointer{
+		{Path: "CLAUDE.md", Content: "@AGENTS.md\n"},
+	}
+}
+
+func (claudeDriver) OllamaURL() string { return "http://localhost:11434" }
+
 func (claudeDriver) ResumeFlag() string { return "--resume" }
 
 func (claudeDriver) LatestSession(path string) (*session.Session, error) {
@@ -50,7 +58,7 @@ func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc.Env = append(lc.Env,
 		"ANTHROPIC_AUTH_TOKEN=ollama",
 		"ANTHROPIC_API_KEY=",
-		"ANTHROPIC_BASE_URL="+config.OllamaBaseURL,
+		"ANTHROPIC_BASE_URL="+claudeDriver{}.OllamaURL(),
 	)
 	lc.Args = append(lc.Args, "--model", m.ModelName)
 	return lc

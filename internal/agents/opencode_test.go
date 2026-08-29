@@ -82,3 +82,15 @@ func TestOpenCodeLatestSessionNoDir(t *testing.T) {
 		t.Fatalf("expected nil session, got %+v", s)
 	}
 }
+
+// TestOpenCodeOllamaURL asserts opencodeDriver returns the /v1 endpoint.
+func TestOpenCodeOllamaURL(t *testing.T) {
+	var d Driver = opencodeDriver{}
+	u, ok := d.(OllamaURLer)
+	if !ok {
+		t.Fatal("opencodeDriver does not implement OllamaURLer")
+	}
+	if got := u.OllamaURL(); got != "http://localhost:11434/v1" {
+		t.Errorf("OllamaURL() = %q, want http://localhost:11434/v1", got)
+	}
+}

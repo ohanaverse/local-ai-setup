@@ -56,3 +56,31 @@ func TestClaudeLatestSessionNoDir(t *testing.T) {
 		t.Fatalf("expected nil session, got %+v", s)
 	}
 }
+
+// TestClaudeSeeder asserts claudeDriver returns the CLAUDE.md pointer.
+func TestClaudeSeeder(t *testing.T) {
+	var d Driver = claudeDriver{}
+	s, ok := d.(Seeder)
+	if !ok {
+		t.Fatal("claudeDriver does not implement Seeder")
+	}
+	ptrs := s.InstructionPointers()
+	if len(ptrs) != 1 {
+		t.Fatalf("expected 1 pointer, got %d", len(ptrs))
+	}
+	if ptrs[0].Path != "CLAUDE.md" || ptrs[0].Content != "@AGENTS.md\n" {
+		t.Errorf("pointer = %+v, want CLAUDE.md @AGENTS.md", ptrs[0])
+	}
+}
+
+// TestClaudeOllamaURL asserts claudeDriver returns the bare gateway URL.
+func TestClaudeOllamaURL(t *testing.T) {
+	var d Driver = claudeDriver{}
+	u, ok := d.(OllamaURLer)
+	if !ok {
+		t.Fatal("claudeDriver does not implement OllamaURLer")
+	}
+	if got := u.OllamaURL(); got != "http://localhost:11434" {
+		t.Errorf("OllamaURL() = %q, want http://localhost:11434", got)
+	}
+}

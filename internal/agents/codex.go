@@ -21,7 +21,7 @@ func (codexDriver) YoloFlag() string { return "--dangerously-bypass-approvals-an
 // anthropic-compatible endpoint instead).
 const ollamaProvider = "agent-wt"
 
-const ollamaProviderURL = config.OllamaBaseURL + "/v1/"
+func (codexDriver) OllamaURL() string { return "http://localhost:11434/v1/" }
 
 func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	lc := LaunchCmd{Bin: "codex"}
@@ -37,7 +37,7 @@ func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		lc.Args = append(lc.Args,
 			"-c", "model_provider="+ollamaProvider,
 			"-c", "model_providers."+ollamaProvider+".name=\"Ollama\"",
-			"-c", "model_providers."+ollamaProvider+".base_url=\""+ollamaProviderURL+"\"",
+			"-c", "model_providers."+ollamaProvider+".base_url=\""+codexDriver{}.OllamaURL()+"\"",
 			"-c", "model_providers."+ollamaProvider+".wire_api=\"responses\"",
 			"--model", m.ModelName,
 		)

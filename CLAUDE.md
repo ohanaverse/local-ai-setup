@@ -67,6 +67,8 @@ After the launched subprocess exits, both the TUI and non-TUI paths print a sing
 - `docs/configuration.md` — Claude Code / Codex CLI config
 - `docs/wt-config.md` — `wt config` subcommands
 - `docs/wt-agents/` — per-agent reference (one file per launcher)
+- `docs/superpowers/specs/` — design specs (input to implementation)
+- `docs/superpowers/plans/` — implementation plans (output of planning, input to execution)
 
 ## Go tests
 
@@ -75,8 +77,12 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 ```bash
 go test ./...                        # all Go tests
 go test ./internal/worktree -v       # verbose, one package
+go test ./internal/agents -run TestOpenCodeOllamaPrefix -v   # one test
 go vet ./...                         # static analysis
+make help                            # list Makefile targets
 ```
+
+Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `dev` (dev deps).
 
 Package list: `internal/{config,rotation,usage,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
@@ -109,12 +115,12 @@ Module root is the repo root.
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) holds wt-owned state only:
+`~/.config/agent-wt/config.toml` (TOML) is wt-owned, but contains **only agents and preferences** — Providers/Models live in the registry (below). wt never writes providers/models to this file.
+
+Fields:
 
 - **Agent** — tool with ≥1 supported provider and optional default.
 - **DefaultTag** — the default rotation tag group.
-
-Providers and Models are no longer stored here — see [Registry (modelman-owned)](#registry-modelman-owned) below.
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 
@@ -189,7 +195,19 @@ go run ./cmd/wt rotate code    # debug helper: print the model after the last-la
 
 ## Agents (Go)
 
-Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor (both TUI and non-TUI). `Syncer` (pi) is an optional pre-launch step; `ArgSetter` (shell) consumes passthrough args.
+Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor used by both TUI and non-TUI launch paths — drivers should not bypass it.
+
+**Optional capabilities** (interface checks via type assertion in `BuildLaunchCmd`):
+
+| Capability | Consumer | Drivers that implement it |
+|---|---|---|
+| `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, codex, copilot, opencode, pi, agy, shell (none yet — empty seed) |
+| `OllamaURLer` | Per-driver ollama gateway URL (overrides `config.OllamaBaseURL`) | claude, codex, copilot, opencode |
+| `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
+| `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |
+| `Resumer` | `ResumeFlag()` + `LatestSession(path)` for resume support | claude, opencode |
+
+Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the session lookup in `internal/session` returns nil for them.
 
 **Model id contract.** Drivers hand the **bare provider name** (`m.ModelName`) to the agent CLI — never the registry key (`m.ID`, which carries the `provider/` prefix). OpenCode is the exception: its CLI needs `provider/model`, so it constructs `"ollama/" + m.ModelName` deliberately. Passing `m.ID` would double-prefix (`ollama/ollama/<model>`) or forward `ollama/<model>` to the gateway. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use a model with distinct `ID`/`ModelName` so this bug can't reappear silently.
 

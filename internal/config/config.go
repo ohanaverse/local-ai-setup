@@ -27,8 +27,10 @@ const (
 	SourceDiscovered Source = "discovered"
 )
 
-// OllamaBaseURL is the default address of the local Ollama gateway that
-// cloud and local models route through.
+// OllamaBaseURL is the default address of the local Ollama gateway.
+// It is kept in the config package for legacy migration only; agent
+// drivers now declare their own full gateway URLs via the OllamaURLer
+// capability in internal/agents.
 const OllamaBaseURL = "http://localhost:11434"
 
 // ── Provider ──────────────────────────────────────────────

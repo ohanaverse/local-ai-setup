@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ohanaverse/agent-worktree/internal/agents"
 	"github.com/ohanaverse/agent-worktree/internal/worktree"
 )
 
@@ -36,14 +37,17 @@ func Seed(agent, repoRoot string) (*Result, error) {
 	}
 	track(res, created, "AGENTS.md")
 
-	pointer, ok := pointerFor(agent)
-	if ok {
-		ptrPath := filepath.Join(repoRoot, pointer.path)
-		created, err := writeIfMissing(ptrPath, pointer.content)
-		if err != nil {
-			return nil, err
+	if d := agents.ByName(agent); d != nil {
+		if s, ok := d.(agents.Seeder); ok {
+			for _, ptr := range s.InstructionPointers() {
+				ptrPath := filepath.Join(repoRoot, ptr.Path)
+				created, err := writeIfMissing(ptrPath, ptr.Content)
+				if err != nil {
+					return nil, err
+				}
+				track(res, created, ptr.Path)
+			}
 		}
-		track(res, created, pointer.path)
 	}
 	return res, nil
 }
@@ -70,23 +74,6 @@ func writeIfMissing(path, content string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-type pointer struct {
-	path    string
-	content string
-}
-
-// pointerFor returns the pointer file for an agent, and whether it has one.
-func pointerFor(agent string) (pointer, bool) {
-	switch agent {
-	case "claude":
-		return pointer{"CLAUDE.md", "@AGENTS.md\n"}, true
-	case "copilot":
-		return pointer{".github/copilot-instructions.md", "Read AGENTS.md and follow all instructions in it.\n"}, true
-	default:
-		return pointer{}, false
-	}
 }
 
 const agentsTemplate = `# Agent Instructions

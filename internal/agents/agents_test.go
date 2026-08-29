@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -117,7 +118,7 @@ func codexProviderArgs(name string) []string {
 	return []string{
 		"-c", "model_provider=agent-wt",
 		"-c", `model_providers.agent-wt.name="Ollama"`,
-		"-c", "model_providers.agent-wt.base_url=\"" + config.OllamaBaseURL + "/v1/\"",
+		"-c", "model_providers.agent-wt.base_url=\"" + codexDriver{}.OllamaURL() + "\"",
 		"-c", `model_providers.agent-wt.wire_api="responses"`,
 		"--model", name,
 	}
@@ -580,6 +581,14 @@ func TestCopilotOllamaPrefix(t *testing.T) {
 // yield "ollama/ollama/<ModelName>". A future refactor that switches this
 // slot to m.ID would reintroduce the bug; this test locks in the correct
 // m.ModelName shape.
+//
+// The same config also pins the baseURL to exactly what OllamaURL()
+// returns — no extra /v1 suffix. Pre-refactor this code used
+// config.OllamaBaseURL (no path) and the format string added /v1; when the
+// refactor moved the /v1 into OllamaURL() itself, the format string was
+// not updated, producing baseURL=http://localhost:11434/v1/v1 which the
+// ollama gateway rejects. Parsing the JSON (not substring-matching) keeps
+// both halves of the config honest.
 func TestOpenCodeOllamaPrefix(t *testing.T) {
 	d := ByName("opencode")
 	if d == nil {
@@ -589,12 +598,29 @@ func TestOpenCodeOllamaPrefix(t *testing.T) {
 	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want single OPENCODE_CONFIG_CONTENT entry", lc.Env)
 	}
-	cfg := lc.Env[0]
-	if !strings.Contains(cfg, `"model":"ollama/deepseek-v4-pro:cloud"`) {
-		t.Errorf("config missing ollama/<bare>; config = %s", cfg)
+	payload := strings.TrimPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=")
+	var parsed struct {
+		Model    string `json:"model"`
+		Provider struct {
+			Ollama struct {
+				Options struct {
+					BaseURL string `json:"baseURL"`
+					APIKey  string `json:"apiKey"`
+				} `json:"options"`
+			} `json:"ollama"`
+		} `json:"provider"`
 	}
-	if strings.Contains(cfg, `"model":"ollama/ollama/`) {
-		t.Errorf("config has double-prefix (driver likely applied the m.ModelName fix incorrectly): %s", cfg)
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\npayload=%s", err, payload)
+	}
+	if got, want := parsed.Model, "ollama/deepseek-v4-pro:cloud"; got != want {
+		t.Errorf("model = %q, want %q (provider/model form, bare ModelName not m.ID)", got, want)
+	}
+	if got, want := parsed.Provider.Ollama.Options.BaseURL, "http://localhost:11434/v1"; got != want {
+		t.Errorf("baseURL = %q, want %q (OllamaURL() already includes /v1; format string must not double-suffix)", got, want)
+	}
+	if strings.Contains(parsed.Provider.Ollama.Options.BaseURL, "/v1/v1") {
+		t.Errorf("baseURL has doubled /v1/v1 suffix: %s", parsed.Provider.Ollama.Options.BaseURL)
 	}
 }
 
@@ -732,6 +758,63 @@ func TestResumerCapability(t *testing.T) {
 		_, got := d.(Resumer)
 		if got != c.resumable {
 			t.Errorf("agent %q Resumer = %v, want %v", c.agent, got, c.resumable)
+		}
+	}
+}
+
+// TestSeederCapability asserts which drivers implement the Seeder
+// optional capability. claude and copilot create instruction pointer
+// files; other agents do not.
+func TestSeederCapability(t *testing.T) {
+	cases := []struct {
+		agent string
+		wants bool
+	}{
+		{"claude", true},
+		{"copilot", true},
+		{"codex", false},
+		{"opencode", false},
+		{"pi", false},
+		{"agy", false},
+		{"shell", false},
+	}
+	for _, c := range cases {
+		d := ByName(c.agent)
+		if d == nil {
+			t.Fatalf("unknown agent: %s", c.agent)
+		}
+		_, got := d.(Seeder)
+		if got != c.wants {
+			t.Errorf("agent %q Seeder = %v, want %v", c.agent, got, c.wants)
+		}
+	}
+}
+
+// TestOllamaURLerCapability asserts which drivers implement the
+// OllamaURLer optional capability. claude, copilot, codex, and opencode
+// route non-native models through a local Ollama gateway; other agents
+// do not.
+func TestOllamaURLerCapability(t *testing.T) {
+	cases := []struct {
+		agent string
+		wants bool
+	}{
+		{"claude", true},
+		{"copilot", true},
+		{"codex", true},
+		{"opencode", true},
+		{"pi", false},
+		{"agy", false},
+		{"shell", false},
+	}
+	for _, c := range cases {
+		d := ByName(c.agent)
+		if d == nil {
+			t.Fatalf("unknown agent: %s", c.agent)
+		}
+		_, got := d.(OllamaURLer)
+		if got != c.wants {
+			t.Errorf("agent %q OllamaURLer = %v, want %v", c.agent, got, c.wants)
 		}
 	}
 }

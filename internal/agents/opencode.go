@@ -15,6 +15,8 @@ type opencodeDriver struct{}
 
 func (opencodeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
 
+func (opencodeDriver) OllamaURL() string { return "http://localhost:11434/v1" }
+
 func (opencodeDriver) ResumeFlag() string { return "--session" }
 
 func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
@@ -42,8 +44,8 @@ func (opencodeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	}
 	lc.Env = append(lc.Env,
 		"OPENCODE_CONFIG_CONTENT="+fmt.Sprintf(
-			`{"model":"ollama/%s","provider":{"ollama":{"options":{"baseURL":"%s/v1","apiKey":""}}}}`,
-			m.ModelName, config.OllamaBaseURL,
+			`{"model":"ollama/%s","provider":{"ollama":{"options":{"baseURL":"%s","apiKey":""}}}}`,
+			m.ModelName, opencodeDriver{}.OllamaURL(),
 		),
 	)
 	return lc
