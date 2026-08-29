@@ -44,7 +44,7 @@ The `*-wt` shims just `exec wt --agent <name>`, so `wt` must be on `$PATH`.
 claude-wt
 
 # Work on a specific branch directly (skip TUI)
-claude-wt -w my-feature
+claude-wt -W my-feature
 
 # Run in the current directory (no picker)
 claude-wt --cwd
@@ -71,8 +71,8 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-w <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip TUI |
-| `--cwd` | Launch in the current repo root; skip TUI and session resume |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip TUI |
+| `--cwd` | Launch in the current repo root; skips the TUI picker. A prior resume-capable session still auto-resumes. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |
@@ -80,7 +80,7 @@ All launchers support:
 | `--check-guard` | Report whether the main guard is installed |
 | `--no-guard` | Remove the main-branch commit guard and exit |
 
-Model rotation happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `d` to switch tag groups, and `up`/`down` to pick a model — launching it advances the rotation automatically for the next entry.
+Model rotation happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `-T <tag>` to filter to a tag group, then `up`/`down` to pick a model — launching it advances the rotation automatically for the next entry.
 
 ## Configuration
 
@@ -116,9 +116,8 @@ Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
 The `internal/rotation` package implements tag-based model rotation. Any tag can be a rotation group, not just `code` and `design`. Rotation is implicit: every picker entry lands the cursor on the model after the one most recently launched, and pressing Enter records the launch. There is no `r` key — the user navigates with up/down and the rotation advances as a side effect of launching.
 
-- `d` toggles between code and design tag groups; each tag has its own rotation state
-- State is persisted to `~/.config/agent-wt/rotation-<tag>.state` (one line: the last-launched model ID)
-- Legacy 2-line state files (index + ID) are still read correctly via the last non-empty line
+- State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the last-launched model ID)
+- Legacy per-tag `rotation-<tag>.state` files are one-shot migration inputs; they are merged into the global slot on first run and then deleted
 - The hidden `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
 
 ```bash
