@@ -631,7 +631,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 ## Going deeper
 
 - Full original write-up with the plist templates and model-switching tables: [`../archive/Local%20AI%20Setup%202026-08-25.md`](../archive/Local%20AI%20Setup%202026-08-25.md)
-- Admin UI, Postgres/Redis setup, Prisma: [`../litellm-admin-ui-setup.md`](../litellm-admin-ui-setup.md)
+- Admin UI, Postgres/Redis setup, Prisma: [`../reference/litellm-admin-ui-setup.md`](../reference/litellm-admin-ui-setup.md)
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
 - oMLX backend reference: [`../reference/oMLX%20Download%20and%20Run.md`](../reference/oMLX%20Download%20and%20Run.md)
 - Hugging Face downloads (`hf download`, cache layout): [`../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md`](../reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
