@@ -7,10 +7,8 @@ brainstorm → spec → plan cycle in the repo it lands in; this doc just
 tracks where each one stands so a fresh session doesn't have to
 re-derive it from `git log` across three repos.
 
-**Last verified:** 2026-08-28, against `modelman`'s `gh pr view` and
-`agent-worktree`'s PR #94 directly
-(not from memory — status here goes stale fast; re-verify before trusting
-it).
+**Last verified:** 2026-08-28, against `modelman` PR #19 (`033674b`); `uv run pytest -q` = 349 passed, `make check` clean.
+Re-verify before trusting stale checkmarks.
 
 ## Why this effort exists
 
@@ -97,7 +95,22 @@ formalization effort. Don't conflate the two when checking status.
 ## Sub-project 3 — Usage/spend tracking
 
 Reconcile `wt`'s `usage.jsonl`/rotation state with LiteLLM's spend DB.
-**Not yet brainstormed.**
+
+- **Status:** Implementation merged (`modelman` PR #19, `033674b`).
+- **Spec:** `modelman/docs/superpowers/specs/2026-08-28-modelman-usage-design.md`
+  (`modelman` PR #17).
+- **Plan:** `modelman/docs/superpowers/plans/2026-08-28-modelman-usage.md`
+  (`modelman` PR #18).
+- **Notes:**
+  - New `modelman usage report` subcommand in `src/modelman/usage/`.
+  - Read-only: queries `~/.config/litellm/config.yaml` for the Postgres
+    DB URL, reads `~/.config/agent-wt/usage.jsonl` + `rotation.state`, and
+    prints a Markdown report.
+  - Report includes per-model/family WT launch counts (1d/7d/30d), LiteLLM
+    request/token/spend totals, reconciliation sections (matched,
+    WT-only launches, LiteLLM-only spend), and the last launched model.
+  - `psycopg2-binary` added as a dependency.
+  - 349 tests pass; `make check` clean.
 
 ## Conventions for this effort
 
