@@ -11,12 +11,12 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Input, Label
+from textual.widgets import Input, Label, Select
 
 from modelman.app import ModelmanApp
 from modelman.providers.base import VariantSpec
 from modelman.registry import AuthConfig, Fetch, ModelEntry, ProviderEntry, Registry, save_registry
-from modelman.screens.forms import ModelForm
+from modelman.screens.forms import ModelForm, ModelFormResult
 from modelman.state import StateStore, save_state
 
 # ---------------------------------------------------------------------------
@@ -254,7 +254,8 @@ async def test_submit_ollama_tag_produces_correct_spec():
         await pilot.pause()
 
     assert dismissed, "form did not dismiss"
-    spec = dismissed[0]
+    result = dismissed[0]
+    spec = result.spec
     assert isinstance(spec, dict)
     assert spec["provider"] == "ollama"
     assert spec["name"] == "ornith-1.5:35b"
@@ -287,7 +288,8 @@ async def test_submit_hf_repo_only_produces_correct_spec():
         await pilot.press("enter")
         await pilot.pause()
 
-    spec = dismissed[0]
+    result = dismissed[0]
+    spec = result.spec
     assert spec["provider"] == "llamacpp"
     assert spec["repo"] == "unsloth/Ornith-1.5-35B-GGUF"
     assert spec["files"] is None
@@ -319,7 +321,8 @@ async def test_submit_hf_repo_and_file_produces_correct_spec():
         await pilot.press("enter")
         await pilot.pause()
 
-    spec = dismissed[0]
+    result = dismissed[0]
+    spec = result.spec
     assert spec["provider"] == "llamacpp"
     assert spec["repo"] == "unsloth/Ornith-1.5-35B-GGUF"
     assert spec["files"] == ["Ornith-1.5-35B-Q8_0.gguf"]
@@ -440,7 +443,7 @@ async def test_submit_after_fix_clears_error_and_dismisses():
         await pilot.pause()
 
     assert len(dismissed) == 1
-    assert dismissed[0]["name"] == "goodname:tag"
+    assert dismissed[0].spec["name"] == "goodname:tag"
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +478,7 @@ async def test_submit_in_edit_mode_preserves_id():
         await pilot.press("enter")
         await pilot.pause()
 
-    spec = dismissed[0]
+    spec = dismissed[0].spec
     assert spec["id"] == "old-hand-rolled-id"  # preserved
     assert spec["provider"] == "llamacpp"  # preserved
     assert spec["repo"] == "baz/quux"
@@ -514,7 +517,7 @@ async def test_submit_in_edit_mode_preserves_quantizations():
         await pilot.press("enter")
         await pilot.pause()
 
-    spec = dismissed[0]
+    spec = dismissed[0].spec
     assert spec["quantizations"] == ["Q4_K_M"]
 
 
@@ -611,3 +614,127 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
         assert captured, "ModelForm was not pushed"
         form = captured[0]
         assert form._default_provider == "llamacpp"
+
+
+# ---------------------------------------------------------------------------
+# Family selector
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_modelform_shows_family_select_with_all_families():
+    """The Family Select lists every family passed by the caller and
+    pre-selects the current family."""
+    form = ModelForm(
+        providers=["ollama"],
+        families=["deepseek-v4", "gemma4", "gemma4:26b-mlx"],
+        family="gemma4:26b-mlx",
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        assert str(sel.value) == "gemma4:26b-mlx"
+        # Select._options stores (label, value) tuples (SelectOption is
+        # that tuple type in Textual 8.2.8); private but stable and far
+        # simpler than driving ArrowDown.
+        assert [str(value) for _, value in sel._options] == [
+            "deepseek-v4",
+            "gemma4",
+            "gemma4:26b-mlx",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_modelform_prepends_current_family_when_missing():
+    """Defensive: if the current family isn't in the list (e.g. the
+    caller's families list was stale), it must be prepended and chosen."""
+    form = ModelForm(
+        providers=["ollama"],
+        families=["gemma4"],
+        family="gemma4:26b-mlx",
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        assert [str(value) for _, value in sel._options] == ["gemma4:26b-mlx", "gemma4"]
+        assert str(sel.value) == "gemma4:26b-mlx"
+
+
+@pytest.mark.asyncio
+async def test_modelform_family_select_defaults_when_no_families_passed():
+    """Legacy direct callers (tests) pass nothing: the selector shows
+    exactly one entry. The TUI always passes real values."""
+    form = ModelForm(providers=["ollama"])
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        assert [str(value) for _, value in sel._options] == ["unknown"]
+
+
+@pytest.mark.asyncio
+async def test_submit_returns_modelformresult_with_selected_family():
+    """Save dismisses ModelFormResult: the spec plus the family value
+    from the Select (unchanged here because #model keeps focus)."""
+    form = ModelForm(
+        providers=["ollama"],
+        families=["gemma4", "gemma4:26b-mlx"],
+        family="gemma4:26b-mlx",
+    )
+    dismissed: list = []
+
+    def _capture(result):
+        dismissed.append(result)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, _capture)
+        await pilot.pause()
+        _fill_model(app, "gemma4:26b")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    result = dismissed[0]
+    assert isinstance(result, ModelFormResult)
+    assert result.family == "gemma4:26b-mlx"
+    assert result.spec["provider"] == "ollama"
+    assert result.spec["name"] == "gemma4:26b"
+
+
+@pytest.mark.asyncio
+async def test_submit_returns_family_switched_in_the_select():
+    """Choosing a different family in the Select is what the result
+    carries — that's the whole point of the family-move feature."""
+    form = ModelForm(
+        providers=["ollama"],
+        families=["gemma4", "gemma4:26b-mlx"],
+        family="gemma4:26b-mlx",
+    )
+    dismissed: list = []
+
+    def _capture(result):
+        dismissed.append(result)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, _capture)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        sel.value = "gemma4"
+        _fill_model(app, "gemma4:26b")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    result = dismissed[0]
+    assert isinstance(result, ModelFormResult)
+    assert result.family == "gemma4"

@@ -100,67 +100,87 @@ class StatusScreen(Screen[None]):
         if (
             not tag.startswith("delete:")
             and not tag.startswith("download:")
+            and not tag.startswith("move:")
             and not tag.startswith("save:")
             and not tag.startswith("apply:")
         ):
             log.write(f"    [dim]{tag}[/dim]")
             return
         # Per-item tags are pipe-delimited:
-        #   "verb:status|vid|label"       normal lifecycle,
-        #   "verb:status|vid|label|reason" failure with reason,
+        #   "verb:status|vid|label"        normal lifecycle,
+        #   "verb:status|vid|label|detail" failure reason, download size,
+        #                                   or move target family — meaning
+        #                                   depends on verb, see below,
         # Global tags:
-        #   "verb:status"                 normal lifecycle,
-        #   "save:fail|reason"            failure with reason.
+        #   "verb:status"                  normal lifecycle,
+        #   "save:fail|reason"             failure with reason.
         parts = tag.split("|", 3)
         verb = parts[0]
         if verb in ("delete:fail", "download:fail") and len(parts) == 4:
+            # 4th field: failure reason.
             label = parts[2]
-            reason = parts[3]
+            detail = parts[3]
         elif verb == "save:fail" and len(parts) == 2:
             label = ""
-            reason = parts[1]
+            detail = parts[1]
         elif verb == "download:done" and len(parts) == 4:
-            # Optional 4th field: human-readable size (e.g. "21.7 GB").
+            # 4th field: human-readable size (e.g. "21.7 GB"), when known.
             # Surfaced in the success marker so the user can verify the
             # download landed at the expected size (0 B messages look
             # suspicious; concrete sizes don't).
             label = parts[2]
-            reason = parts[3]
+            detail = parts[3]
+        elif verb in ("move:start", "move:done") and len(parts) == 4:
+            # 4th field: target family.
+            label = parts[2]
+            detail = parts[3]
+        elif verb == "move:fail" and len(parts) == 4:
+            # 4th field: failure reason.
+            label = parts[2]
+            detail = parts[3]
         else:
             # Normal lifecycle events.
             label = parts[2] if len(parts) >= 3 else ""
-            reason = ""
+            detail = ""
         if verb == "delete:start":
             log.write(f"· Deleting {label}...")
         elif verb == "delete:done":
             log.write(f"  [green]✓[/green] Deleted {label}")
         elif verb == "delete:fail":
             log.write(f"  [red]✗[/red] Failed to delete {label}")
-            if reason:
-                log.write(f"    [red dim]{reason}[/red dim]")
+            if detail:
+                log.write(f"    [red dim]{detail}[/red dim]")
         elif verb == "download:start":
             log.write(f"· Downloading {label}...")
         elif verb == "download:done":
-            # 4th field (if present) is the file's actual on-disk size,
+            # detail (if present) is the file's actual on-disk size,
             # e.g. "21.7 GB". Including it here so the user has
             # concrete confirmation the download landed at the
             # expected size, not zero bytes.
-            suffix = f" ({reason})" if reason else ""
+            suffix = f" ({detail})" if detail else ""
             log.write(f"  [green]✓[/green] Downloaded {label}{suffix}")
         elif verb == "download:fail":
             log.write(f"  [red]✗[/red] Failed to download {label}")
-            if reason:
-                log.write(f"    [red dim]{reason}[/red dim]")
+            if detail:
+                log.write(f"    [red dim]{detail}[/red dim]")
         elif verb == "download:cancelled":
             log.write(f"  [yellow]![/yellow] Cancelled {label}")
+        elif verb == "move:start":
+            log.write(f"· Moving {label} → {detail}...")
+        elif verb == "move:done":
+            log.write(f"  [green]✓[/green] Moved {label} → {detail}")
+        elif verb == "move:fail":
+            log.write(f"  [red]✗[/red] Failed to move {label}")
+            if detail:
+                log.write(f"    [red dim]{detail}[/red dim]")
         elif verb == "save:start":
             log.write("· Saving manifest...")
         elif verb == "save:done":
             log.write("  [green]✓[/green] Saved manifest")
         elif verb == "save:fail":
             log.write("  [red]✗[/red] Failed to save manifest")
-            if reason:
-                log.write(f"    [red dim]{reason}[/red dim]")
+            if detail:
+                log.write(f"    [red dim]{detail}[/red dim]")
         elif verb == "apply:cancelled":
             self.cancelled = True
             self.done = True

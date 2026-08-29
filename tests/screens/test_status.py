@@ -458,3 +458,32 @@ async def test_status_screen_shows_size_on_download_done(app_with_apply, tmp_pat
         text = "\n".join(line.text for line in log.lines)
         assert "Downloaded ornith:8b" in text
         assert "2.0 GB" in text, text
+
+
+@pytest.mark.asyncio
+async def test_status_screen_renders_move_events():
+    """move:start|done carry the target family in the 4th field;
+    move:fail carries the reason. Without adding `move:` to the
+    lifecycle-verb set these tags render as generic dim lines."""
+    from textual.widgets import RichLog
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.status import StatusScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = StatusScreen(family="gemma4:26b-mlx", run_apply=lambda *_: None)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._handle_event("move:start|ollama/m1|gemma4:26b-mlx|gemma4")
+        screen._handle_event("move:done|ollama/m1|gemma4:26b-mlx|gemma4")
+        screen._handle_event("move:fail|ollama/m2|gemma4:12b-mlx|boom")
+        await pilot.pause()
+
+        log = screen.query_one("#status-log", RichLog)
+        text = "\n".join(strip.text for strip in log.lines)
+        assert "Moving gemma4:26b-mlx → gemma4..." in text
+        assert "Moved gemma4:26b-mlx → gemma4" in text
+        assert "Failed to move gemma4:12b-mlx" in text
+        assert "boom" in text

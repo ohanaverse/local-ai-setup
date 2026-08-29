@@ -195,7 +195,7 @@ make clean       # remove caches
 - `src/modelman/screens/` — `families.py` (family list), `models.py` (two-pane model view), `forms.py` (modals), `status.py` (apply progress).
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
-- `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before downloads, then exposure changes, failures are collected, then a single save.
+- `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save.
 - `src/modelman/litellm.py` — owns all LiteLLM knowledge: provider→`model` prefix mapping, `model_list` entry construction, atomic `config.yaml` read/write, and the `expose_model`/`unexpose_model` orchestration used by both the CLI and TUI.
 - `src/modelman/sync.py` — reconciles configured models against provider state.
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.

@@ -815,3 +815,148 @@ def test_apply_runs_expose_changes(tmp_path):
     assert state.get("ollama/a").litellm_exposed is True
     config = load_litellm_config(litellm_path)
     assert config["model_list"][0]["model_name"] == "ollama/a"
+
+
+# ---------------------------------------------------------------------------
+# moves (family reassignment)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_writes_queued_move_to_registry(tmp_path):
+    """A queued move sets ModelEntry.family and persists it to
+    registry.toml (move-only queues are legal and must still save)."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="gemma4:26b-mlx", provider="ollama", name="gemma4:26b-mlx"),
+    )
+    state = _make_state()
+    events: list[str] = []
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="gemma4:26b-mlx",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "gemma4")],
+    )
+    pending.apply(on_event=events.append)
+
+    assert reg.model("m1").family == "gemma4"
+    # Move-only queues must still trigger the save (early-return guard
+    # previously checked only downloads/deletes/exposes).
+    assert load_registry(reg_path).model("m1").family == "gemma4"
+    assert "move:start|m1|gemma4:26b-mlx|gemma4" in events
+    assert "move:done|m1|gemma4:26b-mlx|gemma4" in events
+    # And they fire in order: start, done, then the final save.
+    start = "move:start|m1|gemma4:26b-mlx|gemma4"
+    done = "move:done|m1|gemma4:26b-mlx|gemma4"
+    assert events.index(start) < events.index(done) < events.index("save:start")
+
+
+def test_apply_move_for_deleted_model_is_dropped(tmp_path):
+    """Deletes run before moves by design: a move for a model deleted
+    in the same apply is moot and is skipped without failing."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="gemma4:26b-mlx", provider="ollama", name="gemma4:26b-mlx"),
+    )
+    state = _make_state()
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.delete.return_value = None
+    events: list[str] = []
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="gemma4:26b-mlx",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={"ollama": provider},
+        deletes=[("m1", _variant(id="m1", provider="ollama", name="gemma4:26b-mlx"))],
+        moves=[("m1", "gemma4")],
+    )
+    pending.apply(on_event=events.append)
+
+    assert reg.models == []
+    # The delete fired; the move produced no events at all.
+    assert "delete:done|m1|gemma4:26b-mlx" in events
+    assert not any(e.startswith("move:") for e in events)
+    assert "apply:done" in events
+
+
+def test_apply_move_only_queue_emits_apply_done(tmp_path):
+    """A move-only queue is not treated as empty; apply runs the save
+    and reports done."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+    )
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=_make_state(),
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "b")],
+    )
+    pending.apply(on_event=events.append)
+    assert "apply:done" in events
+    assert "save:done" in events
+
+
+def test_apply_move_for_unknown_model_records_failure(tmp_path):
+    """A move whose model id was never in the registry (no delete
+    queued) is a failure, not a silent drop."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+    )
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=_make_state(),
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("ghost", "b")],
+    )
+    pending.apply(on_event=events.append)
+
+    assert pending.failures == ["move ghost: Unknown model: ghost"]
+    assert "move:fail|ghost|ghost|Unknown model" in events
+    # The known model is untouched; apply still completes and saves.
+    assert "apply:done" in events
+    assert reg.model("m1").family == "a"
+
+
+def test_apply_cancelled_before_moves_skips_them(tmp_path):
+    """A pre-cancelled apply stops before the moves loop: no move
+    events, and (per existing cancel semantics) registry/state are
+    not saved."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+    )
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=_make_state(),
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "b")],
+    )
+    pending.cancel()
+    pending.apply(on_event=events.append)
+
+    assert "apply:cancelled" in events
+    assert not any(e.startswith("move:") for e in events)
+    # Cancel semantics: nothing persisted.
+    assert load_registry(reg_path).model("m1").family == "a"

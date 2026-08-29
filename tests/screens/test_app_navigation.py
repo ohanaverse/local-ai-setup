@@ -1,4 +1,5 @@
 import pytest
+from textual.widgets import DataTable
 
 from modelman.app import ModelmanApp
 from modelman.registry import (
@@ -1052,10 +1053,11 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 
-def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=()):
+def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=(), families=()):
     """Build a ModelScreen with registry.toml + modelman.toml in tmp_path
-    and seed registry with the given ModelEntries. Returns
-    (ms, registry_path, state_path)."""
+    and seed registry with the given ModelEntries. `families` seeds
+    StateStore.families (explicitly created, possibly empty families).
+    Returns (ms, registry_path, state_path)."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
@@ -1071,10 +1073,11 @@ def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=()):
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
     from modelman.screens.models import ModelScreen
+    from modelman.state import FamilyState
 
     ms = ModelScreen(
         registry=reg,
-        state=StateStore(),
+        state=StateStore(families={f: FamilyState() for f in families}),
         family=family,
         registry_path=reg_path,
         state_path=state_path,
@@ -1624,3 +1627,310 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
         # pending bar reflects the queued expose
         bar = ms.query_one("#pending-bar")
         assert "expose 1" in bar.content
+
+
+# ---------------------------------------------------------------------------
+# Family moves (queued)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_edit_model_changing_family_queues_move(tmp_path, monkeypatch):
+    """Editing a model and picking a different family queues a move:
+    pending bar shows it, the row shows a → glyph, and the in-memory
+    registry family is untouched until apply."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, _reg, _state = _make_screen(
+        tmp_path,
+        monkeypatch,
+        family="gemma4:26b-mlx",
+        entries=[entry],
+        families=["gemma4"],
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.forms import ModelForm
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        ms.query_one("#model-table", DataTable).focus()
+        mt = ms.query_one("#model-table", DataTable)
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, ModelForm)
+
+        from textual.widgets import Select
+
+        sel = app.screen.query_one("#family-select", Select)
+        assert str(sel.value) == "gemma4:26b-mlx"  # re-edit preselect = current family
+        sel.value = "gemma4"
+        await pilot.press("enter")  # submit the (prefilled) edit form
+        await pilot.pause()
+
+        assert ms.queued_moves == {"ollama/gemma4:26b-mlx": "gemma4"}
+        # Registry NOT mutated in memory — move applies at apply time.
+        assert ms.registry.models[0].family == "gemma4:26b-mlx"
+        mt = ms.query_one("#model-table", DataTable)
+        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "→" in rows["gemma4:26b-mlx"][1]  # STATUS column
+        bar = ms.query_one("#pending-bar")
+        assert "move 1" in bar.content
+
+
+@pytest.mark.asyncio
+async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
+    """Editing a model back to the screen family cancels a pending move
+    instead of queueing a no-op."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, _reg, _state = _make_screen(
+        tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry]
+    )
+    ms.queued_moves["ollama/gemma4:26b-mlx"] = "gemma4"
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.forms import ModelForm
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        mt = ms.query_one("#model-table", DataTable)
+        mt.focus()
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, ModelForm)
+        # The re-edit Select honors the already-queued move's target…
+        from textual.widgets import Select
+
+        sel = app.screen.query_one("#family-select", Select)
+        assert str(sel.value) == "gemma4"
+        sel.value = "gemma4:26b-mlx"  # ...moved back to the screen family
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert ms.queued_moves == {}
+
+
+def test_families_list_includes_state_only_families(tmp_path, monkeypatch):
+    """`_families_list()` = registry families ∪ state.families — so a
+    family created empty with `a` (like gemma4/deepseek-v4) is targetable
+    before it has any models."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, _reg, _state = _make_screen(
+        tmp_path,
+        monkeypatch,
+        family="gemma4:26b-mlx",
+        entries=[entry],
+        families=["gemma4", "deepseek-v4"],
+    )
+    # Both state-only families are targetable alongside the registry's
+    # families (sorted). The plan's literal assert omitted deepseek-v4,
+    # contradicting this test's name/docstring and the implementation.
+    assert ms._families_list() == ["deepseek-v4", "gemma4", "gemma4:26b-mlx"]
+
+
+# ---------------------------------------------------------------------------
+# Exit path: exit dialog + apply hand-off + discard safety
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exit_dialog_lists_move_and_apply_persists_it(tmp_path, monkeypatch):
+    """Escape with a queued move opens the exit dialog (move N + a
+    listed line), and apply persists the new family to registry.toml."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, reg_path, _state = _make_screen(
+        tmp_path,
+        monkeypatch,
+        family="gemma4:26b-mlx",
+        entries=[entry],
+        families=["gemma4"],
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.registry import load_registry
+    from modelman.screens.status import StatusScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        # Queue the move the same way _on_edit_model does (the dialog
+        # flow itself is covered by Task 4's tests).
+        ms.queued_moves["ollama/gemma4:26b-mlx"] = "gemma4"
+        await pilot.press("escape")
+        await pilot.pause()
+        from textual.widgets import Label
+
+        labels = "\n".join(str(label.visual) for label in app.screen.query(Label))
+        assert "move 1" in labels
+        assert "→ ollama/gemma4:26b-mlx → gemma4" in labels
+        from textual.widgets import Button
+
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        for _ in range(50):
+            await pilot.pause()
+            cur = app.screen
+            if isinstance(cur, StatusScreen) and cur.done:
+                break
+
+    reloaded = load_registry(reg_path)
+    assert reloaded.model("ollama/gemma4:26b-mlx").family == "gemma4"
+
+
+@pytest.mark.asyncio
+async def test_discard_after_move_reverts_without_duplicates(tmp_path, monkeypatch):
+    """`d` at the exit dialog must restore the registry exactly as at
+    mount, keyed by model id. With a simulated in-memory family drift,
+    the old family-scoped restore logic would leave the drifted live
+    entry in place (family != self.family now) AND re-add the snapshot
+    entry — duplicating the id. Only the id-keyed restore reverts it."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, reg_path, _state = _make_screen(
+        tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry]
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.registry import load_registry
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        ms.queued_moves["ollama/gemma4:26b-mlx"] = "gemma4"
+        # Simulate in-memory family drift (e.g. a future registry-mutation
+        # path): only an id-keyed restore can revert this cleanly — a
+        # family-scoped filter would leave the drifted live entry in place
+        # AND re-add the snapshot entry, duplicating the id.
+        ms.registry.models[0].family = "gemma4"
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("d")  # discard
+        await pilot.pause()
+
+    ids = [m.id for m in ms.registry.models]
+    assert ids == ["ollama/gemma4:26b-mlx"]
+    assert ms.registry.models[0].family == "gemma4:26b-mlx"
+    # Disk untouched.
+    assert load_registry(reg_path).model("ollama/gemma4:26b-mlx").family == "gemma4:26b-mlx"
+
+
+@pytest.mark.asyncio
+async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
+    """The full discard invariant: move + out-of-family add + queued
+    download in one session, then `d`. Registry ids, families, and the
+    state.models keys must all be exactly as at mount."""
+    keep_entry = ModelEntry(
+        id="ollama/mover",
+        family="ornith",
+        provider_id="ollama",
+        model_name="mover",
+    )
+    ms, _reg_path, _state = _make_screen(
+        tmp_path, monkeypatch, family="ornith", entries=[keep_entry]
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.forms import ModelFormResult
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        # Move the existing model out of this family.
+        ms.queued_moves["ollama/mover"] = "mamba"
+        # Out-of-family add (exact _on_add_model path).
+        ms._on_add_model(
+            ModelFormResult(
+                spec={"id": "ollama/newcomer", "provider": "ollama", "name": "newcomer:1b"},
+                family="mamba",
+            )
+        )
+        # Queued download for a session-added model.
+        ms.queued_downloads["ollama/newcomer"] = {
+            "id": "ollama/newcomer",
+            "provider": "ollama",
+            "name": "newcomer:1b",
+        }
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("d")  # discard
+        await pilot.pause()
+
+    assert [m.id for m in ms.registry.models] == ["ollama/mover"]
+    assert ms.registry.models[0].family == "ornith"
+    assert ms.queued_moves == {}
+    assert ms.queued_downloads == {}
+    assert ms._added_ids == set()
+    # State must not have gained any session entries.
+    assert dict(ms.state.models) == {}
+
+
+@pytest.mark.asyncio
+async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
+    """A model added into a *different* family this session isn't caught
+    by the family-scoped restore filter; discard must remove it."""
+    entry = ModelEntry(
+        id="ollama/keep",
+        family="ornith",
+        provider_id="ollama",
+        model_name="keep",
+    )
+    ms, _reg_path, _state = _make_screen(
+        tmp_path, monkeypatch, family="ornith", entries=[entry]
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.forms import ModelFormResult
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        # Out-of-family add, applied exactly as _on_add_model does.
+        ms._on_add_model(
+            ModelFormResult(
+                spec={"id": "ollama/moved", "provider": "ollama", "name": "moved:9b"},
+                family="mamba",
+            )
+        )
+        assert "ollama/moved" in [m.id for m in ms.registry.models]
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("d")  # discard
+        await pilot.pause()
+
+    ids = [m.id for m in ms.registry.models]
+    assert ids == ["ollama/keep"]

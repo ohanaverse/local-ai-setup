@@ -165,6 +165,14 @@ class ModelScreen(Screen[None]):
         self.queued_deletes: dict[str, VariantSpec] = {}
         # model_id -> target exposed state (True to expose, False to unexpose).
         self.queued_exposes: dict[str, bool] = {}
+        # model_id -> target family. Applied to the registry at apply()
+        # time; the in-memory family is untouched until then so the row
+        # stays visible in this family's table with a → glyph.
+        self.queued_moves: dict[str, str] = {}
+        # Ids of models created this session via the add dialog. Used by
+        # _restore_snapshot: a model added into a *different* family
+        # isn't caught by the family-scoped restore filter.
+        self._added_ids: set[str] = set()
         # Reconcile overlay: per-model-id reality from the provider.
         self.reconciled: dict[str, dict] = {}
         # Snapshot for discard: restore if the user exits without applying.
@@ -324,11 +332,13 @@ class ModelScreen(Screen[None]):
                         size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
                     except Exception:
                         pass
-            # Four-state status: takes precedence over current disk state.
+            # Pending ops take precedence over disk state:
             if m.id in self.queued_deletes:
                 status = "[red]✗[/red]"
             elif m.id in self.queued_downloads:
                 status = "[yellow]↓[/yellow]"
+            elif m.id in self.queued_moves:
+                status = "[magenta]→[/magenta]"
             elif downloaded:
                 status = "[green]✓[/green]"
             else:
@@ -343,7 +353,7 @@ class ModelScreen(Screen[None]):
         bar = self.query_one("#pending-bar", Static)
         bar.update(
             f"Pending: download {len(self.queued_downloads)} · delete {len(self.queued_deletes)}"
-            f" · expose {len(self.queued_exposes)}"
+            f" · move {len(self.queued_moves)} · expose {len(self.queued_exposes)}"
         )
 
     def action_toggle_download(self) -> None:
@@ -394,6 +404,12 @@ class ModelScreen(Screen[None]):
             return list(self.available_providers)
         return sorted({m.provider_id for m in self.registry.models_by_family(self.family)})
 
+    def _families_list(self) -> list[str]:
+        """Every family the add/edit dialogs may target: families with
+        models in the registry plus explicitly created-but-empty ones
+        (state.families), sorted."""
+        return sorted(set(self.registry.families()) | set(self.state.families))
+
     def action_add_model(self) -> None:
         from .forms import ModelForm
 
@@ -403,18 +419,25 @@ class ModelScreen(Screen[None]):
         # dropdown back. Fall back to None if no provider is selected.
         default_provider = self.selected_provider if self.selected_provider in providers else None
         self.app.push_screen(
-            ModelForm(providers=providers, default_provider=default_provider),
+            ModelForm(
+                providers=providers,
+                default_provider=default_provider,
+                families=self._families_list(),
+                family=self.family,
+            ),
             self._on_add_model,
         )
 
-    def _on_add_model(self, variant) -> None:
-        if variant is None:
+    def _on_add_model(self, result) -> None:
+        if result is None:
             return
+        variant = result.spec
         if any(m.id == variant["id"] for m in self.registry.models):
             self.app.notify("Model ID already exists")
             return
-        entry = _variant_to_model_entry(variant, family=self.family, registry=self.registry)
+        entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
         self.registry.models.append(entry)
+        self._added_ids.add(variant["id"])
         self.queued_downloads[variant["id"]] = variant
         self.reload()
         self._refresh_pending_bar()
@@ -459,7 +482,12 @@ class ModelScreen(Screen[None]):
 
         spec = _model_entry_to_variant(entry)
         self.app.push_screen(
-            ModelForm(providers=self._provider_list(), variant=spec),
+            ModelForm(
+                providers=self._provider_list(),
+                variant=spec,
+                families=self._families_list(),
+                family=self.queued_moves.get(mid, self.family),
+            ),
             self._on_edit_model,
         )
 
@@ -514,20 +542,31 @@ class ModelScreen(Screen[None]):
         # Fallback for rare states where neither table has focus:
         # do nothing rather than guessing.
 
-    def _on_edit_model(self, updated) -> None:
-        if updated is None:
+    def _on_edit_model(self, result) -> None:
+        if result is None:
             return
+        updated = result.spec
         new_entry = _variant_to_model_entry(updated, family=self.family, registry=self.registry)
         for i, m in enumerate(self.registry.models):
             if m.id == updated["id"]:
                 self.registry.models[i] = new_entry
                 break
+        if result.family != self.family:
+            self.queued_moves[updated["id"]] = result.family
+        else:
+            self.queued_moves.pop(updated["id"], None)
         if updated["id"] in self.queued_downloads:
             self.queued_downloads[updated["id"]] = updated
         self.reload()
+        self._refresh_pending_bar()
 
     def action_back(self) -> None:
-        if not self.queued_downloads and not self.queued_deletes and not self.queued_exposes:
+        if (
+            not self.queued_downloads
+            and not self.queued_deletes
+            and not self.queued_moves
+            and not self.queued_exposes
+        ):
             self.app.pop_screen()
             return
         from .forms import ConfirmExitDialog
@@ -537,6 +576,7 @@ class ModelScreen(Screen[None]):
                 downloads=list(self.queued_downloads.values()),
                 deletes=list(self.queued_deletes.values()),
                 exposes=list(self.queued_exposes.items()),
+                moves=list(self.queued_moves.items()),
             ),
             self._on_exit_confirm,
         )
@@ -549,7 +589,9 @@ class ModelScreen(Screen[None]):
             self._restore_snapshot()
             self.queued_downloads.clear()
             self.queued_deletes.clear()
+            self.queued_moves.clear()
             self.queued_exposes.clear()
+            self._added_ids.clear()
             self.app.pop_screen()
             return
         # "cancel" or None: stay on the model screen, queue preserved.
@@ -616,6 +658,7 @@ class ModelScreen(Screen[None]):
             providers=providers,
             downloads=[(mid, spec) for mid, spec in self.queued_downloads.items()],
             deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()],
+            moves=list(self.queued_moves.items()),
             exposes=list(self.queued_exposes.items()),
             litellm_path=default_litellm_config_path(),
         )
@@ -626,23 +669,35 @@ class ModelScreen(Screen[None]):
         # screen see an empty queue.
         self.queued_downloads.clear()
         self.queued_deletes.clear()
+        self.queued_moves.clear()
         self.queued_exposes.clear()
+        self._added_ids.clear()
 
     def _restore_snapshot(self) -> None:
         """Restore the in-memory registry/state to the snapshot taken on
-        mount, dropping any queued mutations."""
-        # Replace this family's models in registry with the snapshot.
-        keep = [m for m in self.registry.models if m.family != self.family]
+        mount, dropping any queued mutations.
+
+        Restore is keyed by model id, not family: models with queued
+        (unapplied) moves still belong to this family in the registry
+        (edits always write back with family=self.family; only
+        queued_moves tracks the pending target), so every live model
+        with family == self.family is already in restore_ids via
+        _snapshot_models or _added_ids. _added_ids covers the remaining
+        gap: a model added into a *different* family this session, which
+        the id check alone would otherwise let survive discard.
+        """
+        restore_ids = {m.id for m in self._snapshot_models} | self._added_ids
+        keep = [m for m in self.registry.models if m.id not in restore_ids]
         self.registry.models = keep + self._snapshot_models
         # Replace state entries that were in the snapshot.
         for mid in self._snapshot_state_entries:
             self.state.set(mid, self._snapshot_state_entries[mid])
-        # Drop state entries that were added during this session but
-        # weren't in the snapshot, scoped to this family.
+        # Defensive: drop state entries that somehow leaked in during this
+        # session but weren't in the snapshot, scoped to this family. (No
+        # session path writes state.models outside apply(), so this is a
+        # no-op under normal discard flows.)
         for mid in list(self.state.models):
-            if (
-                mid in self.state.models
-                and mid not in self._snapshot_state_entries
-                and any(m.id == mid and m.family == self.family for m in self.registry.models)
+            if mid not in self._snapshot_state_entries and any(
+                m.id == mid and m.family == self.family for m in self.registry.models
             ):
                 self.state.models.pop(mid, None)

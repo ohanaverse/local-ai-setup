@@ -2,7 +2,8 @@
 
 The on-disk targets are registry.toml (canonical model/provider definitions)
 and modelman.toml (per-machine mutable state: download markers, family
-display names). The legacy families/<family>.yaml manifest is no longer
+display names). Queued family moves mutate registry.toml only. The
+legacy families/<family>.yaml manifest is no longer
 written by the TUI; it survives as a migrate-time input only.
 """
 
@@ -36,13 +37,23 @@ if TYPE_CHECKING:
 EventFn = Callable[[str], None]
 
 
+def _sanitize(text: str) -> str:
+    """Strip the event-tag delimiter from user- or exception-controlled text.
+
+    Tags are pipe-delimited ("verb:status|field|field"); a literal '|'
+    in a field would shift the split in StatusScreen._handle_event and
+    corrupt the fields after it.
+    """
+    return text.replace("|", "/")
+
+
 def _label(variant: VariantSpec) -> str:
     """A short, human-readable label for a variant in progress logs.
 
     Falls back to the variant id if no name is set.
     """
     name = variant.get("name")
-    return name if isinstance(name, str) and name else variant["id"]
+    return _sanitize(name if isinstance(name, str) and name else variant["id"])
 
 
 def _reason(exc: BaseException) -> str:
@@ -52,7 +63,7 @@ def _reason(exc: BaseException) -> str:
     first = text.splitlines()[0] if text else ""
     if len(first) > 200:
         first = first[:197] + "…"
-    return first
+    return _sanitize(first)
 
 
 @dataclass
@@ -70,6 +81,11 @@ class PendingChanges:
     deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
     # (model_id, target_exposed) pairs applied after downloads, before save.
     exposes: list[tuple[str, bool]] = field(default_factory=list)
+    # (model_id, new_family) pairs. Pure registry metadata: applies right
+    # after deletes (a same-apply delete wins; its queued move is moot),
+    # needs no provider interaction. A move-only queue still triggers the
+    # final save.
+    moves: list[tuple[str, str]] = field(default_factory=list)
     litellm_path: Path = field(default_factory=Path)
     failures: list[str] = field(default_factory=list)
     cancelled: bool = False
@@ -96,7 +112,8 @@ class PendingChanges:
         on_event: EventFn | None = None,
         on_progress: EventFn | None = None,
     ) -> None:
-        """Apply deletes first, then downloads, then save registry+state once.
+        """Apply deletes first, then moves, then downloads, then exposes,
+        then save registry+state once.
 
         On failure of any single step, capture it in self.failures and continue
         with the remaining steps. If `on_event` is provided, it is called for
@@ -120,10 +137,12 @@ class PendingChanges:
                 return True
             return False
 
-        if not self.downloads and not self.deletes and not self.exposes:
+        if not self.downloads and not self.deletes and not self.exposes and not self.moves:
             emit("apply:done")
             return
 
+        # ids removed by this apply — moves referencing them are moot
+        deleted_ids: set[str] = set()
         for model_id, variant in self.deletes:
             if aborted():
                 return
@@ -153,6 +172,28 @@ class PendingChanges:
             # stale downloaded=True after the user removed the file.
             self.state.models.pop(model_id, None)
             emit(f"delete:done|{model_id}|{label}")
+            deleted_ids.add(model_id)
+
+        for model_id, new_family in self.moves:
+            if aborted():
+                return
+            try:
+                entry = self.registry.model(model_id)
+            except KeyError:
+                if model_id in deleted_ids:
+                    # Deleted earlier in this apply; its move is moot.
+                    continue
+                self.failures.append(f"move {model_id}: Unknown model: {model_id}")
+                emit(f"move:fail|{model_id}|{model_id}|Unknown model")
+                continue
+            move_label = _sanitize(entry.model_name)
+            move_family = _sanitize(new_family)
+            emit(f"move:start|{model_id}|{move_label}|{move_family}")
+            # ModelEntry.family is a plain str field with no validation,
+            # so this assignment cannot fail; unlike delete/download,
+            # there is no move:fail path here.
+            entry.family = new_family
+            emit(f"move:done|{model_id}|{move_label}|{move_family}")
 
         for model_id, variant in self.downloads:
             if aborted():

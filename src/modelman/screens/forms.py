@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label
+from textual.widgets import Button, Input, Label, Select
 
 from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
@@ -53,14 +53,25 @@ def parse_model(provider: str, model: str) -> tuple[str | None, str | None, str 
     return (model, repo_id, filename)
 
 
+class ModelFormResult(NamedTuple):
+    """ModelForm's dismiss payload: the VariantSpec plus the family the
+    user chose. Family is deliberately separate from VariantSpec — the
+    spec dict is the provider-facing contract and has no family field;
+    ModelScreen maps family onto ModelEntry.family."""
+
+    spec: VariantSpec
+    family: str
+
+
 class AddFamilyModal(ModalScreen[tuple[str, str] | None]):
     """Prompt for a family name and optional display name.
 
     Returns `(family, display_name)` on Create — display_name falls
     back to family when left blank. FamilyScreen owns the StateStore
     mutation + save after this dismisses; the modal itself performs
-    no disk I/O (mirrors ModelForm returning a VariantSpec dict for
-    ModelScreen to apply to the Registry).
+    no disk I/O (mirrors ModelForm dismissing `ModelFormResult(spec,
+    family)` for ModelScreen to apply to the Registry — while this
+    modal itself returns its plain `(family, display_name)` tuple).
     """
 
     DEFAULT_CSS = """
@@ -199,7 +210,7 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(value)
 
 
-class ModelForm(ModalScreen[VariantSpec | None]):
+class ModelForm(ModalScreen[ModelFormResult | None]):
     """Add or edit a model. `variant=None` means add; else edit.
 
     The dialog asks for exactly one thing: the model name. The
@@ -209,6 +220,11 @@ class ModelForm(ModalScreen[VariantSpec | None]):
     `variant.name`; HF model names are split into `repo` and
     `files` for llamacpp / omlx.
 
+    On save the form dismisses `ModelFormResult(spec, family)`. The
+    family Select defaults to the family the model screen is
+    showing, and can target any known family (registry families
+    plus explicitly created empty ones).
+
     See `parse_model()` for the parsing rules.
     """
 
@@ -217,6 +233,7 @@ class ModelForm(ModalScreen[VariantSpec | None]):
     ModelForm > Vertical { width: 80; height: auto; padding: 1 2; border: round $primary; }
     ModelForm Label { margin-top: 1; }
     ModelForm Input { margin-bottom: 1; }
+    ModelForm Select { margin-bottom: 1; }
     ModelForm #model-error { color: $error; text-style: bold; }
     ModelForm Horizontal { height: auto; align-horizontal: right; }
     ModelForm Button { margin-left: 1; }
@@ -228,6 +245,8 @@ class ModelForm(ModalScreen[VariantSpec | None]):
         providers: list[str],
         variant: VariantSpec | None = None,
         default_provider: str | None = None,
+        families: list[str] | None = None,
+        family: str | None = None,
     ) -> None:
         super().__init__()
         self._providers = providers
@@ -237,6 +256,17 @@ class ModelForm(ModalScreen[VariantSpec | None]):
         # uses the variant's own provider since provider is
         # immutable on edit.
         self._default_provider = default_provider
+        self._family = family
+        # Families the selector offers (sorted by the caller) and the
+        # pre-selected family. When a caller passes neither, the
+        # selector degrades to a single "unknown" entry — the TUI
+        # always passes real values; only direct test callers hit
+        # this default.
+        self._families: list[str] = (
+            list(families) if families else ([family] if family else ["unknown"])
+        )
+        if self._family is not None and self._family not in self._families:
+            self._families.insert(0, self._family)
 
     def compose(self) -> ComposeResult:
         editing = self._variant is not None
@@ -264,6 +294,13 @@ class ModelForm(ModalScreen[VariantSpec | None]):
 
         with Vertical():
             yield Label(f"Provider: {initial_provider}", id="provider-label")
+            yield Label("Family:")
+            yield Select(
+                options=[(f, f) for f in self._families],
+                value=(self._family if self._family in self._families else self._families[0]),
+                allow_blank=False,
+                id="family-select",
+            )
             yield Label("Model:")
             yield Input(
                 value=model_val,
@@ -347,7 +384,8 @@ class ModelForm(ModalScreen[VariantSpec | None]):
             spec["model_info"] = auto_detect_model_info(name)
         else:
             spec["model_info"] = (self._variant or {}).get("model_info")
-        self.dismiss(spec)
+        family = str(self.query_one("#family-select", Select).value)
+        self.dismiss(ModelFormResult(spec=spec, family=family))
 
 
 class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
@@ -377,22 +415,26 @@ class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
         downloads: list,
         deletes: list,
         exposes: list[tuple[str, bool]] | None = None,
+        moves: list[tuple[str, str]] | None = None,
     ) -> None:
         super().__init__()
         self._downloads = downloads
         self._deletes = deletes
         self._exposes = exposes or []
+        self._moves = moves or []
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label(
                 f"Pending: download {len(self._downloads)} · delete {len(self._deletes)}"
-                f" · expose {len(self._exposes)}"
+                f" · move {len(self._moves)} · expose {len(self._exposes)}"
             )
             for v in self._downloads:
                 yield Label(f"  ↓ {v['id']} ({v['provider']})")
             for v in self._deletes:
                 yield Label(f"  × {v['id']} ({v['provider']})")
+            for model_id, target in self._moves:
+                yield Label(f"  → {model_id} → {target}")
             for model_id, exposed in self._exposes:
                 mark = "L" if exposed else "–"
                 yield Label(f"  {mark} {model_id}")
