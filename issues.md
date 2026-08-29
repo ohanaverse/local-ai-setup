@@ -8,7 +8,7 @@ the actions. Check off and add notes as items close.
 
 ## 1. Rotate the LiteLLM master key (security) — OPEN
 
-`sk-litellm-ui-master-key-4000` in `docs/reference/litellm-admin-ui-setup.md`
+`sk-litellm-<rotate-me>` in `docs/reference/litellm-admin-ui-setup.md`
 (§"what was actually set") **is the live proxy master key** — verified against
 the plist's `LITELLM_MASTER_KEY` during final review. Committed since the
 initial commit; present in git history. Localhost-bound, but anyone with repo
