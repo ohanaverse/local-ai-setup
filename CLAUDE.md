@@ -7,10 +7,12 @@
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
 - `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
+- `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
 - `bin/` — standalone isolation helpers for the external `modelman benchmark` tool (must be on PATH)
+- `Makefile` — lint target for shell scripts
 - `docs/` — setup guides, reference docs, superpowers plans/specs
 - LiteLLM config: `~/.config/litellm/config.yaml`
 
