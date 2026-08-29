@@ -24,6 +24,8 @@ grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml
 uv sync
 ```
 
+- A `wt` on PATH built 2026-08-27 predates the registry-consumer merge — see Gotchas (stale-binary item).
+
 ## TL;DR
 
 | Knob | Lives in | Who reads it | How to change it |
@@ -82,6 +84,8 @@ A family id containing `:` needs TOML quoting. Set names through the TUI, not by
 
 The families screen keys, copied from the modelman README (§TUI):
 
+<!-- UNVERIFIED — keybindings copied from the modelman README; the TUI was not driven — see Verification. -->
+
 | Key | Action |
 |-----|--------|
 | `a` | Add family |
@@ -91,7 +95,7 @@ The families screen keys, copied from the modelman README (§TUI):
 | `r` | Reconcile |
 | `q` | Quit |
 
-(Note `d` deletes here — modelman's TUI. The wt README's `d` means tag-group toggle; different tool, and that one doesn't exist in the current build — see Gotchas.)
+(Note `d` deletes here — modelman's TUI. The wt README's `d` means tag-group toggle; different tool, and that one doesn't exist in the current build — see Gotchas. Fix: drop the `d` toggle from `~/github/ohanaverse/agent-worktree/README.md:119-120`.)
 
 ### 3. Tag groups (`code`/`design`) and how `wt` consumes them
 
@@ -203,7 +207,7 @@ ollama/kimi-k2.7-code:cloud
 ollama/kimi-k2.7-code:cloud
 ```
 
-Both succeed against the *installed* binary only because its catalog predates the registry-consumer switch — see Gotchas. Confirm the on-disk rotation cursor and legacy files:
+Both succeed against the *installed* binary only because its catalog predates the registry-consumer switch (documents the stale PATH binary; a rebuilt wt errors here until tags are assigned — see Gotchas). Confirm the on-disk rotation cursor and legacy files:
 
 ```bash
 for f in ~/.config/agent-wt/rotation*.state; do echo "$f:"; cat "$f"; done
@@ -226,7 +230,7 @@ ollama/glm-5.3-flash:cloud
 - **Display names are per-machine mutable state (`modelman.toml`), consumed by modelman only.** They never change what `wt` shows or rotates.
 - **Family/tag structure is canonical in `registry.toml` (modelman-owned).** `wt` reads it read-only; change families/tags through modelman (or hand-edit knowing modelman owns it).
 - **`~/.config/local-ai/families/` is LEGACY** (`ornith-1.5.yaml`, `qwen3.8.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per `docs/guides/00-config-map.md`: don't resurrect it.
-- **The wt README is stale in two places vs wt 0.1.0 as shipped:** the `d` "toggle between code and design tag groups" key has no handler in the TUI source (picker footer is `[↑/↓] navigate [enter] launch [q] quit`), and rotation state is the single global `rotation.state`, not per-tag `rotation-<tag>.state` files (legacy files are one-shot migration inputs, deleted after).
+- **The wt README is stale in two places vs wt 0.1.0 as shipped:** the `d` "toggle between code and design tag groups" key has no handler in the TUI source (picker footer is `[↑/↓] navigate [enter] launch [q] quit`), and rotation state is the single global `rotation.state`, not per-tag `rotation-<tag>.state` files (legacy files are one-shot migration inputs, deleted after). Fix `~/github/ohanaverse/agent-worktree/README.md:119-120`: drop the `d` toggle; replace per-tag state references with `rotation.state`.
 - **The installed `wt` binary (built 2026-08-27) predates the registry-consumer merge (2026-08-28).** Observed: `wt rotate code`/`design` return models although `registry.toml` has zero tags — the old build still serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks (its catalog is missing `medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`, which registry has). A rebuild from `~/github/ohanaverse/agent-worktree/README.md` (`go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt`) makes `registry.toml` authoritative — expected to fail the `wt rotate code/design` pair-check above until tags exist.
 
 ## Going deeper

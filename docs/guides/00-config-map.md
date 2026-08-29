@@ -209,9 +209,9 @@ CODE_MODELS=(
 
 ### `~/.config/agent-wt/rotation.state` (+ `rotation-*.state`)
 
-- **Owner:** `wt` (one file per rotation slot).
+- **Owner:** `wt` (single global rotation file; per-slot files legacy).
 - **Consumers:** `wt` (rotation cursor), `modelman usage` (last-launched model).
-- **Purpose:** rotation position — the file body is just the model id of the last launch. Per-slot variants on this machine: `rotation-claude-code-_.state`, `rotation-pi-code-_.state`.
+- **Purpose:** rotation position — the file body is just the model id of the last launch. The `rotation-claude-code-_.state` / `rotation-pi-code-_.state` files on this machine are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/agent-worktree/internal/rotation/rotation.go:138-175`).
 
 ```
 ollama/glm-5.3-flash:cloud
