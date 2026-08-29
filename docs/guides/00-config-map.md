@@ -156,6 +156,7 @@ model_list:
 - **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — modelman owns those in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
+- **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default agent-worktree `config.toml` to import from.
 
 ```toml
 default_tag = "code"
@@ -220,7 +221,7 @@ ollama/glm-5.3-flash:cloud
 
 - **Owner:** you (service setup = `01-initial-setup.md`; the `homebrew.mxcl.*` ones came from Homebrew installs).
 - **Consumers:** launchd (`RunAtLoad` + `KeepAlive` on each).
-- **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), llama-server (:8080, pinned GGUF), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`) — redact before sharing.
+- **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), llama-server (:8080, pinned GGUF), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter embeds the local Postgres password) — redact before sharing.
 
 ```xml
     <key>Label</key>
@@ -253,7 +254,7 @@ ls ~/.config/local-ai/registry.toml ~/.config/local-ai/modelman.toml ~/.config/a
 LaunchAgent labels are loaded:
 
 ```bash
-launchctl list | grep -E 'litellm|llamacpp|omlx|redis|ollama'
+launchctl list | grep -E 'litellm|llamacpp|omlx|redis|ollama|postgres'
 ```
 
 ```text
@@ -262,9 +263,13 @@ launchctl list | grep -E 'litellm|llamacpp|omlx|redis|ollama'
 94631	0	local.llamacpp.server
 97297	0	homebrew.mxcl.omlx
 88057	0	homebrew.mxcl.redis
+80374	0	homebrew.mxcl.postgresql@16
+17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
 ```
 
 (PIDs column will differ on your machine; a `-` with exit status means loaded but the app manages restarts itself.)
+
+While the Ollama.app window is running, transient `application.com.electron.ollama.*` rows also appear in the output (PID in the first column; the long trailing suffix is a per-launch UUID).
 
 ## Gotchas
 
@@ -272,7 +277,7 @@ launchctl list | grep -E 'litellm|llamacpp|omlx|redis|ollama'
 - **Exposure state lives in two places by design:** the `litellm_exposed` flag in `~/.config/local-ai/modelman.toml`, and the generated `model_list` entry in `~/.config/litellm/config.yaml`. Edit neither by hand — use `modelman expose` / `modelman unexpose`.
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag` and `[[agents]]` are live; providers/models come from `registry.toml`.
 - **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read only by `modelman migrate` / wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
-- **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY` in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.
+- **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter embeds the local Postgres password) in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.
 - **The `modelman` binary on `PATH` lags the repo source:** `modelman --help` currently lists only `download`, while the source at `/Users/keith/github/ohanaverse/modelman` adds `migrate`, `sync`, `expose`, `unexpose`, `benchmark`, `usage`, and the TUI on bare `modelman`. Check `modelman --help` before scripting against it.
 - **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `modelman benchmark run`. Don't create them by hand.
 - Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock` is wt's lock file.
