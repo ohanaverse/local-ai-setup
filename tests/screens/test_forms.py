@@ -11,7 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Input, Label, Select
+from textual.widgets import Button, Input, Label, Select
 
 from modelman.app import ModelmanApp
 from modelman.providers.base import VariantSpec
@@ -622,8 +622,9 @@ async def test_modelform_shows_family_select_with_all_families():
 
 @pytest.mark.asyncio
 async def test_modelform_prepends_current_family_when_missing():
-    """Defensive: if the current family isn't in the list (e.g. the
-    caller's families list was stale), it must be prepended and chosen."""
+    """Defensive: if the current family isn't in the list (e.g. a
+    queued-move target family that doesn't exist yet), it must be
+    prepended and chosen."""
     form = ModelForm(
         providers=["ollama"],
         families=["gemma4"],
@@ -636,6 +637,30 @@ async def test_modelform_prepends_current_family_when_missing():
         await pilot.pause()
         sel = app.screen.query_one("#family-select", Select)
         assert [str(value) for _, value in sel._options] == ["gemma4:26b-mlx", "gemma4"]
+        assert str(sel.value) == "gemma4:26b-mlx"
+
+
+@pytest.mark.asyncio
+async def test_modelform_family_select_is_sorted_and_does_not_prepend():
+    """When the current family IS in the sorted list, the Select keeps
+    the caller's order — it doesn't shove the pre-selected entry to
+    the front just to make it the default."""
+    form = ModelForm(
+        providers=["ollama"],
+        families=["deepseek-v4", "gemma4", "gemma4:26b-mlx"],
+        family="gemma4:26b-mlx",
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        assert [str(value) for _, value in sel._options] == [
+            "deepseek-v4",
+            "gemma4",
+            "gemma4:26b-mlx",
+        ]
         assert str(sel.value) == "gemma4:26b-mlx"
 
 
@@ -912,3 +937,135 @@ async def test_add_model_dialog_locks_location_for_native_provider(tmp_path, mon
 
     assert captured
     assert captured[0]._provider_kinds["claude"] == "native"
+
+
+# ---------------------------------------------------------------------------
+# Dialog conventions: button order, initial focus, Escape-to-cancel
+# ---------------------------------------------------------------------------
+
+
+def _button_ids(app: ModelmanApp) -> list[str]:
+    return [btn.id for btn in app.screen.query(Button) if btn.id is not None]
+
+
+def _focused_id(app: ModelmanApp) -> str | None:
+    w = app.screen.focused
+    return w.id if w is not None else None
+
+
+@pytest.mark.asyncio
+async def test_add_family_modal_buttons_and_focus():
+    from modelman.screens.forms import AddFamilyModal
+
+    modal = AddFamilyModal()
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal)
+        await pilot.pause()
+        assert _button_ids(pilot.app) == ["cancel", "create"]
+        assert _focused_id(pilot.app) == "family-name"
+
+
+@pytest.mark.asyncio
+async def test_edit_family_modal_buttons_and_focus():
+    from modelman.screens.forms import EditFamilyModal
+
+    modal = EditFamilyModal(family="ornith", display_name="Ornith")
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal)
+        await pilot.pause()
+        assert _button_ids(pilot.app) == ["cancel", "save"]
+        assert _focused_id(pilot.app) == "display-name"
+
+
+@pytest.mark.asyncio
+async def test_modelform_buttons_and_focus():
+    form = ModelForm(providers=["ollama"])
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(form)
+        await pilot.pause()
+        assert _button_ids(pilot.app) == ["cancel", "save"]
+        assert _focused_id(pilot.app) == "model"
+
+
+@pytest.mark.asyncio
+async def test_confirm_modal_buttons_and_safe_focus():
+    from modelman.screens.forms import ConfirmModal
+
+    modal = ConfirmModal("Delete everything?")
+    dismissed: list = []
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal, dismissed.append)
+        await pilot.pause()
+        # Order: Yes (warning) then No (default) — the dangerous option is
+        # on the left, the safe option is on the right where Enter /
+        # mouse defaults land. Initial focus is the safe (No) button.
+        assert _button_ids(pilot.app) == ["yes", "no"]
+        assert _focused_id(pilot.app) == "no"
+
+
+@pytest.mark.asyncio
+async def test_confirm_exit_dialog_buttons_and_safe_focus():
+    from modelman.screens.forms import ConfirmExitDialog
+
+    modal = ConfirmExitDialog(ready=[], deletes=[], exposes=[], moves=[])
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal)
+        await pilot.pause()
+        # Order left-to-right: Cancel, Discard (warning), Apply (primary).
+        # Initial focus is Cancel (safe default; Enter does nothing
+        # destructive).
+        assert _button_ids(pilot.app) == ["cancel", "discard", "apply"]
+        assert _focused_id(pilot.app) == "cancel"
+
+
+@pytest.mark.asyncio
+async def test_cancel_apply_dialog_buttons_and_safe_focus():
+    from modelman.screens.forms import CancelApplyDialog
+
+    modal = CancelApplyDialog()
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal)
+        await pilot.pause()
+        # Order left-to-right: Cancel (warning), Wait (primary).
+        # Initial focus is Wait (safe default: keep the apply running).
+        assert _button_ids(pilot.app) == ["cancel", "wait"]
+        assert _focused_id(pilot.app) == "wait"
+
+
+@pytest.mark.asyncio
+async def test_modelform_escape_from_input_dismisses():
+    """Escape must cancel the modal even when the model Input is focused."""
+    form = ModelForm(providers=["ollama"])
+    dismissed: list = []
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        assert _focused_id(pilot.app) == "model"
+        await pilot.press("escape")
+        await pilot.pause()
+    assert dismissed == [None]
+
+
+@pytest.mark.asyncio
+async def test_edit_family_modal_escape_from_disabled_input_dismisses():
+    """Escape must cancel even when the read-only family-name Input is focused."""
+    from modelman.screens.forms import EditFamilyModal
+
+    modal = EditFamilyModal(family="ornith", display_name="Ornith")
+    dismissed: list = []
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal, dismissed.append)
+        await pilot.pause()
+        modal.query_one("#family-name").focus()
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert dismissed == [None]

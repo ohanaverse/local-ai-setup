@@ -27,6 +27,16 @@ def test_is_downloaded_false(provider, mock_runner):
     assert provider.is_downloaded(variant, runner=runner) is False
 
 
+def test_is_downloaded_raises_on_daemon_error(provider, mock_runner):
+    """A non-zero exit that is NOT 'not found' (e.g. the daemon is down)
+    must raise, not return False — otherwise the delete step would treat a
+    transient outage as 'artifact absent' and orphan the on-disk model."""
+    runner = mock_runner(returncode=1, stdout="", stderr="could not connect to ollama app")
+    variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "ornith-1.5:9b"}
+    with pytest.raises(RuntimeError, match="failed"):
+        provider.is_downloaded(variant, runner=runner)
+
+
 def test_download_calls_pull(provider, mock_runner):
     runner = mock_runner(returncode=0, stdout="pulling...\n", stderr="")
     variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "ornith-1.5:9b"}

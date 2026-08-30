@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.coordinate import Coordinate
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
@@ -18,6 +17,7 @@ from ..litellm import default_litellm_config_path, provider_policy
 from ..queue import PendingChanges
 from ..registry import Fetch, ModelEntry, Registry, known_families, provider_config
 from ..state import ModelState, StateStore
+from . import reload_preserving_cursor
 
 if TYPE_CHECKING:
     from ..providers.base import VariantSpec
@@ -200,8 +200,6 @@ class ModelScreen(Screen[None]):
         self.reload()
         self._refresh_pending_bar()
         mt.focus()
-        if mt.row_count > 0:
-            mt.cursor_coordinate = Coordinate(0, 0)
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def _run_reconcile(self) -> None:
@@ -260,61 +258,64 @@ class ModelScreen(Screen[None]):
     def _load_models(self) -> None:
         from ..providers.registry import ProviderRegistry
 
-        mt = self.query_one("#model-table", DataTable)
-        mt.clear()
-        models = sorted(
-            self.registry.models_by_family(self.family),
-            key=lambda m: (m.provider_id, m.model_name),
-        )
-        for m in models:
-            rec = self.reconciled.get(m.id)
-            if rec is not None:
-                ready = bool(rec.get("ready"))
-                size_str = _human_size(rec.get("size")) if ready else "—"
-                # When reconcile says the model is no longer on disk, don't
-                # fall back to the stale disk_path stored in state.
-                path = (
-                    rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
-                    if ready
-                    else "—"
-                )
-            else:
-                state_entry = self.state.get(m.id)
-                ready = state_entry.ready
-                size_str = "—"
-                path = state_entry.disk_path or "—"
-                if ready:
-                    try:
-                        entry = self.registry.provider(m.provider_id)
-                        prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
-                        size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
-                    except Exception:
-                        pass
-            if m.id in self.queued_deletes:
-                status = "[red]✗[/red]"
-            elif m.id in self.queued_ready:
-                status = "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
-            elif m.id in self.queued_moves:
-                status = "[magenta]→[/magenta]"
-            elif ready:
-                status = "[green]✓[/green]"
-            else:
-                status = "[dim]○[/dim]"
-            exposed = self.state.get(m.id).litellm_exposed
-            if m.id in self.queued_exposes:
-                exposed = self.queued_exposes[m.id]
-            exposed_str = "L" if exposed else "–"
-            mt.add_row(
-                m.family,
-                m.provider_id,
-                m.model_name,
-                m.location or "—",
-                status,
-                exposed_str,
-                size_str,
-                path,
-                key=m.id,
+        def _repopulate() -> None:
+            mt = self.query_one("#model-table", DataTable)
+            mt.clear()
+            models = sorted(
+                self.registry.models_by_family(self.family),
+                key=lambda m: (m.provider_id, m.model_name),
             )
+            for m in models:
+                rec = self.reconciled.get(m.id)
+                if rec is not None:
+                    ready = bool(rec.get("ready"))
+                    size_str = _human_size(rec.get("size")) if ready else "—"
+                    # When reconcile says the model is no longer on disk, don't
+                    # fall back to the stale disk_path stored in state.
+                    path = (
+                        rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
+                        if ready
+                        else "—"
+                    )
+                else:
+                    state_entry = self.state.get(m.id)
+                    ready = state_entry.ready
+                    size_str = "—"
+                    path = state_entry.disk_path or "—"
+                    if ready:
+                        try:
+                            entry = self.registry.provider(m.provider_id)
+                            prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
+                            size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
+                        except Exception:
+                            pass
+                if m.id in self.queued_deletes:
+                    status = "[red]✗[/red]"
+                elif m.id in self.queued_ready:
+                    status = "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
+                elif m.id in self.queued_moves:
+                    status = "[magenta]→[/magenta]"
+                elif ready:
+                    status = "[green]✓[/green]"
+                else:
+                    status = "[dim]○[/dim]"
+                exposed = self.state.get(m.id).litellm_exposed
+                if m.id in self.queued_exposes:
+                    exposed = self.queued_exposes[m.id]
+                exposed_str = "L" if exposed else "–"
+                mt.add_row(
+                    m.family,
+                    m.provider_id,
+                    m.model_name,
+                    m.location or "—",
+                    status,
+                    exposed_str,
+                    size_str,
+                    path,
+                    key=m.id,
+                )
+
+        reload_preserving_cursor(self.query_one("#model-table", DataTable), _repopulate)
 
     def _is_ready(self, model_id: str) -> bool:
         """Truth about whether a model is ready to use.
@@ -380,8 +381,11 @@ class ModelScreen(Screen[None]):
         # Use the full configured-provider list, not just the providers
         # currently used by models in the family, so the user can add
         # the first model for a fresh family via the 'a' dialog.
+        # The list is sorted alphabetically so the Add dialog's
+        # provider Select and any code that iterates providers sees
+        # a stable, predictable order.
         if self.available_providers:
-            return list(self.available_providers)
+            return sorted(self.available_providers)
         return sorted({m.provider_id for m in self.registry.models_by_family(self.family)})
 
     def _provider_kinds(self) -> dict[str, str]:
@@ -454,9 +458,9 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        if not self._is_ready(mid):
-            self.app.notify("Model not ready — nothing to delete")
-            return
+        # No not-ready gate: any model can be queued for delete.
+        # Apply() handles the absent-artifact case (skips the on-disk
+        # removal when provider.is_downloaded() reports False).
         spec = _model_entry_to_variant(entry)
         if mid in self.queued_deletes:
             self.queued_deletes.pop(mid)

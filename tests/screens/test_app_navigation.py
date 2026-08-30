@@ -474,8 +474,9 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delete_action_noop_on_not_downloaded(tmp_path, monkeypatch):
-    """Pressing 'd' on a not-downloaded variant must not queue a delete."""
+async def test_delete_action_queues_even_when_not_downloaded(tmp_path, monkeypatch):
+    """Pressing 'd' on a not-downloaded variant still queues a delete —
+    the gate was removed; apply() handles the absent-artifact case."""
     from unittest.mock import MagicMock
 
     missing = ModelEntry(
@@ -501,7 +502,7 @@ async def test_delete_action_noop_on_not_downloaded(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
-        assert app.screen.queued_deletes == {}
+        assert "ollama/missing" in app.screen.queued_deletes
 
 
 @pytest.mark.asyncio
@@ -539,6 +540,16 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
         await pilot.pause()
         # Single-input dialog: focus the model field and type the
         # ollama tag. New id scheme derives from provider+name.
+        # Note: the provider select is sorted alphabetically now,
+        # so the initial provider may not be "ollama" if other
+        # providers (e.g. agent-worktree's "agy", "claude", etc.)
+        # are synced into the registry. Force the provider back to
+        # ollama to keep this test focused on the add flow.
+        from textual.widgets import Select
+
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        provider_sel.value = "ollama"
+        await pilot.pause()
         app.screen.query_one("#model", Input).focus()
         for ch in "ornith:8b":
             await pilot.press(ch)
@@ -1137,7 +1148,8 @@ async def test_model_screen_add_form_offers_all_providers_for_empty_family(
         await pilot.pause()
 
     assert len(captured) == 1, f"expected ModelForm push; got {captured}"
-    assert captured[0]._initial_provider == "ollama"
+    # Providers are now sorted alphabetically: llamacpp comes first.
+    assert captured[0]._initial_provider == "llamacpp"
 
 
 @pytest.mark.asyncio
@@ -1191,6 +1203,13 @@ async def test_model_screen_add_appends_model_entry_to_registry(
         pilot.app.push_screen(ms)
         await pilot.pause()
         await pilot.press("a")
+        await pilot.pause()
+        # Force the provider select to ollama (alphabetical sort means
+        # the default may differ if other providers are configured).
+        from textual.widgets import Select
+
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        provider_sel.value = "ollama"
         await pilot.pause()
         app.screen.query_one("#model", Input).focus()
         for ch in "ornith:8b":
@@ -1311,20 +1330,13 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_model_screen_delete_only_for_downloaded(tmp_path, monkeypatch):
-    """Pressing `d` on a not_downloaded row is a no-op (delete target
-    must actually exist on disk before we remove it)."""
+async def test_delete_action_noop_when_no_row_selected(tmp_path, monkeypatch):
+    """Pressing 'd' with an empty table is a no-op (no row to act on)."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
 
-    a = ModelEntry(
-        id="ollama/o35",
-        family="ornith",
-        provider_id="ollama",
-        model_name="ornith:35b",
-    )
-    ms, _reg, _state = _make_screen(tmp_path, monkeypatch, entries=[a])
+    ms, _reg, _state = _make_screen(tmp_path, monkeypatch)
 
     stub = MagicMock()
     stub.name = "ollama"

@@ -60,6 +60,24 @@ Spec: `docs/superpowers/specs/2026-08-29-family-model-screen-redesign-design.md`
 
 Plan: `docs/superpowers/plans/2026-08-29-family-model-screen-redesign.md`
 
+## Phase 4c — family/model screen fixes (complete)
+
+Polish pass on the post-redesign TUI: a shared cursor-preserving reload
+helper, an interaction lock on `FamilyScreen` during its background
+size refresh, alphabetically sorted provider/family dropdowns, delete
+allowed on any model (with `PendingChanges` skipping the artifact call
+when `is_downloaded()` is false), and a shared `ModelmanModal` base
+class that standardizes every dialog's button order, initial focus,
+and Escape-to-cancel behavior.
+
+| PR | Scope | Status |
+|---|---|---|
+| — | cursor helper, family refresh lock, sorted dropdowns, delete-any-model, dialog conventions, skip-absent-artifact delete | ✅ merged (this branch) |
+
+Spec: `docs/superpowers/specs/2026-08-30-family-model-screen-fixes-design.md`
+
+Plan: `docs/superpowers/plans/2026-08-30-family-model-screen-fixes.md`
+
 ## Phase 5 — usage/spend tracking (consolidation sub-project 3)
 
 `modelman usage report` joins `wt`'s local launch history (`usage.jsonl`

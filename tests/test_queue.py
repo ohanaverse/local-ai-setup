@@ -586,6 +586,119 @@ def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     assert "ollama/a" not in load_state(state_path).models
 
 
+def test_apply_delete_not_downloaded_skips_provider_call(tmp_path):
+    """When the artifact is already gone, delete still removes registry/state
+    and emits lifecycle events, but does not call provider.delete()."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/a"))
+
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.is_downloaded.return_value = False
+    provider.delete.return_value = None
+
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="a"))],
+    )
+    pending.apply(on_event=events.append)
+
+    assert "delete:start|ollama/a|a" in events
+    assert "delete:done|ollama/a|a" in events
+    assert not provider.delete.called
+    assert "ollama/a" not in [m.id for m in load_registry(reg_path).models]
+    assert "ollama/a" not in load_state(state_path).models
+
+
+def test_apply_delete_is_downloaded_exception_attempts_delete(tmp_path):
+    """If is_downloaded() raises, we cannot know the artifact is absent,
+    so we attempt provider.delete() and surface any failure normally."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.is_downloaded.side_effect = RuntimeError("stat failed")
+    provider.delete.return_value = None
+
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="a"))],
+    )
+    pending.apply(on_event=events.append)
+
+    provider.delete.assert_called_once()
+    assert "ollama/a" not in [m.id for m in load_registry(reg_path).models]
+
+
+def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
+    """If is_downloaded() raises and the subsequent delete also fails,
+    the failure is recorded and registry/state cleanup is skipped."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.is_downloaded.side_effect = RuntimeError("stat failed")
+    provider.delete.side_effect = PermissionError("read-only fs")
+
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="a"))],
+    )
+    pending.apply(on_event=events.append)
+
+    assert pending.failures
+    assert "read-only fs" in str(pending.failures[0])
+    assert "ollama/a" in [m.id for m in load_registry(reg_path).models]
+    assert "ollama/a" in load_state(state_path).models
+
+
 def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
     """A queued delete wins over a queued expose toggle for the same
     model: the expose is dropped and the config row is removed instead."""

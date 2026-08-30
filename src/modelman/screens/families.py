@@ -6,7 +6,7 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header
+from textual.widgets import DataTable, Footer, Header, Static
 
 from ..providers.registry import ProviderRegistry
 from ..registry import (
@@ -20,6 +20,7 @@ from ..registry import (
     save_registry,
 )
 from ..state import StateStore, load_state, save_state
+from . import reload_preserving_cursor
 from .forms import AddFamilyModal, ConfirmModal, EditFamilyModal
 from .models import ModelScreen, _model_entry_to_variant
 
@@ -65,20 +66,64 @@ class FamilyScreen(Screen[None]):
         self.state: StateStore = StateStore()
         self.registry_path: Path = Path()
         self.state_path: Path = Path()
+        # True while a background reconcile worker is running; used to
+        # gate destructive actions and disable the table so the user
+        # can't click a row while the row contents are about to mutate.
+        self._reconciling: bool = False
+        # Monotonic counter identifying the current reconcile worker.
+        # _start_reconcile_worker bumps it and hands each worker its own
+        # generation; _reconcile_done only clears _reconciling when the
+        # finishing worker's generation is still current. This is what
+        # makes "a superseded worker does not clear the flag" actually
+        # true: Textual thread workers run their finally block even after
+        # exclusive=True cancels them, so without the generation check the
+        # first (cancelled) worker would unlock the UI while the second is
+        # still scanning.
+        self._reconcile_generation: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield DataTable(id="family-table", cursor_type="row")
+        yield Static("Refreshing sizes…", id="refresh-indicator")
         yield Footer()
 
     def on_mount(self) -> None:
+        # Hide the refresh indicator until _set_refresh_ui flips it on;
+        # Static doesn't accept `display` as a constructor kwarg.
+        self.query_one("#refresh-indicator", Static).display = False
         table = self.query_one(DataTable)
         table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "READY", "SIZE")
         self._load_from_disk()
         self.reload()
         # Reconcile against provider state so the size and downloaded columns
         # reflect reality even when modelman.toml is stale. In-memory only.
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+        self._start_reconcile_worker()
+
+    def _start_reconcile_worker(self) -> None:
+        """Mark the screen as reconciling, lock the table, show a
+        visible indicator, and dispatch the worker. Called on mount,
+        on resume, and on the `r` binding."""
+        self._reconciling = True
+        self._set_refresh_ui(True)
+        self._reconcile_generation += 1
+        generation = self._reconcile_generation
+        self.run_worker(
+            lambda: self._run_reconcile(generation),
+            exclusive=True,
+            thread=True,
+        )
+
+    def _set_refresh_ui(self, refreshing: bool) -> None:
+        """Toggle the table disabled state and the indicator widget.
+
+        Disabling the DataTable prevents the user from selecting a row
+        that's about to mutate out from under their cursor while a
+        background reconcile worker is running.
+        """
+        table = self.query_one("#family-table", DataTable)
+        indicator = self.query_one("#refresh-indicator", Static)
+        table.disabled = refreshing
+        indicator.display = refreshing
 
     def _load_from_disk(self) -> None:
         """(Re)load registry.toml + modelman.toml and the derived
@@ -116,7 +161,7 @@ class FamilyScreen(Screen[None]):
         self._load_from_disk()
         self._reconciled.clear()
         self.reload()  # show state-truth immediately
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+        self._start_reconcile_worker()
 
     def on_screen_resume(self, event) -> None:
         """Re-reconcile when the screen becomes visible again.
@@ -133,87 +178,122 @@ class FamilyScreen(Screen[None]):
         """
         self._refresh_from_disk()
 
-    def _run_reconcile(self) -> None:
+    def _run_reconcile(self, generation: int) -> None:
         """Ask each provider whether its models are on disk; cache
         results keyed by model id. Mirrors ModelScreen._run_reconcile
-        but across every model in the registry (not one family)."""
-        providers: dict[str, object] = {}
-        for m in self.registry.models:
-            pname = m.provider_id
-            if pname not in providers:
-                try:
-                    entry = self.registry.provider(pname)
-                    providers[pname] = ProviderRegistry.get(pname, provider_config(entry))
-                except Exception:
-                    continue
-            provider = providers[pname]
-            spec = _model_entry_to_variant(m)
-            size: int | None = None
-            ready = False
-            try:
-                ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
-            except Exception:
+        but across every model in the registry (not one family).
+
+        The reconcile overlay is filled on this background thread, but
+        the UI toggles (lock release + reload) must run on the main
+        thread. We use `app.call_from_thread` for the unlock step so
+        the indicator disappears as soon as the worker finishes,
+        regardless of how long the per-model loops took.
+
+        `generation` is this worker's token from _start_reconcile_worker;
+        it is forwarded to _reconcile_done so a superseded worker can be
+        told apart from the current one.
+        """
+        try:
+            providers: dict[str, object] = {}
+            for m in self.registry.models:
+                pname = m.provider_id
+                if pname not in providers:
+                    try:
+                        entry = self.registry.provider(pname)
+                        providers[pname] = ProviderRegistry.get(pname, provider_config(entry))
+                    except Exception:
+                        continue
+                provider = providers[pname]
+                spec = _model_entry_to_variant(m)
+                size: int | None = None
                 ready = False
-            try:
-                raw = provider.size_of(spec)  # type: ignore[attr-defined]
-                if isinstance(raw, int):
-                    size = raw
-            except Exception:
-                size = None
-            self._reconciled[m.id] = {
-                "ready": ready,
-                "size": size,
-            }
-        self.app.call_from_thread(self.reload)
+                try:
+                    ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
+                except Exception:
+                    ready = False
+                try:
+                    raw = provider.size_of(spec)  # type: ignore[attr-defined]
+                    if isinstance(raw, int):
+                        size = raw
+                except Exception:
+                    size = None
+                self._reconciled[m.id] = {
+                    "ready": ready,
+                    "size": size,
+                }
+        finally:
+            self.app.call_from_thread(self._reconcile_done, generation)
+
+    def _reconcile_done(self, generation: int) -> None:
+        """Main-thread side of _run_reconcile: unlock the UI and reload.
+
+        Only the latest worker clears the flag. A superseded worker (one
+        whose generation no longer matches) is a no-op — its finally block
+        still runs after exclusive=True cancels it, but it must not unlock
+        the UI while a newer worker is still scanning.
+        """
+        if generation != self._reconcile_generation:
+            return
+        self._reconciling = False
+        self._set_refresh_ui(False)
+        self.reload()
 
     def reload(self) -> None:
-        table = self.query_one(DataTable)
-        table.clear()
-        # A family is "known" if it has models in the registry, or was
-        # explicitly touched in state (e.g. AddFamilyModal for a family
-        # with zero models yet) — mirrors the legacy per-family manifest
-        # file's existence, which didn't require any variants either.
-        families = known_families(self.registry, self.state)
-        for family in families:
-            models = self.registry.models_by_family(family)
-            variants = len(models)
-            downloaded_count = 0
-            total_size = 0
-            unknown = False
-            for m in models:
-                rec = self._reconciled.get(m.id)
-                if rec is not None:
-                    if rec["ready"]:
+        def _repopulate() -> None:
+            table = self.query_one(DataTable)
+            table.clear()
+            # A family is "known" if it has models in the registry, or was
+            # explicitly touched in state (e.g. AddFamilyModal for a family
+            # with zero models yet) — mirrors the legacy per-family manifest
+            # file's existence, which didn't require any variants either.
+            families = known_families(self.registry, self.state)
+            for family in families:
+                models = self.registry.models_by_family(family)
+                variants = len(models)
+                downloaded_count = 0
+                total_size = 0
+                unknown = False
+                for m in models:
+                    rec = self._reconciled.get(m.id)
+                    if rec is not None:
+                        if rec["ready"]:
+                            downloaded_count += 1
+                            sz = rec["size"]
+                            if sz is None:
+                                unknown = True
+                            else:
+                                total_size += sz
+                        # If rec says not ready, don't fall through to
+                        # state (it could be stale on either side).
+                    elif self.state.get(m.id).ready:
+                        # No reconcile info yet; trust state for this model.
                         downloaded_count += 1
-                        sz = rec["size"]
-                        if sz is None:
-                            unknown = True
-                        else:
-                            total_size += sz
-                    # If rec says not ready, don't fall through to
-                    # state (it could be stale on either side).
-                elif self.state.get(m.id).ready:
-                    # No reconcile info yet; trust state for this model.
-                    downloaded_count += 1
-                    unknown = True  # size unknown until reconcile runs
-            size_str = (
-                "—"
-                if downloaded_count == 0
-                else _human_size(total_size if (total_size > 0 or not unknown) else None)
-            )
-            table.add_row(
-                family,
-                family_display_name(self.registry, self.state, family) or "",
-                str(variants),
-                str(downloaded_count),
-                size_str,
-                key=family,
-            )
+                        unknown = True  # size unknown until reconcile runs
+                size_str = (
+                    "—"
+                    if downloaded_count == 0
+                    else _human_size(total_size if (total_size > 0 or not unknown) else None)
+                )
+                table.add_row(
+                    family,
+                    family_display_name(self.registry, self.state, family) or "",
+                    str(variants),
+                    str(downloaded_count),
+                    size_str,
+                    key=family,
+                )
+
+        reload_preserving_cursor(self.query_one(DataTable), _repopulate)
 
     def action_reconcile(self) -> None:
+        if self._reconciling:
+            return
         self._refresh_from_disk()
 
     def action_add_family(self) -> None:
+        if self._reconciling:
+            return
+
         def _on_close(result: tuple[str, str] | None) -> None:
             if result is None:
                 return
@@ -226,6 +306,8 @@ class FamilyScreen(Screen[None]):
         self.app.push_screen(AddFamilyModal(), _on_close)
 
     def action_edit_family(self) -> None:
+        if self._reconciling:
+            return
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return
@@ -253,6 +335,8 @@ class FamilyScreen(Screen[None]):
         )
 
     def action_delete_family(self) -> None:
+        if self._reconciling:
+            return
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return
@@ -328,12 +412,16 @@ class FamilyScreen(Screen[None]):
         return  # informational only
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if self._reconciling:
+            return
         family_name = str(event.row_key.value) if event.row_key else ""
         if not family_name:
             return
         self._open_family(family_name)
 
     def action_open_family(self) -> None:
+        if self._reconciling:
+            return
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return

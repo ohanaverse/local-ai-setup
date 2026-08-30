@@ -152,7 +152,21 @@ class OllamaProvider(Provider):
         r = (runner or _default_runner)(
             ["ollama", "show", variant["name"]], capture_output=True, text=True
         )
-        return r.returncode == 0
+        if r.returncode == 0:
+            return True
+        # A non-zero exit is either "model not found" (definitively absent)
+        # or a transient failure (daemon down, timeout, ...). Only the former
+        # is a confident "not downloaded"; the latter must raise so callers
+        # treat it as "unknown" rather than "absent". The delete step relies
+        # on this distinction: a False here skips the on-disk removal, so a
+        # transient outage must not read as "already gone" and orphan the
+        # artifact.
+        stderr = (r.stderr or "").lower()
+        if "not found" in stderr:
+            return False
+        raise RuntimeError(
+            f"`ollama show {variant['name']}` failed (exit {r.returncode}): {stderr.strip()}"
+        )
 
     def download(
         self,

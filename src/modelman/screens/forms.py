@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple, cast
+from typing import Literal, NamedTuple, TypeVar, cast
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select
@@ -83,7 +84,70 @@ class ModelFormResult(NamedTuple):
     family: str
 
 
-class AddFamilyModal(ModalScreen[tuple[str, str] | None]):
+T = TypeVar("T")
+
+
+class ModelmanModal(ModalScreen[T]):
+    """Base class for modelman dialogs.
+
+    Provides shared conventions:
+    - Escape cancels the modal (priority binding so it fires even when
+      an Input is focused — Textual's default Input.Escape would
+      otherwise swallow it for cursor-positioning).
+    - Buttons are composed left-to-right in the order supplied by the
+      subclass; destructive dialogs focus the safe button initially so
+      pressing Enter or clicking the default doesn't do damage.
+    - The Horizontal button row is right-aligned and the buttons
+      themselves carry a left margin so they don't jam together.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    ModelmanModal { align: center middle; }
+    ModelmanModal > Vertical { width: 60; height: auto; padding: 1 2; border: round $primary; }
+    ModelmanModal Label { margin-bottom: 1; }
+    ModelmanModal Input { margin-bottom: 1; }
+    ModelmanModal Horizontal { height: auto; align-horizontal: right; }
+    ModelmanModal Button { margin-left: 1; }
+    """
+
+    # Subclasses populate this in compose(); the base mounts the buttons
+    # in on_mount so the Horizontal container is attached first (Textual
+    # rejects mount() calls on unattached containers).
+    _pending_buttons: list[Button] = []
+
+    def _button_row(self, buttons: list[Button]) -> Horizontal:
+        """Return an empty right-aligned Horizontal; the base will mount
+        the given buttons into it once it is attached."""
+        self._pending_buttons = list(buttons)
+        return Horizontal(id="button-row")
+
+    def _focus_button(self, button_id: str) -> None:
+        button = self.query_one(f"#{button_id}", Button)
+        button.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_mount(self) -> None:
+        # Mount any deferred buttons into the row, then run the
+        # subclass's on_mount for focus handling.
+        if self._pending_buttons:
+            row = self.query_one("#button-row", Horizontal)
+            for button in self._pending_buttons:
+                row.mount(button)
+            self._pending_buttons = []
+        self._modal_on_mount()
+
+    def _modal_on_mount(self) -> None:
+        """Subclass hook for setting initial focus. The base on_mount
+        calls this after mounting deferred buttons."""
+
+
+class AddFamilyModal(ModelmanModal[tuple[str, str] | None]):
     """Prompt for a family name and optional display name.
 
     Returns `(family, display_name)` on Create — display_name falls
@@ -94,24 +158,21 @@ class AddFamilyModal(ModalScreen[tuple[str, str] | None]):
     modal itself returns its plain `(family, display_name)` tuple).
     """
 
-    DEFAULT_CSS = """
-    AddFamilyModal { align: center middle; }
-    AddFamilyModal > Vertical { width: 60; height: auto; padding: 1 2; border: round $primary; }
-    AddFamilyModal Label { margin-bottom: 1; }
-    AddFamilyModal Input { margin-bottom: 1; }
-    AddFamilyModal Horizontal { height: auto; align-horizontal: right; }
-    AddFamilyModal Button { margin-left: 1; }
-    """
-
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("Family name (required):")
             yield Input(id="family-name", placeholder="e.g. ornith-1.5")
             yield Label("Display name (optional):")
             yield Input(id="display-name", placeholder="e.g. Ornith 1.5")
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="default")
-                yield Button("Create", id="create", variant="primary")
+            yield self._button_row([
+                Button("Cancel", id="cancel", variant="default"),
+                Button("Create", id="create", variant="primary"),
+            ])
+
+    def _modal_on_mount(self) -> None:
+        # Drop the cursor in the required field so the user can type
+        # without an extra Tab press.
+        self.query_one("#family-name", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -130,7 +191,7 @@ class AddFamilyModal(ModalScreen[tuple[str, str] | None]):
         self.dismiss((name, display or name))
 
 
-class EditFamilyModal(ModalScreen[str | None]):
+class EditFamilyModal(ModelmanModal[str | None]):
     """Edit the display_name of an existing family.
 
     The family slug is intentionally NOT editable here — changing it
@@ -141,15 +202,6 @@ class EditFamilyModal(ModalScreen[str | None]):
     Returns the new display_name on Save (falls back to the family
     slug if blanked, matching AddFamilyModal); None on Cancel.
     FamilyScreen owns the StateStore mutation + save.
-    """
-
-    DEFAULT_CSS = """
-    EditFamilyModal { align: center middle; }
-    EditFamilyModal > Vertical { width: 60; height: auto; padding: 1 2; border: round $primary; }
-    EditFamilyModal Label { margin-bottom: 1; }
-    EditFamilyModal Input { margin-bottom: 1; }
-    EditFamilyModal Horizontal { height: auto; align-horizontal: right; }
-    EditFamilyModal Button { margin-left: 1; }
     """
 
     def __init__(self, family: str, display_name: str) -> None:
@@ -172,11 +224,12 @@ class EditFamilyModal(ModalScreen[str | None]):
                 id="display-name",
                 placeholder="e.g. Ornith 1.5",
             )
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="default")
-                yield Button("Save", id="save", variant="primary")
+            yield self._button_row([
+                Button("Cancel", id="cancel", variant="default"),
+                Button("Save", id="save", variant="primary"),
+            ])
 
-    def on_mount(self) -> None:
+    def _modal_on_mount(self) -> None:
         # Drop the cursor in the editable field so the user can edit
         # the display name without an extra Tab press.
         self.query_one("#display-name", Input).focus()
@@ -195,22 +248,14 @@ class EditFamilyModal(ModalScreen[str | None]):
         self.dismiss(display or self._family)
 
 
-class ConfirmModal(ModalScreen[bool]):
+class ConfirmModal(ModelmanModal[bool]):
     """Generic yes/no confirmation. Default is No."""
 
     BINDINGS = [
         ("y", "answer(True)"),
         ("n", "answer(False)"),
-        ("escape", "answer(False)"),
+        Binding("escape", "answer(False)", show=False),
     ]
-
-    DEFAULT_CSS = """
-    ConfirmModal { align: center middle; }
-    ConfirmModal > Vertical { width: 60; height: auto; padding: 1 2; border: round $primary; }
-    ConfirmModal Label { margin-bottom: 1; }
-    ConfirmModal Horizontal { height: auto; align-horizontal: right; }
-    ConfirmModal Button { margin-left: 1; }
-    """
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -219,9 +264,14 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label(self._message)
-            with Horizontal():
-                yield Button("No", id="no", variant="default")
-                yield Button("Yes", id="yes", variant="warning")
+            yield self._button_row([
+                Button("Yes", id="yes", variant="warning"),
+                Button("No", id="no", variant="default"),
+            ])
+
+    def _modal_on_mount(self) -> None:
+        # Safe default: focus No so an accidental Enter does not confirm.
+        self._focus_button("no")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
@@ -230,7 +280,7 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(value)
 
 
-class ModelForm(ModalScreen[ModelFormResult | None]):
+class ModelForm(ModelmanModal[ModelFormResult | None]):
     """Add or edit a model. `variant=None` means add; else edit.
 
     The dialog asks for the provider (add mode only), family, model
@@ -247,15 +297,14 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
     See `parse_model()` for the parsing rules.
     """
 
+    # Only the rules that differ from the ModelmanModal base are declared
+    # here; the shared align/Input/Horizontal/Button rules are inherited
+    # (Textual type selectors match subclasses via the MRO).
     DEFAULT_CSS = """
-    ModelForm { align: center middle; }
-    ModelForm > Vertical { width: 80; height: auto; padding: 1 2; border: round $primary; }
+    ModelForm > Vertical { width: 80; }
     ModelForm Label { margin-top: 1; }
-    ModelForm Input { margin-bottom: 1; }
     ModelForm Select { margin-bottom: 1; }
     ModelForm #model-error { color: $error; text-style: bold; }
-    ModelForm Horizontal { height: auto; align-horizontal: right; }
-    ModelForm Button { margin-left: 1; }
     ModelForm #provider-select { color: $secondary; text-style: bold; }
     """
 
@@ -282,6 +331,12 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
         # selector degrades to a single "unknown" entry — the TUI
         # always passes real values; only direct test callers hit
         # this default.
+        #
+        # When `family` (the pre-selected family) isn't in the list —
+        # e.g. a queued move targeting a family that doesn't exist
+        # yet — prepend it so the dialog opens on the target, not the
+        # screen's current family. This is the only legitimate case
+        # where the Select deviates from the caller's order.
         self._families: list[str] = (
             list(families) if families else ([family] if family else ["unknown"])
         )
@@ -350,9 +405,10 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
                 disabled=location_locked,
                 id="location-select",
             )
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="default")
-                yield Button("Save", id="save", variant="primary")
+            yield self._button_row([
+                Button("Cancel", id="cancel", variant="default"),
+                Button("Save", id="save", variant="primary"),
+            ])
 
     @staticmethod
     def _reconstruct_model(v: VariantSpec) -> str:
@@ -372,7 +428,7 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
             return f"{repo}/{files[0]}"
         return repo
 
-    def on_mount(self) -> None:
+    def _modal_on_mount(self) -> None:
         # Focus the model input so the user can paste / type immediately.
         self.query_one("#model", Input).focus()
 
@@ -473,7 +529,7 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
         self.dismiss(ModelFormResult(spec=spec, family=family))
 
 
-class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
+class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
     """Show pending downloads/deletes; let the user apply, cancel, or discard.
 
     - apply: confirm and run PendingChanges.apply() in the caller
@@ -481,18 +537,16 @@ class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
     - discard: drop the queue, caller should restore the in-memory manifest
     """
 
+    # Only the width differs from the ModelmanModal base; the rest is inherited.
     DEFAULT_CSS = """
-    ConfirmExitDialog { align: center middle; }
-    ConfirmExitDialog > Vertical { width: 70; height: auto; padding: 1 2; border: round $primary; }
-    ConfirmExitDialog Label { margin-bottom: 1; }
-    ConfirmExitDialog Horizontal { height: auto; align-horizontal: right; }
-    ConfirmExitDialog Button { margin-left: 1; }
+    ConfirmExitDialog > Vertical { width: 70; }
     """
 
     BINDINGS = [
         ("y", "answer('apply')"),
         ("n", "answer('cancel')"),
         ("d", "answer('discard')"),
+        Binding("escape", "answer('cancel')", show=False),
     ]
 
     def __init__(
@@ -528,10 +582,15 @@ class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
                 mark = "L" if exposed else "–"
                 yield Label(f"  {mark} {model_id}")
             yield Label("Apply, cancel, or discard these changes?")
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="default")
-                yield Button("Discard", id="discard", variant="warning")
-                yield Button("Apply", id="apply", variant="primary")
+            yield self._button_row([
+                Button("Cancel", id="cancel", variant="default"),
+                Button("Discard", id="discard", variant="warning"),
+                Button("Apply", id="apply", variant="primary"),
+            ])
+
+    def _modal_on_mount(self) -> None:
+        # Safe default: focus Cancel so an accidental Enter does nothing.
+        self._focus_button("cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
@@ -543,7 +602,7 @@ class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
             self.dismiss(value)  # type: ignore[arg-type]
 
 
-class CancelApplyDialog(ModalScreen[Literal["cancel", "wait"]]):
+class CancelApplyDialog(ModelmanModal[Literal["cancel", "wait"]]):
     """Ask the user whether to abort the running apply or keep waiting.
 
     - cancel: cancel the apply (kill current subprocess if possible, skip
@@ -552,16 +611,13 @@ class CancelApplyDialog(ModalScreen[Literal["cancel", "wait"]]):
     - wait: dismiss the dialog; the apply keeps running.
     """
 
+    # Only the border differs from the ModelmanModal base; the rest is inherited.
     DEFAULT_CSS = """
-    CancelApplyDialog { align: center middle; }
-    CancelApplyDialog > Vertical { width: 60; height: auto; padding: 1 2; border: round $warning; }
-    CancelApplyDialog Label { margin-bottom: 1; }
-    CancelApplyDialog Horizontal { height: auto; align-horizontal: right; }
-    CancelApplyDialog Button { margin-left: 1; }
+    CancelApplyDialog > Vertical { border: round $warning; }
     """
 
     BINDINGS = [
-        ("escape", "answer('wait')"),
+        Binding("escape", "answer('wait')", show=False),
         ("w", "answer('wait')"),
         ("c", "answer('cancel')"),
     ]
@@ -570,9 +626,15 @@ class CancelApplyDialog(ModalScreen[Literal["cancel", "wait"]]):
         with Vertical():
             yield Label("Actions are still running.")
             yield Label("Cancel and stop here, or wait for them to finish?")
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="warning")
-                yield Button("Wait", id="wait", variant="primary")
+            yield self._button_row([
+                Button("Cancel", id="cancel", variant="warning"),
+                Button("Wait", id="wait", variant="primary"),
+            ])
+
+    def _modal_on_mount(self) -> None:
+        # Safe default: focus Wait so an accidental Enter keeps the
+        # apply running.
+        self._focus_button("wait")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id

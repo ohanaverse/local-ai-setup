@@ -159,9 +159,18 @@ class PendingChanges:
             label = _label(variant)
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
+            artifact_present = True  # default to "try the call"
             if provider is not None:
-                # Reconcilable provider: ask it to remove the on-disk artifact.
-                emit(f"delete:start|{model_id}|{label}")
+                try:
+                    artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
+                except Exception:
+                    # Cannot confirm absence; fall back to "try the call"
+                    # and surface any failure normally.
+                    artifact_present = True
+            emit(f"delete:start|{model_id}|{label}")
+            if provider is not None and artifact_present:
+                # Reconcilable provider with an actual artifact to remove:
+                # ask it to delete the file.
                 try:
                     self._delete(variant)
                 except Exception as exc:  # noqa: BLE001
@@ -169,8 +178,10 @@ class PendingChanges:
                     self.failures.append(f"delete {model_id}: {exc}")
                     emit(f"delete:fail|{model_id}|{label}|{reason}")
                     continue
-            # Flag-only providers (native/unmapped) have no Provider instance
-            # and no on-disk artifact to delete; just remove registry/state.
+            # Either:
+            # - flag-only provider (native/unmapped): no on-disk artifact,
+            # - or reconcilable provider with no artifact: nothing to delete.
+            # In both cases we still need to remove the registry/state rows.
             # Record the model's family before removing the entry, so a
             # family emptied by this delete lingers (stickiness). A failed
             # delete records nothing — the model stays.

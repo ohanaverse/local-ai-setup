@@ -112,15 +112,25 @@ The TUI has three screens:
 - **Family screen** — table of families with columns: family · display ·
   variants · downloaded · size. Keys: `a` add, `e` edit display name,
   `d` delete (blocked if anything is downloaded), `enter` open, `r`
-  reconcile, `q` quit.
+  reconcile, `q` quit. While the background size refresh runs after
+  mount/resume/`r`, the table is briefly disabled and a
+  "Refreshing sizes…" indicator is shown — actions (`a`, `e`, `d`,
+  `enter`, `r`) are no-ops during that window so the user can't click
+  a row whose contents are about to mutate. The cursor survives the
+  refresh: returning from a model screen leaves you on the same family.
 - **Model screen** — single table scoped to one family (columns:
   provider · model · location · status ✓/○/↓/↑/✗/→ · exposed · size ·
   path). Rows are sorted by provider then model name. Keys: `a` add model,
   `e` edit (id/provider fixed; changing family queues a move), `d` queue
-  delete (ready variants only), `x` toggle ready (queues download/pull for
-  reconcilable providers, or a flag flip for cloud/native providers), `l`
-  toggle LiteLLM exposure (ready or cloud models), `r` reconcile, `enter`
-  edit, `escape` back / apply queue.
+  delete (works on any model — apply skips the on-disk removal if the
+  artifact is already gone, but still cleans registry/state), `x`
+  toggle ready (queues download/pull for reconcilable providers, or a
+  flag flip for cloud/native providers), `l` toggle LiteLLM exposure
+  (ready or cloud models), `r` reconcile, `enter` edit, `escape` back /
+  apply queue. The cursor survives every reload — reconciling or
+  toggling ready on a row leaves you on that row. Provider and family
+  dropdowns list options alphabetically; the family Select keeps the
+  caller's order when the current family is already in the list.
 - **Status screen** — when you apply on exit, the model screen hands off to
   a status screen that streams per-item progress (`Deleting …`,
   `Downloaded …`, `Saving …`) into a scrollable log. Provider progress is
@@ -131,11 +141,19 @@ The TUI has three screens:
   Once the run completes (or is cancelled), `Escape` returns to the family
   screen.
 
+All dialogs share a layout convention: the cancel/default button is
+rightmost, the primary action is to its left, and pressing `Escape`
+cancels (this works even when an Input is focused). Destructive prompts
+(`ConfirmModal`, `ConfirmExitDialog`, `CancelApplyDialog`) focus the
+safe button on open so a reflexive `Enter` is never destructive.
+
 All model changes (adds, edits, deletes, ready toggles, exposure toggles,
 moves) are queued in memory. On exit, a confirmation dialog shows the
 pending set; confirming runs **deletes, then moves, then ready changes
 (downloads/clears/flag flips), then exposure changes**, and writes
-`registry.toml` + `modelman.toml` once.
+`registry.toml` + `modelman.toml` once. A delete for a not-on-disk model
+is legal: the on-disk removal is skipped, but the registry/state
+cleanup, lifecycle events, and any cascade-unexpose still run.
 
 ### Expose models through LiteLLM
 
@@ -216,10 +234,11 @@ make clean       # remove caches
 ## Architecture
 
 - `src/modelman/app.py` — `ModelmanApp` (Textual `App`), launches into `FamilyScreen`.
-- `src/modelman/screens/` — `families.py` (family list), `models.py` (single-table model view), `forms.py` (modals), `status.py` (apply progress).
+- `src/modelman/screens/__init__.py` — `reload_preserving_cursor` helper used by both list screens so `DataTable.clear()` doesn't reset the cursor to row 0.
+- `src/modelman/screens/` — `families.py` (family list, locks interactions while reconciling), `models.py` (single-table model view, cursor-preserving reload, alphabetical dropdowns, delete-any-model), `forms.py` (modals on a shared `ModelmanModal` base with consistent button order, Escape-to-cancel, and safe-default focus on destructive dialogs), `status.py` (apply progress).
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
-- `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save.
+- `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup, lifecycle events, and the cascade-unexpose still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.
 - `src/modelman/litellm.py` — owns all LiteLLM knowledge: provider→`model` prefix mapping, `model_list` entry construction, atomic `config.yaml` read/write, and the `expose_model`/`unexpose_model` orchestration used by both the CLI and TUI.
 - `src/modelman/sync.py` — reconciles configured models against provider state.
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.

@@ -16,6 +16,23 @@ from modelman.screens.models import _variant_to_model_entry
 from modelman.state import StateStore, save_state
 
 
+def _seed_registry_and_state(tmp_path, monkeypatch, *, models=()):
+    """Seed registry.toml/modelman.toml in tmp_path and redirect the
+    env vars. Mirrors the helper in tests/screens/test_app_navigation.py."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=list(models),
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    return reg_path, state_path
+
+
 def test_variant_to_model_entry_sets_source_curated():
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
@@ -96,12 +113,12 @@ async def test_d_on_cloud_model_queues_delete(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_d_on_local_not_downloaded_does_not_queue_but_notifies(tmp_path, monkeypatch):
-    """A local model that is not on disk still can't be deleted (nothing to
-    remove), but the action must say so instead of silently doing nothing.
-    """
-    from textual.app import Notify
-
+async def test_d_on_local_not_downloaded_still_queues_delete(tmp_path, monkeypatch):
+    """A local model that is not on disk can still be deleted: the
+    apply step skips the on-disk removal (artifact already absent) but
+    still updates registry/state. This makes the queue symmetric with
+    cloud models — the not-ready gate that used to block this is
+    removed (queue-only operations don't need a present artifact)."""
     _seed_cloud_family(tmp_path, monkeypatch, location=None)
 
     app = ModelmanApp()
@@ -113,12 +130,9 @@ async def test_d_on_local_not_downloaded_does_not_queue_but_notifies(tmp_path, m
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        notes: list[Notify] = []
-        monkeypatch.setattr(app, "notify", lambda *a, **kw: notes.append(a and a[0]))
         await pilot.press("d")
         await pilot.pause()
-        assert app.screen.queued_deletes == {}
-        assert notes, "expected a notification explaining the blocked delete"
+        assert "ollama/glm-5.2:cloud" in app.screen.queued_deletes
 
 
 @pytest.mark.asyncio
@@ -220,3 +234,124 @@ async def test_not_ready_model_does_not_show_stale_disk_path(tmp_path, monkeypat
         row = mt.get_row("ollama/glm-5.2:cloud")
         # Column order: family, provider, name, location, status, exposed, size, path
         assert row[7] == "—", f"expected '—' but got {row[7]!r}"
+
+
+# ---------------------------------------------------------------------------
+# Cursor preservation across reload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_model_screen_cursor_restored_after_reload(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from textual.widgets import DataTable
+
+    from modelman.app import ModelmanApp
+    from modelman.providers import registry as prov_registry
+
+    a = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a")
+    b = ModelEntry(id="ollama/b", family="ornith", provider_id="ollama", model_name="b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[a, b])
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
+    monkeypatch.setattr(
+        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
+    )
+
+    app = ModelmanApp(family="ornith")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.move_cursor(row=1)
+        assert mt.cursor_row == 1
+        app.screen.reload()
+        await pilot.pause()
+        assert mt.cursor_row == 1
+        assert str(list(mt.rows.keys())[mt.cursor_row].value) == "ollama/b"
+
+
+# ---------------------------------------------------------------------------
+# Provider list is alphabetically sorted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_list_sorted(tmp_path, monkeypatch):
+    from modelman.registry import (
+        AuthConfig,
+        FamilyEntry,
+        ProviderEntry,
+        Registry,
+        save_registry,
+    )
+    from modelman.screens.models import ModelScreen
+    from modelman.state import StateStore
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx")),
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
+            ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none")),
+        ],
+        families=[FamilyEntry(name="ornith")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    ms = ModelScreen(
+        registry=reg,
+        state=StateStore(),
+        family="ornith",
+        registry_path=reg_path,
+        state_path=state_path,
+        available_providers=["omlx", "ollama", "llamacpp"],
+    )
+    assert ms._provider_list() == ["llamacpp", "ollama", "omlx"]
+
+
+# ---------------------------------------------------------------------------
+# Delete gating is removed: any model can be queued for delete
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_any_model_even_not_ready(tmp_path, monkeypatch):
+    """Native / not-ready models must be deletable; the not-ready gate is
+    removed (apply() handles the absent-artifact case)."""
+    from unittest.mock import MagicMock
+
+    from modelman.app import ModelmanApp
+    from modelman.providers import registry as prov_registry
+
+    a = ModelEntry(
+        id="ollama/o35",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith:35b",
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[a])
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
+    monkeypatch.setattr(
+        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        assert "ollama/o35" in app.screen.queued_deletes
