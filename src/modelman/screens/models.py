@@ -8,17 +8,22 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from ..litellm import default_litellm_config_path, provider_policy
 from ..queue import PendingChanges
 from ..registry import (
+    Cost,
     Fetch,
     ModelEntry,
     Registry,
+    _cost_from_dict,
+    _cost_to_dict,
     known_families,
     provider_config,
     save_registry,
@@ -57,6 +62,10 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         fetch = Fetch(repo=repo, files=files, quantizations=quantizations)
 
     model_info = dict(variant.get("model_info") or {})
+    cost_raw = variant.get("cost")
+    cost: Cost | None = None
+    if cost_raw is not None:
+        cost = cost_raw if isinstance(cost_raw, Cost) else _cost_from_dict(cost_raw)
     return ModelEntry(
         id=variant["id"],
         family=family,
@@ -64,6 +73,8 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         model_name=name,
         location=variant.get("location"),
         source="curated",
+        cost=cost,
+        usage_tier=variant.get("usage_tier"),
         model_info=model_info,
         fetch=fetch,
     )
@@ -79,6 +90,40 @@ def _human_size(n) -> str:
         if n < 1024:
             return f"{n:.1f} {unit}"
     return f"{n:.1f} PB"
+
+
+def _format_cost(cost: Cost | None) -> str:
+    """Short human-readable cost string for the table COST column."""
+    if cost is None:
+        return "—"
+    if cost.kind == "free":
+        return "free"
+    if cost.kind == "per_token":
+        p = cost.price_per_million_tokens
+        return f"${p:.2f}/M" if p is not None else "$/M"
+    if cost.kind == "subscription":
+        p = cost.price_per_period
+        per = cost.period
+        if p is not None:
+            return f"${p:.0f}" + (f"/{per}" if per else "")
+        return f"$/{per}" if per else "$/"
+    return cost.kind
+
+
+def _format_location(location: str | None) -> str:
+    """LOC column icon: cloud, local, or unknown."""
+    if location is None or location == "":
+        return "—"
+    if location == "cloud":
+        return "↗"
+    if location == "local":
+        return "▤"
+    return location
+
+
+def _format_tier(model: ModelEntry) -> str:
+    """The ollama usage tier, or an em dash when unset."""
+    return model.usage_tier or "—"
 
 
 def _entry_kwargs(m: ModelEntry) -> dict:
@@ -98,10 +143,14 @@ def _state_kwargs(s: ModelState) -> dict:
 def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     """Build a VariantSpec-shaped dict from a ModelEntry for provider APIs.
 
-    Providers still consume the legacy TypedDict (provider, name, repo,
+    Providers consume the legacy TypedDict (provider, name, repo,
     files, model_info). ModelEntry stores repo/files in `fetch`. We
     don't carry `model_info` from the registry into the provider call
     (providers read what they need from their own state).
+
+    `cost` is serialized to a plain dict so any provider that JSON-
+    serializes its VariantSpec argument does not receive a non-JSON
+    dataclass. `usage_tier` is a plain string and safe as-is.
     """
     repo = entry.fetch.repo if entry.fetch else None
     files = entry.fetch.files if entry.fetch else None
@@ -115,6 +164,8 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "quantizations": quantizations,
         "location": entry.location,
         "model_info": dict(entry.model_info),
+        "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
+        "usage_tier": entry.usage_tier,
     }
 
 
@@ -196,13 +247,22 @@ class ModelScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield DataTable(id="model-table", cursor_type="row")
+        yield Static("path: —", id="details-panel")
         yield Static("Pending: ready 0 · delete 0", id="pending-bar")
         yield Footer()
 
     def on_mount(self) -> None:
         mt = self.query_one("#model-table", DataTable)
         mt.add_columns(
-            "FAMILY", "PROVIDER", "MODEL", "LOCATION", "STATUS", "EXPOSED", "SIZE", "PATH"
+            "FAMILY",
+            "PROVIDER",
+            "MODEL",
+            "LOC",
+            "STATUS",
+            "EXPOSED",
+            "COST",
+            "TIER",
+            "SIZE",
         )
         self.reload()
         self._refresh_pending_bar()
@@ -277,18 +337,10 @@ class ModelScreen(Screen[None]):
                 if rec is not None:
                     ready = bool(rec.get("ready"))
                     size_str = _human_size(rec.get("size")) if ready else "—"
-                    # When reconcile says the model is no longer on disk, don't
-                    # fall back to the stale disk_path stored in state.
-                    path = (
-                        rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
-                        if ready
-                        else "—"
-                    )
                 else:
                     state_entry = self.state.get(m.id)
                     ready = state_entry.ready
                     size_str = "—"
-                    path = state_entry.disk_path or "—"
                     if ready:
                         try:
                             entry = self.registry.provider(m.provider_id)
@@ -299,7 +351,9 @@ class ModelScreen(Screen[None]):
                 if m.id in self.queued_deletes:
                     status = "[red]✗[/red]"
                 elif m.id in self.queued_ready:
-                    status = "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
+                    status = (
+                        "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
+                    )
                 elif m.id in self.queued_moves:
                     status = "[magenta]→[/magenta]"
                 elif ready:
@@ -309,20 +363,22 @@ class ModelScreen(Screen[None]):
                 exposed = self.state.get(m.id).litellm_exposed
                 if m.id in self.queued_exposes:
                     exposed = self.queued_exposes[m.id]
-                exposed_str = "L" if exposed else "–"
+                exposed_str = "Y" if exposed else "–"
                 mt.add_row(
                     m.family,
                     m.provider_id,
                     m.model_name,
-                    m.location or "—",
+                    _format_location(m.location),
                     status,
                     exposed_str,
+                    _format_cost(m.cost),
+                    _format_tier(m),
                     size_str,
-                    path,
                     key=m.id,
                 )
 
         reload_preserving_cursor(self.query_one("#model-table", DataTable), _repopulate)
+        self._refresh_details_panel(self.query_one("#model-table", DataTable).cursor_row)
 
     def _is_ready(self, model_id: str) -> bool:
         """Truth about whether a model is ready to use.
@@ -507,6 +563,35 @@ class ModelScreen(Screen[None]):
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_edit_model()
 
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Keep the details panel in sync with the row under the cursor."""
+        self._refresh_details_panel(event.cursor_row)
+
+    def _refresh_details_panel(self, cursor_row: int) -> None:
+        """Show the on-disk path of the row under the cursor.
+
+        Prefers the reconcile overlay's local_path (reality), then
+        state.disk_path; renders an em dash when the model isn't ready
+        or its path is unknown.
+        """
+        try:
+            details = self.query_one("#details-panel", Static)
+            mt = self.query_one("#model-table", DataTable)
+        except NoMatches:
+            return  # not mounted (e.g. screen teardown race)
+        if cursor_row < 0 or cursor_row >= mt.row_count:
+            details.update("path: —")
+            return
+        row_key = list(mt.rows.keys())[cursor_row]
+        mid = str(row_key.value)
+        path: str | None = None
+        rec = self.reconciled.get(mid)
+        if rec is not None and rec.get("ready"):
+            path = rec.get("local_path")
+        if path is None and self._is_ready(mid):
+            path = self.state.get(mid).disk_path
+        details.update(Text(f"path: {path or '—'}"))
+
     def action_select_row(self) -> None:
         """Screen-level Enter handler: always edits the row under the
         cursor now that there's only one table."""
@@ -566,6 +651,11 @@ class ModelScreen(Screen[None]):
             return
         if choice == "discard":
             self._restore_snapshot()
+            # Same-family edits save registry immediately on _on_edit_model.
+            # Restoring the in-memory snapshot is not enough: FamilyScreen
+            # reloads from disk on resume, so we must also write the restored
+            # registry back to disk to undo any edits the user discarded.
+            save_registry(self.registry, self.registry_path)
             self.queued_ready.clear()
             self.queued_deletes.clear()
             self.queued_moves.clear()

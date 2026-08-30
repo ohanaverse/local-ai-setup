@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class VariantSpec(TypedDict, total=False):
@@ -18,6 +18,11 @@ class VariantSpec(TypedDict, total=False):
     quantizations: list[str] | None  # quant tags (for omlx)
     model_info: dict | None  # freeform LiteLLM model_info keys
     location: str | None  # "local" | "cloud"
+    # Cost as a plain dict so providers can JSON-serialize VariantSpec if
+    # needed; None when unset. Use registry._cost_from_dict() to rebuild a
+    # registry.Cost object.
+    cost: dict[str, Any] | None
+    usage_tier: str | None  # ollama usage tier ("low" | "medium" | "high"); None otherwise
 
 
 class LocalModel(TypedDict):

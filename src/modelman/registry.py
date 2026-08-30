@@ -10,6 +10,7 @@ modelman.toml.
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -58,6 +59,10 @@ class ProviderEntry:
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
+# ollama.com cloud usage tier for a model's subscription cost.
+UsageTier = Literal["low", "medium", "high"]
+
+
 @dataclass
 class Cost:
     kind: Literal["free", "per_token", "subscription"]
@@ -87,6 +92,7 @@ class ModelEntry:
     cost: Cost | None = None
     model_info: dict[str, Any] = field(default_factory=dict)
     fetch: Fetch | None = None
+    usage_tier: str | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -293,6 +299,22 @@ def _cost_to_dict(c: Cost) -> dict[str, Any]:
     return drop_none({**c.extra, **d})
 
 
+def _cost_from_dict(d: dict[str, Any]) -> Cost:
+    """Reconstruct a Cost from a plain dict (e.g. a VariantSpec value).
+
+    Unknown keys are preserved in `extra` so hand-edited fields survive
+    the round-trip. Callers that have already validated the dict may use
+    this directly; `_parse_cost` is the path that validates raw TOML.
+    """
+    return Cost(
+        kind=d["kind"],
+        price_per_million_tokens=d.get("price_per_million_tokens"),
+        price_per_period=d.get("price_per_period"),
+        period=d.get("period"),
+        extra=unknown_keys(d, {"kind", "price_per_million_tokens", "price_per_period", "period"}),
+    )
+
+
 def _fetch_to_dict(f: Fetch) -> dict[str, Any]:
     d = {"repo": f.repo, "files": f.files, "quantizations": f.quantizations}
     return drop_none({**f.extra, **d})
@@ -310,6 +332,7 @@ def _model_to_dict(m: ModelEntry) -> dict[str, Any]:
         "cost": _cost_to_dict(m.cost) if m.cost is not None else None,
         "model_info": m.model_info,
         "fetch": _fetch_to_dict(m.fetch) if m.fetch is not None else None,
+        "usage_tier": m.usage_tier,
     }
     return drop_none({**m.extra, **d})
 
@@ -360,24 +383,61 @@ def _parse_family(raw: dict[str, Any]) -> FamilyEntry:
     )
 
 
+def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
+    """Validate and construct a Cost from its raw TOML table."""
+    if not isinstance(cost_raw, dict):
+        raise RegistryError(
+            f"Model `{model_id}` cost must be a table, got {type(cost_raw).__name__}"
+        )
+    if "kind" not in cost_raw:
+        raise RegistryError(f"Model `{model_id}` cost missing required `kind` field")
+    kind = cost_raw["kind"]
+    if kind not in ("free", "per_token", "subscription"):
+        raise RegistryError(
+            f"Model `{model_id}` cost kind must be free/per_token/subscription, got {kind!r}"
+        )
+
+    def _number_or_none(name: str) -> float | None:
+        value = cost_raw.get(name)
+        if value is None:
+            return None
+        # Reject booleans explicitly: bool is a subclass of int in Python.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RegistryError(
+                f"Model `{model_id}` cost `{name}` must be a number, got {type(value).__name__}"
+            )
+        if not math.isfinite(value):
+            raise RegistryError(f"Model `{model_id}` cost `{name}` must be finite, got {value}")
+        return float(value)
+
+    period = cost_raw.get("period")
+    if period is not None and not isinstance(period, str):
+        raise RegistryError(
+            f"Model `{model_id}` cost `period` must be a string, got {type(period).__name__}"
+        )
+
+    return Cost(
+        kind=kind,
+        price_per_million_tokens=_number_or_none("price_per_million_tokens"),
+        price_per_period=_number_or_none("price_per_period"),
+        period=period,
+        extra=unknown_keys(
+            cost_raw, {"kind", "price_per_million_tokens", "price_per_period", "period"}
+        ),
+    )
+
+
 def _parse_model(raw: dict[str, Any]) -> ModelEntry:
     required = {"id", "family", "provider_id", "model_name"}
     missing = required - set(raw.keys())
     if missing:
         raise RegistryError(f"Model entry missing required fields {missing}: {raw}")
     cost_raw = raw.get("cost")
-    cost = None
-    if cost_raw is not None:
-        if "kind" not in cost_raw:
-            raise RegistryError(f"Model `{raw['id']}` cost missing required `kind` field")
-        cost = Cost(
-            kind=cost_raw["kind"],
-            price_per_million_tokens=cost_raw.get("price_per_million_tokens"),
-            price_per_period=cost_raw.get("price_per_period"),
-            period=cost_raw.get("period"),
-            extra=unknown_keys(
-                cost_raw, {"kind", "price_per_million_tokens", "price_per_period", "period"}
-            ),
+    cost = _parse_cost(raw["id"], cost_raw) if cost_raw is not None else None
+    usage_tier = raw.get("usage_tier")
+    if usage_tier is not None and not isinstance(usage_tier, str):
+        raise RegistryError(
+            f"Model `{raw['id']}` usage_tier must be a string, got {type(usage_tier).__name__}"
         )
     fetch_raw = raw.get("fetch")
     fetch = (
@@ -401,6 +461,7 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
         cost=cost,
         model_info=dict(raw.get("model_info", {})),
         fetch=fetch,
+        usage_tier=usage_tier,
         extra=unknown_keys(
             raw,
             {
@@ -414,6 +475,7 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
                 "cost",
                 "model_info",
                 "fetch",
+                "usage_tier",
             },
         ),
     )

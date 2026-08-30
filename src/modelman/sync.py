@@ -88,8 +88,10 @@ def list_ollama(runner: _Runner | None = None) -> dict[str, int]:
 def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     """Build a VariantSpec-shaped dict from a ModelEntry for provider APIs.
 
-    Mirrors screens/models.py::_model_entry_to_variant so sync stays decoupled
-    from the UI layer.
+    This is the provider-only subset: it omits `cost` and `usage_tier`,
+    which providers do not consume and which the UI layer serializes
+    differently (Cost as a plain dict). Keeping the provider call lean
+    avoids leaking UI-specific serialization into sync.
     """
     repo = entry.fetch.repo if entry.fetch else None
     files = entry.fetch.files if entry.fetch else None
@@ -101,6 +103,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "repo": repo,
         "files": files,
         "quantizations": quantizations,
+        "location": entry.location,
         "model_info": dict(entry.model_info),
     }
 

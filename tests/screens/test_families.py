@@ -55,9 +55,7 @@ async def test_family_screen_table_focused_after_reconcile(tmp_path, monkeypatch
     gate = threading.Event()
     stub.is_downloaded.side_effect = lambda v: gate.wait(timeout=2.0) or True
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -93,9 +91,7 @@ async def test_family_screen_table_disabled_while_reconciling(tmp_path, monkeypa
 
     stub.is_downloaded.side_effect = slow_is_downloaded
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -127,9 +123,7 @@ async def test_family_screen_actions_noop_while_reconciling(tmp_path, monkeypatc
     gate = threading.Event()
     stub.is_downloaded.side_effect = lambda v: gate.wait(timeout=2.0) or True
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     captured = []
@@ -174,9 +168,7 @@ async def test_family_screen_superseded_reconcile_does_not_clear_flag(tmp_path, 
     stub.name = "ollama"
     stub.is_downloaded.return_value = False
     stub.size_of.return_value = None
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -213,9 +205,7 @@ async def test_family_screen_cursor_restored_after_reconcile(tmp_path, monkeypat
     gate = threading.Event()
     stub.is_downloaded.side_effect = lambda v: gate.wait(timeout=2.0) or True
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:

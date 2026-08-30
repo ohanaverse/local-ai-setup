@@ -592,9 +592,7 @@ def test_apply_delete_not_downloaded_skips_provider_call(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ],
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(reg, reg_path)
@@ -631,9 +629,7 @@ def test_apply_delete_is_downloaded_exception_attempts_delete(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ],
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(reg, reg_path)
@@ -667,9 +663,7 @@ def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ],
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(reg, reg_path)

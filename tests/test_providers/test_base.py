@@ -15,6 +15,12 @@ class FakeProvider(Provider):
         return []
 
 
+def test_variantspec_has_cost_and_usage_tier_keys():
+    """The dialog-facing spec dict carries billing metadata (round-trip)."""
+    assert "cost" in VariantSpec.__annotations__
+    assert "usage_tier" in VariantSpec.__annotations__
+
+
 def test_provider_subclass_works():
     p = FakeProvider({})
     variant: VariantSpec = {"id": "x", "provider": "fake", "name": "fake-model"}

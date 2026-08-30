@@ -17,12 +17,18 @@ from modelman.app import ModelmanApp
 from modelman.providers.base import VariantSpec
 from modelman.registry import (
     AuthConfig,
+    Cost,
     FamilyEntry,
     ProviderEntry,
     Registry,
     save_registry,
 )
-from modelman.screens.forms import ModelForm, ModelFormResult
+from modelman.screens.forms import (
+    ModelForm,
+    ModelFormResult,
+    _price_str,
+    parse_cost_fields,
+)
 from modelman.screens.models import ModelScreen
 from modelman.state import StateStore, save_state
 
@@ -1053,6 +1059,101 @@ async def test_modelform_escape_from_input_dismisses():
     assert dismissed == [None]
 
 
+# ---------------------------------------------------------------------------
+# _price_str: edit-dialog price prefill (shortest round-trip, no float noise)
+# ---------------------------------------------------------------------------
+
+
+def test_price_str_whole_number_drops_decimal():
+    """Whole-number prices must prefill without a noisy '.0' so an untouched
+    edit-save does not flip '20' to '20.0' in the stored registry."""
+    assert _price_str(20.0) == "20"
+
+
+def test_price_str_binary_inexact_uses_shortest_round_trip():
+    """Decimal prices that are not exact in binary must still round-trip
+    through a short repr without truncation."""
+    assert _price_str(9.99) == "9.99"
+    assert _price_str(0.1) == "0.1"
+    assert _price_str(0.35) == "0.35"
+
+
+def test_price_str_round_trips_exactly():
+    """Whatever string _price_str produces must parse back to the same float."""
+    for value in (20.0, 2.5, 9.99, 0.1, 0.35, 123.456):
+        assert float(_price_str(value)) == value
+
+
+def test_price_str_non_finite_survives():
+    """Hand-edited TOML can hold inf/nan; repr keeps them parseable."""
+    import math
+
+    assert _price_str(float("inf")) == "inf"
+    assert math.isnan(float(_price_str(float("nan"))))
+
+
+# ---------------------------------------------------------------------------
+# parse_cost_fields helper
+# ---------------------------------------------------------------------------
+
+
+def test_parse_cost_fields_free():
+    """The 'free' cost kind needs no price fields and produces a plain
+    Cost(kind='free')."""
+    assert parse_cost_fields("free", "", "", "month") == Cost(kind="free")
+
+
+def test_parse_cost_fields_per_token():
+    """per_token parses the million-tokens price and ignores the period."""
+    assert parse_cost_fields("per_token", "2.5", "", "month") == Cost(
+        kind="per_token", price_per_million_tokens=2.5
+    )
+
+
+def test_parse_cost_fields_subscription():
+    """subscription parses the period price and keeps the chosen period."""
+    assert parse_cost_fields("subscription", "", "20", "month") == Cost(
+        kind="subscription", price_per_period=20.0, period="month"
+    )
+
+
+def test_parse_cost_fields_per_token_bad_number():
+    """Non-numeric per-token input must surface a clear ValueError instead of
+    being coerced to a bogus price."""
+    with pytest.raises(ValueError, match="price_per_million_tokens"):
+        parse_cost_fields("per_token", "abc", "", "month")
+
+
+def test_parse_cost_fields_subscription_bad_number():
+    """Non-numeric subscription input must surface a clear ValueError."""
+    with pytest.raises(ValueError, match="price_per_period"):
+        parse_cost_fields("subscription", "", "xyz", "month")
+
+
+def test_parse_cost_fields_negative_price_raises():
+    """Negative prices are not valid costs and must be rejected before they
+    can be stored or rendered as '$-2.50/M' in the table."""
+    with pytest.raises(ValueError, match="price_per_million_tokens"):
+        parse_cost_fields("per_token", "-2.5", "", "month")
+    with pytest.raises(ValueError, match="price_per_period"):
+        parse_cost_fields("subscription", "", "-10", "month")
+
+
+def test_parse_cost_fields_non_finite_price_raises():
+    """inf/nan are not valid prices; reject them at parse time."""
+    with pytest.raises(ValueError, match="price_per_million_tokens"):
+        parse_cost_fields("per_token", "inf", "", "month")
+    with pytest.raises(ValueError, match="price_per_period"):
+        parse_cost_fields("subscription", "", "nan", "month")
+
+
+def test_parse_cost_fields_unknown_kind():
+    """An unsupported cost kind must fail loudly rather than create a
+    malformed Cost object."""
+    with pytest.raises(ValueError, match="unknown cost kind"):
+        parse_cost_fields("weird", "", "", "month")
+
+
 @pytest.mark.asyncio
 async def test_edit_family_modal_escape_from_disabled_input_dismisses():
     """Escape must cancel even when the read-only family-name Input is focused."""
@@ -1069,3 +1170,378 @@ async def test_edit_family_modal_escape_from_disabled_input_dismisses():
         await pilot.press("escape")
         await pilot.pause()
     assert dismissed == [None]
+
+
+# ---------------------------------------------------------------------------
+# Cost section (kind Select + conditional price/period fields) and the
+# ollama-only usage-tier Select. Visibility is .display-based; the widgets
+# are always mounted, so tests can query ids unconditionally.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_model_form_cost_section_free_default():
+    """Default kind is 'free'; the price/period inputs are hidden."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app, pilot, _pilot_cm = await _mount_and_run(form)
+    try:
+        kind_sel = app.screen.query_one("#cost-kind-select", Select)
+        assert str(kind_sel.value) == "free"
+        assert app.screen.query_one("#price-per-mtok", Input).display is False
+        assert app.screen.query_one("#price-per-period", Input).display is False
+        assert app.screen.query_one("#period-select", Select).display is False
+    finally:
+        await _pilot_cm.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_model_form_cost_section_per_token_shows_price_input():
+    """Switching the cost kind to per_token reveals the per-million-tokens
+    price Input and hides the subscription fields."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app, pilot, _pilot_cm = await _mount_and_run(form)
+    try:
+        app.screen.query_one("#cost-kind-select", Select).value = "per_token"
+        await pilot.pause()
+        assert app.screen.query_one("#price-per-mtok", Input).display is True
+        assert app.screen.query_one("#price-per-period", Input).display is False
+        assert app.screen.query_one("#period-select", Select).display is False
+    finally:
+        await _pilot_cm.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_model_form_cost_section_subscription_shows_period():
+    """Switching the cost kind to subscription reveals the period price Input
+    and the period Select, defaulting to month."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app, pilot, _pilot_cm = await _mount_and_run(form)
+    try:
+        app.screen.query_one("#cost-kind-select", Select).value = "subscription"
+        await pilot.pause()
+        assert app.screen.query_one("#price-per-period", Input).display is True
+        assert app.screen.query_one("#period-select", Select).display is True
+        assert str(app.screen.query_one("#period-select", Select).value) == "month"
+        assert app.screen.query_one("#price-per-mtok", Input).display is False
+    finally:
+        await _pilot_cm.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_model_form_tier_section_only_for_ollama():
+    """Tier widgets exist but are visible only for ollama providers."""
+    form_ollama = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app, pilot, pilot_cm = await _mount_and_run(form_ollama)
+    try:
+        assert app.screen.query_one("#usage-tier-label").display is True
+        assert app.screen.query_one("#usage-tier-select", Select).display is True
+    finally:
+        await pilot_cm.__aexit__(None, None, None)
+
+    form_llamacpp = ModelForm(
+        providers=["llamacpp"],
+        default_provider="llamacpp",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"llamacpp": "local-only"},
+    )
+    app2, pilot2, pilot_cm2 = await _mount_and_run(form_llamacpp)
+    try:
+        assert app2.screen.query_one("#usage-tier-select", Select).display is False
+        assert app2.screen.query_one("#usage-tier-label").display is False
+    finally:
+        await pilot_cm2.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_model_form_edit_prefills_cost_and_tier():
+    """Edit mode pre-fills the cost fields and tier from the variant."""
+    spec = {
+        "id": "ollama/glm-5.3:cloud",
+        "provider": "ollama",
+        "name": "glm-5.3:cloud",
+        "location": "cloud",
+        "cost": Cost(kind="subscription", price_per_period=20.0, period="month"),
+        "usage_tier": "high",
+        "model_info": None,
+        "repo": None,
+        "files": None,
+        "quantizations": None,
+    }
+    form = ModelForm(
+        providers=["ollama"],
+        variant=spec,
+        families=["glm"],
+        family="glm",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app, pilot, _pilot_cm = await _mount_and_run(form)
+    try:
+        assert str(app.screen.query_one("#cost-kind-select", Select).value) == "subscription"
+        assert app.screen.query_one("#price-per-period", Input).value == "20"
+        assert app.screen.query_one("#price-per-period", Input).display is True
+        assert str(app.screen.query_one("#usage-tier-select", Select).value) == "high"
+    finally:
+        await _pilot_cm.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_model_form_submit_carries_cost_and_tier():
+    """Save dismisses ModelFormResult whose spec includes cost & usage_tier."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#cost-kind-select", Select).value = "subscription"
+        await pilot.pause()
+        price = app.screen.query_one("#price-per-period", Input)
+        price.value = "20"
+        app.screen.query_one("#usage-tier-select", Select).value = "high"
+        # Focus is still on #model: fill it so the Enter press below submits
+        # (an empty ollama tag would raise the validation error instead).
+        _fill_model(app, "glm-5.3:cloud")
+        await pilot.press("enter")  # Input.Submitted on #model triggers _submit
+        await pilot.pause()
+
+    assert len(dismissed) == 1
+    result = dismissed[0]
+    assert result.spec["cost"] == {
+        "kind": "subscription",
+        "price_per_period": 20.0,
+        "period": "month",
+    }
+    assert result.spec["usage_tier"] == "high"
+    assert result.family == "ornith"
+
+
+@pytest.mark.asyncio
+async def test_model_form_untouched_edit_preserves_cost_tier_and_model_info():
+    """Edit prefill → save WITHOUT touching any widget → cost, usage_tier,
+    and other edit-only metadata survive the round trip intact."""
+    spec = {
+        "id": "ollama/glm-5.3:cloud",
+        "provider": "ollama",
+        "name": "glm-5.3:cloud",
+        "location": "cloud",
+        "repo": None,
+        "files": None,
+        "quantizations": None,
+        "model_info": {"supports_function_calling": True},
+        "cost": Cost(kind="subscription", price_per_period=20.0, period="month"),
+        "usage_tier": "high",
+    }
+    form = ModelForm(
+        providers=["ollama"],
+        variant=spec,
+        families=["glm"],
+        family="glm",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        # Initial focus lands on #model and the pre-filled tag is valid, so
+        # pressing Enter with no other touches saves the form as-is.
+        model_input = app.screen.query_one("#model", Input)
+        assert model_input.value == "glm-5.3:cloud"  # untouched below
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert dismissed, "form did not dismiss"
+    result = dismissed[0]
+    assert result.spec["cost"] == {
+        "kind": "subscription",
+        "price_per_period": 20.0,
+        "period": "month",
+    }
+    assert result.spec["usage_tier"] == "high"
+    assert result.spec["model_info"] == {"supports_function_calling": True}
+    assert result.spec["id"] == "ollama/glm-5.3:cloud"
+    assert result.spec["location"] == "cloud"
+    assert result.spec["quantizations"] is None
+    assert result.family == "glm"
+
+
+@pytest.mark.asyncio
+async def test_model_form_llamacpp_edit_forces_tier_none():
+    """A llamacpp variant that somehow carries a tier must submit with
+    usage_tier=None (tier is ollama-only)."""
+    spec = {
+        "id": "llamacpp/unsloth/Qwen3.8-27B-GGUF",
+        "provider": "llamacpp",
+        "name": "unsloth/Qwen3.8-27B-GGUF",
+        "location": "local",
+        "repo": "unsloth/Qwen3.8-27B-GGUF",
+        "files": ["Qwen3.8-27B-Q4_K_M.gguf"],
+        "quantizations": None,
+        "model_info": None,
+        "cost": Cost(kind="free"),
+        "usage_tier": "high",
+    }
+    form = ModelForm(
+        providers=["llamacpp"],
+        variant=spec,
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"llamacpp": "local-only"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        # No touches: the pre-filled repo/file string is already valid.
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert dismissed, "form did not dismiss"
+    result = dismissed[0]
+    assert result.spec["usage_tier"] is None
+    assert result.spec["cost"] == {"kind": "free"}
+
+
+@pytest.mark.asyncio
+async def test_model_form_edit_preserves_unset_cost():
+    """A model with no configured cost must stay cost=None when the edit
+    dialog is saved without touching the cost section; it must not be
+    silently upgraded to Cost(kind='free')."""
+    spec = {
+        "id": "ollama/glm-5.3:cloud",
+        "provider": "ollama",
+        "name": "glm-5.3:cloud",
+        "location": "cloud",
+        "repo": None,
+        "files": None,
+        "quantizations": None,
+        "model_info": None,
+        "cost": None,
+        "usage_tier": None,
+    }
+    form = ModelForm(
+        providers=["ollama"],
+        variant=spec,
+        families=["glm"],
+        family="glm",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert dismissed, "form did not dismiss"
+    result = dismissed[0]
+    assert result.spec["cost"] is None
+
+
+@pytest.mark.asyncio
+async def test_model_form_edit_preserves_custom_subscription_period():
+    """A hand-edited registry cost with a non-standard period must survive
+    an untouched edit-save instead of being rewritten to the default month."""
+    spec = {
+        "id": "ollama/glm-5.3:cloud",
+        "provider": "ollama",
+        "name": "glm-5.3:cloud",
+        "location": "cloud",
+        "repo": None,
+        "files": None,
+        "quantizations": None,
+        "model_info": None,
+        "cost": Cost(kind="subscription", price_per_period=20.0, period="quarter"),
+        "usage_tier": None,
+    }
+    form = ModelForm(
+        providers=["ollama"],
+        variant=spec,
+        families=["glm"],
+        family="glm",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert dismissed, "form did not dismiss"
+    result = dismissed[0]
+    assert result.spec["cost"] == {
+        "kind": "subscription",
+        "price_per_period": 20.0,
+        "period": "quarter",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_form_bad_price_shows_error_and_stays_open():
+    """Invalid price input surfaces the message inline and cancels the dismiss."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#price-per-mtok", Input)  # ensure mounted
+        app.screen.query_one("#cost-kind-select", Select).value = "per_token"
+        await pilot.pause()
+        _fill_model(app, "test:1b")  # valid tag so the ONLY failure is the price
+        app.screen.query_one("#price-per-mtok", Input).value = "abc"
+        # Focus stays on #model, whose value is valid: Enter submits, and the
+        # submit must fail on the cost field rather than the model name.
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert dismissed == [], "form must not dismiss on invalid price"
+        assert _rendered_error(app) == "price_per_million_tokens must be a number"

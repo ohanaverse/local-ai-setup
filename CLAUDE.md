@@ -16,6 +16,8 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
 - **Lint / format / typecheck:** `make lint`, `make format`, `make typecheck` (or `make check` to run lint+typecheck together)
+- **Run everything:** `make all` (format + test + check)
+- **Clean caches:** `make clean`
 - **Build a wheel:** `uv build`
 
 The Makefile wraps the standard dev commands. Run `make help` to list targets.
@@ -31,10 +33,10 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 - `src/modelman/app.py` — `ModelmanApp(App[None])`. `on_mount` pushes `FamilyScreen`.
 - `src/modelman/screens/__init__.py` — `reload_preserving_cursor(table, repopulate)` helper: snapshots the row key under the cursor before `DataTable.clear()` (which resets to row 0) and restores the cursor onto that key after repopulate. Both `FamilyScreen.reload()` and `ModelScreen._load_models()` route through it.
 - `src/modelman/screens/families.py` — `FamilyScreen`: DataTable of families (family · display · variants · downloaded · size). Actions: `action_add_family` (`a`), `action_edit_family` (`e`, renames display_name only — the slug is read-only to avoid orphaning cross-references), `action_delete_family` (`d`, blocked if any downloaded models), `action_open_family` (Enter / `DataTable.RowSelected`), `action_reconcile` (`r`), `action_quit` (`q`). While `_reconciling` is true the table is disabled, a "Refreshing sizes…" indicator is shown, and every action above (plus `RowSelected`) no-ops so the user can't click a row that's about to mutate; `q` (quit) stays live.
-- `src/modelman/screens/models.py` — `ModelScreen`: single DataTable (provider · model · location · status · exposed · size · path). STATUS renders queued ops as glyphs with priority `✗ delete > ↓ download > → move > ✓ ready > ○`. Holds `queued_ready` / `queued_deletes` / `queued_moves` / `queued_exposes` dicts. Actions: `a` add model (family selectable), `e` edit (id/provider fixed; picking a different family queues a move), `d` queue delete (works on any model — the old not-ready gate is gone; apply skips the on-disk removal if `provider.is_downloaded()` reports False), `x` toggle ready, `l` toggle LiteLLM expose, `r` reconcile, `escape` back/apply. `_provider_list()` returns `sorted(...)` so the Add dialog's provider dropdown is alphabetical.
+- `src/modelman/screens/models.py` — `ModelScreen`: single DataTable (family · provider · model · loc · status · exposed · cost · tier · size) plus a details panel Static below the table showing the row's on-disk path (`path: —` when unknown). LOC is an icon (↗ cloud / ▤ local) and EXPOSED renders `Y`/`–`; there is no PATH column. STATUS renders queued ops as glyphs with priority `✗ delete > ↓ download > → move > ✓ ready > ○`. Holds `queued_ready` / `queued_deletes` / `queued_moves` / `queued_exposes` dicts. Actions: `a` add model (family selectable), `e` edit (id/provider fixed; picking a different family queues a move), `d` queue delete (works on any model — the old not-ready gate is gone; apply skips the on-disk removal if `provider.is_downloaded()` reports False), `x` toggle ready, `l` toggle LiteLLM expose, `r` reconcile, `escape` back/apply. `_provider_list()` returns `sorted(...)` so the Add dialog's provider dropdown is alphabetical.
 - Both `FamilyScreen` and `ModelScreen` run a background worker (`_run_reconcile`, `thread=True`) on mount, on `on_screen_resume`, and via the `r` binding: it asks each provider whether a variant is actually on disk and overlays fresh size/downloaded values into an in-memory cache, independent of `modelman.toml` and the `sync` CLI command. This is why the SIZE/DOWNLOADED columns can differ from `state.py`'s stored values until a reconcile runs. `FamilyScreen` wraps the worker in try/finally + `app.call_from_thread(self._reconcile_done)` so the lock always clears, even on worker exception.
 - `src/modelman/screens/status.py` — `StatusScreen`: live progress log of the apply-queue run. Opened from ModelScreen when the user confirms applying pending changes.
-- `src/modelman/screens/forms.py` — modal screens: `AddFamilyModal`, `EditFamilyModal` (rename a family's display name only; the slug itself is read-only to avoid orphaning cross-references), `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with provider Select, family Select, model input, and location Select; see "ModelForm parsing rules" below), `ConfirmExitDialog` (shows pending set, applies on confirm), `CancelApplyDialog` (Escape during an in-progress apply on `StatusScreen`; offers cancel-or-wait). All inherit from a shared `ModelmanModal` base that enforces the dialog conventions: buttons composed left-to-right (cancel/default rightmost, primary left of it), priority-bound `escape` action that cancels even from inside an `Input`, and a `_focus_button(id)` helper for the safe-default focus on destructive prompts.
+- `src/modelman/screens/forms.py` — modal screens: `AddFamilyModal`, `EditFamilyModal` (rename a family's display name only; the slug itself is read-only to avoid orphaning cross-references), `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with provider Select, family Select, model input, location Select, a cost section — kind Select (free / per_token / subscription) plus conditional price fields — and an ollama-only usage-tier Select; `parse_cost_fields()` parses the cost fields alongside `parse_model()`; see "ModelForm parsing rules" below), `ConfirmExitDialog` (shows pending set, applies on confirm), `CancelApplyDialog` (Escape during an in-progress apply on `StatusScreen`; offers cancel-or-wait). All inherit from a shared `ModelmanModal` base that enforces the dialog conventions: buttons composed left-to-right (cancel/default rightmost, primary left of it), priority-bound `escape` action that cancels even from inside an `Input`, and a `_focus_button(id)` helper for the safe-default focus on destructive prompts.
 
 ### Pending changes queue
 
@@ -42,7 +44,7 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 ### Registry and state
 
-- `src/modelman/registry.py` — `Registry` dataclass: providers + models. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching agent-worktree's `config.RegistryPath`).
+- `src/modelman/registry.py` — `Registry` dataclass: providers + models + families. `ModelEntry` now carries `cost` (`Cost` dataclass: `free`/`per_token`/`subscription`), optional `usage_tier`, and an optional per-model `location` that overrides the provider's location for the LOC icon. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching agent-worktree's `config.RegistryPath`). See `README.md` for the exact TOML schema.
 - `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. Loaded from `modelman.toml` (`MODELMAN_STATE`).
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. Run once via `uv run modelman migrate`.
 - `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.
@@ -94,8 +96,8 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 1. Create `src/modelman/providers/<name>.py` with a class extending `Provider`.
 2. Call `ProviderRegistry.register(TheProvider)` at the bottom of the module.
-3. Add the provider to `~/.config/local-ai/config.yaml` under `providers:`.
-4. Use `provider: <name>` in family manifests.
+3. Add a `[[providers]]` entry to `registry.toml` with `id = "<name>"`.
+4. Reference it from models via `provider_id = "<name>"`.
 5. (Optional) Override `size_of` so the size column is populated for downloaded variants.
 6. Add a `ProviderPolicy` entry to `PROVIDER_POLICIES` in `src/modelman/litellm.py` (prefix, api_key, cloud flag). This table is the single source of truth for LiteLLM exposure — both the config writer and the TUI's expose gate read it, and an unmapped provider cannot be exposed.
 

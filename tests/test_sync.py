@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from modelman.providers.base import Provider, VariantSpec
-from modelman.registry import AuthConfig, Fetch, ModelEntry, ProviderEntry, Registry
+from modelman.registry import AuthConfig, Cost, Fetch, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
 from modelman.sync import (
     SyncError,
@@ -64,6 +64,8 @@ def test_list_ollama_raises_on_failure(mock_runner):
 
 
 def test_model_entry_to_variant_builds_spec_from_fetch():
+    """sync's adapter builds the provider-only subset; cost and usage_tier
+    are UI metadata and are omitted from provider calls."""
     entry = ModelEntry(
         id="llamacpp/q4",
         family="ornith-1.5",
@@ -80,8 +82,11 @@ def test_model_entry_to_variant_builds_spec_from_fetch():
         "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
         "files": ["Ornith-1.5-35B-Q4_K_M.gguf"],
         "quantizations": None,
+        "location": None,
         "model_info": {"supports_function_calling": True},
     }
+    assert "cost" not in spec
+    assert "usage_tier" not in spec
 
 
 def test_model_entry_to_variant_handles_empty_fetch():
@@ -96,6 +101,23 @@ def test_model_entry_to_variant_handles_empty_fetch():
     assert spec["files"] is None
     assert spec["quantizations"] is None
     assert spec["model_info"] == {}
+
+
+def test_model_entry_to_variant_omits_cost_and_usage_tier():
+    """Provider APIs do not consume cost or usage_tier, and the UI layer
+    serializes Cost as a plain dict; sync's adapter omits both fields
+    entirely to keep the provider contract lean."""
+    entry = ModelEntry(
+        id="ollama/glm-5.3:cloud",
+        family="glm",
+        provider_id="ollama",
+        model_name="glm-5.3:cloud",
+        cost=Cost(kind="subscription", price_per_period=20.0, period="month"),
+        usage_tier="high",
+    )
+    spec = _model_entry_to_variant(entry)
+    assert "cost" not in spec
+    assert "usage_tier" not in spec
 
 
 def test_ollama_downloaded_maps_configured_models():

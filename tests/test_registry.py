@@ -133,6 +133,97 @@ def test_load_registry_missing_cost_kind_raises(tmp_path):
         load_registry(path)
 
 
+def test_load_registry_non_dict_cost_raises(tmp_path):
+    """A hand-edited cost value that isn't a TOML table must fail loudly
+    with RegistryError rather than a TypeError from probing 'kind'."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        'cost = "free"\n'
+    )
+    with pytest.raises(RegistryError, match="cost must be a table"):
+        load_registry(path)
+
+
+def test_load_registry_unknown_cost_kind_raises(tmp_path):
+    """Only the canonical cost kinds are accepted; garbage labels must be
+    rejected at load time before they can appear in the COST column."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "enterprise"\n'
+    )
+    with pytest.raises(RegistryError, match="cost kind must be free/per_token/subscription"):
+        load_registry(path)
+
+
+def test_load_registry_string_price_raises(tmp_path):
+    """Numeric price fields must be numbers; a string price would otherwise
+    crash the TUI cost formatter when it tries to format the value."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "per_token"\nprice_per_million_tokens = "abc"\n'
+    )
+    with pytest.raises(RegistryError, match="cost `price_per_million_tokens` must be a number"):
+        load_registry(path)
+
+
+def test_load_registry_non_finite_price_raises(tmp_path):
+    """Prices must be finite; inf/nan cannot be rendered sensibly and are
+    almost always a hand-editing mistake."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "subscription"\nprice_per_period = inf\nperiod = "month"\n'
+    )
+    with pytest.raises(RegistryError, match="cost `price_per_period` must be finite"):
+        load_registry(path)
+
+
+def test_load_registry_non_string_usage_tier_raises(tmp_path):
+    """usage_tier is typed str|None at the schema level; booleans or numbers
+    must not silently render as 'True' or '1' in the TIER column."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        "usage_tier = true\n"
+    )
+    with pytest.raises(RegistryError, match="usage_tier must be a string"):
+        load_registry(path)
+
+
+def test_load_registry_unknown_string_usage_tier_round_trips(tmp_path):
+    """String tier values outside the current enum are intentionally
+    accepted for forward compatibility; they must survive save/load."""
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/x",
+                family="x",
+                provider_id="ollama",
+                model_name="x",
+                usage_tier="premium",
+            )
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").usage_tier == "premium"
+
+
 def test_registry_lookup_helpers_raise_keyerror_for_unknown_id():
     registry = Registry()
     with pytest.raises(KeyError):
@@ -409,3 +500,47 @@ def test_default_wt_config_path_honors_override(monkeypatch):
 def test_default_wt_config_path_defaults_to_home(monkeypatch):
     monkeypatch.delenv("MODELMAN_WT_DIR", raising=False)
     assert _default_wt_config_path() == Path.home() / ".config" / "agent-wt" / "config.toml"
+
+
+def test_registry_round_trips_usage_tier(tmp_path):
+    """A ModelEntry with a usage tier must survive save/load, and the saved
+    TOML must omit the key when the tier is unset."""
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/glm-5.3:cloud",
+                family="glm",
+                provider_id="ollama",
+                model_name="glm-5.3:cloud",
+                location="cloud",
+                cost=Cost(kind="subscription", price_per_period=20.0, period="month"),
+                usage_tier="high",
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    m = loaded.model("ollama/glm-5.3:cloud")
+    assert m.usage_tier == "high"
+    assert m.cost == Cost(kind="subscription", price_per_period=20.0, period="month")
+
+
+def test_registry_omits_cost_and_usage_tier_keys_when_unset(tmp_path):
+    """Spec §11: unset cost/tier must not leak keys into the saved TOML."""
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(id="ollama/x", family="x", provider_id="ollama", model_name="x"),
+        ],
+    )
+    path = tmp_path / "registry.toml"
+    save_registry(registry, path)
+    text = path.read_text()
+    assert "cost" not in text
+    assert "usage_tier" not in text
+    loaded = load_registry(path)
+    m = loaded.model("ollama/x")
+    assert m.cost is None
+    assert m.usage_tier is None

@@ -590,7 +590,7 @@ async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monke
         mt = app.screen.query_one("#model-table", DataTable)
         row = mt.get_row_at(0)
         assert row[4] == "[green]✓[/green]"  # status
-        assert row[6] == "22.0 GB"  # size
+        assert row[8] == "22.0 GB"  # size (col 8 after COST/TIER were added)
 
 
 @pytest.mark.asyncio
@@ -1178,7 +1178,7 @@ async def test_model_screen_is_single_table_sorted_by_provider_then_name(tmp_pat
 
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
-        # FAMILY, PROVIDER, MODEL, LOCATION, STATUS, EXPOSED, SIZE, PATH
+        # FAMILY, PROVIDER, MODEL, LOC, STATUS, EXPOSED, COST, TIER, SIZE
         providers_then_names = [(r[1], r[2]) for r in rows]
         assert providers_then_names == [("llamacpp", "a.gguf"), ("ollama", "b:tag")]
         assert rows[0][0] == "ornith"  # FAMILY column constant per row
@@ -1598,8 +1598,9 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
         await pilot.pause()
         assert "ollama/a" in ms.queued_exposes
         assert ms.queued_exposes["ollama/a"] is True
-        # EXPOSED column exists (NAME, STATUS, SIZE, PATH, EXPOSED).
-        assert len(mt.columns) == 8
+        # EXPOSED column exists (FAMILY, PROVIDER, MODEL, LOC, STATUS,
+        # EXPOSED, COST, TIER, SIZE).
+        assert len(mt.columns) == 9
         # pending bar reflects the queued expose
         bar = ms.query_one("#pending-bar")
         assert "expose 1" in bar.content
@@ -1700,9 +1701,7 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_edit_model_location_change_persists_to_registry_on_back(
-    tmp_path, monkeypatch
-):
+async def test_edit_model_location_change_persists_to_registry_on_back(tmp_path, monkeypatch):
     """Editing a model's location (same family — empty queue) and returning
     to the family screen must persist the change to registry.toml.
 
@@ -1756,9 +1755,7 @@ async def test_edit_model_location_change_persists_to_registry_on_back(
 
 
 @pytest.mark.asyncio
-async def test_location_edit_survives_family_screen_round_trip(
-    tmp_path, monkeypatch
-):
+async def test_location_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
     """End-to-end user journey: family screen -> open family -> edit a
     model's location -> escape back -> reopen the family. The LOCATION
     column must show the new value, not the pre-edit one."""
@@ -1816,8 +1813,8 @@ async def test_location_edit_survives_family_screen_round_trip(
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
         assert rows, "family should still list its model"
-        # Column order: family, provider, model, location, status, ...
-        assert rows[0][3] == "cloud"
+        # LOC column renders the cloud icon for cloud-located models.
+        assert rows[0][3] == "↗"
 
 
 async def _wait_reconcile_done(screen) -> None:
