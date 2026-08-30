@@ -15,7 +15,14 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from ..litellm import default_litellm_config_path, provider_policy
 from ..queue import PendingChanges
-from ..registry import Fetch, ModelEntry, Registry, known_families, provider_config
+from ..registry import (
+    Fetch,
+    ModelEntry,
+    Registry,
+    known_families,
+    provider_config,
+    save_registry,
+)
 from ..state import ModelState, StateStore
 from . import reload_preserving_cursor
 
@@ -514,6 +521,16 @@ class ModelScreen(Screen[None]):
             if m.id == updated["id"]:
                 self.registry.models[i] = new_entry
                 break
+        # Persist the edit's registry metadata (location, model name,
+        # fetch split, …) immediately: unlike every other mutating
+        # action here, a same-family edit queues nothing, so the
+        # escape-apply path is never reached and PendingChanges' final
+        # save_registry() would never run. FamilyScreen's on_screen_resume
+        # reloads the registry from disk, which would silently drop the
+        # edit before the user ever reopened this screen. Family changes
+        # from the dialog stay queued as moves and are applied (and saved)
+        # at apply time, as before.
+        save_registry(self.registry, self.registry_path)
         if result.family != self.family:
             self.queued_moves[updated["id"]] = result.family
         else:

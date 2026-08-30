@@ -1699,6 +1699,136 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
     assert ms.queued_moves == {}
 
 
+@pytest.mark.asyncio
+async def test_edit_model_location_change_persists_to_registry_on_back(
+    tmp_path, monkeypatch
+):
+    """Editing a model's location (same family — empty queue) and returning
+    to the family screen must persist the change to registry.toml.
+
+    Regression: _on_edit_model mutated only the in-memory registry and
+    queued nothing; FamilyScreen's on-screen-resume then reloaded the
+    registry from disk, silently dropping the location edit.
+    """
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+        location="local",
+    )
+    ms, reg_path, _state = _make_screen(
+        tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry]
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.forms import ModelForm
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        mt = ms.query_one("#model-table", DataTable)
+        mt.focus()
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, ModelForm)
+
+        from textual.widgets import Select
+
+        # Ollama is the editable-location provider; flip local -> cloud.
+        loc = app.screen.query_one("#location-select", Select)
+        assert not loc.disabled
+        assert str(loc.value) == "local"
+        loc.value = "cloud"
+        await pilot.press("enter")  # submit the (prefilled) edit form
+        await pilot.pause()
+
+        assert ms.registry.models[0].location == "cloud"
+        # Nothing else queued: escape pops straight back to the previous
+        # screen (this is the path that used to drop the edit).
+        await pilot.press("escape")
+        await pilot.pause()
+
+    reloaded = load_registry(reg_path)
+    assert reloaded.model("ollama/gemma4:26b-mlx").location == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_location_edit_survives_family_screen_round_trip(
+    tmp_path, monkeypatch
+):
+    """End-to-end user journey: family screen -> open family -> edit a
+    model's location -> escape back -> reopen the family. The LOCATION
+    column must show the new value, not the pre-edit one."""
+    reg_path, _state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=(
+            ModelEntry(
+                id="ollama/gemma4:26b-mlx",
+                family="gemma4:26b-mlx",
+                provider_id="ollama",
+                model_name="gemma4:26b-mlx",
+                location="local",
+            ),
+        ),
+    )
+    del reg_path
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.families import FamilyScreen
+    from modelman.screens.forms import ModelForm
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, FamilyScreen)
+        fs = app.screen
+        await _wait_reconcile_done(fs)
+        await pilot.press("enter")  # open the family
+        await pilot.pause()
+        ms = app.screen
+        assert ms.family == "gemma4:26b-mlx"
+
+        mt = ms.query_one("#model-table", DataTable)
+        mt.focus()
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, ModelForm)
+
+        from textual.widgets import Select
+
+        loc = app.screen.query_one("#location-select", Select)
+        loc.value = "cloud"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("escape")  # back to the family screen
+        await pilot.pause()
+        assert isinstance(app.screen, FamilyScreen)
+        await _wait_reconcile_done(app.screen)
+
+        await pilot.press("enter")  # reopen the family
+        await pilot.pause()
+        mt = app.screen.query_one("#model-table", DataTable)
+        rows = [mt.get_row_at(i) for i in range(mt.row_count)]
+        assert rows, "family should still list its model"
+        # Column order: family, provider, model, location, status, ...
+        assert rows[0][3] == "cloud"
+
+
+async def _wait_reconcile_done(screen) -> None:
+    """Yield until the screen's background reconcile worker has cleared
+    its lock (the family table is disabled and blocks `enter` until then)."""
+    for _ in range(200):
+        if not screen._reconciling:
+            return
+        await screen.app._pilot_pause()
+
+
 def test_families_list_includes_state_only_families(tmp_path, monkeypatch):
     """`_families_list()` = registry families ∪ state.families — so a
     family created empty with `a` (like gemma4/deepseek-v4) is targetable
