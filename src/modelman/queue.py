@@ -1,8 +1,8 @@
 """In-memory change queue applied on exit of the TUI model screen.
 
-The on-disk targets are registry.toml (canonical model/provider definitions)
-and modelman.toml (per-machine mutable state: download markers, family
-display names). Queued family moves mutate registry.toml only. The
+The on-disk targets are registry.toml (canonical model/provider/family
+definitions) and modelman.toml (per-machine mutable state: download
+markers). Queued family moves mutate registry.toml only. The
 legacy families/<family>.yaml manifest is no longer
 written by the TUI; it survives as a migrate-time input only.
 """
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from .litellm import apply_expose_queue
 from .providers._progress import DownloadCancelled
-from .registry import save_registry
+from .registry import FamilyEntry, save_registry
 from .state import save_state
 
 if TYPE_CHECKING:
@@ -143,6 +143,11 @@ class PendingChanges:
 
         # ids removed by this apply — moves referencing them are moot
         deleted_ids: set[str] = set()
+        # Families whose membership changed this apply (a model deleted or
+        # moved out). After all membership changes, any of these that now
+        # has zero models lingers as a first-class [[families]] entry so it
+        # stays visible until explicitly deleted (stickiness).
+        recorded_families: set[str] = set()
         for model_id, variant in self.deletes:
             if aborted():
                 return
@@ -158,6 +163,11 @@ class PendingChanges:
                 self.failures.append(f"delete {model_id}: {exc}")
                 emit(f"delete:fail|{model_id}|{label}|{reason}")
                 continue
+            # Record the model's family before removing the entry, so a
+            # family emptied by this delete lingers (stickiness). A failed
+            # delete records nothing — the model stays.
+            with contextlib.suppress(KeyError):
+                recorded_families.add(self.registry.model(model_id).family)
             # Remove from in-memory registry.
             self.registry.models = [m for m in self.registry.models if m.id != model_id]
             # If the model was exposed through LiteLLM, queue an unexpose
@@ -189,11 +199,28 @@ class PendingChanges:
             move_label = _sanitize(entry.model_name)
             move_family = _sanitize(new_family)
             emit(f"move:start|{model_id}|{move_label}|{move_family}")
-            # ModelEntry.family is a plain str field with no validation,
-            # so this assignment cannot fail; unlike delete/download,
-            # there is no move:fail path here.
+            # Record the source family before reassignment (stickiness).
+            recorded_families.add(entry.family)
             entry.family = new_family
             emit(f"move:done|{model_id}|{move_label}|{move_family}")
+
+        # Stickiness: a family that had models and now has none (emptied by
+        # a delete or move in this apply) lingers as a first-class
+        # [[families]] entry so it stays visible until explicitly deleted.
+        # Runs after all membership changes (deletes + moves) so a family
+        # that gained a model in the same apply is not touched.
+        for f in recorded_families:
+            if self.registry.models_by_family(f):
+                continue
+            family_entry = self.registry.family(f)
+            legacy = self.state.families.get(f)
+            if family_entry is None:
+                self.registry.families.append(
+                    FamilyEntry(name=f, display_name=legacy.display_name if legacy else None)
+                )
+            elif family_entry.display_name is None and legacy is not None and legacy.display_name:
+                family_entry.display_name = legacy.display_name
+            self.state.forget_family(f)
 
         for model_id, variant in self.downloads:
             if aborted():

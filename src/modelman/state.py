@@ -1,15 +1,15 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
 Owner: modelman only. See registry.py for the canonical, shared model/
-provider definitions this state is keyed against, and
+provider/family definitions this state is keyed against, and
 docs/superpowers/specs/2026-08-27-shared-model-registry-design.md for the
 ownership split.
 
-The `families` table is a modelman-only addition on top of that spec: it
-holds a family's display name and marks a family "known" before it has any
-models (mirroring the legacy per-family manifest file's existence). It is
-NOT part of the shared registry.toml schema and is never read by
-agent-worktree.
+The `families` table is a legacy read-side fallback: family display names
+now live in registry.toml's first-class [[families]] entries (see
+docs/superpowers/specs/2026-08-29-modelman-first-class-families-design.md).
+Writers no longer create entries here; they drain them via promotion.
+Entries stay loadable so pre-existing modelman.toml files keep working.
 """
 
 from __future__ import annotations

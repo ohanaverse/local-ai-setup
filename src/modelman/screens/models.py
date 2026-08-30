@@ -17,7 +17,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from ..litellm import default_litellm_config_path, is_cloud
 from ..queue import PendingChanges
-from ..registry import Fetch, ModelEntry, Registry, provider_config
+from ..registry import Fetch, ModelEntry, Registry, known_families, provider_config
 from ..state import ModelState, StateStore
 
 if TYPE_CHECKING:
@@ -406,9 +406,9 @@ class ModelScreen(Screen[None]):
 
     def _families_list(self) -> list[str]:
         """Every family the add/edit dialogs may target: families with
-        models in the registry plus explicitly created-but-empty ones
-        (state.families), sorted."""
-        return sorted(set(self.registry.families()) | set(self.state.families))
+        models in the registry, first-class [[families]] entries, and
+        legacy state.families keys, sorted."""
+        return known_families(self.registry, self.state)
 
     def action_add_model(self) -> None:
         from .forms import ModelForm

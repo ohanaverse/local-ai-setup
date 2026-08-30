@@ -189,10 +189,11 @@ async def test_family_screen_e_with_no_rows_is_a_noop(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_family_screen_edit_persists_display_name_to_state(tmp_path, monkeypatch):
-    """Saving the edit modal must write the new display_name to
-    modelman.toml (StateStore), not to any manifest file."""
-    _reg_path, state_path = _seed(
+async def test_family_screen_edit_persists_display_name_to_registry(tmp_path, monkeypatch):
+    """Saving the edit modal must write the new display_name to a
+    first-class [[families]] entry in registry.toml and drop the legacy
+    state.families entry (promotion)."""
+    reg_path, state_path = _seed(
         tmp_path, monkeypatch, family_state=FamilyState(display_name="Ornith 1.5")
     )
 
@@ -208,5 +209,8 @@ async def test_family_screen_edit_persists_display_name_to_state(tmp_path, monke
         app.screen.query_one("#save", Button).press()
         await pilot.pause()
 
-    reloaded = load_state(state_path)
-    assert reloaded.family_display_name("ornith-1.5") == "Ornith v1.5 (renamed)"
+    from modelman.registry import load_registry
+
+    reloaded_reg = load_registry(reg_path)
+    assert reloaded_reg.family("ornith-1.5").display_name == "Ornith v1.5 (renamed)"
+    assert "ornith-1.5" not in load_state(state_path).families

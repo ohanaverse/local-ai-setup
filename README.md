@@ -24,7 +24,7 @@ with an env var):
 | File | Purpose | Env override |
 |------|---------|--------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
-| `modelman.toml` | Per-machine mutable state: download markers, family display names, LiteLLM exposure flags | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 
 ### `registry.toml`
@@ -46,6 +46,10 @@ location = "cloud"
 type = "api_key"
 base_url = "https://openrouter.ai/api/v1"
 secret_ref = "sk-or-v1-..."
+
+[[families]]
+name = "ornith"
+display_name = "Ornith"       # optional; omitted when unset
 
 [[models]]
 id = "ollama/ornith:35b"     # globally unique, stable key
@@ -73,10 +77,11 @@ downloaded = true
 disk_path = "ollama:ornith:35b"
 size_bytes = 123456789
 litellm_exposed = false
-
-[families.ornith]
-display_name = "Ornith"
 ```
+
+Family display names now live in `registry.toml`'s `[[families]]` section.
+The legacy `[families.*]` table here is still loaded as a read-side
+fallback, but the TUI no longer writes it.
 
 This file is optional — a fresh install starts with an empty store.
 

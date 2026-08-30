@@ -4,6 +4,7 @@ from textual.widgets import DataTable
 from modelman.app import ModelmanApp
 from modelman.registry import (
     AuthConfig,
+    FamilyEntry,
     ModelEntry,
     ProviderEntry,
     Registry,
@@ -116,11 +117,11 @@ async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_add_family_registers_state(tmp_path, monkeypatch):
-    """Adding a family with no models yet must still make it appear
-    in the family table (mirrors the legacy manifest file's
-    existence) by recording it in modelman.toml's `families` table."""
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
+async def test_add_family_registers_registry_entry(tmp_path, monkeypatch):
+    """Adding a family with no models yet must still make it appear in
+    the family table by recording a first-class [[families]] entry in
+    registry.toml (the legacy state.families entry is no longer created)."""
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
 
     from modelman.app import ModelmanApp
 
@@ -135,10 +136,11 @@ async def test_add_family_registers_state(tmp_path, monkeypatch):
         table = app.screen.query_one("DataTable")
         assert table.row_count == 1
 
+    from modelman.registry import load_registry
     from modelman.state import load_state
 
-    reloaded = load_state(state_path)
-    assert "mamba" in reloaded.families
+    assert load_registry(reg_path).family("mamba") is not None
+    assert "mamba" not in load_state(state_path).families
 
 
 @pytest.mark.asyncio
@@ -160,6 +162,31 @@ async def test_delete_family_when_empty(tmp_path, monkeypatch):
         await pilot.pause()
 
     assert "mamba" not in load_state(state_path).families
+
+
+@pytest.mark.asyncio
+async def test_delete_family_removes_registry_entry(tmp_path, monkeypatch):
+    """Deleting an emptied family must remove its first-class
+    [[families]] entry from registry.toml, not just the state entry."""
+    from modelman.registry import FamilyEntry, load_registry, save_registry
+
+    reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch)
+    # Seed a first-class entry (the emptied-by-move residue) with no models.
+    reg = load_registry(reg_path)
+    reg.families.append(FamilyEntry(name="mamba"))
+    save_registry(reg, reg_path)
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert load_registry(reg_path).family("mamba") is None
 
 
 @pytest.mark.asyncio
@@ -1053,10 +1080,13 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 
-def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=(), families=()):
+def _make_screen(
+    tmp_path, monkeypatch, *, family: str = "ornith", entries=(), families=(), family_entries=()
+):
     """Build a ModelScreen with registry.toml + modelman.toml in tmp_path
     and seed registry with the given ModelEntries. `families` seeds
-    StateStore.families (explicitly created, possibly empty families).
+    StateStore.families (explicitly created, possibly empty families);
+    `family_entries` seeds first-class Registry.families entries.
     Returns (ms, registry_path, state_path)."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
@@ -1066,6 +1096,7 @@ def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=(), f
             ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none")),
             ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx")),
         ],
+        families=list(family_entries),
         models=list(entries),
     )
     save_registry(reg, reg_path)
@@ -1748,6 +1779,26 @@ def test_families_list_includes_state_only_families(tmp_path, monkeypatch):
     assert ms._families_list() == ["deepseek-v4", "gemma4", "gemma4:26b-mlx"]
 
 
+def test_families_list_includes_registry_entry_only_families(tmp_path, monkeypatch):
+    """`_families_list()` must include a family that exists only as a
+    first-class [[families]] entry (no models, no state entry) — the
+    emptied-by-move case that must stay visible."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, _reg, _state = _make_screen(
+        tmp_path,
+        monkeypatch,
+        family="gemma4:26b-mlx",
+        entries=[entry],
+        family_entries=[FamilyEntry(name="deepseek-v4")],
+    )
+    assert ms._families_list() == ["deepseek-v4", "gemma4:26b-mlx"]
+
+
 # ---------------------------------------------------------------------------
 # Exit path: exit dialog + apply hand-off + discard safety
 # ---------------------------------------------------------------------------
@@ -1803,6 +1854,62 @@ async def test_exit_dialog_lists_move_and_apply_persists_it(tmp_path, monkeypatc
 
     reloaded = load_registry(reg_path)
     assert reloaded.model("ollama/gemma4:26b-mlx").family == "gemma4"
+
+
+@pytest.mark.asyncio
+async def test_apply_move_emptying_family_keeps_it_visible(tmp_path, monkeypatch):
+    """After an apply that moves the last model out of a family, the
+    emptied family must still appear on the FamilyScreen (0 variants)
+    because apply recorded a first-class [[families]] entry."""
+    entry = ModelEntry(
+        id="ollama/gemma4:26b-mlx",
+        family="gemma4:26b-mlx",
+        provider_id="ollama",
+        model_name="gemma4:26b-mlx",
+    )
+    ms, reg_path, _state = _make_screen(
+        tmp_path,
+        monkeypatch,
+        family="gemma4:26b-mlx",
+        entries=[entry],
+        families=["gemma4"],
+    )
+
+    from modelman.app import ModelmanApp
+    from modelman.registry import load_registry
+    from modelman.screens.families import FamilyScreen
+    from modelman.screens.status import StatusScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        ms.queued_moves["ollama/gemma4:26b-mlx"] = "gemma4"
+        await pilot.press("escape")
+        await pilot.pause()
+        from textual.widgets import Button
+
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        for _ in range(50):
+            await pilot.pause()
+            cur = app.screen
+            if isinstance(cur, StatusScreen) and cur.done:
+                break
+        # Pop back to FamilyScreen and confirm the emptied family lingers.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, FamilyScreen)
+        table = app.screen.query_one(DataTable)
+        rows = {r[0]: r for r in [table.get_row_at(i) for i in range(table.row_count)]}
+        assert "gemma4:26b-mlx" in rows
+        assert rows["gemma4:26b-mlx"][2] == "0"  # VARIANTS column
+
+    reloaded = load_registry(reg_path)
+    assert reloaded.family("gemma4:26b-mlx") is not None
 
 
 @pytest.mark.asyncio

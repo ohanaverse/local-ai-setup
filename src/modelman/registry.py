@@ -1,8 +1,11 @@
-"""registry.toml — the canonical, shared model/provider registry.
+"""registry.toml — the canonical, shared model/provider/family registry.
 
 Owned exclusively by modelman (see docs/superpowers/specs/2026-08-27-
 shared-model-registry-design.md). agent-worktree reads this file
-read-only; it never writes it.
+read-only; it never writes it. Families are first-class [[families]]
+entries here (see docs/superpowers/specs/2026-08-29-modelman-first-class-
+families-design.md); their display names live in the entry, not in
+modelman.toml.
 """
 
 from __future__ import annotations
@@ -11,9 +14,12 @@ import os
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
+
+if TYPE_CHECKING:
+    from .state import StateStore
 
 
 class RegistryError(Exception):
@@ -85,8 +91,16 @@ class ModelEntry:
 
 
 @dataclass
+class FamilyEntry:
+    name: str
+    display_name: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass
 class Registry:
     providers: list[ProviderEntry] = field(default_factory=list)
+    families: list[FamilyEntry] = field(default_factory=list)
     models: list[ModelEntry] = field(default_factory=list)
 
     def provider(self, provider_id: str) -> ProviderEntry:
@@ -101,11 +115,41 @@ class Registry:
                 return m
         raise KeyError(f"Unknown model: {model_id}")
 
-    def families(self) -> list[str]:
+    def family(self, name: str) -> FamilyEntry | None:
+        for f in self.families:
+            if f.name == name:
+                return f
+        return None
+
+    def derived_families(self) -> list[str]:
         return sorted({m.family for m in self.models})
 
     def models_by_family(self, family: str) -> list[ModelEntry]:
         return [m for m in self.models if m.family == family]
+
+
+def known_families(registry: Registry, state: StateStore) -> list[str]:
+    """Sorted union of every family the TUI should show: families derived
+    from models, first-class [[families]] entry names, and legacy
+    state.families keys (read-side fallback)."""
+    return sorted(
+        set(registry.derived_families())
+        | {f.name for f in registry.families}
+        | set(state.families.keys())
+    )
+
+
+def family_display_name(registry: Registry, state: StateStore, family: str) -> str | None:
+    """Registry entry display_name, else legacy state display_name, else
+    None. Callers decide the fallback (table column: ""; edit prefill:
+    the family name)."""
+    entry = registry.family(family)
+    if entry is not None and entry.display_name:
+        return entry.display_name
+    legacy = state.families.get(family)
+    if legacy is not None and legacy.display_name:
+        return legacy.display_name
+    return None
 
 
 def provider_config(entry: ProviderEntry) -> dict[str, Any]:
@@ -170,6 +214,7 @@ def load_registry(path: Path | None = None) -> Registry:
         raw = tomllib.load(f)
     return Registry(
         providers=[_parse_provider(p) for p in raw.get("providers", [])],
+        families=[_parse_family(f) for f in raw.get("families", [])],
         models=[_parse_model(m) for m in raw.get("models", [])],
     )
 
@@ -221,10 +266,16 @@ def _model_to_dict(m: ModelEntry) -> dict[str, Any]:
     return drop_none({**m.extra, **d})
 
 
+def _family_to_dict(f: FamilyEntry) -> dict[str, Any]:
+    d = {"name": f.name, "display_name": f.display_name}
+    return drop_none({**f.extra, **d})
+
+
 def save_registry(registry: Registry, path: Path | None = None) -> None:
     registry_path = Path(path) if path else _default_registry_path()
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
+        "families": [_family_to_dict(f) for f in registry.families],
         "models": [_model_to_dict(m) for m in registry.models],
     }
     atomic_write_toml(payload, registry_path)
@@ -248,6 +299,16 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
             extra=unknown_keys(auth_raw, {"type", "secret_ref", "base_url"}),
         ),
         extra=unknown_keys(raw, {"id", "name", "location", "model_dir", "auth"}),
+    )
+
+
+def _parse_family(raw: dict[str, Any]) -> FamilyEntry:
+    if "name" not in raw:
+        raise RegistryError(f"Family entry missing required `name` field: {raw}")
+    return FamilyEntry(
+        name=raw["name"],
+        display_name=raw.get("display_name"),
+        extra=unknown_keys(raw, {"name", "display_name"}),
     )
 
 

@@ -22,6 +22,7 @@ from modelman.providers._progress import DownloadCancelled
 from modelman.queue import PendingChanges
 from modelman.registry import (
     AuthConfig,
+    FamilyEntry,
     ModelEntry,
     ProviderEntry,
     Registry,
@@ -960,3 +961,163 @@ def test_apply_cancelled_before_moves_skips_them(tmp_path):
     assert not any(e.startswith("move:") for e in events)
     # Cancel semantics: nothing persisted.
     assert load_registry(reg_path).model("m1").family == "a"
+
+
+def test_apply_move_emptying_family_creates_family_entry(tmp_path):
+    """Moving the last model out of a family must leave a first-class
+    [[families]] entry with the legacy display name promoted, and drop
+    the legacy state.families entry."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="gemma4:26b-mlx", provider="ollama", name="gemma4:26b-mlx"),
+    )
+    state = _make_state()
+    state.touch_family("gemma4:26b-mlx", display_name="Gemma4 26B MLX")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="gemma4:26b-mlx",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "gemma4")],
+    )
+    pending.apply()
+
+    reloaded = load_registry(reg_path)
+    assert reloaded.family("gemma4:26b-mlx").display_name == "Gemma4 26B MLX"
+    assert "gemma4:26b-mlx" not in load_state(tmp_path / "modelman.toml").families
+
+
+def test_apply_delete_emptying_family_creates_family_entry(tmp_path):
+    """Deleting the last model of a family must also leave a lingering
+    [[families]] entry (no display name — there was none to promote)."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="solo", provider="ollama", name="solo"),
+    )
+    state = _make_state()
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.delete.return_value = None
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="solo",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={"ollama": provider},
+        deletes=[("m1", _variant(id="m1", provider="ollama", name="solo"))],
+    )
+    pending.apply()
+
+    reloaded = load_registry(reg_path)
+    assert reloaded.family("solo") is not None
+    assert reloaded.family("solo").display_name is None
+    assert reloaded.models == []
+
+
+def test_apply_move_does_not_create_entry_when_family_survives(tmp_path):
+    """A family that still has models after the apply must NOT gain an
+    entry — only families emptied to zero models linger."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+        _entry(id="m2", family="a", provider="ollama", name="y"),
+    )
+    state = _make_state()
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "b")],
+    )
+    pending.apply()
+
+    assert load_registry(reg_path).family("a") is None
+
+
+def test_apply_move_emptying_family_does_not_duplicate_existing_entry(tmp_path):
+    """If a [[families]] entry already exists, emptying the family must
+    not append a duplicate — the existing entry is left untouched."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+    )
+    reg.families.append(FamilyEntry(name="a", display_name="Already"))
+    save_registry(reg, reg_path)
+    state = _make_state()
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "b")],
+    )
+    pending.apply()
+
+    entries = [f for f in load_registry(reg_path).families if f.name == "a"]
+    assert len(entries) == 1
+    assert entries[0].display_name == "Already"
+
+
+def test_apply_promotes_legacy_display_into_existing_entry_without_display(tmp_path):
+    """An existing entry with no display name gains the legacy state
+    display name before the state entry is dropped."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+    )
+    reg.families.append(FamilyEntry(name="a", display_name=None))
+    save_registry(reg, reg_path)
+    state = _make_state()
+    state.touch_family("a", display_name="Legacy Name")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "b")],
+    )
+    pending.apply()
+
+    assert load_registry(reg_path).family("a").display_name == "Legacy Name"
+    assert "a" not in load_state(tmp_path / "modelman.toml").families
+
+
+def test_apply_cancelled_persists_no_family_entry(tmp_path):
+    """A cancelled apply saves nothing, so the stickiness entry is not
+    written and the move is not applied."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="m1", family="a", provider="ollama", name="x"),
+    )
+    state = _make_state()
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="a",
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={},
+        moves=[("m1", "b")],
+    )
+    pending.cancel()
+    pending.apply()
+
+    reloaded = load_registry(reg_path)
+    assert reloaded.family("a") is None
+    assert reloaded.model("m1").family == "a"

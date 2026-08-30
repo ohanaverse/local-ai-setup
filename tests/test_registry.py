@@ -11,16 +11,20 @@ import pytest
 from modelman.registry import (
     AuthConfig,
     Cost,
+    FamilyEntry,
     Fetch,
     ModelEntry,
     ProviderEntry,
     Registry,
     RegistryError,
     _default_registry_path,
+    family_display_name,
+    known_families,
     load_registry,
     provider_config,
     save_registry,
 )
+from modelman.state import FamilyState, StateStore
 
 
 def test_default_registry_path_honors_xdg(monkeypatch):
@@ -135,7 +139,70 @@ def test_registry_lookup_helpers_raise_keyerror_for_unknown_id():
         registry.model("nope")
 
 
-def test_families_returns_sorted_distinct_family_names():
+def test_family_entry_round_trip(tmp_path):
+    # A [[families]] entry with a display name must survive save/load,
+    # since the family screen's DISPLAY column reads it back.
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="deepseek-v4", display_name="DeepSeek V4")],
+    )
+    path = tmp_path / "registry.toml"
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    assert loaded.family("deepseek-v4") == FamilyEntry(
+        name="deepseek-v4", display_name="DeepSeek V4"
+    )
+
+
+def test_load_registry_missing_families_section_returns_empty(tmp_path):
+    # A registry without a [[families]] section (every pre-existing file)
+    # must load with families == [], not raise.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n[providers.auth]\ntype = "none"\n'
+    )
+    assert load_registry(path).families == []
+
+
+def test_load_registry_missing_family_name_raises(tmp_path):
+    # A [[families]] entry without a name is malformed; mirror the
+    # provider-id requirement so a hand-edited file fails loudly.
+    path = tmp_path / "registry.toml"
+    path.write_text('[[families]]\ndisplay_name = "No Name"\n')
+    with pytest.raises(RegistryError, match="missing required `name`"):
+        load_registry(path)
+
+
+def test_family_entry_preserves_unknown_keys(tmp_path):
+    # Hand-edited fields on a [[families]] entry must survive round-trip.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[families]]\nname = "deepseek-v4"\ndisplay_name = "DeepSeek V4"\ncustom = "keep"\n'
+    )
+    registry = load_registry(path)
+    save_registry(registry, path)
+    assert load_registry(path).family("deepseek-v4").extra == {"custom": "keep"}
+
+
+def test_family_lookup_returns_none_for_unknown():
+    # family() returns None for an unknown name (absence is normal),
+    # unlike provider()/model() which raise.
+    assert Registry().family("nope") is None
+
+
+def test_family_lookup_returns_first_match():
+    # Duplicate names are tolerated (first match wins), matching the
+    # duplicate-model-id tolerance.
+    registry = Registry(
+        families=[
+            FamilyEntry(name="a", display_name="First"),
+            FamilyEntry(name="a", display_name="Second"),
+        ]
+    )
+    assert registry.family("a").display_name == "First"
+
+
+def test_derived_families_returns_sorted_distinct_family_names():
     # The family list drives the TUI's left pane; it must be sorted and
     # deduplicated so a family spanning multiple providers appears once.
     registry = Registry(
@@ -145,13 +212,46 @@ def test_families_returns_sorted_distinct_family_names():
             ModelEntry(id="llamacpp/c", family="alpha", provider_id="llamacpp", model_name="c"),
         ]
     )
-    assert registry.families() == ["alpha", "zeta"]
+    assert registry.derived_families() == ["alpha", "zeta"]
 
 
-def test_families_on_empty_registry_returns_empty_list():
-    # A fresh registry has no models; families() must return [] rather than
-    # raise, so the TUI renders an empty family list on first run.
-    assert Registry().families() == []
+def test_derived_families_on_empty_registry_returns_empty_list():
+    # A fresh registry has no models; derived_families() must return []
+    # rather than raise, so the TUI renders an empty family list on first run.
+    assert Registry().derived_families() == []
+
+
+def test_known_families_union_of_derived_entries_and_state():
+    # known_families must include families from all three sources so an
+    # emptied-by-move family (registry entry only) stays visible.
+    registry = Registry(
+        families=[FamilyEntry(name="entry-only")],
+        models=[ModelEntry(id="ollama/a", family="derived", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore(families={"legacy": FamilyState()})
+    assert known_families(registry, state) == ["derived", "entry-only", "legacy"]
+
+
+def test_family_display_name_resolution_order():
+    # Registry entry wins over legacy state; both fall back to None.
+    registry = Registry(families=[FamilyEntry(name="a", display_name="Registry Name")])
+    state = StateStore(
+        families={
+            "a": FamilyState(display_name="Legacy Name"),
+            "b": FamilyState(display_name="Only Legacy"),
+        }
+    )
+    assert family_display_name(registry, state, "a") == "Registry Name"
+    assert family_display_name(registry, state, "b") == "Only Legacy"
+    assert family_display_name(registry, state, "c") is None
+
+
+def test_family_display_name_ignores_empty_display_name():
+    # An empty display_name is treated as unset (falls through to the
+    # next source), matching state.family_display_name's truthiness check.
+    registry = Registry(families=[FamilyEntry(name="a", display_name="")])
+    state = StateStore(families={"a": FamilyState(display_name="Legacy")})
+    assert family_display_name(registry, state, "a") == "Legacy"
 
 
 def test_models_by_family_filters_and_preserves_order():

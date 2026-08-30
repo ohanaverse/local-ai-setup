@@ -10,8 +10,11 @@ from textual.widgets import DataTable, Footer, Header
 
 from ..providers.registry import ProviderRegistry
 from ..registry import (
+    FamilyEntry,
     Registry,
     RegistryError,
+    family_display_name,
+    known_families,
     load_registry,
     provider_config,
     save_registry,
@@ -162,7 +165,7 @@ class FamilyScreen(Screen[None]):
         # explicitly touched in state (e.g. AddFamilyModal for a family
         # with zero models yet) — mirrors the legacy per-family manifest
         # file's existence, which didn't require any variants either.
-        families = sorted(set(self.registry.families()) | set(self.state.families.keys()))
+        families = known_families(self.registry, self.state)
         for family in families:
             models = self.registry.models_by_family(family)
             variants = len(models)
@@ -192,7 +195,7 @@ class FamilyScreen(Screen[None]):
             )
             table.add_row(
                 family,
-                self.state.family_display_name(family) if family in self.state.families else "",
+                family_display_name(self.registry, self.state, family) or "",
                 str(variants),
                 str(downloaded_count),
                 size_str,
@@ -207,7 +210,8 @@ class FamilyScreen(Screen[None]):
             if result is None:
                 return
             family, display_name = result
-            self.state.touch_family(family, display_name)
+            self._upsert_family_entry(family, display_name)
+            save_registry(self.registry, self.registry_path)
             save_state(self.state, self.state_path)
             self.reload()
 
@@ -223,7 +227,8 @@ class FamilyScreen(Screen[None]):
         def _on_close(display_name: str | None) -> None:
             if display_name is None:
                 return
-            self.state.touch_family(family_name, display_name)
+            self._upsert_family_entry(family_name, display_name)
+            save_registry(self.registry, self.registry_path)
             save_state(self.state, self.state_path)
             # _refresh_from_disk also clears the reconcile overlay; model
             # ids didn't change so the keys stay valid, but matching
@@ -233,7 +238,8 @@ class FamilyScreen(Screen[None]):
         self.app.push_screen(
             EditFamilyModal(
                 family=family_name,
-                display_name=self.state.family_display_name(family_name),
+                display_name=family_display_name(self.registry, self.state, family_name)
+                or family_name,
             ),
             _on_close,
         )
@@ -291,6 +297,16 @@ class FamilyScreen(Screen[None]):
             return
         self._delete_family()
 
+    def _upsert_family_entry(self, name: str, display_name: str) -> None:
+        """Write (or update) the first-class [[families]] entry for `name`
+        and drop any legacy state.families entry (promotion)."""
+        entry = self.registry.family(name)
+        if entry is None:
+            self.registry.families.append(FamilyEntry(name=name, display_name=display_name))
+        else:
+            entry.display_name = display_name
+        self.state.forget_family(name)
+
     def _delete_family(self) -> None:
         """Remove every model in the currently-selected family from
         the registry, drop its state entries and its `families` state
@@ -311,6 +327,9 @@ class FamilyScreen(Screen[None]):
         family_name = str(row_key.value)
         removed_ids = {m.id for m in self.registry.models if m.family == family_name}
         self.registry.models = [m for m in self.registry.models if m.family != family_name]
+        # Remove the first-class [[families]] entry too, so an emptied
+        # family is gone for good after an explicit delete.
+        self.registry.families = [f for f in self.registry.families if f.name != family_name]
         for mid in removed_ids:
             self.state.models.pop(mid, None)
         self.state.forget_family(family_name)
