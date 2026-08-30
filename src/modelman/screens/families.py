@@ -118,12 +118,18 @@ class FamilyScreen(Screen[None]):
 
         Disabling the DataTable prevents the user from selecting a row
         that's about to mutate out from under their cursor while a
-        background reconcile worker is running.
+        background reconcile worker is running. Textual blurs a focused
+        widget when it is disabled, so when the table is re-enabled we
+        restore focus to it (unless the user has focused something else
+        meanwhile) — otherwise the screen is left with nothing focused
+        and keys act on it only after a manual Tab.
         """
         table = self.query_one("#family-table", DataTable)
         indicator = self.query_one("#refresh-indicator", Static)
         table.disabled = refreshing
         indicator.display = refreshing
+        if not refreshing and table.screen.focused is None:
+            table.focus()
 
     def _load_from_disk(self) -> None:
         """(Re)load registry.toml + modelman.toml and the derived

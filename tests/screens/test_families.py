@@ -41,6 +41,42 @@ def _seed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_family_screen_table_focused_after_reconcile(tmp_path, monkeypatch):
+    """After the initial refresh completes, focus must be back on the family
+    table without the user pressing Tab first. Disabling the focused table
+    (Textual blurs a widget when it's disabled) must not leave the screen
+    with nothing focused once the table is re-enabled."""
+    _seed(tmp_path, monkeypatch)
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    gate = threading.Event()
+    stub.is_downloaded.side_effect = lambda v: gate.wait(timeout=2.0) or True
+    stub.size_of.return_value = 1
+    monkeypatch.setattr(
+        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#family-table", DataTable)
+        # While the refresh runs the table is disabled and blurred...
+        assert app.screen._reconciling is True
+        assert table.disabled is True
+        gate.set()
+        for _ in range(50):
+            await pilot.pause()
+            if not app.screen._reconciling:
+                break
+        assert app.screen._reconciling is False
+        # ...but once the refresh completes the table must hold focus again.
+        assert app.screen.focused is table
+
+
+@pytest.mark.asyncio
 async def test_family_screen_table_disabled_while_reconciling(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
 
