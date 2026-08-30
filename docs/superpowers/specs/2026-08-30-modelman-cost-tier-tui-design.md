@@ -105,18 +105,14 @@ def _format_cost(cost: Cost | None) -> str:
         return f"${p:.2f}/M" if p is not None else "$/M"
     if cost.kind == "subscription":
         p = cost.price_per_period
-        per = cost.period
-        if p is not None:
-            return f"${p:.0f}" + (f"/{per}" if per else "")
-        return f"$/{per}" if per else "$/"
+        per = cost.period or ""
+        return f"${p:.0f}/{per}" if p is not None else "$/?"
     return cost.kind
 ```
 
 `—` is rendered when no cost is set (still useful to see — a
 free local ollama model and a model with no cost set look the same to
-the user, but the formatter is honest about it). In the subscription
-branch, a price without a period renders as `$20` (no suffix), a
-period without a price as `$/month`, and neither as `$/`.
+the user, but the formatter is honest about it).
 
 ### 4. Tier formatter
 
@@ -143,7 +139,7 @@ Content format (single line):
 path: /Users/me/.ollama/models/blobs/sha256-abc...
 ```
 
-`path: —` (em dash) when no row is selected, or when the row's
+`path: ` (empty value) when no row is selected, or when the row's
 path is unknown (e.g. not ready and reconcile hasn't run).
 
 Updated on `DataTable.RowHighlighted` (cursor move) and on
