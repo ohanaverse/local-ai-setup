@@ -451,9 +451,15 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        # Only allow queuing a delete for models that are actually on
-        # disk; otherwise the delete has nothing to remove.
-        if not self._is_downloaded(mid):
+        # Local models must be on disk before a delete has anything to
+        # remove. Cloud-located ollama models (`location == "cloud"`) are
+        # different: a pulled `:cloud` row lives in the ollama registry
+        # with no local size (SIZE column '-'), so reconcile can never
+        # report them downloaded — yet `ollama rm` can delete them. Say
+        # why when the delete is refused instead of silently ignoring the
+        # keypress.
+        if entry.location != "cloud" and not self._is_downloaded(mid):
+            self.app.notify("Model not downloaded — nothing to delete")
             return
         spec = _model_entry_to_variant(entry)
         if mid in self.queued_deletes:

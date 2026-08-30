@@ -150,3 +150,17 @@ def test_cancel_current_noop_when_proc_already_finished():
     p.cancel_current()
 
     fake_proc.terminate.assert_not_called()
+
+
+def test_delete_runs_ollama_rm(provider, mock_runner):
+    runner = mock_runner(returncode=0, stdout="", stderr="")
+    variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "glm-5.2:cloud"}
+    provider.delete(variant, runner=runner)
+    runner.assert_called_with(["ollama", "rm", "glm-5.2:cloud"], capture_output=True, text=True)
+
+
+def test_delete_failure_raises(provider, mock_runner):
+    runner = mock_runner(returncode=1, stdout="", stderr="no such model")
+    variant: VariantSpec = {"id": "x", "provider": "ollama", "name": "missing:7b"}
+    with pytest.raises(RuntimeError, match="failed"):
+        provider.delete(variant, runner=runner)

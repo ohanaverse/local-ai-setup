@@ -174,6 +174,19 @@ class OllamaProvider(Provider):
             raise RuntimeError(f"`ollama pull {variant['name']}` failed (exit {r.returncode})")
         return f"ollama:{variant['name']}"
 
+    def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
+        """Remove the model from the ollama registry (`ollama rm <name>`).
+
+        Works for cloud-located models too: `ollama list` carries `:cloud`
+        rows with SIZE '-' once they've been pulled, and `ollama rm` is what
+        removes that registry entry.
+        """
+        r = (runner or _default_runner)(
+            ["ollama", "rm", variant["name"]], capture_output=True, text=True
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"`ollama rm {variant['name']}` failed (exit {r.returncode})")
+
     def size_of(self, variant: VariantSpec, runner: _Runner | None = None) -> int | None:
         r = (runner or _default_runner)(["ollama", "list"], capture_output=True, text=True)
         if r.returncode != 0:
