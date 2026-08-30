@@ -127,48 +127,43 @@ Unexposed ollama/gemma4:12b-mlx.
 
 TUI — same toggle from the interactive UI (bare `uv run modelman`): press `l` on a model row; it queues the change and applies it on exit; the EXPOSED column shows `L` (see [02-providers-and-models](02-providers-and-models.md)).
 
-Before/after, using the real files read-only. This replays the `expose` operation that was actually run on this machine (see issue 3 / guide 00): the entry already existed in config.yaml, but modelman's own flag still said `false` (state drift, see Gotchas) until the command below was run:
+Before/after, using the real files read-only. This illustrates the `expose` operation on `ollama/gpt-oss:20b`, a model that is in the registry and ready but currently has no LiteLLM row and `litellm_exposed = false`:
 
 ```bash
-grep -n -A6 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config.yaml
-grep -A4 '^\[model_state."ollama/qwen3.8:27b-mlx"\]' /Users/keith/.config/local-ai/modelman.toml
+grep -n -A6 'model_name: ollama/gpt-oss:20b' /Users/keith/.config/litellm/config.yaml
+grep -A4 '^\[model_state."ollama/gpt-oss:20b"\]' /Users/keith/.config/local-ai/modelman.toml
 ```
 
 ```text
-3:  - model_name: ollama/qwen3.8:27b-mlx
-4-    litellm_params:
-5-      model: ollama_chat/qwen3.8:27b-mlx
-6-      api_base: http://localhost:11434
-7-    model_info:
-8-      supports_function_calling: true
-9-
-[model_state."ollama/qwen3.8:27b-mlx"]
-downloaded = true
-disk_path = "ollama:qwen3.8:27b-mlx"
-size_bytes = 19327352832
+# config.yaml: (no output — no existing LiteLLM row for this id)
+
+[model_state."ollama/gpt-oss:20b"]
+ready = true
+disk_path = "ollama:gpt-oss:20b"
+size_bytes = 13958643712
 litellm_exposed = false
 ```
 
-Expected after `uv run modelman expose ollama/qwen3.8:27b-mlx`:
+Expected after `uv run modelman expose ollama/gpt-oss:20b`:
 
-<!-- UNVERIFIED — not run; row shape is deterministic from PROVIDER_POLICIES + the registry entry, and set_exposed would replace the existing row by model_name. The comment-strip behavior is stated in the save_litellm_config docstring (src/modelman/litellm.py:215-219), not exercised here. -->
+<!-- UNVERIFIED — not run; row shape is deterministic from PROVIDER_POLICIES + the registry entry, and set_exposed would append a new row because none exists. The comment-strip behavior is stated in the save_litellm_config docstring (src/modelman/litellm.py:215-219), not exercised here. -->
 
 ```yaml
 model_list:                                       # banners/comments gone — PyYAML round-trip
-  - model_name: ollama/qwen3.8:27b-mlx            # same shape (regenerated); replaces the old row in place
+  - model_name: ollama/gpt-oss:20b                # appended because no matching row existed
     litellm_params:
-      model: ollama_chat/qwen3.8:27b-mlx
+      model: ollama_chat/gpt-oss:20b
       api_base: http://localhost:11434
     model_info:
       supports_function_calling: true
 ```
 
 ```toml
-[model_state."ollama/qwen3.8:27b-mlx"]
-litellm_exposed = true                            # ← only field modelman flips; downloaded/disk_path/size_bytes untouched
+[model_state."ollama/gpt-oss:20b"]
+litellm_exposed = true                            # ← only field modelman flips; ready/disk_path/size_bytes untouched
 ```
 
-This has already been run on this machine — the live `modelman.toml` now shows `litellm_exposed = true` for this model, matching the "after" block above.
+This model is currently unexposed on this machine — running the command above would produce the "after" state.
 
 modelman does **not** restart LiteLLM — the new row is invisible to clients until the restart in §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
 

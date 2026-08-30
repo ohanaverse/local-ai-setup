@@ -57,21 +57,49 @@ tags = []
 
 - **Owner:** `modelman` (written on every TUI apply, `sync`, `expose`/`unexpose`).
 - **Consumers:** `modelman` only.
-- **Purpose:** per-machine state: downloads, LiteLLM exposure flags, family display names (`[families]` is present but empty here).
+- **Purpose:** per-machine state: ready/downloaded status, disk path, size, LiteLLM exposure flags, and family display names.
 - **Env override:** `MODELMAN_STATE`.
 
 ```toml
+[model_state."ollama/glm-5.3-flash:cloud"]
+ready = true
+disk_path = "ollama:glm-5.3-flash:cloud"
+litellm_exposed = true
+
 [model_state."ollama/qwen3.8:27b-mlx"]
-downloaded = true
+ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
 litellm_exposed = true
 
 [model_state."ollama/ornith-1.5:35b"]
-downloaded = true
+ready = true
 disk_path = "ollama:ornith-1.5:35b"
 size_bytes = 23622320128
 litellm_exposed = true
+
+[model_state."ollama/kimi-k2.7-code:cloud"]
+ready = true
+disk_path = "ollama:kimi-k2.7-code:cloud"
+litellm_exposed = true
+
+[model_state."ollama/deepseek-v4-flash:cloud"]
+ready = true
+disk_path = "ollama:deepseek-v4-flash:cloud"
+litellm_exposed = true
+
+[model_state."ollama/deepseek-v4-pro:cloud"]
+ready = true
+disk_path = "ollama:deepseek-v4-pro:cloud"
+litellm_exposed = true
+
+[model_state."ollama/glm-5.3:cloud"]
+ready = true
+disk_path = "ollama:glm-5.3:cloud"
+litellm_exposed = true
+
+[families.deepseek-v4]
+display_name = "deepseek-v4"
 ```
 
 ### `~/.config/local-ai/settings.yaml`
