@@ -39,7 +39,7 @@ def _default_state_path() -> Path:
 
 @dataclass
 class ModelState:
-    downloaded: bool = False
+    ready: bool = False
     disk_path: str | None = None
     size_bytes: int | None = None
     litellm_exposed: bool = False
@@ -98,11 +98,13 @@ def load_state(path: Path | None = None) -> StateStore:
         raw = tomllib.load(f)
     models = {
         model_id: ModelState(
-            downloaded=entry.get("downloaded", False),
+            ready=entry.get("ready", entry.get("downloaded", False)),
             disk_path=entry.get("disk_path"),
             size_bytes=entry.get("size_bytes"),
             litellm_exposed=entry.get("litellm_exposed", False),
-            extra=unknown_keys(entry, {"downloaded", "disk_path", "size_bytes", "litellm_exposed"}),
+            extra=unknown_keys(
+                entry, {"ready", "downloaded", "disk_path", "size_bytes", "litellm_exposed"}
+            ),
         )
         for model_id, entry in raw.get("model_state", {}).items()
     }
@@ -127,7 +129,7 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
             model_id: drop_none(
                 {
                     **s.extra,
-                    "downloaded": s.downloaded,
+                    "ready": s.ready,
                     "disk_path": s.disk_path,
                     "size_bytes": s.size_bytes,
                     "litellm_exposed": s.litellm_exposed,

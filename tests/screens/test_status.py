@@ -93,9 +93,9 @@ async def test_pending_changes_cancel_stops_loop(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
-        downloads=[
-            ("o35", _variant(id="o35", provider="ollama", name="ornith:35b")),
-            ("q8", _variant(id="q8", provider="ollama", name="ornith:8b")),
+        ready=[
+            ("o35", _variant(id="o35", provider="ollama", name="ornith:35b"), True),
+            ("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True),
         ],
     )
     pending.cancel()
@@ -121,7 +121,7 @@ async def test_pending_changes_fires_lifecycle_events(app_with_apply, tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": p},
-        downloads=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"))],
+        ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
         deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
     )
     seen: list[str] = []
@@ -178,9 +178,9 @@ async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            downloads=[
-                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b")),
-                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b")),
+            ready=[
+                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b"), True),
+                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True),
             ],
         )
         captured_pending.append(pending)
@@ -254,7 +254,7 @@ async def test_status_screen_cancel_writes_immediate_feedback(tmp_path, monkeypa
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            downloads=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
+            ready=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"), True)],
         )
         captured_pending.append(pending)
         register(pending)
@@ -308,7 +308,7 @@ async def test_status_screen_renders_provider_progress(app_with_apply, tmp_path)
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            downloads=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"))],
+            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
             deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
         )
         pending.apply(on_event=log_event, on_progress=on_progress)
@@ -347,7 +347,7 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": p},
-            downloads=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"))],
+            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
             deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
         )
         pending.apply(on_event=log_event)
@@ -394,7 +394,7 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            downloads=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"))],
+            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
             deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
         )
         pending.apply(on_event=log_event)
@@ -440,7 +440,7 @@ async def test_status_screen_shows_size_on_download_done(app_with_apply, tmp_pat
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            downloads=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"))],
+            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
             deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
         )
         pending.apply(on_event=log_event)

@@ -23,6 +23,7 @@ from .registry import (
     Registry,
     default_provider_entry,
     provider_config,
+    sync_agent_providers,
 )
 from .state import ModelState, StateStore
 
@@ -200,7 +201,7 @@ def reconcile(
             state.set(
                 m.id,
                 ModelState(
-                    downloaded=True,
+                    ready=True,
                     disk_path=disk_path,
                     size_bytes=size,
                     litellm_exposed=existing.litellm_exposed,
@@ -211,7 +212,7 @@ def reconcile(
             state.set(
                 m.id,
                 ModelState(
-                    downloaded=False,
+                    ready=False,
                     disk_path=None,
                     size_bytes=None,
                     litellm_exposed=existing.litellm_exposed,
@@ -228,6 +229,7 @@ def sync(
 ) -> SyncResult:
     """Reconcile configured ollama and model-dir models against their providers."""
     providers_added = _ensure_provider_entries(registry)
+    providers_added += sync_agent_providers(registry)
     downloaded = _ollama_downloaded(registry, list_ollama(runner))
     downloaded.update(list_modeldir(registry, _modeldir_providers(registry)))
     result = reconcile(registry, state, downloaded)

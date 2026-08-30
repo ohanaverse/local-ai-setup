@@ -44,6 +44,22 @@ wt reads `registry.toml` read-only and joins it in memory with its own
 
 **Status:** ✅ merged — `agent-worktree` PR #94 (`79d620f`, 2026-08-28).
 
+## Phase 4b — family & model screen redesign (complete)
+
+Replace `ModelScreen`'s two-pane provider/model layout with a single sorted
+table scoped to one family, generalize `ModelState.downloaded` into a
+provider-agnostic `ready` flag (and load the legacy `downloaded` key), make
+`FamilyScreen` always block delete when any models exist, and add native
+provider support synced from `agent-worktree`'s `[[agents]]` list.
+
+| PR | Scope | Status |
+|---|---|---|
+| #25 | single-table model screen, `ready` rename, native providers | ✅ merged (2026-08-30) |
+
+Spec: `docs/superpowers/specs/2026-08-29-family-model-screen-redesign-design.md`
+
+Plan: `docs/superpowers/plans/2026-08-29-family-model-screen-redesign.md`
+
 ## Phase 5 — usage/spend tracking (consolidation sub-project 3)
 
 `modelman usage report` joins `wt`'s local launch history (`usage.jsonl`

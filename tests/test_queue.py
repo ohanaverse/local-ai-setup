@@ -179,7 +179,7 @@ def test_apply_deletes_before_downloads(tmp_path):
         state_path=state_path,
         providers=providers,
         deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
-        downloads=[
+        ready=[
             (
                 "llamacpp/b",
                 _variant(
@@ -189,6 +189,7 @@ def test_apply_deletes_before_downloads(tmp_path):
                     repo="org/repo",
                     files=["x.gguf"],
                 ),
+                True,
             )
         ],
     )
@@ -202,7 +203,7 @@ def test_apply_deletes_before_downloads(tmp_path):
     # After delete, ollama/a should be gone; after download, llamacpp/b stays.
     assert all(m.id != "ollama/a" for m in reloaded.models)
     # State recorded the download.
-    assert state.models["llamacpp/b"].downloaded is True
+    assert state.models["llamacpp/b"].ready is True
     # Both files were written.
     assert reg_path.exists()
     assert state_path.exists()
@@ -219,7 +220,7 @@ def test_apply_collects_failures(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        downloads=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
     )
     pending.apply()
 
@@ -288,7 +289,7 @@ def test_apply_download_cancelled_is_not_a_failure(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"llamacpp": provider},
-        downloads=[
+        ready=[
             (
                 "llamacpp/b",
                 _variant(
@@ -298,6 +299,7 @@ def test_apply_download_cancelled_is_not_a_failure(tmp_path):
                     repo="org/repo",
                     files=["x.gguf"],
                 ),
+                True,
             )
         ],
     )
@@ -327,7 +329,7 @@ def test_apply_download_fail_includes_reason_in_event(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        downloads=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
     )
     pending.apply(on_event=events.append)
 
@@ -362,7 +364,7 @@ def test_apply_save_fail_includes_reason_in_event(tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers=providers,
-            downloads=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+            ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
         )
         pending.apply(on_event=events.append)
     finally:
@@ -417,7 +419,7 @@ def test_apply_download_done_includes_size_of_file(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        downloads=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
     )
     pending.apply(on_event=events.append)
 
@@ -441,7 +443,7 @@ def test_apply_download_done_omits_size_when_zero_or_unreadable(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        downloads=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
     )
     pending.apply(on_event=events.append)
 
@@ -464,8 +466,8 @@ def test_apply_writes_state_for_each_downloaded_model(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        downloads=[
-            ("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a")),
+        ready=[
+            ("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True),
             (
                 "llamacpp/b",
                 _variant(
@@ -475,6 +477,7 @@ def test_apply_writes_state_for_each_downloaded_model(tmp_path):
                     repo="org/repo",
                     files=["x.gguf"],
                 ),
+                True,
             ),
         ],
     )
@@ -482,9 +485,9 @@ def test_apply_writes_state_for_each_downloaded_model(tmp_path):
 
     # State on disk has both downloads recorded.
     reloaded_state = load_state(state_path)
-    assert reloaded_state.get("ollama/a").downloaded is True
+    assert reloaded_state.get("ollama/a").ready is True
     assert reloaded_state.get("ollama/a").disk_path == str(tmp_path / "new-a")
-    assert reloaded_state.get("llamacpp/b").downloaded is True
+    assert reloaded_state.get("llamacpp/b").ready is True
     assert reloaded_state.get("llamacpp/b").disk_path == str(tmp_path / "new-b")
 
 
@@ -516,7 +519,7 @@ def test_apply_clear_state_for_deleted_model(tmp_path):
     user removed the file."""
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
     # Pre-seed state: ollama/a was previously downloaded.
-    state.set("ollama/a", ModelState(downloaded=True, disk_path="/old/path"))
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
     save_state(state, state_path)
 
     pending = PendingChanges(
@@ -556,7 +559,7 @@ def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     )
     save_registry(registry, registry_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(downloaded=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
     save_state(state, state_path)
     save_litellm_config(
         {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
@@ -603,7 +606,7 @@ def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
     )
     save_registry(registry, registry_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(downloaded=True))
+    state.set("ollama/a", ModelState(ready=True))
     save_state(state, state_path)
     save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
 
@@ -666,8 +669,8 @@ def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
     )
     save_registry(registry, registry_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(downloaded=True))
-    state.set("ollama/b", ModelState(downloaded=True))
+    state.set("ollama/a", ModelState(ready=True))
+    state.set("ollama/b", ModelState(ready=True))
     real_save({"model_list": [], "general_settings": {}}, litellm_path)
 
     pending = PendingChanges(
@@ -692,7 +695,7 @@ def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
 
 
 def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
-    """A per-model validation failure (not downloaded) must not block the
+    """A per-model validation failure (not ready) must not block the
     other queued exposes, and must not prevent the config save."""
     registry_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
@@ -712,9 +715,9 @@ def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
     )
     save_registry(registry, registry_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(downloaded=True))
+    state.set("ollama/a", ModelState(ready=True))
     # ollama/b is NOT downloaded — its expose must fail per-item.
-    state.set("ollama/b", ModelState(downloaded=False))
+    state.set("ollama/b", ModelState(ready=False))
     from modelman.litellm import save_litellm_config
 
     save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
@@ -738,10 +741,10 @@ def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
     assert state.get("ollama/a").litellm_exposed is True
     # The failed item got no flag flip and is reported with its reason.
     assert state.get("ollama/b").litellm_exposed is False
-    assert any("ollama/b" in f and "not downloaded" in f for f in pending.failures)
+    assert any("ollama/b" in f and "not ready" in f for f in pending.failures)
 
 
-def test_apply_asserts_download_twin_keys_agree(tmp_path):
+def test_apply_asserts_ready_twin_keys_agree(tmp_path):
     """A queued (model_id, variant) pair must have matching ids — otherwise
     a future caller in Tasks 2-4 could desync them silently and emit the
     right event tag while writing to the wrong registry entry."""
@@ -755,7 +758,7 @@ def test_apply_asserts_download_twin_keys_agree(tmp_path):
         state_path=state_path,
         providers=providers,
         # queued model_id says "wrong-id" but the variant's own id is "ollama/a"
-        downloads=[("wrong-id", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("wrong-id", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
     )
     with pytest.raises(AssertionError, match="wrong-id"):
         pending.apply()
@@ -798,7 +801,7 @@ def test_apply_runs_expose_changes(tmp_path):
     )
     save_registry(registry, registry_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(downloaded=True))
+    state.set("ollama/a", ModelState(ready=True))
     save_state(state, state_path)
     save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
 
@@ -1121,3 +1124,164 @@ def test_apply_cancelled_persists_no_family_entry(tmp_path):
     reloaded = load_registry(reg_path)
     assert reloaded.family("a") is None
     assert reloaded.model("m1").family == "a"
+
+
+def test_apply_ready_true_reconcilable_downloads(tmp_path):
+    """target=True for a provider present in self.providers behaves
+    exactly like today's download step."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    providers["ollama"].download.return_value = str(tmp_path / "new-a")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
+    )
+    pending.apply()
+
+    assert state.models["ollama/a"].ready is True
+    assert state.models["ollama/a"].disk_path == str(tmp_path / "new-a")
+    providers["ollama"].download.assert_called_once()
+
+
+def test_apply_ready_false_reconcilable_clears_without_removing_registry_entry(tmp_path):
+    """target=False for a reconcilable, currently-ready model calls
+    provider.delete() but must NOT remove the ModelEntry — only the
+    full `deletes` list does that."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/a"))
+    save_state(state, state_path)
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+    )
+    pending.apply()
+
+    providers["ollama"].delete.assert_called_once()
+    assert state.models["ollama/a"].ready is False
+    assert state.models["ollama/a"].disk_path is None
+    assert state.models["ollama/a"].size_bytes is None
+    reloaded = load_registry(reg_path)
+    assert reloaded.model("ollama/a") is not None  # NOT removed
+    reloaded_state = load_state(state_path)
+    assert reloaded_state.models["ollama/a"].disk_path is None
+    assert reloaded_state.models["ollama/a"].size_bytes is None
+
+
+def test_apply_ready_true_flag_only_sets_flag_no_provider_call(tmp_path):
+    """A provider with no entry in self.providers (flag-only: native or
+    openrouter) just flips the state flag; no download call is made."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    native_model = ModelEntry(
+        id="claude/native", family="f", provider_id="claude", model_name="native"
+    )
+    reg = Registry(
+        providers=[
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            )
+        ],
+        models=[native_model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={},  # no Provider instance for "claude" — flag-only
+        ready=[
+            ("claude/native", _variant(id="claude/native", provider="claude", name="native"), True)
+        ],
+    )
+    pending.apply()
+
+    assert state.get("claude/native").ready is True
+    assert pending.failures == []
+
+
+def test_apply_delete_flag_only_native_model_removes_entry(tmp_path):
+    """Deleting a model whose provider is flag-only (no Provider instance)
+    must remove the registry entry and state without crashing. Previously
+    _delete raised KeyError looking up the missing provider."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    native_model = ModelEntry(
+        id="claude/native", family="f", provider_id="claude", model_name="native"
+    )
+    reg = Registry(
+        providers=[
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            )
+        ],
+        models=[native_model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("claude/native", ModelState(ready=True, litellm_exposed=False))
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={},  # no Provider instance for "claude"
+        deletes=[("claude/native", _variant(id="claude/native", provider="claude", name="native"))],
+    )
+    pending.apply()
+
+    assert pending.failures == []
+    assert all(m.id != "claude/native" for m in load_registry(reg_path).models)
+    assert "claude/native" not in load_state(state_path).models
+
+
+def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path):
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    native_model = ModelEntry(
+        id="claude/native", family="f", provider_id="claude", model_name="native"
+    )
+    reg = Registry(
+        providers=[
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            )
+        ],
+        models=[native_model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("claude/native", ModelState(ready=True, litellm_exposed=True))
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={},
+        ready=[
+            ("claude/native", _variant(id="claude/native", provider="claude", name="native"), False)
+        ],
+    )
+    pending.apply()
+
+    assert state.get("claude/native").ready is False
+    # Cascade: was exposed, so an unexpose must have been queued and run.
+    assert state.get("claude/native").litellm_exposed is False

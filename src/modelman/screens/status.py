@@ -70,10 +70,24 @@ class StatusScreen(Screen[None]):
         `app.call_from_thread` to update the RichLog.
         """
         self._emit(f"Applying changes for family '{self.family}'\n")
-        self._run_apply(self._emit_threaded, self._emit_threaded, self._register_pending)
+        try:
+            self._run_apply(self._emit_threaded, self._emit_threaded, self._register_pending)
+        except Exception as exc:  # noqa: BLE001
+            # apply() normally captures per-step failures and emits its own
+            # failure events, but unexpected errors in the runner closure
+            # (e.g. a provider that fails to instantiate with a real error)
+            # must not crash the worker silently.
+            self._emit(f"[red]Unexpected error during apply: {exc}[/red]")
+            self.app.call_from_thread(self._set_done)
+            return
         # The closure calls _emit_threaded, which marshals to _emit on the UI
         # thread. After it returns, the apply:done (or apply:cancelled)
         # event has been processed and `done` is True.
+
+    def _set_done(self) -> None:
+        """Flip the done flag from the UI thread (used by _run on error)."""
+        self.done = True
+        self._refresh_bindings()
 
     def _register_pending(self, pending: PendingChanges) -> None:
         """Closure hook: store the PendingChanges so we can cancel it.
@@ -100,6 +114,7 @@ class StatusScreen(Screen[None]):
         if (
             not tag.startswith("delete:")
             and not tag.startswith("download:")
+            and not tag.startswith("ready:")
             and not tag.startswith("move:")
             and not tag.startswith("save:")
             and not tag.startswith("apply:")
@@ -165,6 +180,10 @@ class StatusScreen(Screen[None]):
                 log.write(f"    [red dim]{detail}[/red dim]")
         elif verb == "download:cancelled":
             log.write(f"  [yellow]![/yellow] Cancelled {label}")
+        elif verb == "ready:start":
+            log.write(f"· Marking {label} ready...")
+        elif verb == "ready:done":
+            log.write(f"  [green]✓[/green] Ready: {label}")
         elif verb == "move:start":
             log.write(f"· Moving {label} → {detail}...")
         elif verb == "move:done":

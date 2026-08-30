@@ -13,7 +13,9 @@ from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
 
 
-def parse_model(provider: str, model: str) -> tuple[str | None, str | None, str | None]:
+def parse_model(
+    provider: str, model: str, *, is_native: bool = False
+) -> tuple[str | None, str | None, str | None]:
     """Parse the dialog's single `model` input into provider-specific fields.
 
     Returns a (variant_name, repo_id, filename) tuple. Exactly one of
@@ -30,15 +32,33 @@ def parse_model(provider: str, model: str) -> tuple[str | None, str | None, str 
       - 3+ segments: one specific file. repo_id = first two joined
         by '/', filename = remaining segments joined by '/'.
 
+    Native providers (is_native=True): `model` is used verbatim as the
+    model name; blank input defaults to the sentinel "native". No
+    slash-splitting — `id` becomes f"{provider}/{model_name}" regardless
+    of any '/' the user types.
+
+    openrouter and any other provider that is neither ollama, an HF
+    provider (llamacpp/omlx), nor native: `model` is stored whole as
+    the model name (e.g. "anthropic/claude-opus") with no repo/files
+    split.
+
     Leading/trailing whitespace on `model` is trimmed before parsing.
     Empty input raises ValueError for HF providers.
     """
     model = model.strip()
+    if is_native:
+        return (model or "native", None, None)
     if provider == "ollama":
         if "/" in model:
             raise ValueError("ollama tags must not contain '/'")
         if not model:
             raise ValueError("ollama tag is required")
+        return (model, None, None)
+    if provider not in ("llamacpp", "omlx"):
+        # openrouter and any other non-HF, non-native provider: plain
+        # string, no repo/files split.
+        if not model:
+            raise ValueError(f"{provider} model is required")
         return (model, None, None)
     # HF providers
     if not model:
@@ -213,12 +233,11 @@ class ConfirmModal(ModalScreen[bool]):
 class ModelForm(ModalScreen[ModelFormResult | None]):
     """Add or edit a model. `variant=None` means add; else edit.
 
-    The dialog asks for exactly one thing: the model name. The
-    provider is locked in by the caller (model screen's left-pane
-    selection for add; variant's own provider for edit). The model
-    name is parsed provider-dispatched: ollama tags go straight to
-    `variant.name`; HF model names are split into `repo` and
-    `files` for llamacpp / omlx.
+    The dialog asks for the provider (add mode only), family, model
+    name, and location. The model name is parsed provider-dispatched:
+    ollama tags go straight to `variant.name`; HF model names are split
+    into `repo` and `files` for llamacpp / omlx; native providers keep
+    the name verbatim; openrouter stores the plain string.
 
     On save the form dismisses `ModelFormResult(spec, family)`. The
     family Select defaults to the family the model screen is
@@ -237,7 +256,7 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
     ModelForm #model-error { color: $error; text-style: bold; }
     ModelForm Horizontal { height: auto; align-horizontal: right; }
     ModelForm Button { margin-left: 1; }
-    ModelForm #provider-label { color: $secondary; text-style: bold; }
+    ModelForm #provider-select { color: $secondary; text-style: bold; }
     """
 
     def __init__(
@@ -247,16 +266,17 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
         default_provider: str | None = None,
         families: list[str] | None = None,
         family: str | None = None,
+        provider_kinds: dict[str, str] | None = None,
     ) -> None:
         super().__init__()
         self._providers = providers
         self._variant = variant  # None for add
         # Used only in add mode (variant is None): the provider to
-        # pre-fill in the static provider label. Edit mode always
-        # uses the variant's own provider since provider is
-        # immutable on edit.
+        # pre-fill in the provider Select. Edit mode always uses the
+        # variant's own provider since provider is immutable on edit.
         self._default_provider = default_provider
         self._family = family
+        self._provider_kinds = provider_kinds or {}
         # Families the selector offers (sorted by the caller) and the
         # pre-selected family. When a caller passes neither, the
         # selector degrades to a single "unknown" entry — the TUI
@@ -271,10 +291,6 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
     def compose(self) -> ComposeResult:
         editing = self._variant is not None
         v: VariantSpec = self._variant if self._variant is not None else cast("VariantSpec", {})
-        # Provider precedence: variant's own (edit) > explicit default
-        # (add, when caller passes one and it's a known provider) > first
-        # configured provider. The form doesn't render a Select — the
-        # provider is fixed at compose time.
         if editing:
             initial_provider = v.get("provider") or self._providers[0]
         elif self._default_provider and self._default_provider in self._providers:
@@ -283,17 +299,35 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
             initial_provider = self._providers[0]
         self._initial_provider: str = initial_provider
 
-        # Reconstruct the dialog's single `model` input from the variant.
-        # Edit mode pre-fills so the user sees the same string they would
-        # have typed to produce this spec.
         model_val = self._reconstruct_model(v) if editing else ""
-
+        kind = self._provider_kinds.get(initial_provider, self._default_kind(initial_provider))
         placeholder = (
-            "e.g. ornith-1.5:35b" if initial_provider == "ollama" else "org/repo[/path/to/file]"
+            "e.g. ornith-1.5:35b"
+            if kind == "ollama"
+            else "leave blank for 'native', or a model name"
+            if kind == "native"
+            else "provider/model-name"
+            if kind == "cloud-only"
+            else "org/repo[/path/to/file]"
         )
+        location_value = (
+            "cloud"
+            if kind in ("native", "cloud-only")
+            else "local"
+            if kind == "local-only"
+            else v.get("location") or "local"
+        )
+        location_locked = kind in ("native", "cloud-only", "local-only")
 
         with Vertical():
-            yield Label(f"Provider: {initial_provider}", id="provider-label")
+            yield Label("Provider:")
+            yield Select(
+                options=[(p, p) for p in self._providers],
+                value=initial_provider,
+                allow_blank=False,
+                disabled=editing,
+                id="provider-select",
+            )
             yield Label("Family:")
             yield Select(
                 options=[(f, f) for f in self._families],
@@ -308,6 +342,14 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
                 id="model",
             )
             yield Label("", id="model-error")
+            yield Label("Location:")
+            yield Select(
+                options=[("cloud", "cloud"), ("local", "local")],
+                value=location_value,
+                allow_blank=False,
+                disabled=location_locked,
+                id="location-select",
+            )
             with Horizontal():
                 yield Button("Cancel", id="cancel", variant="default")
                 yield Button("Save", id="save", variant="primary")
@@ -318,8 +360,11 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
 
         For HF providers the model string is `repo` plus `/file` if a
         single filename is stored. For ollama it's just the tag.
+        For native providers it's the model name. For openrouter it's
+        the plain model string.
         """
-        if v.get("provider") == "ollama":
+        provider = v.get("provider")
+        if provider == "ollama" or provider not in ("llamacpp", "omlx"):
             return v.get("name") or ""
         repo = v.get("repo") or ""
         files = v.get("files") or []
@@ -330,6 +375,41 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
     def on_mount(self) -> None:
         # Focus the model input so the user can paste / type immediately.
         self.query_one("#model", Input).focus()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """In add mode, changing the provider must re-lock location and
+        update the model input placeholder to match the new provider's
+        expected format (native vs HF vs ollama vs cloud-only)."""
+        if event.select.id != "provider-select":
+            return
+        if self._variant is not None:
+            # Edit mode locks the provider; changes shouldn't happen.
+            return
+        provider = str(event.value)
+        kind = self._provider_kinds.get(provider, self._default_kind(provider))
+        new_placeholder = (
+            "e.g. ornith-1.5:35b"
+            if kind == "ollama"
+            else "leave blank for 'native', or a model name"
+            if kind == "native"
+            else "provider/model-name"
+            if kind == "cloud-only"
+            else "org/repo[/path/to/file]"
+        )
+        model_input = self.query_one("#model", Input)
+        model_input.placeholder = new_placeholder
+
+        location_select = self.query_one("#location-select", Select)
+        new_location = (
+            "cloud"
+            if kind in ("native", "cloud-only")
+            else "local"
+            if kind == "local-only"
+            else "local"
+        )
+        location_locked = kind in ("native", "cloud-only", "local-only")
+        location_select.value = new_location
+        location_select.disabled = location_locked
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -346,39 +426,44 @@ class ModelForm(ModalScreen[ModelFormResult | None]):
     def _clear_error(self) -> None:
         self.query_one("#model-error", Label).update("")
 
+    def _default_kind(self, provider: str) -> str:
+        """Fallback kind when the caller didn't supply provider_kinds."""
+        if provider in ("llamacpp", "omlx"):
+            return "local-only"
+        if provider == "ollama":
+            return "ollama"
+        return "cloud-only"
+
     def _submit(self) -> None:
-        provider = self._initial_provider
+        provider = str(self.query_one("#provider-select", Select).value)
+        kind = self._provider_kinds.get(provider, self._default_kind(provider))
         raw = self.query_one("#model", Input).value
         try:
-            name, repo, filename = parse_model(provider, raw)
+            name, repo, filename = parse_model(provider, raw, is_native=(kind == "native"))
         except ValueError as exc:
             self._show_error(str(exc))
             return
         self._clear_error()
 
-        # Derive the id: provider + escaped model. Edit mode preserves
-        # the existing variant's id (provider and id are immutable on
-        # edit per the spec).
         if self._variant is not None:
             vid = self._variant["id"]
+        elif kind == "native":
+            vid = f"{provider}/{name}"
         else:
             vid = f"{provider}/{name.replace('/', '--')}"  # type: ignore[union-attr]
 
-        # Carry over existing quantizations in edit mode; add mode has
-        # none because the single model input cannot express them.
         existing_quantizations = (
             (self._variant or {}).get("quantizations") if self._variant is not None else None
         )
+        location = str(self.query_one("#location-select", Select).value)
         spec: VariantSpec = {
             "id": vid,
             "provider": provider,
             "name": name or vid,
             "repo": repo,
-            # variant["files"] is a list per the existing spec shape;
-            # empty filename => no file filter => files=None. A
-            # non-empty filename => single-element list.
             "files": [filename] if filename else None,
             "quantizations": existing_quantizations,
+            "location": location,
         }
         if provider == "ollama" and self._variant is None and name:
             spec["model_info"] = auto_detect_model_info(name)
@@ -412,25 +497,29 @@ class ConfirmExitDialog(ModalScreen[Literal["apply", "cancel", "discard"]]):
 
     def __init__(
         self,
-        downloads: list,
+        ready: list[tuple[str, bool]],
         deletes: list,
         exposes: list[tuple[str, bool]] | None = None,
         moves: list[tuple[str, str]] | None = None,
     ) -> None:
         super().__init__()
-        self._downloads = downloads
+        self._ready = ready
         self._deletes = deletes
         self._exposes = exposes or []
         self._moves = moves or []
 
     def compose(self) -> ComposeResult:
+        ready_on = [mid for mid, target in self._ready if target]
+        ready_off = [mid for mid, target in self._ready if not target]
         with Vertical():
             yield Label(
-                f"Pending: download {len(self._downloads)} · delete {len(self._deletes)}"
+                f"Pending: ready {len(self._ready)} · delete {len(self._deletes)}"
                 f" · move {len(self._moves)} · expose {len(self._exposes)}"
             )
-            for v in self._downloads:
-                yield Label(f"  ↓ {v['id']} ({v['provider']})")
+            for mid in ready_on:
+                yield Label(f"  ↓ {mid}")
+            for mid in ready_off:
+                yield Label(f"  ↑ {mid}")
             for v in self._deletes:
                 yield Label(f"  × {v['id']} ({v['provider']})")
             for model_id, target in self._moves:

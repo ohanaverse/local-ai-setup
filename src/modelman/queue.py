@@ -74,10 +74,12 @@ class PendingChanges:
     registry_path: Path
     state_path: Path
     providers: dict[str, object]
-    # Each queued item carries (model_id, VariantSpec). model_id is the
-    # ModelEntry.id used to key Registry/StateStore mutations; VariantSpec
-    # is what the provider APIs (download, size_of, delete) still consume.
-    downloads: list[tuple[str, VariantSpec]] = field(default_factory=list)
+    # Each queued item carries (model_id, VariantSpec, target_ready). For a
+    # provider present in `providers`, target=True downloads / target=False
+    # clears (rm) without touching the registry entry. For a provider absent
+    # from `providers` (flag-only: native or unmapped), either target just
+    # flips state.ready — no provider call is made.
+    ready: list[tuple[str, VariantSpec, bool]] = field(default_factory=list)
     deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
     # (model_id, target_exposed) pairs applied after downloads, before save.
     exposes: list[tuple[str, bool]] = field(default_factory=list)
@@ -137,7 +139,7 @@ class PendingChanges:
                 return True
             return False
 
-        if not self.downloads and not self.deletes and not self.exposes and not self.moves:
+        if not self.ready and not self.deletes and not self.exposes and not self.moves:
             emit("apply:done")
             return
 
@@ -155,14 +157,20 @@ class PendingChanges:
                 f"variant id {variant['id']!r} != queued model_id {model_id!r}"
             )
             label = _label(variant)
-            emit(f"delete:start|{model_id}|{label}")
-            try:
-                self._delete(variant)
-            except Exception as exc:  # noqa: BLE001
-                reason = _reason(exc)
-                self.failures.append(f"delete {model_id}: {exc}")
-                emit(f"delete:fail|{model_id}|{label}|{reason}")
-                continue
+            provider_id = variant["provider"]
+            provider = self.providers.get(provider_id)
+            if provider is not None:
+                # Reconcilable provider: ask it to remove the on-disk artifact.
+                emit(f"delete:start|{model_id}|{label}")
+                try:
+                    self._delete(variant)
+                except Exception as exc:  # noqa: BLE001
+                    reason = _reason(exc)
+                    self.failures.append(f"delete {model_id}: {exc}")
+                    emit(f"delete:fail|{model_id}|{label}|{reason}")
+                    continue
+            # Flag-only providers (native/unmapped) have no Provider instance
+            # and no on-disk artifact to delete; just remove registry/state.
             # Record the model's family before removing the entry, so a
             # family emptied by this delete lingers (stickiness). A failed
             # delete records nothing — the model stays.
@@ -222,40 +230,85 @@ class PendingChanges:
                 family_entry.display_name = legacy.display_name
             self.state.forget_family(f)
 
-        for model_id, variant in self.downloads:
+        for model_id, variant, target in self.ready:
             if aborted():
                 return
             assert variant["id"] == model_id, (
                 f"variant id {variant['id']!r} != queued model_id {model_id!r}"
             )
             label = _label(variant)
-            emit(f"download:start|{model_id}|{label}")
-            try:
-                local_path = self._download(variant, on_progress)
-            except DownloadCancelled:
-                emit(f"download:cancelled|{model_id}|{label}")
-                emit("apply:cancelled")
-                return
-            except Exception as exc:  # noqa: BLE001
-                reason = _reason(exc)
-                self.failures.append(f"download {model_id}: {exc}")
-                emit(f"download:fail|{model_id}|{label}|{reason}")
-                continue
-            # Record download in state.
-            self.state.set(
-                model_id,
-                replace(self.state.get(model_id), downloaded=True, disk_path=local_path),
-            )
-            try:
-                size = Path(local_path).stat().st_size
-            except OSError:
-                size = 0
-            if size > 0:
-                from .providers._progress import human_bytes
+            provider_id = variant["provider"]
+            provider = self.providers.get(provider_id)
+            if provider is None:
+                # Flag-only provider (native or unmapped): no download/delete
+                # mechanics exist. Just flip the flag.
+                emit(f"ready:start|{model_id}|{label}")
+                self.state.set(model_id, replace(self.state.get(model_id), ready=target))
+                emit(f"ready:done|{model_id}|{label}")
+            elif target:
+                emit(f"download:start|{model_id}|{label}")
+                try:
+                    local_path = self._download(variant, on_progress)
+                except DownloadCancelled:
+                    emit(f"download:cancelled|{model_id}|{label}")
+                    emit("apply:cancelled")
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    reason = _reason(exc)
+                    self.failures.append(f"download {model_id}: {exc}")
+                    emit(f"download:fail|{model_id}|{label}|{reason}")
+                    continue
+                self.state.set(
+                    model_id,
+                    replace(self.state.get(model_id), ready=True, disk_path=local_path),
+                )
+                try:
+                    size = Path(local_path).stat().st_size
+                except OSError:
+                    size = 0
+                if size > 0:
+                    from .providers._progress import human_bytes
 
-                emit(f"download:done|{model_id}|{label}|{human_bytes(size)}")
+                    emit(f"download:done|{model_id}|{label}|{human_bytes(size)}")
+                else:
+                    emit(f"download:done|{model_id}|{label}")
             else:
-                emit(f"download:done|{model_id}|{label}")
+                emit(f"delete:start|{model_id}|{label}")
+                try:
+                    self._delete(variant)
+                except Exception as exc:  # noqa: BLE001
+                    reason = _reason(exc)
+                    self.failures.append(f"clear {model_id}: {exc}")
+                    emit(f"delete:fail|{model_id}|{label}|{reason}")
+                    continue
+                # Unlike the full-delete step above, the ModelEntry stays in
+                # the registry — only its ready state and on-disk artifact
+                # are cleared. Wipe the cached path/size so modelman.toml
+                # doesn't keep pointing at a file that was just removed.
+                self.state.set(
+                    model_id,
+                    replace(
+                        self.state.get(model_id),
+                        ready=False,
+                        disk_path=None,
+                        size_bytes=None,
+                    ),
+                )
+                emit(f"delete:done|{model_id}|{label}")
+            # Cascade: turning ready off (either branch) drops the model's
+            # exposure — mirrors the full-delete step's was_exposed rule.
+            # Flag-only providers have no LiteLLM config row, so just flip
+            # the state flag directly instead of routing through the
+            # config writer.
+            if not target and self.state.get(model_id).litellm_exposed:
+                provider = self.providers.get(provider_id)
+                self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
+                if provider is None:
+                    self.state.set(
+                        model_id, replace(self.state.get(model_id), litellm_exposed=False)
+                    )
+                else:
+                    self.exposes.append((model_id, False))
 
         if aborted():
             return

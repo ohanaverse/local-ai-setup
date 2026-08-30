@@ -32,6 +32,27 @@ def test_state_store_get_returns_default_for_unknown_model():
     assert store.get("ollama/x") == ModelState()
 
 
+def test_load_state_accepts_legacy_downloaded_key(tmp_path):
+    # Existing installs have modelman.toml files with the old `downloaded`
+    # key. Renaming the field must not silently drop their ready state.
+    path = tmp_path / "modelman.toml"
+    path.write_text('[model_state."ollama/x"]\ndownloaded = true\ndisk_path = "/models/x"\n')
+    store = load_state(path)
+    assert store.get("ollama/x").ready is True
+    assert store.get("ollama/x").disk_path == "/models/x"
+
+
+def test_save_writes_ready_key_not_legacy_downloaded(tmp_path):
+    # Going forward, only the new key should ever be written.
+    path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/x", ModelState(ready=True))
+    save_state(store, path)
+    raw_text = path.read_text()
+    assert "ready = true" in raw_text
+    assert "downloaded" not in raw_text
+
+
 def test_save_then_load_round_trips_model_state(tmp_path):
     # The whole point of the overlay is persistence across runs; if any
     # field is dropped on save/load, download state silently resets.
@@ -39,7 +60,7 @@ def test_save_then_load_round_trips_model_state(tmp_path):
     store.set(
         "llamacpp/qwen3.8-27b-q4",
         ModelState(
-            downloaded=True,
+            ready=True,
             disk_path="/models/qwen3.8-27b-q4.gguf",
             size_bytes=17179869184,
             litellm_exposed=True,
@@ -51,7 +72,7 @@ def test_save_then_load_round_trips_model_state(tmp_path):
     loaded = load_state(path)
 
     assert loaded.get("llamacpp/qwen3.8-27b-q4") == ModelState(
-        downloaded=True,
+        ready=True,
         disk_path="/models/qwen3.8-27b-q4.gguf",
         size_bytes=17179869184,
         litellm_exposed=True,
@@ -178,6 +199,7 @@ def test_save_then_load_preserves_unknown_keys(tmp_path):
     store = load_state(path)
     save_state(store, path)
     loaded = load_state(path)
+    assert loaded.get("ollama/x").ready is True
     assert loaded.get("ollama/x").extra == {"custom_field": "keep-me"}
     assert loaded.families["f"].extra == {"family_extra": 1}
     assert loaded.extra == {"settings": {"top_level": "keep"}}

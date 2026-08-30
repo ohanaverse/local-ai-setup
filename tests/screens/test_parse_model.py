@@ -91,3 +91,29 @@ def test_parse_model_hf_whitespace_stripped():
     )
     assert repo == "unsloth/Ornith-1.5-35B-GGUF"
     assert filename == "Ornith-1.5-35B-Q8_0.gguf"
+
+
+# ---------------------------------------------------------------------------
+# native / openrouter: plain model names
+# ---------------------------------------------------------------------------
+
+
+def test_parse_model_native_blank_defaults_to_native_sentinel():
+    name, repo, filename = parse_model("claude", "", is_native=True)
+    assert name == "native"
+    assert repo is None
+    assert filename is None
+
+
+def test_parse_model_native_named_is_verbatim():
+    name, repo, filename = parse_model("claude", "opus", is_native=True)
+    assert name == "opus"
+    assert repo is None
+    assert filename is None
+
+
+def test_parse_model_openrouter_plain_string_no_split():
+    name, repo, filename = parse_model("openrouter", "anthropic/claude-opus")
+    assert name == "anthropic/claude-opus"
+    assert repo is None
+    assert filename is None

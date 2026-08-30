@@ -15,8 +15,15 @@ from textual.widgets import Input, Label, Select
 
 from modelman.app import ModelmanApp
 from modelman.providers.base import VariantSpec
-from modelman.registry import AuthConfig, Fetch, ModelEntry, ProviderEntry, Registry, save_registry
+from modelman.registry import (
+    AuthConfig,
+    FamilyEntry,
+    ProviderEntry,
+    Registry,
+    save_registry,
+)
 from modelman.screens.forms import ModelForm, ModelFormResult
+from modelman.screens.models import ModelScreen
 from modelman.state import StateStore, save_state
 
 # ---------------------------------------------------------------------------
@@ -25,8 +32,8 @@ from modelman.state import StateStore, save_state
 
 
 def _rendered_provider(app: ModelmanApp) -> str:
-    label = app.screen.query_one("#provider-label", Label)
-    return str(label.visual)
+    sel = app.screen.query_one("#provider-select", Select)
+    return str(sel.value)
 
 
 def _rendered_error(app: ModelmanApp) -> str:
@@ -68,7 +75,7 @@ async def test_modelform_add_mode_uses_default_provider():
         await pilot.pause()
         app.push_screen(form)
         await pilot.pause()
-        assert _rendered_provider(app) == "Provider: omlx"
+        assert _rendered_provider(app) == "omlx"
         assert form._initial_provider == "omlx"
 
 
@@ -84,7 +91,7 @@ async def test_modelform_add_mode_ignores_unknown_default_provider():
         await pilot.pause()
         app.push_screen(form)
         await pilot.pause()
-        assert _rendered_provider(app) == "Provider: llamacpp"
+        assert _rendered_provider(app) == "llamacpp"
         assert form._initial_provider == "llamacpp"
 
 
@@ -99,7 +106,7 @@ async def test_modelform_add_mode_without_default_falls_back_to_first():
         await pilot.pause()
         app.push_screen(form)
         await pilot.pause()
-        assert _rendered_provider(app) == "Provider: llamacpp"
+        assert _rendered_provider(app) == "llamacpp"
         assert form._initial_provider == "llamacpp"
 
 
@@ -122,7 +129,7 @@ async def test_modelform_edit_mode_uses_variant_provider():
         await pilot.pause()
         app.push_screen(form)
         await pilot.pause()
-        assert _rendered_provider(app) == "Provider: llamacpp"
+        assert _rendered_provider(app) == "llamacpp"
         assert form._initial_provider == "llamacpp"
 
 
@@ -529,33 +536,16 @@ async def test_submit_in_edit_mode_preserves_quantizations():
 
 
 @pytest.mark.asyncio
-async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch):
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
-    )
-    q8 = ModelEntry(
-        id="llamacpp/q8",
-        family="ornith",
-        provider_id="llamacpp",
-        model_name="x.gguf",
-        fetch=Fetch(repo="foo/bar", files=["x.gguf"]),
-    )
-    m8 = ModelEntry(
-        id="omlx/m8",
-        family="ornith",
-        provider_id="omlx",
-        model_name="x-mlx",
-        fetch=Fetch(repo="foo/bar"),
-    )
+async def test_add_model_dialog_inherits_last_used_provider(tmp_path, monkeypatch):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
         providers=[
             ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
             ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none")),
-            ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx")),
         ],
-        models=[o35, q8, m8],
+        families=[FamilyEntry(name="ornith")],
+        models=[],
     )
     save_registry(reg, reg_path)
     save_state(StateStore(), state_path)
@@ -566,12 +556,9 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
 
     stub = MagicMock()
     stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
     stub.name = "ollama"
-    monkeypatch.setattr(
-        registry.ProviderRegistry,
-        "get",
-        staticmethod(lambda name, cfg: stub),
-    )
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -583,21 +570,8 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
 
         assert isinstance(app.screen, ModelScreen)
 
-        from textual.widgets import DataTable
-
-        provider_table = app.screen.query_one("#provider-table", DataTable)
-        llamacpp_idx = None
-        for i in range(provider_table.row_count):
-            if provider_table.get_row_at(i)[0] == "llamacpp":
-                llamacpp_idx = i
-                break
-        assert llamacpp_idx is not None
-        provider_table.focus()
-        await pilot.pause()
-        for _ in range(llamacpp_idx):
-            await pilot.press("down")
-        await pilot.pause()
-        assert app.screen.selected_provider == "llamacpp"
+        # Add one llamacpp model first (sets _last_provider_used).
+        app.screen._last_provider_used = "llamacpp"
 
         captured: list[ModelForm] = []
         original_push = app.push_screen
@@ -612,8 +586,7 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
         await pilot.pause()
 
         assert captured, "ModelForm was not pushed"
-        form = captured[0]
-        assert form._default_provider == "llamacpp"
+        assert captured[0]._default_provider == "llamacpp"
 
 
 # ---------------------------------------------------------------------------
@@ -738,3 +711,204 @@ async def test_submit_returns_family_switched_in_the_select():
     result = dismissed[0]
     assert isinstance(result, ModelFormResult)
     assert result.family == "gemma4"
+
+
+@pytest.mark.asyncio
+async def test_modelform_add_mode_provider_is_a_select():
+    """Add mode offers a real provider dropdown, not a locked label."""
+    form = ModelForm(
+        providers=["ollama", "llamacpp", "claude"],
+        provider_kinds={"claude": "native"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#provider-select", Select)
+        assert not sel.disabled
+        assert [str(v) for _, v in sel._options] == ["ollama", "llamacpp", "claude"]
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_mode_provider_select_is_disabled():
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+    }
+    form = ModelForm(providers=["llamacpp", "ollama"], variant=variant)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#provider-select", Select)
+        assert sel.disabled
+        assert str(sel.value) == "llamacpp"
+
+
+@pytest.mark.asyncio
+async def test_modelform_location_locked_cloud_for_native_provider():
+    form = ModelForm(
+        providers=["claude"], default_provider="claude", provider_kinds={"claude": "native"}
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#location-select", Select)
+        assert sel.disabled
+        assert str(sel.value) == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_modelform_location_locked_local_for_omlx():
+    form = ModelForm(
+        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#location-select", Select)
+        assert sel.disabled
+        assert str(sel.value) == "local"
+
+
+@pytest.mark.asyncio
+async def test_modelform_location_editable_for_ollama():
+    form = ModelForm(providers=["ollama"], default_provider="ollama")
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#location-select", Select)
+        assert not sel.disabled
+
+
+@pytest.mark.asyncio
+async def test_submit_native_blank_model_defaults_to_native_sentinel():
+    form = ModelForm(
+        providers=["claude"], default_provider="claude", provider_kinds={"claude": "native"}
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        await pilot.press("enter")  # blank #model input
+        await pilot.pause()
+
+    spec = dismissed[0].spec
+    assert spec["name"] == "native"
+    assert spec["id"] == "claude/native"
+
+
+@pytest.mark.asyncio
+async def test_submit_native_named_model():
+    form = ModelForm(
+        providers=["claude"], default_provider="claude", provider_kinds={"claude": "native"}
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        _fill_model(app, "opus")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    spec = dismissed[0].spec
+    assert spec["name"] == "opus"
+    assert spec["id"] == "claude/opus"
+
+
+@pytest.mark.asyncio
+async def test_modelform_provider_change_updates_placeholder_and_location():
+    """Switching the provider Select in add mode must re-lock the location
+    select and update the model input placeholder to match the new provider
+    kind."""
+    form = ModelForm(
+        providers=["ollama", "claude", "llamacpp"],
+        provider_kinds={"claude": "native"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        location_sel = app.screen.query_one("#location-select", Select)
+        model_input = app.screen.query_one("#model", Input)
+
+        # Default is the first provider (ollama): editable location, ollama placeholder.
+        assert not location_sel.disabled
+        assert "ornith-1.5:35b" in (model_input.placeholder or "")
+
+        # Switch to native provider: location locked to cloud, placeholder changes.
+        provider_sel.value = "claude"
+        await pilot.pause()
+        assert location_sel.disabled
+        assert str(location_sel.value) == "cloud"
+        assert "native" in (model_input.placeholder or "")
+
+        # Switch to HF provider: location locked to local, placeholder changes.
+        provider_sel.value = "llamacpp"
+        await pilot.pause()
+        assert location_sel.disabled
+        assert str(location_sel.value) == "local"
+        assert "org/repo" in (model_input.placeholder or "")
+
+
+@pytest.mark.asyncio
+async def test_add_model_dialog_locks_location_for_native_provider(tmp_path, monkeypatch):
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            ),
+        ],
+        families=[FamilyEntry(name="ornith")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.forms import ModelForm
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ModelScreen)
+        app.screen._last_provider_used = "claude"
+
+        captured: list[ModelForm] = []
+        original_push = app.push_screen
+
+        def tracking_push(screen, *args, **kwargs):
+            if isinstance(screen, ModelForm):
+                captured.append(screen)
+            return original_push(screen, *args, **kwargs)
+
+        monkeypatch.setattr(app, "push_screen", tracking_push)
+        await pilot.press("a")
+        await pilot.pause()
+
+    assert captured
+    assert captured[0]._provider_kinds["claude"] == "native"

@@ -73,7 +73,7 @@ class FamilyScreen(Screen[None]):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE")
+        table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "READY", "SIZE")
         self._load_from_disk()
         self.reload()
         # Reconcile against provider state so the size and downloaded columns
@@ -95,6 +95,9 @@ class FamilyScreen(Screen[None]):
         except RegistryError:
             self.registry = Registry()
         self.state = load_state(self.state_path)
+        from ..registry import sync_agent_providers
+
+        sync_agent_providers(self.registry)
         # Preserve registry.toml's provider insertion order so the left
         # pane's column order matches what the user wrote there (mirrors
         # app.py's _configured_providers()).
@@ -146,6 +149,11 @@ class FamilyScreen(Screen[None]):
             provider = providers[pname]
             spec = _model_entry_to_variant(m)
             size: int | None = None
+            ready = False
+            try:
+                ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
+            except Exception:
+                ready = False
             try:
                 raw = provider.size_of(spec)  # type: ignore[attr-defined]
                 if isinstance(raw, int):
@@ -153,7 +161,7 @@ class FamilyScreen(Screen[None]):
             except Exception:
                 size = None
             self._reconciled[m.id] = {
-                "downloaded": size is not None,
+                "ready": ready,
                 "size": size,
             }
         self.app.call_from_thread(self.reload)
@@ -175,16 +183,16 @@ class FamilyScreen(Screen[None]):
             for m in models:
                 rec = self._reconciled.get(m.id)
                 if rec is not None:
-                    if rec["downloaded"]:
+                    if rec["ready"]:
                         downloaded_count += 1
                         sz = rec["size"]
                         if sz is None:
                             unknown = True
                         else:
                             total_size += sz
-                    # If rec says not downloaded, don't fall through to
+                    # If rec says not ready, don't fall through to
                     # state (it could be stale on either side).
-                elif self.state.get(m.id).downloaded:
+                elif self.state.get(m.id).ready:
                     # No reconcile info yet; trust state for this model.
                     downloaded_count += 1
                     unknown = True  # size unknown until reconcile runs
@@ -252,34 +260,18 @@ class FamilyScreen(Screen[None]):
         family_name = str(row_key.value)
         models = self.registry.models_by_family(family_name)
         variants_count = len(models)
-        downloaded_count = sum(1 for m in models if self.state.get(m.id).downloaded)
 
-        # Deletion is only safe when the family has nothing to lose.
-        # Protect against any models, queued-download or downloaded.
-        # The dialog messages spell out the current state so the user
-        # knows which path they're on.
-        if downloaded_count > 0:
+        # Any model — ready or not — blocks delete outright. No
+        # confirm-anyway override: the user must remove or move the
+        # models first.
+        if variants_count > 0:
             self.app.push_screen(
                 ConfirmModal(
-                    f"Cannot delete '{family_name}': {downloaded_count} "
-                    f"downloaded model{'s' if downloaded_count != 1 else ''} "
-                    f"of {variants_count} variant{'s' if variants_count != 1 else ''}. "
-                    f"Remove downloads first."
+                    f"Family '{family_name}' has {variants_count} model"
+                    f"{'s' if variants_count != 1 else ''}. Remove or move "
+                    f"them before deleting this family."
                 ),
                 self._on_blocked_confirm,
-            )
-            return
-        if variants_count > 0:
-            # Family has model definitions but none have been
-            # downloaded yet. Deleting would lose the model
-            # definitions entirely; require explicit confirmation.
-            self.app.push_screen(
-                ConfirmModal(
-                    f"Family '{family_name}' has {variants_count} variant"
-                    f"{'s' if variants_count != 1 else ''} (none downloaded). "
-                    f"Delete anyway? This loses the model definitions."
-                ),
-                self._on_delete_family_with_variants,
             )
             return
         self.app.push_screen(
@@ -288,11 +280,6 @@ class FamilyScreen(Screen[None]):
         )
 
     def _on_delete_confirm(self, confirmed: bool | None) -> None:
-        if not confirmed:
-            return
-        self._delete_family()
-
-    def _on_delete_family_with_variants(self, confirmed: bool | None) -> None:
         if not confirmed:
             return
         self._delete_family()

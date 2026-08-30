@@ -79,7 +79,7 @@ class LiteLLMConfigError(Exception):
 
 
 class ExposeError(Exception):
-    """Raised when a model cannot be exposed (not downloaded, unknown, etc.)."""
+    """Raised when a model cannot be exposed (not ready, unknown, etc.)."""
 
 
 def default_litellm_config_path() -> Path:
@@ -269,8 +269,8 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
     policy = provider_policy(model.provider_id)
     if policy is None:
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
-    if not policy.cloud and not state.get(model_id).downloaded:
-        raise ExposeError(f"model {model_id!r} is not downloaded")
+    if not policy.cloud and not state.get(model_id).ready:
+        raise ExposeError(f"model {model_id!r} is not ready")
     return build_model_list_entry(model, provider)
 
 
@@ -282,7 +282,7 @@ def expose_model(
 ) -> None:
     """Expose a model through LiteLLM: write its model_list entry and flip
     the modelman.toml flag. Errors if the model is unknown, its provider
-    has no LiteLLM mapping, or it isn't downloaded (unless cloud)."""
+    has no LiteLLM mapping, or it isn't ready (unless cloud)."""
     entry = _validated_entry(registry, state, model_id)
     config = load_litellm_config(litellm_path)
     set_exposed(config, model_id, entry)

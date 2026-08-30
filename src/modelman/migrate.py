@@ -158,5 +158,5 @@ def _import_modelman_families(family_dir: Path, registry: Registry, state: State
             if downloaded_info is not None:
                 state.set(
                     model_id,
-                    ModelState(downloaded=True, disk_path=downloaded_info.get("local_path")),
+                    ModelState(ready=True, disk_path=downloaded_info.get("local_path")),
                 )

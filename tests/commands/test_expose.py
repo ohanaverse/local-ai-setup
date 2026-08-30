@@ -36,7 +36,7 @@ def _seed(tmp_path, monkeypatch, *, downloaded=True):
         registry_path,
     )
     store = StateStore()
-    store.set("ollama/a", ModelState(downloaded=downloaded))
+    store.set("ollama/a", ModelState(ready=downloaded))
     save_state(store, state_path)
     save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
@@ -57,12 +57,12 @@ def test_expose_command_writes_and_reports(tmp_path, monkeypatch):
     assert config["model_list"][0]["model_name"] == "ollama/a"
 
 
-def test_expose_command_errors_on_not_downloaded(tmp_path, monkeypatch):
+def test_expose_command_errors_on_not_ready(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, downloaded=False)
     runner = CliRunner()
     result = runner.invoke(app, ["expose", "ollama/a"])
     assert result.exit_code == 1
-    assert "not downloaded" in result.output
+    assert "not ready" in result.output
 
 
 def test_unexpose_command_writes_and_reports(tmp_path, monkeypatch):

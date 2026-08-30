@@ -49,7 +49,7 @@ def _registry(*, cloud=False):
 
 def _state(*, downloaded_a=True):
     store = StateStore()
-    store.set("ollama/a", ModelState(downloaded=downloaded_a))
+    store.set("ollama/a", ModelState(ready=downloaded_a))
     return store
 
 
@@ -80,11 +80,11 @@ def test_expose_model_cloud_ok_without_download(tmp_path):
     assert state.get("openrouter/x").litellm_exposed is True
 
 
-def test_expose_model_not_downloaded_raises(tmp_path):
+def test_expose_model_not_ready_raises(tmp_path):
     registry = _registry()
     state = _state(downloaded_a=False)
     path = _seed_config(tmp_path)
-    with pytest.raises(ExposeError, match="not downloaded"):
+    with pytest.raises(ExposeError, match="not ready"):
         expose_model(registry, state, "ollama/a", path)
 
 

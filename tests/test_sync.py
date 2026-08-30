@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from modelman.providers.base import Provider, VariantSpec
-from modelman.registry import Fetch, ModelEntry, ProviderEntry, Registry
+from modelman.registry import AuthConfig, Fetch, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
 from modelman.sync import (
     SyncError,
@@ -130,7 +130,7 @@ def test_reconcile_downloaded_model():
     assert result.downloaded == ["ollama/a"]
     assert result.not_downloaded == []
     s = state.get("ollama/a")
-    assert s.downloaded is True
+    assert s.ready is True
     assert s.disk_path == "ollama:a"
     assert s.size_bytes == 1024
 
@@ -151,7 +151,7 @@ def test_reconcile_not_downloaded_model():
     assert result.downloaded == []
     assert result.not_downloaded == ["ollama/a"]
     s = state.get("ollama/a")
-    assert s.downloaded is False
+    assert s.ready is False
     assert s.disk_path is None
     assert s.size_bytes is None
 
@@ -171,7 +171,7 @@ def test_reconcile_skips_non_reconcilable_models():
     result = reconcile(registry, state, {"openrouter/x": ("path", 1024)})
     assert result.downloaded == []
     assert result.not_downloaded == []
-    assert state.get("openrouter/x").downloaded is False
+    assert state.get("openrouter/x").ready is False
 
 
 def test_reconcile_preserves_litellm_exposed():
@@ -186,7 +186,7 @@ def test_reconcile_preserves_litellm_exposed():
         ]
     )
     state = StateStore()
-    state.set("ollama/a", ModelState(downloaded=False, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
     reconcile(registry, state, {"ollama/a": ("ollama:a", 1024)})
     assert state.get("ollama/a").litellm_exposed is True
 
@@ -355,8 +355,8 @@ def test_sync_reconciles_configured_models():
 
     assert result.downloaded == ["ollama/ornith-1.5:9b"]
     assert result.not_downloaded == ["ollama/other"]
-    assert state.get("ollama/ornith-1.5:9b").downloaded is True
-    assert state.get("ollama/other").downloaded is False
+    assert state.get("ollama/ornith-1.5:9b").ready is True
+    assert state.get("ollama/other").ready is False
     # registry is untouched (no new models added)
     assert len(registry.models) == 2
 
@@ -402,7 +402,7 @@ def test_sync_includes_modeldir_results():
 
     assert result.downloaded == ["llamacpp/q4"]
     assert result.not_downloaded == []
-    assert state.get("llamacpp/q4").downloaded is True
+    assert state.get("llamacpp/q4").ready is True
     assert state.get("llamacpp/q4").disk_path == "/cache/q4.gguf"
     assert state.get("llamacpp/q4").size_bytes == 100
 
@@ -489,3 +489,28 @@ def test_ensure_provider_entries_returns_fresh_instances():
     _ensure_provider_entries(registry2)
     registry1.providers[0].auth.base_url = "http://mutated:9999"
     assert registry2.providers[0].auth.base_url == "http://localhost:11434"
+
+
+def test_sync_registers_agent_providers(tmp_path, monkeypatch):
+    # _default_wt_config_path() joins <MODELMAN_WT_DIR>/config.toml exactly
+    # — the fixture file must be named "config.toml", not anything else.
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text('[[agents]]\nname = "claude"\n')
+    monkeypatch.setenv("MODELMAN_WT_DIR", str(tmp_path))
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+    )
+    state = StateStore()
+
+    def fake_runner(args, **kwargs):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "NAME    ID    SIZE    MODIFIED\n"
+        return result
+
+    result = sync(registry, state, runner=fake_runner)
+
+    assert "claude" in result.providers_added
+    registry.provider("claude")  # does not raise

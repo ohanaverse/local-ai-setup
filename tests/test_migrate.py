@@ -144,7 +144,7 @@ def test_migrate_records_downloaded_state_from_modelman_manifest(tmp_path):
     result = migrate(config_path, family_dir, wt_config_path=tmp_path / "absent.toml")
 
     state = result.state.get("llamacpp/qwen3.8-27b-q4")
-    assert state.downloaded is True
+    assert state.ready is True
     assert state.disk_path == "/models/qwen3.8-27b-q4.gguf"
 
 

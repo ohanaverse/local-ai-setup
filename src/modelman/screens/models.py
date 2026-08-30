@@ -10,12 +10,11 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..litellm import default_litellm_config_path, is_cloud
+from ..litellm import default_litellm_config_path, provider_policy
 from ..queue import PendingChanges
 from ..registry import Fetch, ModelEntry, Registry, known_families, provider_config
 from ..state import ModelState, StateStore
@@ -56,6 +55,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         family=family,
         provider_id=provider_id,
         model_name=name,
+        location=variant.get("location"),
         source="curated",
         model_info=model_info,
         fetch=fetch,
@@ -106,6 +106,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "repo": repo,
         "files": files,
         "quantizations": quantizations,
+        "location": entry.location,
         "model_info": dict(entry.model_info),
     }
 
@@ -113,7 +114,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
 class ModelScreen(Screen[None]):
     BINDINGS = [
         ("escape", "back", "Back"),
-        ("x", "toggle_download", "Toggle download"),
+        ("x", "toggle_ready", "Toggle ready"),
         ("a", "add_model", "Add"),
         ("d", "delete_model", "Delete"),
         ("e", "edit_model", "Edit"),
@@ -152,16 +153,16 @@ class ModelScreen(Screen[None]):
         # Default selection: ollama if configured, otherwise the first
         # configured provider. This keeps the cursor on the most
         # common starting point for empty families.
-        if "ollama" in self.available_providers:
-            self.selected_provider: str | None = "ollama"
-        elif self.available_providers:
-            self.selected_provider = self.available_providers[0]
-        else:
-            self.selected_provider = None
-        # queued_downloads / queued_deletes map model_id -> VariantSpec
-        # (the VariantSpec is what provider APIs still consume; model_id
-        # is the registry/state key).
-        self.queued_downloads: dict[str, VariantSpec] = {}
+        # Default selection: ollama if configured, otherwise the first
+        # configured provider. This keeps the cursor on the most
+        # common starting point for empty families.
+        # Provider of the last model added or edited this session; used to
+        # default the Add dialog's provider dropdown now that there's no
+        # provider pane to inherit a selection from.
+        self._last_provider_used: str | None = None
+        # queued_ready / queued_deletes map model_id -> target state.
+        # queued_ready values are bools: True to ready, False to clear.
+        self.queued_ready: dict[str, bool] = {}
         self.queued_deletes: dict[str, VariantSpec] = {}
         # model_id -> target exposed state (True to expose, False to unexpose).
         self.queued_exposes: dict[str, bool] = {}
@@ -187,35 +188,20 @@ class ModelScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="panes"):
-            with Vertical(id="provider-pane"):
-                yield DataTable(id="provider-table", cursor_type="row")
-            with Vertical(id="model-pane"):
-                yield DataTable(id="model-table", cursor_type="row")
-        yield Static("Pending: download 0 · delete 0", id="pending-bar")
+        yield DataTable(id="model-table", cursor_type="row")
+        yield Static("Pending: ready 0 · delete 0", id="pending-bar")
         yield Footer()
 
     def on_mount(self) -> None:
-        pt = self.query_one("#provider-table", DataTable)
-        pt.add_columns("PROVIDER", "MODELS")
         mt = self.query_one("#model-table", DataTable)
-        mt.add_columns("NAME", "STATUS", "SIZE", "PATH", "EXPOSED")
+        mt.add_columns(
+            "FAMILY", "PROVIDER", "MODEL", "LOCATION", "STATUS", "EXPOSED", "SIZE", "PATH"
+        )
         self.reload()
         self._refresh_pending_bar()
-        # Put the cursor and focus on the first provider row so the
-        # user sees an immediate visible cursor highlight on ollama
-        # (or whatever the first configured provider is) and can
-        # navigate the left pane with arrow keys without an extra
-        # Tab. Enter on a model row still opens the edit dialog
-        # via a screen-level binding (see action_select_row); the
-        # DataTable's built-in select_cursor binding fires only when
-        # the table is focused, so the screen binding fills the gap.
-        if pt.row_count > 0:
-            pt.cursor_coordinate = Coordinate(0, 0)
-        pt.focus()
-        # Reconcile with the world so the UI shows reality even when the
-        # registry is stale. In-memory only; nothing is written to disk
-        # until the user applies.
+        mt.focus()
+        if mt.row_count > 0:
+            mt.cursor_coordinate = Coordinate(0, 0)
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def _run_reconcile(self) -> None:
@@ -234,18 +220,19 @@ class ModelScreen(Screen[None]):
                 continue
             for m in entries:
                 size: int | None = None
-                # Providers consume VariantSpec; build a minimal one
-                # from the ModelEntry's stored Fetch.
                 spec = _model_entry_to_variant(m)
+                try:
+                    ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
+                except Exception:
+                    ready = False
                 try:
                     raw = provider.size_of(spec)  # type: ignore[attr-defined]
                     if isinstance(raw, int):
                         size = raw
                 except Exception:
                     size = None
-                downloaded = size is not None
                 local_path: str | None = None
-                if downloaded and hasattr(provider, "list_local"):
+                if ready and hasattr(provider, "list_local"):
                     try:
                         for lm in provider.list_local():
                             lm_name = lm.get("name") or lm.get("variant_id")
@@ -257,7 +244,7 @@ class ModelScreen(Screen[None]):
                     except Exception:
                         pass
                 self.reconciled[m.id] = {
-                    "downloaded": downloaded,
+                    "ready": ready,
                     "size": size,
                     "local_path": local_path,
                 }
@@ -268,78 +255,48 @@ class ModelScreen(Screen[None]):
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def reload(self) -> None:
-        pt = self.query_one("#provider-table", DataTable)
-        pt.clear()
-        # Always render a row for every configured provider so an empty
-        # family still shows ollama/llamacpp/omlx in the left pane and
-        # the user has somewhere to add their first model. Counts
-        # come from the registry.models filtered to this family (0
-        # when none).
-        counts: dict[str, int] = defaultdict(int)
-        for m in self.registry.models_by_family(self.family):
-            counts[m.provider_id] += 1
-        for provider in self.available_providers:
-            pt.add_row(provider, str(counts.get(provider, 0)), key=provider)
-        # If the previously selected provider disappeared from the
-        # config (e.g. user removed ollama from config.yaml), fall
-        # back to the first available one so the right pane doesn't
-        # stay blank.
-        if self.selected_provider not in self.available_providers and self.available_providers:
-            self.selected_provider = self.available_providers[0]
-        if self.selected_provider:
-            self._load_models_for_provider(self.selected_provider)
+        self._load_models()
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.control.id == "provider-table":
-            row_key = event.row_key
-            if row_key is not None:
-                self.selected_provider = str(row_key.value)
-                self._load_models_for_provider(self.selected_provider)
-
-    def _is_downloaded(self, model_id: str) -> bool:
-        """Truth about whether a model is on disk.
-
-        Prefers the reconcile overlay (reality); falls back to state
-        when reconcile hasn't run for this model yet.
-        """
-        rec = self.reconciled.get(model_id)
-        if rec is not None:
-            return bool(rec.get("downloaded"))
-        return self.state.get(model_id).downloaded
-
-    def _load_models_for_provider(self, provider: str) -> None:
+    def _load_models(self) -> None:
         from ..providers.registry import ProviderRegistry
 
         mt = self.query_one("#model-table", DataTable)
         mt.clear()
-        for m in self.registry.models_by_family(self.family):
-            if m.provider_id != provider:
-                continue
+        models = sorted(
+            self.registry.models_by_family(self.family),
+            key=lambda m: (m.provider_id, m.model_name),
+        )
+        for m in models:
             rec = self.reconciled.get(m.id)
             if rec is not None:
-                downloaded = bool(rec.get("downloaded"))
-                size_str = _human_size(rec.get("size")) if downloaded else "—"
-                path = rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
+                ready = bool(rec.get("ready"))
+                size_str = _human_size(rec.get("size")) if ready else "—"
+                # When reconcile says the model is no longer on disk, don't
+                # fall back to the stale disk_path stored in state.
+                path = (
+                    rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
+                    if ready
+                    else "—"
+                )
             else:
                 state_entry = self.state.get(m.id)
-                downloaded = state_entry.downloaded
+                ready = state_entry.ready
                 size_str = "—"
                 path = state_entry.disk_path or "—"
-                if downloaded:
+                if ready:
                     try:
-                        entry = self.registry.provider(provider)
-                        prov = ProviderRegistry.get(provider, provider_config(entry))
+                        entry = self.registry.provider(m.provider_id)
+                        prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
                         size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
                     except Exception:
                         pass
-            # Pending ops take precedence over disk state:
             if m.id in self.queued_deletes:
                 status = "[red]✗[/red]"
-            elif m.id in self.queued_downloads:
-                status = "[yellow]↓[/yellow]"
+            elif m.id in self.queued_ready:
+                status = "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
             elif m.id in self.queued_moves:
                 status = "[magenta]→[/magenta]"
-            elif downloaded:
+            elif ready:
                 status = "[green]✓[/green]"
             else:
                 status = "[dim]○[/dim]"
@@ -347,16 +304,37 @@ class ModelScreen(Screen[None]):
             if m.id in self.queued_exposes:
                 exposed = self.queued_exposes[m.id]
             exposed_str = "L" if exposed else "–"
-            mt.add_row(m.model_name, status, size_str, path, exposed_str, key=m.id)
+            mt.add_row(
+                m.family,
+                m.provider_id,
+                m.model_name,
+                m.location or "—",
+                status,
+                exposed_str,
+                size_str,
+                path,
+                key=m.id,
+            )
+
+    def _is_ready(self, model_id: str) -> bool:
+        """Truth about whether a model is ready to use.
+
+        Prefers the reconcile overlay (reality); falls back to state
+        when reconcile hasn't run for this model yet.
+        """
+        rec = self.reconciled.get(model_id)
+        if rec is not None:
+            return bool(rec.get("ready"))
+        return self.state.get(model_id).ready
 
     def _refresh_pending_bar(self) -> None:
         bar = self.query_one("#pending-bar", Static)
         bar.update(
-            f"Pending: download {len(self.queued_downloads)} · delete {len(self.queued_deletes)}"
+            f"Pending: ready {len(self.queued_ready)} · delete {len(self.queued_deletes)}"
             f" · move {len(self.queued_moves)} · expose {len(self.queued_exposes)}"
         )
 
-    def action_toggle_download(self) -> None:
+    def action_toggle_ready(self) -> None:
         mt = self.query_one("#model-table", DataTable)
         if mt.row_count == 0:
             return
@@ -365,16 +343,16 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        if self._is_downloaded(mid):
-            return  # already downloaded
-        spec = _model_entry_to_variant(entry)
-        if mid in self.queued_downloads:
-            self.queued_downloads.pop(mid)
+        currently_ready = self._is_ready(mid)
+        target = not currently_ready
+        if mid in self.queued_ready:
+            # Toggling again cancels the queued flip.
+            self.queued_ready.pop(mid)
         else:
-            self.queued_downloads[mid] = spec
+            self.queued_ready[mid] = target
+        self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
-        if self.selected_provider is not None:
-            self._load_models_for_provider(self.selected_provider)
+        self.reload()
 
     def action_toggle_expose(self) -> None:
         mt = self.query_one("#model-table", DataTable)
@@ -385,16 +363,18 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        if not is_cloud(entry.provider_id) and not self._is_downloaded(mid):
-            self.app.notify("Model must be downloaded before exposing")
+        if not self._is_ready(mid):
+            self.app.notify("Model must be ready before exposing")
+            return
+        if provider_policy(entry.provider_id) is None:
+            self.app.notify("Provider has no LiteLLM mapping — cannot expose")
             return
         current = self.state.get(mid).litellm_exposed
         if mid in self.queued_exposes:
             current = self.queued_exposes[mid]
         self.queued_exposes[mid] = not current
         self._refresh_pending_bar()
-        if self.selected_provider is not None:
-            self._load_models_for_provider(self.selected_provider)
+        self.reload()
 
     def _provider_list(self) -> list[str]:
         # Use the full configured-provider list, not just the providers
@@ -403,6 +383,25 @@ class ModelScreen(Screen[None]):
         if self.available_providers:
             return list(self.available_providers)
         return sorted({m.provider_id for m in self.registry.models_by_family(self.family)})
+
+    def _provider_kinds(self) -> dict[str, str]:
+        """Map each registered provider id to the ModelForm 'kind' that
+        drives its Location-select lock rule: native providers and
+        llamacpp/omlx are locked (cloud and local respectively); ollama
+        is the one provider where location is genuinely editable;
+        everything else (openrouter, any other unmapped provider) locks
+        to cloud."""
+        kinds: dict[str, str] = {}
+        for p in self.registry.providers:
+            if p.auth.type == "native":
+                kinds[p.id] = "native"
+            elif p.id in ("llamacpp", "omlx"):
+                kinds[p.id] = "local-only"
+            elif p.id == "ollama":
+                kinds[p.id] = "ollama"
+            else:
+                kinds[p.id] = "cloud-only"
+        return kinds
 
     def _families_list(self) -> list[str]:
         """Every family the add/edit dialogs may target: families with
@@ -417,13 +416,16 @@ class ModelScreen(Screen[None]):
         # Pre-select the provider the user is currently looking at, so
         # adding "another llamacpp model" doesn't make them switch the
         # dropdown back. Fall back to None if no provider is selected.
-        default_provider = self.selected_provider if self.selected_provider in providers else None
+        default_provider = (
+            self._last_provider_used if self._last_provider_used in providers else None
+        )
         self.app.push_screen(
             ModelForm(
                 providers=providers,
                 default_provider=default_provider,
                 families=self._families_list(),
                 family=self.family,
+                provider_kinds=self._provider_kinds(),
             ),
             self._on_add_model,
         )
@@ -438,7 +440,8 @@ class ModelScreen(Screen[None]):
         entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
         self.registry.models.append(entry)
         self._added_ids.add(variant["id"])
-        self.queued_downloads[variant["id"]] = variant
+        self.queued_ready[variant["id"]] = True
+        self._last_provider_used = variant["provider"]
         self.reload()
         self._refresh_pending_bar()
 
@@ -451,25 +454,17 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        # Local models must be on disk before a delete has anything to
-        # remove. Cloud-located ollama models (`location == "cloud"`) are
-        # different: a pulled `:cloud` row lives in the ollama registry
-        # with no local size (SIZE column '-'), so reconcile can never
-        # report them downloaded — yet `ollama rm` can delete them. Say
-        # why when the delete is refused instead of silently ignoring the
-        # keypress.
-        if entry.location != "cloud" and not self._is_downloaded(mid):
-            self.app.notify("Model not downloaded — nothing to delete")
+        if not self._is_ready(mid):
+            self.app.notify("Model not ready — nothing to delete")
             return
         spec = _model_entry_to_variant(entry)
         if mid in self.queued_deletes:
             self.queued_deletes.pop(mid)
         else:
             self.queued_deletes[mid] = spec
-        self.queued_downloads.pop(mid, None)
+        self.queued_ready.pop(mid, None)
         self._refresh_pending_bar()
-        if self.selected_provider is not None:
-            self._load_models_for_provider(self.selected_provider)
+        self.reload()
 
     def action_edit_model(self) -> None:
         mt = self.query_one("#model-table", DataTable)
@@ -493,60 +488,18 @@ class ModelScreen(Screen[None]):
                 variant=spec,
                 families=self._families_list(),
                 family=self.queued_moves.get(mid, self.family),
+                provider_kinds=self._provider_kinds(),
             ),
             self._on_edit_model,
         )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Enter on a model-table row opens the edit dialog. Enter
-        on a provider-table row (the focused one on mount) is a
-        no-op here — arrow keys already switch providers via the
-        RowHighlighted handler.
-
-        The screen-level 'enter' binding (action_select_row) takes
-        priority over DataTable.select_cursor so this handler is
-        rarely fired in practice; we keep it as a fallback path.
-        """
-        if event.data_table.id == "model-table":
-            self.action_edit_model()
+        self.action_edit_model()
 
     def action_select_row(self) -> None:
-        """Screen-level Enter handler. Wins over DataTable's
-        built-in select_cursor binding because the binding is
-        marked priority=True.
-
-        - If the model table has focus, Enter opens the edit dialog
-          for the highlighted model (preserving the earlier
-          "Enter on a model row opens edit" UX).
-        - If the provider table has focus (the default on mount),
-          Enter is a no-op: arrows already switch the right pane via
-          RowHighlighted, and we don't want to invoke an action the
-          user didn't explicitly choose.
-
-        Why this lives at the screen level instead of relying on
-        DataTable.select_cursor: provider-table now has focus on
-        mount (so the user sees a cursor highlight on the first
-        configured provider row, per recent UX feedback). With
-        provider-table focused, DataTable's built-in select_cursor
-        binding for Enter fires on the provider table, not the
-        model table. priority=True on the screen binding routes
-        Enter through this action so Enter-on-model still works
-        after the user tabs into the model pane.
-        """
-        try:
-            mt = self.query_one("#model-table", DataTable)
-            pt = self.query_one("#provider-table", DataTable)
-        except Exception:
-            return
-        if mt.has_focus:
-            self.action_edit_model()
-        # If the provider table has focus, Enter is intentionally a
-        # no-op. The visual cursor is on the provider row; the user
-        # can switch providers with arrows or Tab to the model pane.
-        elif pt.has_focus:
-            return
-        # Fallback for rare states where neither table has focus:
-        # do nothing rather than guessing.
+        """Screen-level Enter handler: always edits the row under the
+        cursor now that there's only one table."""
+        self.action_edit_model()
 
     def _on_edit_model(self, result) -> None:
         if result is None:
@@ -561,14 +514,13 @@ class ModelScreen(Screen[None]):
             self.queued_moves[updated["id"]] = result.family
         else:
             self.queued_moves.pop(updated["id"], None)
-        if updated["id"] in self.queued_downloads:
-            self.queued_downloads[updated["id"]] = updated
+        self._last_provider_used = updated["provider"]
         self.reload()
         self._refresh_pending_bar()
 
     def action_back(self) -> None:
         if (
-            not self.queued_downloads
+            not self.queued_ready
             and not self.queued_deletes
             and not self.queued_moves
             and not self.queued_exposes
@@ -579,7 +531,7 @@ class ModelScreen(Screen[None]):
 
         self.app.push_screen(
             ConfirmExitDialog(
-                downloads=list(self.queued_downloads.values()),
+                ready=list(self.queued_ready.items()),
                 deletes=list(self.queued_deletes.values()),
                 exposes=list(self.queued_exposes.items()),
                 moves=list(self.queued_moves.items()),
@@ -593,7 +545,7 @@ class ModelScreen(Screen[None]):
             return
         if choice == "discard":
             self._restore_snapshot()
-            self.queued_downloads.clear()
+            self.queued_ready.clear()
             self.queued_deletes.clear()
             self.queued_moves.clear()
             self.queued_exposes.clear()
@@ -623,7 +575,7 @@ class ModelScreen(Screen[None]):
         """Construct a PendingChanges and drive apply().
 
         Passed as a closure to StatusScreen. Mutates self.registry and
-        self.state in place (mark_downloaded, remove deleted models).
+        self.state in place (mark_ready, remove deleted models).
         The on_event callable receives lifecycle tags; on_progress
         receives per-line provider output forwarded verbatim into the
         log.
@@ -631,25 +583,35 @@ class ModelScreen(Screen[None]):
         from ..providers.registry import ProviderRegistry
 
         providers: dict[str, object] = {}
-        for spec in list(self.queued_downloads.values()) + list(self.queued_deletes.values()):
+        specs_by_id = {
+            m.id: _model_entry_to_variant(m)
+            for m in self.registry.models
+            if m.id in self.queued_ready
+        }
+        for spec in list(specs_by_id.values()) + list(self.queued_deletes.values()):
             try:
                 entry = self.registry.provider(spec["provider"])
                 providers[spec["provider"]] = ProviderRegistry.get(
                     spec["provider"], provider_config(entry)
                 )
-            except Exception:
+            except KeyError:
+                # Provider not in registry or not mapped to a Provider
+                # class: treat as flag-only (native/unmapped) and let
+                # PendingChanges flip state flags without a provider call.
                 continue
+            # Other exceptions (bad config, import failure, etc.) are
+            # real errors and must not be silently treated as flag-only.
         # Merge any reconciled entries that state didn't know about,
         # so the saved state reflects reality. Never remove existing
         # entries; the user can queue a delete (d) for that. This also
         # bridges the expose gate: the TUI accepts an expose based on
         # the reconcile overlay, while the apply-time check reads
-        # state.downloaded — without this merge a model on disk with a
-        # stale downloaded=False would fail at apply with a spurious
-        # "not downloaded".
+        # state.ready — without this merge a model on disk with a
+        # stale ready=False would fail at apply with a spurious
+        # "not ready".
         for mid, rec in self.reconciled.items():
-            if rec.get("downloaded") and not self.state.get(mid).downloaded:
-                updated = replace(self.state.get(mid), downloaded=True)
+            if rec.get("ready") and not self.state.get(mid).ready:
+                updated = replace(self.state.get(mid), ready=True)
                 # Only overwrite the path when reconcile actually found
                 # one; a blank local_path must not blank a known one.
                 if rec.get("local_path"):
@@ -662,7 +624,7 @@ class ModelScreen(Screen[None]):
             registry_path=self.registry_path,
             state_path=self.state_path,
             providers=providers,
-            downloads=[(mid, spec) for mid, spec in self.queued_downloads.items()],
+            ready=[(mid, specs_by_id[mid], target) for mid, target in self.queued_ready.items()],
             deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()],
             moves=list(self.queued_moves.items()),
             exposes=list(self.queued_exposes.items()),
@@ -673,7 +635,7 @@ class ModelScreen(Screen[None]):
         # The closure runs on the StatusScreen's worker thread; mutate
         # in-memory queue state from here too so subsequent opens of this
         # screen see an empty queue.
-        self.queued_downloads.clear()
+        self.queued_ready.clear()
         self.queued_deletes.clear()
         self.queued_moves.clear()
         self.queued_exposes.clear()

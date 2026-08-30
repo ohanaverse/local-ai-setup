@@ -17,6 +17,7 @@ class VariantSpec(TypedDict, total=False):
     files: list[str] | None  # files in repo (for llamacpp)
     quantizations: list[str] | None  # quant tags (for omlx)
     model_info: dict | None  # freeform LiteLLM model_info keys
+    location: str | None  # "local" | "cloud"
 
 
 class LocalModel(TypedDict):

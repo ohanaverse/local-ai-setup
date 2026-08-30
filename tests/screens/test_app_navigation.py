@@ -37,7 +37,7 @@ def _seed_registry_and_state(
     save_registry(reg, reg_path)
     store = StateStore()
     for mid, path in (downloaded or {}).items():
-        store.set(mid, ModelState(downloaded=True, disk_path=path))
+        store.set(mid, ModelState(ready=True, disk_path=path))
     save_state(store, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -67,6 +67,50 @@ async def test_q_exits_app_from_family_screen():
         await pilot.pause()
         # After action_quit, the app should no longer be running.
         assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_direct_download_syncs_agent_providers(tmp_path, monkeypatch):
+    """`ModelmanApp(family=...)` must call sync_agent_providers so the
+    ModelScreen sees native-agent providers imported from agent-worktree's
+    config, not just the providers already written to registry.toml."""
+    from modelman.screens.models import ModelScreen
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    wt_dir = tmp_path / "wt"
+    wt_dir.mkdir()
+    wt_config = wt_dir / "config.toml"
+    wt_config.write_text('[[agents]]\nname = "claude"\n')
+    monkeypatch.setenv("MODELMAN_WT_DIR", str(wt_dir))
+
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/ornith:35b",
+                family="ornith",
+                provider_id="ollama",
+                model_name="ornith:35b",
+            ),
+        ],
+    )
+    save_registry(reg, reg_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp(family="ornith")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ModelScreen)
+        # Native provider synced from agent-worktree config should be
+        # present in the in-memory registry passed to ModelScreen.
+        assert app.screen.registry.provider("claude").auth.type == "native"
+        # And it should be in the available-providers list used for the
+        # provider pane / add-model form.
+        assert "claude" in app.screen.available_providers
 
 
 @pytest.mark.asyncio
@@ -243,12 +287,9 @@ async def test_delete_family_blocked_when_variants_present_even_without_download
 
 
 @pytest.mark.asyncio
-async def test_delete_family_prompts_for_explicit_confirmation_with_variants(
-    tmp_path,
-    monkeypatch,
-):
-    """The variants-but-no-downloads state must require the user to
-    type Yes (not just any key) before the models are removed."""
+async def test_delete_family_blocked_with_undownloaded_models_no_override(tmp_path, monkeypatch):
+    """A family with model definitions but nothing downloaded must be
+    blocked outright now — no confirm-anyway override exists any more."""
     q4 = ModelEntry(id="ollama/q4", family="ornith", provider_id="ollama", model_name="ornith:q4")
     reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[q4])
 
@@ -259,13 +300,14 @@ async def test_delete_family_prompts_for_explicit_confirmation_with_variants(
         await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
-        # Confirm "lose the model definitions"
+        # There is no confirm dialog to answer any more — pressing y must
+        # do nothing, since the block is informational-only.
         await pilot.press("y")
         await pilot.pause()
 
     from modelman.registry import load_registry
 
-    assert load_registry(reg_path).models_by_family("ornith") == []
+    assert len(load_registry(reg_path).models_by_family("ornith")) == 1
 
 
 @pytest.mark.asyncio
@@ -350,36 +392,7 @@ async def test_enter_opens_model_screen(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_model_screen_two_pane_lists_providers_and_models(tmp_path, monkeypatch):
-    from modelman.registry import Fetch
-
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
-    )
-    q4 = ModelEntry(
-        id="llamacpp/q4",
-        family="ornith",
-        provider_id="llamacpp",
-        model_name="q4",
-        fetch=Fetch(repo="o/r", files=["x.gguf"]),
-    )
-    _seed_registry_and_state(
-        tmp_path, monkeypatch, models=[o35, q4], providers=["ollama", "llamacpp"]
-    )
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        tables = app.screen.query("DataTable")
-        assert len(tables) == 2
-
-
-@pytest.mark.asyncio
-async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
+async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
     o35 = ModelEntry(
         id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
     )
@@ -394,13 +407,13 @@ async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("x")
         await pilot.pause()
-        pending = app.screen.queued_downloads
-        assert "ollama/o35" in pending
+        pending = app.screen.queued_ready
+        assert pending.get("ollama/o35") is True
 
 
 @pytest.mark.asyncio
 async def test_status_shows_four_states(tmp_path, monkeypatch):
-    """Status column reflects: downloaded, not downloaded, queued for
+    """Status column reflects: ready, not ready, queued for
     download, queued for delete."""
     from unittest.mock import MagicMock
 
@@ -422,6 +435,7 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
         return 10 if v["id"] == "ollama/dl" else None
 
     stub.size_of.side_effect = fake_size_of
+    stub.is_downloaded.side_effect = lambda v: v["id"] == "ollama/dl"
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from textual.widgets import DataTable
@@ -437,9 +451,9 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
 
         # Initial: dl ✓, missing ○
         mt = app.screen.query_one("#model-table", DataTable)
-        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
-        assert "✓" in rows["dl"][1]
-        assert "○" in rows["missing"][1]
+        rows = {r[2]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "✓" in rows["dl"][4]
+        assert "○" in rows["missing"][4]
 
         # Toggle download on missing → ↓
         # Cursor is on the first row (dl). Move down then x.
@@ -447,16 +461,16 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
         await pilot.press("x")
         await pilot.pause()
         mt = app.screen.query_one("#model-table", DataTable)
-        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
-        assert "↓" in rows["missing"][1]
+        rows = {r[2]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "↓" in rows["missing"][4]
 
         # Toggle delete on dl → ✗
         mt.cursor_coordinate = (0, 0)
         await pilot.press("d")
         await pilot.pause()
         mt = app.screen.query_one("#model-table", DataTable)
-        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
-        assert "✗" in rows["dl"][1]
+        rows = {r[2]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "✗" in rows["dl"][4]
 
 
 @pytest.mark.asyncio
@@ -474,6 +488,7 @@ async def test_delete_action_noop_on_not_downloaded(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -507,6 +522,7 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = 10 * 1024**3
+    stub.is_downloaded.return_value = True
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -562,8 +578,8 @@ async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monke
 
         mt = app.screen.query_one("#model-table", DataTable)
         row = mt.get_row_at(0)
-        assert row[1] == "[green]✓[/green]"  # status
-        assert row[2] == "22.0 GB"  # size
+        assert row[4] == "[green]✓[/green]"  # status
+        assert row[6] == "22.0 GB"  # size
 
 
 @pytest.mark.asyncio
@@ -596,15 +612,15 @@ async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatc
 
     from modelman.state import load_state
 
-    assert not load_state(state_path).get("ollama/o35").downloaded
+    assert not load_state(state_path).get("ollama/o35").ready
 
 
 @pytest.mark.asyncio
 async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch):
-    """Model on disk but modelman.toml says downloaded=False (stale): the
+    """Model on disk but modelman.toml says ready=False (stale): the
     expose gate accepts via the reconcile overlay, and the apply-time
-    check (which reads state.downloaded) must not then fail with a
-    spurious 'not downloaded'. The apply-time merge of reconciled
+    check (which reads state.ready) must not then fail with a
+    spurious 'not ready'. The apply-time merge of reconciled
     entries into state is what bridges the two gates."""
     from unittest.mock import MagicMock
 
@@ -620,7 +636,7 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
     from modelman.state import ModelState
 
     store = StateStore()
-    store.set("ollama/o35", ModelState(downloaded=False))
+    store.set("ollama/o35", ModelState(ready=False))
     save_state(store, state_path)
     # LiteLLM config for the expose step.
     litellm_path = tmp_path / "litellm" / "config.yaml"
@@ -634,6 +650,7 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = 22 * 1024**3  # reconcile: on disk
+    stub.is_downloaded.return_value = True
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -663,8 +680,8 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
 
     final = load_state(state_path).get("ollama/o35")
     # The merge promoted the reconciled download into state, so the
-    # expose succeeded instead of failing with 'not downloaded'.
-    assert final.downloaded is True
+    # expose succeeded instead of failing with 'not ready'.
+    assert final.ready is True
     assert final.litellm_exposed is True
     from modelman.litellm import load_litellm_config
 
@@ -698,6 +715,7 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
         return 22 * 1024**3 if v["id"] == "ollama/o35" else None
 
     stub.size_of.side_effect = fake_size_of
+    stub.is_downloaded.side_effect = lambda v: v["id"] == "ollama/o35"
     stub.download.return_value = "ollama:ornith:8b"
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
@@ -707,7 +725,7 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause()  # let reconcile settle
-        # Queue a download for q8 (which is not downloaded), so escape triggers
+        # Queue a download for q8 (which is not ready), so escape triggers
         # the apply dialog.
         mt = app.screen.query_one("#model-table", DataTable)
         # Click on the q8 row.
@@ -729,7 +747,7 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
 
     from modelman.state import load_state
 
-    assert load_state(state_path).get("ollama/o35").downloaded
+    assert load_state(state_path).get("ollama/o35").ready
 
 
 @pytest.mark.asyncio
@@ -746,6 +764,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
     original_get = registry.ProviderRegistry.get
     stub = MagicMock()
     stub.download.return_value = "/tmp/fake"
+    stub.is_downloaded.return_value = False
     stub.name = "ollama"
 
     def fake_get(name, cfg):
@@ -763,6 +782,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
         await pilot.press("enter")
         await pilot.pause()
         await pilot.press("x")
+        await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
         from textual.widgets import Button
@@ -783,7 +803,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
 
     from modelman.state import load_state
 
-    assert load_state(state_path).get("ollama/o35").downloaded
+    assert load_state(state_path).get("ollama/o35").ready
 
 
 @pytest.mark.asyncio
@@ -805,6 +825,7 @@ async def test_family_screen_reconciles_size_from_provider(tmp_path, monkeypatch
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = 22 * 1024**3
+    stub.is_downloaded.return_value = True
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -841,7 +862,7 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
         # Queue a download on the existing variant.
         await pilot.press("x")
         await pilot.pause()
-        assert "ollama/o35" in app.screen.queued_downloads
+        assert app.screen.queued_ready.get("ollama/o35") is True
         # Open the exit dialog.
         await pilot.press("escape")
         await pilot.pause()
@@ -859,7 +880,7 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
     from modelman.state import load_state
 
     # State on disk should be unchanged: no downloaded entry for o35.
-    assert not load_state(state_path).get("ollama/o35").downloaded
+    assert not load_state(state_path).get("ollama/o35").ready
 
 
 @pytest.mark.asyncio
@@ -899,6 +920,7 @@ async def test_family_screen_reconciles_on_resume_after_apply(tmp_path, monkeypa
         return None
 
     stub.size_of.side_effect = fake_size_of
+    stub.is_downloaded.side_effect = lambda v: v["id"] in {"ollama/o35", "ollama/o70"}
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -932,6 +954,7 @@ async def test_family_screen_reconciles_on_resume_after_apply(tmp_path, monkeypa
             return 44 * 1024**3 if variant["id"] == "ollama/o70" else None
 
         stub.size_of.side_effect = post_delete_size
+        stub.is_downloaded.side_effect = lambda v: v["id"] == "ollama/o70"
 
         # Push and pop a dummy screen to fire on_screen_resume on
         # FamilyScreen (mirrors what popping from StatusScreen does).
@@ -978,6 +1001,7 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -998,81 +1022,25 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
         # Drill into the family.
         await pilot.press("enter")
         await pilot.pause()
-        # By default the provider-table has focus on mount, so Tab
-        # into the model pane; the first model row is already
-        # highlighted. Press Enter to open the edit dialog for o35.
-        await pilot.press("tab")
-        await pilot.pause()
+        # The single model table has focus on mount; the first model
+        # row is already highlighted. Press Enter to open the edit
+        # dialog for o35.
         await pilot.press("enter")
         await pilot.pause()
+        # Give the modal screen time to mount.
+        for _ in range(10):
+            if isinstance(app.screen, ModelForm):
+                break
+            await pilot.pause()
 
         assert captured, "ModelForm was not pushed on Enter"
-        form = captured[0]
+        assert isinstance(app.screen, ModelForm)
+        form = app.screen
         # Edit-mode pre-fill: model_input field has the ollama tag.
         from textual.widgets import Input
 
         model_input = form.query_one("#model", Input)
         assert model_input.value == "ornith:35b"
-
-
-@pytest.mark.asyncio
-async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeypatch):
-    """Enter on a provider row (left pane) only changes the right
-    pane; it must NOT open the edit dialog."""
-    from textual.widgets import DataTable
-
-    from modelman.registry import Fetch
-    from modelman.screens.forms import ModelForm
-
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
-    )
-    q8 = ModelEntry(
-        id="llamacpp/q8",
-        family="ornith",
-        provider_id="llamacpp",
-        model_name="x.gguf",
-        fetch=Fetch(repo="foo/bar", files=["x.gguf"]),
-    )
-    _seed_registry_and_state(
-        tmp_path, monkeypatch, models=[o35, q8], providers=["ollama", "llamacpp"]
-    )
-
-    from unittest.mock import MagicMock
-
-    from modelman.providers import registry
-
-    stub = MagicMock()
-    stub.name = "ollama"
-    stub.size_of.return_value = None
-    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    captured: list[ModelForm] = []
-    original_push = app.push_screen
-
-    def tracking_push(screen, *args, **kwargs):
-        if isinstance(screen, ModelForm):
-            captured.append(screen)
-        return original_push(screen, *args, **kwargs)
-
-    monkeypatch.setattr(app, "push_screen", tracking_push)
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("enter")  # into family
-        await pilot.pause()
-        # Tab to the provider-table (left pane) before pressing Enter,
-        # so the test is checking what happens when Enter is pressed
-        # while the provider-table has focus.
-        provider_table = app.screen.query_one("#provider-table", DataTable)
-        provider_table.focus()
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert captured == [], "Enter on provider-table row should not open the edit dialog"
 
 
 # ---------------------------------------------------------------------------
@@ -1115,81 +1083,6 @@ def _make_screen(
         available_providers=["ollama", "llamacpp", "omlx"],
     )
     return ms, reg_path, state_path
-
-
-@pytest.mark.asyncio
-async def test_model_screen_shows_all_providers_for_empty_family(
-    tmp_path,
-    monkeypatch,
-):
-    """The provider-table on the left of the model screen must show
-    every configured provider, even when the family has zero entries."""
-    from textual.widgets import DataTable
-
-    ms, _reg, _state = _make_screen(tmp_path, monkeypatch)
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        pilot.app.push_screen(ms)
-        await pilot.pause()
-        pt = ms.query_one("#provider-table", DataTable)
-        keys = sorted(str(rk.value) for rk in pt.rows)
-        assert keys == ["llamacpp", "ollama", "omlx"], (
-            f"provider table should list every configured provider "
-            f"(got {keys}); an empty family must not hide them"
-        )
-
-
-@pytest.mark.asyncio
-async def test_model_screen_provider_table_count_zero_for_empty(
-    tmp_path,
-    monkeypatch,
-):
-    """When the family has 0 entries, each provider row should show
-    count '0' (not blank)."""
-    from textual.widgets import DataTable
-
-    from modelman.app import ModelmanApp
-    from modelman.screens.models import ModelScreen
-
-    reg_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
-            ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none")),
-            ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx")),
-        ],
-        models=[],
-    )
-    save_registry(reg, reg_path)
-    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
-    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-
-    ms = ModelScreen(
-        registry=reg,
-        state=StateStore(),
-        family="x",
-        registry_path=reg_path,
-        state_path=state_path,
-        available_providers=["ollama", "llamacpp", "omlx"],
-    )
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        pilot.app.push_screen(ms)
-        await pilot.pause()
-        pt = ms.query_one("#provider-table", DataTable)
-        provider_cells = list(pt.get_column_at(0))
-        count_cells = [str(c) for c in pt.get_column_at(1)]
-        assert sorted(str(c) for c in provider_cells) == [
-            "llamacpp",
-            "ollama",
-            "omlx",
-        ], provider_cells
-        for c in count_cells:
-            assert c == "0", f"empty family: count column must be 0, got {c!r}"
 
 
 @pytest.mark.asyncio
@@ -1248,54 +1141,35 @@ async def test_model_screen_add_form_offers_all_providers_for_empty_family(
 
 
 @pytest.mark.asyncio
-async def test_model_screen_starts_with_cursor_on_first_provider(
-    tmp_path,
-    monkeypatch,
-):
-    """When the model screen mounts, the cursor must be on row 0 of
-    the provider-table (the first configured provider)."""
-    from textual.widgets import DataTable
-
-    ms, _reg, _state = _make_screen(tmp_path, monkeypatch)
+async def test_model_screen_is_single_table_sorted_by_provider_then_name(tmp_path, monkeypatch):
+    b_model = ModelEntry(id="ollama/b", family="ornith", provider_id="ollama", model_name="b:tag")
+    a_model = ModelEntry(
+        id="llamacpp/a",
+        family="ornith",
+        provider_id="llamacpp",
+        model_name="a.gguf",
+    )
+    _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[b_model, a_model], providers=["ollama", "llamacpp"]
+    )
 
     from modelman.app import ModelmanApp
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
-        pilot.app.push_screen(ms)
         await pilot.pause()
-        pt = ms.query_one("#provider-table", DataTable)
-        assert pt.cursor_coordinate.row == 0
-        assert pt.cursor_coordinate.column == 0
+        await pilot.press("enter")
+        await pilot.pause()
 
+        tables = app.screen.query("DataTable")
+        assert len(tables) == 1, "the two-pane provider/model split must be gone"
 
-def test_entry_kwargs_preserves_nested_fetch_dataclass():
-    """_entry_kwargs must deep-copy a ModelEntry so the snapshot's
-    nested Fetch dataclass survives the round-trip through kwargs."""
-    from modelman.registry import Fetch, ModelEntry
-    from modelman.screens.models import _entry_kwargs, _model_entry_to_variant
-
-    entry = ModelEntry(
-        id="llamacpp/ornith-q4",
-        family="ornith",
-        provider_id="llamacpp",
-        model_name="ornith-q4.gguf",
-        fetch=Fetch(
-            repo="ornith-ai/Ornith-1.5-35B-GGUF",
-            files=["ornith-q4.gguf"],
-            quantizations=["Q4_K_M"],
-        ),
-    )
-    kwargs = _entry_kwargs(entry)
-    restored = ModelEntry(**kwargs)
-    assert isinstance(restored.fetch, Fetch)
-    assert restored.fetch is not entry.fetch
-    assert restored.fetch.repo == entry.fetch.repo
-    assert restored.fetch.files == entry.fetch.files
-    assert restored.fetch.quantizations == entry.fetch.quantizations
-    # This is the path that crashes if fetch became a plain dict.
-    variant = _model_entry_to_variant(restored)
-    assert variant["quantizations"] == ["Q4_K_M"]
+        mt = app.screen.query_one("#model-table", DataTable)
+        rows = [mt.get_row_at(i) for i in range(mt.row_count)]
+        # FAMILY, PROVIDER, MODEL, LOCATION, STATUS, EXPOSED, SIZE, PATH
+        providers_then_names = [(r[1], r[2]) for r in rows]
+        assert providers_then_names == [("llamacpp", "a.gguf"), ("ollama", "b:tag")]
+        assert rows[0][0] == "ornith"  # FAMILY column constant per row
 
 
 @pytest.mark.asyncio
@@ -1337,11 +1211,11 @@ async def test_model_screen_add_appends_model_entry_to_registry(
 
 
 @pytest.mark.asyncio
-async def test_model_screen_toggle_download_queues_variant(
+async def test_model_screen_toggle_ready_queues_variant(
     tmp_path,
     monkeypatch,
 ):
-    """Pressing `x` on a not_downloaded row queues the variant for download."""
+    """Pressing `x` on a not-ready row queues the variant for ready-on."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1357,6 +1231,7 @@ async def test_model_screen_toggle_download_queues_variant(
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
     monkeypatch.setattr(
         prov_registry.ProviderRegistry,
         "get",
@@ -1371,7 +1246,7 @@ async def test_model_screen_toggle_download_queues_variant(
         await pilot.pause()
         await pilot.press("x")
         await pilot.pause()
-        assert "ollama/o35" in ms.queued_downloads
+        assert ms.queued_ready.get("ollama/o35") is True
 
 
 @pytest.mark.asyncio
@@ -1401,6 +1276,7 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
     stub = MagicMock()
     stub.name = "llamacpp"
     stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
     monkeypatch.setattr(
         prov_registry.ProviderRegistry,
         "get",
@@ -1413,15 +1289,11 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
     async with app.run_test() as pilot:
         pilot.app.push_screen(ms)
         await pilot.pause()
-        # Switch from the default ollama provider to llamacpp so the
-        # model row is visible and can be toggled.
-        await pilot.press("down")
-        await pilot.pause()
-        assert ms.selected_provider == "llamacpp"
-        # Queue a download so escape opens the exit dialog.
+        mt = ms.query_one("#model-table", DataTable)
+        mt.cursor_coordinate = (0, 0)  # only one model in this family
         await pilot.press("x")
         await pilot.pause()
-        assert "llamacpp/ornith-q4" in ms.queued_downloads
+        assert ms.queued_ready == {"llamacpp/ornith-q4": True}
         # Open the exit dialog and discard.
         await pilot.press("escape")
         await pilot.pause()
@@ -1435,7 +1307,7 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
     assert isinstance(restored.fetch, Fetch)
     assert restored.fetch.repo == "ornith-ai/Ornith-1.5-35B-GGUF"
     assert restored.fetch.quantizations == ["Q4_K_M"]
-    assert ms.queued_downloads == {}
+    assert ms.queued_ready == {}
 
 
 @pytest.mark.asyncio
@@ -1457,6 +1329,7 @@ async def test_model_screen_delete_only_for_downloaded(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
     monkeypatch.setattr(
         prov_registry.ProviderRegistry,
         "get",
@@ -1561,6 +1434,65 @@ def test_variant_to_model_entry_raises_for_unknown_provider():
         _variant_to_model_entry(variant, family="f", registry=reg)
 
 
+def test_run_apply_does_not_swallow_provider_instantiation_errors(tmp_path, monkeypatch):
+    """A provider that exists in the registry but fails to instantiate with
+    a non-KeyError exception must not be silently treated as flag-only.
+    The error should propagate out of _run_apply so the caller (StatusScreen)
+    can surface it instead of masking it."""
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.models import ModelScreen
+
+    o35 = ModelEntry(
+        id="ollama/o35",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith:35b",
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
+
+    real_get = prov_registry.ProviderRegistry.get
+
+    def failing_get(name, cfg):
+        if name == "ollama":
+            raise TypeError("missing base_url")
+        return real_get(name, cfg)
+
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(failing_get))
+
+    ms = ModelScreen(
+        registry=load_registry(reg_path),
+        state=StateStore(),
+        family="ornith",
+        registry_path=reg_path,
+        state_path=state_path,
+        available_providers=["ollama"],
+    )
+    ms.queued_ready["ollama/o35"] = True
+
+    events: list[str] = []
+    progress: list[str] = []
+    registered: list = []
+
+    with pytest.raises(TypeError, match="missing base_url"):
+        ms._run_apply(events.append, progress.append, registered.append)
+
+
+def test_model_entry_to_variant_preserves_location():
+    """Editing a cloud-located ollama model must pass its location into
+    the ModelForm so the Location select doesn't default back to local."""
+    from modelman.screens.models import _model_entry_to_variant
+
+    entry = ModelEntry(
+        id="ollama/glm-5.2:cloud",
+        family="glm",
+        provider_id="ollama",
+        model_name="glm-5.2:cloud",
+        location="cloud",
+    )
+    variant = _model_entry_to_variant(entry)
+    assert variant.get("location") == "cloud"
+
+
 def test_round_trip_preserves_quantizations():
     """`_variant_to_model_entry` followed by `_model_entry_to_variant`
     must preserve every field, including `quantizations`. Catches the
@@ -1629,6 +1561,7 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = 10
+    stub.is_downloaded.return_value = True
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.registry import load_registry
@@ -1654,7 +1587,7 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
         assert "ollama/a" in ms.queued_exposes
         assert ms.queued_exposes["ollama/a"] is True
         # EXPOSED column exists (NAME, STATUS, SIZE, PATH, EXPOSED).
-        assert len(mt.columns) == 5
+        assert len(mt.columns) == 8
         # pending bar reflects the queued expose
         bar = ms.query_one("#pending-bar")
         assert "expose 1" in bar.content
@@ -1710,8 +1643,8 @@ async def test_edit_model_changing_family_queues_move(tmp_path, monkeypatch):
         # Registry NOT mutated in memory — move applies at apply time.
         assert ms.registry.models[0].family == "gemma4:26b-mlx"
         mt = ms.query_one("#model-table", DataTable)
-        rows = {r[0]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
-        assert "→" in rows["gemma4:26b-mlx"][1]  # STATUS column
+        rows = {r[2]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
+        assert "→" in rows["gemma4:26b-mlx"][4]  # STATUS column
         bar = ms.query_one("#pending-bar")
         assert "move 1" in bar.content
 
@@ -1726,9 +1659,7 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
         provider_id="ollama",
         model_name="gemma4:26b-mlx",
     )
-    ms, _reg, _state = _make_screen(
-        tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry]
-    )
+    ms, _reg, _state = _make_screen(tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry])
     ms.queued_moves["ollama/gemma4:26b-mlx"] = "gemma4"
 
     from modelman.app import ModelmanApp
@@ -1985,12 +1916,8 @@ async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
                 family="mamba",
             )
         )
-        # Queued download for a session-added model.
-        ms.queued_downloads["ollama/newcomer"] = {
-            "id": "ollama/newcomer",
-            "provider": "ollama",
-            "name": "newcomer:1b",
-        }
+        # Queued ready-on for a session-added model.
+        ms.queued_ready["ollama/newcomer"] = True
         await pilot.press("escape")
         await pilot.pause()
         await pilot.press("d")  # discard
@@ -1999,7 +1926,7 @@ async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
     assert [m.id for m in ms.registry.models] == ["ollama/mover"]
     assert ms.registry.models[0].family == "ornith"
     assert ms.queued_moves == {}
-    assert ms.queued_downloads == {}
+    assert ms.queued_ready == {}
     assert ms._added_ids == set()
     # State must not have gained any session entries.
     assert dict(ms.state.models) == {}
@@ -2015,9 +1942,7 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
         provider_id="ollama",
         model_name="keep",
     )
-    ms, _reg_path, _state = _make_screen(
-        tmp_path, monkeypatch, family="ornith", entries=[entry]
-    )
+    ms, _reg_path, _state = _make_screen(tmp_path, monkeypatch, family="ornith", entries=[entry])
 
     from modelman.app import ModelmanApp
     from modelman.screens.forms import ModelFormResult

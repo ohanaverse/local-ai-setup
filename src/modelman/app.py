@@ -6,7 +6,7 @@ import contextlib
 
 from textual.app import App
 
-from .registry import load_registry
+from .registry import load_registry, sync_agent_providers
 from .screens.families import FamilyScreen
 from .screens.models import ModelScreen
 from .settings import Settings, load_settings, save_settings
@@ -20,7 +20,9 @@ def _configured_providers() -> list[str]:
     hard dependency on a modelman-side parser for legacy config.yaml.
     """
     try:
-        return [p.id for p in load_registry().providers]
+        registry = load_registry()
+        sync_agent_providers(registry)
+        return [p.id for p in registry.providers]
     except Exception:
         return []
 
@@ -48,6 +50,7 @@ class ModelmanApp(App[None]):
         if self._initial_family is not None:
             try:
                 registry = load_registry()
+                sync_agent_providers(registry)
             except Exception:
                 registry = None
             if registry is None:

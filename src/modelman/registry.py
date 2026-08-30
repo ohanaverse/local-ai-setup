@@ -186,6 +186,54 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
 DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "llamacpp", "omlx")
 
 
+def _default_wt_config_path() -> Path:
+    """agent-worktree's config.toml, whose `[[agents]]` list names the
+    native-provider agents (claude, codex, ...). Precedence: MODELMAN_WT_DIR
+    > ~/.config/agent-wt, matching the usage subsystem's existing
+    MODELMAN_WT_DIR convention (usage/wt_state.py)."""
+    override = os.environ.get("MODELMAN_WT_DIR")
+    base = Path(override).expanduser() if override else Path.home() / ".config" / "agent-wt"
+    return base / "config.toml"
+
+
+def sync_agent_providers(registry: Registry, wt_config_path: Path | None = None) -> list[str]:
+    """Register every agent-worktree agent name missing from
+    `registry.providers` as a native provider (auth.type="native",
+    location="cloud"). Mutates `registry` in place; returns the ids added.
+
+    A missing or unreadable wt config is not fatal — returns [] — matching
+    migrate.py's existing tolerance for an absent agent-worktree install.
+    """
+    path = wt_config_path if wt_config_path is not None else _default_wt_config_path()
+    if not path.exists():
+        return []
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+    existing = {p.id for p in registry.providers}
+    added: list[str] = []
+    agents = raw.get("agents", [])
+    # Tolerate hand-edited configs where agents is not a list of tables.
+    if not isinstance(agents, list):
+        return []
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        name = agent.get("name")
+        if not name or name in existing:
+            continue
+        registry.providers.append(
+            ProviderEntry(
+                id=name,
+                name=name.title(),
+                location="cloud",
+                auth=AuthConfig(type="native"),
+            )
+        )
+        existing.add(name)
+        added.append(name)
+    return added
+
+
 def default_provider_entry(provider_id: str) -> ProviderEntry:
     """Return a fresh default ProviderEntry for a reconcilable local provider.
 

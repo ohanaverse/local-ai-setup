@@ -18,11 +18,13 @@ from modelman.registry import (
     Registry,
     RegistryError,
     _default_registry_path,
+    _default_wt_config_path,
     family_display_name,
     known_families,
     load_registry,
     provider_config,
     save_registry,
+    sync_agent_providers,
 )
 from modelman.state import FamilyState, StateStore
 
@@ -333,3 +335,77 @@ def test_save_then_load_preserves_unknown_keys(tmp_path):
     assert loaded.provider("ollama").extra == {"custom_field": "keep-me"}
     assert loaded.provider("ollama").auth.extra == {"auth_extra": True}
     assert loaded.model("ollama/x").extra == {"model_extra": "keep-too"}
+
+
+def test_sync_agent_providers_adds_missing_agents(tmp_path, monkeypatch):
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text(
+        "[[agents]]\n"
+        'name = "claude"\n'
+        'supported_providers = ["claude", "ollama"]\n'
+        "\n"
+        "[[agents]]\n"
+        'name = "codex"\n'
+        'supported_providers = ["codex"]\n'
+    )
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+    )
+    added = sync_agent_providers(registry, wt_config_path=wt_config)
+
+    assert added == ["claude", "codex"]
+    claude = registry.provider("claude")
+    assert claude.auth.type == "native"
+    assert claude.location == "cloud"
+    assert claude.name == "Claude"
+    registry.provider("codex")  # does not raise
+
+
+def test_sync_agent_providers_is_idempotent(tmp_path):
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text('[[agents]]\nname = "claude"\n')
+    registry = Registry()
+
+    first = sync_agent_providers(registry, wt_config_path=wt_config)
+    second = sync_agent_providers(registry, wt_config_path=wt_config)
+
+    assert first == ["claude"]
+    assert second == []
+    assert len([p for p in registry.providers if p.id == "claude"]) == 1
+
+
+def test_sync_agent_providers_tolerates_non_list_agents(tmp_path):
+    """A hand-edited config where `agents` is a string or dict rather than
+    a list of tables must not crash; it should be treated as empty."""
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text('agents = "claude"\n')
+    registry = Registry()
+    assert sync_agent_providers(registry, wt_config_path=wt_config) == []
+    assert registry.providers == []
+
+
+def test_sync_agent_providers_skips_non_dict_agent_entries(tmp_path):
+    """Malformed entries inside the agents list (e.g. bare strings) are
+    skipped without crashing."""
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text('agents = ["not-a-table"]\n')
+    registry = Registry()
+    assert sync_agent_providers(registry, wt_config_path=wt_config) == []
+    assert registry.providers == []
+
+
+def test_sync_agent_providers_missing_config_is_a_noop(tmp_path):
+    registry = Registry()
+    added = sync_agent_providers(registry, wt_config_path=tmp_path / "nonexistent.toml")
+    assert added == []
+    assert registry.providers == []
+
+
+def test_default_wt_config_path_honors_override(monkeypatch):
+    monkeypatch.setenv("MODELMAN_WT_DIR", "/custom/wt")
+    assert _default_wt_config_path() == Path("/custom/wt/config.toml")
+
+
+def test_default_wt_config_path_defaults_to_home(monkeypatch):
+    monkeypatch.delenv("MODELMAN_WT_DIR", raising=False)
+    assert _default_wt_config_path() == Path.home() / ".config" / "agent-wt" / "config.toml"

@@ -30,10 +30,10 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 - `src/modelman/app.py` — `ModelmanApp(App[None])`. `on_mount` pushes `FamilyScreen`.
 - `src/modelman/screens/families.py` — `FamilyScreen`: DataTable of families (family · display · variants · downloaded · size). Actions: `action_add_family` (`a`), `action_edit_family` (`e`, renames display_name only — the slug is read-only to avoid orphaning cross-references), `action_delete_family` (`d`, blocked if any downloaded models), `action_open_family` (Enter / `DataTable.RowSelected`), `action_reconcile` (`r`), `action_quit` (`q`).
-- `src/modelman/screens/models.py` — `ModelScreen`: two-pane layout (providers DataTable left, models DataTable right with name · status · size · path · EXPOSED). STATUS renders queued ops as glyphs with priority `✗ delete > ↓ download > → move > ✓ downloaded > ○`. Holds `queued_downloads` / `queued_deletes` / `queued_moves` / `queued_exposes` dicts. Actions: `a` add model (family selectable), `e` edit (id/provider fixed; picking a different family queues a move), `d` queue delete, `x` toggle download, `l` toggle LiteLLM expose, `r` reconcile, `escape` back/apply. Provider selection drives a `RowHighlighted` handler that reloads the right pane.
+- `src/modelman/screens/models.py` — `ModelScreen`: single DataTable (provider · model · location · status · exposed · size · path). STATUS renders queued ops as glyphs with priority `✗ delete > ↓ download > → move > ✓ ready > ○`. Holds `queued_ready` / `queued_deletes` / `queued_moves` / `queued_exposes` dicts. Actions: `a` add model (family selectable), `e` edit (id/provider fixed; picking a different family queues a move), `d` queue delete, `x` toggle ready, `l` toggle LiteLLM expose, `r` reconcile, `escape` back/apply.
 - Both `FamilyScreen` and `ModelScreen` run a background worker (`_run_reconcile`, `thread=True`) on mount, on `on_screen_resume`, and via the `r` binding: it asks each provider whether a variant is actually on disk and overlays fresh size/downloaded values into an in-memory cache, independent of `modelman.toml` and the `sync` CLI command. This is why the SIZE/DOWNLOADED columns can differ from `state.py`'s stored values until a reconcile runs.
-- `src/modelman/screens/status.py` — `StatusScreen`: read-only view of registry state (last sync, downloaded count, exposed count). Opened from the family screen.
-- `src/modelman/screens/forms.py` — modal screens: `AddFamilyModal`, `EditFamilyModal` (rename a family's display name only; the slug itself is read-only to avoid orphaning cross-references), `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with `disabled=editing` on provider/id for immutability and a family `Select`; dismisses `ModelFormResult(spec, family)`), `ConfirmExitDialog` (shows pending set, applies on confirm), `CancelApplyDialog` (Escape during an in-progress apply on `StatusScreen`; offers cancel-or-wait).
+- `src/modelman/screens/status.py` — `StatusScreen`: live progress log of the apply-queue run. Opened from ModelScreen when the user confirms applying pending changes.
+- `src/modelman/screens/forms.py` — modal screens: `AddFamilyModal`, `EditFamilyModal` (rename a family's display name only; the slug itself is read-only to avoid orphaning cross-references), `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with provider Select, family Select, model input, and location Select; see "ModelForm parsing rules" below), `ConfirmExitDialog` (shows pending set, applies on confirm), `CancelApplyDialog` (Escape during an in-progress apply on `StatusScreen`; offers cancel-or-wait).
 
 ### Pending changes queue
 
@@ -99,6 +99,17 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 6. Add a `ProviderPolicy` entry to `PROVIDER_POLICIES` in `src/modelman/litellm.py` (prefix, api_key, cloud flag). This table is the single source of truth for LiteLLM exposure — both the config writer and the TUI's expose gate read it, and an unmapped provider cannot be exposed.
 
 No changes to `main.py` are required unless a new CLI subcommand is also added.
+
+## ModelForm parsing rules
+
+`src/modelman/screens/forms.py::parse_model()` decides how the single `model` input is interpreted per provider:
+
+- **ollama**: tag verbatim (e.g. `ornith-1.5:35b`). Slashes are rejected.
+- **llamacpp / omlx**: HuggingFace-style `org/repo` or `org/repo/file`. Single-segment input is rejected.
+- **native providers** (`provider_kinds[provider] == "native"`): model name is used verbatim; blank defaults to `native`.
+- **cloud-only providers** (e.g. openrouter): model string is stored whole, no repo/files split.
+
+`ModelForm` derives the model id as `provider/name` with `/` replaced by `--` (except native providers, which keep the name as-is). On save, `ModelScreen._variant_to_model_entry()` turns the resulting `VariantSpec` into a `ModelEntry`.
 
 ## Testing patterns
 

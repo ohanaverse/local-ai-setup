@@ -1,10 +1,11 @@
 # modelman
 
-A terminal UI for managing local LLM models across providers (Ollama,
-llama.cpp, oMLX, OpenRouter). Models and providers live in a shared
-`registry.toml`; per-machine state (downloads, LiteLLM exposure) lives in
-`modelman.toml`. The TUI lets you browse families, drill into per-provider
-model lists, and queue changes (add/edit/delete/download/expose) that are
+A terminal UI for managing LLM models across providers (Ollama,
+llama.cpp, oMLX, OpenRouter, and native agent providers like `claude`,
+`codex`). Models and providers live in a shared `registry.toml`;
+per-machine state (ready markers, LiteLLM exposure) lives in
+`modelman.toml`. The TUI lets you browse families, drill into a family's
+model list, and queue changes (add/edit/delete/ready/expose) that are
 applied on exit.
 
 ## Install
@@ -73,11 +74,17 @@ running `ollama show <name>` and translating known capabilities (e.g.
 
 ```toml
 [model_state."ollama/ornith:35b"]
-downloaded = true
+ready = true
 disk_path = "ollama:ornith:35b"
 size_bytes = 123456789
 litellm_exposed = false
 ```
+
+`ready` is the provider-agnostic readiness flag. For reconcilable providers
+(Ollama, llama.cpp, oMLX) it means "the model is present on this machine".
+For flag-only providers (OpenRouter, native agents like `claude`) it means
+"the user has marked this model as available"; there is nothing to download
+or delete on disk.
 
 Family display names now live in `registry.toml`'s `[[families]]` section.
 The legacy `[families.*]` table here is still loaded as a read-side
@@ -106,12 +113,14 @@ The TUI has three screens:
   variants · downloaded · size. Keys: `a` add, `e` edit display name,
   `d` delete (blocked if anything is downloaded), `enter` open, `r`
   reconcile, `q` quit.
-- **Model screen** — two-pane view: providers on the left, that provider's
-  models on the right (columns: name · status ✓/○/↓/✗ · size · path ·
-  exposed). Keys: `a` add model, `e` edit (id/provider fixed), `d` queue
-  delete (downloaded variants only), `x` toggle download (not-downloaded
-  variants only), `l` toggle LiteLLM exposure (downloaded or cloud variants
-  only), `r` reconcile, `enter` edit, `escape` back / apply queue.
+- **Model screen** — single table scoped to one family (columns:
+  provider · model · location · status ✓/○/↓/↑/✗/→ · exposed · size ·
+  path). Rows are sorted by provider then model name. Keys: `a` add model,
+  `e` edit (id/provider fixed; changing family queues a move), `d` queue
+  delete (ready variants only), `x` toggle ready (queues download/pull for
+  reconcilable providers, or a flag flip for cloud/native providers), `l`
+  toggle LiteLLM exposure (ready or cloud models), `r` reconcile, `enter`
+  edit, `escape` back / apply queue.
 - **Status screen** — when you apply on exit, the model screen hands off to
   a status screen that streams per-item progress (`Deleting …`,
   `Downloaded …`, `Saving …`) into a scrollable log. Provider progress is
@@ -122,10 +131,11 @@ The TUI has three screens:
   Once the run completes (or is cancelled), `Escape` returns to the family
   screen.
 
-All model changes (adds, edits, deletes, downloads, exposure toggles) are
-queued in memory. On exit, a confirmation dialog shows the pending set;
-confirming runs **deletes first, then downloads, then exposure changes**,
-and writes `registry.toml` + `modelman.toml` once.
+All model changes (adds, edits, deletes, ready toggles, exposure toggles,
+moves) are queued in memory. On exit, a confirmation dialog shows the
+pending set; confirming runs **deletes, then moves, then ready changes
+(downloads/clears/flag flips), then exposure changes**, and writes
+`registry.toml` + `modelman.toml` once.
 
 ### Expose models through LiteLLM
 
@@ -146,13 +156,22 @@ LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (override with `MODELMAN_LITELLM_CONFIG`). modelman only touches the
 `model_list` section; `general_settings` and unrecognized rows are preserved.
 
+### Native providers
+
+Providers whose `auth.type` is `"native"` (or whose id matches an agent in
+`~/.config/agent-wt/config.toml`) represent models handled by external
+agents (e.g. `claude`, `codex`). They have no download mechanics:
+pressing `x` simply toggles the `ready` flag, and there is no disk path or
+size. These providers are synced into `registry.toml` automatically on TUI
+launch from the agent-worktree config.
+
 ### Sync
 
-`modelman sync` reconciles the downloaded state of models already in
+`modelman sync` reconciles the ready state of models already in
 `registry.toml` against their providers — it never adds new models. Ollama
-is reconciled via `ollama list`; llama.cpp via the Hugging Face cache;
-oMLX via its `model_dir`. Cloud providers (OpenRouter) are configured
-explicitly and are not reconciled.
+is reconciled via `ollama show`; llama.cpp via the Hugging Face cache;
+oMLX via its `model_dir`. Cloud providers (OpenRouter, native agents) are
+configured explicitly and are not reconciled.
 
 ### One-time migration
 
@@ -197,7 +216,7 @@ make clean       # remove caches
 ## Architecture
 
 - `src/modelman/app.py` — `ModelmanApp` (Textual `App`), launches into `FamilyScreen`.
-- `src/modelman/screens/` — `families.py` (family list), `models.py` (two-pane model view), `forms.py` (modals), `status.py` (apply progress).
+- `src/modelman/screens/` — `families.py` (family list), `models.py` (single-table model view), `forms.py` (modals), `status.py` (apply progress).
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
 - `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save.

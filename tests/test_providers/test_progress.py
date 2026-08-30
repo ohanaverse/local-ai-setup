@@ -186,7 +186,7 @@ def test_pending_changes_forwards_on_progress(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
-        downloads=[(entry.id, {"id": entry.id, "provider": "ollama", "name": "x:7b"})],
+        ready=[(entry.id, {"id": entry.id, "provider": "ollama", "name": "x:7b"}, True)],
     )
     pending.apply(on_progress=progress_lines.append)
 
