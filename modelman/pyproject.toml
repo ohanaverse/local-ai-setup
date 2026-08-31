@@ -1,0 +1,92 @@
+[project]
+name = "modelman"
+version = "0.1.0"
+description = "CLI for managing local LLM model families across providers"
+readme = "README.md"
+requires-python = "==3.13.*"
+authors = [
+    { name = "Keith Hartmann", email = "keith.hartmann@nytimes.com" }
+]
+dependencies = [
+    "typer>=0.15.3",
+    "rich>=14.0.0",
+    "pyyaml>=6.0.2",
+    "huggingface_hub>=1.0.0",
+    "questionary>=2.0.0",
+    "textual>=0.80.0",
+    "tomli-w>=1.2.0",
+    "requests>=2.32.0",
+    "psycopg2-binary>=2.9.10",
+    "ruamel-yaml>=0.18",
+]
+
+[project.scripts]
+modelman = "modelman.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/modelman"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.10.0",
+    "types-pyyaml>=6.0.12.20260815",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src/modelman"]
+omit = ["*/tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".venv", "build", "dist", ".worktrees"]
+
+[tool.ruff.lint]
+# Defaults: E, F. Add the common sense ones.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    "E501",   # line too long (ruff format handles this)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["modelman"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
