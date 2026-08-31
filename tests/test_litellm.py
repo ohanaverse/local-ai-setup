@@ -7,6 +7,7 @@ from modelman.litellm import (
     _database_url_from_config,
     _reverse_model_index,
     build_model_list_entry,
+    ensure_litellm_settings,
     load_litellm_config,
     remove_exposed,
     save_litellm_config,
@@ -123,6 +124,40 @@ def test_set_exposed_replaces_existing_row():
     config = {"model_list": [{"model_name": "ollama/a", "old": True}]}
     set_exposed(config, "ollama/a", {"model_name": "ollama/a", "new": True})
     assert config["model_list"] == [{"model_name": "ollama/a", "new": True}]
+
+
+def test_set_exposed_preserves_user_managed_additional_drop_params():
+    # Re-exposing a row must not wipe a user-managed
+    # additional_drop_params extension; ensure_litellm_settings should
+    # then see the key is present and leave the value untouched (spec
+    # Decision 3: presence-based, existing values of any kind are respected).
+    config = {
+        "model_list": [
+            {
+                "model_name": "ollama/a",
+                "litellm_params": {
+                    "model": "ollama_chat/a",
+                    "api_base": "http://old:11434",
+                    "additional_drop_params": ["reasoning_effort", "user_param"],
+                },
+            }
+        ]
+    }
+    set_exposed(
+        config,
+        "ollama/a",
+        {
+            "model_name": "ollama/a",
+            "litellm_params": {
+                "model": "ollama_chat/a",
+                "api_base": "http://new:11434",
+            },
+        },
+    )
+    ensure_litellm_settings(config)
+    params = config["model_list"][0]["litellm_params"]
+    assert params["api_base"] == "http://new:11434"
+    assert params["additional_drop_params"] == ["reasoning_effort", "user_param"]
 
 
 def test_remove_exposed_removes_row():
@@ -339,3 +374,154 @@ def test_restart_proxy_failure_is_nonfatal(monkeypatch):
     warnings = restart_litellm_proxy()
     assert len(warnings) == 1
     assert "restart" in warnings[0].lower()
+
+
+def test_roundtrip_preserves_comments_byte_identical(tmp_path):
+    # ruamel round-trip must reproduce hand-written "why" comments and
+    # layout byte-for-byte when modelman saves without touching them —
+    # the settings-persistence spec's core guarantee (Decision 5).
+    original = (
+        "# Tolerate params the bridged provider does not support.\n"
+        "model_list:\n"
+        "- model_name: ollama/a\n"
+        "  litellm_params:\n"
+        "    model: ollama_chat/a\n"
+        "litellm_settings:\n"
+        "  drop_params: true\n"
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(original)
+    config = load_litellm_config(path)
+    save_litellm_config(config, path)
+    assert path.read_text() == original
+
+
+def test_ensure_adds_drop_params_when_section_missing():
+    config = {"model_list": []}
+    assert ensure_litellm_settings(config) is True
+    assert config["litellm_settings"] == {"drop_params": True}
+
+
+def test_ensure_corrects_drop_params_false():
+    # Value-enforced: any non-true value is a launcher break waiting to
+    # happen (copilot 400s), so modelman corrects it, not just missing keys.
+    config = {"litellm_settings": {"drop_params": False}}
+    assert ensure_litellm_settings(config) is True
+    assert config["litellm_settings"]["drop_params"] is True
+
+
+def test_ensure_leaves_correct_drop_params_untouched():
+    config = {"litellm_settings": {"drop_params": True}}
+    assert ensure_litellm_settings(config) is False
+
+
+def test_ensure_preserves_other_litellm_settings():
+    config = {"litellm_settings": {"drop_params": False, "num_workers": 4}}
+    assert ensure_litellm_settings(config) is True
+    assert config["litellm_settings"] == {"drop_params": True, "num_workers": 4}
+
+
+def test_ensure_adds_bridge_drop_params_to_ollama_chat_rows():
+    config = {
+        "model_list": [
+            {"model_name": "a", "litellm_params": {"model": "ollama_chat/a"}},
+        ]
+    }
+    assert ensure_litellm_settings(config) is True
+    params = config["model_list"][0]["litellm_params"]
+    assert params["additional_drop_params"] == ["reasoning_effort"]
+
+
+def test_ensure_leaves_existing_bridge_drop_params_untouched():
+    # Presence-based: an existing key — an extended list or a deliberate
+    # empty list — marks the row user-managed; only missing keys are added.
+    config = {
+        "litellm_settings": {"drop_params": True},
+        "model_list": [
+            {
+                "model_name": "a",
+                "litellm_params": {
+                    "model": "ollama_chat/a",
+                    "additional_drop_params": ["reasoning_effort", "other"],
+                },
+            },
+            {
+                "model_name": "b",
+                "litellm_params": {
+                    "model": "ollama_chat/b",
+                    "additional_drop_params": [],
+                },
+            },
+        ],
+    }
+    assert ensure_litellm_settings(config) is False
+
+
+def test_ensure_never_touches_non_bridge_rows():
+    config = {
+        "model_list": [
+            {"model_name": "x", "litellm_params": {"model": "openai/x"}},
+            {"model_name": "y", "litellm_params": {"model": "openrouter/y"}},
+        ],
+        "litellm_settings": {"drop_params": True},
+    }
+    assert ensure_litellm_settings(config) is False
+
+
+def test_ensure_covers_rows_modelman_did_not_write():
+    # The ensure runs over the whole parsed model_list, not just newly
+    # created rows — hand-added ollama_chat rows are repaired too.
+    config = {
+        "litellm_settings": {"drop_params": True},
+        "model_list": [
+            {"model_name": "hand/row", "litellm_params": {"model": "ollama_chat/hand"}},
+        ],
+    }
+    assert ensure_litellm_settings(config) is True
+
+
+def test_ensure_skips_degenerate_shapes():
+    # Hand-edited scalars aren't modelman's to fix; skip rather than
+    # crash — the module's established tolerance pattern.
+    config = {"litellm_settings": "broken", "model_list": ["just-a-string"]}
+    assert ensure_litellm_settings(config) is False
+
+
+def test_ensure_is_idempotent():
+    # A second run over a healed document changes nothing (spec
+    # Decision 3: no save, no proxy bounce).
+    config = {
+        "model_list": [
+            {"model_name": "a", "litellm_params": {"model": "ollama_chat/a"}},
+        ]
+    }
+    assert ensure_litellm_settings(config) is True
+    assert ensure_litellm_settings(config) is False
+
+
+def test_save_preserves_comments_when_other_rows_change(tmp_path):
+    # Editing one row (set_exposed replaces it with a plain dict) must
+    # not disturb comments or sections modelman didn't touch.
+    original = (
+        "# top-level why comment\n"
+        "model_list:\n"
+        "- model_name: ollama/a\n"
+        "  litellm_params:\n"
+        "    model: ollama_chat/a\n"
+        "general_settings:\n"
+        "  database_url: postgresql://x\n"
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(original)
+    config = load_litellm_config(path)
+    set_exposed(
+        config,
+        "ollama/b",
+        {"model_name": "ollama/b", "litellm_params": {"model": "ollama_chat/b"}},
+    )
+    save_litellm_config(config, path)
+    text = path.read_text()
+    assert "# top-level why comment" in text
+    assert "database_url: postgresql://x" in text
+    loaded = load_litellm_config(path)
+    assert [r["model_name"] for r in loaded["model_list"]] == ["ollama/a", "ollama/b"]

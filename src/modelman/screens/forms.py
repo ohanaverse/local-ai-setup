@@ -537,7 +537,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             )
             yield Label("Usage tier (ollama cloud):", id="usage-tier-label")
             yield Select(
-                options=[("—", ""), ("low", "low"), ("medium", "medium"), ("high", "high"), ("extra high", "extra high")],
+                options=[
+                    ("—", ""),
+                    ("low", "low"),
+                    ("medium", "medium"),
+                    ("high", "high"),
+                    ("extra high", "extra high"),
+                ],
                 value=initial_tier,
                 allow_blank=False,
                 id="usage-tier-select",

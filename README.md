@@ -207,8 +207,19 @@ on exit alongside downloads/deletes. The EXPOSED column shows `Y` when
 exposed (or queued to expose) and `–` otherwise.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
-(override with `MODELMAN_LITELLM_CONFIG`). modelman only touches the
-`model_list` section; `general_settings` and unrecognized rows are preserved.
+(override with `MODELMAN_LITELLM_CONFIG`). Writes are read-modify-write with
+ruamel round-trip, so sections modelman doesn't own (`general_settings`,
+`router_settings`, unknown keys, hand-written comments) survive untouched
+(comments attached to a specific `model_list` row are best-effort — one
+positioned next to a row modelman removes or replaces can be dropped).
+modelman additionally owns two launcher-required settings and ensures them on
+every write: `litellm_settings.drop_params: true` (without it, copilot's
+`parallel_tool_calls` gets rejected with `400 UnsupportedParamsError`) and
+`additional_drop_params: ["reasoning_effort"]` on every `model_list` entry
+routed through the `ollama_chat/` bridge (a workaround for a LiteLLM 1.98.x
+responses-bridge crash hit by codex, BerriAI/litellm#37452; an entry already
+carrying the key, whatever its value, is left as-is). A write that changes
+nothing saves nothing and does not restart the proxy.
 
 By default the running LiteLLM proxy is **not** automatically restarted
 after an expose/unexpose change. Set `MODELMAN_LITELLM_RESTART_CMD` to a
@@ -281,7 +292,7 @@ make clean       # remove caches
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
 - `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup, lifecycle events, and the cascade-unexpose still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.
-- `src/modelman/litellm.py` — owns all LiteLLM knowledge: provider→`model` prefix mapping, `model_list` entry construction, atomic `config.yaml` read/write, and the `expose_model`/`unexpose_model` orchestration used by both the CLI and TUI.
+- `src/modelman/litellm.py` — owns all LiteLLM knowledge: provider→`model` prefix mapping, `model_list` entry construction, atomic `config.yaml` read/write (ruamel round-trip so comments and foreign sections survive byte-identically; PyYAML remains for the legacy modules), the `ensure_litellm_settings()` owned-settings pass, and the `expose_model`/`unexpose_model`/`apply_expose_queue` orchestration used by both the CLI and TUI.
 - `src/modelman/sync.py` — reconciles configured models against provider state.
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.
 - `src/modelman/settings.py` — user preferences (`settings.yaml`).

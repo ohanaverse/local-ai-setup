@@ -17,6 +17,7 @@ dependencies = [
     "tomli-w>=1.2.0",
     "requests>=2.32.0",
     "psycopg2-binary>=2.9.10",
+    "ruamel-yaml>=0.18",
 ]
 
 [project.scripts]

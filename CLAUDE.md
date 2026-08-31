@@ -48,7 +48,7 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 - `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. Loaded from `modelman.toml` (`MODELMAN_STATE`).
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. Run once via `uv run modelman migrate`.
 - `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.
-- `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate). After a config write that actually changed the model list, `restart_litellm_proxy()` runs the `MODELMAN_LITELLM_RESTART_CMD` command (30s timeout) to reconcile the running proxy; it returns warning strings (command unset or failed) rather than printing to stderr, so the CLI surfaces them and the TUI routes them through the apply event channel (`expose:warning|…`). `_set_exposed_flag` returns whether the flag changed, so a no-op unexpose of an already-removed model does not bounce the proxy.
+- `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Every writer runs `ensure_litellm_settings()` before save (value-enforces `litellm_settings.drop_params: true`; adds `additional_drop_params: ["reasoning_effort"]` to every `ollama_chat/*` row missing it — the BerriAI/litellm#37452 codex workaround) and saves/restarts only when the parsed document or an exposed flag actually changed. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate). After a config write that actually changed the model list, `restart_litellm_proxy()` runs the `MODELMAN_LITELLM_RESTART_CMD` command (30s timeout) to reconcile the running proxy; it returns warning strings (command unset or failed) rather than printing to stderr, so the CLI surfaces them and the TUI routes them through the apply event channel (`expose:warning|…`). `_set_exposed_flag` returns whether the flag changed, so a no-op unexpose of an already-removed model does not bounce the proxy.
 - `src/modelman/_toml_io.py` — minimal `tomllib`/`tomli_w` helpers (read/write dict-shaped TOML without external config libs).
 
 ### Provider plugin system
@@ -114,12 +114,22 @@ No changes to `main.py` are required unless a new CLI subcommand is also added.
 
 `ModelForm` derives the model id as `provider/name` with `/` replaced by `--` (except native providers, which keep the name as-is). On save, `ModelScreen._variant_to_model_entry()` turns the resulting `VariantSpec` into a `ModelEntry`.
 
+## Worktree-aware file paths
+
+When operating inside a linked worktree (`.worktrees/<branch>/`), verify
+absolute paths point to the worktree and not the main checkout before
+reading or editing source files. The main checkout's paths are easy to
+reach by accident and can lead to analyzing or mutating the wrong branch.
+
 ## Testing patterns
 
 - TUI tests use `pytest-asyncio` (`asyncio_mode = "auto"` in pyproject) and `ModelmanApp.run_test()` with a `pilot`. Drive interactions with `await pilot.press("a")` etc. and assert on `app.screen` / `query_one(DataTable)`. Modal text-input flows explicitly focus the target `Input` before pressing characters (Tab cycling is unreliable in tests).
 - Provider unit tests inject a `runner` callable (commonly the `mock_runner` fixture in `tests/conftest.py`) so subprocess behavior can be mocked without shelling out.
 - CLI entry-point tests use `typer.testing.CliRunner` and `unittest.mock.patch("modelman.main.run_tui")` to assert the TUI is invoked with the right argument. Every subcommand has two layers: the orchestration helpers are tested directly with `tmp_path`-based registry/state fixtures (e.g. `tests/test_expose.py`, `tests/test_sync.py`), and the command wiring (load → run → save → report) is covered by `tests/commands/test_*.py` driving the CLI runner against env-var-redirected paths.
 - Tests redirect config/registry/state paths via `MODELMAN_REGISTRY`, `MODELMAN_STATE` (new) and the legacy `MODELMAN_CONFIG` / `MODELMAN_FAMILY_DIR` (still honored by `migrate` tests). LiteLLM config paths redirect via `MODELMAN_LITELLM_CONFIG`; the LiteLLM DSN via `MODELMAN_LITELLM_DATABASE_URL`.
+- **Run focused tests per change, not the full suite.** When working on a change, run only the test files that exercise the code you touched (plus `make check` for lint/typecheck) — the full suite is slow. Run the entire suite once at the end, when reviewing the whole set of changes (e.g. the final task of a multi-task plan runs `make all`).
+- **Focused test timeout:** `tests/test_expose.py` + `tests/test_queue.py` together take roughly 2.5 minutes; use a longer timeout or run them in the background and poll `TaskOutput`.
+- **Pyenv `VIRTUAL_ENV` warning:** `uv run` ignores an active pyenv `VIRTUAL_ENV` and uses the project's `.venv`; the emitted warning is expected and can be disregarded.
 
 ## Important implementation notes
 
@@ -133,7 +143,7 @@ No changes to `main.py` are required unless a new CLI subcommand is also added.
 - Deleting an exposed model auto-queues its unexpose inside `apply()` (keyed on the state's `litellm_exposed` flag), so config.yaml never keeps a route to a deleted file.
 - `FamilyScreen._reconciling` (bool) gates every action while the background size refresh runs. The flag is set when `_start_reconcile_worker` is called (mount, resume, `r` binding), and cleared on the main thread via `app.call_from_thread(self._reconcile_done)` inside a `try/finally` so a worker exception can never leave the UI locked. The table is `disabled` and a `#refresh-indicator` Static is shown for the duration. `on_screen_resume` also fires on initial mount, so two workers start on mount; `exclusive=True` cancels the first but its `finally` still runs — `_reconcile_generation` (a monotonic counter) ensures only the latest worker clears the flag.
 - `reload_preserving_cursor(table, repopulate)` is the single DataTable-clear helper: it snapshots the row key under the cursor before `repopulate()` (which calls `clear()` and resets the cursor to row 0) and restores the cursor onto that key after. If the key vanished, falls back to row 0; empty-table cases are no-ops. Both list screens route through it.
-- `save_litellm_config` preserves the existing config.yaml's permission bits on rewrite (mkstemp's 0600 would otherwise silently tighten them); malformed or non-dict `model_list` content is preserved or refused, never crashed on.
+- `save_litellm_config` preserves the existing config.yaml's permission bits on rewrite (mkstemp's 0600 would otherwise silently tighten them); malformed or non-dict `model_list` content is preserved or refused, never crashed on. Config writes use ruamel round-trip (`_rt_yaml()`: `typ="rt"`, `preserve_quotes=True`, `width=4096`) so hand-written comments and untouched sections survive byte-identically; changed-detection is `copy.deepcopy` before the mutation + ensure, `!=` after — save iff changed, proxy restart iff changed or a flag flipped.
 - The TUI's `action_back` (`escape` from ModelScreen) shows the exit confirmation only if the queue is non-empty; otherwise it pops immediately.
 
 ## Configuration for end users

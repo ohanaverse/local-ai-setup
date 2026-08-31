@@ -1,14 +1,25 @@
 """LiteLLM exposure — build model_list entries and update config.yaml.
 
-modelman manages only the `model_list` section of LiteLLM's config.yaml,
-keyed by registry model id as `model_name`. `general_settings` and any
-unrecognized rows are preserved. See
-docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md.
+modelman manages the `model_list` section of LiteLLM's config.yaml,
+keyed by registry model id as `model_name`, plus a small curated set of
+launcher-required settings it *owns* and ensures on every write (see
+`ensure_litellm_settings`). Everything else — `general_settings`,
+`router_settings`, unknown keys, hand-written comments — passes through
+untouched (ruamel round-trip keeps layout byte-identical), and a write
+that changes nothing saves nothing. Known limitation: comments attached
+to a specific `model_list` row (a comment on the line before a row) are
+best-effort — they survive when the list is untouched, but a comment
+positioned next to a row that modelman removes or replaces can be
+dropped. Top-level and section-level comments (e.g. the hand-written
+`drop_params` note) always survive. See
+docs/superpowers/specs/2026-08-31-litellm-settings-persistence-design.md
+and docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md.
 """
 
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import subprocess
 import tempfile
@@ -16,7 +27,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from .registry import ModelEntry, ProviderEntry, Registry
 from .state import StateStore
@@ -59,6 +71,11 @@ PROVIDER_POLICIES: dict[str, ProviderPolicy] = {
     "openrouter": ProviderPolicy(prefix="openrouter/", secret_ref=True, cloud=True),
 }
 
+# Launcher-required settings modelman owns and ensures on every config
+# write (settings-persistence spec, 2026-08-31).
+_BRIDGE_PREFIX = "ollama_chat/"  # LiteLLM's chat-completions→ollama bridge
+_BRIDGE_DROP_PARAMS = ("reasoning_effort",)  # BerriAI/litellm#37452 workaround
+
 
 def provider_policy(provider_id: str) -> ProviderPolicy | None:
     """The ProviderPolicy for `provider_id`, or None if unmapped."""
@@ -77,6 +94,17 @@ def is_cloud(provider_id: str) -> bool:
 
 class LiteLLMConfigError(Exception):
     """Raised when LiteLLM's config.yaml is missing or malformed."""
+
+
+def _rt_yaml() -> YAML:
+    """A round-trip YAML instance: preserves comments, layout, and quote
+    style across the load→mutate→save cycle (settings-persistence spec,
+    Decision 5). The wide `width` keeps long values (api keys) on one
+    line instead of folding them across lines the way PyYAML would."""
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+    return yaml
 
 
 class ExposeError(Exception):
@@ -121,13 +149,18 @@ def build_model_list_entry(model: ModelEntry, provider: ProviderEntry) -> dict[s
 
 
 def load_litellm_config(path: Path) -> dict[str, Any]:
-    """Read LiteLLM's config.yaml. Errors if missing, malformed, or not a mapping."""
+    """Read LiteLLM's config.yaml. Errors if missing, malformed, or not a mapping.
+
+    Round-trip mode so comments and formatting survive modelman's own
+    writes; a CommentedMap is a dict subclass, so callers see the
+    document they've always seen.
+    """
     if not path.exists():
         raise LiteLLMConfigError(f"LiteLLM config not found: {path}")
     with open(path) as f:
         try:
-            data = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
+            data = _rt_yaml().load(f)
+        except YAMLError as exc:
             # Hand-edited configs can be syntactically invalid; surface
             # that as a LiteLLMConfigError so the CLI prints "error: ..."
             # instead of a raw yaml traceback.
@@ -186,6 +219,12 @@ def set_exposed(config: dict[str, Any], model_id: str, entry: dict[str, Any]) ->
     Rows that aren't dicts (hand-edited scalars etc.) are skipped, not
     crashed on — they're preserved on write as the module docstring
     promises.
+
+    When replacing an existing row, any user-managed
+    `litellm_params.additional_drop_params` is preserved. The
+    settings-persistence spec treats that key as presence-based (Decision
+    3), so re-exposing a model must not reset an extended list or a
+    deliberate `[]` back to the default.
     """
     rows = _model_list_rows(config)
     if rows is None:
@@ -194,6 +233,18 @@ def set_exposed(config: dict[str, Any], model_id: str, entry: dict[str, Any]) ->
         )
     for i, row in enumerate(rows):
         if isinstance(row, dict) and row.get("model_name") == model_id:
+            old_params = row.get("litellm_params")
+            new_params = entry.get("litellm_params")
+            if (
+                isinstance(old_params, dict)
+                and isinstance(new_params, dict)
+                and "additional_drop_params" in old_params
+                and "additional_drop_params" not in new_params
+            ):
+                entry = copy.deepcopy(entry)
+                entry["litellm_params"]["additional_drop_params"] = old_params[
+                    "additional_drop_params"
+                ]
             rows[i] = entry
             return
     rows.append(entry)
@@ -212,12 +263,59 @@ def remove_exposed(config: dict[str, Any], model_id: str) -> None:
     ]
 
 
+def ensure_litellm_settings(config: dict[str, Any]) -> bool:
+    """Ensure launcher-required LiteLLM settings are present.
+
+    Returns True iff the document changed. Two curated rules
+    (settings-persistence spec, Decision 3):
+
+    - `litellm_settings.drop_params` is **value-enforced** — set to
+      `True` when missing or not `true`. copilot sends
+      `parallel_tool_calls`, which the ollama backend rejects with
+      `400 UnsupportedParamsError` unless LiteLLM drops it.
+    - `additional_drop_params: ["reasoning_effort"]` is
+      **presence-based** — added to every model_list row whose
+      `litellm_params.model` starts with `ollama_chat/` and lacks the
+      key. codex's `/v1/responses` `reasoning` object crashes LiteLLM
+      1.98.x's bridge (BerriAI/litellm#37452); an existing key of any
+      value (an extended list, a deliberate `[]`) marks the row
+      user-managed and is left untouched.
+
+    Tolerates hand-edited degenerate shapes the way the rest of the
+    module does: a scalar `litellm_settings` or non-dict `model_list`
+    rows are skipped, never crashed on.
+    """
+    changed = False
+    settings = config.get("litellm_settings")
+    if settings is None:
+        settings = config["litellm_settings"] = {}
+    if isinstance(settings, dict) and settings.get("drop_params") is not True:
+        settings["drop_params"] = True
+        changed = True
+    rows = config.get("model_list")
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            params = row.get("litellm_params")
+            if not isinstance(params, dict):
+                continue
+            model = params.get("model")
+            if (
+                isinstance(model, str)
+                and model.startswith(_BRIDGE_PREFIX)
+                and "additional_drop_params" not in params
+            ):
+                params["additional_drop_params"] = list(_BRIDGE_DROP_PARAMS)
+                changed = True
+    return changed
+
+
 def save_litellm_config(config: dict[str, Any], path: Path) -> None:
     """Write config.yaml atomically (temp file + rename).
 
-    NOTE: PyYAML does not preserve comments/formatting on round-trip.
-    Unrecognized rows and general_settings are preserved as data; comments
-    are not. This is an accepted limitation of the current implementation.
+    Round-trip mode preserves the comments and layout of content
+    modelman did not touch; only targeted mutations re-serialize.
 
     The replacement file inherits the existing file's permission bits:
     mkstemp creates 0600 and os.replace preserves that mode, so without
@@ -234,7 +332,7 @@ def save_litellm_config(config: dict[str, Any], path: Path) -> None:
         if existing_mode is not None:
             os.fchmod(fd, existing_mode)
         with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
+            _rt_yaml().dump(config, f)
         os.replace(tmp_name, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -293,14 +391,25 @@ def expose_model(
     the modelman.toml flag. Errors if the model is unknown, its provider
     has no LiteLLM mapping, or it isn't ready (unless cloud).
 
+    Read-modify-write with settings-ensure: the config is saved only when
+    the operation or the ensure actually changed it, and the proxy is
+    restarted only when the config or the flag changed — an idempotent
+    re-expose of a byte-identical entry writes nothing and does not
+    bounce the proxy.
+
     Returns non-fatal proxy-restart warnings (command unset or failed) so
     the CLI can surface them; the TUI path uses apply_expose_queue instead.
     """
     entry = _validated_entry(registry, state, model_id)
     config = load_litellm_config(litellm_path)
+    before = copy.deepcopy(config)
     set_exposed(config, model_id, entry)
-    save_litellm_config(config, litellm_path)
-    if _set_exposed_flag(state, model_id, True):
+    ensure_litellm_settings(config)
+    changed = config != before
+    if changed:
+        save_litellm_config(config, litellm_path)
+    flag_changed = _set_exposed_flag(state, model_id, True)
+    if changed or flag_changed:
         return restart_litellm_proxy()
     return []
 
@@ -312,17 +421,25 @@ def unexpose_model(
 ) -> list[str]:
     """Remove a model's model_list entry and clear its modelman.toml flag.
 
-    A no-op success when the model no longer exists in the registry —
-    e.g. it was deleted earlier in the same apply() cycle, after which
-    the config row (keyed by id) is the only thing left to clean up.
+    A true no-op — row absent, flag already false, settings already
+    ensured — saves nothing and does not bounce the proxy. A stale row
+    (in config but not exposed per state) is still a real change and
+    does restart. A model missing from state (e.g. deleted earlier in
+    the same apply cycle) unexposes cleanly without materializing a
+    state row for the corpse.
 
     Returns non-fatal proxy-restart warnings (command unset or failed) so
     the CLI can surface them; the TUI path uses apply_expose_queue instead.
     """
     config = load_litellm_config(litellm_path)
+    before = copy.deepcopy(config)
     remove_exposed(config, model_id)
-    save_litellm_config(config, litellm_path)
-    if _set_exposed_flag(state, model_id, False):
+    ensure_litellm_settings(config)
+    changed = config != before
+    if changed:
+        save_litellm_config(config, litellm_path)
+    flag_changed = _set_exposed_flag(state, model_id, False)
+    if changed or flag_changed:
         return restart_litellm_proxy()
     return []
 
@@ -342,6 +459,12 @@ def apply_expose_queue(
     file if the process dies mid-queue. The standalone expose_model /
     unexpose_model remain for the CLI's one-model-at-a-time use.
 
+    The owned-settings ensure runs over the whole parsed document before
+    the save, and the save (and proxy restart) happen only when the
+    document — the queue's rows or the ensured settings — actually
+    changed: an idempotent re-expose writes nothing and does not bounce
+    the proxy, while a fully-failed queue still persists a settings fix.
+
     Returns (outcomes, warnings). `outcomes` is one (model_id, target,
     error) per item, error None when applied. Config-level failures
     (missing/unwritable file) propagate to the caller; per-model
@@ -355,6 +478,7 @@ def apply_expose_queue(
     if not exposes:
         return [], []
     config = load_litellm_config(litellm_path)
+    before = copy.deepcopy(config)
     outcomes: list[tuple[str, bool, str | None]] = []
     succeeded: list[tuple[str, bool]] = []
     for model_id, target in exposes:
@@ -368,10 +492,15 @@ def apply_expose_queue(
             continue
         outcomes.append((model_id, target, None))
         succeeded.append((model_id, target))
-    if succeeded:
+    ensure_litellm_settings(config)
+    changed = config != before
+    if changed:
         save_litellm_config(config, litellm_path)
-        for model_id, target in succeeded:
-            _set_exposed_flag(state, model_id, target)
+    flags_changed = False
+    for model_id, target in succeeded:
+        if _set_exposed_flag(state, model_id, target):
+            flags_changed = True
+    if changed or flags_changed:
         return outcomes, restart_litellm_proxy()
     return outcomes, []
 

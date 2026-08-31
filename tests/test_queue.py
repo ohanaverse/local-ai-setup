@@ -936,13 +936,12 @@ def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))
@@ -966,13 +965,12 @@ def test_apply_expose_queue_no_restart_when_empty(tmp_path, monkeypatch):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
     path = tmp_path / "config.yaml"
@@ -1452,3 +1450,80 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     assert state.get("claude/native").ready is False
     # Cascade: was exposed, so an unexpose must have been queued and run.
     assert state.get("claude/native").litellm_exposed is False
+
+
+def test_apply_expose_queue_ensures_settings_when_all_items_fail(tmp_path, monkeypatch):
+    # A fully-failed queue (model not ready) must still persist the
+    # owned-settings fix and bounce the proxy: the ensure is orthogonal
+    # to the queue's per-model outcomes (settings-persistence spec,
+    # Decision 4).
+    from modelman.litellm import apply_expose_queue, load_litellm_config, save_litellm_config
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+    from modelman.state import ModelState, StateStore
+
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=False))
+    path = tmp_path / "config.yaml"
+    save_litellm_config({"model_list": [], "general_settings": {}}, path)
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
+    assert outcomes[0][0] == "ollama/a"
+    assert "not ready" in outcomes[0][2]
+    config = load_litellm_config(path)
+    assert config["litellm_settings"]["drop_params"] is True
+    assert calls == ["restart"]
+
+
+def test_apply_expose_queue_identical_reexpose_does_not_restart(tmp_path, monkeypatch):
+    # Queueing an expose for a model whose entry and flag are already
+    # correct changes nothing: no save (bytes unchanged), no flag flip,
+    # no proxy bounce. The rebuilt entry temporarily drops the ensured
+    # `additional_drop_params`, but the post-loop ensure re-adds it, so
+    # the document compares equal and nothing is written.
+    from modelman.litellm import apply_expose_queue, save_litellm_config
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+    from modelman.state import ModelState, StateStore
+
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+    path = tmp_path / "config.yaml"
+    save_litellm_config({"model_list": [], "general_settings": {}}, path)
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
+    assert calls == ["restart"]  # first apply: row added
+
+    before = path.read_bytes()
+    calls.clear()
+    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
+    assert outcomes == [("ollama/a", True, None)]
+    assert warnings == []
+    assert calls == []
+    assert path.read_bytes() == before

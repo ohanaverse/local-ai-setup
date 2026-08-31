@@ -22,7 +22,9 @@ class VariantSpec(TypedDict, total=False):
     # needed; None when unset. Use registry._cost_from_dict() to rebuild a
     # registry.Cost object.
     cost: dict[str, Any] | None
-    usage_tier: str | None  # ollama usage tier ("low" | "medium" | "high" | "extra high"); None otherwise
+    usage_tier: (
+        str | None
+    )  # ollama usage tier ("low" | "medium" | "high" | "extra high"); None otherwise
 
 
 class LocalModel(TypedDict):

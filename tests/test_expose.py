@@ -6,6 +6,7 @@ from modelman.litellm import (
     ExposeError,
     LiteLLMConfigError,
     expose_model,
+    load_litellm_config,
     save_litellm_config,
     unexpose_model,
 )
@@ -177,13 +178,15 @@ def test_expose_model_restarts_proxy(tmp_path, monkeypatch):
     assert calls == ["restart"]
 
 
-def test_unexpose_model_noop_does_not_restart_proxy(tmp_path, monkeypatch):
-    # Unexposing a model with no state entry (deleted earlier in the same
-    # apply) is a documented no-op: nothing changed, so the shared proxy
-    # must not be bounced. A needless `launchctl kickstart -k` would
-    # disrupt in-flight proxy requests for zero config change.
+def test_unexpose_stale_row_restarts_proxy(tmp_path, monkeypatch):
+    # The row exists in config but state says not exposed (flag reset by
+    # hand, or the model was deleted): removing the route IS a real
+    # config change, so the proxy restarts even though no flag flips.
+    # Pre-spec behavior skipped the restart because only flag changes
+    # triggered it — the settings-persistence spec's changed-detection
+    # fixes that.
     state = StateStore()
-    path = _seed_config(tmp_path)
+    path = tmp_path / "config.yaml"
     save_litellm_config(
         {"model_list": [{"model_name": "ollama/a", "litellm_params": {"model": "x"}}]},
         path,
@@ -193,7 +196,34 @@ def test_unexpose_model_noop_does_not_restart_proxy(tmp_path, monkeypatch):
         "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
     )
     unexpose_model(state, "ollama/a", path)
+    assert calls == ["restart"]
+
+
+def test_unexpose_true_noop_skips_save_and_restart(tmp_path, monkeypatch):
+    # Row absent, flag already false, settings already ensured: the file
+    # is not rewritten (mtime and bytes unchanged) and the proxy is not
+    # bounced. A needless `launchctl kickstart -k` would disrupt
+    # in-flight proxy requests for zero config change.
+    state = _state()  # ollama/a with litellm_exposed defaulting to False
+    path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {
+            "model_list": [],
+            "general_settings": {},
+            "litellm_settings": {"drop_params": True},
+        },
+        path,
+    )
+    before = path.read_bytes()
+    mtime = path.stat().st_mtime_ns
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    unexpose_model(state, "ollama/a", path)
     assert calls == []
+    assert path.read_bytes() == before
+    assert path.stat().st_mtime_ns == mtime
 
 
 def test_unexpose_model_restarts_proxy(tmp_path, monkeypatch):
@@ -202,10 +232,89 @@ def test_unexpose_model_restarts_proxy(tmp_path, monkeypatch):
     path = _seed_config(tmp_path)
     expose_model(registry, state, "ollama/a", path)
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
+    unexpose_model(state, "ollama/a", path)
+    assert calls == ["restart"]
+
+
+def test_unexpose_ensures_launcher_required_settings(tmp_path):
+    # The unexpose path runs the same ensure: every write opportunity is
+    # a settings-repair opportunity, even when the operation is a removal.
+    state = StateStore()
+    path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {"model_list": [{"model_name": "ollama/a", "litellm_params": {"model": "x"}}]},
+        path,
     )
     unexpose_model(state, "ollama/a", path)
+    config = load_litellm_config(path)
+    assert config["litellm_settings"]["drop_params"] is True
+
+
+def test_expose_ensures_launcher_required_settings(tmp_path):
+    # The ensure runs over the whole parsed model_list: pre-existing
+    # hand rows are repaired on the same write, not just the new entry,
+    # and the fresh ollama entry gains the bridge workaround too.
+    registry = _registry()
+    state = _state()
+    path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {
+            "model_list": [
+                {
+                    "model_name": "hand/row",
+                    "litellm_params": {"model": "ollama_chat/hand"},
+                }
+            ],
+            "general_settings": {"database_url": "x"},
+        },
+        path,
+    )
+    expose_model(registry, state, "ollama/a", path)
+    config = load_litellm_config(path)
+    assert config["litellm_settings"]["drop_params"] is True
+    hand = next(r for r in config["model_list"] if r["model_name"] == "hand/row")
+    assert hand["litellm_params"]["additional_drop_params"] == ["reasoning_effort"]
+    fresh = next(r for r in config["model_list"] if r["model_name"] == "ollama/a")
+    assert fresh["litellm_params"]["additional_drop_params"] == ["reasoning_effort"]
+
+
+def test_reexpose_identical_entry_skips_save_and_restart(tmp_path, monkeypatch):
+    # Idempotent re-expose: the rebuilt entry is identical to the saved
+    # row, the flag is already set, and the settings are already
+    # ensured — so nothing is saved and the proxy is not bounced.
+    registry = _registry()
+    state = _state()
+    path = _seed_config(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    expose_model(registry, state, "ollama/a", path)
+    assert calls == ["restart"]
+    before = path.read_bytes()
+    mtime = path.stat().st_mtime_ns
+    calls.clear()
+    expose_model(registry, state, "ollama/a", path)
+    assert calls == []
+    assert path.read_bytes() == before
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_reexpose_with_changed_content_restarts_proxy(tmp_path, monkeypatch):
+    # Latent-gap fix: a re-expose that rewrites the row with NEW content
+    # (here: the provider's base_url changed) must bounce the proxy even
+    # though the flag never flips — the running proxy serves the old row.
+    registry = _registry()
+    state = _state()
+    path = _seed_config(tmp_path)
+    expose_model(registry, state, "ollama/a", path)
+    registry.providers[0].auth.base_url = "http://localhost:11435"
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    expose_model(registry, state, "ollama/a", path)
     assert calls == ["restart"]
 
 
