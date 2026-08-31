@@ -1,0 +1,25 @@
+name: modelman-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modelman/**"
+      - "docs/contracts/**"
+  pull_request:
+    paths:
+      - "modelman/**"
+      - "docs/contracts/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: modelman
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - run: make check
+      - run: make test
