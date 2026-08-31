@@ -224,7 +224,7 @@ Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the 
 | copilot | `COPILOT_PROVIDER_BASE_URL`/`API_KEY`/`WIRE_API`/`COPILOT_MODEL` env; never `--model`. **Ollama-routed models must use the OpenAI-compatible endpoint `http://localhost:11434/v1` with `WIRE_API=responses`, matching `ollama launch copilot`**. Native models clear all `COPILOT_*` provider env vars. |
 | opencode | ollama-only; `OPENCODE_CONFIG_CONTENT` inline JSON with `ollama/<m.ModelName>`; never `--model` |
 | pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); passes `--model` only when present; no yolo |
-| agy | no model passthrough (chosen in its TUI) |
+| agy | no model passthrough (chosen in its TUI); **not** a command agent — `IsCommand("agy")` is false, so the launch path still resolves a model and `-A agy` without `-M` errors "multiple models match" (→ TTY error on non-TTY stdin) when >1 agy model is eligible |
 | shell | execs passthrough args as argv, or interactive `bash`; no model/yolo/resume; `ArgSetter` |
 
 In **gateway (litellm) mode** (`[gateway].mode = "litellm"`), non-native models switch from the local ollama gateway to LiteLLM's `/v1`:
@@ -286,4 +286,5 @@ wt -W my-feature -A claude   # named worktree + launch
 wt --cwd -A codex    # current repo root
 claude-wt --cwd      # shim forwards to wt
 wt --init            # seed agent instruction files
+make test-agents        # live one-shot smoke: every agent × configured models
 ```
