@@ -126,7 +126,7 @@ Fields:
 
 - **Agent** — tool with ≥1 supported provider and optional default.
 - **DefaultTag** — the default rotation tag group.
-- **`[gateway]`** — optional routing section. `mode` is `"direct"` (default) or `"litellm"`; `url` + `api_key` are required when `mode = "litellm"` (fail-fast validation). In litellm mode non-native models route through the LiteLLM proxy's OpenAI-compatible endpoint instead of local ollama. `GatewayConfig.BaseURL()` trims trailing slashes so drivers append `/v1` (or none for claude) cleanly.
+- **`[gateway]`** — optional routing section. `mode` is `"direct"` (default) or `"litellm"`; `url` + `api_key` are required when `mode = "litellm"` (fail-fast validation). In litellm mode non-native models route through the LiteLLM proxy's OpenAI-compatible endpoint instead of local ollama. `GatewayConfig.BaseURL()` trims trailing slashes so drivers append `/v1` (or none for claude) cleanly. The proxy loads `~/.config/litellm/config.yaml` only at startup — modelman (the writer of that file) restarts it after expose changes via `MODELMAN_LITELLM_RESTART_CMD`; wt never restarts the proxy (see `docs/wt-agents/README.md#litellm-proxy-lifecycle`).
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 

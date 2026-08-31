@@ -13,6 +13,29 @@ uv run modelman expose ollama/<model>
 
 Native models (`claude/native`, `copilot/native`) are always shown and do not need to be exposed.
 
+## LiteLLM proxy lifecycle
+
+In gateway mode, `wt` routes non-native models through the LiteLLM proxy at
+`:4000`. The proxy loads its model list from `~/.config/litellm/config.yaml`
+**only at startup** — editing that file does not take effect until the proxy is
+restarted; until then it serves a stale model list and returns
+`400 Invalid model name passed in model=…` for any newly added model.
+
+**modelman owns reconciliation.** `modelman` is the writer of `config.yaml`
+(`expose`/`unexpose`, TUI `l` key) and restarts the proxy after a successful
+write via the `MODELMAN_LITELLM_RESTART_CMD` env var (e.g.
+`launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`). `wt` does not
+detect or restart the proxy — it is a launcher, not the owner of the shared
+service. If a model was added by hand (or the env var is unset), restart the
+proxy manually:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
+```
+
+This affects every gateway-routed agent (claude, codex, copilot, opencode, pi),
+not just one launcher.
+
 ## Scope
 
 These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, rotation, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
