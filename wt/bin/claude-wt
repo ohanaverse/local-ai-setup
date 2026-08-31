@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# claude-wt — legacy shim; forwards to the unified wt tool.
+exec wt --agent claude "$@"
