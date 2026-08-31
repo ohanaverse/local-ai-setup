@@ -97,23 +97,37 @@ func TestOpenCodeOllamaURL(t *testing.T) {
 	}
 }
 
-// TestOpenCodeBuildLitellm asserts that in gateway mode opencode routes through
-// the LiteLLM OpenAI-compatible /v1 endpoint with the registry id as the model,
-// instead of silently bypassing the gateway (the spec's "fail fast, no silent
-// fallback" decision).
+// TestOpenCodeBuildLitellm asserts that in gateway mode opencode routes
+// through a wt-declared @ai-sdk/openai-compatible provider pointed at the
+// LiteLLM gateway. The builtin "openai" provider cannot be used: opencode
+// resolves its models through its own catalog, so an unknown registry id
+// errors with "Model not found", and the models.dev-listed openai path uses
+// the responses API whose bridged stream opencode cannot map ("text part not
+// found"). The explicit models map registers the registry id; small_model is
+// pinned to the same gateway model so background summarization (default
+// gpt-5-nano) does not query the proxy with nonexistent model names.
 func TestOpenCodeBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
 	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := opencodeDriver{}.Build(m, false, gw)
 	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-	if !strings.Contains(content, `"model":"openai/ollama/qwen3.8:27b-mlx"`) {
-		t.Errorf("config content = %s, want model openai/ollama/qwen3.8:27b-mlx", content)
+	if !strings.Contains(content, `"model":"`+opencodeGatewayProviderID+`/ollama/qwen3.8:27b-mlx"`) {
+		t.Errorf("config content = %s, want model %s/ollama/qwen3.8:27b-mlx", content, opencodeGatewayProviderID)
+	}
+	if !strings.Contains(content, `"small_model":"`+opencodeGatewayProviderID+`/ollama/qwen3.8:27b-mlx"`) {
+		t.Errorf("config content = %s, want small_model pinned to the gateway (default gpt-5-nano is unknown to the proxy)", content)
+	}
+	if !strings.Contains(content, `"npm":"@ai-sdk/openai-compatible"`) {
+		t.Errorf("config content = %s, want @ai-sdk/openai-compatible provider (chat wire, no responses bridging)", content)
 	}
 	if !strings.Contains(content, `"baseURL":"http://localhost:4000/v1"`) {
 		t.Errorf("config content = %s, want baseURL http://localhost:4000/v1", content)
 	}
 	if !strings.Contains(content, `"apiKey":"sk-litellm"`) {
 		t.Errorf("config content = %s, want apiKey sk-litellm", content)
+	}
+	if !strings.Contains(content, `"models":{"ollama/qwen3.8:27b-mlx":{`) {
+		t.Errorf("config content = %s, want registry id declared in provider models map (opencode rejects catalog-unknown model ids)", content)
 	}
 }
 

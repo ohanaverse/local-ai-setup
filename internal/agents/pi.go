@@ -23,10 +23,14 @@ func (piDriver) SyncModels(cfg *config.Config) error {
 	return syncModels(cfg, path)
 }
 
-// Build passes --model <ModelName> in normal mode or --model <ID> in litellm
-// mode only when the model is present in pi's models.json and marked
-// _launch: true. Otherwise it falls back to pi's default model and surfaces
-// a warning.
+// Build passes --model only when the target model is present in pi's
+// models.json and marked _launch: true. Direct mode launches the bare
+// ModelName from pi's "ollama" provider; litellm mode launches
+// "litellm/<registry-id>" from the wt-created litellm provider — pi splits
+// --model on the first slash, so a registry id under the "ollama" provider
+// could never be addressed and its bare form would be sent upstream (400 at
+// the gateway). When the entry is missing, Build falls back to pi's default
+// model and surfaces a warning.
 func (piDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {
@@ -38,10 +42,14 @@ func (piDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		return lc
 	}
 	modelArg := m.ModelName
+	providerID := piOllamaProviderID
+	launchID := m.ModelName
 	if gw.IsLitellm() {
-		modelArg = m.ID
+		modelArg = piLitellmProviderID + "/" + m.ID
+		providerID = piLitellmProviderID
+		launchID = m.ID
 	}
-	if isLaunchable(modelArg, path) {
+	if isLaunchable(providerID, launchID, path) {
 		lc.Args = append(lc.Args, "--model", modelArg)
 	} else {
 		lc.Warn = fmt.Sprintf("pi: model %q not configured for pi, using default model", modelArg)

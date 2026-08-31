@@ -34,11 +34,17 @@ launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
 ```
 
 This affects every gateway-routed agent (claude, codex, copilot, opencode, pi),
-not just one launcher.
+not just one launcher — and the failure modes differ per driver: model-id
+grammar mismatches, strict `ollama_chat` param mapping, and litellm bridge
+bugs all surface as *agent-side* errors ("Invalid model name", "high demand",
+"Model not found", …). Per-driver causes, fixes, and a debugging playbook
+live in [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Scope
 
 These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, rotation, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
+
+Gateway-mode launches have their own failure modes (model-id grammar mismatches, litellm bridge bugs) — see [litellm-troubleshooting.md](litellm-troubleshooting.md) for the driver matrix, known litellm issues, and the debugging playbook.
 
 ## Agents
 

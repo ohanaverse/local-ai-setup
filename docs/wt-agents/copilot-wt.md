@@ -53,6 +53,8 @@ COPILOT_MODEL="<registry-model-id>"  # e.g. ollama/qwen3.8:27b-mlx
 
 The `COPILOT_MODEL` value is the full registry model id, not the bare provider-specific name. The `COPILOT_PROVIDER_API_KEY` comes from `[gateway].api_key`. Native models (`copilot/native`) continue to use the native subscription and ignore the gateway.
 
+Verified 2026-08-31 with `ollama/glm-5.3-flash:cloud` (one-shot prompt answered end-to-end). This requires the proxy to tolerate params copilot sends that `ollama_chat` does not support (e.g. `parallel_tool_calls`) — set `litellm_settings: drop_params: true` in `~/.config/litellm/config.yaml` and restart the proxy; otherwise litellm answers `400 UnsupportedParamsError`. See [litellm-troubleshooting.md](litellm-troubleshooting.md).
+
 ## Agent init
 
 `copilot-wt --init` seeds project-level instruction files:

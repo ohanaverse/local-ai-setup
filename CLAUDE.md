@@ -232,10 +232,10 @@ In **gateway (litellm) mode** (`[gateway].mode = "litellm"`), non-native models 
 | Agent | litellm routing |
 |---|---|
 | claude | `ANTHROPIC_BASE_URL`=`[gateway].url` (no suffix) + `ANTHROPIC_AUTH_TOKEN`=`[gateway].api_key`, `--model <m.ID>` |
-| codex | `--model <m.ID>` plus the four `-c` overrides pointing `agent-wt` at `<url>/v1/` (trailing slash) |
+| codex | `--model <m.ID>` plus four `-c` overrides plus `-c model_providers.agent-wt.env_key="AGENT_WT_GATEWAY_API_KEY"` pointing `agent-wt` at `<url>/v1/` (trailing slash), key exported as `AGENT_WT_GATEWAY_API_KEY`. **litellm ≤ 1.98.0 cannot serve codex** (responses→`ollama_chat` bridge crashes on codex's structured `reasoning`); see `docs/wt-agents/litellm-troubleshooting.md` |
 | copilot | `COPILOT_PROVIDER_BASE_URL=<url>/v1` + `COPILOT_PROVIDER_API_KEY=<api_key>`, `COPILOT_MODEL=<m.ID>` |
-| opencode | `OPENCODE_CONFIG_CONTENT` with built-in `openai` provider at `<url>/v1`, model `openai/<m.ID>` |
-| pi | syncModels points the ollama provider at `<url>/v1` + `api_key` and keys models by registry id |
+| opencode | `OPENCODE_CONFIG_CONTENT` with wt-declared custom provider `agent-wt` (`@ai-sdk/openai-compatible`) at `<url>/v1`, models map keyed by `m.ID`, model `agent-wt/<m.ID>`, `small_model` pinned the same — the builtin `openai` provider can't serve registry ids (catalog validation + responses-API stream mismatch) |
+| pi | syncModels creates a dedicated `litellm` provider (`<url>/v1` + `api_key`) keyed by registry id and launches `--model litellm/<m.ID>`; pi splits `--model` on the first slash, so gateway ids under the `ollama` provider are unreachable — the `ollama` provider stays local (reverted + pruned of wt-generated prefixed entries; empty `apiKey` invalidates pi's whole models.json, reverts write placeholder `"ollama"`) |
 
 The pre-launch `ollamacheck.Check` is **skipped in litellm mode**: a model absent from local `ollama list` is not an error when LiteLLM serves it from a non-local upstream.
 

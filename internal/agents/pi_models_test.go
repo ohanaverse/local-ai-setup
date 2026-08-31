@@ -48,21 +48,22 @@ func TestPiSyncModelsAddsMissing(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if len(f.Providers.Ollama.Models) != 1 {
-		t.Fatalf("models = %d, want 1 (native skipped)", len(f.Providers.Ollama.Models))
+	ol := f.Providers[piOllamaProviderID]
+	if len(ol.Models) != 1 {
+		t.Fatalf("models = %d, want 1 (native skipped)", len(ol.Models))
 	}
-	m := f.Providers.Ollama.Models[0]
+	m := ol.Models[0]
 	if m.ID != "deepseek-v4-pro:cloud" || !m.Launch {
 		t.Errorf("model = %+v, want id deepseek-v4-pro:cloud with _launch true", m)
 	}
-	if f.Providers.Ollama.API != "openai-completions" {
-		t.Errorf("api not preserved: %+v", f.Providers.Ollama)
+	if ol.API != "openai-completions" {
+		t.Errorf("api not preserved: %+v", ol)
 	}
-	if f.Providers.Ollama.BaseURL != defaultPiOllamaBaseURL {
-		t.Errorf("baseUrl = %q, want %q", f.Providers.Ollama.BaseURL, defaultPiOllamaBaseURL)
+	if ol.BaseURL != defaultPiOllamaBaseURL {
+		t.Errorf("baseUrl = %q, want %q", ol.BaseURL, defaultPiOllamaBaseURL)
 	}
-	if f.Providers.Ollama.APIKey != "" {
-		t.Errorf("apiKey = %q, want empty", f.Providers.Ollama.APIKey)
+	if ol.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (pi placeholder)", ol.APIKey, defaultPiOllamaAPIKey)
 	}
 }
 
@@ -81,8 +82,8 @@ func TestPiSyncModelsIdempotent(t *testing.T) {
 		t.Fatalf("second syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if len(f.Providers.Ollama.Models) != 1 {
-		t.Fatalf("models = %d, want 1 after two syncs", len(f.Providers.Ollama.Models))
+	if len(f.Providers[piOllamaProviderID].Models) != 1 {
+		t.Fatalf("models = %d, want 1 after two syncs", len(f.Providers[piOllamaProviderID].Models))
 	}
 }
 
@@ -99,8 +100,8 @@ func TestPiSyncModelsUsesModelName(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if f.Providers.Ollama.Models[0].ID != "deepseek-v4-pro:cloud" {
-		t.Errorf("id = %q, want %q (bare ModelName)", f.Providers.Ollama.Models[0].ID, "deepseek-v4-pro:cloud")
+	if f.Providers[piOllamaProviderID].Models[0].ID != "deepseek-v4-pro:cloud" {
+		t.Errorf("id = %q, want %q (bare ModelName)", f.Providers[piOllamaProviderID].Models[0].ID, "deepseek-v4-pro:cloud")
 	}
 }
 
@@ -116,11 +117,12 @@ func TestPiSyncModelsPreservesExisting(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if len(f.Providers.Ollama.Models) != 2 {
-		t.Fatalf("models = %d, want 2 (existing + added)", len(f.Providers.Ollama.Models))
+	ol := f.Providers[piOllamaProviderID]
+	if len(ol.Models) != 2 {
+		t.Fatalf("models = %d, want 2 (existing + added)", len(ol.Models))
 	}
-	if f.Providers.Ollama.Models[0].ID != "manual-model" || f.Providers.Ollama.Models[0].Launch {
-		t.Errorf("existing entry changed: %+v", f.Providers.Ollama.Models[0])
+	if ol.Models[0].ID != "manual-model" || ol.Models[0].Launch {
+		t.Errorf("existing entry changed: %+v", ol.Models[0])
 	}
 }
 
@@ -136,37 +138,47 @@ func TestPiSyncModelsMissingFile(t *testing.T) {
 	}
 }
 
-// isLaunchable must return true only when the model is present AND marked
-// _launch: true. A model present but _launch: false must not be launched.
+// isLaunchable must return true only when the model is present under the
+// named provider AND marked _launch: true. A model present but _launch: false
+// must not be launched; an entry under the wrong provider must not match.
 func TestIsLaunchable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
-	writeFile(t, path, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"good"},{"_launch":false,"id":"orphan"}]}}}`)
-	if !isLaunchable("good", path) {
-		t.Error("isLaunchable(good) = false, want true")
+	writeFile(t, path, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"good"},{"_launch":false,"id":"orphan"}]},"litellm":{"models":[{"_launch":true,"id":"ollama/good"}]}}}`)
+	if !isLaunchable("ollama", "good", path) {
+		t.Error("isLaunchable(ollama, good) = false, want true")
 	}
-	if isLaunchable("orphan", path) {
-		t.Error("isLaunchable(orphan) = true, want false (_launch false)")
+	if isLaunchable("ollama", "orphan", path) {
+		t.Error("isLaunchable(ollama, orphan) = true, want false (_launch false)")
 	}
-	if isLaunchable("missing", path) {
-		t.Error("isLaunchable(missing) = true, want false")
+	if isLaunchable("ollama", "missing", path) {
+		t.Error("isLaunchable(ollama, missing) = true, want false")
+	}
+	if !isLaunchable("litellm", "ollama/good", path) {
+		t.Error("isLaunchable(litellm, ollama/good) = false, want true")
+	}
+	if isLaunchable("ollama", "ollama/good", path) {
+		t.Error("isLaunchable(ollama, ollama/good) = true, want false (wrong provider)")
 	}
 }
 
 // isLaunchable must return false (not panic) when models.json is missing or
 // unparseable, so the caller falls back to pi's default model.
 func TestIsLaunchableMissingOrCorrupt(t *testing.T) {
-	if isLaunchable("x", filepath.Join(t.TempDir(), "nope.json")) {
+	if isLaunchable("ollama", "x", filepath.Join(t.TempDir(), "nope.json")) {
 		t.Error("isLaunchable on missing file = true, want false")
 	}
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, `{not valid json`)
-	if isLaunchable("x", path) {
+	if isLaunchable("ollama", "x", path) {
 		t.Error("isLaunchable on corrupt file = true, want false")
 	}
 }
 
-// syncModels in litellm mode must key entries by registry id and point pi's
-// ollama provider at the LiteLLM gateway baseUrl with the configured apiKey.
+// syncModels in litellm mode must put gateway models under a dedicated
+// "litellm" provider keyed by full registry id, and leave pi's ollama provider
+// alone. Under the "ollama" provider such entries are unreachable: pi splits
+// --model on the first slash, so "ollama/<id>" would always resolve to the
+// bare <id> entry and the bare name would be sent to LiteLLM (400).
 func TestSyncModelsLitellm(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
@@ -181,14 +193,87 @@ func TestSyncModelsLitellm(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if f.Providers.Ollama.BaseURL != "http://localhost:4000/v1" {
-		t.Errorf("baseUrl = %q, want %q", f.Providers.Ollama.BaseURL, "http://localhost:4000/v1")
+	lw := f.Providers[piLitellmProviderID]
+	if lw.BaseURL != "http://localhost:4000/v1" {
+		t.Errorf("litellm baseUrl = %q, want %q", lw.BaseURL, "http://localhost:4000/v1")
 	}
-	if f.Providers.Ollama.APIKey != "sk-litellm" {
-		t.Errorf("apiKey = %q, want %q", f.Providers.Ollama.APIKey, "sk-litellm")
+	if lw.APIKey != "sk-litellm" {
+		t.Errorf("litellm apiKey = %q, want %q", lw.APIKey, "sk-litellm")
 	}
-	if len(f.Providers.Ollama.Models) != 1 || f.Providers.Ollama.Models[0].ID != "ollama/qwen3.8:27b-mlx" {
-		t.Errorf("unexpected models: %v", f.Providers.Ollama.Models)
+	if len(lw.Models) != 1 || lw.Models[0].ID != "ollama/qwen3.8:27b-mlx" || !lw.Models[0].Launch {
+		t.Errorf("unexpected litellm models: %v", lw.Models)
+	}
+	ol := f.Providers[piOllamaProviderID]
+	if ol.BaseURL != defaultPiOllamaBaseURL {
+		t.Errorf("ollama baseUrl = %q, want local direct preserved", ol.BaseURL)
+	}
+	if len(ol.Models) != 0 {
+		t.Errorf("ollama models = %v, want none added in litellm mode", ol.Models)
+	}
+}
+
+// Switching to litellm mode must migrate the state an older wt sync left
+// behind: pi's ollama provider restored from the gateway to the local endpoint
+// (its bare entries 400 through LiteLLM), the un-launchable "ollama/…" entries
+// pruned from it, and gateway entries created under the litellm provider
+// instead. A second sync must be a no-op. Otherwise pi keeps sending bare
+// model names to LiteLLM and every launch fails with "Invalid model name".
+func TestSyncModelsLitellmDedicatedProvider(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"qwen3.8:27b-mlx"},{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"},{"_launch":false,"id":"user-model"}]}}}`)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		Models: []config.Model{
+			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
+		},
+	}
+	for run := 1; run <= 2; run++ {
+		if err := syncModels(cfg, path); err != nil {
+			t.Fatalf("syncModels run %d: %v", run, err)
+		}
+	}
+	f := readPiModels(t, path)
+	ol := f.Providers[piOllamaProviderID]
+	if ol.BaseURL != defaultPiOllamaBaseURL {
+		t.Errorf("ollama baseUrl = %q, want %q (gateway redirect not reverted)", ol.BaseURL, defaultPiOllamaBaseURL)
+	}
+	if ol.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("ollama apiKey = %q, want %q (pi placeholder; empty fails pi schema)", ol.APIKey, defaultPiOllamaAPIKey)
+	}
+	ids := []string{}
+	for _, m := range ol.Models {
+		ids = append(ids, m.ID)
+	}
+	if !slices.Equal(ids, []string{"qwen3.8:27b-mlx", "user-model"}) {
+		t.Errorf("ollama models = %v, want bare entry + user model (prefixed artifact pruned)", ids)
+	}
+	lw := f.Providers[piLitellmProviderID]
+	if len(lw.Models) != 1 || lw.Models[0].ID != "ollama/qwen3.8:27b-mlx" || !lw.Models[0].Launch {
+		t.Errorf("unexpected litellm models: %v", lw.Models)
+	}
+}
+
+// syncModels in direct mode must leave the litellm provider block alone: it
+// is either wt-created (harmless stale routing the user can flip back) or a
+// user's own provider config that must never be dropped.
+func TestSyncModelsDirectPreservesLitellmProvider(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	writeFile(t, path, `{"providers":{"litellm":{"api":"openai-completions","apiKey":"sk-x","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]},"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{Mode: "direct"},
+		Models: []config.Model{
+			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	lw := f.Providers[piLitellmProviderID]
+	if len(lw.Models) != 1 || lw.BaseURL != "http://localhost:4000/v1" || lw.APIKey != "sk-x" {
+		t.Errorf("litellm provider not preserved: %+v", lw)
 	}
 }
 
@@ -211,11 +296,12 @@ func TestSyncModelsDirectRevertsGatewayProvider(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if f.Providers.Ollama.BaseURL != defaultPiOllamaBaseURL {
-		t.Errorf("baseUrl = %q, want %q", f.Providers.Ollama.BaseURL, defaultPiOllamaBaseURL)
+	ol := f.Providers[piOllamaProviderID]
+	if ol.BaseURL != defaultPiOllamaBaseURL {
+		t.Errorf("baseUrl = %q, want %q", ol.BaseURL, defaultPiOllamaBaseURL)
 	}
-	if f.Providers.Ollama.APIKey != "" {
-		t.Errorf("apiKey = %q, want empty", f.Providers.Ollama.APIKey)
+	if ol.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (pi placeholder)", ol.APIKey, defaultPiOllamaAPIKey)
 	}
 }
 
@@ -240,11 +326,12 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if f.Providers.Ollama.BaseURL != defaultPiOllamaBaseURL {
-		t.Errorf("baseUrl = %q, want %q (gateway settings not reverted)", f.Providers.Ollama.BaseURL, defaultPiOllamaBaseURL)
+	ol := f.Providers[piOllamaProviderID]
+	if ol.BaseURL != defaultPiOllamaBaseURL {
+		t.Errorf("baseUrl = %q, want %q (gateway settings not reverted)", ol.BaseURL, defaultPiOllamaBaseURL)
 	}
-	if f.Providers.Ollama.APIKey != "" {
-		t.Errorf("apiKey = %q, want empty", f.Providers.Ollama.APIKey)
+	if ol.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (pi placeholder)", ol.APIKey, defaultPiOllamaAPIKey)
 	}
 }
 
@@ -265,11 +352,12 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if f.Providers.Ollama.BaseURL != "http://192.168.1.50:11434/v1" {
-		t.Errorf("baseUrl = %q, want custom value preserved", f.Providers.Ollama.BaseURL)
+	ol := f.Providers[piOllamaProviderID]
+	if ol.BaseURL != "http://192.168.1.50:11434/v1" {
+		t.Errorf("baseUrl = %q, want custom value preserved", ol.BaseURL)
 	}
-	if f.Providers.Ollama.APIKey != "sk-remote" {
-		t.Errorf("apiKey = %q, want custom value preserved", f.Providers.Ollama.APIKey)
+	if ol.APIKey != "sk-remote" {
+		t.Errorf("apiKey = %q, want custom value preserved", ol.APIKey)
 	}
 }
 
@@ -289,19 +377,24 @@ func TestSyncModelsLitellmCreatesMissingFile(t *testing.T) {
 		t.Fatalf("syncModels: %v", err)
 	}
 	f := readPiModels(t, path)
-	if f.Providers.Ollama.BaseURL != "http://localhost:4000/v1" {
-		t.Errorf("baseUrl = %q, want %q", f.Providers.Ollama.BaseURL, "http://localhost:4000/v1")
+	lw := f.Providers[piLitellmProviderID]
+	if lw.BaseURL != "http://localhost:4000/v1" {
+		t.Errorf("baseUrl = %q, want %q", lw.BaseURL, "http://localhost:4000/v1")
 	}
-	if f.Providers.Ollama.APIKey != "sk-litellm" {
-		t.Errorf("apiKey = %q, want %q", f.Providers.Ollama.APIKey, "sk-litellm")
+	if lw.APIKey != "sk-litellm" {
+		t.Errorf("apiKey = %q, want %q", lw.APIKey, "sk-litellm")
 	}
-	if len(f.Providers.Ollama.Models) != 1 || f.Providers.Ollama.Models[0].ID != "ollama/qwen3.8:27b-mlx" {
-		t.Errorf("unexpected models: %v", f.Providers.Ollama.Models)
+	if len(lw.Models) != 1 || lw.Models[0].ID != "ollama/qwen3.8:27b-mlx" {
+		t.Errorf("unexpected models: %v", lw.Models)
 	}
 }
 
-// piDriver.Build in litellm mode must pass the registry id as --model when
-// that id is present in pi's models.json.
+// piDriver.Build in litellm mode must pass the registry id routed through the
+// wt-created provider as --model ("litellm/<registry-id>"). pi splits --model
+// on the first slash, so "litellm" must carry the entry while the full id —
+// which itself contains a slash — lands verbatim in the request body that
+// LiteLLM dispatches on. Passing the bare name or a bare "<id>" resolves to
+// the wrong entry and 400s at the gateway.
 func TestPiBuildLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -310,16 +403,36 @@ func TestPiBuildLitellm(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(piDir, "models.json")
-	writeFile(t, path, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
+	writeFile(t, path, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
 	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := piDriver{}.Build(m, false, gw)
-	// Switching between direct and litellm modes may leave both the bare
-	// ModelName key and the provider-prefixed ID in pi's catalog. Both are
-	// harmless: direct mode looks up ModelName, litellm mode looks up ID.
-	if !slices.Equal(lc.Args, []string{"--model", "ollama/qwen3.8:27b-mlx"}) {
-		t.Fatalf("expected --model with registry id, got %v", lc.Args)
+	if !slices.Equal(lc.Args, []string{"--model", "litellm/ollama/qwen3.8:27b-mlx"}) {
+		t.Fatalf("expected --model litellm/<registry id>, got %v", lc.Args)
+	}
+}
+
+// piDriver.Build in litellm mode must fall back to pi's default model with a
+// warning when the gateway entry is not present/launchable in models.json —
+// for example before the first sync or when the user disabled the entry.
+func TestPiBuildLitellmNotConfigured(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	piDir := filepath.Join(dir, ".pi", "agent")
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(piDir, "models.json"), `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
+
+	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
+	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := piDriver{}.Build(m, false, gw)
+	if len(lc.Args) != 0 {
+		t.Fatalf("args = %v, want none (fallback to default)", lc.Args)
+	}
+	if lc.Warn == "" {
+		t.Error("warn should be set when falling back")
 	}
 }
 

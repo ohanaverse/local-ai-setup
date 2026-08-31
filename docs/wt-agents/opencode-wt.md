@@ -56,6 +56,16 @@ OpenCode is the one agent whose CLI uniquely requires the `provider/model` form,
 
 The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) with a `/v1` suffix. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`).
 
+### Gateway mode (LiteLLM)
+
+When `[gateway].mode = "litellm"`, the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the gateway's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same gateway model:
+
+```json
+{"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<gateway.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}
+```
+
+The builtin `openai` provider is not usable for gateway models: opencode validates model ids against its own catalog ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). opencode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the registry id stays verbatim inside it. Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the proxy with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
+
 ## Session resume
 
 `wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.

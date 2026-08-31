@@ -21,6 +21,12 @@ func (codexDriver) YoloFlag() string { return "--dangerously-bypass-approvals-an
 // anthropic-compatible endpoint instead).
 const ollamaProvider = "agent-wt"
 
+// codexGatewayEnvKey names the env var carrying the LiteLLM gateway key in
+// gateway mode. codex custom providers take no inline API key — they read one
+// from the env var named by model_providers.<id>.env_key; without it the
+// proxy rejects every request with 401 "No api key passed in".
+const codexGatewayEnvKey = "AGENT_WT_GATEWAY_API_KEY"
+
 func (codexDriver) OllamaURL() string { return "http://localhost:11434/v1/" }
 
 func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
@@ -39,9 +45,15 @@ func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 
 	baseURL := codexDriver{}.OllamaURL()
 	modelName := m.ModelName
+	configArgs := []string{}
 	if gw.IsLitellm() {
 		baseURL = gw.BaseURL() + "/v1/"
 		modelName = m.ID
+		// The local ollama endpoint needs no key; LiteLLM's v1 API does.
+		lc.Env = append(lc.Env, codexGatewayEnvKey+"="+gw.APIKey)
+		configArgs = append(configArgs,
+			"-c", "model_providers."+ollamaProvider+".env_key=\""+codexGatewayEnvKey+"\"",
+		)
 	}
 
 	lc.Args = append(lc.Args,
@@ -49,6 +61,9 @@ func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		"-c", "model_providers."+ollamaProvider+".name=\"Ollama\"",
 		"-c", "model_providers."+ollamaProvider+".base_url=\""+baseURL+"\"",
 		"-c", "model_providers."+ollamaProvider+".wire_api=\"responses\"",
+	)
+	lc.Args = append(lc.Args, configArgs...)
+	lc.Args = append(lc.Args,
 		"--model", modelName,
 	)
 	return lc

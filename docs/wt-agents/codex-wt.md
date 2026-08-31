@@ -65,10 +65,13 @@ When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `c
 -c 'model_providers.agent-wt.name="Ollama"'
 -c 'model_providers.agent-wt.base_url="http://localhost:4000/v1/"'  # trailing slash normalized
 -c 'model_providers.agent-wt.wire_api="responses"'
+-c 'model_providers.agent-wt.env_key="AGENT_WT_GATEWAY_API_KEY"'
 --model <registry-model-id>
 ```
 
-The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[gateway].api_key`. Native models (`codex/native`) continue to use codex's own subscription and ignore the gateway.
+The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. codex custom providers take no inline API key: the gateway key is exported as `AGENT_WT_GATEWAY_API_KEY` (value from `[gateway].api_key`) and read via the `env_key` override above — without it the proxy rejects every request with `401 Authentication Error, No api key passed in`. Native models (`codex/native`) continue to use codex's own subscription and ignore the gateway.
+
+> **Upstream incompatibility (litellm ≤ 1.98.0) — worked around.** codex ≥ 0.148 only speaks the responses API (`wire_api = "chat"` was removed), and litellm's responses→`ollama_chat` bridge crashes on codex's structured `reasoning` object (`TypeError: unhashable type: 'dict'` → 500 on every attempt; codex masks it as "high demand"). Workaround: add `additional_drop_params: ["reasoning_effort"]` to the model's `litellm_params` in `~/.config/litellm/config.yaml` and restart the proxy (applied to `ollama/glm-5.3-flash:cloud` on 2026-08-31; every `ollama_chat/*` model needs it for codex). Proper fix ships in a litellm release past 1.98.0. Details: [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Verified on this machine
 

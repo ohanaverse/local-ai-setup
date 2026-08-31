@@ -36,7 +36,7 @@ pi picks a model from `~/.pi/agent/models.json` based on `--model <id>` and `--p
 
 `pi-wt` interacts with this via `--model` passthrough. The launcher's rotation chooses a model from `~/.config/agent-wt/config.toml`; `pi-wt` then verifies the model is both present in `~/.pi/agent/models.json` **and** marked `._launch: true` (only models explicitly configured for launch are used — orphaned entries are skipped) using native Go JSON parsing (no `jq` dependency). If verified, `pi-wt` execs `pi --model <id>` where `<id>` is the **bare** provider-specific name (`config.Model.ModelName`), not the registry key. pi was the first driver to follow this contract; see the "Model id contract" note in CLAUDE.md for the rationale shared across all drivers.
 
-**Auto-sync on launch:** `pi-wt` automatically syncs non-native models from `config.toml` into `~/.pi/agent/models.json` if they are missing — including both cloud models (`:cloud` suffix) and local models (MLX, etc.). This happens on every launch, is idempotent (only adds, never removes), and ensures rotation models are always available to pi. The sync runs silently unless models are added, in which case it logs:
+**Auto-sync on launch:** `pi-wt` automatically syncs non-native models from `config.toml` into `~/.pi/agent/models.json` if they are missing — including both cloud models (`:cloud` suffix) and local models (MLX, etc.). This happens on every launch and is idempotent. Direct mode only ever adds entries under the `ollama` provider; gateway mode additionally maintains the `litellm` provider block (above), reverts stale gateway values found in the `ollama` block, and removes only wt-generated gateway entries from it — user-authored entries always survive. The sync runs silently unless it changes state, in which case it logs:
 ```bash
 pi-wt: synced N model(s) to pi models.json
 ```
@@ -47,17 +47,14 @@ For `pi/native` (the launcher's "use pi's own default" sentinel), `pi-wt` execs 
 
 ### Gateway mode (LiteLLM)
 
-When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `pi-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The auto-sync step updates the `ollama` provider in `~/.pi/agent/models.json` to:
+When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `pi-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway.
 
-```json
-{
-  "api": "openai-completions",
-  "baseUrl": "http://localhost:4000/v1",
-  "apiKey": "<gateway.api_key>"
-}
-```
+Gateway models **cannot** live under pi's `ollama` provider: pi splits a `--model` value on the first slash and matches the remainder against the named provider's entries, so `ollama/<registry-id>` would always resolve to the bare-id entry and LiteLLM would receive the unprefixed name. The sync therefore manages two provider blocks:
 
-Synced models use the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`) as their `id`, and `pi-wt` passes `--model <registry-model-id>`. The API key comes from `[gateway].api_key`. Native models (`pi/native`) continue to use pi's default provider and ignore the gateway.
+- **`litellm` (wt-created)** — `{"api": "openai-completions", "baseUrl": "http://localhost:4000/v1", "apiKey": "<gateway.api_key>"}` plus one `_launch: true` entry per non-native registry model, keyed by the full registry id (e.g. `ollama/qwen3.8:27b-mlx`). Launches use `--model litellm/<registry-model-id>`; the `litellm` prefix selects the provider while the registry id survives verbatim as the API model name.
+- **`ollama` (pi's direct provider)** — always reset to the standard local endpoint with pi's placeholder key when its values match the gateway or a local-ollama variant, and pruned of wt-generated registry-id entries an older sync added there (pi's `--model` grammar can never launch them). Bare-name entries and every non-`ollama`/`litellm` provider round-trip untouched.
+
+All three values are required: pi's models.json schema rejects an empty `apiKey` (a single bad provider invalidates the whole catalog — "No models available"), so direct-mode reverts write the placeholder `"ollama"`, never `""`. Native models (`pi/native`) continue to use pi's default provider and ignore the gateway. See [litellm-troubleshooting.md](litellm-troubleshooting.md) for the resolution-grammar details and diagnostics.
 
 ## Agent init
 
