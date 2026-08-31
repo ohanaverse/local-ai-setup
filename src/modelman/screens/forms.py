@@ -473,7 +473,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                     if cost.period not in ("month", "year"):
                         period_options.append((cost.period, cost.period))
         usage_tier_value = v.get("usage_tier") if editing else None
-        if usage_tier_value in ("low", "medium", "high"):
+        if usage_tier_value in ("low", "medium", "high", "extra high"):
             initial_tier = usage_tier_value
 
         with Vertical():
@@ -537,7 +537,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             )
             yield Label("Usage tier (ollama cloud):", id="usage-tier-label")
             yield Select(
-                options=[("—", ""), ("low", "low"), ("medium", "medium"), ("high", "high")],
+                options=[("—", ""), ("low", "low"), ("medium", "medium"), ("high", "high"), ("extra high", "extra high")],
                 value=initial_tier,
                 allow_blank=False,
                 id="usage-tier-select",
@@ -699,7 +699,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         if kind == "ollama":
             # The widget always exists, but read defensively anyway.
             tier_raw = str(self.query_one("#usage-tier-select", Select).value)
-            if tier_raw in ("low", "medium", "high"):
+            if tier_raw in ("low", "medium", "high", "extra high"):
                 usage_tier = tier_raw
         spec: VariantSpec = {
             "id": vid,

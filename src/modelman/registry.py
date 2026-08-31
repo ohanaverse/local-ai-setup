@@ -60,7 +60,7 @@ class ProviderEntry:
 
 
 # ollama.com cloud usage tier for a model's subscription cost.
-UsageTier = Literal["low", "medium", "high"]
+UsageTier = Literal["low", "medium", "high", "extra high"]
 
 
 @dataclass
