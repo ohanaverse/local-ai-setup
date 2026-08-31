@@ -6,8 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // newTextInput builds a textinput.Model pre-filled with value and the given

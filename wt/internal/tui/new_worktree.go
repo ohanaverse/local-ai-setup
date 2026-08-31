@@ -6,8 +6,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ohanaverse/agent-worktree/internal/themes"
-	"github.com/ohanaverse/agent-worktree/internal/worktree"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // newWorktreePlaceholder is the textinput placeholder shown in the

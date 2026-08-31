@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbles/list"
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // installed is a test seam wrapping agents.Installed. Production code uses

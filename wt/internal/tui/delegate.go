@@ -3,7 +3,7 @@ package tui
 import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // ThemedListDelegate returns a list.DefaultDelegate whose Normal/Selected

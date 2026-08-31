@@ -15,9 +15,9 @@ import (
 	"sort"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/configeditor"
-	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 )
 

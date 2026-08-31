@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // app holds shared dependencies loaded once at startup.

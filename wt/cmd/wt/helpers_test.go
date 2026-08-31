@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/agent-worktree/internal/guard"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 )
 
 func gitInit(t *testing.T, dir string) {

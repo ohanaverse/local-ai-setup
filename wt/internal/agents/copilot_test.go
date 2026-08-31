@@ -3,7 +3,7 @@ package agents
 import (
 	"testing"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestCopilotSeeder asserts copilotDriver returns the Copilot instruction

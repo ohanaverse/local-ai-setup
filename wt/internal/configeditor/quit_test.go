@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestQuit_CleanExits verifies that pressing 'q' with no unsaved changes

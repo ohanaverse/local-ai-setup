@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 // LaunchCmd describes a fully-built process to exec.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // Summary formats the post-run summary line printed to stdout after an agent

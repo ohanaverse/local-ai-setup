@@ -5,13 +5,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/guard"
-	"github.com/ohanaverse/agent-worktree/internal/initseed"
-	"github.com/ohanaverse/agent-worktree/internal/session"
-	"github.com/ohanaverse/agent-worktree/internal/tui"
-	"github.com/ohanaverse/agent-worktree/internal/worktree"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
 )
 

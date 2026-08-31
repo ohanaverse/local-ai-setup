@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestAgentsTab_Sort_CommandsFirst verifies that command agents (e.g. shell)

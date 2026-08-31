@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // errCommandAgent is the sentinel returned by resolveModel when the

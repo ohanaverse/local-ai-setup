@@ -7,11 +7,11 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
-	"github.com/ohanaverse/agent-worktree/internal/rotation"
-	"github.com/ohanaverse/agent-worktree/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 // buildLaunch constructs the agent command for the given model and worktree,

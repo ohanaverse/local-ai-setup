@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/usage"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // Rotation reads and writes the single global rotation.state file.

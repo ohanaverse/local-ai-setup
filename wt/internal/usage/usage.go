@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // retentionWindow is the longest count window Counts reports (30 days).

@@ -5,10 +5,10 @@ import (
 	"sort"
 
 	"github.com/charmbracelet/bubbles/list"
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/themes"
-	"github.com/ohanaverse/agent-worktree/internal/tui"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 // agentItem adapts config.Agent to list.Item. command marks command agents

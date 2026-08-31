@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/spf13/cobra"
 )
 

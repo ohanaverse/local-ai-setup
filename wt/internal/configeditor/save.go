@@ -2,7 +2,7 @@ package configeditor
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // saveMsg is emitted after a config save completes.

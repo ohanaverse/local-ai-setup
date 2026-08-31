@@ -1,4 +1,4 @@
-module github.com/ohanaverse/agent-worktree
+module github.com/ohanaverse/local-ai-setup/wt
 
 go 1.26.7
 

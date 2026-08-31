@@ -16,14 +16,14 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ohanaverse/agent-worktree/internal/agents"
-	"github.com/ohanaverse/agent-worktree/internal/config"
-	"github.com/ohanaverse/agent-worktree/internal/ollamacheck"
-	"github.com/ohanaverse/agent-worktree/internal/rotation"
-	"github.com/ohanaverse/agent-worktree/internal/session"
-	"github.com/ohanaverse/agent-worktree/internal/themes"
-	"github.com/ohanaverse/agent-worktree/internal/usage"
-	"github.com/ohanaverse/agent-worktree/internal/worktree"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // phase identifies which screen the TUI is currently showing.

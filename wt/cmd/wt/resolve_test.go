@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestResolveModel covers the non-TUI model resolution path used after

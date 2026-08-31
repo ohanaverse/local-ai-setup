@@ -1,7 +1,7 @@
 package agents
 
 import (
-	"github.com/ohanaverse/agent-worktree/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // shellDriver launches a shell command (or interactive bash) in the selected
