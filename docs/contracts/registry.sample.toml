@@ -1,0 +1,64 @@
+# Shared fixture for cross-language contract tests. Exercises every schema
+# variant modelman writes and wt reads: both provider auth types, all three
+# Cost kinds, model_info, a per-model location override, and usage_tier.
+#
+# Read by:
+#   - wt/internal/config/registry_fixture_test.go (Go)
+#   - modelman/tests/contracts/test_registry_fixture.py (Python)
+#
+# The point of this file is that changing a field here without updating
+# both tests should make both CI jobs fail in the same PR.
+
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+[providers.auth]
+type = "none"
+base_url = "http://localhost:11434"
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+[providers.auth]
+type = "api_key"
+base_url = "https://openrouter.ai/api/v1"
+secret_ref = "OPENROUTER_API_KEY"
+
+[[families]]
+name = "contract-fixture"
+display_name = "Contract Fixture"
+
+[[models]]
+id = "ollama/contract-fixture:local"
+family = "contract-fixture"
+provider_id = "ollama"
+model_name = "contract-fixture:local"
+tags = ["code"]
+[models.cost]
+kind = "free"
+
+[[models]]
+id = "openrouter/contract-fixture:cloud"
+family = "contract-fixture"
+provider_id = "openrouter"
+model_name = "org/contract-fixture-cloud"
+location = "cloud"
+tags = ["design"]
+model_info = { supports_function_calling = true }
+[models.cost]
+kind = "per_token"
+price_per_million_tokens = 1.5
+
+[[models]]
+id = "ollama/contract-fixture:subscription"
+family = "contract-fixture"
+provider_id = "ollama"
+model_name = "contract-fixture:subscription"
+tags = ["chat"]
+usage_tier = "medium"
+[models.cost]
+kind = "subscription"
+price_per_period = 20.0
+period = "month"
