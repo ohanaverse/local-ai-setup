@@ -18,7 +18,7 @@ None — this is a reference doc, not a procedure.
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
 | `~/.config/local-ai/families/*.yaml` | pre-registry modelman tooling | `modelman migrate` (read-only input) | Legacy per-family variants + download markers |
 | `~/.config/litellm/config.yaml` | `modelman` (expose toggle), you by hand | LiteLLM proxy | `model_list`, general settings |
-| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag (NO providers/models — modelman owns those in registry.toml) |
+| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and optional [gateway] routing. (NO providers/models — modelman owns those in registry.toml) |
 | `~/.config/agent-wt/themes.toml` | `wt` (`wt config theme`) | `wt` | Active theme |
 | `~/.config/agent-wt/models.conf` | you by hand (pre-wt bash era) | `wt` first-run migration (read-only input) | Legacy bash rotation config |
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `modelman usage` | Launch log |
@@ -183,7 +183,7 @@ model_list:
 - **Owner:** `wt` (`wt config` editor; writes atomically on save).
 - **Consumers:** `wt` only.
 - **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — modelman owns those in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
-- `[gateway]` is a new wt-owned section for routing agents through LiteLLM.
+- **[gateway]** is a new wt-owned section for routing agents through LiteLLM.
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
 - **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default agent-worktree `config.toml` to import from.
