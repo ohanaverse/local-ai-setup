@@ -995,3 +995,35 @@ func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
 		t.Errorf("status = %q, want 'not in the eligible list'", gotModel.status)
 	}
 }
+
+// buildTestConfigWithModels returns a minimal config with claude supporting
+// the ollama provider and the supplied models. Tests that exercise the
+// litellm_exposed filter use this helper so the fixture exposes exactly the
+// models the test intends.
+func buildTestConfigWithModels(models ...config.Model) *config.Config {
+	return &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "ollama"}},
+		Models:     models,
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+}
+
+// TestEligibleModelsHidesUnexposed asserts that cfg.EligibleModels only
+// returns non-native models marked litellm_exposed. Without the exposure
+// gate, non-native models would leak into the picker even when they are not
+// routable through the LiteLLM gateway.
+func TestEligibleModelsHidesUnexposed(t *testing.T) {
+	cfg := buildTestConfigWithModels(
+		config.Model{ID: "ollama/exposed", ModelName: "exposed", ProviderID: "ollama", Tags: []string{"code"}},
+		config.Model{ID: "ollama/hidden", ModelName: "hidden", ProviderID: "ollama", Tags: []string{"code"}},
+	)
+	cfg.SetExposedForTest(map[string]bool{"ollama/exposed": true})
+	models, err := cfg.EligibleModels("claude", "code", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "ollama/exposed" {
+		t.Fatalf("expected only exposed model, got %v", models)
+	}
+}

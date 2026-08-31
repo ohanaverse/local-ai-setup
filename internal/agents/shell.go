@@ -28,7 +28,7 @@ func (d *shellDriver) SetArgs(args []string) {
 // Build returns a LaunchCmd that execs the user's command directly, or an
 // interactive bash shell when no command was given. The model parameter is
 // ignored — shell does not use models.
-func (d *shellDriver) Build(_ config.Model, _ bool) LaunchCmd {
+func (d *shellDriver) Build(_ config.Model, _ bool, _ Gateway) LaunchCmd {
 	if len(d.args) > 0 {
 		return LaunchCmd{
 			Bin:  d.args[0],

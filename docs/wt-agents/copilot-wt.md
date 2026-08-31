@@ -40,6 +40,19 @@ COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 
 `<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is `config.OllamaBaseURL` (`http://localhost:11434`) with a `/v1` suffix, matching the OpenAI-compatible endpoint that Copilot CLI's BYOK provider expects.
 
+### Gateway mode (LiteLLM)
+
+When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `copilot-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The launcher sets:
+
+```bash
+COPILOT_PROVIDER_BASE_URL="http://localhost:4000/v1"  # trailing slash normalized
+COPILOT_PROVIDER_API_KEY="<gateway.api_key>"
+COPILOT_PROVIDER_WIRE_API="responses"
+COPILOT_MODEL="<registry-model-id>"  # e.g. ollama/qwen3.8:27b-mlx
+```
+
+The `COPILOT_MODEL` value is the full registry model id, not the bare provider-specific name. The `COPILOT_PROVIDER_API_KEY` comes from `[gateway].api_key`. Native models (`copilot/native`) continue to use the native subscription and ignore the gateway.
+
 ## Agent init
 
 `copilot-wt --init` seeds project-level instruction files:

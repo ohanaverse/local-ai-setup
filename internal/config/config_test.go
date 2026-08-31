@@ -34,6 +34,7 @@ func TestPath(t *testing.T) {
 // empty catalog.
 func TestLoad_FileNotExist(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg, err := Load()
@@ -54,6 +55,7 @@ func TestLoad_FileNotExist(t *testing.T) {
 // follows.
 func TestLoad_ValidConfig(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
@@ -131,11 +133,11 @@ tags = ["code", "design"]
 // surface the problem rather than silently using defaults.
 func TestLoad_BadTOML(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`this is not toml {{{`), 0644)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	_, err := Load()
 	if err == nil {
@@ -151,6 +153,76 @@ func TestValidate_EmptyDefaultTag(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for empty default_tag")
+	}
+}
+
+// gateway.mode must be empty, direct, or litellm. Any other value is a
+// configuration error that would otherwise be silently ignored and could
+// cause the launcher to misroute requests. litellm mode additionally requires
+// url and api_key — without them drivers emit empty base URLs and silently
+// misroute (claude falls back to api.anthropic.com with the gateway key).
+func TestValidateGatewayMode(t *testing.T) {
+	base := &Config{
+		DefaultTag: "code",
+		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
+		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+
+	for _, mode := range []string{"", "direct"} {
+		cfg := *base
+		cfg.Gateway.Mode = mode
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("mode %q should be valid, got: %v", mode, err)
+		}
+	}
+
+	// litellm mode is valid only with url and api_key set.
+	litellm := *base
+	litellm.Gateway = GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	if err := litellm.Validate(); err != nil {
+		t.Errorf("litellm with url+api_key should be valid, got: %v", err)
+	}
+
+	invalid := *base
+	invalid.Gateway.Mode = "proxy"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("expected error for invalid gateway.mode")
+	} else if !strings.Contains(err.Error(), "gateway.mode") {
+		t.Errorf("error = %q, want it to mention gateway.mode", err)
+	}
+}
+
+// A litellm gateway without a url must fail validation: every driver needs a
+// base URL to route through, and an empty one silently misroutes agents.
+func TestValidateLitellmRequiresURL(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "code",
+		Gateway:    GatewayConfig{Mode: "litellm", APIKey: "sk-litellm"}, // no url
+		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
+		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for litellm mode without url")
+	} else if !strings.Contains(err.Error(), "gateway.url") {
+		t.Errorf("error = %q, want it to mention gateway.url", err)
+	}
+}
+
+// A litellm gateway without an api_key must fail validation: LiteLLM requires
+// a bearer token, and an empty one makes every agent request 401.
+func TestValidateLitellmRequiresAPIKey(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "code",
+		Gateway:    GatewayConfig{Mode: "litellm", URL: "http://localhost:4000"}, // no api_key
+		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
+		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for litellm mode without api_key")
+	} else if !strings.Contains(err.Error(), "gateway.api_key") {
+		t.Errorf("error = %q, want it to mention gateway.api_key", err)
 	}
 }
 
@@ -519,6 +591,7 @@ func TestHasTag(t *testing.T) {
 // a Save of a config carrying providers must not write them to disk.
 func TestSave(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg := &Config{
@@ -627,6 +700,7 @@ func TestDeriveNative(t *testing.T) {
 // test pins the Load()-level wiring.
 func TestLoad_DerivesNativeFromRegistryAuth(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
@@ -696,3 +770,90 @@ tags = ["code", "design"]
 		t.Errorf("ollama/test:1 Native = true, want false (provider auth.type == \"none\")")
 	}
 }
+
+// TestGatewayConfigDirectByDefault asserts that a zero-value GatewayConfig
+// is treated as direct (no proxy). This is the safe default: until the user
+// explicitly configures gateway.mode = "litellm", wt must keep routing
+// agents to their native endpoints.
+func TestGatewayConfigDirectByDefault(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.Gateway.IsDirect() {
+		t.Fatalf("expected default gateway mode to be direct")
+	}
+	if cfg.Gateway.IsLitellm() {
+		t.Fatalf("expected default gateway mode not to be litellm")
+	}
+}
+
+// TestGatewayConfigParsedFromTOML asserts that a [gateway] section in
+// config.toml is loaded into Config.Gateway. Without this, the CLI cannot
+// read a user's LiteLLM proxy settings from disk.
+func TestGatewayConfigParsedFromTOML(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	writeRegistry(t, dir, "providers = []\nmodels = []\n")
+
+	cfgDir := Dir()
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte(`
+default_tag = "code"
+
+[gateway]
+mode = "litellm"
+url = "http://localhost:4000"
+api_key = "test-key"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Gateway.Mode != "litellm" {
+		t.Errorf("Gateway.Mode = %q, want %q", cfg.Gateway.Mode, "litellm")
+	}
+	if cfg.Gateway.URL != "http://localhost:4000" {
+		t.Errorf("Gateway.URL = %q, want %q", cfg.Gateway.URL, "http://localhost:4000")
+	}
+	if cfg.Gateway.APIKey != "test-key" {
+		t.Errorf("Gateway.APIKey = %q, want %q", cfg.Gateway.APIKey, "test-key")
+	}
+	if !cfg.Gateway.IsLitellm() {
+		t.Errorf("expected IsLitellm() = true")
+	}
+	if cfg.Gateway.IsDirect() {
+		t.Errorf("expected IsDirect() = false")
+	}
+}
+
+// TestIsExposedNativeAlways asserts that native models are always exposed,
+// even when the exposure set is empty. Native providers cannot route through
+// LiteLLM, so hiding them would make the agent unusable.
+func TestIsExposedNativeAlways(t *testing.T) {
+	cfg := &Config{exposed: map[string]bool{}}
+	m := Model{ID: "claude/native", ProviderID: "claude", Native: true}
+	if !cfg.IsExposed(m) {
+		t.Fatalf("native model must be exposed")
+	}
+}
+
+// TestIsExposedNonNativeRequiresFlag asserts that non-native models only
+// appear in the catalog when modelman.toml has marked them litellm_exposed.
+// This prevents wt from advertising models that the LiteLLM proxy is not
+// configured to serve.
+func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
+	cfg := &Config{exposed: map[string]bool{"ollama/qwen3.8:27b-mlx": true}}
+	exposed := Model{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama"}
+	unexposed := Model{ID: "ollama/gemma4:9b", ProviderID: "ollama"}
+	if !cfg.IsExposed(exposed) {
+		t.Fatalf("expected exposed model to be exposed")
+	}
+	if cfg.IsExposed(unexposed) {
+		t.Fatalf("expected unexposed model to be unexposed")
+	}
+}
+

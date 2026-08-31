@@ -28,6 +28,7 @@ func TestResolveModel(t *testing.T) {
 			{Name: "pi", SupportedProviders: []string{"claude", "ollama"}},
 		},
 	}
+	cfg.ExposeAllForTest()
 
 	// resolveModel errors on any ambiguous eligible list rather than
 	// falling back to defaultModel. launch.go calls resolveModel and
@@ -86,6 +87,7 @@ func TestResolveModelReturnsEligible(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
+	cfg.ExposeAllForTest()
 
 	m, eligible, err := resolveModel("claude", cfg, "", "", "")
 	if err == nil {

@@ -119,7 +119,7 @@ func TestAgentsTab_InstalledAnnotation(t *testing.T) {
 // stubCommandDriver is a test driver that reports IsCommand() == true.
 type stubCommandDriver struct{}
 
-func (d *stubCommandDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
+func (d *stubCommandDriver) Build(_ config.Model, _ bool, _ agents.Gateway) agents.LaunchCmd {
 	return agents.LaunchCmd{}
 }
 func (d *stubCommandDriver) YoloFlag() string { return "" }
@@ -128,7 +128,7 @@ func (d *stubCommandDriver) IsCommand() bool  { return true }
 // stubAgentDriver is a normal (non-command) test driver.
 type stubAgentDriver struct{}
 
-func (d *stubAgentDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
+func (d *stubAgentDriver) Build(_ config.Model, _ bool, _ agents.Gateway) agents.LaunchCmd {
 	return agents.LaunchCmd{}
 }
 func (d *stubAgentDriver) YoloFlag() string { return "" }

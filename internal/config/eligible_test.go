@@ -26,7 +26,12 @@ func TestEligibleModels(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
 		},
+		exposed: map[string]bool{
+			"ollama/gemma4:9b": true,
+			"ollama/llama3":    true,
+		},
 	}
+	deriveNative(cfg)
 
 	tests := []struct {
 		name    string

@@ -23,7 +23,7 @@ func TestShellDriverRegistered(t *testing.T) {
 func TestShellDriverBuildWithArgs(t *testing.T) {
 	d := &shellDriver{}
 	d.SetArgs([]string{"echo", "hello world"})
-	lc := d.Build(config.Model{}, false)
+	lc := d.Build(config.Model{}, false, directGateway())
 	if lc.Bin != "echo" {
 		t.Errorf("Bin = %q, want echo", lc.Bin)
 	}
@@ -37,7 +37,7 @@ func TestShellDriverBuildWithArgs(t *testing.T) {
 // command case.
 func TestShellDriverBuildNoArgs(t *testing.T) {
 	d := &shellDriver{}
-	lc := d.Build(config.Model{}, false)
+	lc := d.Build(config.Model{}, false, directGateway())
 	if lc.Bin != "bash" {
 		t.Errorf("Bin = %q, want bash", lc.Bin)
 	}
@@ -63,7 +63,7 @@ func TestShellDriverYoloFlagEmpty(t *testing.T) {
 func TestShellDriverBuildMetacharactersLiteral(t *testing.T) {
 	d := &shellDriver{}
 	d.SetArgs([]string{"echo", "a | b"})
-	lc := d.Build(config.Model{}, false)
+	lc := d.Build(config.Model{}, false, directGateway())
 	if lc.Bin != "echo" {
 		t.Errorf("Bin = %q, want echo", lc.Bin)
 	}

@@ -120,12 +120,13 @@ Module root is the repo root.
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) is wt-owned, but contains **only agents and preferences** — Providers/Models live in the registry (below). wt never writes providers/models to this file.
+`~/.config/agent-wt/config.toml` (TOML) is wt-owned, but contains **only agents, preferences, and the optional `[gateway]` section** — Providers/Models live in the registry (below). wt never writes providers/models to this file.
 
 Fields:
 
 - **Agent** — tool with ≥1 supported provider and optional default.
 - **DefaultTag** — the default rotation tag group.
+- **`[gateway]`** — optional routing section. `mode` is `"direct"` (default) or `"litellm"`; `url` + `api_key` are required when `mode = "litellm"` (fail-fast validation). In litellm mode non-native models route through the LiteLLM proxy's OpenAI-compatible endpoint instead of local ollama. `GatewayConfig.BaseURL()` trims trailing slashes so drivers append `/v1` (or none for claude) cleanly.
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 
@@ -143,8 +144,8 @@ resolver — Go/the OS never expand `~` on their own, so this parity is
 deliberate, not incidental.
 wt loads it read-only via `config.Load` (fail-closed: missing/malformed
 registry is an error; seed with `modelman migrate`) and joins it in memory
-with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
-persists Agents + DefaultTag only — wt never writes providers/models. Extra
+with its own `config.toml`, which now holds only Agents + DefaultTag + gateway. `Save`
+persists wt-owned fields only — wt never writes providers/models. Extra
 registry fields (cost, model_info, fetch, model_dir, auth secret_ref/base_url)
 are ignored by wt's parser.
 
@@ -214,7 +215,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `
 
 Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the session lookup in `internal/session` returns nil for them.
 
-**Model id contract.** Drivers hand the **bare provider name** (`m.ModelName`) to the agent CLI — never the registry key (`m.ID`, which carries the `provider/` prefix). OpenCode is the exception: its CLI needs `provider/model`, so it constructs `"ollama/" + m.ModelName` deliberately. Passing `m.ID` would double-prefix (`ollama/ollama/<model>`) or forward `ollama/<model>` to the gateway. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use a model with distinct `ID`/`ModelName` so this bug can't reappear silently.
+**Model id contract.** In **direct mode** drivers hand the **bare provider name** (`m.ModelName`) to the agent CLI — never the registry key (`m.ID`, which carries the `provider/` prefix). In **litellm mode** the rule inverts: claude, codex, copilot, and opencode pass the **registry id** (`m.ID`, e.g. `ollama/qwen3.8:27b-mlx`), because LiteLLM's `model_list` is keyed on it. OpenCode is also mode-dependent: `ollama/<m.ModelName>` in direct mode, `openai/<m.ID>` in litellm mode. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use a model with distinct `ID`/`ModelName` so a wrong id can't slip through silently.
 
 | Agent | Launch behavior |
 |---|---|
@@ -225,6 +226,18 @@ Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the 
 | pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); passes `--model` only when present; no yolo |
 | agy | no model passthrough (chosen in its TUI) |
 | shell | execs passthrough args as argv, or interactive `bash`; no model/yolo/resume; `ArgSetter` |
+
+In **gateway (litellm) mode** (`[gateway].mode = "litellm"`), non-native models switch from the local ollama gateway to LiteLLM's `/v1`:
+
+| Agent | litellm routing |
+|---|---|
+| claude | `ANTHROPIC_BASE_URL`=`[gateway].url` (no suffix) + `ANTHROPIC_AUTH_TOKEN`=`[gateway].api_key`, `--model <m.ID>` |
+| codex | `--model <m.ID>` plus the four `-c` overrides pointing `agent-wt` at `<url>/v1/` (trailing slash) |
+| copilot | `COPILOT_PROVIDER_BASE_URL=<url>/v1` + `COPILOT_PROVIDER_API_KEY=<api_key>`, `COPILOT_MODEL=<m.ID>` |
+| opencode | `OPENCODE_CONFIG_CONTENT` with built-in `openai` provider at `<url>/v1`, model `openai/<m.ID>` |
+| pi | syncModels points the ollama provider at `<url>/v1` + `api_key` and keys models by registry id |
+
+The pre-launch `ollamacheck.Check` is **skipped in litellm mode**: a model absent from local `ollama list` is not an error when LiteLLM serves it from a non-local upstream.
 
 ## Guard (Go)
 

@@ -18,7 +18,7 @@ func (copilotDriver) InstructionPointers() []InstructionPointer {
 
 func (copilotDriver) OllamaURL() string { return "http://localhost:11434/v1" }
 
-func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
+func (copilotDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	lc := LaunchCmd{Bin: "copilot"}
 	if yolo {
 		lc.Args = append(lc.Args, copilotDriver{}.YoloFlag())
@@ -32,11 +32,21 @@ func (copilotDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		lc.ClearEnv = []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_WIRE_API", "COPILOT_MODEL"}
 		return lc
 	}
+
+	baseURL := copilotDriver{}.OllamaURL()
+	modelName := m.ModelName
+	apiKey := ""
+	if gw.IsLitellm() {
+		baseURL = gw.BaseURL() + "/v1"
+		modelName = m.ID
+		apiKey = gw.APIKey
+	}
+
 	lc.Env = append(lc.Env,
-		"COPILOT_PROVIDER_BASE_URL="+copilotDriver{}.OllamaURL(),
-		"COPILOT_PROVIDER_API_KEY=",
+		"COPILOT_PROVIDER_BASE_URL="+baseURL,
+		"COPILOT_PROVIDER_API_KEY="+apiKey,
 		"COPILOT_PROVIDER_WIRE_API=responses",
-		"COPILOT_MODEL="+m.ModelName,
+		"COPILOT_MODEL="+modelName,
 	)
 	return lc
 }

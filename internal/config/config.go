@@ -33,6 +33,31 @@ const (
 // capability in internal/agents.
 const OllamaBaseURL = "http://localhost:11434"
 
+// ── GatewayConfig ─────────────────────────────────────────
+
+// GatewayConfig is wt-owned gateway routing config.
+type GatewayConfig struct {
+	Mode   string `toml:"mode"` // "direct" | "litellm"
+	URL    string `toml:"url"`
+	APIKey string `toml:"api_key"`
+}
+
+// IsDirect reports whether the gateway is disabled/absent.
+func (g GatewayConfig) IsDirect() bool {
+	return g.Mode == "" || g.Mode == "direct"
+}
+
+// IsLitellm reports whether the gateway routes through the LiteLLM proxy.
+func (g GatewayConfig) IsLitellm() bool {
+	return g.Mode == "litellm"
+}
+
+// BaseURL returns g.URL with any trailing slashes removed. Drivers append
+// their own protocol suffix (/v1, /v1/), so a user URL like
+// "http://localhost:4000/" must not produce a double slash. TrimRight (not
+// TrimSuffix) so a double-slash typo is also normalized.
+func (g GatewayConfig) BaseURL() string { return strings.TrimRight(g.URL, "/") }
+
 // ── Provider ──────────────────────────────────────────────
 
 // Provider is a source of models with connection info.
@@ -79,10 +104,12 @@ type Agent struct {
 // wt-owned config.toml; Providers + Models come from modelman-owned
 // registry.toml and are never persisted by wt (see Save).
 type Config struct {
-	DefaultTag string     `toml:"default_tag"`
-	Providers  []Provider `toml:"providers"`
-	Models     []Model    `toml:"models"`
-	Agents     []Agent    `toml:"agents"`
+	DefaultTag string          `toml:"default_tag"`
+	Gateway    GatewayConfig   `toml:"gateway"`
+	Providers  []Provider      `toml:"providers"`
+	Models     []Model         `toml:"models"`
+	Agents     []Agent         `toml:"agents"`
+	exposed    map[string]bool `toml:"-"` // from modelman.toml
 }
 
 // Dir returns the base config directory (~/.config/agent-wt, or
@@ -131,13 +158,11 @@ func Load() (*Config, error) {
 	cfg := &Config{DefaultTag: "code"}
 	data, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
-		providers, models, regErr := loadRegistry()
-		if regErr != nil {
-			return nil, regErr
+		providers, models, err := loadRegistry()
+		if err != nil {
+			return nil, err
 		}
-		cfg.Providers, cfg.Models = providers, models
-		deriveNative(cfg)
-		return cfg, nil
+		return finalizeCfg(cfg, providers, models)
 	}
 	if err != nil {
 		return nil, err
@@ -166,8 +191,20 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
+	return finalizeCfg(cfg, providers, models)
+}
+
+// finalizeCfg joins registry providers/models into cfg, derives native-ness
+// from provider auth types, and loads modelman exposure state. Callers must
+// already have loaded config.toml and registry.toml.
+func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
+	exposed, err := loadModelmanState()
+	if err != nil {
+		return nil, err
+	}
+	cfg.exposed = exposed
 	return cfg, nil
 }
 
@@ -189,6 +226,23 @@ func (c *Config) validate() []error {
 	var errs []error
 	if c.DefaultTag == "" {
 		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
+	}
+
+	if c.Gateway.Mode != "" && c.Gateway.Mode != "direct" && c.Gateway.Mode != "litellm" {
+		errs = append(errs, fmt.Errorf("gateway.mode must be empty, direct, or litellm, got %q", c.Gateway.Mode))
+	}
+
+	// litellm mode is unusable without a base URL and bearer token: drivers
+	// would emit empty ANTHROPIC_BASE_URL / base_url values and silently
+	// misroute (claude falls back to api.anthropic.com with the gateway key).
+	// Fail fast at validation time instead.
+	if c.Gateway.IsLitellm() {
+		if c.Gateway.URL == "" {
+			errs = append(errs, fmt.Errorf("gateway.url must be set when gateway.mode is litellm"))
+		}
+		if c.Gateway.APIKey == "" {
+			errs = append(errs, fmt.Errorf("gateway.api_key must be set when gateway.mode is litellm"))
+		}
 	}
 
 	// Providers
@@ -286,6 +340,32 @@ func deriveNative(cfg *Config) {
 	for i := range cfg.Models {
 		p := cfg.ProviderByID(cfg.Models[i].ProviderID)
 		cfg.Models[i].Native = p != nil && p.Auth.Type == "native"
+	}
+}
+
+// IsExposed reports whether m should appear in wt's model catalog.
+// Native models are always exposed (they cannot route through LiteLLM).
+func (c *Config) IsExposed(m Model) bool {
+	if m.Native {
+		return true
+	}
+	return c.exposed[m.ID]
+}
+
+// SetExposedForTest replaces the in-memory exposed set. Tests only.
+func (c *Config) SetExposedForTest(exposed map[string]bool) {
+	c.exposed = exposed
+}
+
+// ExposeAllForTest marks every non-native model in cfg as exposed. Tests only.
+func (c *Config) ExposeAllForTest() {
+	if c.exposed == nil {
+		c.exposed = make(map[string]bool)
+	}
+	for _, m := range c.Models {
+		if !m.Native {
+			c.exposed[m.ID] = true
+		}
 	}
 }
 
@@ -516,6 +596,9 @@ func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error)
 			}
 		}
 		if len(familySet) > 0 && !familySet[m.Family] {
+			continue
+		}
+		if !c.IsExposed(m) {
 			continue
 		}
 		out = append(out, m)

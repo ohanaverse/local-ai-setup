@@ -17,7 +17,7 @@ import (
 // the agent filter, tag filter, and rotation all have something to
 // operate on.
 func testConfig() *config.Config {
-	return &config.Config{
+	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
 			{ID: "ollama"},
@@ -31,6 +31,8 @@ func testConfig() *config.Config {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
+	cfg.ExposeAllForTest()
+	return cfg
 }
 
 // TestInitLoadsEntries asserts Init starts background worktree enumeration.
@@ -704,6 +706,7 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
+	cfg.ExposeAllForTest()
 	m := phaseModelWithList(t, cfg, "claude", "code")
 	m.selectedPath = "/repo"
 
@@ -741,6 +744,32 @@ func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 	// Should have produced a command (either launch or resume prompt).
 	if cmd == nil {
 		t.Fatal("expected a command from enter on non-ollama model")
+	}
+}
+
+// TestNoOllamaWarnInLitellmMode asserts that the ollama availability check is
+// skipped when the gateway is in litellm mode. In gateway mode models may be
+// served by any upstream behind LiteLLM, so a model absent from `ollama list`
+// must not trigger the unavailable-model warning.
+func TestNoOllamaWarnInLitellmMode(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		Providers:  []config.Provider{{ID: "ollama"}},
+		Models: []config.Model{
+			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+	m := phaseModelWithList(t, cfg, "claude", "code")
+	m.selectedPath = "/repo"
+
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := newM.(model)
+
+	if mm.phase == phaseOllamaWarn {
+		t.Fatal("expected no ollama warn in litellm mode")
 	}
 }
 

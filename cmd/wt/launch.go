@@ -131,18 +131,23 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 
 	// Fail fast if the selected ollama model is not available locally.
 	// This runs before session lookup and full command construction so we
-	// don't waste work on a model we can't launch.
-	ok, oerr := ollamacheck.Check(m)
-	if oerr != nil {
-		// Print the summary before returning so the user sees the same
-		// post-run line on pre-launch config errors as on a real exit.
-		// Duration is 0 — the subprocess never started.
-		fmt.Println("\n" + agents.Summary(agent, m, 0))
-		return fmt.Errorf("ollama check failed: %w", oerr)
-	}
-	if !ok {
-		fmt.Println("\n" + agents.Summary(agent, m, 0))
-		return ollamaUnavailableError(m.ModelName)
+	// don't waste work on a model we can't launch. In gateway (litellm) mode
+	// the check is skipped: models may be served by any upstream behind
+	// LiteLLM (llama.cpp, oMLX, OpenRouter), not just local ollama, so a
+	// model absent from `ollama list` must not hard-block the launch.
+	if !cfg.Gateway.IsLitellm() {
+		ok, oerr := ollamacheck.Check(m)
+		if oerr != nil {
+			// Print the summary before returning so the user sees the same
+			// post-run line on pre-launch config errors as on a real exit.
+			// Duration is 0 — the subprocess never started.
+			fmt.Println("\n" + agents.Summary(agent, m, 0))
+			return fmt.Errorf("ollama check failed: %w", oerr)
+		}
+		if !ok {
+			fmt.Println("\n" + agents.Summary(agent, m, 0))
+			return ollamaUnavailableError(m.ModelName)
+		}
 	}
 
 	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)

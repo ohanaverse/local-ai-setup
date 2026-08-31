@@ -34,7 +34,7 @@ func (claudeDriver) LatestSession(path string) (*session.Session, error) {
 	})
 }
 
-func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
+func (claudeDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	args := []string{}
 	if yolo {
 		args = append(args, claudeDriver{}.YoloFlag())
@@ -52,6 +52,16 @@ func (claudeDriver) Build(m config.Model, yolo bool) LaunchCmd {
 		if m.ModelName != "native" {
 			lc.Args = append(lc.Args, "--model", m.ModelName)
 		}
+		return lc
+	}
+
+	if gw.IsLitellm() {
+		lc.Env = append(lc.Env,
+			"ANTHROPIC_AUTH_TOKEN="+gw.APIKey,
+			"ANTHROPIC_API_KEY=",
+			"ANTHROPIC_BASE_URL="+gw.BaseURL(),
+		)
+		lc.Args = append(lc.Args, "--model", m.ID)
 		return lc
 	}
 

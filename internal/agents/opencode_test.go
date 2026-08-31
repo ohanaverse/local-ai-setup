@@ -4,9 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/agent-worktree/internal/config"
 	"github.com/ohanaverse/agent-worktree/internal/session"
 )
 
@@ -93,4 +95,37 @@ func TestOpenCodeOllamaURL(t *testing.T) {
 	if got := u.OllamaURL(); got != "http://localhost:11434/v1" {
 		t.Errorf("OllamaURL() = %q, want http://localhost:11434/v1", got)
 	}
+}
+
+// TestOpenCodeBuildLitellm asserts that in gateway mode opencode routes through
+// the LiteLLM OpenAI-compatible /v1 endpoint with the registry id as the model,
+// instead of silently bypassing the gateway (the spec's "fail fast, no silent
+// fallback" decision).
+func TestOpenCodeBuildLitellm(t *testing.T) {
+	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
+	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := opencodeDriver{}.Build(m, false, gw)
+	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
+	if !strings.Contains(content, `"model":"openai/ollama/qwen3.8:27b-mlx"`) {
+		t.Errorf("config content = %s, want model openai/ollama/qwen3.8:27b-mlx", content)
+	}
+	if !strings.Contains(content, `"baseURL":"http://localhost:4000/v1"`) {
+		t.Errorf("config content = %s, want baseURL http://localhost:4000/v1", content)
+	}
+	if !strings.Contains(content, `"apiKey":"sk-litellm"`) {
+		t.Errorf("config content = %s, want apiKey sk-litellm", content)
+	}
+}
+
+// envValue returns the value of key in env, failing the test if absent.
+func envValue(t *testing.T, env []string, key string) string {
+	t.Helper()
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return strings.TrimPrefix(e, prefix)
+		}
+	}
+	t.Fatalf("env %s not found in %v", key, env)
+	return ""
 }

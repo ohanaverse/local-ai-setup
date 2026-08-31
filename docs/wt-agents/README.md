@@ -2,6 +2,17 @@
 
 Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims in [`bin/`](../../bin/)). Each file documents how the underlying agent is configured on disk and how it authenticates. The `*-wt` files are now thin shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`); the launch logic lives in the Go tool (`cmd/wt/`, `internal/agents/`).
 
+## Migrating to modelman exposure
+
+After this update, `wt` only shows non-native models that have `litellm_exposed = true`
+in `~/.config/local-ai/modelman.toml`. To make a model available in `wt`, run:
+
+```bash
+uv run modelman expose ollama/<model>
+```
+
+Native models (`claude/native`, `copilot/native`) are always shown and do not need to be exposed.
+
 ## Scope
 
 These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, rotation, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.

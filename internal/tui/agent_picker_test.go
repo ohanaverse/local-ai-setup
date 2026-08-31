@@ -132,6 +132,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
+	cfg.ExposeAllForTest()
 
 	// Build a model in phaseAgent (where phaseAgent Enter fires).
 	// The picker list is built from buildAgentList so Enter advances
@@ -185,7 +186,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 // below; mirrors the catalog-narrowing shape of TestPhaseModelHonorsFilters
 // but with one item, so EligibleModels returns a 1-element slice.
 func singleModelConfig() *config.Config {
-	return &config.Config{
+	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "ollama"}},
 		Models: []config.Model{
@@ -195,6 +196,8 @@ func singleModelConfig() *config.Config {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
+	cfg.ExposeAllForTest()
+	return cfg
 }
 
 // buildModelInPhaseAgent constructs a model in phaseAgent with the agent

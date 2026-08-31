@@ -162,6 +162,6 @@ type stubDriver struct {
 }
 
 func (stubDriver) YoloFlag() string { return "" }
-func (d stubDriver) Build(_ config.Model, _ bool) agents.LaunchCmd {
+func (d stubDriver) Build(_ config.Model, _ bool, _ agents.Gateway) agents.LaunchCmd {
 	return agents.LaunchCmd{Bin: d.path}
 }

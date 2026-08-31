@@ -30,6 +30,14 @@ func RegistryPath() string {
 	return filepath.Join(baseConfigHome(), "local-ai", "registry.toml")
 }
 
+// ModelmanPath returns the modelman-owned modelman.toml location. It uses the
+// same XDG base-directory resolution as RegistryPath(): XDG_CONFIG_HOME (with
+// tilde expansion), falling back to ~/.config. It does NOT honor
+// MODELMAN_REGISTRY. wt reads this file read-only.
+func ModelmanPath() string {
+	return filepath.Join(baseConfigHome(), "local-ai", "modelman.toml")
+}
+
 // expandHome expands a leading "~" or "~/" in path to the user's home
 // directory, matching Python's Path.expanduser() semantics used by
 // modelman's _default_registry_path so MODELMAN_REGISTRY behaves the same

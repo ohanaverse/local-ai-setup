@@ -421,6 +421,13 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		0o644); err != nil {
 		t.Fatalf("write registry: %v", err)
 	}
+	// Expose the ollama model through the LiteLLM gateway so the
+	// auto-launch short-circuit sees it as eligible.
+	if err := os.WriteFile(filepath.Join(regDir, "modelman.toml"),
+		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\n"),
+		0o644); err != nil {
+		t.Fatalf("write modelman state: %v", err)
+	}
 
 	called := false
 	oldLaunchFiltered := launchFiltered

@@ -384,17 +384,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// NOT recorded here: the user can still cancel the ollama
 				// warning or the resume prompt, or the check can fail, and
 				// in none of those cases did a launch happen. Recording
-				// lives in launchAndRecord, the single commit point.
-				ok, err := ollamacheck.Check(highlighted.model)
-				if err != nil {
-					m.status = "ollama check failed: " + err.Error()
-					return m, nil
-				}
-				if !ok {
-					m.ollamaWarnModel = list.New(buildOllamaChoices(), ThemedListDelegate(m.theme), m.width-2, m.height-2)
-					m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
-					m.phase = phaseOllamaWarn
-					return m, nil
+				// lives in launchAndRecord, the single commit point. In
+				// gateway (litellm) mode the check is skipped: models may be
+				// served by any upstream behind LiteLLM, not just local
+				// ollama, so an absent `ollama list` entry must not warn.
+				if !m.cfg.Gateway.IsLitellm() {
+					ok, err := ollamacheck.Check(highlighted.model)
+					if err != nil {
+						m.status = "ollama check failed: " + err.Error()
+						return m, nil
+					}
+					if !ok {
+						m.ollamaWarnModel = list.New(buildOllamaChoices(), ThemedListDelegate(m.theme), m.width-2, m.height-2)
+						m.ollamaWarnModel.Title = "Model not available: " + highlighted.model.ModelName
+						m.phase = phaseOllamaWarn
+						return m, nil
+					}
 				}
 				return m.proceedToLaunch()
 			case phaseResume:

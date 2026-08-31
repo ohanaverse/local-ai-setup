@@ -175,6 +175,7 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
+	cfg.ExposeAllForTest()
 
 	// Two models, no -M → resolveModel errors with "multiple models match".
 	// Any ambiguous eligible list errors so callers can route through
@@ -346,6 +347,48 @@ func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
 	}
 }
 
+// TestLaunchFilteredSkipsOllamaCheckInLitellm verifies that the local ollama
+// availability check is skipped when the gateway is in litellm mode. In
+// gateway mode models may be served by any upstream behind LiteLLM (llama.cpp,
+// oMLX, OpenRouter), so a model absent from `ollama list` must not hard-block
+// the launch — the model can never be pulled because it is not an ollama model.
+func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+
+	// Install a fake claude binary so launchFiltered can execute without
+	// requiring the real CLI on PATH.
+	binDir := t.TempDir()
+	claudeBin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal},
+		},
+		Models: []config.Model{
+			// A model that is definitely not in `ollama list` — in direct mode
+			// this would abort with the unavailable-model error.
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	cfg.ExposeAllForTest()
+
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+		t.Fatalf("launchFiltered in litellm mode: %v", err)
+	}
+}
+
 // TestLaunchFilteredUsesEligibleAndSlot verifies that the non-TUI launch path
 // (a) calls cfg.EligibleModels to resolve the model list, (b) consults the
 // global rotation via rotation.Last/rotation.Next (no per-slot state) to
@@ -372,6 +415,7 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
+	cfg.ExposeAllForTest()
 
 	// Two eligible models, no -M → resolveModel errors with "multiple models
 	// match". The defaultModel fallback is gone, so any ambiguous eligible
@@ -431,6 +475,7 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
+	cfg.ExposeAllForTest()
 
 	want := []string{"claude/a", "claude/b", "claude/c"}
 	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
@@ -485,6 +530,7 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
+	cfg.ExposeAllForTest()
 
 	if err := rotation.New().Record("claude/design-a"); err != nil {
 		t.Fatalf("seed rotation state: %v", err)

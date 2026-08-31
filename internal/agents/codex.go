@@ -23,7 +23,7 @@ const ollamaProvider = "agent-wt"
 
 func (codexDriver) OllamaURL() string { return "http://localhost:11434/v1/" }
 
-func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
+func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	lc := LaunchCmd{Bin: "codex"}
 	if yolo {
 		lc.Args = append(lc.Args, codexDriver{}.YoloFlag())
@@ -33,14 +33,23 @@ func (codexDriver) Build(m config.Model, yolo bool) LaunchCmd {
 	// expected behavior for an explicit native choice). Ollama-routed models get
 	// the Ollama endpoint declared inline so codex never falls back to "openai"
 	// auth and prompts to sign in.
-	if !m.Native {
-		lc.Args = append(lc.Args,
-			"-c", "model_provider="+ollamaProvider,
-			"-c", "model_providers."+ollamaProvider+".name=\"Ollama\"",
-			"-c", "model_providers."+ollamaProvider+".base_url=\""+codexDriver{}.OllamaURL()+"\"",
-			"-c", "model_providers."+ollamaProvider+".wire_api=\"responses\"",
-			"--model", m.ModelName,
-		)
+	if m.Native {
+		return lc
 	}
+
+	baseURL := codexDriver{}.OllamaURL()
+	modelName := m.ModelName
+	if gw.IsLitellm() {
+		baseURL = gw.BaseURL() + "/v1/"
+		modelName = m.ID
+	}
+
+	lc.Args = append(lc.Args,
+		"-c", "model_provider="+ollamaProvider,
+		"-c", "model_providers."+ollamaProvider+".name=\"Ollama\"",
+		"-c", "model_providers."+ollamaProvider+".base_url=\""+baseURL+"\"",
+		"-c", "model_providers."+ollamaProvider+".wire_api=\"responses\"",
+		"--model", modelName,
+	)
 	return lc
 }

@@ -51,6 +51,18 @@ ANTHROPIC_BASE_URL="http://localhost:11434"
 
 The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
 
+### Gateway mode (LiteLLM)
+
+When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `claude-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The launcher sets:
+
+```bash
+ANTHROPIC_AUTH_TOKEN="<gateway.api_key>"
+ANTHROPIC_API_KEY=""
+ANTHROPIC_BASE_URL="http://localhost:4000"  # trailing slash is normalized
+```
+
+The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[gateway].api_key` and is forwarded to the LiteLLM proxy as the provider's auth token. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and ignore the gateway.
+
 ## Session resume
 
 `wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.

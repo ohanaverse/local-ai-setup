@@ -56,6 +56,20 @@ Codex picks a model from `--model <name>` (or a `--profile <name>` + `-m <model>
 
 Codex reads `AGENTS.md` natively, so no pointer file is needed.
 
+### Gateway mode (LiteLLM)
+
+When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `codex-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The provider block becomes:
+
+```
+-c model_provider=agent-wt
+-c 'model_providers.agent-wt.name="Ollama"'
+-c 'model_providers.agent-wt.base_url="http://localhost:4000/v1/"'  # trailing slash normalized
+-c 'model_providers.agent-wt.wire_api="responses"'
+--model <registry-model-id>
+```
+
+The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[gateway].api_key`. Native models (`codex/native`) continue to use codex's own subscription and ignore the gateway.
+
 ## Verified on this machine
 
 Ollama-routed `codex-wt` launches reproduce a `provider: ollama-launch`-style run against the local `http://127.0.0.1:11434` gateway with no sign-in prompt and no `~/.codex/` file writes, even with no `~/.codex/auth.json` and no `model_provider` set in the user's `config.toml`. The provider name shown in codex's banner is the configured `agent-wt` provider. Statements about codex CLI behavior are sourced from the [Codex CLI docs](https://developers.openai.com/codex/cli/) and the [Ollama Codex integration guide](https://docs.ollama.com/integrations/codex). Re-verify after codex CLI upgrades.

@@ -45,6 +45,20 @@ pi-wt: synced N model(s) to pi models.json
 
 For `pi/native` (the launcher's "use pi's own default" sentinel), `pi-wt` execs `pi` with no `--model` flag and lets pi (or the LiteLLM wrapper, if present) choose.
 
+### Gateway mode (LiteLLM)
+
+When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `pi-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The auto-sync step updates the `ollama` provider in `~/.pi/agent/models.json` to:
+
+```json
+{
+  "api": "openai-completions",
+  "baseUrl": "http://localhost:4000/v1",
+  "apiKey": "<gateway.api_key>"
+}
+```
+
+Synced models use the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`) as their `id`, and `pi-wt` passes `--model <registry-model-id>`. The API key comes from `[gateway].api_key`. Native models (`pi/native`) continue to use pi's default provider and ignore the gateway.
+
 ## Agent init
 
 `pi-wt --init` seeds project-level instruction files:

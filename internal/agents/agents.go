@@ -21,11 +21,17 @@ type LaunchCmd struct {
 	Warn     string   // printed to stderr by Command when non-empty
 }
 
+// Gateway carries the routing target for non-native models. It is an alias
+// for config.GatewayConfig so the mode predicates and BaseURL helper live in
+// one place (the config package) and cannot drift from the TOML-loaded type.
+type Gateway = config.GatewayConfig
+
 // Driver knows how to build a launch command for one agent.
 type Driver interface {
 	// Build returns the command to run agent for the given model.
 	// yolo adds the agent's skip-permissions flag.
-	Build(m config.Model, yolo bool) LaunchCmd
+	// gw carries the configured gateway routing target.
+	Build(m config.Model, yolo bool, gw Gateway) LaunchCmd
 	// YoloFlag is the agent's permission-skip flag.
 	YoloFlag() string
 }
@@ -260,6 +266,10 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	if d == nil {
 		return nil, fmt.Errorf("unknown agent: %s", agent)
 	}
+	gw := Gateway{}
+	if cfg != nil {
+		gw = cfg.Gateway
+	}
 	if s, ok := d.(Syncer); ok {
 		if err := s.SyncModels(cfg); err != nil {
 			return nil, err
@@ -271,7 +281,7 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 		as.SetArgs(extraArgs)
 		extraArgs = nil
 	}
-	cmd, err := Command(d, m, yolo, worktreePath)
+	cmd, err := Command(d, m, yolo, gw, worktreePath)
 	if err != nil {
 		return nil, err
 	}
@@ -293,8 +303,8 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 
 // Command resolves the agent binary and returns an exec.Cmd ready to run in
 // workdir, with the driver's extra env merged over the inherited environment.
-func Command(d Driver, m config.Model, yolo bool, workdir string) (*exec.Cmd, error) {
-	lc := d.Build(m, yolo)
+func Command(d Driver, m config.Model, yolo bool, gw Gateway, workdir string) (*exec.Cmd, error) {
+	lc := d.Build(m, yolo, gw)
 	bin, err := exec.LookPath(lc.Bin)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s not installed", lc.Bin)

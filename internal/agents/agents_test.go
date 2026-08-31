@@ -33,6 +33,8 @@ func localModel(id string) config.Model {
 	return config.Model{ID: id, ModelName: id, Location: config.LocationLocal}
 }
 
+func directGateway() Gateway { return Gateway{Mode: "direct"} }
+
 // ollamaCloudModel mirrors cloudModel but with a real ProviderID, so the
 // provider-keyed driver dispatch reaches the ollama branch (cloudModel
 // leaves ProviderID empty, which silently routes through the native
@@ -66,6 +68,30 @@ func TestByNameUnknown(t *testing.T) {
 	}
 }
 
+// Gateway.BaseURL must strip any trailing slash from the configured URL
+// before drivers append their protocol-specific /v1 or /v1/ suffix.
+// Without this, a user-configured URL like "http://localhost:4000/" would
+// produce double slashes (e.g. "http://localhost:4000//v1") and the agent
+// would fail to connect. TrimRight (not TrimSuffix) so a double-slash typo
+// is normalized too.
+func TestGatewayBaseURLTrim(t *testing.T) {
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"http://localhost:4000", "http://localhost:4000"},
+		{"http://localhost:4000/", "http://localhost:4000"},
+		{"http://localhost:4000//", "http://localhost:4000"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := Gateway{URL: c.url}.BaseURL()
+		if got != c.want {
+			t.Errorf("BaseURL(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+}
+
 // The Claude driver handles three cases: native sentinel (no args/env,
 // clears the inherited gateway vars), native named (passes --model,
 // clears the inherited gateway vars), and ollama cloud (sets the
@@ -81,7 +107,7 @@ func TestClaude(t *testing.T) {
 	// Native sentinel — no args/env, but clears the inherited ANTHROPIC_*
 	// gateway vars so the native subscription is used instead of routing
 	// to ollama.
-	lc := d.Build(nativeModel("claude"), false)
+	lc := d.Build(nativeModel("claude"), false, directGateway())
 	if lc.Bin != "claude" || len(lc.Args) != 0 || len(lc.Env) != 0 {
 		t.Errorf("native build = %+v, want bare claude", lc)
 	}
@@ -92,7 +118,7 @@ func TestClaude(t *testing.T) {
 	}
 
 	// Ollama cloud — env gateway + --model.
-	lc = d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false)
+	lc = d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false, directGateway())
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
 		t.Errorf("cloud args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
@@ -101,7 +127,7 @@ func TestClaude(t *testing.T) {
 	}
 
 	// Yolo flag prepended.
-	lc = d.Build(ollamaCloudModel("x"), true)
+	lc = d.Build(ollamaCloudModel("x"), true, directGateway())
 	if len(lc.Args) < 1 || lc.Args[0] != "--dangerously-skip-permissions" {
 		t.Errorf("yolo args = %v, want leading --dangerously-skip-permissions", lc.Args)
 	}
@@ -135,18 +161,18 @@ func TestCodex(t *testing.T) {
 	if d == nil {
 		t.Fatal("codex driver not registered")
 	}
-	lc := d.Build(cloudModel("deepseek-v4-pro:cloud"), false)
+	lc := d.Build(cloudModel("deepseek-v4-pro:cloud"), false, directGateway())
 	if !slices.Equal(lc.Args, codexProviderArgs("deepseek-v4-pro:cloud")) {
 		t.Errorf("args = %v, want %v", lc.Args, codexProviderArgs("deepseek-v4-pro:cloud"))
 	}
 	if len(lc.Env) != 0 {
 		t.Errorf("env = %v, want none", lc.Env)
 	}
-	if d.Build(nativeModel("codex"), false).Args != nil {
+	if d.Build(nativeModel("codex"), false, directGateway()).Args != nil {
 		t.Errorf("native build should have no args")
 	}
 	// yolo prepends the approval-skip flag ahead of the provider block.
-	yl := d.Build(cloudModel("deepseek-v4-pro:cloud"), true)
+	yl := d.Build(cloudModel("deepseek-v4-pro:cloud"), true, directGateway())
 	if len(yl.Args) < 1 || yl.Args[0] != "--dangerously-bypass-approvals-and-sandbox" {
 		t.Errorf("yolo args = %v, want first flag to be the approval-skip", yl.Args)
 	}
@@ -162,7 +188,7 @@ func TestCopilot(t *testing.T) {
 	if d == nil {
 		t.Fatal("copilot driver not registered")
 	}
-	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false)
+	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false, directGateway())
 	if len(lc.Args) != 0 {
 		t.Errorf("copilot should not pass --model, got args %v", lc.Args)
 	}
@@ -175,12 +201,12 @@ func TestCopilot(t *testing.T) {
 	if !hasEnv(lc.Env, "COPILOT_PROVIDER_WIRE_API=responses") {
 		t.Errorf("env missing wire api: %v", lc.Env)
 	}
-	if len(d.Build(nativeModel("copilot"), false).Env) != 0 {
+	if len(d.Build(nativeModel("copilot"), false, directGateway()).Env) != 0 {
 		t.Errorf("native build should have no env")
 	}
 	// Native must clear the inherited COPILOT_* gateway vars so the native
 	// subscription is used instead of routing to ollama.
-	clear := d.Build(nativeModel("copilot"), false).ClearEnv
+	clear := d.Build(nativeModel("copilot"), false, directGateway()).ClearEnv
 	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_WIRE_API", "COPILOT_MODEL"} {
 		if !slices.Contains(clear, k) {
 			t.Errorf("native ClearEnv = %v, want it to include %q", clear, k)
@@ -197,7 +223,7 @@ func TestOpenCode(t *testing.T) {
 	if d == nil {
 		t.Fatal("opencode driver not registered")
 	}
-	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false)
+	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false, directGateway())
 	if len(lc.Args) != 0 {
 		t.Errorf("opencode should not pass --model, got args %v", lc.Args)
 	}
@@ -242,7 +268,7 @@ func TestPiYoloFlag(t *testing.T) {
 func TestPiBuildVerified(t *testing.T) {
 	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"deepseek-v4-pro:cloud"}]}}}`)
 	d := ByName("pi")
-	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false)
+	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false, directGateway())
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
 		t.Errorf("args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
@@ -256,7 +282,7 @@ func TestPiBuildVerified(t *testing.T) {
 func TestPiBuildNotVerified(t *testing.T) {
 	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":false,"id":"deepseek-v4-pro:cloud"}]}}}`)
 	d := ByName("pi")
-	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false)
+	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false, directGateway())
 	if len(lc.Args) != 0 {
 		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
 	}
@@ -269,7 +295,7 @@ func TestPiBuildNotVerified(t *testing.T) {
 func TestPiBuildMissingFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // no models.json created
 	d := ByName("pi")
-	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false)
+	lc := d.Build(config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}, false, directGateway())
 	if len(lc.Args) != 0 {
 		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
 	}
@@ -281,7 +307,7 @@ func TestPiBuildMissingFile(t *testing.T) {
 // Pi native models produce no args and no warning.
 func TestPiBuildNative(t *testing.T) {
 	d := ByName("pi")
-	lc := d.Build(nativeModel("pi"), false)
+	lc := d.Build(nativeModel("pi"), false, directGateway())
 	if len(lc.Args) != 0 || lc.Warn != "" {
 		t.Errorf("native build = %+v, want bare pi", lc)
 	}
@@ -296,11 +322,11 @@ func TestAgy(t *testing.T) {
 		t.Fatal("agy driver not registered")
 	}
 	// Model is ignored entirely.
-	lc := d.Build(cloudModel("anything"), false)
+	lc := d.Build(cloudModel("anything"), false, directGateway())
 	if len(lc.Args) != 0 || len(lc.Env) != 0 {
 		t.Errorf("agy build = %+v, want bare agy", lc)
 	}
-	lc = d.Build(cloudModel("anything"), true)
+	lc = d.Build(cloudModel("anything"), true, directGateway())
 	if len(lc.Args) != 1 || lc.Args[0] != "--dangerously-skip-permissions" {
 		t.Errorf("agy yolo args = %v, want [--dangerously-skip-permissions]", lc.Args)
 	}
@@ -326,7 +352,7 @@ func TestCommand(t *testing.T) {
 	m := cloudModel("test-model")
 	workdir := "/tmp"
 
-	cmd, err := Command(d, m, false, workdir)
+	cmd, err := Command(d, m, false, directGateway(), workdir)
 	if err != nil {
 		// pi may not be installed; that's fine, just verify the error is clear.
 		if !strings.Contains(err.Error(), "not installed") {
@@ -352,7 +378,7 @@ func TestCommandClearsInheritedEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "http://localhost:11434")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ollama")
 
-	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, "/tmp")
+	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, directGateway(), "/tmp")
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
@@ -413,7 +439,7 @@ func TestBuildLaunchCmdShellNoDoubleAppend(t *testing.T) {
 // binary so tests always run without requiring a real agent to be installed.
 type regularTestDriver struct{}
 
-func (regularTestDriver) Build(_ config.Model, _ bool) LaunchCmd {
+func (regularTestDriver) Build(_ config.Model, _ bool, _ Gateway) LaunchCmd {
 	return LaunchCmd{Bin: "bash"}
 }
 func (regularTestDriver) YoloFlag() string { return "" }
@@ -442,7 +468,7 @@ func hasEnvKey(env []string, key string) bool {
 // verify Command strips them from the inherited environment.
 type clearEnvDriver struct{}
 
-func (clearEnvDriver) Build(_ config.Model, _ bool) LaunchCmd {
+func (clearEnvDriver) Build(_ config.Model, _ bool, _ Gateway) LaunchCmd {
 	return LaunchCmd{Bin: "true", ClearEnv: []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"}}
 }
 func (clearEnvDriver) YoloFlag() string { return "" }
@@ -451,7 +477,7 @@ func (clearEnvDriver) YoloFlag() string { return "" }
 // to verify Command surfaces it on stderr.
 type warnDriver struct{}
 
-func (warnDriver) Build(m config.Model, yolo bool) LaunchCmd {
+func (warnDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	return LaunchCmd{Bin: "true", Warn: "test warning"}
 }
 func (warnDriver) YoloFlag() string { return "" }
@@ -467,7 +493,7 @@ func TestCommandPrintsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stderr = w
-	_, cmdErr := Command(warnDriver{}, config.Model{}, false, "/tmp")
+	_, cmdErr := Command(warnDriver{}, config.Model{}, false, directGateway(), "/tmp")
 	w.Close()
 	os.Stderr = old
 	if cmdErr != nil {
@@ -503,7 +529,7 @@ func TestClaudeOllamaPrefix(t *testing.T) {
 	if d == nil {
 		t.Fatal("claude driver not registered")
 	}
-	lc := d.Build(ollamaPrefixedModel(), false)
+	lc := d.Build(ollamaPrefixedModel(), false, directGateway())
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" {
 		t.Fatalf("args = %v, want [--model <name>]", lc.Args)
 	}
@@ -532,7 +558,7 @@ func TestCodexOllamaPrefix(t *testing.T) {
 	if d == nil {
 		t.Fatal("codex driver not registered")
 	}
-	lc := d.Build(ollamaPrefixedModel(), false)
+	lc := d.Build(ollamaPrefixedModel(), false, directGateway())
 	if !slices.Equal(lc.Args, codexProviderArgs("deepseek-v4-pro:cloud")) {
 		t.Fatalf("args = %v, want %v", lc.Args, codexProviderArgs("deepseek-v4-pro:cloud"))
 	}
@@ -560,7 +586,7 @@ func TestCopilotOllamaPrefix(t *testing.T) {
 	if d == nil {
 		t.Fatal("copilot driver not registered")
 	}
-	lc := d.Build(ollamaPrefixedModel(), false)
+	lc := d.Build(ollamaPrefixedModel(), false, directGateway())
 	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
 		t.Errorf("COPILOT_MODEL missing or wrong; env = %v", lc.Env)
 	}
@@ -594,7 +620,7 @@ func TestOpenCodeOllamaPrefix(t *testing.T) {
 	if d == nil {
 		t.Fatal("opencode driver not registered")
 	}
-	lc := d.Build(ollamaPrefixedModel(), false)
+	lc := d.Build(ollamaPrefixedModel(), false, directGateway())
 	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want single OPENCODE_CONFIG_CONTENT entry", lc.Env)
 	}
@@ -636,7 +662,7 @@ func TestClaudeNativeProviderNamed(t *testing.T) {
 	if d == nil {
 		t.Fatal("claude driver not registered")
 	}
-	lc := d.Build(namedNativeModel("claude", "opus"), false)
+	lc := d.Build(namedNativeModel("claude", "opus"), false, directGateway())
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "opus" {
 		t.Errorf("args = %v, want [--model opus]", lc.Args)
 	}
@@ -660,7 +686,7 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 	if d == nil {
 		t.Fatal("copilot driver not registered")
 	}
-	lc := d.Build(namedNativeModel("copilot", "auto"), false)
+	lc := d.Build(namedNativeModel("copilot", "auto"), false, directGateway())
 	if len(lc.Args) != 0 {
 		t.Errorf("args = %v, want none", lc.Args)
 	}
