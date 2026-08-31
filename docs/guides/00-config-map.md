@@ -241,7 +241,7 @@ CODE_MODELS=(
 
 - **Owner:** `wt` (single global rotation file; per-slot files legacy).
 - **Consumers:** `wt` (rotation cursor), `modelman usage` (last-launched model).
-- **Purpose:** rotation position — the file body is just the model id of the last launch. The `rotation-claude-code-_.state` / `rotation-pi-code-_.state` files on this machine are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/agent-worktree/internal/rotation/rotation.go:138-175`).
+- **Purpose:** rotation position — the file body is just the model id of the last launch. The `rotation-claude-code-_.state` / `rotation-pi-code-_.state` files on this machine are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/local-ai-setup/wt/internal/rotation/rotation.go:138-175`).
 
 ```
 ollama/glm-5.3-flash:cloud
@@ -316,7 +316,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 
 - Service setup (plists above): `/Users/keith/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
 - modelman file semantics + CLI: `/Users/keith/github/ohanaverse/modelman/README.md`
-- wt config/registry relationship: `/Users/keith/github/ohanaverse/agent-worktree/README.md`
-- wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md`
-- Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
+- wt config/registry relationship: `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
+- wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
+- Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - oMLX backend reference: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
