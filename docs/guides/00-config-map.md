@@ -13,7 +13,7 @@ None — this is a reference doc, not a procedure.
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
 | `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) | `wt` (read-only), LiteLLM exposure | Canonical providers + models |
-| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` | Per-machine state: downloads, LiteLLM exposure flags, family display names |
+| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only for `litellm_exposed`) | Per-machine state: downloads, LiteLLM exposure flags, family display names |
 | `~/.config/local-ai/settings.yaml` | `modelman` | `modelman` | User preferences (theme) |
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
 | `~/.config/local-ai/families/*.yaml` | pre-registry modelman tooling | `modelman migrate` (read-only input) | Legacy per-family variants + download markers |
@@ -183,6 +183,7 @@ model_list:
 - **Owner:** `wt` (`wt config` editor; writes atomically on save).
 - **Consumers:** `wt` only.
 - **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — modelman owns those in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
+- `[gateway]` is a new wt-owned section for routing agents through LiteLLM.
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
 - **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default agent-worktree `config.toml` to import from.

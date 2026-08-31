@@ -86,6 +86,28 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
 
 **Stale-binary delta:** the installed 2026-08-27 build predates the merge and still serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`. Its picker therefore misses registry-only entries (`medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`). Same flags, different catalog — rebuild (Prerequisites) before trusting the picker.
 
+### LiteLLM gateway mode
+
+By default wt agents talk directly to Ollama (`localhost:11434`). To route
+non-native traffic through the LiteLLM proxy (`localhost:4000`) and populate
+the dashboard, add `[gateway]` to `~/.config/agent-wt/config.toml`:
+
+```toml
+[gateway]
+mode    = "litellm"
+url     = "http://localhost:4000"
+api_key = "sk-…"
+```
+
+In this mode:
+- wt only shows models with `litellm_exposed = true` in `modelman.toml`.
+- The model name passed to agents is the registry id (e.g.
+  `ollama/qwen3.8:27b-mlx`), matching LiteLLM's `model_list` entries.
+- Native models (`claude/native`, `copilot/native`) still use their own
+  subscriptions and are always shown.
+- OpenCode continues to use Ollama directly until its OpenAI-compatible
+  provider block is confirmed.
+
 ### 4. Rotation
 
 - Launching a model **advances rotation**: the picker cursor (and any model-less launch) lands on the next eligible model after the last-launched one. There is no key or command to advance manually.
