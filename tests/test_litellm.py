@@ -286,3 +286,56 @@ def test_reverse_model_index_skips_non_dict_rows():
     ]
     index = _reverse_model_index(model_list)
     assert index == {"m": "ollama/a"}
+
+
+def test_default_restart_cmd_unset(monkeypatch):
+    monkeypatch.delenv("MODELMAN_LITELLM_RESTART_CMD", raising=False)
+    from modelman.litellm import default_litellm_restart_cmd
+
+    assert default_litellm_restart_cmd() is None
+
+
+def test_default_restart_cmd_set(monkeypatch):
+    monkeypatch.setenv("MODELMAN_LITELLM_RESTART_CMD", "echo restart")
+    from modelman.litellm import default_litellm_restart_cmd
+
+    assert default_litellm_restart_cmd() == "echo restart"
+
+
+def test_restart_proxy_noop_when_unset(monkeypatch):
+    monkeypatch.delenv("MODELMAN_LITELLM_RESTART_CMD", raising=False)
+    from modelman.litellm import restart_litellm_proxy
+
+    # Returns a warning (not a stderr print) telling the user to restart
+    # the proxy manually; must not raise.
+    warnings = restart_litellm_proxy()
+    assert len(warnings) == 1
+    assert "restart" in warnings[0].lower()
+
+
+def test_restart_proxy_runs_command(monkeypatch):
+    monkeypatch.setenv("MODELMAN_LITELLM_RESTART_CMD", "echo restarted")
+    import subprocess
+
+    calls = []
+
+    def fake_run(cmd, *, shell, check, timeout):
+        calls.append((cmd, shell, check, timeout))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    from modelman.litellm import restart_litellm_proxy
+
+    # No warnings on success.
+    assert restart_litellm_proxy() == []
+    assert calls == [("echo restarted", True, True, 30)]
+
+
+def test_restart_proxy_failure_is_nonfatal(monkeypatch):
+    monkeypatch.setenv("MODELMAN_LITELLM_RESTART_CMD", "false")
+    from modelman.litellm import restart_litellm_proxy
+
+    # Must not raise; returns a warning instead.
+    warnings = restart_litellm_proxy()
+    assert len(warnings) == 1
+    assert "restart" in warnings[0].lower()

@@ -33,8 +33,11 @@ Toggle `litellm_exposed`; write/remove `model_list` entries in LiteLLM's
 | PR | Scope | Status |
 |---|---|---|
 | — | `expose`/`unexpose` CLI + TUI `l` key; write/remove `model_list` entries | ✅ done |
+| — | reconcile running proxy after expose changes (restart via `MODELMAN_LITELLM_RESTART_CMD`) | ✅ done |
 
 Spec: `docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
+
+Spec (reconcile): `docs/superpowers/specs/2026-08-31-modelman-litellm-proxy-reconcile-design.md`
 
 ## Phase 4 — wt consumer (cross-repo)
 

@@ -928,6 +928,66 @@ def test_apply_runs_expose_changes(tmp_path):
     assert config["model_list"][0]["model_name"] == "ollama/a"
 
 
+def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
+    from modelman.litellm import apply_expose_queue, save_litellm_config
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+    from modelman.state import ModelState, StateStore
+
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama", name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
+        ],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+    path = tmp_path / "config.yaml"
+    save_litellm_config({"model_list": [], "general_settings": {}}, path)
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
+    assert calls == ["restart"]
+    assert warnings == []
+
+
+def test_apply_expose_queue_no_restart_when_empty(tmp_path, monkeypatch):
+    from modelman.litellm import apply_expose_queue, save_litellm_config
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+    from modelman.state import StateStore
+
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama", name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
+        ],
+    )
+    state = StateStore()
+    path = tmp_path / "config.yaml"
+    save_litellm_config({"model_list": [], "general_settings": {}}, path)
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    outcomes, warnings = apply_expose_queue(registry, state, [], path)
+    assert calls == []
+    assert outcomes == []
+    assert warnings == []
+
+
 # ---------------------------------------------------------------------------
 # moves (family reassignment)
 # ---------------------------------------------------------------------------

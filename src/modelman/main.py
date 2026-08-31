@@ -113,12 +113,14 @@ def expose(
     registry = load_registry()
     state = load_state()
     try:
-        expose_model(registry, state, model_id, default_litellm_config_path())
+        warnings = expose_model(registry, state, model_id, default_litellm_config_path())
     except (ExposeError, LiteLLMConfigError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     save_state(state)
     typer.echo(f"Exposed {model_id} through LiteLLM.")
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 @app.command()
@@ -128,12 +130,14 @@ def unexpose(
     """Remove a model's LiteLLM model_list entry."""
     state = load_state()
     try:
-        unexpose_model(state, model_id, default_litellm_config_path())
+        warnings = unexpose_model(state, model_id, default_litellm_config_path())
     except (ExposeError, LiteLLMConfigError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     save_state(state)
     typer.echo(f"Unexposed {model_id}.")
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 if __name__ == "__main__":

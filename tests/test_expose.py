@@ -163,3 +163,61 @@ def test_unexpose_model_absent_from_registry_is_noop(tmp_path):
 
     assert load_litellm_config(path)["model_list"] == []
     assert "ollama/a" not in state.models
+
+
+def test_expose_model_restarts_proxy(tmp_path, monkeypatch):
+    registry = _registry()
+    state = _state()
+    path = _seed_config(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    expose_model(registry, state, "ollama/a", path)
+    assert calls == ["restart"]
+
+
+def test_unexpose_model_noop_does_not_restart_proxy(tmp_path, monkeypatch):
+    # Unexposing a model with no state entry (deleted earlier in the same
+    # apply) is a documented no-op: nothing changed, so the shared proxy
+    # must not be bounced. A needless `launchctl kickstart -k` would
+    # disrupt in-flight proxy requests for zero config change.
+    state = StateStore()
+    path = _seed_config(tmp_path)
+    save_litellm_config(
+        {"model_list": [{"model_name": "ollama/a", "litellm_params": {"model": "x"}}]},
+        path,
+    )
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    unexpose_model(state, "ollama/a", path)
+    assert calls == []
+
+
+def test_unexpose_model_restarts_proxy(tmp_path, monkeypatch):
+    registry = _registry()
+    state = _state()
+    path = _seed_config(tmp_path)
+    expose_model(registry, state, "ollama/a", path)
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
+    )
+    unexpose_model(state, "ollama/a", path)
+    assert calls == ["restart"]
+
+
+def test_expose_model_restart_failure_nonfatal(tmp_path, monkeypatch):
+    registry = _registry()
+    state = _state()
+    path = _seed_config(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("restart failed")
+
+    monkeypatch.setattr("modelman.litellm.subprocess.run", boom)
+    # Must not raise.
+    expose_model(registry, state, "ollama/a", path)
+    assert state.get("ollama/a").litellm_exposed is True

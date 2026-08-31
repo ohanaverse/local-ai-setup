@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -241,14 +242,22 @@ def save_litellm_config(config: dict[str, Any], path: Path) -> None:
         raise
 
 
-def _set_exposed_flag(state: StateStore, model_id: str, exposed: bool) -> None:
+def _set_exposed_flag(state: StateStore, model_id: str, exposed: bool) -> bool:
+    """Flip a model's litellm_exposed flag; return True if it changed.
+
+    Returns False when the flag was already at the target value, or when
+    unexposing a model with no state entry (e.g. it was deleted earlier in
+    this apply) — in that case there's nothing to clear and we must not
+    materialize an all-default row in modelman.toml. Callers use the
+    return value to decide whether a proxy restart is warranted.
+    """
     existing = state.get(model_id)
     if model_id not in state.models and not exposed:
-        # Unexposing a model with no state entry (e.g. it was deleted
-        # earlier in this apply) must not materialize an all-default
-        # row in modelman.toml — there's nothing to clear.
-        return
+        return False
+    if existing.litellm_exposed == exposed:
+        return False
     state.set(model_id, replace(existing, litellm_exposed=exposed))
+    return True
 
 
 def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> dict[str, Any]:
@@ -279,32 +288,43 @@ def expose_model(
     state: StateStore,
     model_id: str,
     litellm_path: Path,
-) -> None:
+) -> list[str]:
     """Expose a model through LiteLLM: write its model_list entry and flip
     the modelman.toml flag. Errors if the model is unknown, its provider
-    has no LiteLLM mapping, or it isn't ready (unless cloud)."""
+    has no LiteLLM mapping, or it isn't ready (unless cloud).
+
+    Returns non-fatal proxy-restart warnings (command unset or failed) so
+    the CLI can surface them; the TUI path uses apply_expose_queue instead.
+    """
     entry = _validated_entry(registry, state, model_id)
     config = load_litellm_config(litellm_path)
     set_exposed(config, model_id, entry)
     save_litellm_config(config, litellm_path)
-    _set_exposed_flag(state, model_id, True)
+    if _set_exposed_flag(state, model_id, True):
+        return restart_litellm_proxy()
+    return []
 
 
 def unexpose_model(
     state: StateStore,
     model_id: str,
     litellm_path: Path,
-) -> None:
+) -> list[str]:
     """Remove a model's model_list entry and clear its modelman.toml flag.
 
     A no-op success when the model no longer exists in the registry —
     e.g. it was deleted earlier in the same apply() cycle, after which
     the config row (keyed by id) is the only thing left to clean up.
+
+    Returns non-fatal proxy-restart warnings (command unset or failed) so
+    the CLI can surface them; the TUI path uses apply_expose_queue instead.
     """
     config = load_litellm_config(litellm_path)
     remove_exposed(config, model_id)
     save_litellm_config(config, litellm_path)
-    _set_exposed_flag(state, model_id, False)
+    if _set_exposed_flag(state, model_id, False):
+        return restart_litellm_proxy()
+    return []
 
 
 def apply_expose_queue(
@@ -312,7 +332,7 @@ def apply_expose_queue(
     state: StateStore,
     exposes: list[tuple[str, bool]],
     litellm_path: Path,
-) -> list[tuple[str, bool, str | None]]:
+) -> tuple[list[tuple[str, bool, str | None]], list[str]]:
     """Apply a queue of (model_id, target_exposed) pairs with a single
     config load and a single atomic save.
 
@@ -322,15 +342,18 @@ def apply_expose_queue(
     file if the process dies mid-queue. The standalone expose_model /
     unexpose_model remain for the CLI's one-model-at-a-time use.
 
-    Returns one (model_id, target, error) outcome per item, error None
-    when applied. Config-level failures (missing/unwritable file)
-    propagate to the caller; per-model validation failures are reported
-    per item and don't block the rest of the queue. Flags flip only
-    after the save succeeds, so state never claims an exposure the
-    config file lost.
+    Returns (outcomes, warnings). `outcomes` is one (model_id, target,
+    error) per item, error None when applied. Config-level failures
+    (missing/unwritable file) propagate to the caller; per-model
+    validation failures are reported per item and don't block the rest
+    of the queue. Flags flip only after the save succeeds, so state
+    never claims an exposure the config file lost. `warnings` carries
+    non-fatal proxy-restart notices (command unset or failed) so the
+    caller can surface them on the UI thread instead of printing to
+    stderr from a worker thread.
     """
     if not exposes:
-        return []
+        return [], []
     config = load_litellm_config(litellm_path)
     outcomes: list[tuple[str, bool, str | None]] = []
     succeeded: list[tuple[str, bool]] = []
@@ -349,4 +372,37 @@ def apply_expose_queue(
         save_litellm_config(config, litellm_path)
         for model_id, target in succeeded:
             _set_exposed_flag(state, model_id, target)
-    return outcomes
+        return outcomes, restart_litellm_proxy()
+    return outcomes, []
+
+
+def default_litellm_restart_cmd() -> str | None:
+    """The shell command used to restart the LiteLLM proxy, or None when
+    unset (reconcile is a no-op with a warning). Read lazily so env
+    overrides work in tests."""
+    return os.environ.get("MODELMAN_LITELLM_RESTART_CMD")
+
+
+def restart_litellm_proxy() -> list[str]:
+    """Best-effort reconcile of the running LiteLLM proxy after a config
+    write. Runs the configured restart command; when unset, returns a
+    warning that a manual restart is needed. Never raises: the config
+    write is the source of truth, and a failed restart just leaves the
+    proxy stale.
+
+    Returns a list of warning strings (empty on success) rather than
+    printing to stderr, so callers can surface them on the UI thread —
+    a direct stderr write from a TUI worker thread would interleave with
+    and garble Textual's rendering.
+    """
+    cmd = default_litellm_restart_cmd()
+    if not cmd:
+        return [
+            "LiteLLM config changed but MODELMAN_LITELLM_RESTART_CMD is unset; "
+            "restart the proxy manually for the change to take effect."
+        ]
+    try:
+        subprocess.run(cmd, shell=True, check=True, timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        return [f"failed to restart LiteLLM proxy ({exc}); restart it manually."]
+    return []

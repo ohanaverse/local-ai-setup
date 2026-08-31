@@ -76,3 +76,28 @@ def test_unexpose_command_writes_and_reports(tmp_path, monkeypatch):
 
     config = load_litellm_config(litellm_path)
     assert config["model_list"] == []
+
+
+def test_expose_command_restarts_proxy(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["expose", "ollama/a"])
+    assert result.exit_code == 0
+    assert calls == ["restart"]
+
+
+def test_expose_command_restart_failure_still_exits_zero(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("restart failed")
+
+    monkeypatch.setattr("modelman.litellm.subprocess.run", boom)
+    runner = CliRunner()
+    result = runner.invoke(app, ["expose", "ollama/a"])
+    assert result.exit_code == 0
+    assert "Exposed ollama/a" in result.stdout

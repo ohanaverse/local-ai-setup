@@ -20,13 +20,15 @@ uv run modelman
 ## Configuration
 
 modelman reads three files under `~/.config/local-ai/` (each overridable
-with an env var):
+with an env var), plus one LiteLLM-specific override:
 
-| File | Purpose | Env override |
-|------|---------|--------------|
+| File / setting | Purpose | Env override |
+|----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
 | `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
+| LiteLLM `config.yaml` | Path to the LiteLLM config file modelman writes | `MODELMAN_LITELLM_CONFIG` |
+| LiteLLM proxy restart | Shell command to restart the running proxy after expose changes | `MODELMAN_LITELLM_RESTART_CMD` |
 
 ### `registry.toml`
 
@@ -207,6 +209,10 @@ exposed (or queued to expose) and `–` otherwise.
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (override with `MODELMAN_LITELLM_CONFIG`). modelman only touches the
 `model_list` section; `general_settings` and unrecognized rows are preserved.
+
+By default the running LiteLLM proxy is **not** automatically restarted
+after an expose/unexpose change. Set `MODELMAN_LITELLM_RESTART_CMD` to a
+shell command that restarts your proxy (e.g. `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`) to have modelman run it automatically after each config write that changes the model list. The restart runs only when the change actually took effect (a no-op unexpose of an already-removed model does not bounce the proxy), and is bounded by a 30-second timeout. When the command is unset, modelman surfaces a warning that a manual restart is needed — in the TUI it appears in the apply log, in the CLI it is printed to stderr. A failed restart does not fail the expose operation.
 
 ### Native providers
 

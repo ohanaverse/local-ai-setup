@@ -333,7 +333,7 @@ class PendingChanges:
                 verb = "expose" if exposed else "unexpose"
                 emit(f"{verb}:start|{model_id}|{model_id}")
             try:
-                outcomes = apply_expose_queue(
+                outcomes, warnings = apply_expose_queue(
                     self.registry, self.state, self.exposes, self.litellm_path
                 )
             except Exception as exc:  # noqa: BLE001
@@ -352,6 +352,12 @@ class PendingChanges:
                     else:
                         self.failures.append(f"{verb} {model_id}: {error}")
                         emit(f"{verb}:fail|{model_id}|{model_id}|{error}")
+                # Proxy-restart notices (command unset or failed) are
+                # non-fatal; surface them through the event channel so the
+                # TUI renders them on the UI thread rather than a worker
+                # thread writing to stderr.
+                for warning in warnings:
+                    emit(f"expose:warning|{_sanitize(warning)}")
 
         emit("save:start")
         try:

@@ -153,6 +153,10 @@ class StatusScreen(Screen[None]):
             # 4th field: failure reason.
             label = parts[2]
             detail = parts[3]
+        elif verb == "expose:warning" and len(parts) == 2:
+            # 2nd field: non-fatal proxy-restart notice.
+            label = ""
+            detail = parts[1]
         else:
             # Normal lifecycle events.
             label = parts[2] if len(parts) >= 3 else ""
@@ -192,6 +196,9 @@ class StatusScreen(Screen[None]):
             log.write(f"  [red]✗[/red] Failed to move {label}")
             if detail:
                 log.write(f"    [red dim]{detail}[/red dim]")
+        elif verb == "expose:warning":
+            # Non-fatal proxy-restart notice (command unset or failed).
+            log.write(f"  [yellow]![/yellow] {detail}")
         elif verb == "save:start":
             log.write("· Saving manifest...")
         elif verb == "save:done":
