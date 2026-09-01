@@ -14,10 +14,12 @@ from modelman.benchmark.isolation import isolate_provider, restore_providers
 from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
-from modelman.registry import Registry
+from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
 from modelman.state import StateStore
 
-LOCAL_PROVIDERS = {"ollama", "llamacpp", "omlx"}
+# Providers `modelman benchmark` can isolate+run locally. Derived from the
+# registry's canonical provider-id tuple so the set can't drift from it.
+LOCAL_PROVIDERS = set(DEFAULT_PROVIDER_IDS)
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
 
@@ -109,16 +111,23 @@ def run_benchmark(
     )
 
     session = requests.Session()
+    # Isolation is provider-scoped: consecutive targets on the same provider
+    # reuse the running isolation instead of paying another stop-others +
+    # warmup cycle (~a minute of polling per target otherwise).
+    last_provider: str | None = None
+    direct_url: str | None = None
     try:
         for target in targets:
             try:
-                isolate = isolate_provider(target.provider_id)
-                if not isolate.ok:
-                    raise BenchmarkError(
-                        f"failed to isolate provider {target.provider_id}: "
-                        f"{isolate.error or 'unknown error'}"
-                    )
-                direct_url = isolate.direct_url
+                if target.provider_id != last_provider:
+                    isolate = isolate_provider(target.provider_id)
+                    if not isolate.ok:
+                        raise BenchmarkError(
+                            f"failed to isolate provider {target.provider_id}: "
+                            f"{isolate.error or 'unknown error'}"
+                        )
+                    direct_url = isolate.direct_url
+                    last_provider = target.provider_id
             except BenchmarkError as exc:
                 for route in routes:
                     for pass_number in range(1, passes + 1):
@@ -139,6 +148,9 @@ def run_benchmark(
                         )
                 continue
 
+            # Reached only when isolation succeeded (fresh or reused), so
+            # direct_url was assigned either above or on a prior iteration.
+            assert direct_url is not None
             for pass_number in range(1, passes + 1):
                 for route in routes:
                     url = direct_url if route == "direct" else LITELLM_URL

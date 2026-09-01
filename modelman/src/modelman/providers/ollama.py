@@ -87,7 +87,8 @@ def _tracked_popen_runner(
 def _parse_ollama_list_sizes(stdout: str) -> dict[str, int]:
     """Parse `ollama list` output into {model_name: size_bytes}.
 
-    Each row is: NAME ID <number> <UNIT> MODIFIED... (SIZE column is two tokens).
+    Each row is: NAME ID <number> <UNIT> MODIFIED... (SIZE column is two
+    tokens). Cloud rows (SIZE `-`) are skipped — they are not downloaded.
     """
     sizes: dict[str, int] = {}
     units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
@@ -99,6 +100,8 @@ def _parse_ollama_list_sizes(stdout: str) -> dict[str, int]:
         if len(parts) < 4:
             continue
         name = parts[0]
+        if parts[2] == "-":
+            continue
         num_str, unit = parts[2], parts[3].upper()
         if unit not in units:
             continue

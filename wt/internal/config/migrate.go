@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,7 +62,7 @@ func Migrate() (bool, error) {
 		return false, err
 	}
 
-	legacyFile, stateDir := legacyPaths()
+	legacyFile, _ := legacyPaths()
 	data, err := os.ReadFile(legacyFile)
 	if os.IsNotExist(err) {
 		return false, nil // nothing to migrate
@@ -215,11 +214,6 @@ func Migrate() (bool, error) {
 	if err := saveFull(cfg); err != nil {
 		return false, err
 	}
-
-	// Migrate rotation position: log last-selected models to stderr.
-	if err := migrateRotationState(stateDir); err != nil {
-		return false, err
-	}
 	return true, nil
 }
 
@@ -346,30 +340,6 @@ func displayName(agent string) string {
 	default:
 		return agent
 	}
-}
-
-// lastSelected reads the last line of a legacy <mode>.state file. Used only
-// by migrateRotationState for one-time migration logging.
-func lastSelected(stateDir, mode string) string {
-	data, err := os.ReadFile(filepath.Join(stateDir, "rotation-"+mode+".state"))
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	return lines[len(lines)-1]
-}
-
-func migrateRotationState(stateDir string) error {
-	for _, mode := range []string{"code", "design"} {
-		last := lastSelected(stateDir, mode)
-		if last != "" {
-			fmt.Fprintf(os.Stderr, "wt: migrated %s rotation; last selected: %s\n", mode, last)
-		}
-	}
-	return nil
 }
 
 func trimQuotes(s string) string {

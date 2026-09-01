@@ -15,7 +15,7 @@ type opencodeDriver struct{}
 
 func (opencodeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
 
-func (opencodeDriver) OllamaURL() string { return "http://localhost:11434/v1" }
+func (opencodeDriver) OllamaURL() string { return config.OllamaBaseURL + "/v1" }
 
 func (opencodeDriver) ResumeFlag() string { return "--session" }
 

@@ -27,7 +27,7 @@ const ollamaProvider = "agent-wt"
 // proxy rejects every request with 401 "No api key passed in".
 const codexGatewayEnvKey = "AGENT_WT_GATEWAY_API_KEY"
 
-func (codexDriver) OllamaURL() string { return "http://localhost:11434/v1/" }
+func (codexDriver) OllamaURL() string { return config.OllamaBaseURL + "/v1/" }
 
 func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	lc := LaunchCmd{Bin: "codex"}

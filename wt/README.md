@@ -18,24 +18,19 @@ The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models
 
 ## Installation
 
-### Go binary (primary)
+### Go binary + shims
 
 ```bash
-go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
-```
-
-Requires Go 1.26.7 (see `go.mod`).
-
-### Legacy shims
-
-Copy the bash wrappers to a directory on `$PATH`:
-
-```bash
-make install      # Install bin/* to ~/.local/bin/
+make install      # Build bin/wt, copy it + the shims to ~/.local/bin/ (re-signs on macOS)
 make uninstall    # Remove from ~/.local/bin/
 ```
 
-The `*-wt` shims just `exec wt --agent <name>`, so `wt` must be on `$PATH`.
+Requires Go 1.26.7 (see `go.mod`). `make install` builds the binary itself
+(`make build`) — on macOS it also re-seals the ad-hoc code signature, which a
+manual `go build` into `$GOPATH/bin` skips (AMFI then SIGKILLs the binary on
+launch, exit 137).
+
+The `*-wt` shims just `exec wt --agent <name>`, so the installed `wt` must be on `$PATH`.
 
 ## Quick start
 
@@ -121,8 +116,7 @@ The `internal/rotation` package implements tag-based model rotation. Any tag can
 - The hidden `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
 
 ```bash
-wt rotate code    # prints the model after the last code launch
-wt rotate design  # independent rotation for design
+wt rotate code    # print the model after the last launch within the "code" tag group
 ```
 
 ### Ollama availability check
@@ -152,7 +146,7 @@ Launchers auto-install a `block-main-commit` pre-commit hook on every invocation
 
 ## Session resume (`claude-wt`, `opencode-wt`)
 
-When a prior Claude Code or OpenCode session exists for the worktree path, the launcher prompts whether to resume it. Skipped when `--cwd` is used.
+When a prior Claude Code or OpenCode session exists for the worktree path, the launcher resumes it. In the TUI flow this is an interactive prompt; in the non-TUI launch paths (`--cwd`, `-W`) the resume flag is appended automatically with no prompt. Native-provider models always launch fresh in both flows — resuming would restore the session's stored model over the native choice.
 
 ## Post-run summary line
 
@@ -194,7 +188,6 @@ go vet ./...       # Vet
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
 | `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt |
 | `internal/ollamacheck/` | Ollama model availability check before launch |
-| `testdata/` | Sample configs for manual testing |
 | `docs/superpowers/specs/` | Design specs |
 | `docs/superpowers/plans/` | Implementation plans |
 

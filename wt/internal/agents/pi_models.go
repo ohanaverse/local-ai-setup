@@ -45,7 +45,7 @@ func piModelsPath() (string, error) {
 	return filepath.Join(home, ".pi", "agent", "models.json"), nil
 }
 
-const defaultPiOllamaBaseURL = "http://localhost:11434/v1"
+const defaultPiOllamaBaseURL = config.OllamaBaseURL + "/v1"
 
 // defaultPiOllamaAPIKey is pi's placeholder apiKey for keyless local Ollama.
 // pi's models.json schema requires a non-empty apiKey; an empty value makes

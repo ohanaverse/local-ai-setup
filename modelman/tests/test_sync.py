@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from modelman.providers.base import Provider, VariantSpec
+from modelman.providers.ollama import _parse_ollama_list_sizes
 from modelman.registry import AuthConfig, Cost, Fetch, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
 from modelman.sync import (
@@ -13,7 +14,6 @@ from modelman.sync import (
     _model_entry_to_variant,
     _modeldir_providers,
     _ollama_downloaded,
-    _parse_ollama_list_sizes,
     list_modeldir,
     list_ollama,
     reconcile,

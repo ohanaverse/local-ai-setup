@@ -65,7 +65,7 @@ echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY —
 ollama pull qwen3.8:27b-mlx
 
 # 4. modelman setup + expose a model to LiteLLM
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 # uv run modelman        # TUI (interactive) — skip in one-shot mode; 'expose' below is non-interactive
 uv run modelman expose ollama/qwen3.8:27b-mlx   # non-interactive expose (writes model_list entry)
@@ -619,7 +619,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - **The `modelman` binary on PATH is stale** (only `download` — verified). Full CLI (TUI, `expose`, `sync`, …) is repo-local:
 
   ```bash
-  # from: ~/github/ohanaverse/modelman
+  # from: ~/github/ohanaverse/local-ai-setup/modelman
   uv run modelman          # bare = TUI
   ```
 

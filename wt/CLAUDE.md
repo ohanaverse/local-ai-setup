@@ -15,7 +15,7 @@ The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copi
 ## Installation
 
 ```bash
-go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
+make install      # builds bin/wt and copies it + the shims to ~/.local/bin/
 ```
 
 Requires Go 1.26.7 (see `go.mod`).
@@ -93,7 +93,7 @@ Package list: `internal/{config,rotation,usage,agents,guard,worktree,initseed,se
 
 ## Go module
 
-Module root is the repo root.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root.
 
 | Path | Purpose |
 |---|---|
@@ -115,7 +115,6 @@ Module root is the repo root.
 | `internal/ollamacheck/` | availability check before launch |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
-| `testdata/` | sample configs |
 | `docs/superpowers/` | specs + plans |
 
 ## Config (Go)
@@ -148,6 +147,11 @@ with its own `config.toml`, which now holds only Agents + DefaultTag + gateway. 
 persists wt-owned fields only — wt never writes providers/models. Extra
 registry fields (cost, model_info, fetch, model_dir, auth secret_ref/base_url)
 are ignored by wt's parser.
+
+**Read-side schemas are pinned by contract fixtures.** `docs/contracts/registry.sample.toml`
+and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
+contract tests and modelman's `tests/contracts/` — a schema change must
+update both sides or both CI jobs fail.
 
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt
 > bug** — e.g. a `registry.toml` with models referencing `provider_id`s but
@@ -208,7 +212,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `
 | Capability | Consumer | Drivers that implement it |
 |---|---|---|
 | `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, copilot (only drivers implementing `InstructionPointers()`; others skip seeding entirely) |
-| `OllamaURLer` | Per-driver ollama gateway URL (overrides `config.OllamaBaseURL`) | claude, codex, copilot, opencode |
+| `OllamaURLer` | Per-driver ollama gateway URL — `OllamaURL()` returns `config.OllamaBaseURL` + the driver's wire-protocol suffix (`/`, `/v1`, `/v1/`) | claude, codex, copilot, opencode, pi (via `defaultPiOllamaBaseURL`) |
 | `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
 | `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |
 | `Resumer` | `ResumeFlag()` + `LatestSession(path)` for resume support | claude, opencode |

@@ -56,7 +56,7 @@ tags = []
 ### `~/.config/local-ai/modelman.toml`
 
 - **Owner:** `modelman` (written on every TUI apply, `sync`, `expose`/`unexpose`).
-- **Consumers:** `modelman` only.
+- **Consumers:** `modelman`, plus `wt` (read-only — reads the `litellm_exposed` flags to filter the model picker to models actually served through LiteLLM; that read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, LiteLLM exposure flags, and family display names.
 - **Env override:** `MODELMAN_STATE`.
 
@@ -308,14 +308,14 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag` and `[[agents]]` are live; providers/models come from `registry.toml`.
 - **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read only by `modelman migrate` / wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
 - **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.
-- **The `modelman` binary on `PATH` lags the repo source:** `modelman --help` currently lists only `download`, while the source at `/Users/keith/github/ohanaverse/modelman` adds `migrate`, `sync`, `expose`, `unexpose`, `benchmark`, `usage`, and the TUI on bare `modelman`. Check `modelman --help` before scripting against it.
+- **The `modelman` binary on `PATH` lags the repo source:** `modelman --help` currently lists only `download`, while the source at `/Users/keith/github/ohanaverse/local-ai-setup/modelman` adds `migrate`, `sync`, `expose`, `unexpose`, `benchmark`, `usage`, and the TUI on bare `modelman`. Check `modelman --help` before scripting against it.
 - **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `modelman benchmark run`. Don't create them by hand.
 - Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock` is wt's lock file.
 
 ## Going deeper
 
 - Service setup (plists above): `/Users/keith/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
-- modelman file semantics + CLI: `/Users/keith/github/ohanaverse/modelman/README.md`
+- modelman file semantics + CLI: `/Users/keith/github/ohanaverse/local-ai-setup/modelman/README.md`
 - wt config/registry relationship: `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
 - wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
 - Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`

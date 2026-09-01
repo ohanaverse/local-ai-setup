@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, llama.cpp, oMLX) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list).
 
+## Monorepo context
+
+- `wt/` (Go sibling) reads `registry.toml` and `modelman.toml` (exposure flags) read-only. The cross-language schema is pinned by the `docs/contracts/` fixtures, loaded by `tests/contracts/` here and `wt/internal/config` there — change a fixture without updating both sides and both CI jobs fail.
+- `modelman benchmark` shells out to `bin/llm-isolate-provider` / `bin/llm-restore-providers` **by PATH** (`src/modelman/benchmark/isolation.py`) — the monorepo root's `bin/` must be on PATH for `modelman benchmark` to isolate providers.
+
 ## Common development commands
 
 The project uses `uv` for packaging and dependency management. Python 3.13 is required (`requires-python = "==3.13.*"`).
@@ -40,12 +45,12 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
 ### Pending changes queue
 
-- `src/modelman/queue.py` — `PendingChanges(registry, state, family, registry_path, state_path, providers, downloads, deletes, moves, exposes, litellm_path, failures, cancelled)`. `apply()` runs deletes first (so downloads free up disk), then moves (pure registry metadata: `ModelEntry.family = new_family`; a move for a model deleted in the same apply is dropped), then downloads (each calls `provider.download(variant)` → `state.mark_downloaded(...)`), then exposes (each writes a LiteLLM `model_list` entry), then a single `save_registry()` + `save_state()`. The delete step checks `provider.is_downloaded(variant)` before artifact removal: if the artifact is absent, the provider's `delete()` is skipped but the lifecycle events, registry/state cleanup, and cascade-unexpose still run; if `is_downloaded()` raises, the artifact delete is attempted conservatively and real failures surface. Failures are captured per-step, processing continues.
+- `src/modelman/queue.py` — `PendingChanges(registry, state, family, registry_path, state_path, providers, downloads, deletes, moves, exposes, litellm_path, failures, cancelled)`. `apply()` runs deletes first (so downloads free up disk), then moves (pure registry metadata: `ModelEntry.family = new_family`; a move for a model deleted in the same apply is dropped), then downloads (each calls `provider.download(variant)` → `state.set(id, replace(state.get(id), ready=True, disk_path=local_path))`), then exposes (each writes a LiteLLM `model_list` entry), then a single `save_registry()` + `save_state()`. The delete step checks `provider.is_downloaded(variant)` before artifact removal: if the artifact is absent, the provider's `delete()` is skipped but the lifecycle events, registry/state cleanup, and cascade-unexpose still run; if `is_downloaded()` raises, the artifact delete is attempted conservatively and real failures surface. Failures are captured per-step, processing continues.
 
 ### Registry and state
 
 - `src/modelman/registry.py` — `Registry` dataclass: providers + models + families. `ModelEntry` now carries `cost` (`Cost` dataclass: `free`/`per_token`/`subscription`), optional `usage_tier`, and an optional per-model `location` that overrides the provider's location for the LOC icon. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching agent-worktree's `config.RegistryPath`). See `README.md` for the exact TOML schema.
-- `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. Loaded from `modelman.toml` (`MODELMAN_STATE`).
+- `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. (`get`/`set`/`forget_family`). Loaded from `modelman.toml` (`MODELMAN_STATE`); display-name resolution lives in `registry.family_display_name`/`known_families`.
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. Run once via `uv run modelman migrate`.
 - `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.
 - `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Every writer runs `ensure_litellm_settings()` before save (value-enforces `litellm_settings.drop_params: true`; adds `additional_drop_params: ["reasoning_effort"]` to every `ollama_chat/*` row missing it — the BerriAI/litellm#37452 codex workaround) and saves/restarts only when the parsed document or an exposed flag actually changed. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate). After a config write that actually changed the model list, `restart_litellm_proxy()` runs the `MODELMAN_LITELLM_RESTART_CMD` command (30s timeout) to reconcile the running proxy; it returns warning strings (command unset or failed) rather than printing to stderr, so the CLI surfaces them and the TUI routes them through the apply event channel (`expose:warning|…`). `_set_exposed_flag` returns whether the flag changed, so a no-op unexpose of an already-removed model does not bounce the proxy.
@@ -88,8 +93,8 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 - `src/modelman/registry.py` loads/saves `registry.toml` (providers + model definitions) into a `Registry` dataclass. Path overridable with `MODELMAN_REGISTRY`.
 - `src/modelman/state.py` loads/saves `modelman.toml` (per-model state: downloaded, exposed, paths) into a `StateStore`. Path overridable with `MODELMAN_STATE`.
 - `src/modelman/migrate.py` is the one-time path: imports legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `agent-worktree` config) into the registry/state pair. The TUI/CLI expect the new layout after migration.
-- `src/modelman/manifest.py` still exists for the legacy path — `FamilyManifest.variant_by_id(vid)` looks up a variant; `downloaded` is a dict keyed by variant id; `mark_downloaded` stores an ISO timestamp and local path; `save_manifest` rewrites the whole YAML file with `sort_keys=False`. Not used by the new TUI screens.
-- `src/modelman/config.py` — loads legacy `~/.config/local-ai/config.yaml`; used **only** by the `migrate` path (see its module docstring) — do not add new callers, add to `registry.toml` instead.
+- `src/modelman/manifest.py` — legacy `families/*.yaml` read/write, used **only** by the migrate path (its `save_manifest` is the migrate test fixture-writer). No TUI code touches it; do not add new callers (see its module docstring).
+- `src/modelman/config.py` — one helper, `default_config_path()` (`MODELMAN_CONFIG` override), pointing at the legacy `~/.config/local-ai/config.yaml`; `migrate.py` parses the YAML itself. Read-only legacy path — add new config to `registry.toml` instead.
 - `src/modelman/settings.py` — persists TUI user preferences (currently just theme) to `~/.config/local-ai/settings.yaml` (`MODELMAN_SETTINGS` override); missing file = defaults, corrupted file raises rather than silently falling back.
 
 ### Adding a new provider
@@ -134,7 +139,7 @@ reach by accident and can lead to analyzing or mutating the wrong branch.
 ## Important implementation notes
 
 - The `OllamaProvider` methods accept an optional `runner` argument so tests can substitute a mock. The default runner just calls `subprocess.run`.
-- `StateStore.mark_downloaded` stores an ISO timestamp and local path under the registry model id (replaces the legacy `FamilyManifest.mark_downloaded`).
+- `StateStore.set` is the single state-write path (downloads do `state.set(id, replace(state.get(id), ready=True, disk_path=local_path))`; the ISO timestamp + local path shape was the legacy `FamilyManifest.mark_downloaded`, now gone).
 - `Registry`/`StateStore` save helpers rewrite the whole TOML file (`tomli_w`) — preserve unknown keys on round-trip so user-edited fields survive.
 - `llamacpp` checks the Hugging Face cache (`HF_HOME/hub`) for the requested files; `omlx` downloads into `model_dir/<repo-basename>`.
 - `size_of` is implemented per provider: Ollama parses the `ollama list` SIZE column (two-token `<number> <UNIT>`), llamacpp stats the primary file in the HF cache snapshot dir, omlx sums files in the model directory.

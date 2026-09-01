@@ -1,14 +1,14 @@
 # local-ai-setup
 
-Entry point for running local and routed LLMs on macOS. This repo orchestrates
-three repos — fresh install starts at
+Entry point for running local and routed LLMs on macOS. One monorepo, three
+components — fresh install starts at
 [docs/guides/01-initial-setup.md](docs/guides/01-initial-setup.md).
 
-| Repo | Role |
+| Component | Role |
 |---|---|
-| `local-ai-setup` (this) | backends (LiteLLM proxy, Ollama, llama.cpp, oMLX) + LaunchAgents + benchmarks + user guides |
-| `modelman` (`~/github/ohanaverse/modelman`) | model registry TUI/CLI — canonical source of truth for providers/models, exposure, benchmarks, usage |
-| `agent-worktree` (`wt`, `~/github/ohanaverse/agent-worktree`) | worktree agent launcher with model rotation |
+| Root (`bin/`, `benchmarks/`, `docs/`) | backends (LiteLLM proxy, Ollama, llama.cpp, oMLX) + LaunchAgents + benchmarks + user guides |
+| `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, exposure, benchmarks, usage |
+| `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
 ## User guides (docs/guides/)
 
@@ -73,10 +73,14 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── docs/
 │   ├── guides/         # user playbooks — index above
 │   ├── reference/      # backend-specific guides
+│   ├── contracts/      # cross-language config-format fixtures (read by wt Go + modelman Python tests)
 │   ├── archive/        # superseded docs
 │   └── superpowers/    # plans + specs
+├── modelman/           # model registry TUI/CLI (Python/uv) — has its own CLAUDE.md
+├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
+├── .github/workflows/ # CI: shell-ci, wt-ci, modelman-ci
 ├── CLAUDE.md           # agent entry point
-├── Makefile            # make lint (shellcheck)
+├── Makefile            # make lint (shellcheck), make check-links, make test-all
 └── README.md           # this file — index only
 ```
 
@@ -86,10 +90,11 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 
 ## Status
 
-Cross-repo tracker:
-`agent-worktree/docs/superpowers/plans/2026-08-27-model-management-consolidation-status.md`
-
 All three model-management consolidation sub-projects are merged (shared model
-registry, benchmark tooling, usage/spend tracking).
+registry, benchmark tooling, usage/spend tracking). The cross-repo drift signal
+is now automatic: the shared-format fixtures in
+[docs/contracts/](docs/contracts) are read by contract tests on both sides
+(`wt` Go tests, `modelman` Python tests), replacing the hand-maintained
+cross-repo tracker doc.
 
 Follow-up items from the guide-set review: [issues.md](issues.md).

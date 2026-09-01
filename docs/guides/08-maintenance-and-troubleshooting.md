@@ -180,7 +180,7 @@ Historical note (2026-08-30): `modelman.toml` flags were out of sync because the
 <!-- UNVERIFIED — mutating; not run in this session (would rewrite the live config.yaml + modelman.toml). Success line from live-verified source (guide 04 §2, guide 02 §7). -->
 
 ```bash
-# from: /Users/keith/github/ohanaverse/modelman
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman expose ollama/qwen3.8:27b-mlx
 ```
 
@@ -302,15 +302,15 @@ Startup-fault lines worth reacting to: repeated `Error loading config`, YAML par
 <!-- UNVERIFIED — upgrade not run in this session (mutates the repo + tool env); checkout was d93f5b9, 2026-08-29. Under-way output depends on how far behind the checkout is; when current: `Already up to date.` plus uv's install line. -->
 
 ```bash
-# from: /Users/keith/github/ohanaverse/modelman
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 git pull && uv sync
 ```
 
 Verify — these commands ran live, 2026-08-29, on current checkout `d93f5b9`:
 
 ```bash
-git -C /Users/keith/github/ohanaverse/modelman rev-parse --short HEAD
-# from: /Users/keith/github/ohanaverse/modelman
+git -C /Users/keith/github/ohanaverse/local-ai-setup/modelman rev-parse --short HEAD
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman sync --help
 ```
 
@@ -471,7 +471,7 @@ model_list entries: 11
 - **Use `launchctl kickstart -k gui/$(id -u)/<label>` to restart.** With `KeepAlive=true`, bare `launchctl stop` (or killing the PID) just gets the job relaunched — you cannot hold a service down that way, and it does not re-read anything in a controlled way. `kickstart -k` is the verified, one-shot kill+restart used by all the guides; for the brew trio use `brew services restart <name>`.
 - **The `launchctl list` middle column reads `0` or `-15` here — both healthy.** `0` = last exit was clean; `-15` = last exit was from SIGTERM, i.e. normal residue after a `kickstart -k` (live example above). What's *not* healthy: `-` PID with a non-zero status, or a PID that changes while the port stays dead (§3).
 - **There is no Ollama LaunchAgent.** `launchctl list | grep ollama` shows `-	0	com.ollama.ollama` because the row comes from the app's login item — you cannot `kickstart` Ollama back; relaunch Ollama.app. (The `application.com.electron.ollama.*` row appears only while the app window lives — don't grep for it in scripts.)
-- **The `modelman` on PATH is stale** (only `download`; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/modelman` + `uv run modelman …`.
+- **The `modelman` on PATH is stale** (only `download`; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman` + `uv run modelman …`.
 - **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
 - **Upgrades recreate the LiteLLM tool env** — recheck `prisma` in `/Users/keith/.local/share/uv/tools/litellm/bin/` after `uv tool upgrade` or `--force --reinstall`, or the Postgres-backed UI/auth features die on the next kickstart (guide 01 §6).
 

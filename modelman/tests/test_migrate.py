@@ -138,7 +138,10 @@ def test_migrate_records_downloaded_state_from_modelman_manifest(tmp_path):
             ),
         ],
     )
-    manifest.mark_downloaded("q1", "/models/qwen3.8-27b-q4.gguf")
+    manifest.downloaded["q1"] = {
+        "downloaded_at": "2026-08-31T00:00:00",
+        "local_path": "/models/qwen3.8-27b-q4.gguf",
+    }
     save_manifest(manifest, family_dir / "qwen3.8.yaml")
 
     result = migrate(config_path, family_dir, wt_config_path=tmp_path / "absent.toml")

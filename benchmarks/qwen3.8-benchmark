@@ -86,101 +86,31 @@ display_key() {
 
 # --- Service management ----------------------------------------------------
 
-# Stop all three local services (called before each isolated local test)
-# Note: Ollama daemon keeps :11434 bound; only its model is unloaded.
-stop_all_local() {
-    echo "  [isolation] unloading all local models..."
+# Isolation lives in bin/llm-isolate-provider (also used by `modelman
+# benchmark`); this script calls it with model-name env overrides instead of
+# duplicating the stop/start/warmup logic here. Fails hard: without the
+# helper on PATH, isolation (and therefore valid results) is not possible.
+ISOLATE_HELPER="$(cd "$(dirname "$0")/../bin" && pwd)/llm-isolate-provider"
 
-    # Ollama: unload the model from RAM. Daemon stays up on :11434.
-    if curl -s -m 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
-        ollama stop qwen3.8:27b-mlx 2>/dev/null || true
-        echo "    ollama: model qwen3.8:27b-mlx unloaded (daemon still on :11434)"
-    fi
+# Map this script's backend keys to the helper's provider ids.
+declare -A ISOLATE_ID
+ISOLATE_ID[ollama]="ollama"
+ISOLATE_ID[omlx]="omlx"
+ISOLATE_ID[llama_cpp]="llamacpp"
 
-    # oMLX: full service stop
-    if curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
-        omlx stop 2>/dev/null || true
-        echo "    omlx: stopped"
-    fi
+# Env var per backend (helper naming: LLM_ISOLATE_<PROVIDER>_MODEL).
+declare -A ISOLATE_ENV
+ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
+ISOLATE_ENV[omlx]="LLM_ISOLATE_OMLX_4BIT_MODEL"
+ISOLATE_ENV[llama_cpp]="LLM_ISOLATE_LLAMACPP_MODEL"
 
-    # llama.cpp: unload LaunchAgent (frees ~16 GB GPU/RAM)
-    if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
-        launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
-        echo "    llama.cpp: LaunchAgent unloaded"
-    fi
-
-    # Give the OS a moment to reclaim memory
-    sleep 3
-
-    # Show what's still bound. Ollama daemon's :11434 is expected to remain.
-    local bound=$(lsof -iTCP -sTCP:LISTEN -P 2>/dev/null | grep -cE ":(11434|8000|8080)\b")
-    echo "    local service ports still bound: $bound (Ollama :11434 daemon is expected to remain)"
-}
-
-# Start only the requested local backend and wait until ready
-start_one_local() {
+# Stop all local providers, then start+warmup only the requested backend's
+# model (the helper polls until the model actually answers).
+isolate_one() {
     local key="$1"
-    case "$key" in
-        ollama)
-            echo "  [isolation] loading ollama model..."
-            # Use a SHORT prompt for warmup — long prompts cause Ollama to do a full
-            # prefill on the model which can take 60+ seconds. The "hi" prompt loads
-            # the model in ~6 seconds.
-            local warmup='{"model":"qwen3.8:27b-mlx","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":1,"temperature":0}'
-            local resp
-            resp=$(curl -s -m 120 "${DIRECT_URLS[ollama]}" \
-                -H "Content-Type: application/json" \
-                -d "$warmup" 2>/dev/null)
-            if echo "$resp" | grep -q '"done":true'; then
-                echo "    ollama: model loaded"
-                return 0
-            fi
-            echo "    WARNING: ollama model load failed (warmup response: ${resp:0:200})"
-            return 1
-            ;;
-        omlx)
-            echo "  [isolation] starting omlx..."
-            omlx start > /dev/null 2>&1 || true
-            # Wait for service and trigger model load with a SHORT request
-            local warmup='{"model":"Qwen3.8-27B-4bit","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":1,"temperature":0}'
-            for i in {1..90}; do
-                if curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
-                    local resp=$(curl -s -m 120 "${DIRECT_URLS[omlx]}" \
-                        -H "Content-Type: application/json" \
-                        -d "$warmup" 2>/dev/null)
-                    if echo "$resp" | grep -q '"object":"chat.completion"'; then
-                        echo "    omlx: service up, model loaded"
-                        return 0
-                    fi
-                fi
-                sleep 1
-            done
-            echo "    WARNING: omlx model load timeout"
-            return 1
-            ;;
-        llama_cpp)
-            echo "  [isolation] starting llama.cpp..."
-            launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
-            # Wait for service to bind :8080, then warmup with a SHORT request
-            # (the /v1/models endpoint returns 'list' before model is actually loaded into RAM)
-            local warmup='{"model":"local-llama","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":1,"temperature":0}'
-            for i in {1..90}; do
-                if curl -s -m 2 http://localhost:8080/v1/models > /dev/null 2>&1; then
-                    local resp
-                    resp=$(curl -s -m 120 "${DIRECT_URLS[llama_cpp]}" \
-                        -H "Content-Type: application/json" \
-                        -d "$warmup" 2>/dev/null)
-                    if echo "$resp" | grep -q '"object":"chat.completion"'; then
-                        echo "    llama.cpp: model loaded"
-                        return 0
-                    fi
-                fi
-                sleep 1
-            done
-            echo "    WARNING: llama.cpp model load timeout"
-            return 1
-            ;;
-    esac
+    echo "  [isolation] isolating ${ISOLATE_ID[$key]} (${DIRECT_MODELS[$key]})..."
+    env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
+        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
 }
 
 # Ensure all local services are running (called at script start)
@@ -333,8 +263,7 @@ echo "## Direct backend (ISOLATED, one model loaded at a time):"
 for backend in ollama omlx llama_cpp; do
     display_name=$(display_key "$backend")
     echo ""
-    stop_all_local
-    start_one_local "$backend"
+    isolate_one "$backend"
     echo ""
     echo "Testing ${display_name} directly..."
     run_streaming "$display_name (direct)" "${DIRECT_URLS[$backend]}" "${DIRECT_MODELS[$backend]}"
@@ -353,8 +282,7 @@ echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"
 for backend in ollama omlx llama_cpp; do
     display_name=$(display_key "$backend")
     echo ""
-    stop_all_local
-    start_one_local "$backend"
+    isolate_one "$backend"
     # Ensure litellm proxy is still running
     if ! curl -s -m 2 http://localhost:4000/v1/models > /dev/null 2>&1; then
         launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null || true
@@ -379,9 +307,7 @@ echo "## OpenRouter (cloud, always live):"
 # Restore all local services so system is back to normal
 echo ""
 echo "  [cleanup] restoring all local services..."
-launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
-omlx start > /dev/null 2>&1 || true
-launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+"$(cd "$(dirname "$0")/../bin" && pwd)/llm-restore-providers"
 
 echo ""
 echo "Testing OpenRouter models (direct + via LiteLLM)..."

@@ -17,6 +17,18 @@ from ..providers.base import VariantSpec
 from ..registry import Cost, _cost_to_dict
 
 
+def default_form_kind(provider: str) -> str:
+    """Default ModelForm 'kind' for a provider id when the caller's
+    provider_kinds map doesn't cover it. ModelScreen._provider_kinds
+    uses the same rule for its non-native providers, keeping the kind
+    policy in one place."""
+    if provider in ("llamacpp", "omlx"):
+        return "local-only"
+    if provider == "ollama":
+        return "ollama"
+    return "cloud-only"
+
+
 def parse_model(
     provider: str, model: str, *, is_native: bool = False
 ) -> tuple[str | None, str | None, str | None]:
@@ -661,11 +673,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
 
     def _default_kind(self, provider: str) -> str:
         """Fallback kind when the caller didn't supply provider_kinds."""
-        if provider in ("llamacpp", "omlx"):
-            return "local-only"
-        if provider == "ollama":
-            return "ollama"
-        return "cloud-only"
+        return default_form_kind(provider)
 
     def _submit(self) -> None:
         provider = str(self.query_one("#provider-select", Select).value)
