@@ -16,9 +16,7 @@ def stub_ollama_caps(monkeypatch):
     model_info content, so stubbing it to {} keeps them meaningful without
     requiring ollama to be installed.
     """
-    monkeypatch.setattr(
-        "modelman.screens.forms.auto_detect_model_info", lambda name: {}
-    )
+    monkeypatch.setattr("modelman.screens.forms.auto_detect_model_info", lambda name: {})
 
 
 @pytest.fixture
