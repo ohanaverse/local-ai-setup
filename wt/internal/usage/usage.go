@@ -180,6 +180,10 @@ func CompositeScore(c UsageCounts) int {
 // total usage is accurate even when a tag/family filter exposes only some of
 // its models. Events whose model ID is absent from familyOf are skipped. A
 // missing or unreadable usage file yields an empty map.
+//
+// Unlike Counts, families are not pre-seeded: only families with at least
+// one event within the retention window appear as keys, so a missing family
+// key means zero usage.
 func (s *Store) FamilyCounts(familyOf map[string]string) map[string]UsageCounts {
 	out := map[string]UsageCounts{}
 	f, err := os.Open(s.path())

@@ -330,3 +330,31 @@ func TestFamilyCountsMissingFile(t *testing.T) {
 		t.Fatalf("FamilyCounts = %v, want empty", got)
 	}
 }
+
+// TestFamilyCountsDoesNotPreSeedZeroFamilies verifies FamilyCounts only emits
+// keys for families with at least one event in the retention window: a family
+// present in familyOf but with no events is absent from the result (a missing
+// key therefore means zero usage), unlike Counts which zero-fills every
+// requested model ID.
+func TestFamilyCountsDoesNotPreSeedZeroFamilies(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	fixed := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	line, _ := json.Marshal(event{ModelID: "ollama/used:1", Timestamp: fixed.Add(-30 * time.Minute)})
+	_ = os.WriteFile(store.path(), append(line, '\n'), 0o600)
+
+	familyOf := map[string]string{
+		"ollama/used:1":   "used",
+		"ollama/silent:1": "silent",
+	}
+	got := store.FamilyCounts(familyOf)
+	if got["used"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("used counts = %+v, want {1,1,1}", got["used"])
+	}
+	if _, ok := got["silent"]; ok {
+		t.Fatalf("silent family should be absent from result: %v", got["silent"])
+	}
+}
