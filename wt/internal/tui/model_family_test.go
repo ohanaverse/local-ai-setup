@@ -126,6 +126,10 @@ func TestModelListDelegateRendersDivider(t *testing.T) {
 // index map accounts for inserted divider rows and always points at model
 // rows.
 func TestBuildModelListWithFamiliesIdIndex(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
 	models := modelFamilies()
 	ml, idIndex := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
 	if got := idIndex["ollama/qwen3.8:27b"]; got != 4 {
@@ -149,6 +153,10 @@ func TestBuildModelListWithFamiliesIdIndex(t *testing.T) {
 // assertion inspects m.models because list.Model stores its cursor by value
 // and snapSelectionOnModel mutates the model's own list copy.
 func TestSnapSelectionOnModelMovesOffDivider(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
 	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
 	ml.Select(3) // index 3 is the qwen3.8 divider
 	m := model{models: ml}

@@ -13,6 +13,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
+// newUsageStore is a seam for tests: production uses usage.NewStore() (the
+// default config dir); tests swap it to isolate from the real usage.jsonl.
+var newUsageStore = func() *usage.Store { return usage.NewStore() }
+
 // modelItem adapts a config.Model to a list.Item for the model picker.
 type modelItem struct {
 	model       config.Model
@@ -115,11 +119,11 @@ func (d modelListDelegate) Render(w io.Writer, m list.Model, index int, item lis
 	d.DefaultDelegate.Render(w, m, index, item)
 }
 
-// sortModelsByUsage stably sorts models descending by family composite score,
-// then model composite score. Same-family models end up adjacent and
-// higher-usage families float to the top. familyCounts and modelCounts come
-// from usage.Store (missing entries read as zero, scoring 0 for a stable
-// tie-break that preserves registry order).
+// sortModelsByUsage sorts models in place (stable) descending by family
+// composite score, then model composite score. Same-family models end up
+// adjacent and higher-usage families float to the top. familyCounts and
+// modelCounts come from usage.Store (missing entries read as zero, scoring 0
+// for a stable tie-break that preserves registry order).
 func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[string]usage.UsageCounts) {
 	sort.SliceStable(models, func(i, j int) bool {
 		fi := usage.CompositeScore(familyCounts[models[i].Family])
@@ -163,7 +167,7 @@ func withFamilyDividers(models []config.Model, modelCounts, familyCounts map[str
 // aggregation, so a family's total usage is accurate even when a tag/family
 // filter narrows the eligible set.
 func buildModelListWithFamilies(models []config.Model, familyOf map[string]string, theme themes.Theme, width, height int) (list.Model, map[string]int) {
-	store := usage.NewStore()
+	store := newUsageStore()
 	modelCounts := store.Counts(modelIDs(models))
 	familyCounts := store.FamilyCounts(familyOf)
 
