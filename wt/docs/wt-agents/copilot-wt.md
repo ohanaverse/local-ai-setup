@@ -34,11 +34,13 @@ When a non-native model (e.g., `minimax-m2.7:cloud`) is selected, `copilot-wt` s
 ```bash
 COPILOT_PROVIDER_BASE_URL="http://localhost:11434/v1"
 COPILOT_PROVIDER_API_KEY=""
-COPILOT_PROVIDER_WIRE_API="responses"
+COPILOT_PROVIDER_WIRE_API="completions"
 COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 ```
 
 `<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is `config.OllamaBaseURL` (`http://localhost:11434`) with a `/v1` suffix, matching the OpenAI-compatible endpoint that Copilot CLI's BYOK provider expects.
+
+`WIRE_API=completions` (chat-completions) is deliberate: Copilot CLI's `responses` wire drops leading characters through the OpenAI-compatible bridge, making one-shot prompts unreliable (observed via LiteLLM's responses bridge with `glm-5.3-flash:cloud`). This diverges from `ollama launch copilot`, which still prescribes `responses`. Re-test when LiteLLM's responses bridge is fixed ([BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452)) or copilot CLI's responses client changes.
 
 ### Gateway mode (LiteLLM)
 
@@ -47,13 +49,13 @@ When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `c
 ```bash
 COPILOT_PROVIDER_BASE_URL="http://localhost:4000/v1"  # trailing slash normalized
 COPILOT_PROVIDER_API_KEY="<gateway.api_key>"
-COPILOT_PROVIDER_WIRE_API="responses"
+COPILOT_PROVIDER_WIRE_API="completions"
 COPILOT_MODEL="<registry-model-id>"  # e.g. ollama/qwen3.8:27b-mlx
 ```
 
 The `COPILOT_MODEL` value is the full registry model id, not the bare provider-specific name. The `COPILOT_PROVIDER_API_KEY` comes from `[gateway].api_key`. Native models (`copilot/native`) continue to use the native subscription and ignore the gateway.
 
-Verified 2026-08-31 with `ollama/glm-5.3-flash:cloud` (one-shot prompt answered end-to-end). This requires the proxy to tolerate params copilot sends that `ollama_chat` does not support (e.g. `parallel_tool_calls`) — set `litellm_settings: drop_params: true` in `~/.config/litellm/config.yaml` and restart the proxy; otherwise litellm answers `400 UnsupportedParamsError`. See [litellm-troubleshooting.md](litellm-troubleshooting.md).
+Verified in both gateway modes 2026-09-01 with `ollama/glm-5.3-flash:cloud` (one-shot prompt answered end-to-end in direct and litellm modes; the earlier 2026-08-31 litellm-mode matrix run had verified the `responses` wire with the proxy-side `drop_params` workaround below, before the truncation was attributed to the responses wire itself — the responses-era PASS and the truncation both went through the same bridge, which is why the wire was switched). This requires the proxy to tolerate params copilot sends that `ollama_chat` does not support (e.g. `parallel_tool_calls`) — set `litellm_settings: drop_params: true` in `~/.config/litellm/config.yaml` and restart the proxy; otherwise litellm answers `400 UnsupportedParamsError`. See [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Agent init
 

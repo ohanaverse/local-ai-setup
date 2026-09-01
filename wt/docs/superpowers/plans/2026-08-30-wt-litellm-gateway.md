@@ -501,11 +501,15 @@ if gw.IsLitellm() {
 lc.Env = append(lc.Env,
 	"COPILOT_PROVIDER_BASE_URL="+baseURL,
 	"COPILOT_PROVIDER_API_KEY="+apiKey,
-	"COPILOT_PROVIDER_WIRE_API=responses",
+	"COPILOT_PROVIDER_WIRE_API=completions",
 	"COPILOT_MODEL="+modelName,
 )
 return lc
 ```
+
+> Note: The plan originally specified `responses`, but the Copilot CLI's
+> `responses` wire drops leading characters when routed through Ollama/LiteLLM
+> (observed with `glm-5.3-flash:cloud`). `completions` is used instead.
 
 ### Step 2: Add gateway test
 
@@ -519,8 +523,13 @@ func TestCopilotBuildLitellm(t *testing.T) {
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 	assertEnv(t, lc.Env, "COPILOT_MODEL", "ollama/qwen3.8:27b-mlx")
+	assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 }
 ```
+
+> Note: the `WIRE_API` assertion pins the regression guard for the
+> truncation fix above — the real test in `copilot_test.go` includes it;
+> adding it here keeps the plan's recipe in lockstep.
 
 ### Step 3: Commit
 

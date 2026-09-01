@@ -46,7 +46,7 @@ Codex picks a model from `--model <name>` (or a `--profile <name>` + `-m <model>
   --model <name>
   ```
 
-  Two properties matter. First, the base_url uses Ollama's OpenAI-compatible `/v1/` path (`config.OllamaBaseURL + "/v1/"`); `claude` uses the bare gateway URL for the anthropic-compatible endpoint, while `copilot` uses `config.OllamaBaseURL + "/v1"` with `wire_api="responses"`. Second, the provider is namespaced `agent-wt` rather than `ollama-launch` so a user-authored `[model_providers.ollama-launch]` (e.g. written by `ollama launch codex`) in their main `config.toml` cannot leak a stray field into the fields `codex-wt` fully controls. The `-c` overrides are self-contained on the command line, so the launcher writes nothing to `~/.codex/`.
+    Two properties matter. First, the base_url uses Ollama's OpenAI-compatible `/v1/` path (`config.OllamaBaseURL + "/v1/"`); `claude` uses the bare gateway URL for the anthropic-compatible endpoint, while `copilot` uses `config.OllamaBaseURL + "/v1"` with `COPILOT_PROVIDER_WIRE_API="completions"` (chat-completions — its `responses` wire drops leading characters through the OpenAI-compatible bridge; see [copilot-wt.md](copilot-wt.md)). Second, the provider is namespaced `agent-wt` rather than `ollama-launch` so a user-authored `[model_providers.ollama-launch]` (e.g. written by `ollama launch codex`) in their main `config.toml` cannot leak a stray field into the fields `codex-wt` fully controls. The `-c` overrides are self-contained on the command line, so the launcher writes nothing to `~/.codex/`.
 
 ## Agent init
 
