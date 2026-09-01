@@ -17,9 +17,12 @@
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
-- `bin/` — standalone isolation helpers for the external `modelman benchmark` tool (must be on PATH)
-- `Makefile` — lint target for shell scripts
-- `docs/` — guides/ (user playbooks — see Docs above), reference/, archive/ (dated docs), superpowers/ (plans+specs)
+- `bin/` — isolation helpers (`llm-isolate-provider`, `llm-restore-providers`) invoked by both `modelman benchmark` (via `modelman/src/modelman/benchmark/isolation.py`, by PATH) and the legacy benchmark scripts
+- `modelman/` — model registry TUI/CLI (Python/uv; `src/modelman`, own `CLAUDE.md`, own `Makefile`). Canonical owner of `registry.toml`, `modelman.toml` (exposure state), LiteLLM config writes, and the `modelman benchmark` tool
+- `wt/` — worktree agent launcher (Go module; `cmd/wt`, `internal/`, own `CLAUDE.md`, own `Makefile`). Reads modelman's `registry.toml` and `modelman.toml` (exposure) read-only; owns `~/.config/agent-wt/config.toml`, rotation + usage state
+- `Makefile` — lint target for shell scripts (root + wt), `check-links` (all tracked markdown), `test-all` (aggregates modelman + wt)
+- `docs/` — guides/ (user playbooks — see Docs above), reference/, contracts/ (cross-language config-format fixtures, read by wt Go + modelman Python contract tests), archive/ (dated docs), superpowers/ (plans+specs)
+- `.github/workflows/` — shell-ci (root lint), wt-ci (Go + wt lint), modelman-ci (Python)
 - LiteLLM config: `~/.config/litellm/config.yaml`
 - LaunchAgent plists: `~/Library/LaunchAgents/local.llamacpp.server.plist` (llama.cpp), `local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers
 
@@ -33,11 +36,16 @@
 - **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all five go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift.
 
 ## Adding a New Benchmark Backend
-The isolation logic exists in **two places** (legacy + CLI helper). Both must
-be updated, otherwise `modelman benchmark` and the bash script will drift.
+The isolation logic exists in **two places** (legacy bash benchmark scripts +
+`bin/llm-isolate-provider` helper). Both must be updated, otherwise the bash
+script and `modelman benchmark` will drift. `modelman benchmark` itself
+delegates to the `bin/` helper (`modelman/src/modelman/benchmark/isolation.py`),
+so that side needs no isolation code — but its provider registry must know the
+backend or it will be filtered out:
 1. Add to `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS` associative arrays in the benchmark script
 2. Add the model to `~/.config/litellm/config.yaml`
 3. Add stop/start logic to `stop_all_local` / `start_one_local` in the benchmark script
 4. Add a new branch in `bin/llm-isolate-provider`'s case statement (and matching `*_MODEL` env var) so `modelman benchmark` can isolate it
-5. Smoke test: `./benchmarks/qwen3.8-benchmark 30` (and `bin/llm-isolate-provider <new-backend>`)
-6. Update the benchmark doc with new numbers
+5. modelman side: add a provider entry to `~/.config/local-ai/registry.toml` (via `modelman sync` or the TUI) and confirm the provider id is in `LOCAL_PROVIDERS` in `modelman/src/modelman/benchmark/runner.py` — a backend missing from that set is silently skipped by `modelman benchmark`
+6. Smoke test: `./benchmarks/qwen3.8-benchmark 30` (and `bin/llm-isolate-provider <new-backend>`)
+7. Update the benchmark doc with new numbers
