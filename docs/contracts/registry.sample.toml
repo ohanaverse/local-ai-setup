@@ -14,7 +14,7 @@ id = "ollama"
 name = "Ollama"
 location = "local"
 [providers.auth]
-type = "none"
+type = "none"  # trigger-check
 base_url = "http://localhost:11434"
 
 [[providers]]
