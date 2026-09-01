@@ -42,10 +42,7 @@ endif
 	@echo "Installed agent-worktree scripts to $(BINDIR)"
 
 uninstall:              # Remove installed scripts from ~/.local/bin/
-	rm -f $(BINDIR)/agy-wt $(BINDIR)/claude-wt $(BINDIR)/codex-wt \
-	      $(BINDIR)/copilot-wt \
-	      $(BINDIR)/opencode-wt $(BINDIR)/pi-wt \
-	      $(BINDIR)/shell-wt
+	rm -f $(BINDIR)/*-wt $(BINDIR)/wt
 	@echo "Uninstalled agent-worktree scripts from $(BINDIR)"
 
 lint:                   # Run shellcheck
