@@ -27,7 +27,7 @@ ifeq ($(shell uname -s),Darwin)
 endif
 	@echo "Built bin/wt"
 
-install:                # Install scripts to ~/.local/bin/
+install: build          # Build then install scripts to ~/.local/bin/
 	cp -r $(SRCDIR)/* $(BINDIR)/
 	chmod +x $(BINDIR)/*-wt
 ifeq ($(shell uname -s),Darwin)
