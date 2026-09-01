@@ -304,5 +304,6 @@ async def test_family_screen_downloaded_excludes_cloud(tmp_path, monkeypatch):
         table = app.screen.query_one("#family-table", DataTable)
         # Row key is the family name (key=family in add_row); cells are
         # FAMILY, DISPLAY, VARIANTS, DOWNLOADED, SIZE.
-        row_key = next(k for k in table.rows.keys() if k.value == "alpha")
+        row_key = next(k for k in table.rows if k.value == "alpha")
         assert str(table.get_row(row_key)[3]) == "1"
+        assert str(table.get_row(row_key)[4]) == "—"
