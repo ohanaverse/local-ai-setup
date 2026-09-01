@@ -3,6 +3,7 @@
 ## Docs
 - User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance). Read `docs/guides/00-config-map.md` first for config-file ownership.
 - `./issues.md` — follow-ups from the 2026-08-29 guide-set review; all 5 items are marked FIXED, kept as a historical record.
+- Package-level context: `modelman/CLAUDE.md` (Python TUI/CLI) and `wt/CLAUDE.md` (Go worktree launcher) contain per-package commands, architecture, and gotchas.
 
 ## Commands
 - `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (4 qwen3.8 backends)
@@ -18,7 +19,7 @@
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
-- `bin/` — isolation helpers (`llm-isolate-provider`, `llm-restore-providers`) invoked by both `modelman benchmark` (via `modelman/src/modelman/benchmark/isolation.py`, by PATH) and the legacy benchmark scripts
+- `bin/` — isolation helpers (`llm-isolate-provider`, `llm-restore-providers`) invoked by both `modelman benchmark` (via `modelman/src/modelman/benchmark/isolation.py`, by PATH) and the legacy benchmark scripts. These are monorepo-wide utilities; the modelman package calls them through `$PATH`, not by importing Python code.
 - `modelman/` — model registry TUI/CLI (Python/uv; `src/modelman`, own `CLAUDE.md`, own `Makefile`). Canonical owner of `registry.toml`, `modelman.toml` (exposure state), LiteLLM config writes, and the `modelman benchmark` tool
 - `wt/` — worktree agent launcher (Go module; `cmd/wt`, `internal/`, own `CLAUDE.md`, own `Makefile`). Reads modelman's `registry.toml` and `modelman.toml` (exposure) read-only; owns `~/.config/agent-wt/config.toml`, rotation + usage state
 - `Makefile` — lint target for shell scripts (root + wt), `check-links` (all tracked markdown), `test-all` (aggregates modelman + wt)
