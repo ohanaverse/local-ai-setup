@@ -291,5 +291,6 @@ wt -W my-feature -A claude   # named worktree + launch
 wt --cwd -A codex    # current repo root
 claude-wt --cwd      # shim forwards to wt
 wt --init            # seed agent instruction files
-make test-agents        # live one-shot smoke: every agent × configured models
+make test-agents        # live one-shot smoke: every agent × configured models, both gateway modes
+                       # (flips [gateway].mode direct→litellm, restores config afterwards; --modes current for one pass)
 ```
