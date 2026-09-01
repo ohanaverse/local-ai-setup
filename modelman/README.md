@@ -10,12 +10,17 @@ applied on exit.
 
 ## Install
 
-Run from the repo with `uv`:
+modelman is a `uv` project nested inside the monorepo. Run all commands from
+the `modelman/` directory:
 
 ```bash
+cd modelman
 uv sync
 uv run modelman
 ```
+
+Because the repo root has no `pyproject.toml`, running `uv run modelman` from the
+root will fail. Always `cd modelman` first.
 
 ## Configuration
 

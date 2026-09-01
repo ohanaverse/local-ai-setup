@@ -616,11 +616,13 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** `local.llamacpp.server.plist` sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|llamacpp|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`, `~/.llamacpp.err.log`).
 - **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its llama.cpp verification curls hit `:8000` — that's oMLX; llama-server is `:8080`; (3) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (4) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`; (5) its llama.cpp plist template points `-m` at `~/models/qwen3.8-27b.Q4_K_M.gguf` — the live plist pins the actual GGUF snapshot in `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/`.
-- **The `modelman` binary on PATH is stale** (only `download` — verified). Full CLI (TUI, `expose`, `sync`, …) is repo-local:
+- **Run modelman from the `modelman/` directory.** modelman is not installed globally anymore. Run it from `~/github/ohanaverse/local-ai-setup/modelman`:
 
   ```bash
   # from: ~/github/ohanaverse/local-ai-setup/modelman
   uv run modelman          # bare = TUI
+  uv run modelman expose <model-id>
+  uv run modelman sync
   ```
 
 - **`echo "model_list: []"` beats `touch`** for the initial LiteLLM config — an empty file fails to start.

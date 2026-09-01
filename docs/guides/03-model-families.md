@@ -17,7 +17,7 @@ grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml
 22
 ```
 
-- modelman runnable from its repo (PATH-installed binary is stale — see [02-providers-and-models](02-providers-and-models.md) Gotchas):
+- modelman runnable from its repo (not installed globally — see [02-providers-and-models](02-providers-and-models.md) Gotchas for why it must be run from the `modelman/` directory):
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman

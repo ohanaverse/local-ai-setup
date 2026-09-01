@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - [01-initial-setup](01-initial-setup.md) complete: proxy running under the `local.litellm.proxy` LaunchAgent with `--config /Users/keith/.config/litellm/config.yaml --port 4000`, master key in the plist's `EnvironmentVariables`, Postgres + Redis up (health checks: guide 01 §6).
-- modelman runnable from its repo (the PATH-installed `modelman` is stale — guide 02 Gotchas). Exposure context (providers, registry): [02-providers-and-models](02-providers-and-models.md).
+- modelman runnable from its repo (not installed globally — run from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`). Exposure context (providers, registry): [02-providers-and-models](02-providers-and-models.md).
 - Live pre-flight — all three lines must match before relying on anything below:
 
 ```bash

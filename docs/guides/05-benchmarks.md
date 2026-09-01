@@ -9,7 +9,7 @@
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
 - Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` (seven ollama models are exposed in total, but only those two are local MLX downloads). If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
 - Backends healthy: the four-port block in Verification answers (llama.cpp `:8080`, oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`).
-- modelman from its repo, not PATH (`uv run modelman` under `/Users/keith/github/ohanaverse/local-ai-setup/modelman` — the PATH-installed `modelman` is stale, guide 02 Gotchas). Isolation helpers callable:
+- modelman runnable from its repo (`uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`; modelman is not installed globally). Isolation helpers callable:
   `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` and `bin/llm-restore-providers` from `/Users/keith/github/ohanaverse/local-ai-setup`.
 
 ## TL;DR
@@ -197,7 +197,7 @@ ls /Users/keith/.config/local-ai/benchmarks/
 - **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); `bin/*` helpers use `#!/bin/bash`. Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
 - **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/results/`; modelman runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.
 - **OpenRouter rows are N/A without an API key** (legacy scripts read `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`).
-- **The `modelman` binary on PATH is stale** (guide 02 Gotchas) — always `uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`.
+- **Run modelman from the repo.** modelman is not installed globally. Always run it with `uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`.
 
 ## Going deeper
 
