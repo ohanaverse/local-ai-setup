@@ -23,7 +23,7 @@ func (claudeDriver) InstructionPointers() []InstructionPointer {
 	}
 }
 
-func (claudeDriver) OllamaURL() string { return "http://localhost:11434" }
+func (claudeDriver) OllamaURL() string { return config.OllamaBaseURL }
 
 func (claudeDriver) ResumeFlag() string { return "--resume" }
 

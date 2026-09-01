@@ -27,10 +27,11 @@ const (
 	SourceDiscovered Source = "discovered"
 )
 
-// OllamaBaseURL is the default address of the local Ollama gateway.
-// It is kept in the config package for legacy migration only; agent
-// drivers now declare their own full gateway URLs via the OllamaURLer
-// capability in internal/agents.
+// OllamaBaseURL is the base address of the local Ollama gateway. Agent
+// drivers (internal/agents) derive their full wire URLs from it via the
+// OllamaURLer capability, adding the per-agent path suffix ("/", "/v1",
+// "/v1/") their wire protocol expects; legacy migration writes it as the
+// ollama provider's auth base URL.
 const OllamaBaseURL = "http://localhost:11434"
 
 // ── GatewayConfig ─────────────────────────────────────────

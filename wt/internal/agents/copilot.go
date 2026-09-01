@@ -16,7 +16,7 @@ func (copilotDriver) InstructionPointers() []InstructionPointer {
 	}
 }
 
-func (copilotDriver) OllamaURL() string { return "http://localhost:11434/v1" }
+func (copilotDriver) OllamaURL() string { return config.OllamaBaseURL + "/v1" }
 
 func (copilotDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	lc := LaunchCmd{Bin: "copilot"}
