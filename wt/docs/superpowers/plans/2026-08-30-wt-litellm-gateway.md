@@ -523,8 +523,13 @@ func TestCopilotBuildLitellm(t *testing.T) {
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 	assertEnv(t, lc.Env, "COPILOT_MODEL", "ollama/qwen3.8:27b-mlx")
+	assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 }
 ```
+
+> Note: the `WIRE_API` assertion pins the regression guard for the
+> truncation fix above — the real test in `copilot_test.go` includes it;
+> adding it here keeps the plan's recipe in lockstep.
 
 ### Step 3: Commit
 

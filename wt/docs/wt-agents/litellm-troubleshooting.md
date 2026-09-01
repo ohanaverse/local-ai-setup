@@ -13,16 +13,19 @@ to answer a one-shot prompt on stdout.
 | claude | ✅ works | `ANTHROPIC_BASE_URL` → gateway, `--model <registry-id>`; a `claude-code:unrecognized_model` notice is benign |
 | pi | ✅ works | after the dedicated `litellm` provider fix (below) |
 | opencode | ✅ works | after the custom-provider fix (below) |
-| copilot | ✅ works | after proxy `litellm_settings.drop_params: true` (below) |
+| copilot | ✅ works | after proxy `litellm_settings.drop_params: true` and wt-side `WIRE_API=completions` (below) |
 | codex | ✅ works | after per-model `additional_drop_params: ["reasoning_effort"]` (below) |
 | agy | N/A | no model passthrough; the model is chosen inside its own TUI |
 | shell | N/A | command executor, not an LLM agent |
 
 Driver-level fixes shipped in wt: pi (`pi.go`, `pi_models.go`), codex
-(`env_key` + gateway env var), opencode (custom provider + models map). The
-copilot and codex fixes live in the LiteLLM proxy config, not in wt —
-both are settings modelman may clobber (see the modelman settings-persistence
-spec, `2026-08-31-litellm-settings-persistence-design.md`).
+(`env_key` + gateway env var), opencode (custom provider + models map), and
+copilot (`WIRE_API=completions`, below). Of the proxy-side fixes, only codex's
+`additional_drop_params` lives in the LiteLLM proxy config, not in wt — a
+setting modelman may clobber (see the modelman settings-persistence spec,
+`2026-08-31-litellm-settings-persistence-design.md`); copilot's
+`drop_params` is proxy-side but its wire fix is now in wt (see the copilot
+section).
 
 ## Debugging playbook (what actually worked)
 
@@ -181,6 +184,28 @@ Applied 2026-08-31; copilot verified green with `ollama/glm-5.3-flash:cloud`
 after `drop_params`. Note: `~/.config/litellm/config.yaml` is written by
 modelman — if modelman reconciliation drops the block, re-add it or teach
 modelman the setting.
+
+### copilot — `responses` wire drops leading characters (fix in wt: WIRE_API=completions)
+
+`drop_params` fixed the 400s, but copilot one-shot prompts were still
+unreliable on the `responses` wire: answers arrived with leading characters
+dropped (observed via LiteLLM's /v1/responses→ollama_chat bridge with
+`glm-5.3-flash:cloud`). codex speaks responses through the same bridge
+without truncation, so the trigger is the copilot-client×bridge interaction,
+not the bridge alone. wt's fix is driver-side: copilot launches with
+`COPILOT_PROVIDER_WIRE_API=completions` (chat-completions) in both direct
+and litellm modes — see `internal/agents/copilot.go`. This deliberately
+diverges from `ollama launch copilot`, which still sets `responses`.
+
+Verified 2026-09-01 in both gateway modes (direct ollama `/v1`, LiteLLM
+`/v1`) with `ollama/glm-5.3-flash:cloud` one-shot prompts answered
+end-to-end (`scripts/agents-smoke.sh --only copilot`). The proxy-side
+`drop_params` above is still required in litellm mode — completions does
+not stop copilot sending `parallel_tool_calls`.
+
+Re-test trigger: LiteLLM's responses bridge fixes
+([BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452))
+ship in a release, or copilot CLI's responses client changes.
 
 ### opencode — builtin `openai` provider is unusable for gateway models
 

@@ -348,6 +348,11 @@ wt_exec() {
 }
 ```
 
+> Historical spec note (added 2026-09-01): `WIRE_API="responses"` above is
+> outdated. Copilot CLI's `responses` wire drops leading characters through
+> the OpenAI-compatible bridge; wt now ships `completions` in both gateway
+> modes. See `docs/wt-agents/copilot-wt.md` for the current contract.
+
 #### agy-wt
 **No changes.** agy doesn't support model passthrough, so adding rotation logic would be dead code.
 

@@ -130,11 +130,11 @@ Before launching with an Ollama model, `wt` verifies the model is locally availa
 ```bash
 COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1
 COPILOT_PROVIDER_API_KEY=
-COPILOT_PROVIDER_WIRE_API=responses
+COPILOT_PROVIDER_WIRE_API=completions
 COPILOT_MODEL=<model-name>
 ```
 
-The base URL comes from the ollama provider config in `config.toml`, defaulting to `http://localhost:11434`.
+The base URL comes from the ollama provider config in `config.toml`, defaulting to `http://localhost:11434`. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
 
 ## Main guard
 

@@ -43,11 +43,17 @@ func (copilotDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	}
 
 	// Use the chat-completions wire API for Ollama/LiteLLM backends.
-	// GitHub Copilot's newer "responses" wire API drops leading characters
-	// when routed through Ollama's OpenAI-compatible endpoint (observed with
-	// glm-5.3-flash:cloud and others), making one-shot prompts unreliable.
-	// "completions" is fully supported by both Ollama and LiteLLM and avoids
-	// the truncation.
+	// Copilot CLI's "responses" wire drops leading characters through the
+	// OpenAI-compatible bridge — observed in litellm mode (LiteLLM's
+	// /v1/responses→ollama_chat bridge, with glm-5.3-flash:cloud and others),
+	// making one-shot prompts unreliable; codex speaks responses through the
+	// same bridge without truncation, so the trigger is the copilot-client×
+	// bridge interaction, not localized to either side. "completions" is
+	// fully supported by both Ollama and LiteLLM. Verified live in both
+	// direct (ollama /v1) and litellm modes 2026-09-01 via agents-smoke.sh.
+	// This deliberately diverges from `ollama launch copilot`, which still
+	// sets responses — re-test when LiteLLM's responses bridge is fixed
+	// (BerriAI/litellm#37452) or copilot CLI's responses client changes.
 	lc.Env = append(lc.Env,
 		"COPILOT_PROVIDER_BASE_URL="+baseURL,
 		"COPILOT_PROVIDER_API_KEY="+apiKey,
