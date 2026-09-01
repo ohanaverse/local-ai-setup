@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -13,8 +15,9 @@ import (
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
 type modelItem struct {
-	model  config.Model
-	counts usage.UsageCounts
+	model       config.Model
+	counts      usage.UsageCounts
+	familyCount int // 30-day launches for the model's family
 }
 
 // FilterValue returns the model ID so the list's built-in fuzzy filter
@@ -24,18 +27,19 @@ func (m modelItem) FilterValue() string { return m.model.ID }
 // Title renders the model ID — the primary identifier users scan for.
 func (m modelItem) Title() string { return m.model.ID }
 
-// Description renders the metadata columns: provider, location, tags, and
-// 1d/7d/30d usage counts. Counts are display-only and help the user spot
-// model-selection bias.
+// Description renders the metadata columns: provider, location, tags, family
+// usage, and 1d/7d/30d model usage. Family usage helps the user see the sort
+// basis and spot family-selection bias.
 func (m modelItem) Description() string {
 	tags := strings.Join(m.model.Tags, ",")
 	if tags == "" {
 		tags = "-"
 	}
-	return fmt.Sprintf("%-10s %-6s %-20s  1d:%-3d 7d:%-3d 30d:%-3d",
+	return fmt.Sprintf("%-10s %-6s %-20s fam:%-3d 1d:%-3d 7d:%-3d 30d:%-3d",
 		m.model.ProviderID,
 		string(m.model.Location),
 		tags,
+		m.familyCount,
 		m.counts.OneDay,
 		m.counts.SevenDay,
 		m.counts.ThirtyDay,
@@ -68,6 +72,167 @@ func indexOfModelID(models []config.Model, id string) int {
 		}
 	}
 	return -1
+}
+
+// otherFamily is the display label for models whose Family is empty.
+const otherFamily = "— other"
+
+// familyDividerLabel renders a family-group header: the family name (or
+// otherFamily when empty) plus its 30-day launch count.
+func familyDividerLabel(family string, thirtyDay int) string {
+	if family == "" {
+		family = otherFamily
+	}
+	return fmt.Sprintf("◈ %s · 30d:%d", family, thirtyDay)
+}
+
+// dividerItem is a non-selectable family header row in the model picker. It
+// renders the family name plus its 30-day count, separating model rows of
+// different families. It is never a launch target.
+type dividerItem struct {
+	label string
+}
+
+// FilterValue returns "" so dividers never match the list's fuzzy filter
+// (filtering shows only model rows).
+func (d dividerItem) FilterValue() string { return "" }
+
+// modelListDelegate wraps ThemedListDelegate so dividerItem rows render as
+// unhighlighted family headers regardless of the cursor position. Model rows
+// fall through to the themed DefaultDelegate. Embedding the value (not a
+// pointer) preserves Height/Spacing/Update/ShortHelp/FullHelp from
+// DefaultDelegate, all of which have value receivers.
+type modelListDelegate struct {
+	list.DefaultDelegate
+	headerStyle lipgloss.Style
+}
+
+func (d modelListDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	if dv, ok := item.(dividerItem); ok {
+		_, _ = w.Write([]byte(d.headerStyle.Render(dv.label) + "\n"))
+		return
+	}
+	d.DefaultDelegate.Render(w, m, index, item)
+}
+
+// sortModelsByUsage stably sorts models descending by family composite score,
+// then model composite score. Same-family models end up adjacent and
+// higher-usage families float to the top. familyCounts and modelCounts come
+// from usage.Store (missing entries read as zero, scoring 0 for a stable
+// tie-break that preserves registry order).
+func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[string]usage.UsageCounts) {
+	sort.SliceStable(models, func(i, j int) bool {
+		fi := usage.CompositeScore(familyCounts[models[i].Family])
+		fj := usage.CompositeScore(familyCounts[models[j].Family])
+		if fi != fj {
+			return fi > fj
+		}
+		return usage.CompositeScore(modelCounts[models[i].ID]) >
+			usage.CompositeScore(modelCounts[models[j].ID])
+	})
+}
+
+// withFamilyDividers returns list items for the (already usage-sorted) models,
+// inserting a dividerItem before each distinct family group. Each model row
+// carries its own 1d/7d/30d counts plus its family's 30-day count for display.
+func withFamilyDividers(models []config.Model, modelCounts, familyCounts map[string]usage.UsageCounts) []list.Item {
+	items := make([]list.Item, 0, len(models)*2)
+	prevFamily := ""
+	havePrev := false
+	for _, m := range models {
+		fam := m.Family
+		if !havePrev || fam != prevFamily {
+			items = append(items, dividerItem{label: familyDividerLabel(fam, familyCounts[fam].ThirtyDay)})
+			prevFamily = fam
+			havePrev = true
+		}
+		items = append(items, modelItem{
+			model:       m,
+			counts:      modelCounts[m.ID],
+			familyCount: familyCounts[fam].ThirtyDay,
+		})
+	}
+	return items
+}
+
+// buildModelListWithFamilies builds the usage-sorted, family-grouped model
+// picker list. It sorts eligible models by family-then-model usage, inserts
+// family divider headers, and returns the list plus a modelID→list-index map
+// so callers can position the cursor (bypassing divider rows). familyOf maps
+// the FULL catalog's model IDs to their families for family-count
+// aggregation, so a family's total usage is accurate even when a tag/family
+// filter narrows the eligible set.
+func buildModelListWithFamilies(models []config.Model, familyOf map[string]string, theme themes.Theme, width, height int) (list.Model, map[string]int) {
+	store := usage.NewStore()
+	modelCounts := store.Counts(modelIDs(models))
+	familyCounts := store.FamilyCounts(familyOf)
+
+	sortModelsByUsage(models, familyCounts, modelCounts)
+	items := withFamilyDividers(models, modelCounts, familyCounts)
+
+	delegate := modelListDelegate{
+		DefaultDelegate: ThemedListDelegate(theme),
+		headerStyle: lipgloss.NewStyle().
+			Foreground(theme.Token(themes.TokenHeader)).
+			Bold(true),
+	}
+	ml := list.New(items, delegate, width, height)
+	ml.Title = "Models"
+	ml.SetShowStatusBar(false)
+
+	idIndex := make(map[string]int, len(models))
+	for i, it := range items {
+		if mi, ok := it.(modelItem); ok {
+			idIndex[mi.model.ID] = i
+		}
+	}
+	return ml, idIndex
+}
+
+// firstModelIndex returns the index of the first model row in items (skipping
+// leading family dividers), or -1 if there are no model rows.
+func firstModelIndex(items []list.Item) int {
+	for i, it := range items {
+		if _, ok := it.(modelItem); ok {
+			return i
+		}
+	}
+	return -1
+}
+
+// lastModelIndex returns the index of the last model row in items, or -1.
+func lastModelIndex(items []list.Item) int {
+	for i := len(items) - 1; i >= 0; i-- {
+		if _, ok := items[i].(modelItem); ok {
+			return i
+		}
+	}
+	return -1
+}
+
+// snapSelectionOnModel keeps the model-picker cursor on a model row, never on
+// a family divider. Called after any navigation so a divider can't be
+// highlighted or launched. Prefers the next row, then the previous.
+func (m *model) snapSelectionOnModel() {
+	items := m.models.Items()
+	idx := m.models.Index()
+	if idx < 0 || idx >= len(items) {
+		return
+	}
+	if _, ok := items[idx].(dividerItem); ok {
+		for i := idx + 1; i < len(items); i++ {
+			if _, ok := items[i].(modelItem); ok {
+				m.models.Select(i)
+				return
+			}
+		}
+		for i := idx - 1; i >= 0; i-- {
+			if _, ok := items[i].(modelItem); ok {
+				m.models.Select(i)
+				return
+			}
+		}
+	}
 }
 
 // phaseModelView renders the model picker screen: the list of
