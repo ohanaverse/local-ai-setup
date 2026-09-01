@@ -36,16 +36,13 @@
 - **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all five go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift.
 
 ## Adding a New Benchmark Backend
-The isolation logic exists in **two places** (legacy bash benchmark scripts +
-`bin/llm-isolate-provider` helper). Both must be updated, otherwise the bash
-script and `modelman benchmark` will drift. `modelman benchmark` itself
-delegates to the `bin/` helper (`modelman/src/modelman/benchmark/isolation.py`),
-so that side needs no isolation code — but its provider registry must know the
-backend or it will be filtered out:
-1. Add to `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS` associative arrays in the benchmark script
+Isolation logic lives in **one place**: `bin/llm-isolate-provider`. The bash
+benchmark scripts call it (with `LLM_ISOLATE_*_MODEL` env overrides for their
+model names), and `modelman benchmark` delegates to it
+(`modelman/src/modelman/benchmark/isolation.py`). Adding a backend:
+1. Add to `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS`, `ISOLATE_ID`, `ISOLATE_ENV` associative arrays in the benchmark script
 2. Add the model to `~/.config/litellm/config.yaml`
-3. Add stop/start logic to `stop_all_local` / `start_one_local` in the benchmark script
-4. Add a new branch in `bin/llm-isolate-provider`'s case statement (and matching `*_MODEL` env var) so `modelman benchmark` can isolate it
-5. modelman side: add a provider entry to `~/.config/local-ai/registry.toml` (via `modelman sync` or the TUI) and confirm the provider id is in `LOCAL_PROVIDERS` in `modelman/src/modelman/benchmark/runner.py` — a backend missing from that set is silently skipped by `modelman benchmark`
-6. Smoke test: `./benchmarks/qwen3.8-benchmark 30` (and `bin/llm-isolate-provider <new-backend>`)
-7. Update the benchmark doc with new numbers
+3. Add a new branch in `bin/llm-isolate-provider`'s case statement (and matching `LLM_ISOLATE_*_MODEL` env var) — both the bash scripts and `modelman benchmark` isolate through it
+4. modelman side: add a provider entry to `~/.config/local-ai/registry.toml` (via `modelman sync` or the TUI) and confirm the provider id is in `LOCAL_PROVIDERS` in `modelman/src/modelman/benchmark/runner.py` — a backend missing from that set is silently skipped by `modelman benchmark`
+5. Smoke test: `./benchmarks/qwen3.8-benchmark 30` (and `bin/llm-isolate-provider <new-backend>`)
+6. Update the benchmark doc with new numbers

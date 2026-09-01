@@ -109,16 +109,23 @@ def run_benchmark(
     )
 
     session = requests.Session()
+    # Isolation is provider-scoped: consecutive targets on the same provider
+    # reuse the running isolation instead of paying another stop-others +
+    # warmup cycle (~a minute of polling per target otherwise).
+    last_provider: str | None = None
+    direct_url: str | None = None
     try:
         for target in targets:
             try:
-                isolate = isolate_provider(target.provider_id)
-                if not isolate.ok:
-                    raise BenchmarkError(
-                        f"failed to isolate provider {target.provider_id}: "
-                        f"{isolate.error or 'unknown error'}"
-                    )
-                direct_url = isolate.direct_url
+                if target.provider_id != last_provider:
+                    isolate = isolate_provider(target.provider_id)
+                    if not isolate.ok:
+                        raise BenchmarkError(
+                            f"failed to isolate provider {target.provider_id}: "
+                            f"{isolate.error or 'unknown error'}"
+                        )
+                    direct_url = isolate.direct_url
+                    last_provider = target.provider_id
             except BenchmarkError as exc:
                 for route in routes:
                     for pass_number in range(1, passes + 1):

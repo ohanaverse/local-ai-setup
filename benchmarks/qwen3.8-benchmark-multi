@@ -22,7 +22,7 @@ echo
 
 for i in $(seq 1 "$PASSES"); do
     echo "===== Pass $i / $PASSES ====="
-    /Users/keith/.local/bin/qwen3.8-benchmark "$MAX_TOKENS"
+    "$(dirname "$0")/qwen3.8-benchmark" "$MAX_TOKENS"
     echo
     if [ "$i" -lt "$PASSES" ]; then
         echo "Cooling down for ${COOLDOWN}s..."
