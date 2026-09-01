@@ -163,21 +163,32 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 		t.Fatalf("phase = %v, want phaseModel after phaseAgent Enter", nm.phase)
 	}
 
-	// Every item in the picker must be in the gemma4 family; the
-	// design-tag llama3 model must be filtered out.
+	// Every model row in the picker must be in the gemma4 family; the
+	// design-tag llama3 model must be filtered out. Family divider header
+	// rows are expected (the gemma4 group gets a leading divider); they are
+	// not launch targets, so they are skipped here and their label is just
+	// the family header.
 	items := nm.models.Items()
 	if len(items) == 0 {
 		t.Fatal("picker list is empty after phaseAgent Enter")
 	}
+	sawModel := false
 	for _, it := range items {
+		if _, ok := it.(dividerItem); ok {
+			continue
+		}
 		mi, ok := it.(modelItem)
 		if !ok {
 			t.Fatalf("picker item is %T, want modelItem", it)
 		}
+		sawModel = true
 		if mi.model.Family != "gemma4" {
 			t.Errorf("model %s has family %q, want gemma4 (filter -F gemma4 not honored)",
 				mi.model.ID, mi.model.Family)
 		}
+	}
+	if !sawModel {
+		t.Fatal("picker list has no model rows after phaseAgent Enter")
 	}
 }
 

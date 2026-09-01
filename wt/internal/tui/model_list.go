@@ -215,26 +215,41 @@ func lastModelIndex(items []list.Item) int {
 }
 
 // snapSelectionOnModel keeps the model-picker cursor on a model row, never on
-// a family divider. Called after any navigation so a divider can't be
-// highlighted or launched. Prefers the next row, then the previous.
-func (m *model) snapSelectionOnModel() {
+// a family divider. prev is the cursor index before the navigation step that
+// produced the current cursor; the snap resumes in the direction of travel so
+// moving up onto a divider continues up into the previous group (rather than
+// snapping back onto the row just left). When prev is <0 (no meaningful
+// direction, e.g. an initial land), it prefers the next model row.
+func (m *model) snapSelectionOnModel(prev int) {
 	items := m.models.Items()
 	idx := m.models.Index()
 	if idx < 0 || idx >= len(items) {
 		return
 	}
-	if _, ok := items[idx].(dividerItem); ok {
-		for i := idx + 1; i < len(items); i++ {
-			if _, ok := items[i].(modelItem); ok {
-				m.models.Select(i)
-				return
-			}
-		}
+	if _, ok := items[idx].(dividerItem); !ok {
+		return
+	}
+	if prev >= 0 && idx < prev {
+		// Moved backward (e.g. up arrow): continue backward.
 		for i := idx - 1; i >= 0; i-- {
 			if _, ok := items[i].(modelItem); ok {
 				m.models.Select(i)
 				return
 			}
+		}
+	}
+	// Forward (or unknown direction).
+	for i := idx + 1; i < len(items); i++ {
+		if _, ok := items[i].(modelItem); ok {
+			m.models.Select(i)
+			return
+		}
+	}
+	// Fall back backward if no forward row exists.
+	for i := idx - 1; i >= 0; i-- {
+		if _, ok := items[i].(modelItem); ok {
+			m.models.Select(i)
+			return
 		}
 	}
 }

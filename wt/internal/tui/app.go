@@ -22,7 +22,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -259,16 +258,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// typed into a filter query reach the text input instead of being
 		// swallowed as navigation.
 		if m.phase == phaseModel && m.models.FilterState() != list.Filtering {
+			items := m.models.Items()
 			switch msg.String() {
 			case "up", "k":
-				if m.models.Index() == 0 {
-					m.models.Select(len(m.models.Items()) - 1)
-					return m, nil
+				if fi := firstModelIndex(items); fi >= 0 && m.models.Index() == fi {
+					if li := lastModelIndex(items); li >= 0 {
+						m.models.Select(li)
+						return m, nil
+					}
 				}
 			case "down", "j":
-				if m.models.Index() == len(m.models.Items())-1 {
-					m.models.Select(0)
-					return m, nil
+				if li := lastModelIndex(items); li >= 0 && m.models.Index() == li {
+					if fi := firstModelIndex(items); fi >= 0 {
+						m.models.Select(fi)
+						return m, nil
+					}
 				}
 			}
 		}
@@ -460,8 +464,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.phase == phaseModel && m.width > 0 && m.height > 0 {
+		prev := m.models.Index()
 		var cmd tea.Cmd
 		m.models, cmd = m.models.Update(msg)
+		m.snapSelectionOnModel(prev)
 		return m, cmd
 	}
 	if m.phase == phaseAgent && m.width > 0 && m.height > 0 {
@@ -633,16 +639,11 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	// Validate the pinned model FIRST. Building the model list (which
-	// scans usage.jsonl and wraps every model with a usage badge) is
-	// wasted work when the pin is invalid — we'll just discard it.
-	if m.pinnedModel != "" {
-		if idx := indexOfModelID(models, m.pinnedModel); idx >= 0 {
-			counts := usage.NewStore().Counts(modelIDs(models))
-			m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
-			m.models.Select(idx)
-			return m.proceedToLaunch()
-		}
+	// Validate a -M pin BEFORE any list construction: a bad pin routes back to
+	// the agent picker without scanning usage.jsonl or wrapping models. The
+	// eligible slice is the source of truth; a pin that matches at all is one
+	// of these models.
+	if m.pinnedModel != "" && indexOfModelID(models, m.pinnedModel) < 0 {
 		m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
 		m.pinnedModel = ""
 		items := buildAgentList(m.cfg)
@@ -653,13 +654,37 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m, nil
 	}
 
-	counts := usage.NewStore().Counts(modelIDs(models))
-	m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
+	// Build the sorted, family-grouped model list once. Family counts come
+	// from the full catalog (m.cfg.Models), so a family's total usage is
+	// accurate even when the -T/-F filters narrow the eligible models.
+	familyOf := make(map[string]string, len(m.cfg.Models))
+	for _, mm := range m.cfg.Models {
+		familyOf[mm.ID] = mm.Family
+	}
+	ml, idIndex := buildModelListWithFamilies(models, familyOf, m.theme, m.width-2, m.height-2)
+	m.models = ml
+
+	// Pinned model: select its true list index (divider-aware) and launch.
+	if m.pinnedModel != "" {
+		m.models.Select(idIndex[m.pinnedModel])
+		return m.proceedToLaunch()
+	}
+
+	// Unpinned: prefer the rotation's next-to-use model; otherwise start at
+	// the first model row (skipping leading family dividers).
+	posSet := false
 	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
-		if idx := indexOfModelID(models, next.ID); idx >= 0 {
+		if idx, ok := idIndex[next.ID]; ok {
 			m.models.Select(idx)
+			posSet = true
 		}
 	}
+	if !posSet {
+		if fi := firstModelIndex(m.models.Items()); fi >= 0 {
+			m.models.Select(fi)
+		}
+	}
+
 	if len(models) == 1 {
 		return m.proceedToLaunch()
 	}

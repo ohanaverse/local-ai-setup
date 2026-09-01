@@ -149,9 +149,9 @@ func TestBuildModelListWithFamiliesIdIndex(t *testing.T) {
 }
 
 // TestSnapSelectionOnModelMovesOffDivider verifies a cursor resting on a
-// divider is snapped to the nearest model row (forward preferred). The
-// assertion inspects m.models because list.Model stores its cursor by value
-// and snapSelectionOnModel mutates the model's own list copy.
+// divider is snapped to a model row (forward preferred when the direction is
+// unknown). The assertion inspects m.models because list.Model stores its
+// cursor by value and snapSelectionOnModel mutates the model's own list copy.
 func TestSnapSelectionOnModelMovesOffDivider(t *testing.T) {
 	old := newUsageStore
 	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
@@ -160,8 +160,75 @@ func TestSnapSelectionOnModelMovesOffDivider(t *testing.T) {
 	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
 	ml.Select(3) // index 3 is the qwen3.8 divider
 	m := model{models: ml}
-	m.snapSelectionOnModel()
-	if _, ok := m.models.Items()[m.models.Index()].(modelItem); !ok {
-		t.Fatalf("selection not on a model after snap: index %d is %T", m.models.Index(), m.models.Items()[m.models.Index()])
+	m.snapSelectionOnModel(-1) // unknown direction: forward preferred
+	if got := m.models.Index(); got != 4 {
+		t.Fatalf("after snap index = %d, want 4 (first model of qwen3.8 group)", got)
+	}
+}
+
+// TestSnapSelectionOnModelContinuesUpwardAcrossDivider verifies pressing UP
+// onto a divider continues up into the previous family group, so a model
+// right after a divider is never stuck (up is a real move, not a no-op).
+// Fixture layout: [div gemma4(0), 9b(1), 14b(2), div qwen3.8(3), qwen3.8(4),
+// div other(5), loose(6)].
+func TestSnapSelectionOnModelContinuesUpwardAcrossDivider(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
+	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
+	// Up from qwen3.8(4) lands on divider(3).
+	ml.Select(3)
+	m := model{models: ml}
+	m.snapSelectionOnModel(4) // moved backward 4→3
+	if got := m.models.Index(); got != 2 {
+		t.Fatalf("after up-snap index = %d, want 2 (last model of gemma4 group)", got)
+	}
+}
+
+// TestSnapSelectionOnModelContinuesDownwardAcrossDivider verifies pressing
+// DOWN onto a divider continues down into the next family group, so a model
+// right before a divider is never stuck.
+func TestSnapSelectionOnModelContinuesDownwardAcrossDivider(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
+	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
+	// Down from 14b(2) lands on divider(3).
+	ml.Select(3)
+	m := model{models: ml}
+	m.snapSelectionOnModel(2) // moved forward 2→3
+	if got := m.models.Index(); got != 4 {
+		t.Fatalf("after down-snap index = %d, want 4 (first model of qwen3.8 group)", got)
+	}
+}
+
+// TestEnterModelPhaseCursorNeverOnDivider verifies that entering the model
+// phase (no rotation history) lands the cursor on a model row, not the
+// leading family divider. testConfig() models share an empty family, so the
+// first list item is the "— other" divider.
+func TestEnterModelPhaseCursorNeverOnDivider(t *testing.T) {
+	cfg := testConfig()
+	m := model{
+		cfg:          cfg,
+		agent:        "claude",
+		tag:          "code",
+		activeTags:   "code",
+		activeFamily: "",
+		theme:        themes.Default,
+		width:        80,
+		height:       24,
+	}
+	models, err := cfg.EligibleModels("claude", "code", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	got, _ := m.enterModelPhase("claude", models, "code")
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", got.phase)
+	}
+	if _, ok := got.models.Items()[got.models.Index()].(modelItem); !ok {
+		t.Fatalf("cursor at %d is %T; want a modelItem", got.models.Index(), got.models.Items()[got.models.Index()])
 	}
 }
