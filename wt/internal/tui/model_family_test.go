@@ -209,6 +209,10 @@ func TestSnapSelectionOnModelContinuesDownwardAcrossDivider(t *testing.T) {
 // leading family divider. testConfig() models share an empty family, so the
 // first list item is the "— other" divider.
 func TestEnterModelPhaseCursorNeverOnDivider(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
 	cfg := testConfig()
 	m := model{
 		cfg:          cfg,

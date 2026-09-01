@@ -666,7 +666,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 
 	// Pinned model: select its true list index (divider-aware) and launch.
 	if m.pinnedModel != "" {
-		m.models.Select(idIndex[m.pinnedModel])
+		if idx, ok := idIndex[m.pinnedModel]; ok {
+			m.models.Select(idx)
+		}
 		return m.proceedToLaunch()
 	}
 

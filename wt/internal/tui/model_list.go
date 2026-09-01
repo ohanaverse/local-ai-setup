@@ -245,7 +245,7 @@ func (m *model) snapSelectionOnModel(prev int) {
 			return
 		}
 	}
-	// Fall back backward if no forward row exists.
+	// Defensive: a divider is normally followed by a model row, but cover the edge where none exists.
 	for i := idx - 1; i >= 0; i-- {
 		if _, ok := items[i].(modelItem); ok {
 			m.models.Select(i)
