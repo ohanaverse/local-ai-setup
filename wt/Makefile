@@ -10,7 +10,7 @@ help:                   # Show available targets
 	@echo "  format-check - Check shfmt formatting on bin/*-wt and scripts/agents-smoke.sh"
 	@echo "  check     - Run lint + format-check"
 	@echo "  test      - Run smoke tests"
-	@echo "  test-agents - Run live one-shot agent smoke tests (requires gateways/agent CLIs)"
+	@echo "  test-agents - Run live one-shot agent smoke tests in both gateway modes (requires gateways/agent CLIs)"
 	@echo "  clean     - Remove build artifacts"
 
 BINDIR := $(HOME)/.local/bin
