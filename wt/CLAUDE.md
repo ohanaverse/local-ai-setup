@@ -196,7 +196,7 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
   - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
 - State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model's picker footer — see `internal/usage`).
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model's picker footer — see `internal/usage`). `Store.FamilyCounts` aggregates the same events by model family (via a model-id→family map from the registry), and the model picker sorts eligible models descending by family-then-model `CompositeScore` (a recency-weighted integer key) with non-selectable family header rows between groups.
 
 ```bash
 go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
