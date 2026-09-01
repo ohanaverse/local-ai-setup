@@ -255,3 +255,54 @@ async def test_family_screen_column_headers(tmp_path, monkeypatch):
         table = app.screen.query_one("#family-table", DataTable)
         labels = [str(col.label) for col in table.columns.values()]
         assert labels == ["FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE"]
+
+
+@pytest.mark.asyncio
+async def test_family_screen_downloaded_excludes_cloud(tmp_path, monkeypatch):
+    """DOWNLOADED counts only local models. A cloud entry (location='cloud')
+    holds no disk weights and must not inflate the count, even when the
+    provider reports it as downloaded — `ollama show <model>:cloud` exits 0."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="alpha")],
+        models=[
+            ModelEntry(
+                id="ollama/cloudy",
+                family="alpha",
+                provider_id="ollama",
+                model_name="cloudy:cloud",
+                location="cloud",
+            ),
+            ModelEntry(id="ollama/local-a", family="alpha", provider_id="ollama", model_name="a"),
+        ],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/local-a", ModelState(ready=True, disk_path="/tmp/a"))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True  # cloud tags resolve too
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Let the initial reconcile complete so reload() uses provider truth.
+        for _ in range(50):
+            await pilot.pause()
+            if not app.screen._reconciling:
+                break
+        table = app.screen.query_one("#family-table", DataTable)
+        # Row key is the family name (key=family in add_row); cells are
+        # FAMILY, DISPLAY, VARIANTS, DOWNLOADED, SIZE.
+        row_key = next(k for k in table.rows.keys() if k.value == "alpha")
+        assert str(table.get_row(row_key)[3]) == "1"

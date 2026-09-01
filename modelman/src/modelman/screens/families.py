@@ -260,6 +260,11 @@ class FamilyScreen(Screen[None]):
                 total_size = 0
                 unknown = False
                 for m in models:
+                    # Cloud entries hold no disk weights and cannot be
+                    # duplicates — never count them toward DOWNLOADED/SIZE.
+                    # Entries with location=None (legacy) still count.
+                    if m.location == "cloud":
+                        continue
                     rec = self._reconciled.get(m.id)
                     if rec is not None:
                         if rec["ready"]:
