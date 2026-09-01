@@ -710,6 +710,9 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 // override the user's "native" choice (for claude, routing a gateway model at
 // the real Anthropic API).
 func TestBuildLaunchCmdNativeSkipsResume(t *testing.T) {
+	if !Installed("claude") {
+		t.Skip("claude not installed on PATH; skipping launcher test")
+	}
 	cmd, err := BuildLaunchCmd("claude", nativeModel("claude"), "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -730,6 +733,9 @@ func TestBuildLaunchCmdNativeSkipsResume(t *testing.T) {
 // the guard that a named native model, which the old IsNative() would have
 // missed, is not resumed.
 func TestBuildLaunchCmdNamedNativeSkipsResume(t *testing.T) {
+	if !Installed("claude") {
+		t.Skip("claude not installed on PATH; skipping launcher test")
+	}
 	cmd, err := BuildLaunchCmd("claude", namedNativeModel("claude", "opus"), "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -746,6 +752,9 @@ func TestBuildLaunchCmdNamedNativeSkipsResume(t *testing.T) {
 // TestBuildLaunchCmdNativeSkipsResume, this locks both halves of the
 // `sess != nil && !m.Native` guard so neither clause can drift.
 func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
+	if !Installed("claude") {
+		t.Skip("claude not installed on PATH; skipping launcher test")
+	}
 	cmd, err := BuildLaunchCmd("claude",
 		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},
 		"/tmp/repo", false,

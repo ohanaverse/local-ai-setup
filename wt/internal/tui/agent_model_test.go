@@ -98,6 +98,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 // user picks an agent from the picker.
 func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
 	t.Helper()
+	requireBinary(t, "claude")
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
 	m = got.(model)
 	if m.phase != phaseAgent {
@@ -163,6 +164,7 @@ func TestSelectedEntryMsgEmptyListSetsActionableStatus(t *testing.T) {
 // --agent path the empty-catalog status uses the first active -T tag rather
 // than the config default tag.
 func TestPinnedAgentEmptyListStatusUsesFirstActiveTag(t *testing.T) {
+	requireBinary(t, "claude")
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
@@ -261,6 +263,7 @@ func TestViewModelPhase(t *testing.T) {
 // when there is no prior session quits the TUI and runs the agent. We test
 // the immediate-launch path by inspecting the returned command batch.
 func TestEnterInModelPhaseLaunchesWithoutSession(t *testing.T) {
+	requireBinary(t, "claude")
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
 		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -308,6 +311,7 @@ func TestEnterInModelPhaseShowsResumePrompt(t *testing.T) {
 // selecting claude/native launched claude with a prior session's
 // kimi-k2.7-code:cloud model.
 func TestEnterInModelPhaseNativeSkipsResume(t *testing.T) {
+	requireBinary(t, "claude")
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	repo := t.TempDir()
@@ -397,6 +401,7 @@ func TestWindowSizeResizesResumePrompt(t *testing.T) {
 // Resume is no longer the cursor default (Start fresh is); the test steps
 // down twice to reach the Resume row.
 func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
+	requireBinary(t, "claude")
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
 		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
 		launchModel: config.Model{ID: "ollama/gemma4:9b"},
@@ -424,6 +429,7 @@ func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
 // defaulting change made Start fresh the natural cursor position so
 // stepping is no longer required.
 func TestResumePromptStartFreshLaunchesWithoutSession(t *testing.T) {
+	requireBinary(t, "claude")
 	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
 		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
 		launchModel: config.Model{ID: "ollama/gemma4:9b"},
@@ -487,6 +493,7 @@ func TestSelectedEntryMsgSetsSelectedPath(t *testing.T) {
 // TestYoloFlagPassedToLaunch asserts that when the model has yolo=true, the
 // launch command builder propagates it to the agent driver.
 func TestYoloFlagPassedToLaunch(t *testing.T) {
+	requireBinary(t, "claude")
 	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
 		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}), yolo: true}
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -941,6 +948,7 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 // launch. This is the `-M` without `-A` flow: the agent is picked first, then
 // the pinned model is validated and, when valid, launched without a picker.
 func TestPinnedModelValidSkipsPicker(t *testing.T) {
+	requireBinary(t, "claude")
 	tempStateDir(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, agent: "claude", pinnedModel: "ollama/gemma4:9b", selectedPath: t.TempDir(), width: 80, height: 24}
@@ -984,6 +992,7 @@ func TestPinnedModelInvalidShowsError(t *testing.T) {
 // agent, asserting the invalid pin keeps the user on the agent picker with an
 // inline error. This locks the plumbing of pinnedModel through the picker.
 func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
+	requireBinary(t, "claude")
 	tempStateDir(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, pinnedModel: "ollama/missing", phase: phaseList, width: 80, height: 24}

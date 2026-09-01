@@ -34,6 +34,9 @@ func TestBuildLaunchUnknownAgent(t *testing.T) {
 // claude-wt wrapper used to do. The model is a provider-hosted (non-native)
 // model: native models must never resume (see TestBuildLaunchNativeSkipsResume).
 func TestBuildLaunchClaudeResume(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not installed on PATH; skipping launcher test")
+	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -52,6 +55,9 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 // "native" choice — the exact bug where selecting claude/native launched
 // claude with a prior session's kimi-k2.7-code:cloud model.
 func TestBuildLaunchNativeSkipsResume(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not installed on PATH; skipping launcher test")
+	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native", Native: true}, "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -66,6 +72,9 @@ func TestBuildLaunchNativeSkipsResume(t *testing.T) {
 // TestBuildLaunchOpenCodeResume asserts that an opencode launch with a session
 // appends --session <id>.
 func TestBuildLaunchOpenCodeResume(t *testing.T) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skip("opencode not installed on PATH; skipping launcher test")
+	}
 	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
 		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -85,6 +94,9 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 // TestBuildLaunchCmdNativeSkipsResume in the agents package pins the
 // defense-in-depth `!m.Native` guard directly.
 func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not installed on PATH; skipping launcher test")
+	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
