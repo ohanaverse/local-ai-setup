@@ -92,7 +92,7 @@ class FamilyScreen(Screen[None]):
         # Static doesn't accept `display` as a constructor kwarg.
         self.query_one("#refresh-indicator", Static).display = False
         table = self.query_one(DataTable)
-        table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "READY", "SIZE")
+        table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE")
         self._load_from_disk()
         self.reload()
         # Reconcile against provider state so the size and downloaded columns

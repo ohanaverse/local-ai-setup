@@ -233,3 +233,25 @@ async def test_family_screen_cursor_restored_after_reconcile(tmp_path, monkeypat
         assert app.screen._reconciling is False
         assert table.cursor_row == 1
         assert str(list(table.rows.keys())[table.cursor_row].value) == "beta"
+
+
+@pytest.mark.asyncio
+async def test_family_screen_column_headers(tmp_path, monkeypatch):
+    """The family table's fourth column is DOWNLOADED (count of local
+    models on disk), not READY."""
+    _seed(tmp_path, monkeypatch)
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#family-table", DataTable)
+        labels = [str(col.label) for col in table.columns.values()]
+        assert labels == ["FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE"]
