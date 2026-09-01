@@ -36,7 +36,7 @@ func TestCopilotBuildLitellm(t *testing.T) {
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 	assertEnv(t, lc.Env, "COPILOT_MODEL", "ollama/qwen3.8:27b-mlx")
-	assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "responses")
+	assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 }
 
 // TestCopilotOllamaURL asserts copilotDriver returns the /v1 endpoint.

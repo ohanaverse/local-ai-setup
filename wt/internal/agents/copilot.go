@@ -42,10 +42,16 @@ func (copilotDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		apiKey = gw.APIKey
 	}
 
+	// Use the chat-completions wire API for Ollama/LiteLLM backends.
+	// GitHub Copilot's newer "responses" wire API drops leading characters
+	// when routed through Ollama's OpenAI-compatible endpoint (observed with
+	// glm-5.3-flash:cloud and others), making one-shot prompts unreliable.
+	// "completions" is fully supported by both Ollama and LiteLLM and avoids
+	// the truncation.
 	lc.Env = append(lc.Env,
 		"COPILOT_PROVIDER_BASE_URL="+baseURL,
 		"COPILOT_PROVIDER_API_KEY="+apiKey,
-		"COPILOT_PROVIDER_WIRE_API=responses",
+		"COPILOT_PROVIDER_WIRE_API=completions",
 		"COPILOT_MODEL="+modelName,
 	)
 	return lc

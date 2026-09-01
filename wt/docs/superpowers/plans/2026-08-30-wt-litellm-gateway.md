@@ -501,11 +501,15 @@ if gw.IsLitellm() {
 lc.Env = append(lc.Env,
 	"COPILOT_PROVIDER_BASE_URL="+baseURL,
 	"COPILOT_PROVIDER_API_KEY="+apiKey,
-	"COPILOT_PROVIDER_WIRE_API=responses",
+	"COPILOT_PROVIDER_WIRE_API=completions",
 	"COPILOT_MODEL="+modelName,
 )
 return lc
 ```
+
+> Note: The plan originally specified `responses`, but the Copilot CLI's
+> `responses` wire drops leading characters when routed through Ollama/LiteLLM
+> (observed with `glm-5.3-flash:cloud`). `completions` is used instead.
 
 ### Step 2: Add gateway test
 

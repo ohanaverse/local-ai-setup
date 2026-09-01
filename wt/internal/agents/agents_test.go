@@ -198,7 +198,7 @@ func TestCopilot(t *testing.T) {
 	if !hasEnv(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1") {
 		t.Errorf("env missing base url: %v", lc.Env)
 	}
-	if !hasEnv(lc.Env, "COPILOT_PROVIDER_WIRE_API=responses") {
+	if !hasEnv(lc.Env, "COPILOT_PROVIDER_WIRE_API=completions") {
 		t.Errorf("env missing wire api: %v", lc.Env)
 	}
 	if len(d.Build(nativeModel("copilot"), false, directGateway()).Env) != 0 {
