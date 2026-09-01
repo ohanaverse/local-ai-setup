@@ -6,7 +6,9 @@ SHELL_SCRIPTS := \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \
-	benchmarks/ornith-1.5-benchmark-multi
+	benchmarks/ornith-1.5-benchmark-multi \
+	wt/bin/*-wt \
+	wt/scripts/agents-smoke.sh
 
 lint: lint-shell check-links
 

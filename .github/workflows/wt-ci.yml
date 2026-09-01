@@ -22,6 +22,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.7"
+      # wt/Makefile's lint covers the launcher shims and smoke script; the Go
+      # steps below don't, and nothing else in CI shellchecks files under wt/.
+      - run: make lint
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
