@@ -16,6 +16,7 @@ from typing import Any, Protocol
 # Import the providers package to ensure ProviderRegistry is populated.
 from . import providers  # noqa: F401
 from .providers.base import Provider, VariantSpec
+from .providers.ollama import _parse_ollama_list_sizes
 from .providers.registry import ProviderRegistry
 from .registry import (
     DEFAULT_PROVIDER_IDS,
@@ -27,42 +28,9 @@ from .registry import (
 )
 from .state import ModelState, StateStore
 
-_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
-
-RECONCILABLE_PROVIDERS = ("ollama", "llamacpp", "omlx")
-
-
-def _parse_size(num_str: str, unit: str) -> int | None:
-    """Parse a `<number> <UNIT>` size pair into bytes, or None if invalid."""
-    unit = unit.upper()
-    if unit not in _SIZE_UNITS:
-        return None
-    try:
-        return int(float(num_str) * _SIZE_UNITS[unit])
-    except ValueError:
-        return None
-
-
-def _parse_ollama_list_sizes(stdout: str) -> dict[str, int]:
-    """Parse `ollama list` into {model_name: size_bytes} for downloaded models.
-
-    Cloud rows (SIZE column `-`) are skipped — they are not downloaded.
-    """
-    sizes: dict[str, int] = {}
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line or line.startswith("NAME"):
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        name = parts[0]
-        if parts[2] == "-":
-            continue
-        size = _parse_size(parts[2], parts[3])
-        if size is not None:
-            sizes[name] = size
-    return sizes
+# Providers `modelman sync` reconciles against the filesystem. Same set as
+# registry.DEFAULT_PROVIDER_IDS — that constant is the single source.
+RECONCILABLE_PROVIDERS = DEFAULT_PROVIDER_IDS
 
 
 class SyncError(Exception):

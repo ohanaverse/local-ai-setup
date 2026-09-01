@@ -14,10 +14,12 @@ from modelman.benchmark.isolation import isolate_provider, restore_providers
 from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
-from modelman.registry import Registry
+from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
 from modelman.state import StateStore
 
-LOCAL_PROVIDERS = {"ollama", "llamacpp", "omlx"}
+# Providers `modelman benchmark` can isolate+run locally. Derived from the
+# registry's canonical provider-id tuple so the set can't drift from it.
+LOCAL_PROVIDERS = set(DEFAULT_PROVIDER_IDS)
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
 

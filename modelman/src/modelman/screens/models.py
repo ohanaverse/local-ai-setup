@@ -18,6 +18,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from ..litellm import default_litellm_config_path, provider_policy
 from ..queue import PendingChanges
 from ..registry import (
+    DEFAULT_PROVIDER_IDS,
     Cost,
     Fetch,
     ModelEntry,
@@ -30,6 +31,7 @@ from ..registry import (
 )
 from ..state import ModelState, StateStore
 from . import reload_preserving_cursor
+from .forms import default_form_kind
 
 if TYPE_CHECKING:
     from ..providers.base import VariantSpec
@@ -207,7 +209,9 @@ class ModelScreen(Screen[None]):
         if available_providers is not None:
             self.available_providers: list[str] = list(available_providers)
         else:
-            self.available_providers = ["ollama", "llamacpp", "omlx"]
+            # Default provider order for the Add dialog; DEFAULT_PROVIDER_IDS
+            # keeps this in lockstep with the reconcilable provider set.
+            self.available_providers = list(DEFAULT_PROVIDER_IDS)
         # Default selection: ollama if configured, otherwise the first
         # configured provider. This keeps the cursor on the most
         # common starting point for empty families.
@@ -457,17 +461,14 @@ class ModelScreen(Screen[None]):
         llamacpp/omlx are locked (cloud and local respectively); ollama
         is the one provider where location is genuinely editable;
         everything else (openrouter, any other unmapped provider) locks
-        to cloud."""
+        to cloud. Non-native kinds come from forms.default_form_kind so
+        the fallback policy stays in one place."""
         kinds: dict[str, str] = {}
         for p in self.registry.providers:
             if p.auth.type == "native":
                 kinds[p.id] = "native"
-            elif p.id in ("llamacpp", "omlx"):
-                kinds[p.id] = "local-only"
-            elif p.id == "ollama":
-                kinds[p.id] = "ollama"
             else:
-                kinds[p.id] = "cloud-only"
+                kinds[p.id] = default_form_kind(p.id)
         return kinds
 
     def _families_list(self) -> list[str]:

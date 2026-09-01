@@ -8,7 +8,6 @@ import typer
 
 # Import providers package to trigger registration of all providers.
 from . import providers  # noqa: F401
-from .app import ModelmanApp
 from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .litellm import (
@@ -33,6 +32,10 @@ app.add_typer(usage_app, name="usage")
 
 def run_tui(family: str | None) -> None:
     """Launch the Textual TUI, optionally starting at a family's model screen."""
+    # Imported lazily so non-TUI subcommands (expose, sync, benchmark,
+    # usage, migrate) don't pay the Textual import cost at CLI startup.
+    from .app import ModelmanApp
+
     ModelmanApp(family=family).run()
 
 
