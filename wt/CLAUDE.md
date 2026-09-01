@@ -148,6 +148,11 @@ persists wt-owned fields only — wt never writes providers/models. Extra
 registry fields (cost, model_info, fetch, model_dir, auth secret_ref/base_url)
 are ignored by wt's parser.
 
+**Read-side schemas are pinned by contract fixtures.** `docs/contracts/registry.sample.toml`
+and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
+contract tests and modelman's `tests/contracts/` — a schema change must
+update both sides or both CI jobs fail.
+
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt
 > bug** — e.g. a `registry.toml` with models referencing `provider_id`s but
 > `providers = []`. Fix is `modelman sync`/`modelman migrate` on that machine,
@@ -207,7 +212,7 @@ Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `
 | Capability | Consumer | Drivers that implement it |
 |---|---|---|
 | `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, copilot (only drivers implementing `InstructionPointers()`; others skip seeding entirely) |
-| `OllamaURLer` | Per-driver ollama gateway URL (overrides `config.OllamaBaseURL`) | claude, codex, copilot, opencode |
+| `OllamaURLer` | Per-driver ollama gateway URL — `OllamaURL()` returns `config.OllamaBaseURL` + the driver's wire-protocol suffix (`/`, `/v1`, `/v1/`) | claude, codex, copilot, opencode, pi (via `defaultPiOllamaBaseURL`) |
 | `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
 | `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |
 | `Resumer` | `ResumeFlag()` + `LatestSession(path)` for resume support | claude, opencode |

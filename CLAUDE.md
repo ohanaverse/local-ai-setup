@@ -2,7 +2,7 @@
 
 ## Docs
 - User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance). Read `docs/guides/00-config-map.md` first for config-file ownership.
-- Follow-up issues: `issues.md` — open items from the guide-set review (master-key rotation, wt README drift, litellm_exposed bookkeeping). Check before touching those areas.
+- `issues.md` — follow-ups from the 2026-08-29 guide-set review; all 5 items are marked FIXED, kept as a historical record.
 
 ## Commands
 - `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (4 qwen3.8 backends)
@@ -13,6 +13,7 @@
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
 - `make lint` — umbrella target (`lint-shell` + `check-links`)
+- `make test-all` — one-stop local verification mirroring CI: lint + modelman `make check`/`make test` + wt `go build`/`vet`/`test`
 - `bin/check-links` (or `make check-links`) — validates repo-relative markdown links across README, CLAUDE.md, docs/guides, docs/reference, docs/archive, benchmarks
 
 ## Architecture
