@@ -45,7 +45,7 @@ wt reads `registry.toml` read-only and joins it in memory with its own
 `config.toml`; deletes its `internal/registry` package and
 `wt config ollama` subcommand.
 
-**Status:** ✅ merged — `agent-worktree` PR #94 (`79d620f`, 2026-08-28).
+**Status:** ✅ merged — `wt` PR #94 (`79d620f`, 2026-08-28).
 
 ## Phase 4b — family & model screen redesign (complete)
 
@@ -53,7 +53,7 @@ Replace `ModelScreen`'s two-pane provider/model layout with a single sorted
 table scoped to one family, generalize `ModelState.downloaded` into a
 provider-agnostic `ready` flag (and load the legacy `downloaded` key), make
 `FamilyScreen` always block delete when any models exist, and add native
-provider support synced from `agent-worktree`'s `[[agents]]` list.
+provider support synced from `wt`'s `[[agents]]` list.
 
 | PR | Scope | Status |
 |---|---|---|
@@ -100,7 +100,7 @@ Spec: `docs/superpowers/specs/2026-08-28-modelman-usage-design.md`
 Plan: `docs/superpowers/plans/2026-08-28-modelman-usage.md`
 
 Cross-repo status:
-`agent-worktree/docs/superpowers/plans/2026-08-27-model-management-consolidation-status.md`
+`wt/docs/superpowers/plans/2026-08-27-model-management-consolidation-status.md`
 
 ## Future cleanups
 
