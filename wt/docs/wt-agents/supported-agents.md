@@ -10,7 +10,7 @@ Quick reference for the AI coding agents supported by the `*-wt` launchers.
 | pi-coding-agent | `pi-wt` | [github.com/mariozechner/pi-coding-agent](https://github.com/mariozechner/pi-coding-agent) | [mariozechner/pi-coding-agent](https://github.com/mariozechner/pi-coding-agent) | `npm install -g @mariozechner/pi-coding-agent` |
 | Antigravity CLI | `agy-wt` | [antigravity.google/cli](https://antigravity.google/cli) | — (closed source) | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` |
 | OpenCode | `opencode-wt` | [opencode.ai](https://opencode.ai) | [anomalyco/opencode](https://github.com/anomalyco/opencode) | `curl -fsSL https://opencode.ai/install \| bash` |
-| Shell command | `shell-wt` | — | [ohanaverse/agent-worktree](https://github.com/ohanaverse/agent-worktree) | Copy from this repo |
+| Shell command | `shell-wt` | — | [ohanaverse/local-ai-setup](https://github.com/ohanaverse/local-ai-setup) | Copy from this repo (`wt/`) |
 
 ## Notes
 

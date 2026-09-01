@@ -1,6 +1,6 @@
 # Model families — grouping, display names, tags, and wt rotation
 
-> Use this to: rename family display names in `modelman.toml`, and understand how the `family` and `tags` fields decide what the `wt` picker offers and which model it lands on next.
+> Use this to: rename family display names in `registry.toml`, and understand how the `family` and `tags` fields decide what the `wt` picker offers and which model it lands on next.
 >
 > Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
 
@@ -31,7 +31,7 @@ uv sync
 | Knob | Lives in | Who reads it | How to change it |
 |---|---|---|---|
 | `family` per model | `~/.config/local-ai/registry.toml` (canonical) | `wt` (`-F` family filter), `modelman` (TUI tables) | modelman TUI: add a family, then add the model from inside its family screen |
-| display name per family | `~/.config/local-ai/modelman.toml` `[families]` (per-machine state) | `modelman` TUI only — **never read by `wt`** | modelman TUI family screen: `a` (new family + display name), `e` (rename display) |
+| display name per family | `~/.config/local-ai/registry.toml` `[[families]]` (canonical) | `modelman` TUI only — **never read by `wt`** | modelman TUI family screen: `a` (new family + display name), `e` (rename display) |
 | `tags` per model (rotation groups, e.g. `code`/`design`) | `~/.config/local-ai/registry.toml` | `wt` (`-T` filter, tag rotation) | No TUI editor today — hand-edit (modelman-owned file), see Gotchas |
 
 ```bash
@@ -71,16 +71,17 @@ family = "qwen3.8:27b-mlx"
 
 On this machine the 22 models have 22 **distinct** family values — every model is currently its own family (e.g. `ornith-1.5:35b` and `ornith-1.5:9b` do not share one). Only one provider (`ollama`) is configured, all models `source = "discovered"`.
 
-### 2. Display names in `modelman.toml` `[families]`
+### 2. Display names in `registry.toml` `[[families]]`
 
-Display names are per-machine, modelman-only state. The file's `[families]` section is present but **empty** here (display names fall back to the family id). Shape (from the modelman README):
+Display names are modelman-only state — `wt` never reads them. They live in `registry.toml`'s first-class `[[families]]` entries (the legacy `modelman.toml` `[families]` table is still loaded as a read-side fallback, but the TUI no longer writes it). Shape (from the modelman README):
 
 ```toml
-[families.ornith]
-display_name = "Ornith"
+[[families]]
+name = "ornith"
+display_name = "Ornith"   # optional; omitted when unset
 ```
 
-A family id containing `:` needs TOML quoting. Set names through the TUI, not by hand (modelman rewrites `modelman.toml` on every TUI apply): the family screen — columns `family · display · variants · downloaded · size` — uses `a` add (asks family id + display name) and `e` edit (display name only), per the modelman README. `wt` never reads this section (modelman's `state.py`: the families table "is NOT part of the shared registry.toml schema and is never read by agent-worktree") — renaming a display name changes modelman's family table only, not the picker.
+A family id containing `:` needs TOML quoting. Set names through the TUI, not by hand (modelman rewrites `registry.toml` on every TUI apply): the family screen — columns `family · display · variants · downloaded · size` — uses `a` add (asks family id + display name) and `e` edit (display name only), per the modelman README. Renaming a display name changes modelman's family table only, not the `wt` picker.
 
 The families screen keys, copied from the modelman README (§TUI):
 

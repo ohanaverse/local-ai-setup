@@ -1,5 +1,5 @@
 """Migration from legacy modelman config.yaml + families/*.yaml (and,
-optionally, agent-worktree's config.toml) into registry.toml +
+optionally, wt's config.toml) into registry.toml +
 modelman.toml. Exercises the "One-time migration" collision policy from
 docs/superpowers/specs/2026-08-27-shared-model-registry-design.md: wt's
 curated tags/cost/family/location always win for a model that exists in

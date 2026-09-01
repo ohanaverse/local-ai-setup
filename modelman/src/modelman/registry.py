@@ -1,7 +1,7 @@
 """registry.toml — the canonical, shared model/provider/family registry.
 
 Owned exclusively by modelman (see docs/superpowers/specs/2026-08-27-
-shared-model-registry-design.md). agent-worktree reads this file
+shared-model-registry-design.md). wt reads this file
 read-only; it never writes it. Families are first-class [[families]]
 entries here (see docs/superpowers/specs/2026-08-29-modelman-first-class-
 families-design.md); their display names live in the entry, not in
@@ -31,7 +31,7 @@ def _default_registry_path() -> Path:
     """Compute the registry path lazily so env overrides work in tests.
 
     Precedence: MODELMAN_REGISTRY > XDG_CONFIG_HOME > ~/.config. This must
-    stay in sync with agent-worktree's config.RegistryPath (wt reads the
+    stay in sync with wt's config.RegistryPath (wt reads the
     registry read-only and has no independent default).
     """
     override = os.environ.get("MODELMAN_REGISTRY")
@@ -193,7 +193,7 @@ DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "llamacpp", "omlx")
 
 
 def _default_wt_config_path() -> Path:
-    """agent-worktree's config.toml, whose `[[agents]]` list names the
+    """wt's config.toml, whose `[[agents]]` list names the
     native-provider agents (claude, codex, ...). Precedence: MODELMAN_WT_DIR
     > ~/.config/agent-wt, matching the usage subsystem's existing
     MODELMAN_WT_DIR convention (usage/wt_state.py)."""
@@ -203,12 +203,12 @@ def _default_wt_config_path() -> Path:
 
 
 def sync_agent_providers(registry: Registry, wt_config_path: Path | None = None) -> list[str]:
-    """Register every agent-worktree agent name missing from
+    """Register every wt agent name missing from
     `registry.providers` as a native provider (auth.type="native",
     location="cloud"). Mutates `registry` in place; returns the ids added.
 
     A missing or unreadable wt config is not fatal — returns [] — matching
-    migrate.py's existing tolerance for an absent agent-worktree install.
+    migrate.py's existing tolerance for an absent wt install.
     """
     path = wt_config_path if wt_config_path is not None else _default_wt_config_path()
     if not path.exists():

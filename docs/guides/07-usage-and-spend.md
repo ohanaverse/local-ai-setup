@@ -11,7 +11,7 @@
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
   ```
-- **modelman repo checked out** at `/Users/keith/github/ohanaverse/local-ai-setup/modelman`. Always invoke as `uv run modelman` from there — modelman is not installed globally (Gotchas).
+- **modelman component** at `/Users/keith/github/ohanaverse/local-ai-setup/modelman`. Always invoke as `uv run modelman` from there — modelman is not installed globally (Gotchas).
 - Everything in this guide is **read-only**: it reads `usage.jsonl`, `rotation.state`, and the Postgres spend table; it mutates nothing.
 
 ## TL;DR

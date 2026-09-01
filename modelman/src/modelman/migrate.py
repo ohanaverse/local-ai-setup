@@ -1,9 +1,9 @@
 """One-time migration from legacy modelman (config.yaml + families/*.yaml)
-and, optionally, agent-worktree's config.toml into the new canonical
+and, optionally, wt's config.toml into the new canonical
 registry.toml + modelman.toml. See the "One-time migration" section of
 docs/superpowers/specs/2026-08-27-shared-model-registry-design.md.
 
-Collision policy: agent-worktree's config.toml is imported first, so its
+Collision policy: wt's config.toml is imported first, so its
 curated tags/cost/family/location win for any model that also appears in
 a modelman family manifest. modelman's own legacy providers/variants only
 add new entries or fill in fields it uniquely owns (fetch, model_info,

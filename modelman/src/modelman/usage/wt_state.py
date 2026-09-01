@@ -15,7 +15,7 @@ class LaunchCounts:
 
 
 def wt_dir() -> Path:
-    """Directory where agent-worktree keeps usage.jsonl and rotation.state."""
+    """Directory where wt keeps usage.jsonl and rotation.state."""
     env = os.environ.get("MODELMAN_WT_DIR")
     if env:
         return Path(env).expanduser()

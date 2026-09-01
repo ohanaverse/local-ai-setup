@@ -27,7 +27,7 @@ ifeq ($(shell uname -s),Darwin)
 endif
 	@echo "Built bin/wt"
 
-install:                # Install scripts to ~/.local/bin/
+install: build          # Build then install scripts to ~/.local/bin/
 	cp -r $(SRCDIR)/* $(BINDIR)/
 	chmod +x $(BINDIR)/*-wt
 ifeq ($(shell uname -s),Darwin)
@@ -39,11 +39,11 @@ ifeq ($(shell uname -s),Darwin)
 	@# one codesign syscall per install.
 	@codesign --force --sign - $(BINDIR)/wt
 endif
-	@echo "Installed agent-worktree scripts to $(BINDIR)"
+	@echo "Installed wt scripts to $(BINDIR)"
 
 uninstall:              # Remove installed scripts from ~/.local/bin/
 	rm -f $(BINDIR)/*-wt $(BINDIR)/wt
-	@echo "Uninstalled agent-worktree scripts from $(BINDIR)"
+	@echo "Uninstalled wt scripts from $(BINDIR)"
 
 lint:                   # Run shellcheck
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not found. Install with: brew install shellcheck"; exit 1; }

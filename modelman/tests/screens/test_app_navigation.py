@@ -72,7 +72,7 @@ async def test_q_exits_app_from_family_screen():
 @pytest.mark.asyncio
 async def test_direct_download_syncs_agent_providers(tmp_path, monkeypatch):
     """`ModelmanApp(family=...)` must call sync_agent_providers so the
-    ModelScreen sees native-agent providers imported from agent-worktree's
+    ModelScreen sees native-agent providers imported from wt's
     config, not just the providers already written to registry.toml."""
     from modelman.screens.models import ModelScreen
 
@@ -105,7 +105,7 @@ async def test_direct_download_syncs_agent_providers(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         assert isinstance(app.screen, ModelScreen)
-        # Native provider synced from agent-worktree config should be
+        # Native provider synced from wt config should be
         # present in the in-memory registry passed to ModelScreen.
         assert app.screen.registry.provider("claude").auth.type == "native"
         # And it should be in the available-providers list used for the
@@ -542,7 +542,7 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch, stub_
         # ollama tag. New id scheme derives from provider+name.
         # Note: the provider select is sorted alphabetically now,
         # so the initial provider may not be "ollama" if other
-        # providers (e.g. agent-worktree's "agy", "claude", etc.)
+        # providers (e.g. wt's "agy", "claude", etc.)
         # are synced into the registry. Force the provider back to
         # ollama to keep this test focused on the add flow.
         from textual.widgets import Select

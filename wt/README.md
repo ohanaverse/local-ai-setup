@@ -1,4 +1,4 @@
-# agent-worktree
+# wt
 
 Launch AI coding agent CLIs in git worktrees with model rotation and session resume.
 
