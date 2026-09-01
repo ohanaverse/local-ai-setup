@@ -24,6 +24,10 @@ jobs:
           go-version: "1.26.7"
       # wt/Makefile's lint covers the launcher shims and smoke script; the Go
       # steps below don't, and nothing else in CI shellchecks files under wt/.
+      # shellcheck is not preinstalled on the macos runner image (and not in
+      # the core Homebrew taps), so install it explicitly — wt's lint target
+      # hard-fails without it by design (it's a local dev prerequisite).
+      - run: brew install shellcheck
       - run: make lint
       - run: go build ./...
       - run: go vet ./...
