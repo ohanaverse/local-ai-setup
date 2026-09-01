@@ -13,7 +13,7 @@ import (
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
-		{"init"},
+		{"init", "-b", "main"},
 		{"config", "user.email", "t@t"},
 		{"config", "user.name", "t"},
 		{"commit", "--allow-empty", "-m", "init"},
@@ -502,7 +502,7 @@ func setupTestRepo(t *testing.T) string {
 	dir := t.TempDir()
 
 	for _, args := range [][]string{
-		{"init"},
+		{"init", "-b", "main"},
 		{"config", "user.email", "t@t"},
 		{"config", "user.name", "t"},
 		{"commit", "--allow-empty", "-m", "init"},
@@ -567,7 +567,7 @@ func setupTestRepoWithManyBranches(t *testing.T) string {
 	dir := t.TempDir()
 
 	for _, args := range [][]string{
-		{"init"},
+		{"init", "-b", "main"},
 		{"config", "user.email", "t@t"},
 		{"config", "user.name", "t"},
 		{"commit", "--allow-empty", "-m", "init"},

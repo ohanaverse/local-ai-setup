@@ -506,7 +506,7 @@ async def test_delete_action_queues_even_when_not_downloaded(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
+async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch, stub_ollama_caps):
     from unittest.mock import MagicMock
 
     from textual.widgets import Input
@@ -1188,6 +1188,7 @@ async def test_model_screen_is_single_table_sorted_by_provider_then_name(tmp_pat
 async def test_model_screen_add_appends_model_entry_to_registry(
     tmp_path,
     monkeypatch,
+    stub_ollama_caps,
 ):
     """Submitting ModelForm in add mode appends a ModelEntry to
     registry.models with the adapter's translation. The registry is

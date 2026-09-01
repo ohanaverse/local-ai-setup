@@ -245,7 +245,7 @@ async def test_modelform_edit_prefills_ollama_name():
 
 
 @pytest.mark.asyncio
-async def test_submit_ollama_tag_produces_correct_spec():
+async def test_submit_ollama_tag_produces_correct_spec(stub_ollama_caps):
     form = ModelForm(
         providers=["ollama"],
         variant=None,
@@ -427,7 +427,7 @@ async def test_submit_empty_model_does_not_dismiss():
 
 
 @pytest.mark.asyncio
-async def test_submit_after_fix_clears_error_and_dismisses():
+async def test_submit_after_fix_clears_error_and_dismisses(stub_ollama_caps):
     """After a failed submit, fixing the input must dismiss the form."""
     form = ModelForm(
         providers=["ollama"],
@@ -685,7 +685,7 @@ async def test_modelform_family_select_defaults_when_no_families_passed():
 
 
 @pytest.mark.asyncio
-async def test_submit_returns_modelformresult_with_selected_family():
+async def test_submit_returns_modelformresult_with_selected_family(stub_ollama_caps):
     """Save dismisses ModelFormResult: the spec plus the family value
     from the Select (unchanged here because #model keeps focus)."""
     form = ModelForm(
@@ -715,7 +715,7 @@ async def test_submit_returns_modelformresult_with_selected_family():
 
 
 @pytest.mark.asyncio
-async def test_submit_returns_family_switched_in_the_select():
+async def test_submit_returns_family_switched_in_the_select(stub_ollama_caps):
     """Choosing a different family in the Select is what the result
     carries — that's the whole point of the family-move feature."""
     form = ModelForm(
@@ -1310,7 +1310,7 @@ async def test_model_form_edit_prefills_cost_and_tier():
 
 
 @pytest.mark.asyncio
-async def test_model_form_submit_carries_cost_and_tier():
+async def test_model_form_submit_carries_cost_and_tier(stub_ollama_caps):
     """Save dismisses ModelFormResult whose spec includes cost & usage_tier."""
     form = ModelForm(
         providers=["ollama"],

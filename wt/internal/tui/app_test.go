@@ -107,6 +107,7 @@ func TestEscFromAgentPickerClearsStatus(t *testing.T) {
 // after a worktree pick), m.status showed the error, and the user had no
 // way to recover except Ctrl+C.
 func TestInvalidPinFromProceedFromSelectedPathRoutesToAgentPicker(t *testing.T) {
+	requireBinary(t, "claude")
 	tempStateDir(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, initialAgent: "claude", pinnedModel: "ollama/missing", phase: phaseList, width: 80, height: 24}
@@ -726,6 +727,7 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 // TestNoOllamaWarnForNonOllamaModel asserts that non-ollama models skip the
 // availability check and proceed directly to launch/resume.
 func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
+	requireBinary(t, "claude")
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Models: []config.Model{
@@ -1433,6 +1435,7 @@ func TestPrePathInitSkipsWorktreePicker(t *testing.T) {
 // a pinned --agent: the worktree picker is skipped and the model phase opens
 // directly.
 func TestPrePathInitPinnedGoesToModel(t *testing.T) {
+	requireBinary(t, "claude")
 	m := model{prePath: "/repo/.worktrees/feat", cfg: testConfig(), initialAgent: "claude"}
 	msg := m.Init()()
 	sel, ok := msg.(selectedEntryMsg)

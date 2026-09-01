@@ -229,6 +229,7 @@ func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 // this branch, a user with one eligible model still sees a 1-item picker
 // and has to press Enter twice (once to confirm, once to launch).
 func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
+	requireBinary(t, "claude")
 	m := buildModelInPhaseAgent(t, singleModelConfig())
 	m.selectedPath = t.TempDir()
 
@@ -278,6 +279,7 @@ func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
 // enterModelPhase helper drives both code paths, so a regression here
 // would surface in either.
 func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
+	requireBinary(t, "claude")
 	t.Cleanup(stubInstalled("claude"))
 	m := model{
 		cfg:          singleModelConfig(),

@@ -30,6 +30,7 @@ func TestLaunchAgentUnknownAgent(t *testing.T) {
 // a session appends --resume <id> to the command args. This is the resume
 // wiring that the bash wrappers do for claude.
 func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
+	requireBinary(t, "claude")
 	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -44,6 +45,7 @@ func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 // TestLaunchAgentOpenCodeResumeAppendsFlag asserts that an opencode launch
 // with a session appends --session <id> to the command args.
 func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
+	requireBinary(t, "opencode")
 	cmd, err := launchAgent("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
 		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
 	if err != nil {
@@ -59,6 +61,7 @@ func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 // is passed, no resume/session flag is injected. This is the "start fresh"
 // path.
 func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
+	requireBinary(t, "claude")
 	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
