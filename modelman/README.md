@@ -237,7 +237,7 @@ Providers whose `auth.type` is `"native"` (or whose id matches an agent in
 agents (e.g. `claude`, `codex`). They have no download mechanics:
 pressing `x` simply toggles the `ready` flag, and there is no disk path or
 size. These providers are synced into `registry.toml` automatically on TUI
-launch from the agent-worktree config.
+launch from the wt config.
 
 ### Sync
 
@@ -252,7 +252,7 @@ metadata only.
 ### One-time migration
 
 `modelman migrate` imports the legacy `~/.config/local-ai/config.yaml` and
-`~/.config/local-ai/families/*.yaml` (and, optionally, agent-worktree's
+`~/.config/local-ai/families/*.yaml` (and, optionally, wt's
 `config.toml` via `--wt-config`) into `registry.toml` + `modelman.toml`.
 The legacy files are read-only inputs and are not written by the TUI.
 

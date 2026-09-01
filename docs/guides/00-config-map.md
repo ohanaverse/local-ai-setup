@@ -186,7 +186,7 @@ model_list:
 - **[gateway]** is a new wt-owned section for routing agents through LiteLLM.
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
-- **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default agent-worktree `config.toml` to import from.
+- **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default wt `config.toml` to import from.
 
 ```toml
 default_tag = "code"

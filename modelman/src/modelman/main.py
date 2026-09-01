@@ -59,11 +59,11 @@ def migrate(
     wt_config: str = typer.Option(
         "~/.config/agent-wt/config.toml",
         envvar="MODELMAN_WT_CONFIG",
-        help="Path to agent-worktree's config.toml to import from (skipped if missing)",
+        help="Path to wt's config.toml to import from (skipped if missing)",
     ),
 ) -> None:
     """One-time import of legacy config.yaml + families/*.yaml (and,
-    optionally, agent-worktree's config.toml) into registry.toml +
+    optionally, wt's config.toml) into registry.toml +
     modelman.toml."""
     result = run_migration(
         default_config_path(),

@@ -80,7 +80,7 @@ Display names are per-machine, modelman-only state. The file's `[families]` sect
 display_name = "Ornith"
 ```
 
-A family id containing `:` needs TOML quoting. Set names through the TUI, not by hand (modelman rewrites `modelman.toml` on every TUI apply): the family screen — columns `family · display · variants · downloaded · size` — uses `a` add (asks family id + display name) and `e` edit (display name only), per the modelman README. `wt` never reads this section (modelman's `state.py`: the families table "is NOT part of the shared registry.toml schema and is never read by agent-worktree") — renaming a display name changes modelman's family table only, not the picker.
+A family id containing `:` needs TOML quoting. Set names through the TUI, not by hand (modelman rewrites `modelman.toml` on every TUI apply): the family screen — columns `family · display · variants · downloaded · size` — uses `a` add (asks family id + display name) and `e` edit (display name only), per the modelman README. `wt` never reads this section (modelman's `state.py`: the `families` table is a legacy read-side fallback — family display names now live in `registry.toml`'s first-class `[[families]]` entries) — renaming a display name changes modelman's family table only, not the picker.
 
 The families screen keys, copied from the modelman README (§TUI):
 

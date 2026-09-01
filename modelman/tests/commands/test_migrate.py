@@ -1,5 +1,5 @@
 """`modelman migrate` is the one-time CLI entry point for importing legacy
-config.yaml + families/*.yaml (and, optionally, agent-worktree's
+config.yaml + families/*.yaml (and, optionally, wt's
 config.toml) into the new registry.toml + modelman.toml. This covers the
 command actually writing both output files and reporting what it
 imported — the underlying merge logic is covered by tests/test_migrate.py."""

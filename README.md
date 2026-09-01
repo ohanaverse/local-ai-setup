@@ -91,10 +91,10 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ## Status
 
 All three model-management consolidation sub-projects are merged (shared model
-registry, benchmark tooling, usage/spend tracking). The cross-repo drift signal
+registry, benchmark tooling, usage/spend tracking). The cross-component drift signal
 is now automatic: the shared-format fixtures in
 [docs/contracts/](docs/contracts) are read by contract tests on both sides
 (`wt` Go tests, `modelman` Python tests), replacing the hand-maintained
-cross-repo tracker doc.
+cross-component tracker doc.
 
 Follow-up items from the guide-set review: [issues.md](issues.md).
