@@ -7,12 +7,14 @@
 ## Prerequisites
 
 - [01-initial-setup](01-initial-setup.md) complete: LiteLLM proxy running on :4000, Ollama up, services healthy. Guides 03–08 of this set ([03-model-families](03-model-families.md) onward) continue from here.
-- modelman runnable from its repo (the PATH-installed `modelman` is stale — see Gotchas):
+- modelman runnable from its repo (it is not installed globally; run from the `modelman/` directory):
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 ```
+
+Then run any modelman command with `uv run modelman …` from that same directory.
 
 ```text
 Resolved 51 packages in 4ms
@@ -281,7 +283,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 ## Gotchas
 
 - **`registry.toml` is canonical + read-only to wt.** Model visibility for agents changes HERE — edit `~/.config/local-ai/registry.toml`, not wt's config. `modelman.toml` is per-machine state (`[model_state]` blocks: `downloaded`, `disk_path`, `size_bytes`, `litellm_exposed`; `[families]` display names); never treat it as the model catalog.
-- **The PATH-installed `modelman` is stale.** `/Users/keith/.local/bin/modelman` only knows `download` (`modelman --help` live-verified: a single command, "Download missing model variants for a family"). Always run from the repo: `uv run modelman …`.
+- **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`.
 - **`sync` semantics as observed:** reconcile only (`ollama`/`llamacpp`/`omlx`), `:cloud` rows land `downloaded = false`, unconfigured models ignored, no models added, `litellm_exposed` preserved. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
 - **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:40-43`).
 - **TUI changes apply on exit only.** Adds/edits/deletes/downloads/exposure toggles sit in an in-memory queue until you confirm the pending set; deletes run before downloads, downloads before exposure changes, then one write of both files.

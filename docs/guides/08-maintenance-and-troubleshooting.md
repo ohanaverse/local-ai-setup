@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the five LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `local.llamacpp.server.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`).
-- modelman runnable from its repo, not PATH (the PATH-installed `modelman` is stale — guide 02 Gotchas).
+- modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
 - This repo checked out — `bin/llm-isolate-provider` / `bin/llm-restore-providers` live here (guide 05), and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
 
@@ -297,7 +297,7 @@ Startup-fault lines worth reacting to: repeated `Error loading config`, YAML par
 
 ### 4. Upgrades — command per tool, then verify
 
-**modelman** (repo-local; the PATH binary is stale — guide 02):
+**modelman** (repo-local; it is not installed globally — guide 02):
 
 <!-- UNVERIFIED — upgrade not run in this session (mutates the repo + tool env); checkout was d93f5b9, 2026-08-29. Under-way output depends on how far behind the checkout is; when current: `Already up to date.` plus uv's install line. -->
 
@@ -471,7 +471,7 @@ model_list entries: 11
 - **Use `launchctl kickstart -k gui/$(id -u)/<label>` to restart.** With `KeepAlive=true`, bare `launchctl stop` (or killing the PID) just gets the job relaunched — you cannot hold a service down that way, and it does not re-read anything in a controlled way. `kickstart -k` is the verified, one-shot kill+restart used by all the guides; for the brew trio use `brew services restart <name>`.
 - **The `launchctl list` middle column reads `0` or `-15` here — both healthy.** `0` = last exit was clean; `-15` = last exit was from SIGTERM, i.e. normal residue after a `kickstart -k` (live example above). What's *not* healthy: `-` PID with a non-zero status, or a PID that changes while the port stays dead (§3).
 - **There is no Ollama LaunchAgent.** `launchctl list | grep ollama` shows `-	0	com.ollama.ollama` because the row comes from the app's login item — you cannot `kickstart` Ollama back; relaunch Ollama.app. (The `application.com.electron.ollama.*` row appears only while the app window lives — don't grep for it in scripts.)
-- **The `modelman` on PATH is stale** (only `download`; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman` + `uv run modelman …`.
+- **Run modelman from the `modelman/` directory.** modelman is not installed globally (only `download` would be available from an old install; guide 02 Gotchas) — always `# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman` + `uv run modelman …`.
 - **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
 - **Upgrades recreate the LiteLLM tool env** — recheck `prisma` in `/Users/keith/.local/share/uv/tools/litellm/bin/` after `uv tool upgrade` or `--force --reinstall`, or the Postgres-backed UI/auth features die on the next kickstart (guide 01 §6).
 

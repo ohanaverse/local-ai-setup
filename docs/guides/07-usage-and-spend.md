@@ -11,7 +11,7 @@
   ```json
   {"model_id":"ollama/gemma4:9b","timestamp":"2026-08-22T15:00:03.102105Z"}
   ```
-- **modelman repo checked out** at `/Users/keith/github/ohanaverse/local-ai-setup/modelman`. Always invoke as `uv run modelman` from there — the PATH-installed `/Users/keith/.local/bin/modelman` predates the `usage` subcommand (Gotchas).
+- **modelman repo checked out** at `/Users/keith/github/ohanaverse/local-ai-setup/modelman`. Always invoke as `uv run modelman` from there — modelman is not installed globally (Gotchas).
 - Everything in this guide is **read-only**: it reads `usage.jsonl`, `rotation.state`, and the Postgres spend table; it mutates nothing.
 
 ## TL;DR
@@ -152,7 +152,7 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 ## Gotchas
 
 - **Only LiteLLM-routed traffic produces spend.** Native/direct launches (ollama cloud, llama.cpp `:8080`, oMLX `:8000`) never appear in LiteLLM spend — they surface as `WT-only launches`. Expect that section to be long on this box.
-- **PATH modelman is stale.** `modelman usage report --days 1` → `╭─ Error … │ No such command 'usage'.` (live). Always `uv run modelman` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` (same trap as guide 02 Gotchas).
+- **Run modelman from the `modelman/` directory.** `modelman usage report --days 1` from a globally installed binary would fail with `No such command 'usage'`. Always `uv run modelman` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` (same trap as guide 02 Gotchas).
 - **`--days` doesn't move every window.** It re-scopes the header range and the LiteLLM spend matching; launch columns stay fixed `1d/7d/30d` buckets and WT-only bullet *counts* stay on the fixed 7-day window — but bullet *membership* shifts: a model whose spend falls inside the 7-day default but outside the smaller `--days` window drops out of "matched" and becomes a WT-only bullet (live: `ollama/qwen3.8:27b-mlx` matched at `--days 7`, a WT-only bullet at `--days 1`).
 - **`rotation.state` is the *last* TUI launch, nothing more** — one global slot; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06).
 - **Point-in-time snapshot.** Every launch appends to `usage.jsonl` and LiteLLM logs to Postgres asynchronously — rerun tomorrow (or in a minute) and numbers shift. There is no live/budget dashboard here.
