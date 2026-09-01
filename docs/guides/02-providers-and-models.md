@@ -60,7 +60,7 @@ uv run modelman
 
 Three screens (README, verbatim):
 
-- **Family screen** — table of families with columns: family · display · variants · downloaded · size. Keys: `a` add, `e` edit display name, `d` delete (blocked if anything is downloaded), `enter` open, `r` reconcile, `q` quit.
+- **Family screen** — table of families with columns: family · display · variants · downloaded · size. Keys: `a` add, `e` edit display name, `d` delete (blocked if anything is downloaded), `enter` open, `r` reconcile, `q` quit. The `downloaded` column counts only local models; cloud entries are excluded from both the count and the `size` column.
 - **Model screen** — two-pane view: providers on the left, that provider's models on the right (columns: name · status ✓/○/↓/✗ · size · path · exposed). Keys: `a` add model, `e` edit (id/provider fixed), `d` queue delete (downloaded variants only), `x` toggle download (not-downloaded variants only), `l` toggle LiteLLM exposure (downloaded or cloud variants only), `r` reconcile, `enter` edit, `escape` back / apply queue.
 - **Status screen** — when you apply on exit, the model screen hands off to a status screen that streams per-item progress (`Deleting …`, `Downloaded …`, `Saving …`) into a scrollable log. `Escape` mid-run pops a Cancel-or-Wait dialog: `Cancel` kills any running subprocess (Ollama) and stops the queue; `Wait` keeps waiting. Once the run completes (or is cancelled), `Escape` returns to the family screen.
 
@@ -185,7 +185,7 @@ Synced: 13 downloaded, 9 not downloaded.
 
 What it did / didn't do, as observed:
 
-- The counts match the registry exactly: 13 local Ollama models present on disk with sizes, and the 9 `:cloud` registry rows — `ollama list` shows cloud rows with size `-`, and sync marks them `downloaded = false`.
+- The counts match the registry exactly: 13 local Ollama models present on disk with sizes, and the 9 `:cloud` registry rows — `ollama list` shows cloud rows with size `-`, and sync marks them `downloaded = false`. In the TUI family screen, those `:cloud` rows do not count toward the `downloaded` column and do not contribute to the family's `size` total.
 - Models in `ollama list` but absent from `registry.toml` (e.g. `glm-5.3:cloud`) were ignored — sync only reconciles **configured** models.
 - `modelman.toml` was rewritten with identical values (mtime bumped; no field changed — nothing had drifted). It updated/reaffirmed `downloaded`/`disk_path`/`size_bytes` per model; `litellm_exposed` was left untouched (sync preserves exposure state — it's owned by the LiteLLM feature).
 - It did **not** add models, did not touch `registry.toml`, and printed no `Added provider entries:` line — that line only appears when sync has to repair a missing provider entry.

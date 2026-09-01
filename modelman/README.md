@@ -147,6 +147,9 @@ The TUI has three screens:
   `enter`, `r`) are no-ops during that window so the user can't click
   a row whose contents are about to mutate. The cursor survives the
   refresh: returning from a model screen leaves you on the same family.
+  The `DOWNLOADED` column counts only local models (or legacy entries
+  with no explicit `location`); `cloud` entries are excluded from the
+  count and from the `SIZE` total.
 - **Model screen** — single table scoped to one family (columns:
   provider · model · loc · status ✓/○/↓/↑/✗/→ · exposed · cost ·
   tier · size). LOC is an icon (↗ cloud / ▤ local / `—` when unknown) and

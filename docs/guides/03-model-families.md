@@ -81,7 +81,7 @@ name = "ornith"
 display_name = "Ornith"   # optional; omitted when unset
 ```
 
-A family id containing `:` needs TOML quoting. Set names through the TUI, not by hand (modelman rewrites `registry.toml` on every TUI apply): the family screen — columns `family · display · variants · downloaded · size` — uses `a` add (asks family id + display name) and `e` edit (display name only), per the modelman README. Renaming a display name changes modelman's family table only, not the `wt` picker.
+A family id containing `:` needs TOML quoting. Set names through the TUI, not by hand (modelman rewrites `registry.toml` on every TUI apply): the family screen — columns `family · display · variants · downloaded · size` — uses `a` add (asks family id + display name) and `e` edit (display name only), per the modelman README. Renaming a display name changes modelman's family table only, not the `wt` picker. The `downloaded` count is the number of *local* models in the family (legacy entries with no explicit `location` also count); `cloud` entries do not inflate it and do not contribute to the `size` column.
 
 The families screen keys, copied from the modelman README (§TUI):
 

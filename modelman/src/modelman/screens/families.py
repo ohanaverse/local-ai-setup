@@ -14,6 +14,7 @@ from ..registry import (
     Registry,
     RegistryError,
     family_display_name,
+    is_local_location,
     known_families,
     load_registry,
     provider_config,
@@ -260,10 +261,10 @@ class FamilyScreen(Screen[None]):
                 total_size = 0
                 unknown = False
                 for m in models:
-                    # Cloud entries hold no disk weights and cannot be
+                    # Non-local entries hold no disk weights and cannot be
                     # duplicates — never count them toward DOWNLOADED/SIZE.
-                    # Entries with location=None (legacy) still count.
-                    if m.location == "cloud":
+                    # Legacy entries with location=None still count as local.
+                    if not is_local_location(m.location):
                         continue
                     rec = self._reconciled.get(m.id)
                     if rec is not None:
@@ -282,8 +283,8 @@ class FamilyScreen(Screen[None]):
                         unknown = True  # size unknown until reconcile runs
                 size_str = (
                     "—"
-                    if downloaded_count == 0
-                    else _human_size(total_size if (total_size > 0 or not unknown) else None)
+                    if downloaded_count == 0 or (unknown and total_size == 0)
+                    else _human_size(total_size)
                 )
                 table.add_row(
                     family,

@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from .state import StateStore
 
 
+# Canonical location values used across the TUI and providers.
+LOCATION_LOCAL = "local"
+LOCATION_CLOUD = "cloud"
+
+
 class RegistryError(Exception):
     """Raised when registry.toml is missing or malformed."""
 
@@ -238,6 +243,16 @@ def sync_agent_providers(registry: Registry, wt_config_path: Path | None = None)
         existing.add(name)
         added.append(name)
     return added
+
+
+def is_local_location(location: str | None) -> bool:
+    """Return True only when a model/provider location is explicitly local.
+
+    Legacy entries (location=None or empty) default to local because the
+    original registry did not distinguish cloud entries; only entries that
+    say ``location = "cloud"`` (or another non-local value) are excluded.
+    """
+    return location is None or location == "" or location == LOCATION_LOCAL
 
 
 def default_provider_entry(provider_id: str) -> ProviderEntry:
