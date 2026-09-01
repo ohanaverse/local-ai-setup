@@ -164,3 +164,53 @@ func (s *Store) Counts(modelIDs []string) map[string]UsageCounts {
 	}
 	return out
 }
+
+// CompositeScore is a recency-weighted sort key for a UsageCounts bucket.
+// Each launch is counted exactly once, weighted by how fresh it is:
+// today's launches ≈3x, 1-7 days ≈1.5x, 8-30 days ≈1x. Expressed as
+// integer math (x2), 6*OneDay + 3*(SevenDay-OneDay) + 2*(ThirtyDay-SevenDay)
+// simplifies to 3*OneDay + SevenDay + 2*ThirtyDay.
+func CompositeScore(c UsageCounts) int {
+	return 3*c.OneDay + c.SevenDay + 2*c.ThirtyDay
+}
+
+// FamilyCounts returns 1d/7d/30d launch counts aggregated by model family.
+// familyOf maps every known model ID to its family and is built from the
+// full registry catalog (not the currently-eligible subset) so a family's
+// total usage is accurate even when a tag/family filter exposes only some of
+// its models. Events whose model ID is absent from familyOf are skipped. A
+// missing or unreadable usage file yields an empty map.
+func (s *Store) FamilyCounts(familyOf map[string]string) map[string]UsageCounts {
+	out := map[string]UsageCounts{}
+	f, err := os.Open(s.path())
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+
+	today := now().UTC()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var ev event
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			continue
+		}
+		family, found := familyOf[ev.ModelID]
+		if !found {
+			continue
+		}
+		c := out[family]
+		age := today.Sub(ev.Timestamp.UTC())
+		if age < 24*time.Hour {
+			c.OneDay++
+		}
+		if age < 7*24*time.Hour {
+			c.SevenDay++
+		}
+		if age < retentionWindow {
+			c.ThirtyDay++
+		}
+		out[family] = c
+	}
+	return out
+}

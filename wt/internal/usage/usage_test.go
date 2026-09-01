@@ -268,3 +268,65 @@ func TestRecordLockFileCreated(t *testing.T) {
 		t.Fatalf("lock path is a directory, want a file: %s", lockPath)
 	}
 }
+
+// TestCompositeScore verifies the recency weights: recent launches dominate.
+// Formula: 3*OneDay + SevenDay + 2*ThirtyDay.
+func TestCompositeScore(t *testing.T) {
+	c := UsageCounts{OneDay: 2, SevenDay: 5, ThirtyDay: 10}
+	got := CompositeScore(c)
+	if got != 31 { // 3*2 + 5 + 2*10 = 31
+		t.Fatalf("CompositeScore = %d, want 31", got)
+	}
+	older := UsageCounts{OneDay: 1, SevenDay: 5, ThirtyDay: 10}
+	if got <= CompositeScore(older) {
+		t.Fatal("more recent launches should score strictly higher")
+	}
+}
+
+// TestFamilyCountsAggregatesByFamily verifies events are grouped by family
+// via the familyOf map, that all catalog models in one family aggregate
+// together, and that events for models absent from the catalog are skipped.
+func TestFamilyCountsAggregatesByFamily(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	fixed := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	var data []byte
+	for _, e := range []event{
+		{ModelID: "ollama/gemma4:9b", Timestamp: fixed.Add(-30 * time.Minute)},
+		{ModelID: "ollama/gemma4:14b", Timestamp: fixed.Add(-2 * 24 * time.Hour)},
+		{ModelID: "ollama/qwen3.8:27b", Timestamp: fixed.Add(-30 * time.Minute)},
+		{ModelID: "ollama/notincatalog:1", Timestamp: fixed.Add(-30 * time.Minute)},
+	} {
+		line, _ := json.Marshal(e)
+		data = append(data, append(line, '\n')...)
+	}
+	_ = os.WriteFile(store.path(), data, 0o600)
+
+	familyOf := map[string]string{
+		"ollama/gemma4:9b":   "gemma4",
+		"ollama/gemma4:14b":  "gemma4",
+		"ollama/qwen3.8:27b": "qwen3.8",
+	}
+	got := store.FamilyCounts(familyOf)
+	if got["gemma4"] != (UsageCounts{OneDay: 1, SevenDay: 2, ThirtyDay: 2}) {
+		t.Fatalf("gemma4 = %+v, want {1,2,2}", got["gemma4"])
+	}
+	if got["qwen3.8"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("qwen3.8 = %+v, want {1,1,1}", got["qwen3.8"])
+	}
+	if _, ok := got["notincatalog"]; ok {
+		t.Fatalf("family for a model outside the catalog should be skipped, got %v", got["notincatalog"])
+	}
+}
+
+// TestFamilyCountsMissingFile returns an empty map when usage.jsonl is absent.
+func TestFamilyCountsMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	got := NewStoreAt(dir).FamilyCounts(map[string]string{"a": "fam"})
+	if len(got) != 0 {
+		t.Fatalf("FamilyCounts = %v, want empty", got)
+	}
+}
