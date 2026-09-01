@@ -69,6 +69,7 @@ After the launched subprocess exits, both the TUI and non-TUI paths print a sing
 - `docs/wt-agents/` — per-agent reference (one file per launcher)
 - `docs/superpowers/specs/` — design specs (input to implementation)
 - `docs/superpowers/plans/` — implementation plans (output of planning, input to execution)
+- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, and shared config ownership (modelman owns `registry.toml`/`modelman.toml`; wt owns `~/.config/agent-wt/config.toml`).
 
 ## Go tests
 
