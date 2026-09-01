@@ -181,7 +181,9 @@ func TestCodex(t *testing.T) {
 // Copilot never receives --model on the CLI. Instead it gets the COPILOT_*
 // env vars that tell Copilot CLI which provider and model to use. For
 // Ollama-routed models the base URL must include the `/v1` path and the
-// wire API must be `responses`, matching `ollama launch copilot`.
+// wire API must be `completions`: copilot's `responses` wire drops leading
+// characters through the OpenAI-compatible bridge (see copilot.go), so the
+// chat-completions wire is used in both gateway modes.
 // Native models must produce no env vars at all.
 func TestCopilot(t *testing.T) {
 	d := ByName("copilot")
