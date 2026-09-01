@@ -1,0 +1,20 @@
+family: ornith-1.5
+display_name: "Ornith 1.5"
+variants:
+  - id: ollama-35b
+    provider: ollama
+    name: ornith-1.5:35b
+
+  - id: llamacpp-35b-q4
+    provider: llamacpp
+    repo: ornith-ai/Ornith-1.5-35B-A3B-GGUF
+    files: [Ornith-1.5-35B-Q4_K_M.gguf]
+
+  - id: omlx-35b-4bit
+    provider: omlx
+    repo: ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit
+
+downloaded:
+  ollama-35b:
+    downloaded_at: 2026-08-26T07:30:00Z
+    local_path: "ollama:ornith-1.5:35b"

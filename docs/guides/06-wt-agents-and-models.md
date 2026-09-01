@@ -10,11 +10,11 @@
 - **`wt` built and on PATH** (`/Users/keith/.local/bin/wt`):
 
   ```bash
-  cd /Users/keith/github/ohanaverse/agent-worktree && go build -o /Users/keith/.local/bin/wt ./cmd/wt
+  cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt
   ```
 
   **Caveat (2026-08-29):** the installed binary is STALE — built 2026-08-27 12:15, one commit before the registry-consumer merge (`79d620f`, 2026-08-28, "wt: consume modelman's registry.toml (Phase 4)"). The rebuild command above is the fix — it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4). Differences are cataloged in Steps §3 and Gotchas.
-- **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/agent-worktree` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
+- **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
   /Users/keith/.local/bin/claude-wt  /Users/keith/.local/bin/codex-wt
@@ -39,7 +39,7 @@ claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything
 
 ### 1. Shims and agent support matrix
 
-Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent <name> "$@"`). Mapping and capabilities, copied verbatim from `/Users/keith/github/ohanaverse/agent-worktree/README.md` (all 7 launcher binaries verified present in `/Users/keith/.local/bin/`; matrix semantics verified against `internal/agents/` and `internal/session/` in source):
+Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent <name> "$@"`). Mapping and capabilities, copied verbatim from `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md` (all 7 launcher binaries verified present in `/Users/keith/.local/bin/`; matrix semantics verified against `internal/agents/` and `internal/session/` in source):
 
 | Launcher | Agent | Model rotation | Session resume |
 |---|---|---|---|
@@ -65,7 +65,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
   tag   : code
   ```
 
-  The tag slot defaults to `default_tag = "code"` (see §5) unless `-T` narrows it. Model rows carry usage badges (launch counts from `usage.jsonl`), and the cursor starts on the rotation's next model (see §4).
+  The tag slot defaults to `default_tag = "code"` (see §6) unless `-T` narrows it. Model rows carry usage badges (launch counts from `usage.jsonl`), and the cursor starts on the rotation's next model (see §5).
 - **On the model screen:** `j`/`k`/arrows navigate (with wrap-around), `enter` launches, `q` quits, `esc` pops back. Footer reads `[↑/↓] navigate   [enter] launch   [q] quit`.
 - **Session resume:** for agents with resume (claude, opencode) the picker offers to resume the newest session or go fresh; `esc`/cancel returns to the model screen without launching or advancing rotation.
 - **There is no `d` tag-toggle key.** Use `-T code` / `-T design` instead; picker footer is `[↑/↓] navigate [enter] launch [q] quit`.
@@ -80,13 +80,35 @@ Non-interactive pinning and filtering (all verified against live `wt --help` and
 | `-T, --tags a,b` | Keep only models with ANY of these tags (OR within the flag) |
 | `-F, --family f1,f2` | Keep only models whose family matches any listed (OR within the flag) |
 
-Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define the *eligible list*, and the pin must be inside it — otherwise the launch errors ("model \"…\" is not in the eligible list for agent \"…\"") instead of silently ignoring the filters. So `wt -W x -T design -M <some only-code-tagged model>` fails, while a pin that satisfies the filters wins. With no `-M`: one eligible model → that model; several eligible → the rotation cursor decides (§4). This is all in `cmd/wt/resolve.go` (`resolveModelFromEligible`) and `cmd/wt/launch.go` (source-verified; this machine's catalog tags every legacy model for both code and design, so try it once tags diverge).
+Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define the *eligible list*, and the pin must be inside it — otherwise the launch errors ("model \"…\" is not in the eligible list for agent \"…\"") instead of silently ignoring the filters. So `wt -W x -T design -M <some only-code-tagged model>` fails, while a pin that satisfies the filters wins. With no `-M`: one eligible model → that model; several eligible → the rotation cursor decides (§5). This is all in `cmd/wt/resolve.go` (`resolveModelFromEligible`) and `cmd/wt/launch.go` (source-verified; this machine's catalog tags every legacy model for both code and design, so try it once tags diverge).
 
-**Where the models come from:** `~/.config/local-ai/registry.toml` (modelman-owned) and `~/.config/agent-wt/config.toml` (wt-owned) are joined in memory by `internal/config/config.go` `Load()`. Registry providers/models are loaded **last and overwrite anything pre-existing in config.toml — registry.toml is the source of truth**, and wt never writes providers or models back (see §5). Concretely on this machine: registry has 22 models (`grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` → `22`), all `tags = []` so far.
+**Where the models come from:** `~/.config/local-ai/registry.toml` (modelman-owned) and `~/.config/agent-wt/config.toml` (wt-owned) are joined in memory by `internal/config/config.go` `Load()`. Registry providers/models are loaded **last and overwrite anything pre-existing in config.toml — registry.toml is the source of truth**, and wt never writes providers or models back (see §6). Concretely on this machine: registry has 22 models (`grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` → `22`), all `tags = []` so far.
 
 **Stale-binary delta:** the installed 2026-08-27 build predates the merge and still serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`. Its picker therefore misses registry-only entries (`medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`). Same flags, different catalog — rebuild (Prerequisites) before trusting the picker.
 
-### 4. Rotation
+### 4. LiteLLM gateway mode
+
+By default wt agents talk directly to Ollama (`localhost:11434`). To route
+non-native traffic through the LiteLLM proxy (`localhost:4000`) and populate
+the dashboard, add `[gateway]` to `~/.config/agent-wt/config.toml`:
+
+```toml
+[gateway]
+mode    = "litellm"
+url     = "http://localhost:4000"
+api_key = "sk-…"
+```
+
+In this mode:
+- wt only shows models with `litellm_exposed = true` in `modelman.toml`.
+- The model name passed to agents is the registry id (e.g.
+  `ollama/qwen3.8:27b-mlx`), matching LiteLLM's `model_list` entries.
+- Native models (`claude/native`, `copilot/native`) still use their own
+  subscriptions and are always shown.
+- OpenCode continues to use Ollama directly until its OpenAI-compatible
+  provider block is confirmed.
+
+### 5. Rotation
 
 - Launching a model **advances rotation**: the picker cursor (and any model-less launch) lands on the next eligible model after the last-launched one. There is no key or command to advance manually.
 - State is a **single global file**, `~/.config/agent-wt/rotation.state`, one line, bare model id (`internal/rotation/rotation.go`: `Rotation reads and writes the single global rotation.state file.`). Old per-tag/per-agent `rotation-*.state` files are one-shot migration inputs — the newest one is folded in once and the files deleted; migration only runs when `rotation.state` is missing — it exists, so the legacy files simply remain (two legacy leftovers, `rotation-claude-code-_.state` and `rotation-pi-code-_.state`, still sat in `~/.config/agent-wt/` on 2026-08-29). See [03-model-families](03-model-families.md).
@@ -97,9 +119,9 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
   ```
 
   Observed output: `ollama/kimi-k2.7-code:cloud` — i.e. "the model after the last-launched one, walking the global list filtered to tag `code`". It prints only; it never writes state.
-- `rotation.state` is written by the TUI **launch** path (`Rotation.Record()`), which also appends to `usage.jsonl` (§7). Canceled resume prompts and `esc` leave rotation untouched.
+- `rotation.state` is written by the TUI **launch** path (`Rotation.Record()`), which also appends to `usage.jsonl` (§8). Canceled resume prompts and `esc` leave rotation untouched.
 
-### 5. `wt config`
+### 6. `wt config`
 
 Live `wt config --help` lists three subcommands (plus an interactive editor when run bare):
 
@@ -116,7 +138,7 @@ Available Commands:
 
 `~/.config/agent-wt/config.toml` shape (wt-owned): a `default_tag = "code"` line plus `[[agents]]` entries (launch names, per-agent provider availability). **wt NEVER writes providers/models** — `wt config`'s editor only touches agents and the default tag; registry data is overwritten in-memory on every load and never persisted back (the `Load()` comment in `internal/config/config.go`: "registry.toml is the source of truth"). The `[[providers]]`/`[[models]]` blocks still present on disk are inert migration exchange output (see [00-config-map](00-config-map.md)).
 
-### 6. Extras
+### 7. Extras
 
 - `--init` — seed `AGENTS.md` (if missing) plus an agent-specific pointer file, then exit (`internal/initseed/`).
 - `--check-guard` / `--no-guard` — inspect/remove the `block-main-commit` pre-commit hook that every launch auto-installs in a git repo (blocks commits to `main`/`master`; `git commit --no-verify` is the emergency bypass). Live read-only run in `wt`-managed repo:
@@ -131,7 +153,7 @@ Available Commands:
 - `--debug-worktrees` / `--debug-session <agent>` — test helpers printing worktrees/branches and the newest claude/opencode session respectively; not for daily use, one line, moving on.
 - Removed subcommands now fail loudly instead of creating a worktree named "models": `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt/main.go`).
 
-### 7. Launch records
+### 8. Launch records
 
 Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Record()` → `usage.Store.Record()`). Last pre-existing record on this machine (from a launch run earlier on 2026-08-29 — note that *I did not launch anything during this guide's preparation*):
 
@@ -148,7 +170,7 @@ Live-ran (2026-08-29, all read-only):
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
 - `wt rotate code` → `ollama/kimi-k2.7-code:cloud`, exit 0, no files touched
 - `wt -w foo` → `wt: -w is removed; use -W or --worktree`, exit 1, and `git worktree list` confirmed nothing was created
-- `wt config --help` / `wt config theme --help` / `wt config ollama --help` → subcommands as listed in §5
+- `wt config --help` / `wt config theme --help` / `wt config ollama --help` → subcommands as listed in §6
 - Registry models present: 22 `[[models]]` entries, all `tags = []`
 
 Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx` matches that exact `[[models]]` id in `registry.toml`; the join in `internal/config/config.go` makes it eligible for claude/codex/copilot/pi/opencode (it's an ollama provider model), so `claude-wt -W my-feature -M ollama/qwen3.8:27b-mlx` resolves deterministically and skips the model screen.
@@ -168,8 +190,8 @@ Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx
 
 ## Going deeper
 
-- `/Users/keith/github/ohanaverse/agent-worktree/README.md` — agents, install, guard, copilot passthrough env vars
-- `/Users/keith/github/ohanaverse/agent-worktree/docs/configuration.md` and `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md` — config.toml and themes.toml reference
-- Specs (all verified present): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-native-unification-design.md`
+- `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md` — agents, install, guard, copilot passthrough env vars
+- `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/configuration.md` and `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md` — config.toml and themes.toml reference
+- Specs (all verified present): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-native-unification-design.md`
 - [00-config-map](00-config-map.md) — who owns which `~/.config` file; [02-providers-and-models](02-providers-and-models.md) — registry content; [03-model-families](03-model-families.md) — families/tags that feed the picker
 - Launch-log consumers and spend: [07-usage-and-spend](07-usage-and-spend.md)

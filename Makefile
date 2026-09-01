@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell check-links
+.PHONY: lint lint-shell check-links test-all
 
 SHELL_SCRIPTS := \
 	bin/llm-isolate-provider \
@@ -24,3 +24,8 @@ lint-shell:
 
 check-links:
 	@bin/check-links
+
+# Aggregate local verification across all monorepo components (mirrors CI).
+test-all: lint
+	cd modelman && uv sync && make check && make test
+	cd wt && go build ./... && go vet ./... && go test ./...

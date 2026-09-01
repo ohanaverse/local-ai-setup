@@ -1,0 +1,188 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+)
+
+// buildLaunch constructs the agent command for the given model and worktree,
+// appending passthrough args and a resume flag when a prior session exists.
+// It is a thin wrapper around agents.BuildLaunchCmd so tests can assert the
+// command shape without exec'ing an agent.
+func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+}
+
+// buildCommandForModel performs session lookup and builds the exec.Cmd for a
+// model-driven agent. It is extracted so tests can assert command shape without
+// exec'ing an agent.
+func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
+	// Native models launch fresh: resuming a session would restore the
+	// session's stored model, overriding the user's "native" choice. Skip
+	// the session lookup so no --resume/--session flag is ever appended.
+	var sess *session.Session
+	if !m.Native {
+		if r, ok := agents.ByName(agent).(agents.Resumer); ok {
+			sess, _ = r.LatestSession(worktreePath)
+		}
+	}
+	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+}
+
+// buildCommandForCommand builds the exec.Cmd for a command-like agent (e.g.
+// shell). It runs in the requested worktree; the -M warning lives in
+// launchFiltered where the pinnedSupplied signal is available.
+func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
+	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, nil, cfg, extraArgs)
+}
+
+// buildFilteredCmd is the build-only core of launchFiltered: it resolves the
+// model (or detects a command agent) and constructs the launch command for
+// worktreePath without running it. It is extracted so tests can assert the
+// command shape — including that command agents run in the worktree, not the
+// caller's CWD — without exec'ing an agent.
+//
+// Note: the ollama availability check lives in launchFiltered, not here, so
+// tests can build commands without requiring a local ollama server.
+func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, extraArgs []string) (config.Model, *exec.Cmd, error) {
+	m, _, err := resolveModel(agent, cfg, tags, family, pinned)
+	if errors.Is(err, errCommandAgent) {
+		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, extraArgs)
+		return config.Model{}, cmd, berr
+	}
+	if err != nil {
+		return config.Model{}, nil, err
+	}
+	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
+	return m, cmd, berr
+}
+
+// launchFiltered is the wired-up launch path used by main.go for every
+// non-TUI launch (-w, --cwd, and outside-a-repo passthrough). It resolves
+// the eligible model list (via cfg.EligibleModels), pins the model when -M
+// is provided, and otherwise advances through the eligible list using the
+// per-slot rotation state (agent+tag+family). For a pinned match or a
+// single eligible model, no rotation is consulted. Command agents (shell,
+// etc.) bypass the model layer but still run in worktreePath — they route
+// through buildFilteredCmd so the same worktree-path threading that
+// TestBuildFilteredCmdCommandAgentUsesWorktree locks down is on the launch
+// path, instead of an ad-hoc CWD helper that silently dropped the path.
+//
+// launchFiltered is a package-level variable so tests can stub it (see
+// TestCommandAgentWithoutModelLaunchesDirectly and
+// TestAgentWithOneEligibleModelAutoLaunches). The implementation lives in
+// launchFilteredImpl — keeping it in a separate function makes the var
+// re-assignable without losing the original behavior.
+var launchFiltered = launchFilteredImpl
+
+// pinnedSupplied distinguishes "user passed -M with an empty value" from
+// "user did not pass -M". It's used to surface a stderr note when -M is
+// passed together with a command agent (where the pin would otherwise be
+// silently dropped).
+func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+	if agents.IsCommand(agent) {
+		if pinnedSupplied {
+			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
+		}
+		// buildFilteredCmd dispatches command agents to buildCommandForCommand
+		// with the real worktreePath (not "."), so shell-wt -W foo runs in the
+		// worktree. runAgentCmd then wires stdio and execs it.
+		_, cmd, err := buildFilteredCmd(agent, worktreePath, cfg, yolo, "", "", "", extraArgs)
+		if err != nil {
+			return err
+		}
+		return runAgentCmd(cmd, agent, config.Model{})
+	}
+
+	// Resolve the model. If the caller precomputed the eligible list, reuse
+	// it; otherwise resolveModel computes it (and returns it for rotation).
+	// nil (not len == 0) signals "not precomputed" so a caller that legitimately
+	// passes an empty-but-non-nil slice isn't silently recomputed against.
+	var m config.Model
+	var err error
+	if eligible == nil {
+		m, eligible, err = resolveModel(agent, cfg, tags, family, pinned)
+	} else {
+		m, err = resolveModelFromEligible(agent, eligible, pinned)
+	}
+	if err != nil {
+		// When multiple models are eligible and no pin was supplied, rotate
+		// through the global model list to the next model supported by agent.
+		if pinned == "" {
+			next, ok := rotation.New().NextFromEligible(eligible, cfg)
+			if ok {
+				m = next
+				err = nil
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	// Fail fast if the selected ollama model is not available locally.
+	// This runs before session lookup and full command construction so we
+	// don't waste work on a model we can't launch. In gateway (litellm) mode
+	// the check is skipped: models may be served by any upstream behind
+	// LiteLLM (llama.cpp, oMLX, OpenRouter), not just local ollama, so a
+	// model absent from `ollama list` must not hard-block the launch.
+	if !cfg.Gateway.IsLitellm() {
+		ok, oerr := ollamacheck.Check(m)
+		if oerr != nil {
+			// Print the summary before returning so the user sees the same
+			// post-run line on pre-launch config errors as on a real exit.
+			// Duration is 0 — the subprocess never started.
+			fmt.Println("\n" + agents.Summary(agent, m, 0))
+			return fmt.Errorf("ollama check failed: %w", oerr)
+		}
+		if !ok {
+			fmt.Println("\n" + agents.Summary(agent, m, 0))
+			return ollamaUnavailableError(m.ModelName)
+		}
+	}
+
+	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
+	if berr != nil {
+		return berr
+	}
+	if rerr := rotation.New().Record(m.ID); rerr != nil {
+		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
+	}
+	return runAgentCmd(cmd, agent, m)
+}
+
+// runAgentCmd wires stdio through to the agent, runs it, prints the post-run
+// summary line, and propagates the agent's exit code to the caller.
+func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	start := time.Now()
+	err := cmd.Run()
+	// Leading "\n" guards against the agent's last byte being non-newline
+	// (e.g. a bare prompt or a SIGINT-truncated line) — without it the
+	// summary would glue to that partial output. Println adds the trailing
+	// newline itself, so the line is always self-terminated.
+	fmt.Println("\n" + agents.Summary(agent, m, time.Since(start)))
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
+func ollamaUnavailableError(modelName string) error {
+	return fmt.Errorf("model %q is not available locally. Run: ollama pull %s", modelName, modelName)
+}

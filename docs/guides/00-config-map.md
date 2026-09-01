@@ -13,12 +13,12 @@ None — this is a reference doc, not a procedure.
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
 | `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) | `wt` (read-only), LiteLLM exposure | Canonical providers + models |
-| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` | Per-machine state: downloads, LiteLLM exposure flags, family display names |
+| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only for `litellm_exposed`) | Per-machine state: downloads, LiteLLM exposure flags, family display names |
 | `~/.config/local-ai/settings.yaml` | `modelman` | `modelman` | User preferences (theme) |
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
 | `~/.config/local-ai/families/*.yaml` | pre-registry modelman tooling | `modelman migrate` (read-only input) | Legacy per-family variants + download markers |
 | `~/.config/litellm/config.yaml` | `modelman` (expose toggle), you by hand | LiteLLM proxy | `model_list`, general settings |
-| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag (NO providers/models — modelman owns those in registry.toml) |
+| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and optional [gateway] routing. (NO providers/models — modelman owns those in registry.toml) |
 | `~/.config/agent-wt/themes.toml` | `wt` (`wt config theme`) | `wt` | Active theme |
 | `~/.config/agent-wt/models.conf` | you by hand (pre-wt bash era) | `wt` first-run migration (read-only input) | Legacy bash rotation config |
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `modelman usage` | Launch log |
@@ -183,6 +183,7 @@ model_list:
 - **Owner:** `wt` (`wt config` editor; writes atomically on save).
 - **Consumers:** `wt` only.
 - **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — modelman owns those in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
+- **[gateway]** is a new wt-owned section for routing agents through LiteLLM.
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
 - **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default agent-worktree `config.toml` to import from.
@@ -240,7 +241,7 @@ CODE_MODELS=(
 
 - **Owner:** `wt` (single global rotation file; per-slot files legacy).
 - **Consumers:** `wt` (rotation cursor), `modelman usage` (last-launched model).
-- **Purpose:** rotation position — the file body is just the model id of the last launch. The `rotation-claude-code-_.state` / `rotation-pi-code-_.state` files on this machine are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/agent-worktree/internal/rotation/rotation.go:138-175`).
+- **Purpose:** rotation position — the file body is just the model id of the last launch. The `rotation-claude-code-_.state` / `rotation-pi-code-_.state` files on this machine are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/local-ai-setup/wt/internal/rotation/rotation.go:138-175`).
 
 ```
 ollama/glm-5.3-flash:cloud
@@ -315,7 +316,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 
 - Service setup (plists above): `/Users/keith/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
 - modelman file semantics + CLI: `/Users/keith/github/ohanaverse/modelman/README.md`
-- wt config/registry relationship: `/Users/keith/github/ohanaverse/agent-worktree/README.md`
-- wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md`
-- Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
+- wt config/registry relationship: `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
+- wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
+- Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - oMLX backend reference: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
