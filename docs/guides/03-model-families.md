@@ -20,7 +20,7 @@ grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml
 - modelman runnable from its repo (PATH-installed binary is stale — see [02-providers-and-models](02-providers-and-models.md) Gotchas):
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 ```
 
@@ -35,7 +35,7 @@ uv sync
 | `tags` per model (rotation groups, e.g. `code`/`design`) | `~/.config/local-ai/registry.toml` | `wt` (`-T` filter, tag rotation) | No TUI editor today — hand-edit (modelman-owned file), see Gotchas |
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman    # family screen: a add, e edit display name, d delete, enter open, r reconcile, q quit
 ```
 
@@ -178,7 +178,7 @@ Editing `family`/`tags` changes what `wt` offers on the **next launch** — the 
 Display-name round trip (live-verified 2026-08-29; modelman.toml changed and then restored byte-exact, md5 `5d81a43d40f15483f00ec5eb71d7bfa6` before and after):
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run python -c "from modelman.state import load_state; from pathlib import Path; s = load_state(Path.home() / '.config/local-ai/modelman.toml'); print(s.family_display_name('ornith-1.5:35b'))"
 ```
 
@@ -238,5 +238,5 @@ ollama/glm-5.3-flash:cloud
 - wt README (flags, TUI keys, rotation, config split): `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
 - wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
 - Model registry data model (family/tags/agents, cascading filters): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
-- modelman README (TUI keys, `modelman.toml` shapes): `/Users/keith/github/ohanaverse/modelman/README.md`
+- modelman README (TUI keys, `modelman.toml` shapes): `/Users/keith/github/ohanaverse/local-ai-setup/modelman/README.md`
 - Previous/next in this set: [02-providers-and-models](02-providers-and-models.md), [04-litellm-config](04-litellm-config.md)

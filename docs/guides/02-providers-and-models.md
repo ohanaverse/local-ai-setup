@@ -10,7 +10,7 @@
 - modelman runnable from its repo (the PATH-installed `modelman` is stale — see Gotchas):
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 ```
 
@@ -36,7 +36,7 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_L
 <!-- UNVERIFIED — not run as one block. The `sync` line and the command list were verified live; the `expose`/`unexpose` lines and both TUI launches were not driven from this session (expose/unexpose mutate the live LiteLLM config — see Steps §6–7 and Verification for how to confirm). -->
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman                                # full TUI: browse families → add/edit/delete → queue changes → confirm on exit
 uv run modelman sync                           # reconcile downloaded/disk_path/size_bytes in modelman.toml against providers; never adds models
 uv run modelman expose ollama/gpt-oss:20b      # non-interactive: writes a model_list entry + sets litellm_exposed = true
@@ -52,7 +52,7 @@ Scope split (verified via `uv run modelman --help` and the TUI key lists below):
 <!-- UNVERIFIED — interactive TUI, not driven from this session. All keys/behavior below are copied verbatim from the modelman README (§TUI). -->
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman
 ```
 
@@ -84,7 +84,7 @@ secret_ref = "sk-or-v1-..."
 Validate the file after editing (read-only registry load):
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run python -c 'from modelman.registry import load_registry; print(sorted(p.id for p in load_registry().providers))'
 ```
 
@@ -143,7 +143,7 @@ Downloads are **queued in the TUI and applied on exit** — nothing is written u
 Non-interactive entry point — `download` opens the TUI directly at that family's model screen (help text captured live):
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman download --help
 ```
 
@@ -162,7 +162,7 @@ uv run modelman download --help
 <!-- UNVERIFIED — interactive launch not driven from this session; run it and confirm downloads queue, then apply on exit. -->
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman download ornith-1.5:35b
 ```
 
@@ -171,7 +171,7 @@ uv run modelman download ornith-1.5:35b
 ### 6. Reconcile: `sync`
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman sync
 ```
 
@@ -196,7 +196,7 @@ Semantics summary: `sync` = read-only over providers (`ollama list`, HF cache, o
 <!-- UNVERIFIED — mutating commands; not run on this machine (they rewrite the live `~/.config/litellm/config.yaml` + `modelman.toml`). Help text and success lines below are from live `--help` output and the command source (`src/modelman/main.py`). Local models must be downloaded to expose (cloud models exempt); errors go to stderr with exit 1. -->
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman expose ollama/gpt-oss:20b
 ```
 
@@ -205,7 +205,7 @@ Exposed ollama/gpt-oss:20b through LiteLLM.
 ```
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman unexpose ollama/gpt-oss:20b
 ```
 
@@ -290,7 +290,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 ## Going deeper
 
 - Family concepts and per-provider variants: [03-model-families](03-model-families.md) (next in this set)
-- modelman README (TUI keys, TOML shapes, all commands): `~/github/ohanaverse/modelman/README.md`
-- TUI screens and apply-queue design: `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-26-modelman-tui-design.md`
-- LiteLLM exposure design (provider policies, `model_list` writes): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
-- Model-dir sync/reconcile design (sync semantics): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-sync-modeldir-reconcile-design.md`
+- modelman README (TUI keys, TOML shapes, all commands): `~/github/ohanaverse/local-ai-setup/modelman/README.md`
+- TUI screens and apply-queue design: `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-26-modelman-tui-design.md`
+- LiteLLM exposure design (provider policies, `model_list` writes): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
+- Model-dir sync/reconcile design (sync semantics): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-28-modelman-sync-modeldir-reconcile-design.md`

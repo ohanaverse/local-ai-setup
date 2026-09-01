@@ -15,7 +15,7 @@ The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copi
 ## Installation
 
 ```bash
-go build -o "$(go env GOPATH)/bin/wt" ./cmd/wt
+make install      # builds bin/wt and copies it + the shims to ~/.local/bin/
 ```
 
 Requires Go 1.26.7 (see `go.mod`).
@@ -93,7 +93,7 @@ Package list: `internal/{config,rotation,usage,agents,guard,worktree,initseed,se
 
 ## Go module
 
-Module root is the repo root.
+Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root.
 
 | Path | Purpose |
 |---|---|

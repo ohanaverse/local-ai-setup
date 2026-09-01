@@ -29,7 +29,7 @@ ui:307
 <!-- UNVERIFIED — not run as one block: expose/unexpose mutate the live /Users/keith/.config/litellm/config.yaml and /Users/keith/.config/local-ai/modelman.toml (this machine's 11 current entries all pre-date modelman bookkeeping — see Gotchas). The kickstart + confirm-curl portion was run live; see §5 and Verification for those outputs. -->
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman expose ollama/gemma4:12b-mlx   # writes/updates the model_list row in /Users/keith/.config/litellm/config.yaml
 
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # LiteLLM re-reads config.yaml only at start; down ~10–20 s (§5)
@@ -39,7 +39,7 @@ curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://localhost:4000/v1/
   | python3 -m json.tool | grep '"id"' | grep gemma4
 
 # to revert instead:
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 # uv run modelman unexpose ollama/gemma4:12b-mlx    # removes the row; restart to apply
 ```
 
@@ -80,7 +80,7 @@ general_settings:
     port: 6379
 ```
 
-Field provenance (from `~/github/ohanaverse/modelman/src/modelman/litellm.py` — `PROVIDER_POLICIES` and the entry builder at ~line 110):
+Field provenance (from `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/litellm.py` — `PROVIDER_POLICIES` and the entry builder at ~line 110):
 
 | Field | Comes from |
 |---|---|
@@ -115,7 +115,7 @@ CLI (positional model id; success lines from `src/modelman/main.py`):
 <!-- UNVERIFIED — mutating commands; not run on this machine (they rewrite the live config.yaml + modelman.toml). Help text/success strings verified in source and in guide 02 §7 (identical command set); errors go to stderr with exit 1, e.g. `error: ...` for unknown ids, non-downloaded local models, or providers with no LiteLLM mapping. -->
 
 ```bash
-# from: ~/github/ohanaverse/modelman
+# from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman expose ollama/gemma4:12b-mlx     # model must be downloaded (cloud models exempt)
 uv run modelman unexpose ollama/gemma4:12b-mlx
 ```
@@ -289,7 +289,7 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 
 - Admin UI in depth — Postgres/Redis/Prisma setup, plist template, troubleshooting: [`../reference/litellm-admin-ui-setup.md`](../reference/litellm-admin-ui-setup.md)
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
-- modelman's LiteLLM exposure design (writer contract, upsert semantics): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
-- Source of the writer/policies on this machine: `~/github/ohanaverse/modelman/src/modelman/litellm.py` (policies ~54–58, entry builder ~96–125, save semantics ~215–219)
+- modelman's LiteLLM exposure design (writer contract, upsert semantics): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
+- Source of the writer/policies on this machine: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/litellm.py` (policies ~54–58, entry builder ~96–125, save semantics ~215–219)
 - Benchmarks through the proxy: [05-benchmarks](05-benchmarks.md)
 - When :4000 misbehaves: [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md)

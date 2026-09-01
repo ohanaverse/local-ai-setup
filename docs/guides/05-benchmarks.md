@@ -7,9 +7,9 @@
 ## Prerequisites
 
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
-- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` (seven ollama models are exposed in total, but only those two are local MLX downloads). If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
+- Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` (seven ollama models are exposed in total, but only those two are local MLX downloads). If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
 - Backends healthy: the four-port block in Verification answers (llama.cpp `:8080`, oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`).
-- modelman from its repo, not PATH (`uv run modelman` under `/Users/keith/github/ohanaverse/modelman` — the PATH-installed `modelman` is stale, guide 02 Gotchas). Isolation helpers callable:
+- modelman from its repo, not PATH (`uv run modelman` under `/Users/keith/github/ohanaverse/local-ai-setup/modelman` — the PATH-installed `modelman` is stale, guide 02 Gotchas). Isolation helpers callable:
   `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` and `bin/llm-restore-providers` from `/Users/keith/github/ohanaverse/local-ai-setup`.
 
 ## TL;DR
@@ -22,7 +22,7 @@ bin/llm-isolate-provider omlx
 # → {"provider": "omlx", "model": "Ornith-1.5-35B-A3B-MLX-4bit",
 #    "direct_url": "http://localhost:8000/v1/chat/completions", "ok": true, "error": null}
 
-# from: /Users/keith/github/ohanaverse/modelman
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark run --family ornith-1.5:35b --passes 3
 # → Benchmark complete: <YYYYMMDD-HHMMSS>
 #   Results: /Users/keith/.config/local-ai/benchmarks/<YYYYMMDD-HHMMSS>
@@ -31,7 +31,7 @@ uv run modelman benchmark run --family ornith-1.5:35b --passes 3
 bin/llm-restore-providers
 # → [llm-restore-providers] providers restored
 
-# from: /Users/keith/github/ohanaverse/modelman
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark show-results --latest   # prints summary.md
 ```
 
@@ -69,7 +69,7 @@ Per-argument behavior (from the script itself, `bin/llm-isolate-provider`):
 | `omlx` | ollama (`ollama stop` + `ollama ps` poll), llama.cpp | `omlx start`; warmup Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`) | `http://localhost:8000/v1/chat/completions` |
 | `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll), llama.cpp | `omlx start`; warmup Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`) | `http://localhost:8000/v1/chat/completions` |
 
-Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_LLAMACPP_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL`. On success it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — that contract is what modelman's adapter parses (`~/github/ohanaverse/modelman/src/modelman/benchmark/isolation.py`).
+Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_LLAMACPP_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL`. On success it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — that contract is what modelman's adapter parses (`~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/isolation.py`).
 
 `bin/llm-restore-providers` restarts all four services in parallel (ollama, oMLX, llama.cpp, LiteLLM), skips any already answering its health URL, and exits 1 if any fails to come back.
 
@@ -77,7 +77,7 @@ Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_LLAMAC
 
 <!-- UNVERIFIED — the commands below with a real target stop services via the internal isolation helper. Probe outputs pasted are live. -->
 
-Built-in workloads (`uv run modelman benchmark list-workloads`, verified live from `/Users/keith/github/ohanaverse/modelman`):
+Built-in workloads (`uv run modelman benchmark list-workloads`, verified live from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`):
 
 ```text
 chat
@@ -104,7 +104,7 @@ Single-pass numbers wobble (thermal state, cold weights, background system churn
 
 <!-- UNVERIFIED — mutates live services — not driven; see verified error paths. -->
 ```bash
-# from: /Users/keith/github/ohanaverse/modelman
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark run --workload chat --family ornith-1.5:35b --passes 3
 ```
 
@@ -115,7 +115,7 @@ uv run modelman benchmark run --workload chat --family ornith-1.5:35b --passes 3
 <!-- UNVERIFIED — needs a completed run; only the error paths below were run live. -->
 
 ```bash
-# from: /Users/keith/github/ohanaverse/modelman
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark show-results --latest        # latest run pointer
 uv run modelman benchmark show-results --run-id 20260829-120000
 ```
@@ -197,13 +197,13 @@ ls /Users/keith/.config/local-ai/benchmarks/
 - **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); `bin/*` helpers use `#!/bin/bash`. Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
 - **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/results/`; modelman runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.
 - **OpenRouter rows are N/A without an API key** (legacy scripts read `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`).
-- **The `modelman` binary on PATH is stale** (guide 02 Gotchas) — always `uv run modelman …` from `/Users/keith/github/ohanaverse/modelman`.
+- **The `modelman` binary on PATH is stale** (guide 02 Gotchas) — always `uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`.
 
 ## Going deeper
 
-- Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
+- Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
 - Isolation helpers, stop/start/warmup per backend: `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-isolate-provider`, `.../bin/llm-restore-providers`, and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
 - Legacy benchmark docs + archived numbers: `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
-- modelman source: `~/github/ohanaverse/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` helper adapter)
+- modelman source: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` helper adapter)
 - Launching `wt` agents against the benchmarked models: [06-wt-agents-and-models](06-wt-agents-and-models.md)
 - Spend/usage data the proxy logs per benchmark request: [07-usage-and-spend](07-usage-and-spend.md)
