@@ -1,9 +1,12 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
-Owner: modelman only. See registry.py for the canonical, shared model/
-provider/family definitions this state is keyed against, and
-docs/superpowers/specs/2026-08-27-shared-model-registry-design.md for the
-ownership split.
+Owner: modelman (the only writer). wt reads this file read-only — just the
+`litellm_exposed` flags, to filter its model picker to models actually
+served through LiteLLM (see wt/internal/config/modelman.go; the shared
+contract fixture is docs/contracts/modelman.sample.toml). See registry.py
+for the canonical, shared model/provider/family definitions this state is
+keyed against, and docs/superpowers/specs/2026-08-27-shared-model-registry-design.md
+for the ownership split.
 
 The `families` table is a legacy read-side fallback: family display names
 now live in registry.toml's first-class [[families]] entries (see

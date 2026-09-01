@@ -1,0 +1,41 @@
+# Shared fixture for cross-language contract tests of modelman.toml —
+# the per-machine mutable state file modelman writes and wt reads
+# read-only (only the litellm_exposed flags, to filter the model picker).
+#
+# Read by:
+#   - wt/internal/config/modelman_fixture_test.go (Go)
+#   - modelman/tests/contracts/test_modelman_fixture.py (Python)
+#
+# The point of this file is that a schema change on either side (e.g. wt
+# renaming its litellm_exposed key, modelman moving model_state) makes
+# both CI jobs fail in the same PR.
+
+[model_state."ollama/contract-fixture:local"]
+ready = true
+disk_path = "ollama:contract-fixture:local"
+size_bytes = 2147483648
+litellm_exposed = false
+
+[model_state."ollama/contract-fixture:subscription"]
+ready = true
+disk_path = "ollama:contract-fixture:subscription"
+size_bytes = 1073741824
+litellm_exposed = true
+
+# Legacy pre-registry spelling of `ready`. modelman still accepts it
+# (state.py reads ready, falling back to downloaded); wt ignores it —
+# only the exposure flag matters to the picker.
+[model_state."llamacpp/legacy-contract-fixture"]
+downloaded = true
+disk_path = "/hf/cache/legacy-contract-fixture.q4.gguf"
+litellm_exposed = true
+
+# A model that exists in state but was never downloaded: all defaults.
+# modelman's reader yields ready=False; wt's exposed-set skips it.
+[model_state."openrouter/contract-fixture:cloud"]
+
+# Legacy family display names. Writers no longer create these (display
+# names live in registry.toml [[families]]); entries stay loadable so
+# pre-existing files keep working. wt never reads this table.
+[families."contract-fixture"]
+display_name = "Contract Fixture (legacy)"

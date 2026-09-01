@@ -56,7 +56,7 @@ tags = []
 ### `~/.config/local-ai/modelman.toml`
 
 - **Owner:** `modelman` (written on every TUI apply, `sync`, `expose`/`unexpose`).
-- **Consumers:** `modelman`, plus `wt` (read-only — reads the `litellm_exposed` flags to filter the model picker to models actually served through LiteLLM).
+- **Consumers:** `modelman`, plus `wt` (read-only — reads the `litellm_exposed` flags to filter the model picker to models actually served through LiteLLM; that read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, LiteLLM exposure flags, and family display names.
 - **Env override:** `MODELMAN_STATE`.
 

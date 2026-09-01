@@ -25,7 +25,7 @@ with an env var), plus one LiteLLM-specific override:
 | File / setting | Purpose | Env override |
 |----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
-| `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags | `MODELMAN_STATE` |
+| `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags (also read by `wt`, read-only, for the exposure flags) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
 | LiteLLM `config.yaml` | Path to the LiteLLM config file modelman writes | `MODELMAN_LITELLM_CONFIG` |
 | LiteLLM proxy restart | Shell command to restart the running proxy after expose changes | `MODELMAN_LITELLM_RESTART_CMD` |
