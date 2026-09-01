@@ -10,11 +10,11 @@
 - **`wt` built and on PATH** (`/Users/keith/.local/bin/wt`):
 
   ```bash
-  cd /Users/keith/github/ohanaverse/agent-worktree && go build -o /Users/keith/.local/bin/wt ./cmd/wt
+  cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt
   ```
 
   **Caveat (2026-08-29):** the installed binary is STALE — built 2026-08-27 12:15, one commit before the registry-consumer merge (`79d620f`, 2026-08-28, "wt: consume modelman's registry.toml (Phase 4)"). The rebuild command above is the fix — it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4). Differences are cataloged in Steps §3 and Gotchas.
-- **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/agent-worktree` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
+- **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
   /Users/keith/.local/bin/claude-wt  /Users/keith/.local/bin/codex-wt
@@ -39,7 +39,7 @@ claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything
 
 ### 1. Shims and agent support matrix
 
-Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent <name> "$@"`). Mapping and capabilities, copied verbatim from `/Users/keith/github/ohanaverse/agent-worktree/README.md` (all 7 launcher binaries verified present in `/Users/keith/.local/bin/`; matrix semantics verified against `internal/agents/` and `internal/session/` in source):
+Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent <name> "$@"`). Mapping and capabilities, copied verbatim from `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md` (all 7 launcher binaries verified present in `/Users/keith/.local/bin/`; matrix semantics verified against `internal/agents/` and `internal/session/` in source):
 
 | Launcher | Agent | Model rotation | Session resume |
 |---|---|---|---|
@@ -190,8 +190,8 @@ Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx
 
 ## Going deeper
 
-- `/Users/keith/github/ohanaverse/agent-worktree/README.md` — agents, install, guard, copilot passthrough env vars
-- `/Users/keith/github/ohanaverse/agent-worktree/docs/configuration.md` and `/Users/keith/github/ohanaverse/agent-worktree/docs/wt-config.md` — config.toml and themes.toml reference
-- Specs (all verified present): `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/agent-worktree/docs/superpowers/specs/2026-08-28-native-unification-design.md`
+- `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md` — agents, install, guard, copilot passthrough env vars
+- `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/configuration.md` and `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md` — config.toml and themes.toml reference
+- Specs (all verified present): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-native-unification-design.md`
 - [00-config-map](00-config-map.md) — who owns which `~/.config` file; [02-providers-and-models](02-providers-and-models.md) — registry content; [03-model-families](03-model-families.md) — families/tags that feed the picker
 - Launch-log consumers and spend: [07-usage-and-spend](07-usage-and-spend.md)

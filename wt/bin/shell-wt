@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# shell-wt — execute a shell command in a chosen worktree or branch.
+# Usage: shell-wt [-w/--worktree <name>] [--cwd] [--] <command>
+# `--` is required only when <command> starts with a flag-like token
+# (e.g. `shell-wt -- rm --init`), so wt's own flag parser doesn't consume it.
+exec wt --agent shell "$@"

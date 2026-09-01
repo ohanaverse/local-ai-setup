@@ -1,0 +1,8 @@
+providers:
+  ollama:
+    type: ollama
+  llamacpp:
+    type: llamacpp
+  omlx:
+    type: omlx
+    model_dir: ~/.omlx/models

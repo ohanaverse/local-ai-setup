@@ -1,0 +1,9 @@
+default_tag = "code"
+
+[[models]]
+id = "orphan/model"
+family = "test"
+provider_id = "nonexistent"
+model_name = "model"
+location = "cloud"
+tags = ["code"]

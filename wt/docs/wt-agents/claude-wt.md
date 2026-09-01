@@ -1,0 +1,86 @@
+# claude-wt
+
+## Overview
+
+`claude-wt` is the worktree launcher for [Claude Code](https://claude.ai/code), Anthropic's official CLI. Claude Code reads global identity, skills, and session state from `~/.claude/` and tracks OAuth state in `~/.claude.json`. See [README](README.md) for launcher flags and model rotation.
+
+## Installation
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+This installs the `claude` binary. The `claude-wt` file in this repo is a shim that forwards to `wt --agent claude`. Install `claude-wt` itself by copying `bin/claude-wt` (and the rest of `bin/`) into `~/.local/bin/`.
+
+## Configuration files & locations
+
+Claude Code reads from `~/.claude/`. Briefly:
+
+| File / directory | Purpose |
+|---|---|
+| `~/.claude/CLAUDE.md` | Global persistent instructions for every session. |
+| `~/.claude/settings.json` | Permissions, theme, default model. |
+| `~/.claude/hooks/` | Pre/post-tool hooks for automation and safety. |
+| `~/.claude/skills/` | Reusable workflows (each becomes a slash command). |
+| `~/.claude/plugins/` | Installed Claude Code plugins. |
+| `~/.claude/sessions/` | Session history. |
+| `~/.claude.json` | OAuth sessions, MCP server config, internal caches. |
+
+## Authentication & credentials
+
+Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of that file are observable but should be treated as opaque — the supported way to (re-)authenticate is `claude /login`, not editing `~/.claude.json` by hand. There is no environment-variable credential pattern equivalent to pi's `$ANTHROPIC_API_KEY`-via-wrapper setup; `claude-wt` does not need a credential wrapper.
+
+## Model selection
+
+Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
+
+- **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
+- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)).
+
+For Ollama-routed models, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
+
+### Cloud models via Ollama
+
+When a non-native model (e.g., `minimax-m3:cloud`) is selected, `claude-wt` sets Anthropic-compatible environment variables pointing at the local Ollama gateway:
+
+```bash
+ANTHROPIC_AUTH_TOKEN=ollama
+ANTHROPIC_API_KEY=""
+ANTHROPIC_BASE_URL="http://localhost:11434"
+```
+
+The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+
+### Gateway mode (LiteLLM)
+
+When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `claude-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The launcher sets:
+
+```bash
+ANTHROPIC_AUTH_TOKEN="<gateway.api_key>"
+ANTHROPIC_API_KEY=""
+ANTHROPIC_BASE_URL="http://localhost:4000"  # trailing slash is normalized
+```
+
+The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[gateway].api_key` and is forwarded to the LiteLLM proxy as the provider's auth token. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and ignore the gateway.
+
+## Session resume
+
+`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
+
+## Agent init
+
+`claude-wt --init` seeds project-level instruction files:
+
+- `AGENTS.md` — shared instruction template (if missing)
+- `CLAUDE.md` — pointer containing `@AGENTS.md` (if missing)
+
+Claude natively supports `@path` imports in `CLAUDE.md`. When Claude reads `CLAUDE.md`, it automatically expands the `@AGENTS.md` import. Users can add Claude-specific instructions below the import.
+
+## Verified on this machine
+
+**Verified on this machine, 2026-06-01.**
+
+- **Binary:** `~/.local/bin/claude`.
+- **Home directory:** `~/.claude/` exists with `CLAUDE.md`, `settings.json`, `hooks/`, `skills/`, `plugins/`, `sessions/`, and additional subdirectories (`backups/`, `bin/`, `cache/`, `debug/`, `docs/`, `downloads/`, `file-history/`, `history.jsonl`, `ide/`, `memory/`, `plans/`, `projects/`, `security/`, `session-env/`).
+- **OAuth state:** `~/.claude.json` exists. Internals are an OAuth-token cache; treat as opaque.
+- **No credential wrapper.** `claude-wt`'s `exec claude …` works directly against the installed `claude` binary; no equivalent to pi's `activate-litellm.sh` is needed in this deployment.

@@ -1,0 +1,12 @@
+.worktrees
+.superpowers/
+.DS_Store
+bin/wt
+# Root-anchored: only ignores a stray `wt` binary at the repo root (from
+# `go build ./cmd/wt`), not the `cmd/wt` source directory.
+/wt
+
+# NOTE: a global ~/.gitignore (outside this repo's control) ignores `.claude/`.
+# This repo intentionally tracks `.claude/skills/` — a local negation pattern
+# here can't override the global ignore, so new files under `.claude/` need
+# `git add -f`.
