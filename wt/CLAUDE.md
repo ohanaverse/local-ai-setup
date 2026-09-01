@@ -115,7 +115,6 @@ Module root is the repo root.
 | `internal/ollamacheck/` | availability check before launch |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
-| `testdata/` | sample configs |
 | `docs/superpowers/` | specs + plans |
 
 ## Config (Go)

@@ -146,6 +146,9 @@ def run_benchmark(
                         )
                 continue
 
+            # Reached only when isolation succeeded (fresh or reused), so
+            # direct_url was assigned either above or on a prior iteration.
+            assert direct_url is not None
             for pass_number in range(1, passes + 1):
                 for route in routes:
                     url = direct_url if route == "direct" else LITELLM_URL

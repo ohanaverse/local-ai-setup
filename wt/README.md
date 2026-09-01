@@ -194,7 +194,6 @@ go vet ./...       # Vet
 | `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
 | `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt |
 | `internal/ollamacheck/` | Ollama model availability check before launch |
-| `testdata/` | Sample configs for manual testing |
 | `docs/superpowers/specs/` | Design specs |
 | `docs/superpowers/plans/` | Implementation plans |
 

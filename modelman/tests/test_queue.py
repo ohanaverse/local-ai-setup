@@ -30,6 +30,7 @@ from modelman.registry import (
     save_registry,
 )
 from modelman.state import (
+    FamilyState,
     ModelState,
     StateStore,
     load_state,
@@ -1140,7 +1141,7 @@ def test_apply_move_emptying_family_creates_family_entry(tmp_path):
         _entry(id="m1", family="gemma4:26b-mlx", provider="ollama", name="gemma4:26b-mlx"),
     )
     state = _make_state()
-    state.touch_family("gemma4:26b-mlx", display_name="Gemma4 26B MLX")
+    state.families["gemma4:26b-mlx"] = FamilyState(display_name="Gemma4 26B MLX")
 
     pending = PendingChanges(
         registry=reg,
@@ -1248,7 +1249,7 @@ def test_apply_promotes_legacy_display_into_existing_entry_without_display(tmp_p
     reg.families.append(FamilyEntry(name="a", display_name=None))
     save_registry(reg, reg_path)
     state = _make_state()
-    state.touch_family("a", display_name="Legacy Name")
+    state.families["a"] = FamilyState(display_name="Legacy Name")
 
     pending = PendingChanges(
         registry=reg,

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,18 +35,6 @@ class FamilyManifest:
     display_name: str = ""
     variants: list[VariantSpec] = field(default_factory=list)
     downloaded: dict[str, dict[str, Any]] = field(default_factory=dict)
-
-    def variant_by_id(self, variant_id: str) -> VariantSpec | None:
-        for v in self.variants:
-            if v["id"] == variant_id:
-                return v
-        return None
-
-    def mark_downloaded(self, variant_id: str, local_path: str) -> None:
-        self.downloaded[variant_id] = {
-            "downloaded_at": datetime.now(UTC).isoformat(),
-            "local_path": local_path,
-        }
 
 
 def _coerce_variant(raw: dict) -> VariantSpec:
