@@ -30,7 +30,7 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from .registry import ModelEntry, ProviderEntry, Registry
+from .registry import Cost, ModelEntry, ProviderEntry, Registry
 from .state import StateStore
 
 
@@ -75,6 +75,7 @@ PROVIDER_POLICIES: dict[str, ProviderPolicy] = {
 # write (settings-persistence spec, 2026-08-31).
 _BRIDGE_PREFIX = "ollama_chat/"  # LiteLLM's chat-completions→ollama bridge
 _BRIDGE_DROP_PARAMS = ("reasoning_effort",)  # BerriAI/litellm#37452 workaround
+_TOKENS_PER_MILLION = 1_000_000
 
 
 def provider_policy(provider_id: str) -> ProviderPolicy | None:
@@ -118,12 +119,43 @@ def default_litellm_config_path() -> Path:
     ).expanduser()
 
 
+def _pricing_model_info(cost: Cost) -> dict[str, Any]:
+    """Derive LiteLLM `model_info` pricing keys from a registry Cost.
+
+    Per-token prices are converted from "per million" to "per token".
+    Cache prices are written to both creation and read keys. When a price
+    is absent, an explicit zero is emitted so LiteLLM bypasses budget
+    checks for free or partially-specified models. Subscription pricing
+    is intentionally not passed through.
+    """
+    info: dict[str, Any] = {}
+
+    if cost.input_price_per_million is not None:
+        info["input_cost_per_token"] = cost.input_price_per_million / _TOKENS_PER_MILLION
+    else:
+        info["input_cost_per_token"] = 0
+
+    if cost.output_price_per_million is not None:
+        info["output_cost_per_token"] = cost.output_price_per_million / _TOKENS_PER_MILLION
+    else:
+        info["output_cost_per_token"] = 0
+
+    if cost.cache_price_per_million is not None:
+        per_token = cost.cache_price_per_million / _TOKENS_PER_MILLION
+        info["cache_creation_input_token_cost"] = per_token
+        info["cache_read_input_token_cost"] = per_token
+
+    return info
+
+
 def build_model_list_entry(model: ModelEntry, provider: ProviderEntry) -> dict[str, Any]:
     """Build a LiteLLM `model_list` row for a registry model.
 
     `model_name` is the registry model id; `litellm_params.model` uses the
     provider's prefix; `api_base` comes from the provider's auth config;
-    `model_info` is copied from the model.
+    `model_info` starts with derived pricing and is then merged with the
+    model's own `model_info`, so hand-written keys can override derived
+    pricing when needed.
     """
     policy = provider_policy(provider.id)
     if policy is None:
@@ -143,8 +175,11 @@ def build_model_list_entry(model: ModelEntry, provider: ProviderEntry) -> dict[s
         "model_name": model.id,
         "litellm_params": params,
     }
+    cost = model.cost if model.cost is not None else Cost()
+    info = _pricing_model_info(cost)
     if model.model_info:
-        entry["model_info"] = dict(model.model_info)
+        info.update(model.model_info)
+    entry["model_info"] = info
     return entry
 
 

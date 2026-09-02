@@ -89,7 +89,7 @@ go vet ./...                         # static analysis
 make help                            # list Makefile targets
 ```
 
-Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `dev` (dev deps).
+Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `check` (shellcheck lint + shfmt format-check).
 
 Package list: `internal/{config,rotation,usage,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
@@ -147,8 +147,10 @@ wt loads it read-only via `config.Load` (fail-closed: missing/malformed
 registry is an error; seed with `modelman migrate`) and joins it in memory
 with its own `config.toml`, which now holds only Agents + DefaultTag + gateway. `Save`
 persists wt-owned fields only — wt never writes providers/models. Extra
-registry fields (cost, model_info, fetch, model_dir, auth secret_ref/base_url)
-are ignored by wt's parser.
+registry fields (model_info, fetch, model_dir, auth secret_ref/base_url)
+are ignored by wt's parser; `cost` IS decoded (`config.ModelCost` in
+`internal/config/config.go`) and rendered as per-token + subscription
+pricing columns in the model picker (`internal/tui/model_list.go`).
 
 **Read-side schemas are pinned by contract fixtures.** `docs/contracts/registry.sample.toml`
 and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`

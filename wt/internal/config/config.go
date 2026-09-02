@@ -78,16 +78,26 @@ type AuthConfig struct {
 
 // ── Model ─────────────────────────────────────────────────
 
+// ModelCost holds optional per-token and subscription pricing for a model.
+type ModelCost struct {
+	InputPricePerMillion  *float64 `toml:"input_price_per_million,omitempty"`
+	CachePricePerMillion  *float64 `toml:"cache_price_per_million,omitempty"`
+	OutputPricePerMillion *float64 `toml:"output_price_per_million,omitempty"`
+	SubscriptionPrice     *float64 `toml:"subscription_price,omitempty"`
+	SubscriptionPeriod    string   `toml:"subscription_period,omitempty"`
+}
+
 // Model is a specific variant of a base model available from a provider.
 type Model struct {
-	ID         string   `toml:"id"`          // unique key, e.g. "ollama/gemma4:9b"
-	Family     string   `toml:"family"`      // base model grouping, e.g. "gemma4"
-	ProviderID string   `toml:"provider_id"` // → Provider.ID
-	ModelName  string   `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
-	Location   Location `toml:"location,omitempty"`
-	Tags       []string `toml:"tags"`             // e.g. ["code", "design"]
-	Source     Source   `toml:"source,omitempty"` // curated or discovered
-	Native     bool     `toml:"-"`                // derived: provider auth.type == "native"; not persisted
+	ID         string    `toml:"id"`          // unique key, e.g. "ollama/gemma4:9b"
+	Family     string    `toml:"family"`      // base model grouping, e.g. "gemma4"
+	ProviderID string    `toml:"provider_id"` // → Provider.ID
+	ModelName  string    `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
+	Location   Location  `toml:"location,omitempty"`
+	Tags       []string  `toml:"tags"`             // e.g. ["code", "design"]
+	Source     Source    `toml:"source,omitempty"` // curated or discovered
+	Cost       ModelCost `toml:"cost,omitempty"`
+	Native     bool      `toml:"-"`                // derived: provider auth.type == "native"; not persisted
 }
 
 // ── Agent ─────────────────────────────────────────────────

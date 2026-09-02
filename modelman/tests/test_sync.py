@@ -64,8 +64,8 @@ def test_list_ollama_raises_on_failure(mock_runner):
 
 
 def test_model_entry_to_variant_builds_spec_from_fetch():
-    """sync's adapter builds the provider-only subset; cost and usage_tier
-    are UI metadata and are omitted from provider calls."""
+    """sync's adapter builds the provider-only subset; cost is UI metadata
+    and is omitted from provider calls."""
     entry = ModelEntry(
         id="llamacpp/q4",
         family="ornith-1.5",
@@ -86,7 +86,6 @@ def test_model_entry_to_variant_builds_spec_from_fetch():
         "model_info": {"supports_function_calling": True},
     }
     assert "cost" not in spec
-    assert "usage_tier" not in spec
 
 
 def test_model_entry_to_variant_handles_empty_fetch():
@@ -103,21 +102,19 @@ def test_model_entry_to_variant_handles_empty_fetch():
     assert spec["model_info"] == {}
 
 
-def test_model_entry_to_variant_omits_cost_and_usage_tier():
-    """Provider APIs do not consume cost or usage_tier, and the UI layer
-    serializes Cost as a plain dict; sync's adapter omits both fields
-    entirely to keep the provider contract lean."""
+def test_model_entry_to_variant_omits_cost():
+    """Provider APIs do not consume cost, and the UI layer serializes Cost as
+    a plain dict; sync's adapter omits the field entirely to keep the
+    provider contract lean."""
     entry = ModelEntry(
         id="ollama/glm-5.3:cloud",
         family="glm",
         provider_id="ollama",
         model_name="glm-5.3:cloud",
-        cost=Cost(kind="subscription", price_per_period=20.0, period="month"),
-        usage_tier="high",
+        cost=Cost(subscription_price=20.0, subscription_period="month"),
     )
     spec = _model_entry_to_variant(entry)
     assert "cost" not in spec
-    assert "usage_tier" not in spec
 
 
 def test_ollama_downloaded_maps_configured_models():

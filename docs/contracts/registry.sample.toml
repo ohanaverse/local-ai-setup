@@ -1,6 +1,7 @@
 # Shared fixture for cross-language contract tests. Exercises every schema
-# variant modelman writes and wt reads: both provider auth types, all three
-# Cost kinds, model_info, a per-model location override, and usage_tier.
+# variant modelman writes and wt reads: both provider auth types, full
+# per-token + subscription pricing, model_info, a per-model location
+# override, and a free model.
 #
 # Read by:
 #   - wt/internal/config/registry_fixture_test.go (Go)
@@ -36,8 +37,7 @@ family = "contract-fixture"
 provider_id = "ollama"
 model_name = "contract-fixture:local"
 tags = ["code"]
-[models.cost]
-kind = "free"
+# Free model: no cost fields.
 
 [[models]]
 id = "openrouter/contract-fixture:cloud"
@@ -48,17 +48,8 @@ location = "cloud"
 tags = ["design"]
 model_info = { supports_function_calling = true }
 [models.cost]
-kind = "per_token"
-price_per_million_tokens = 1.5
-
-[[models]]
-id = "ollama/contract-fixture:subscription"
-family = "contract-fixture"
-provider_id = "ollama"
-model_name = "contract-fixture:subscription"
-tags = ["chat"]
-usage_tier = "medium"
-[models.cost]
-kind = "subscription"
-price_per_period = 20.0
-period = "month"
+input_price_per_million  = 0.50
+cache_price_per_million  = 0.25
+output_price_per_million = 1.00
+subscription_price       = 19.99
+subscription_period      = "month"

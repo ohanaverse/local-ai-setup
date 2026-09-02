@@ -15,13 +15,55 @@ import os
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 
 if TYPE_CHECKING:
     from .state import StateStore
 
+
+# Valid subscription period values used for cost validation and serialization.
+SUBSCRIPTION_PERIODS = ("month", "year")
+
+
+def _validate_cost(cost: Cost, *, source: str = "Cost") -> None:
+    """Validate that all present prices are non-negative finite numbers and
+    that subscription_period is valid when subscription_price is set."""
+    for name in (
+        "input_price_per_million",
+        "cache_price_per_million",
+        "output_price_per_million",
+        "subscription_price",
+    ):
+        value = getattr(cost, name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{source} `{name}` must be a number")
+        if not math.isfinite(value):
+            raise ValueError(f"{source} `{name}` must be finite")
+        if value < 0:
+            raise ValueError(f"{source} `{name}` must be non-negative")
+    if cost.subscription_price is not None and cost.subscription_period not in SUBSCRIPTION_PERIODS:
+        raise ValueError(
+            f"{source} subscription_period must be one of {SUBSCRIPTION_PERIODS}, got {cost.subscription_period!r}"
+        )
+
+
+# Flat cost field names. Used for serialization, dict reconstruction, and
+# unknown-key whitelisting.
+_COST_FIELDS = {
+    "input_price_per_million",
+    "cache_price_per_million",
+    "output_price_per_million",
+    "subscription_price",
+    "subscription_period",
+}
+
+# Legacy cost field names. These are migrated to _COST_FIELDS on load and
+# must never leak into `extra` so they cannot survive a save.
+_LEGACY_COST_FIELDS = {"kind", "price_per_million_tokens", "price_per_period", "period"}
 
 # Canonical location values used across the TUI and providers.
 LOCATION_LOCAL = "local"
@@ -64,17 +106,17 @@ class ProviderEntry:
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
-# ollama.com cloud usage tier for a model's subscription cost.
-UsageTier = Literal["low", "medium", "high", "extra high"]
-
-
 @dataclass
 class Cost:
-    kind: Literal["free", "per_token", "subscription"]
-    price_per_million_tokens: float | None = None
-    price_per_period: float | None = None
-    period: str | None = None
+    input_price_per_million: float | None = None
+    cache_price_per_million: float | None = None
+    output_price_per_million: float | None = None
+    subscription_price: float | None = None
+    subscription_period: str | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_cost(self, source="Cost")
 
 
 @dataclass
@@ -97,7 +139,6 @@ class ModelEntry:
     cost: Cost | None = None
     model_info: dict[str, Any] = field(default_factory=dict)
     fetch: Fetch | None = None
-    usage_tier: str | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -305,12 +346,7 @@ def _provider_to_dict(p: ProviderEntry) -> dict[str, Any]:
 
 
 def _cost_to_dict(c: Cost) -> dict[str, Any]:
-    d = {
-        "kind": c.kind,
-        "price_per_million_tokens": c.price_per_million_tokens,
-        "price_per_period": c.price_per_period,
-        "period": c.period,
-    }
+    d = {field: getattr(c, field) for field in _COST_FIELDS}
     return drop_none({**c.extra, **d})
 
 
@@ -322,11 +358,12 @@ def _cost_from_dict(d: dict[str, Any]) -> Cost:
     this directly; `_parse_cost` is the path that validates raw TOML.
     """
     return Cost(
-        kind=d["kind"],
-        price_per_million_tokens=d.get("price_per_million_tokens"),
-        price_per_period=d.get("price_per_period"),
-        period=d.get("period"),
-        extra=unknown_keys(d, {"kind", "price_per_million_tokens", "price_per_period", "period"}),
+        input_price_per_million=d.get("input_price_per_million"),
+        cache_price_per_million=d.get("cache_price_per_million"),
+        output_price_per_million=d.get("output_price_per_million"),
+        subscription_price=d.get("subscription_price"),
+        subscription_period=d.get("subscription_period"),
+        extra=unknown_keys(d, _COST_FIELDS | _LEGACY_COST_FIELDS),
     )
 
 
@@ -347,7 +384,6 @@ def _model_to_dict(m: ModelEntry) -> dict[str, Any]:
         "cost": _cost_to_dict(m.cost) if m.cost is not None else None,
         "model_info": m.model_info,
         "fetch": _fetch_to_dict(m.fetch) if m.fetch is not None else None,
-        "usage_tier": m.usage_tier,
     }
     return drop_none({**m.extra, **d})
 
@@ -399,17 +435,14 @@ def _parse_family(raw: dict[str, Any]) -> FamilyEntry:
 
 
 def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
-    """Validate and construct a Cost from its raw TOML table."""
+    """Validate and construct a Cost from its raw TOML table.
+
+    Supports the legacy `kind` enum for backward migration and the new
+    flat per-token/subscription fields.
+    """
     if not isinstance(cost_raw, dict):
         raise RegistryError(
             f"Model `{model_id}` cost must be a table, got {type(cost_raw).__name__}"
-        )
-    if "kind" not in cost_raw:
-        raise RegistryError(f"Model `{model_id}` cost missing required `kind` field")
-    kind = cost_raw["kind"]
-    if kind not in ("free", "per_token", "subscription"):
-        raise RegistryError(
-            f"Model `{model_id}` cost kind must be free/per_token/subscription, got {kind!r}"
         )
 
     def _number_or_none(name: str) -> float | None:
@@ -425,21 +458,70 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
             raise RegistryError(f"Model `{model_id}` cost `{name}` must be finite, got {value}")
         return float(value)
 
-    period = cost_raw.get("period")
-    if period is not None and not isinstance(period, str):
+    def _subscription_period_or_none(name: str) -> str | None:
+        value = cost_raw.get(name)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise RegistryError(
+                f"Model `{model_id}` cost `{name}` must be a string, got {type(value).__name__}"
+            )
+        return value
+
+    # Legacy `kind` enum migration path.
+    if "kind" in cost_raw:
+        kind = cost_raw["kind"]
+        if kind == "free":
+            try:
+                return Cost(extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS))
+            except ValueError as exc:
+                msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
+                raise RegistryError(msg) from exc
+        if kind == "per_token":
+            price = _number_or_none("price_per_million_tokens")
+            try:
+                return Cost(
+                    input_price_per_million=price,
+                    output_price_per_million=price,
+                    extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+                )
+            except ValueError as exc:
+                msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
+                raise RegistryError(msg) from exc
+        if kind == "subscription":
+            try:
+                return Cost(
+                    subscription_price=_number_or_none("price_per_period"),
+                    subscription_period=_subscription_period_or_none("period"),
+                    extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+                )
+            except ValueError as exc:
+                msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
+                raise RegistryError(msg) from exc
         raise RegistryError(
-            f"Model `{model_id}` cost `period` must be a string, got {type(period).__name__}"
+            f"Model `{model_id}` cost kind must be free/per_token/subscription, got {kind!r}"
         )
 
-    return Cost(
-        kind=kind,
-        price_per_million_tokens=_number_or_none("price_per_million_tokens"),
-        price_per_period=_number_or_none("price_per_period"),
-        period=period,
-        extra=unknown_keys(
-            cost_raw, {"kind", "price_per_million_tokens", "price_per_period", "period"}
-        ),
-    )
+    # New flat fields.
+    subscription_price = _number_or_none("subscription_price")
+    subscription_period = _subscription_period_or_none("subscription_period")
+    if subscription_price is not None and subscription_price >= 0 and subscription_period is None:
+        raise RegistryError(
+            f"Model `{model_id}` cost `subscription_period` is required when `subscription_price` is set"
+        )
+
+    try:
+        return Cost(
+            input_price_per_million=_number_or_none("input_price_per_million"),
+            cache_price_per_million=_number_or_none("cache_price_per_million"),
+            output_price_per_million=_number_or_none("output_price_per_million"),
+            subscription_price=subscription_price,
+            subscription_period=subscription_period,
+            extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+        )
+    except ValueError as exc:
+        msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
+        raise RegistryError(msg) from exc
 
 
 def _parse_model(raw: dict[str, Any]) -> ModelEntry:
@@ -449,11 +531,6 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
         raise RegistryError(f"Model entry missing required fields {missing}: {raw}")
     cost_raw = raw.get("cost")
     cost = _parse_cost(raw["id"], cost_raw) if cost_raw is not None else None
-    usage_tier = raw.get("usage_tier")
-    if usage_tier is not None and not isinstance(usage_tier, str):
-        raise RegistryError(
-            f"Model `{raw['id']}` usage_tier must be a string, got {type(usage_tier).__name__}"
-        )
     fetch_raw = raw.get("fetch")
     fetch = (
         Fetch(
@@ -476,7 +553,6 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
         cost=cost,
         model_info=dict(raw.get("model_info", {})),
         fetch=fetch,
-        usage_tier=usage_tier,
         extra=unknown_keys(
             raw,
             {

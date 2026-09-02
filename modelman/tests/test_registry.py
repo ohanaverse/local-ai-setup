@@ -1,8 +1,8 @@
 """registry.toml is the canonical, shared model/provider registry per the
 2026-08-27 shared-model-registry design spec. These tests cover the load/
 save round trip and the minimal validation that catches a hand-edited file
-missing a field code elsewhere assumes exists (id, provider_id, model_name,
-cost.kind)."""
+missing a field code elsewhere assumes exists (id, provider_id, model_name).
+"""
 
 from pathlib import Path
 
@@ -72,7 +72,7 @@ def test_save_then_load_round_trips_providers_and_models(tmp_path):
                 location="local",
                 source="discovered",
                 tags=["code", "design"],
-                cost=Cost(kind="free"),
+                cost=Cost(),
                 model_info={"supports_function_calling": True},
             ),
             ModelEntry(
@@ -82,7 +82,7 @@ def test_save_then_load_round_trips_providers_and_models(tmp_path):
                 model_name="qwen3.8-27b-q4",
                 location="local",
                 tags=["code"],
-                cost=Cost(kind="free"),
+                cost=Cost(),
                 fetch=Fetch(
                     repo="unsloth/Qwen3.8-27B-GGUF",
                     files=["Qwen3.8-27B-UD-Q4_K_XL.gguf"],
@@ -97,7 +97,7 @@ def test_save_then_load_round_trips_providers_and_models(tmp_path):
 
     assert loaded.provider("omlx").model_dir == "~/.omlx/models"
     assert loaded.model("ollama/qwen3.8:27b-mlx").tags == ["code", "design"]
-    assert loaded.model("ollama/qwen3.8:27b-mlx").cost == Cost(kind="free")
+    assert loaded.model("ollama/qwen3.8:27b-mlx").cost == Cost()
     assert loaded.model("llamacpp/qwen3.8-27b-q4").fetch == Fetch(
         repo="unsloth/Qwen3.8-27B-GGUF", files=["Qwen3.8-27B-UD-Q4_K_XL.gguf"]
     )
@@ -121,21 +121,9 @@ def test_load_registry_missing_required_model_field_raises(tmp_path):
         load_registry(path)
 
 
-def test_load_registry_missing_cost_kind_raises(tmp_path):
-    path = tmp_path / "registry.toml"
-    path.write_text(
-        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
-        '[providers.auth]\ntype = "none"\n\n'
-        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
-        "[models.cost]\nprice_per_million_tokens = 1.0\n"
-    )
-    with pytest.raises(RegistryError, match="cost missing required `kind`"):
-        load_registry(path)
-
-
 def test_load_registry_non_dict_cost_raises(tmp_path):
     """A hand-edited cost value that isn't a TOML table must fail loudly
-    with RegistryError rather than a TypeError from probing 'kind'."""
+    with RegistryError rather than a TypeError from probing price keys."""
     path = tmp_path / "registry.toml"
     path.write_text(
         '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
@@ -147,20 +135,6 @@ def test_load_registry_non_dict_cost_raises(tmp_path):
         load_registry(path)
 
 
-def test_load_registry_unknown_cost_kind_raises(tmp_path):
-    """Only the canonical cost kinds are accepted; garbage labels must be
-    rejected at load time before they can appear in the COST column."""
-    path = tmp_path / "registry.toml"
-    path.write_text(
-        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
-        '[providers.auth]\ntype = "none"\n\n'
-        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
-        '[models.cost]\nkind = "enterprise"\n'
-    )
-    with pytest.raises(RegistryError, match="cost kind must be free/per_token/subscription"):
-        load_registry(path)
-
-
 def test_load_registry_string_price_raises(tmp_path):
     """Numeric price fields must be numbers; a string price would otherwise
     crash the TUI cost formatter when it tries to format the value."""
@@ -169,9 +143,9 @@ def test_load_registry_string_price_raises(tmp_path):
         '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
         '[providers.auth]\ntype = "none"\n\n'
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
-        '[models.cost]\nkind = "per_token"\nprice_per_million_tokens = "abc"\n'
+        '[models.cost]\ninput_price_per_million = "abc"\n'
     )
-    with pytest.raises(RegistryError, match="cost `price_per_million_tokens` must be a number"):
+    with pytest.raises(RegistryError, match="cost `input_price_per_million` must be a number"):
         load_registry(path)
 
 
@@ -183,45 +157,71 @@ def test_load_registry_non_finite_price_raises(tmp_path):
         '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
         '[providers.auth]\ntype = "none"\n\n'
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
-        '[models.cost]\nkind = "subscription"\nprice_per_period = inf\nperiod = "month"\n'
+        '[models.cost]\nsubscription_price = inf\nsubscription_period = "month"\n'
     )
-    with pytest.raises(RegistryError, match="cost `price_per_period` must be finite"):
+    with pytest.raises(RegistryError, match="cost `subscription_price` must be finite"):
         load_registry(path)
 
 
-def test_load_registry_non_string_usage_tier_raises(tmp_path):
-    """usage_tier is typed str|None at the schema level; booleans or numbers
-    must not silently render as 'True' or '1' in the TIER column."""
+@pytest.mark.parametrize(
+    "field",
+    [
+        "input_price_per_million",
+        "cache_price_per_million",
+        "output_price_per_million",
+        "subscription_price",
+    ],
+)
+def test_load_registry_negative_price_raises(tmp_path, field):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\n'
+        'model_name = "x"\n'
+        f'[models.cost]\n{field} = -1.0\n'
+    )
+    with pytest.raises(RegistryError, match=f"cost `{field}` must be non-negative"):
+        load_registry(path)
+
+
+def test_load_registry_invalid_subscription_period_raises(tmp_path):
     path = tmp_path / "registry.toml"
     path.write_text(
         '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
         '[providers.auth]\ntype = "none"\n\n'
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
-        "usage_tier = true\n"
+        '[models.cost]\nsubscription_price = 20.0\nsubscription_period = "quarter"\n'
     )
-    with pytest.raises(RegistryError, match="usage_tier must be a string"):
+    with pytest.raises(RegistryError, match="cost subscription_period must be one of"):
         load_registry(path)
 
 
-def test_load_registry_unknown_string_usage_tier_round_trips(tmp_path):
-    """String tier values outside the current enum are intentionally
-    accepted for forward compatibility; they must survive save/load."""
+def test_load_registry_missing_subscription_period_raises(tmp_path):
     path = tmp_path / "registry.toml"
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[
-            ModelEntry(
-                id="ollama/x",
-                family="x",
-                provider_id="ollama",
-                model_name="x",
-                usage_tier="premium",
-            )
-        ],
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        "[models.cost]\nsubscription_price = 20.0\n"
     )
-    save_registry(registry, path)
-    loaded = load_registry(path)
-    assert loaded.model("ollama/x").usage_tier == "premium"
+    with pytest.raises(RegistryError, match="subscription_period.*required"):
+        load_registry(path)
+
+
+def test_cost_direct_construction_rejects_negative_price():
+    with pytest.raises(ValueError, match="Cost `input_price_per_million` must be non-negative"):
+        Cost(input_price_per_million=-1.0)
+
+
+def test_cost_direct_construction_rejects_non_finite_price():
+    with pytest.raises(ValueError, match="Cost `subscription_price` must be finite"):
+        Cost(subscription_price=float("inf"), subscription_period="month")
+
+
+def test_cost_direct_construction_rejects_invalid_subscription_period():
+    with pytest.raises(ValueError, match="Cost subscription_period must be one of"):
+        Cost(subscription_price=20.0, subscription_period="quarter")
 
 
 def test_registry_lookup_helpers_raise_keyerror_for_unknown_id():
@@ -502,9 +502,8 @@ def test_default_wt_config_path_defaults_to_home(monkeypatch):
     assert _default_wt_config_path() == Path.home() / ".config" / "agent-wt" / "config.toml"
 
 
-def test_registry_round_trips_usage_tier(tmp_path):
-    """A ModelEntry with a usage tier must survive save/load, and the saved
-    TOML must omit the key when the tier is unset."""
+def test_registry_round_trips_flat_cost(tmp_path):
+    """A ModelEntry with flat cost fields must survive save/load."""
     path = tmp_path / "registry.toml"
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
@@ -515,20 +514,47 @@ def test_registry_round_trips_usage_tier(tmp_path):
                 provider_id="ollama",
                 model_name="glm-5.3:cloud",
                 location="cloud",
-                cost=Cost(kind="subscription", price_per_period=20.0, period="month"),
-                usage_tier="high",
+                cost=Cost(
+                    input_price_per_million=1.0,
+                    cache_price_per_million=0.5,
+                    output_price_per_million=2.0,
+                ),
             ),
         ],
     )
     save_registry(registry, path)
     loaded = load_registry(path)
     m = loaded.model("ollama/glm-5.3:cloud")
-    assert m.usage_tier == "high"
-    assert m.cost == Cost(kind="subscription", price_per_period=20.0, period="month")
+    assert m.cost == Cost(
+        input_price_per_million=1.0,
+        cache_price_per_million=0.5,
+        output_price_per_million=2.0,
+    )
 
 
-def test_registry_omits_cost_and_usage_tier_keys_when_unset(tmp_path):
-    """Spec §11: unset cost/tier must not leak keys into the saved TOML."""
+def test_registry_round_trips_subscription_cost(tmp_path):
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/glm-5.3:cloud",
+                family="glm",
+                provider_id="ollama",
+                model_name="glm-5.3:cloud",
+                location="cloud",
+                cost=Cost(subscription_price=20.0, subscription_period="month"),
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    m = loaded.model("ollama/glm-5.3:cloud")
+    assert m.cost == Cost(subscription_price=20.0, subscription_period="month")
+
+
+def test_registry_omits_cost_keys_when_unset(tmp_path):
+    """Unset cost must not leak keys into the saved TOML."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[
@@ -539,8 +565,196 @@ def test_registry_omits_cost_and_usage_tier_keys_when_unset(tmp_path):
     save_registry(registry, path)
     text = path.read_text()
     assert "cost" not in text
-    assert "usage_tier" not in text
     loaded = load_registry(path)
     m = loaded.model("ollama/x")
     assert m.cost is None
-    assert m.usage_tier is None
+
+
+def test_save_registry_writes_new_cost_keys_only(tmp_path):
+    """Saved cost tables must use the new flat keys, never the legacy
+    kind/price_per_million_tokens/price_per_period/period keys."""
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/per-token",
+                family="pt",
+                provider_id="ollama",
+                model_name="per-token",
+                cost=Cost(input_price_per_million=1.0, output_price_per_million=2.0),
+            ),
+            ModelEntry(
+                id="ollama/sub",
+                family="sub",
+                provider_id="ollama",
+                model_name="sub",
+                cost=Cost(subscription_price=20.0, subscription_period="month"),
+            ),
+            ModelEntry(
+                id="ollama/free",
+                family="free",
+                provider_id="ollama",
+                model_name="free",
+                cost=Cost(),
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    text = path.read_text()
+    assert "\nperiod = " not in text
+    assert "\nkind = " not in text
+    assert "price_per_million_tokens" not in text
+    assert "price_per_period" not in text
+    assert "input_price_per_million" in text
+    assert "output_price_per_million" in text
+    assert "subscription_price" in text
+    assert "subscription_period" in text
+
+
+def test_load_registry_migrates_legacy_free_cost(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "free"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").cost == Cost()
+
+
+def test_load_registry_migrates_legacy_per_token_cost(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "per_token"\nprice_per_million_tokens = 2.5\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").cost == Cost(
+        input_price_per_million=2.5, output_price_per_million=2.5
+    )
+
+
+def test_load_registry_migrates_legacy_subscription_cost(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "subscription"\nprice_per_period = 20.0\nperiod = "month"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").cost == Cost(
+        subscription_price=20.0, subscription_period="month"
+    )
+
+
+def test_legacy_cost_keys_do_not_leak_into_extra(tmp_path):
+    """A legacy cost table with mixed old fields must migrate to the new
+    flat keys; after save, no legacy cost keys may remain in the file."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "per_token"\nprice_per_million_tokens = 1.5\nperiod = "month"\n'
+    )
+    registry = load_registry(path)
+    save_registry(registry, path)
+    text = path.read_text()
+    assert "kind" not in text
+    assert "price_per_million_tokens" not in text
+    assert "price_per_period" not in text
+    assert "period" not in text
+
+
+def test_load_registry_rejects_unknown_legacy_cost_kind(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        '[models.cost]\nkind = "enterprise"\n'
+    )
+    with pytest.raises(RegistryError, match="cost kind must be free/per_token/subscription"):
+        load_registry(path)
+
+
+def test_load_registry_ignores_usage_tier_field(tmp_path):
+    """The usage_tier field is dropped from the schema; it must not be
+    parsed, stored, or serialized, even when present in legacy files."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        'usage_tier = "high"\n'
+    )
+    loaded = load_registry(path)
+    assert not hasattr(loaded.model("ollama/x"), "usage_tier")
+    save_registry(loaded, path)
+    assert "usage_tier" not in path.read_text()
+
+
+def test_load_registry_empty_cost_table_loads_as_default_cost(tmp_path):
+    """An empty [models.cost] table must deserialize as Cost()."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        "[models.cost]\n"
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").cost == Cost()
+
+
+def test_load_registry_boolean_price_raises(tmp_path):
+    """Booleans are subclasses of int and must be rejected as prices."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        "[models.cost]\ninput_price_per_million = true\n"
+    )
+    with pytest.raises(RegistryError, match="cost `input_price_per_million` must be a number"):
+        load_registry(path)
+
+
+def test_registry_round_trips_zero_subscription_price(tmp_path):
+    """A zero subscription price must survive save/load unchanged."""
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/x",
+                family="x",
+                provider_id="ollama",
+                model_name="x",
+                cost=Cost(subscription_price=0.0, subscription_period="month"),
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").cost == Cost(
+        subscription_price=0.0, subscription_period="month"
+    )
+
+
+def test_load_registry_usage_tier_not_preserved_in_extra(tmp_path):
+    """The dropped usage_tier field must not leak into model.extra."""
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+        'usage_tier = "high"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").extra.get("usage_tier") is None

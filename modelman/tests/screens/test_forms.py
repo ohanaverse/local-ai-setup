@@ -11,7 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Button, Input, Label, Select
+from textual.widgets import Button, Checkbox, Input, Label, Select
 
 from modelman.app import ModelmanApp
 from modelman.providers.base import VariantSpec
@@ -28,6 +28,7 @@ from modelman.screens.forms import (
     ModelFormResult,
     _price_str,
     parse_cost_fields,
+    parse_subscription_fields,
 )
 from modelman.screens.models import ModelScreen
 from modelman.state import StateStore, save_state
@@ -1093,65 +1094,73 @@ def test_price_str_non_finite_survives():
 
 
 # ---------------------------------------------------------------------------
-# parse_cost_fields helper
+# ---------------------------------------------------------------------------
+# parse_cost_fields / parse_subscription_fields helpers
 # ---------------------------------------------------------------------------
 
 
-def test_parse_cost_fields_free():
-    """The 'free' cost kind needs no price fields and produces a plain
-    Cost(kind='free')."""
-    assert parse_cost_fields("free", "", "", "month") == Cost(kind="free")
-
-
-def test_parse_cost_fields_per_token():
-    """per_token parses the million-tokens price and ignores the period."""
-    assert parse_cost_fields("per_token", "2.5", "", "month") == Cost(
-        kind="per_token", price_per_million_tokens=2.5
+def test_parse_cost_fields_per_token_one_required():
+    """A single per-token price is enough to build a Cost."""
+    assert parse_cost_fields(input_price="0.50", cache_price="", output_price="") == Cost(
+        input_price_per_million=0.50
     )
 
 
-def test_parse_cost_fields_subscription():
-    """subscription parses the period price and keeps the chosen period."""
-    assert parse_cost_fields("subscription", "", "20", "month") == Cost(
-        kind="subscription", price_per_period=20.0, period="month"
+def test_parse_cost_fields_per_token_all_present():
+    assert parse_cost_fields(input_price="0.50", cache_price="0.25", output_price="1.00") == Cost(
+        input_price_per_million=0.50,
+        cache_price_per_million=0.25,
+        output_price_per_million=1.00,
     )
 
 
-def test_parse_cost_fields_per_token_bad_number():
-    """Non-numeric per-token input must surface a clear ValueError instead of
-    being coerced to a bogus price."""
-    with pytest.raises(ValueError, match="price_per_million_tokens"):
-        parse_cost_fields("per_token", "abc", "", "month")
+def test_parse_cost_fields_per_token_empty_raises():
+    with pytest.raises(ValueError, match="at least one per-token price"):
+        parse_cost_fields(input_price="", cache_price="", output_price="")
 
 
-def test_parse_cost_fields_subscription_bad_number():
-    """Non-numeric subscription input must surface a clear ValueError."""
-    with pytest.raises(ValueError, match="price_per_period"):
-        parse_cost_fields("subscription", "", "xyz", "month")
+def test_parse_cost_fields_bad_number_raises():
+    """Non-numeric per-token input must surface a clear ValueError."""
+    with pytest.raises(ValueError, match="input_price"):
+        parse_cost_fields(input_price="abc", cache_price="", output_price="")
 
 
-def test_parse_cost_fields_negative_price_raises():
-    """Negative prices are not valid costs and must be rejected before they
-    can be stored or rendered as '$-2.50/M' in the table."""
-    with pytest.raises(ValueError, match="price_per_million_tokens"):
-        parse_cost_fields("per_token", "-2.5", "", "month")
-    with pytest.raises(ValueError, match="price_per_period"):
-        parse_cost_fields("subscription", "", "-10", "month")
+def test_parse_cost_fields_negative_raises():
+    """Negative prices are not valid costs and must be rejected."""
+    with pytest.raises(ValueError, match="cache_price"):
+        parse_cost_fields(input_price="", cache_price="-1", output_price="")
 
 
-def test_parse_cost_fields_non_finite_price_raises():
+def test_parse_cost_fields_non_finite_raises():
     """inf/nan are not valid prices; reject them at parse time."""
-    with pytest.raises(ValueError, match="price_per_million_tokens"):
-        parse_cost_fields("per_token", "inf", "", "month")
-    with pytest.raises(ValueError, match="price_per_period"):
-        parse_cost_fields("subscription", "", "nan", "month")
+    with pytest.raises(ValueError, match="output_price"):
+        parse_cost_fields(input_price="", cache_price="", output_price="inf")
 
 
-def test_parse_cost_fields_unknown_kind():
-    """An unsupported cost kind must fail loudly rather than create a
-    malformed Cost object."""
-    with pytest.raises(ValueError, match="unknown cost kind"):
-        parse_cost_fields("weird", "", "", "month")
+def test_parse_subscription_fields_required():
+    assert parse_subscription_fields(price="19.99", period="month") == Cost(
+        subscription_price=19.99, subscription_period="month"
+    )
+
+
+def test_parse_subscription_fields_missing_price_raises():
+    with pytest.raises(ValueError, match="subscription price is required"):
+        parse_subscription_fields(price="", period="month")
+
+
+def test_parse_subscription_fields_missing_period_raises():
+    with pytest.raises(ValueError, match="subscription period is required"):
+        parse_subscription_fields(price="19.99", period="")
+
+
+def test_parse_subscription_fields_bad_period_raises():
+    with pytest.raises(ValueError, match="subscription period must be month or year"):
+        parse_subscription_fields(price="19.99", period="week")
+
+
+def test_parse_subscription_fields_negative_price_raises():
+    with pytest.raises(ValueError, match="subscription_price"):
+        parse_subscription_fields(price="-5", period="month")
 
 
 @pytest.mark.asyncio
@@ -1173,15 +1182,15 @@ async def test_edit_family_modal_escape_from_disabled_input_dismisses():
 
 
 # ---------------------------------------------------------------------------
-# Cost section (kind Select + conditional price/period fields) and the
-# ollama-only usage-tier Select. Visibility is .display-based; the widgets
-# are always mounted, so tests can query ids unconditionally.
+# Cost section (per-token + subscription checkboxes). Visibility is
+# .display-based; the widgets are always mounted, so tests can query ids
+# unconditionally.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_model_form_cost_section_free_default():
-    """Default kind is 'free'; the price/period inputs are hidden."""
+async def test_model_form_cost_section_default_hidden():
+    """Add mode has both pricing checkboxes unchecked and their inputs hidden."""
     form = ModelForm(
         providers=["ollama"],
         default_provider="ollama",
@@ -1191,19 +1200,20 @@ async def test_model_form_cost_section_free_default():
     )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
-        kind_sel = app.screen.query_one("#cost-kind-select", Select)
-        assert str(kind_sel.value) == "free"
-        assert app.screen.query_one("#price-per-mtok", Input).display is False
-        assert app.screen.query_one("#price-per-period", Input).display is False
-        assert app.screen.query_one("#period-select", Select).display is False
+        assert app.screen.query_one("#per-token-checkbox", Checkbox).value is False
+        assert app.screen.query_one("#subscription-checkbox", Checkbox).value is False
+        assert app.screen.query_one("#input-price", Input).display is False
+        assert app.screen.query_one("#cache-price", Input).display is False
+        assert app.screen.query_one("#output-price", Input).display is False
+        assert app.screen.query_one("#subscription-price", Input).display is False
+        assert app.screen.query_one("#subscription-period-select", Select).display is False
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
-async def test_model_form_cost_section_per_token_shows_price_input():
-    """Switching the cost kind to per_token reveals the per-million-tokens
-    price Input and hides the subscription fields."""
+async def test_model_form_cost_section_per_token_shows_inputs():
+    """Checking the per-token checkbox reveals the three price Inputs."""
     form = ModelForm(
         providers=["ollama"],
         default_provider="ollama",
@@ -1213,19 +1223,20 @@ async def test_model_form_cost_section_per_token_shows_price_input():
     )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
-        app.screen.query_one("#cost-kind-select", Select).value = "per_token"
+        app.screen.query_one("#per-token-checkbox", Checkbox).value = True
         await pilot.pause()
-        assert app.screen.query_one("#price-per-mtok", Input).display is True
-        assert app.screen.query_one("#price-per-period", Input).display is False
-        assert app.screen.query_one("#period-select", Select).display is False
+        assert app.screen.query_one("#input-price", Input).display is True
+        assert app.screen.query_one("#cache-price", Input).display is True
+        assert app.screen.query_one("#output-price", Input).display is True
+        assert app.screen.query_one("#subscription-price", Input).display is False
+        assert app.screen.query_one("#subscription-period-select", Select).display is False
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
-async def test_model_form_cost_section_subscription_shows_period():
-    """Switching the cost kind to subscription reveals the period price Input
-    and the period Select, defaulting to month."""
+async def test_model_form_cost_section_subscription_shows_inputs():
+    """Checking the subscription checkbox reveals price and period widgets."""
     form = ModelForm(
         providers=["ollama"],
         default_provider="ollama",
@@ -1235,58 +1246,31 @@ async def test_model_form_cost_section_subscription_shows_period():
     )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
-        app.screen.query_one("#cost-kind-select", Select).value = "subscription"
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
-        assert app.screen.query_one("#price-per-period", Input).display is True
-        assert app.screen.query_one("#period-select", Select).display is True
-        assert str(app.screen.query_one("#period-select", Select).value) == "month"
-        assert app.screen.query_one("#price-per-mtok", Input).display is False
+        assert app.screen.query_one("#subscription-price", Input).display is True
+        assert app.screen.query_one("#subscription-period-select", Select).display is True
+        assert str(app.screen.query_one("#subscription-period-select", Select).value) == "month"
+        assert app.screen.query_one("#input-price", Input).display is False
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
-async def test_model_form_tier_section_only_for_ollama():
-    """Tier widgets exist but are visible only for ollama providers."""
-    form_ollama = ModelForm(
-        providers=["ollama"],
-        default_provider="ollama",
-        families=["ornith"],
-        family="ornith",
-        provider_kinds={"ollama": "ollama"},
-    )
-    app, pilot, pilot_cm = await _mount_and_run(form_ollama)
-    try:
-        assert app.screen.query_one("#usage-tier-label").display is True
-        assert app.screen.query_one("#usage-tier-select", Select).display is True
-    finally:
-        await pilot_cm.__aexit__(None, None, None)
-
-    form_llamacpp = ModelForm(
-        providers=["llamacpp"],
-        default_provider="llamacpp",
-        families=["ornith"],
-        family="ornith",
-        provider_kinds={"llamacpp": "local-only"},
-    )
-    app2, pilot2, pilot_cm2 = await _mount_and_run(form_llamacpp)
-    try:
-        assert app2.screen.query_one("#usage-tier-select", Select).display is False
-        assert app2.screen.query_one("#usage-tier-label").display is False
-    finally:
-        await pilot_cm2.__aexit__(None, None, None)
-
-
-@pytest.mark.asyncio
-async def test_model_form_edit_prefills_cost_and_tier():
-    """Edit mode pre-fills the cost fields and tier from the variant."""
+async def test_model_form_edit_prefills_cost():
+    """Edit mode pre-fills the per-token and subscription fields from the variant."""
     spec = {
         "id": "ollama/glm-5.3:cloud",
         "provider": "ollama",
         "name": "glm-5.3:cloud",
         "location": "cloud",
-        "cost": Cost(kind="subscription", price_per_period=20.0, period="month"),
-        "usage_tier": "high",
+        "cost": Cost(
+            input_price_per_million=0.50,
+            cache_price_per_million=0.25,
+            output_price_per_million=1.00,
+            subscription_price=20.0,
+            subscription_period="month",
+        ),
         "model_info": None,
         "repo": None,
         "files": None,
@@ -1301,17 +1285,22 @@ async def test_model_form_edit_prefills_cost_and_tier():
     )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
-        assert str(app.screen.query_one("#cost-kind-select", Select).value) == "subscription"
-        assert app.screen.query_one("#price-per-period", Input).value == "20"
-        assert app.screen.query_one("#price-per-period", Input).display is True
-        assert str(app.screen.query_one("#usage-tier-select", Select).value) == "high"
+        assert app.screen.query_one("#per-token-checkbox", Checkbox).value is True
+        assert app.screen.query_one("#input-price", Input).value == "0.5"
+        assert app.screen.query_one("#cache-price", Input).value == "0.25"
+        assert app.screen.query_one("#output-price", Input).value == "1"
+        assert app.screen.query_one("#subscription-checkbox", Checkbox).value is True
+        assert app.screen.query_one("#subscription-price", Input).value == "20"
+        assert str(app.screen.query_one("#subscription-period-select", Select).value) == "month"
+        assert app.screen.query_one("#input-price", Input).display is True
+        assert app.screen.query_one("#subscription-price", Input).display is True
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
-async def test_model_form_submit_carries_cost_and_tier(stub_ollama_caps):
-    """Save dismisses ModelFormResult whose spec includes cost & usage_tier."""
+async def test_model_form_submit_carries_cost(stub_ollama_caps):
+    """Save dismisses ModelFormResult whose spec includes the flat cost fields."""
     form = ModelForm(
         providers=["ollama"],
         default_provider="ollama",
@@ -1326,13 +1315,10 @@ async def test_model_form_submit_carries_cost_and_tier(stub_ollama_caps):
         await pilot.pause()
         app.push_screen(form, dismissed.append)
         await pilot.pause()
-        app.screen.query_one("#cost-kind-select", Select).value = "subscription"
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
-        price = app.screen.query_one("#price-per-period", Input)
+        price = app.screen.query_one("#subscription-price", Input)
         price.value = "20"
-        app.screen.query_one("#usage-tier-select", Select).value = "high"
-        # Focus is still on #model: fill it so the Enter press below submits
-        # (an empty ollama tag would raise the validation error instead).
         _fill_model(app, "glm-5.3:cloud")
         await pilot.press("enter")  # Input.Submitted on #model triggers _submit
         await pilot.pause()
@@ -1340,18 +1326,16 @@ async def test_model_form_submit_carries_cost_and_tier(stub_ollama_caps):
     assert len(dismissed) == 1
     result = dismissed[0]
     assert result.spec["cost"] == {
-        "kind": "subscription",
-        "price_per_period": 20.0,
-        "period": "month",
+        "subscription_price": 20.0,
+        "subscription_period": "month",
     }
-    assert result.spec["usage_tier"] == "high"
     assert result.family == "ornith"
 
 
 @pytest.mark.asyncio
-async def test_model_form_untouched_edit_preserves_cost_tier_and_model_info():
-    """Edit prefill → save WITHOUT touching any widget → cost, usage_tier,
-    and other edit-only metadata survive the round trip intact."""
+async def test_model_form_untouched_edit_preserves_cost_and_model_info():
+    """Edit prefill → save WITHOUT touching any widget → cost and other
+    edit-only metadata survive the round trip intact."""
     spec = {
         "id": "ollama/glm-5.3:cloud",
         "provider": "ollama",
@@ -1361,8 +1345,7 @@ async def test_model_form_untouched_edit_preserves_cost_tier_and_model_info():
         "files": None,
         "quantizations": None,
         "model_info": {"supports_function_calling": True},
-        "cost": Cost(kind="subscription", price_per_period=20.0, period="month"),
-        "usage_tier": "high",
+        "cost": Cost(subscription_price=20.0, subscription_period="month"),
     }
     form = ModelForm(
         providers=["ollama"],
@@ -1377,21 +1360,17 @@ async def test_model_form_untouched_edit_preserves_cost_tier_and_model_info():
         await pilot.pause()
         app.push_screen(form, dismissed.append)
         await pilot.pause()
-        # Initial focus lands on #model and the pre-filled tag is valid, so
-        # pressing Enter with no other touches saves the form as-is.
         model_input = app.screen.query_one("#model", Input)
-        assert model_input.value == "glm-5.3:cloud"  # untouched below
+        assert model_input.value == "glm-5.3:cloud"
         await pilot.press("enter")
         await pilot.pause()
 
     assert dismissed, "form did not dismiss"
     result = dismissed[0]
     assert result.spec["cost"] == {
-        "kind": "subscription",
-        "price_per_period": 20.0,
-        "period": "month",
+        "subscription_price": 20.0,
+        "subscription_period": "month",
     }
-    assert result.spec["usage_tier"] == "high"
     assert result.spec["model_info"] == {"supports_function_calling": True}
     assert result.spec["id"] == "ollama/glm-5.3:cloud"
     assert result.spec["location"] == "cloud"
@@ -1400,9 +1379,8 @@ async def test_model_form_untouched_edit_preserves_cost_tier_and_model_info():
 
 
 @pytest.mark.asyncio
-async def test_model_form_llamacpp_edit_forces_tier_none():
-    """A llamacpp variant that somehow carries a tier must submit with
-    usage_tier=None (tier is ollama-only)."""
+async def test_model_form_llamacpp_edit_preserves_no_cost():
+    """A llamacpp variant with no cost submits with cost=None."""
     spec = {
         "id": "llamacpp/unsloth/Qwen3.8-27B-GGUF",
         "provider": "llamacpp",
@@ -1412,8 +1390,7 @@ async def test_model_form_llamacpp_edit_forces_tier_none():
         "files": ["Qwen3.8-27B-Q4_K_M.gguf"],
         "quantizations": None,
         "model_info": None,
-        "cost": Cost(kind="free"),
-        "usage_tier": "high",
+        "cost": None,
     }
     form = ModelForm(
         providers=["llamacpp"],
@@ -1434,15 +1411,13 @@ async def test_model_form_llamacpp_edit_forces_tier_none():
 
     assert dismissed, "form did not dismiss"
     result = dismissed[0]
-    assert result.spec["usage_tier"] is None
-    assert result.spec["cost"] == {"kind": "free"}
+    assert result.spec["cost"] is None
 
 
 @pytest.mark.asyncio
 async def test_model_form_edit_preserves_unset_cost():
     """A model with no configured cost must stay cost=None when the edit
-    dialog is saved without touching the cost section; it must not be
-    silently upgraded to Cost(kind='free')."""
+    dialog is saved without touching the cost section."""
     spec = {
         "id": "ollama/glm-5.3:cloud",
         "provider": "ollama",
@@ -1453,7 +1428,6 @@ async def test_model_form_edit_preserves_unset_cost():
         "quantizations": None,
         "model_info": None,
         "cost": None,
-        "usage_tier": None,
     }
     form = ModelForm(
         providers=["ollama"],
@@ -1477,26 +1451,13 @@ async def test_model_form_edit_preserves_unset_cost():
 
 
 @pytest.mark.asyncio
-async def test_model_form_edit_preserves_custom_subscription_period():
-    """A hand-edited registry cost with a non-standard period must survive
-    an untouched edit-save instead of being rewritten to the default month."""
-    spec = {
-        "id": "ollama/glm-5.3:cloud",
-        "provider": "ollama",
-        "name": "glm-5.3:cloud",
-        "location": "cloud",
-        "repo": None,
-        "files": None,
-        "quantizations": None,
-        "model_info": None,
-        "cost": Cost(kind="subscription", price_per_period=20.0, period="quarter"),
-        "usage_tier": None,
-    }
+async def test_model_form_empty_per_token_section_shows_error():
+    """Enabling per-token pricing without entering any price keeps the form open."""
     form = ModelForm(
         providers=["ollama"],
-        variant=spec,
-        families=["glm"],
-        family="glm",
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
         provider_kinds={"ollama": "ollama"},
     )
     dismissed: list = []
@@ -1505,15 +1466,73 @@ async def test_model_form_edit_preserves_custom_subscription_period():
         await pilot.pause()
         app.push_screen(form, dismissed.append)
         await pilot.pause()
+        app.screen.query_one("#per-token-checkbox", Checkbox).value = True
+        await pilot.pause()
+        _fill_model(app, "test:1b")
         await pilot.press("enter")
         await pilot.pause()
 
-    assert dismissed, "form did not dismiss"
+        assert dismissed == [], "form must not dismiss on empty per-token section"
+        assert _rendered_error(app) == "at least one per-token price is required"
+
+
+@pytest.mark.asyncio
+async def test_model_form_missing_subscription_price_shows_error():
+    """Enabling subscription pricing without a price keeps the form open."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        _fill_model(app, "test:1b")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert dismissed == []
+        assert _rendered_error(app) == "subscription price is required"
+
+
+@pytest.mark.asyncio
+async def test_model_form_both_sections_combined(stub_ollama_caps):
+    """Both per-token and subscription pricing can be enabled together."""
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#per-token-checkbox", Checkbox).value = True
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        _fill_model(app, "test:1b")
+        app.screen.query_one("#input-price", Input).value = "0.50"
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert len(dismissed) == 1
     result = dismissed[0]
     assert result.spec["cost"] == {
-        "kind": "subscription",
-        "price_per_period": 20.0,
-        "period": "quarter",
+        "input_price_per_million": 0.5,
+        "subscription_price": 20.0,
+        "subscription_period": "month",
     }
 
 
@@ -1533,15 +1552,15 @@ async def test_model_form_bad_price_shows_error_and_stays_open():
         await pilot.pause()
         app.push_screen(form, dismissed.append)
         await pilot.pause()
-        app.screen.query_one("#price-per-mtok", Input)  # ensure mounted
-        app.screen.query_one("#cost-kind-select", Select).value = "per_token"
+        app.screen.query_one("#input-price", Input)  # ensure mounted
+        app.screen.query_one("#per-token-checkbox", Checkbox).value = True
         await pilot.pause()
         _fill_model(app, "test:1b")  # valid tag so the ONLY failure is the price
-        app.screen.query_one("#price-per-mtok", Input).value = "abc"
+        app.screen.query_one("#input-price", Input).value = "abc"
         # Focus stays on #model, whose value is valid: Enter submits, and the
         # submit must fail on the cost field rather than the model name.
         await pilot.press("enter")
         await pilot.pause()
 
         assert dismissed == [], "form must not dismiss on invalid price"
-        assert _rendered_error(app) == "price_per_million_tokens must be a number"
+        assert _rendered_error(app) == "input_price must be a number"

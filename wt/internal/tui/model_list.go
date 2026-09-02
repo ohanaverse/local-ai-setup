@@ -3,7 +3,9 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -52,6 +54,63 @@ func indexOfModelID(models []config.Model, id string) int {
 		}
 	}
 	return -1
+}
+
+// formatPrice returns a price string with a leading "$". It guarantees at
+// least two decimal places while preserving fractional cents beyond the
+// hundredth. A nil price renders as a hyphen.
+func formatPrice(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return "$" + formatPriceNumber(p)
+}
+
+// formatPriceNumber returns the numeric portion of a price string without
+// the leading "$". A nil price renders as a hyphen.
+func formatPriceNumber(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	s := strconv.FormatFloat(*p, 'f', -1, 64)
+	if i := strings.Index(s, "."); i == -1 {
+		s += ".00"
+	} else {
+		frac := s[i+1:]
+		if len(frac) < 2 {
+			s += strings.Repeat("0", 2-len(frac))
+		}
+	}
+	return s
+}
+
+// formatPerToken returns the compact per-token cost as "$in/cache/out".
+// When all three prices are absent it returns a hyphen; missing individual
+// segments are rendered with a hyphen in their slot.
+func formatPerToken(cost config.ModelCost) string {
+	in := formatPriceNumber(cost.InputPricePerMillion)
+	cache := formatPriceNumber(cost.CachePricePerMillion)
+	out := formatPriceNumber(cost.OutputPricePerMillion)
+	if in == "-" && cache == "-" && out == "-" {
+		return "-"
+	}
+	return fmt.Sprintf("$%s/%s/%s", in, cache, out)
+}
+
+// formatSubscription returns the subscription price as "$amount/mo" or
+// "$amount/yr". A nil subscription price renders as a hyphen.
+func formatSubscription(cost config.ModelCost) string {
+	if cost.SubscriptionPrice == nil {
+		return "-"
+	}
+	period := cost.SubscriptionPeriod
+	switch period {
+	case "month":
+		period = "mo"
+	case "year":
+		period = "yr"
+	}
+	return fmt.Sprintf("%s/%s", formatPrice(cost.SubscriptionPrice), period)
 }
 
 // sortModelsByUsage sorts models in place (stable) descending by family
@@ -108,20 +167,37 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 	// Sort the models in place.
 	sortModelsByUsage(models, familyCounts, modelCounts)
 
-	// Compute max widths for alignment.
+	// Compute max widths for alignment, including the new pricing columns.
+	// Widths are measured in runes so single-byte characters such as the
+	// hyphen used for absent prices do not throw off fmt.Sprintf padding.
 	famWidth := 0
 	idWidth := 0
-	for _, m := range models {
-		if len(m.Family) > famWidth {
-			famWidth = len(m.Family)
+	ptWidth := 0
+	subWidth := 0
+	type pricingStrings struct {
+		perToken     string
+		subscription string
+	}
+	pricing := make([]pricingStrings, len(models))
+	for i, m := range models {
+		if w := utf8.RuneCountInString(m.Family); w > famWidth {
+			famWidth = w
 		}
-		if len(m.ID) > idWidth {
-			idWidth = len(m.ID)
+		if w := utf8.RuneCountInString(m.ID); w > idWidth {
+			idWidth = w
+		}
+		pricing[i].perToken = formatPerToken(m.Cost)
+		pricing[i].subscription = formatSubscription(m.Cost)
+		if w := utf8.RuneCountInString(pricing[i].perToken); w > ptWidth {
+			ptWidth = w
+		}
+		if w := utf8.RuneCountInString(pricing[i].subscription); w > subWidth {
+			subWidth = w
 		}
 	}
 
 	items := make([]*modelItem, 0, len(models))
-	for _, m := range models {
+	for i, m := range models {
 		fam := m.Family
 		famDisp := fam
 		if fam == "" {
@@ -136,8 +212,9 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		c := modelCounts[m.ID]
 		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
 
-		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s",
-			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr)
+		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s  %-*s  %-*s",
+			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
+			ptWidth, pricing[i].perToken, subWidth, pricing[i].subscription)
 
 		if len(m.Tags) > 0 {
 			line += fmt.Sprintf(" [%s]", strings.Join(m.Tags, ","))

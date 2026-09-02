@@ -68,15 +68,11 @@ location = "local"           # optional override; "local" | "cloud". Falls back 
 model_info = { supports_function_calling = true }   # optional LiteLLM-style keys
 
 [models.cost]                # optional; omit entirely when unknown/unset
-kind = "per_token"           # "free" | "per_token" | "subscription"
-price_per_million_tokens = 0.50
-
-# [models.cost]
-# kind = "subscription"
-# price_per_period = 20.0
-# period = "month"
-
-usage_tier = "medium"        # optional; "low" | "medium" | "high" (Ollama cloud tier style)
+input_price_per_million  = 0.50
+cache_price_per_million  = 0.25
+output_price_per_million = 1.00
+subscription_price       = 19.99
+subscription_period      = "month"   # "month" | "year"
 
 [models.fetch]               # optional, for HF-backed providers
 repo = "org/repo"
@@ -89,15 +85,15 @@ the model is exposed. For Ollama models it is auto-populated on add by
 running `ollama show <name>` and translating known capabilities (e.g.
 `tools` → `supports_function_calling: true`).
 
-`cost` is validated on load: `kind` must be one of the three supported
-values; price fields must be finite numbers; `period` must be a string.
-Unknown keys inside `[models.cost]` are preserved on round-trip so
-hand-edited fields survive. Omit the whole `[models.cost]` table to leave
-cost unset (the TUI shows `—`).
+`cost` is validated on load: each price field must be a non-negative
+finite number; `subscription_period` must be `month` or `year` when
+`subscription_price` is set. Unknown keys inside `[models.cost]` are
+preserved on round-trip so hand-edited fields survive. Omit the whole
+`[models.cost]` table to leave cost unset (the TUI shows `—`).
 
-`usage_tier` is optional and freeform at the registry level, but the TUI's
-Ollama add/edit dialog only offers `low`/`medium`/`high` to match
-Ollama.com's cloud subscription tiers.
+The old `kind = "free" | "per_token" | "subscription"` schema is still
+accepted on read and is silently migrated to the flat fields above on
+save. `usage_tier` has been removed; use the pricing fields directly.
 
 ### `modelman.toml`
 
@@ -151,11 +147,11 @@ The TUI has three screens:
   with no explicit `location`); `cloud` entries are excluded from the
   count and from the `SIZE` total.
 - **Model screen** — single table scoped to one family (columns:
-  provider · model · loc · status ✓/○/↓/↑/✗/→ · exposed · cost ·
-  tier · size). LOC is an icon (↗ cloud / ▤ local / `—` when unknown) and
-  EXPOSED shows `Y`/`–`; COST shows `free`, a per-token price, a
-  subscription price, or `—` when unset; TIER shows the usage tier or `—`.
-  The row's on-disk path appears in a details panel below the table
+  family · provider · model · loc · status ✓/○/↓/↑/✗/→ · exposed · cost ·
+  subscription · size). LOC is an icon (↗ cloud / ▤ local / `—` when unknown) and
+  EXPOSED shows `Y`/`–`; COST shows input/cache/output prices per million
+  tokens, or `—` when unset; SUB shows the subscription price (`$x/mo` or
+  `$x/yr`) or `—`. The row's on-disk path appears in a details panel below the table
   (`path: —` when unknown). Rows are sorted by provider then model name.
   Keys: `a` add model, `e` edit (id/provider fixed; changing family queues
   a move), `d` queue delete (works on any model — apply skips the on-disk
@@ -169,12 +165,13 @@ The TUI has three screens:
   family Select keeps the caller's order when the current family is
   already in the list.
 
-  Add/Edit dialogs include a cost section: pick `free`,
-  `per_token` (price per million tokens), or `subscription` (price +
-  period). Choose `—` in the cost-kind dropdown to leave cost unset.
-  Subscription periods default to `month`/`year`, but any custom string
-  you type is preserved on untouched edits. Ollama models also get a
-  usage-tier dropdown (`low`/`medium`/`high`).
+  Add/Edit dialogs include a cost section with two independent
+  checkboxes: per-token pricing (input, cache, and output price per
+  million tokens) and subscription pricing (price + `month`/`year`
+  period). Enable either, both, or none to leave cost unset. At least
+  one per-token price is required when per-token pricing is enabled;
+  both price and period are required when subscription pricing is
+  enabled.
 - **Status screen** — when you apply on exit, the model screen hands off to
   a status screen that streams per-item progress (`Deleting …`,
   `Downloaded …`, `Saving …`) into a scrollable log. Provider progress is
@@ -249,8 +246,7 @@ launch from the wt config.
 is reconciled via `ollama show`; llama.cpp via the Hugging Face cache;
 oMLX via its `model_dir`. Cloud providers (OpenRouter, native agents) are
 configured explicitly and are not reconciled. Sync intentionally does not
-propagate `cost` or `usage_tier` to providers; those fields are registry
-metadata only.
+propagate `cost` to providers; it is registry metadata only.
 
 ### One-time migration
 

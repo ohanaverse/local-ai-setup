@@ -15,9 +15,10 @@ from modelman.registry import (
     save_registry,
 )
 from modelman.screens.models import (
-    _format_cost,
     _format_location,
-    _format_tier,
+    _format_per_token,
+    _format_price,
+    _format_subscription,
     _model_entry_to_variant,
     _variant_to_model_entry,
 )
@@ -52,9 +53,9 @@ def test_variant_to_model_entry_sets_source_curated():
     assert entry.source == "curated"
 
 
-def test_variant_to_model_entry_passes_through_cost_and_tier():
-    """The adapter must carry cost and usage_tier from the dialog result into
-    the registry ModelEntry, accepting either a Cost object or a plain dict."""
+def test_variant_to_model_entry_passes_through_cost():
+    """The adapter must carry cost from the dialog result into the registry
+    ModelEntry, accepting either a Cost object or a plain dict."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
     )
@@ -62,27 +63,24 @@ def test_variant_to_model_entry_passes_through_cost_and_tier():
         "id": "ollama/glm-5.3:cloud",
         "provider": "ollama",
         "name": "glm-5.3:cloud",
-        "cost": Cost(kind="subscription", price_per_period=20.0, period="month"),
-        "usage_tier": "high",
+        "cost": Cost(subscription_price=20.0, subscription_period="month"),
     }
     entry = _variant_to_model_entry(variant, family="glm", registry=registry)
-    assert entry.cost == Cost(kind="subscription", price_per_period=20.0, period="month")
-    assert entry.usage_tier == "high"
+    assert entry.cost == Cost(subscription_price=20.0, subscription_period="month")
 
 
-def test_variant_to_model_entry_defaults_cost_and_tier_to_none():
-    """When the dialog result omits cost/tier, the ModelEntry must keep them
-    as None rather than inventing defaults."""
+def test_variant_to_model_entry_defaults_cost_to_none():
+    """When the dialog result omits cost, the ModelEntry must keep it as
+    None rather than inventing a default."""
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
     )
     variant = {"id": "ollama/x", "provider": "ollama", "name": "x"}
     entry = _variant_to_model_entry(variant, family="ornith", registry=registry)
     assert entry.cost is None
-    assert entry.usage_tier is None
 
 
-def test_model_entry_to_variant_carries_cost_and_tier():
+def test_model_entry_to_variant_carries_cost():
     """The provider-facing VariantSpec must carry cost as a plain dict, not
     the registry Cost dataclass, so providers can JSON-serialize it."""
     entry = ModelEntry(
@@ -91,16 +89,13 @@ def test_model_entry_to_variant_carries_cost_and_tier():
         provider_id="ollama",
         model_name="glm-5.3:cloud",
         location="cloud",
-        cost=Cost(kind="subscription", price_per_period=20.0, period="month"),
-        usage_tier="high",
+        cost=Cost(subscription_price=20.0, subscription_period="month"),
     )
     spec = _model_entry_to_variant(entry)
     assert spec["cost"] == {
-        "kind": "subscription",
-        "price_per_period": 20.0,
-        "period": "month",
+        "subscription_price": 20.0,
+        "subscription_period": "month",
     }
-    assert spec["usage_tier"] == "high"
 
 
 # ---------------------------------------------------------------------------
@@ -135,53 +130,64 @@ def test_format_location_unexpected_value():
 
 
 # ---------------------------------------------------------------------------
-# Cost / tier formatters (COST and TIER table columns)
+# Cost / subscription formatters (COST and SUB table columns)
 # ---------------------------------------------------------------------------
 
 
-def test_format_cost_none():
-    """A model with no configured cost must render as an em dash, keeping
-    unset cost visually distinct from an explicit free cost."""
-    assert _format_cost(None) == "—"
+def test_format_price_none():
+    assert _format_price(None) == "-"
 
 
-def test_format_cost_free():
-    assert _format_cost(Cost(kind="free")) == "free"
+def test_format_price_whole():
+    assert _format_price(2.0) == "$2.00"
 
 
-def test_format_cost_per_token():
-    c = Cost(kind="per_token", price_per_million_tokens=2.5)
-    assert _format_cost(c) == "$2.50/M"
+def test_format_price_fraction():
+    assert _format_price(2.5) == "$2.50"
 
 
-def test_format_cost_per_token_missing_price():
-    c = Cost(kind="per_token", price_per_million_tokens=None)
-    assert _format_cost(c) == "$/M"
+def test_format_price_fractional_cents():
+    """Prices below a cent are preserved, not rounded to two decimals."""
+    assert _format_price(0.0025) == "$0.0025"
 
 
-def test_format_cost_subscription():
-    c = Cost(kind="subscription", price_per_period=20.0, period="month")
-    assert _format_cost(c) == "$20/month"
+def test_format_price_strips_trailing_zeros_beyond_two_decimals():
+    assert _format_price(1.2300) == "$1.23"
+    assert _format_price(1.200) == "$1.20"
 
 
-def test_format_cost_subscription_missing_price():
-    c = Cost(kind="subscription", price_per_period=None, period="month")
-    assert _format_cost(c) == "$/month"
+def test_format_per_token_all_fields():
+    c = Cost(
+        input_price_per_million=2.0,
+        cache_price_per_million=1.0,
+        output_price_per_million=3.0,
+    )
+    assert _format_per_token(c) == "$2.00/1.00/3.00"
 
 
-def test_format_cost_subscription_missing_period():
-    c = Cost(kind="subscription", price_per_period=20.0, period=None)
-    assert _format_cost(c) == "$20"
+def test_format_per_token_partial():
+    c = Cost(input_price_per_million=2.0, output_price_per_million=3.0)
+    assert _format_per_token(c) == "$2.00/-/3.00"
 
 
-def test_format_tier_none():
-    m = ModelEntry(id="x", family="x", provider_id="ollama", model_name="x")
-    assert _format_tier(m) == "—"
+def test_format_per_token_none():
+    assert _format_per_token(None) == "-"
+    assert _format_per_token(Cost()) == "-"
 
 
-def test_format_tier_high():
-    m = ModelEntry(id="x", family="x", provider_id="ollama", model_name="x", usage_tier="high")
-    assert _format_tier(m) == "high"
+def test_format_subscription_month():
+    c = Cost(subscription_price=20.0, subscription_period="month")
+    assert _format_subscription(c) == "$20.00/mo"
+
+
+def test_format_subscription_year():
+    c = Cost(subscription_price=200.0, subscription_period="year")
+    assert _format_subscription(c) == "$200.00/yr"
+
+
+def test_format_subscription_none():
+    assert _format_subscription(None) == "-"
+    assert _format_subscription(Cost()) == "-"
 
 
 # ---------------------------------------------------------------------------
@@ -496,13 +502,13 @@ async def test_delete_any_model_even_not_ready(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Table layout: 9 columns (cost/tier) + details panel with the disk path
+# Table layout: 9 columns (COST + SUB) + details panel with the disk path
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
-    """Table shows FAMILY/PROVIDER/MODEL/LOC/STATUS/EXPOSED/COST/TIER/SIZE
+    """Table shows FAMILY/PROVIDER/MODEL/LOC/STATUS/EXPOSED/COST/SUB/SIZE
     (no PATH column) and a details-panel Static exists below."""
     from unittest.mock import MagicMock
 
@@ -514,8 +520,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
         provider_id="ollama",
         model_name="ornith-1.5:35b",
         location="local",
-        cost=Cost(kind="free"),
-        usage_tier="low",
+        cost=Cost(subscription_price=20.0, subscription_period="month"),
     )
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     state = load_state(state_path)
@@ -546,7 +551,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
             "STATUS",
             "EXPOSED",
             "COST",
-            "TIER",
+            "SUB",
             "SIZE",
         ]
         assert "PATH" not in labels
@@ -556,9 +561,78 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
 
         row0 = [str(c) for c in mt.get_row_at(0)]
         assert "▤" in row0  # local icon
-        assert "free" in row0  # COST column
-        assert "low" in row0  # TIER column
+        assert "$20.00/mo" in row0  # SUB column
+        assert "-" in row0  # COST column (no per-token prices)
         assert "Y" not in row0 and "–" in row0  # exposed off renders as "–"
+
+
+@pytest.mark.asyncio
+async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path, monkeypatch):
+    """The COST column renders per-token prices and the SUB column renders
+    subscription prices using the new flat Cost fields."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    per_token = ModelEntry(
+        id="ollama/per-token",
+        family="ornith",
+        provider_id="ollama",
+        model_name="per-token",
+        location="cloud",
+        cost=Cost(
+            input_price_per_million=1.0,
+            cache_price_per_million=0.5,
+            output_price_per_million=2.0,
+        ),
+    )
+    subscription = ModelEntry(
+        id="ollama/subscription",
+        family="ornith",
+        provider_id="ollama",
+        model_name="subscription",
+        location="cloud",
+        cost=Cost(subscription_price=20.0, subscription_period="month"),
+    )
+    _reg_path, state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[per_token, subscription]
+    )
+    save_state(load_state(state_path), state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")  # open the only family's ModelScreen
+        await pilot.pause()
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        labels = [mt.columns[col].label.plain for col in mt.columns]
+        assert labels == [
+            "FAMILY",
+            "PROVIDER",
+            "MODEL",
+            "LOC",
+            "STATUS",
+            "EXPOSED",
+            "COST",
+            "SUB",
+            "SIZE",
+        ]
+
+        rows = [[str(c) for c in mt.get_row_at(r)] for r in range(mt.row_count)]
+        per_token_row = next(r for r in rows if "per-token" in r)
+        subscription_row = next(r for r in rows if "subscription" in r)
+
+        assert per_token_row[6] == "$1.00/0.50/2.00"
+        assert per_token_row[7] == "-"
+        assert subscription_row[6] == "-"
+        assert subscription_row[7] == "$20.00/mo"
 
 
 @pytest.mark.asyncio
@@ -653,20 +727,18 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
 
         assert isinstance(app.screen, ModelScreen)
 
-        # Edit the model: open ModelForm, set a subscription cost, submit.
+        # Edit the model: open ModelForm, change location, submit.
         await pilot.press("e")
         await pilot.pause()
-        app.screen.query_one("#cost-kind-select", Select).value = "subscription"
+        app.screen.query_one("#location-select", Select).value = "local"
         await pilot.pause()
-        app.screen.query_one("#price-per-period", Input).value = "20"
+        app.screen.query_one("#model", Input).focus()
         await pilot.press("enter")
         await pilot.pause()
 
-        # The edit saved to disk immediately; confirm the file has the cost.
+        # The edit saved to disk immediately; confirm the file has the new location.
         reg_after_edit = load_registry(reg_path)
-        assert reg_after_edit.model("ollama/glm-5.3:cloud").cost == Cost(
-            kind="subscription", price_per_period=20.0, period="month"
-        )
+        assert reg_after_edit.model("ollama/glm-5.3:cloud").location == "local"
 
         # Queue another action so the exit dialog offers Discard.
         await pilot.press("x")
@@ -679,6 +751,6 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
         await pilot.press("d")
         await pilot.pause()
 
-    # After discarding, the registry file must no longer contain the cost.
+    # After discarding, the registry file must be reverted to the original location.
     reg_after_discard = load_registry(reg_path)
-    assert reg_after_discard.model("ollama/glm-5.3:cloud").cost is None
+    assert reg_after_discard.model("ollama/glm-5.3:cloud").location == "cloud"

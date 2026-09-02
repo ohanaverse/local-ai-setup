@@ -10,11 +10,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select
+from textual.widgets import Button, Checkbox, Input, Label, Select
 
 from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
-from ..registry import Cost, _cost_to_dict
+from ..registry import Cost, _cost_from_dict, _cost_to_dict
 
 
 def default_form_kind(provider: str) -> str:
@@ -89,8 +89,12 @@ def parse_model(
     return (model, repo_id, filename)
 
 
-def _parse_price(value: str, field: str) -> float:
-    """Parse a non-negative finite price. Raises ValueError on bad input."""
+def _parse_price(value: str, field: str) -> float | None:
+    """Parse a non-negative finite price. Empty string becomes None.
+    Raises ValueError on bad input."""
+    value = value.strip()
+    if value == "":
+        return None
     try:
         p = float(value)
     except ValueError:
@@ -102,21 +106,41 @@ def _parse_price(value: str, field: str) -> float:
     return p
 
 
-def parse_cost_fields(kind: str, price_mtok: str, price_period: str, period: str) -> Cost:
-    """Build a Cost from the dialog fields. Raises ValueError on bad input.
+def parse_cost_fields(input_price: str, cache_price: str, output_price: str) -> Cost:
+    """Build a per-token Cost from the dialog fields.
 
-    Mirrors parse_model's contract: provider-dispatched parsing that
-    raises ValueError so the dialog can surface the message inline.
+    Empty fields become None. At least one price is required.
+    Raises ValueError on bad input.
     """
-    if kind == "free":
-        return Cost(kind="free")
-    if kind == "per_token":
-        p = _parse_price(price_mtok, "price_per_million_tokens")
-        return Cost(kind="per_token", price_per_million_tokens=p)
-    if kind == "subscription":
-        p = _parse_price(price_period, "price_per_period")
-        return Cost(kind="subscription", price_per_period=p, period=period)
-    raise ValueError(f"unknown cost kind: {kind}")
+    cost = Cost(
+        input_price_per_million=_parse_price(input_price, "input_price"),
+        cache_price_per_million=_parse_price(cache_price, "cache_price"),
+        output_price_per_million=_parse_price(output_price, "output_price"),
+    )
+    if (
+        cost.input_price_per_million is None
+        and cost.cache_price_per_million is None
+        and cost.output_price_per_million is None
+    ):
+        raise ValueError("at least one per-token price is required")
+    return cost
+
+
+def parse_subscription_fields(price: str, period: str) -> Cost:
+    """Build a subscription Cost from the dialog fields.
+
+    Both price and period are required; period must be month or year.
+    Raises ValueError on bad input.
+    """
+    sub_price = _parse_price(price, "subscription_price")
+    if sub_price is None:
+        raise ValueError("subscription price is required")
+    period = period.strip()
+    if period == "":
+        raise ValueError("subscription period is required")
+    if period not in ("month", "year"):
+        raise ValueError("subscription period must be month or year")
+    return Cost(subscription_price=sub_price, subscription_period=period)
 
 
 def _price_str(value: float) -> str:
@@ -346,24 +370,25 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     """Add or edit a model. `variant=None` means add; else edit.
 
     The dialog asks for the provider (add mode only), family, model
-    name, location, cost, and (for ollama providers) the usage tier.
+    name, location, and optional pricing sections. Per-token pricing is
+    controlled by `#per-token-checkbox` and reveals `#input-price`,
+    `#cache-price`, and `#output-price`. Subscription pricing is
+    controlled by `#subscription-checkbox` and reveals
+    `#subscription-price` and `#subscription-period-select`. Both
+    sections can be enabled at the same time.
+
     The model name is parsed provider-dispatched: ollama tags go straight
     to `variant.name`; HF model names are split into `repo` and `files`
     for llamacpp / omlx; native providers keep the name verbatim;
     openrouter stores the plain string.
-
-    The cost section is a kind Select (free / per_token / subscription)
-    plus conditional price fields: per_token shows #price-per-mtok,
-    subscription shows #price-per-period and #period-select. Only the
-    relevant fields are visible (.display), but all widgets are always
-    mounted. The usage-tier Select is visible only for ollama providers.
 
     On save the form dismisses `ModelFormResult(spec, family)`. The
     family Select defaults to the family the model screen is
     showing, and can target any known family (registry families
     plus explicitly created empty ones).
 
-    See `parse_model()` and `parse_cost_fields()` for the parsing rules.
+    See `parse_model()`, `parse_cost_fields()`, and
+    `parse_subscription_fields()` for the parsing rules.
     """
 
     # Only the rules that differ from the ModelmanModal base are declared
@@ -442,51 +467,41 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             else v.get("location") or "local"
         )
         location_locked = kind in ("native", "cloud-only", "local-only")
-        self._initial_provider_is_ollama: bool = kind == "ollama"
 
-        # Cost & usage-tier prefill. Add mode starts free/untiered; edit
-        # mode reads them from the variant. _price_str gives the shortest
-        # round-trip representation ("20.0" -> "20", 9.99 -> "9.99") so
-        # an untouched edit-save never changes the stored price (plain
-        # `:g` truncates to 6 significant digits, so it would silently
-        # round e.g. 3.14159265; repr keeps full precision without
-        # binary-inexact noise).
-        #
-        # Edit mode with no cost pre-selects the "unset" sentinel so saving
-        # without touching the cost section preserves cost=None. Custom
-        # subscription periods outside month/year are added to the period
-        # Select so they are not silently rewritten to the default month.
-        initial_cost_kind = "free" if not editing else ""
-        initial_price_mtok = ""
-        initial_price_period = ""
-        initial_period = "month"
-        period_options = [("month", "month"), ("year", "year")]
-        initial_tier = ""
+        # Pricing prefill. Add mode starts with both sections disabled;
+        # edit mode reads the flat cost fields from the variant.
+        # _price_str gives the shortest round-trip representation
+        # ("20.0" -> "20", 9.99 -> "9.99") so an untouched edit-save
+        # never changes the stored price.
+        initial_per_token = False
+        initial_input_price = ""
+        initial_cache_price = ""
+        initial_output_price = ""
+        initial_subscription = False
+        initial_subscription_price = ""
+        initial_subscription_period = "month"
+
         cost_raw = v.get("cost") if editing else None
         cost: Cost | None = None
         if isinstance(cost_raw, dict):
-            cost = Cost(
-                kind=cost_raw["kind"],
-                price_per_million_tokens=cost_raw.get("price_per_million_tokens"),
-                price_per_period=cost_raw.get("price_per_period"),
-                period=cost_raw.get("period"),
-            )
+            cost = _cost_from_dict(cost_raw)
         elif isinstance(cost_raw, Cost):
             cost = cost_raw
         if cost is not None:
-            initial_cost_kind = cost.kind
-            if cost.kind == "per_token" and cost.price_per_million_tokens is not None:
-                initial_price_mtok = _price_str(cost.price_per_million_tokens)
-            elif cost.kind == "subscription":
-                if cost.price_per_period is not None:
-                    initial_price_period = _price_str(cost.price_per_period)
-                if cost.period is not None:
-                    initial_period = cost.period
-                    if cost.period not in ("month", "year"):
-                        period_options.append((cost.period, cost.period))
-        usage_tier_value = v.get("usage_tier") if editing else None
-        if usage_tier_value in ("low", "medium", "high", "extra high"):
-            initial_tier = usage_tier_value
+            if cost.input_price_per_million is not None:
+                initial_per_token = True
+                initial_input_price = _price_str(cost.input_price_per_million)
+            if cost.cache_price_per_million is not None:
+                initial_per_token = True
+                initial_cache_price = _price_str(cost.cache_price_per_million)
+            if cost.output_price_per_million is not None:
+                initial_per_token = True
+                initial_output_price = _price_str(cost.output_price_per_million)
+            if cost.subscription_price is not None:
+                initial_subscription = True
+                initial_subscription_price = _price_str(cost.subscription_price)
+                if cost.subscription_period in ("month", "year"):
+                    initial_subscription_period = cost.subscription_period
 
         with Vertical():
             yield Label("Provider:")
@@ -519,46 +534,43 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 disabled=location_locked,
                 id="location-select",
             )
-            yield Label("Cost:")
-            yield Select(
-                options=[
-                    ("—", ""),
-                    ("free", "free"),
-                    ("per_token", "per_token"),
-                    ("subscription", "subscription"),
-                ],
-                value=initial_cost_kind,
-                allow_blank=False,
-                id="cost-kind-select",
+            yield Label("Per-token pricing:")
+            yield Checkbox(
+                "Enable per-token pricing",
+                value=initial_per_token,
+                id="per-token-checkbox",
             )
             yield Input(
-                value=initial_price_mtok,
-                placeholder="price per million tokens, e.g. 2.50",
-                id="price-per-mtok",
+                value=initial_input_price,
+                placeholder="input price per million tokens",
+                id="input-price",
             )
             yield Input(
-                value=initial_price_period,
-                placeholder="price per period, e.g. 20",
-                id="price-per-period",
+                value=initial_cache_price,
+                placeholder="cache price per million tokens",
+                id="cache-price",
+            )
+            yield Input(
+                value=initial_output_price,
+                placeholder="output price per million tokens",
+                id="output-price",
+            )
+            yield Label("Subscription pricing:")
+            yield Checkbox(
+                "Enable subscription pricing",
+                value=initial_subscription,
+                id="subscription-checkbox",
+            )
+            yield Input(
+                value=initial_subscription_price,
+                placeholder="subscription price",
+                id="subscription-price",
             )
             yield Select(
-                options=period_options,
-                value=initial_period,
+                options=[("month", "month"), ("year", "year")],
+                value=initial_subscription_period,
                 allow_blank=False,
-                id="period-select",
-            )
-            yield Label("Usage tier (ollama cloud):", id="usage-tier-label")
-            yield Select(
-                options=[
-                    ("—", ""),
-                    ("low", "low"),
-                    ("medium", "medium"),
-                    ("high", "high"),
-                    ("extra high", "extra high"),
-                ],
-                value=initial_tier,
-                allow_blank=False,
-                id="usage-tier-select",
+                id="subscription-period-select",
             )
             yield self._button_row(
                 [
@@ -588,41 +600,42 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     def _modal_on_mount(self) -> None:
         # Focus the model input so the user can paste / type immediately.
         self.query_one("#model", Input).focus()
-        # Apply initial visibility: cost fields follow the pre-selected
-        # kind; the tier section only shows for ollama providers.
-        self._set_cost_field_visibility(str(self.query_one("#cost-kind-select", Select).value))
-        self._set_tier_visibility(self._initial_provider_is_ollama)
+        # Apply initial visibility for the conditional pricing sections.
+        per_token_cb = self.query_one("#per-token-checkbox", Checkbox)
+        sub_cb = self.query_one("#subscription-checkbox", Checkbox)
+        self._set_per_token_visibility(bool(per_token_cb.value))
+        self._set_subscription_visibility(bool(sub_cb.value))
 
-    def _set_cost_field_visibility(self, kind: str) -> None:
-        """Show only the price fields relevant to the selected cost kind:
-        free -> nothing; per_token -> #price-per-mtok; subscription ->
-        #price-per-period + #period-select."""
+    def _set_per_token_visibility(self, show: bool) -> None:
+        """Show/hide the per-token price Inputs as a unit."""
         try:
-            self.query_one("#price-per-mtok", Input).display = kind == "per_token"
-            self.query_one("#price-per-period", Input).display = kind == "subscription"
-            self.query_one("#period-select", Select).display = kind == "subscription"
+            self.query_one("#input-price", Input).display = show
+            self.query_one("#cache-price", Input).display = show
+            self.query_one("#output-price", Input).display = show
         except NoMatches:
-            # A Select.Changed can arrive before the conditional fields are
-            # mounted; _modal_on_mount applies the initial state anyway.
+            # A Checkbox.Changed can arrive before the conditional fields
+            # are mounted; _modal_on_mount applies the initial state anyway.
             return
 
-    def _set_tier_visibility(self, show: bool) -> None:
-        """Show/hide the ollama usage-tier section (label + Select) as a unit."""
+    def _set_subscription_visibility(self, show: bool) -> None:
+        """Show/hide the subscription price Input and period Select."""
         try:
-            self.query_one("#usage-tier-label", Label).display = show
-            self.query_one("#usage-tier-select", Select).display = show
+            self.query_one("#subscription-price", Input).display = show
+            self.query_one("#subscription-period-select", Select).display = show
         except NoMatches:
             return
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Toggle visibility of the conditional pricing sections."""
+        if event.checkbox.id == "per-token-checkbox":
+            self._set_per_token_visibility(event.value)
+        elif event.checkbox.id == "subscription-checkbox":
+            self._set_subscription_visibility(event.value)
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Cost-kind changes show only the relevant price fields. In add
-        mode, changing the provider must re-lock location, update the model
-        input placeholder to match the new provider's expected format
-        (native vs HF vs ollama vs cloud-only), and toggle the ollama
-        usage-tier section."""
-        if event.select.id == "cost-kind-select":
-            self._set_cost_field_visibility(str(event.value))
-            return
+        """In add mode, changing the provider must re-lock location and
+        update the model input placeholder to match the new provider's
+        expected format (native vs HF vs ollama vs cloud-only)."""
         if event.select.id != "provider-select":
             return
         if self._variant is not None:
@@ -653,8 +666,6 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         location_locked = kind in ("native", "cloud-only", "local-only")
         location_select.value = new_location
         location_select.disabled = location_locked
-        # The ollama usage-tier section follows the provider kind.
-        self._set_tier_visibility(kind == "ollama")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -686,17 +697,50 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             return
         self._clear_error()
 
-        cost_kind = str(self.query_one("#cost-kind-select", Select).value)
-        price_mtok = self.query_one("#price-per-mtok", Input).value
-        price_period = self.query_one("#price-per-period", Input).value
-        period = str(self.query_one("#period-select", Select).value)
-        cost: Cost | None = None
-        if cost_kind != "":
+        per_token_enabled = bool(self.query_one("#per-token-checkbox", Checkbox).value)
+        subscription_enabled = bool(self.query_one("#subscription-checkbox", Checkbox).value)
+
+        per_token_cost: Cost | None = None
+        subscription_cost: Cost | None = None
+        if per_token_enabled:
             try:
-                cost = parse_cost_fields(cost_kind, price_mtok, price_period, period)
+                per_token_cost = parse_cost_fields(
+                    self.query_one("#input-price", Input).value,
+                    self.query_one("#cache-price", Input).value,
+                    self.query_one("#output-price", Input).value,
+                )
             except ValueError as exc:
                 self._show_error(str(exc))
                 return
+        if subscription_enabled:
+            try:
+                subscription_cost = parse_subscription_fields(
+                    self.query_one("#subscription-price", Input).value,
+                    str(self.query_one("#subscription-period-select", Select).value),
+                )
+            except ValueError as exc:
+                self._show_error(str(exc))
+                return
+
+        cost: Cost | None = None
+        if per_token_cost is not None or subscription_cost is not None:
+            cost = Cost(
+                input_price_per_million=per_token_cost.input_price_per_million
+                if per_token_cost
+                else None,
+                cache_price_per_million=per_token_cost.cache_price_per_million
+                if per_token_cost
+                else None,
+                output_price_per_million=per_token_cost.output_price_per_million
+                if per_token_cost
+                else None,
+                subscription_price=subscription_cost.subscription_price
+                if subscription_cost
+                else None,
+                subscription_period=subscription_cost.subscription_period
+                if subscription_cost
+                else None,
+            )
 
         if self._variant is not None:
             vid = self._variant["id"]
@@ -709,12 +753,6 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             (self._variant or {}).get("quantizations") if self._variant is not None else None
         )
         location = str(self.query_one("#location-select", Select).value)
-        usage_tier: str | None = None
-        if kind == "ollama":
-            # The widget always exists, but read defensively anyway.
-            tier_raw = str(self.query_one("#usage-tier-select", Select).value)
-            if tier_raw in ("low", "medium", "high", "extra high"):
-                usage_tier = tier_raw
         spec: VariantSpec = {
             "id": vid,
             "provider": provider,
@@ -724,7 +762,6 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             "quantizations": existing_quantizations,
             "location": location,
             "cost": _cost_to_dict(cost) if cost is not None else None,
-            "usage_tier": usage_tier,
         }
         if provider == "ollama" and self._variant is None and name:
             spec["model_info"] = auto_detect_model_info(name)

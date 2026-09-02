@@ -76,7 +76,6 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         location=variant.get("location"),
         source="curated",
         cost=cost,
-        usage_tier=variant.get("usage_tier"),
         model_info=model_info,
         fetch=fetch,
     )
@@ -94,22 +93,46 @@ def _human_size(n) -> str:
     return f"{n:.1f} PB"
 
 
-def _format_cost(cost: Cost | None) -> str:
-    """Short human-readable cost string for the table COST column."""
+def _format_price(value: float | None) -> str:
+    """Format a single price with a dollar sign.
+
+    Always shows at least two decimal places. Fractional cents are
+    preserved, and trailing zeros beyond two decimals are stripped.
+    """
+    if value is None:
+        return "-"
+    s = f"{value:.10f}".rstrip("0").rstrip(".")
+    if "." not in s:
+        s += ".00"
+    else:
+        integer_part, decimal_part = s.split(".")
+        if len(decimal_part) < 2:
+            decimal_part = decimal_part.ljust(2, "0")
+        s = f"{integer_part}.{decimal_part}"
+    return f"${s}"
+
+
+def _format_per_token(cost: Cost | None) -> str:
+    """COST column: input/cache/output per-million-token prices."""
     if cost is None:
-        return "—"
-    if cost.kind == "free":
-        return "free"
-    if cost.kind == "per_token":
-        p = cost.price_per_million_tokens
-        return f"${p:.2f}/M" if p is not None else "$/M"
-    if cost.kind == "subscription":
-        p = cost.price_per_period
-        per = cost.period
-        if p is not None:
-            return f"${p:.0f}" + (f"/{per}" if per else "")
-        return f"$/{per}" if per else "$/"
-    return cost.kind
+        return "-"
+    prices = (
+        cost.input_price_per_million,
+        cost.cache_price_per_million,
+        cost.output_price_per_million,
+    )
+    if all(p is None for p in prices):
+        return "-"
+    return f"${'/'.join(_format_price(p).lstrip('$') for p in prices)}"
+
+
+def _format_subscription(cost: Cost | None) -> str:
+    """SUB column: subscription price abbreviated as mo/yr."""
+    if cost is None or cost.subscription_price is None:
+        return "-"
+    suffix = "mo" if cost.subscription_period == "month" else "yr"
+    return f"{_format_price(cost.subscription_price)}/{suffix}"
+
 
 
 def _format_location(location: str | None) -> str:
@@ -121,11 +144,6 @@ def _format_location(location: str | None) -> str:
     if location == "local":
         return "▤"
     return location
-
-
-def _format_tier(model: ModelEntry) -> str:
-    """The ollama usage tier, or an em dash when unset."""
-    return model.usage_tier or "—"
 
 
 def _entry_kwargs(m: ModelEntry) -> dict:
@@ -152,7 +170,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
 
     `cost` is serialized to a plain dict so any provider that JSON-
     serializes its VariantSpec argument does not receive a non-JSON
-    dataclass. `usage_tier` is a plain string and safe as-is.
+    dataclass.
     """
     repo = entry.fetch.repo if entry.fetch else None
     files = entry.fetch.files if entry.fetch else None
@@ -167,7 +185,6 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "location": entry.location,
         "model_info": dict(entry.model_info),
         "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
-        "usage_tier": entry.usage_tier,
     }
 
 
@@ -265,7 +282,7 @@ class ModelScreen(Screen[None]):
             "STATUS",
             "EXPOSED",
             "COST",
-            "TIER",
+            "SUB",
             "SIZE",
         )
         self.reload()
@@ -375,8 +392,8 @@ class ModelScreen(Screen[None]):
                     _format_location(m.location),
                     status,
                     exposed_str,
-                    _format_cost(m.cost),
-                    _format_tier(m),
+                    _format_per_token(m.cost),
+                    _format_subscription(m.cost),
                     size_str,
                     key=m.id,
                 )
