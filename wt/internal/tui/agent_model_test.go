@@ -722,10 +722,11 @@ func TestNoRKeyInModelPhase(t *testing.T) {
 }
 
 // TestSelectedEntryNoLastStartsAtZero asserts the picker lands
-// the cursor at index 0 when no rotation state exists. This is the
-// cold-start path: fresh user, fresh state file. PR 2 added a
-// phaseAgent step between worktree selection and the model picker,
-// so the test now drives both transitions to reach phaseModel.
+// the cursor on the first model row (index 1) when no rotation state
+// exists. Index 0 is the leading family divider the family-aware builder
+// inserts. This is the cold-start path: fresh user, fresh state file.
+// PR 2 added a phaseAgent step between worktree selection and the model
+// picker, so the test now drives both transitions to reach phaseModel.
 func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
 	tempStateDir(t) // isolates state; file doesn't exist
 	cfg := testConfig()
@@ -763,10 +764,11 @@ func TestSelectedEntryPositionsAfterLast(t *testing.T) {
 }
 
 // TestSelectedEntryLastMissingFallsBackToZero asserts the
-// picker lands on index 0 when the saved rotation.Last model is
-// no longer in the snapshot (config changed since last launch).
-// PR 2 added a phaseAgent step, so the test drives both
-// transitions to reach phaseModel.
+// picker lands on the first model row (index 1) when the saved
+// rotation.Last model is no longer in the snapshot (config changed since
+// last launch). Index 0 is the leading family divider. PR 2 added a
+// phaseAgent step, so the test drives both transitions to reach
+// phaseModel.
 func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/removed:cloud")
@@ -787,8 +789,8 @@ func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
 // the end of the list forever. PR 3b: the picker now sources
 // models from cfg.EligibleModels without an implicit tag filter,
 // so all 3 testConfig models (2 code + 1 design) are in the
-// snapshot; wrapping past gemma4:14b (index 1) lands on
-// gemma4:design (index 2).
+// snapshot; wrapping past gemma4:14b (index 2) lands on
+// gemma4:design (index 3). Index 0 is the leading family divider.
 func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:14b")
@@ -888,8 +890,8 @@ func TestLaunchAndRecordWritesLast(t *testing.T) {
 // snapshot it asserts on.
 func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	dir := tempStateDir(t)
-	// Seed: last-launched is gemma4:9b (index 0). Picker entry 1
-	// will land on gemma4:14b (index 1).
+	// Seed: last-launched is gemma4:9b. Picker entry 1 will land on
+	// gemma4:14b at index 2 (index 0 is the leading family divider).
 	seedState(t, dir, "ollama/gemma4:9b")
 
 	// Picker entry 1: drive the full PR-2 path (worktree pick →
@@ -913,7 +915,7 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	// phaseAgent Enter handler rebuilds the rotation, sees gemma4:14b
 	// as last-launched, and advances to the next model. PR 3b: the
 	// picker shows all 3 testConfig models (no implicit tag filter),
-	// so "next" from gemma4:14b (index 1) is gemma4:design (index 2).
+	// so "next" from gemma4:14b (index 2) is gemma4:design (index 3).
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m2 = drivePhaseAgentEnter(t, m2, "claude")
 	if m2.models.Index() != 3 {
@@ -932,7 +934,8 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 // drives the worktree pick and the phaseAgent Enter to reach phaseModel.
 func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	dir := tempStateDir(t)
-	// No prior state. Picker entry 1 lands at index 0.
+	// No prior state. Picker entry 1 lands on the first model row
+	// at index 1 (index 0 is the leading family divider).
 	_ = dir
 
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
