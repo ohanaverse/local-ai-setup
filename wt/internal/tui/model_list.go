@@ -188,13 +188,23 @@ func withFamilyDividers(models []config.Model, modelCounts, familyCounts map[str
 // picker list. It sorts eligible models by family-then-model usage, inserts
 // family divider headers, and returns the list plus a modelID→list-index map
 // so callers can position the cursor (bypassing divider rows). familyOf maps
-// the FULL catalog's model IDs to their families for family-count
-// aggregation, so a family's total usage is accurate even when a tag/family
-// filter narrows the eligible set.
+// the FULL catalog's model IDs to their families (every eligible model must
+// appear in it, since it is also the source of the counted IDs), so a
+// family's total usage is accurate even when a tag/family filter narrows the
+// eligible set.
 func buildModelListWithFamilies(models []config.Model, familyOf map[string]string, theme themes.Theme, width, height int) (list.Model, map[string]int) {
 	store := newUsageStore()
-	modelCounts := store.Counts(modelIDs(models))
-	familyCounts := store.FamilyCounts(familyOf)
+	// ONE pass over usage.jsonl: Counts runs over the full catalog's IDs
+	// (familyOf's keys), and family totals are summed in memory from those
+	// per-model counts. Calling Counts plus the former FamilyCounts made
+	// every picker entry open and scan the same file twice, and duplicated
+	// Counts' scan/bucket loop in a second place.
+	catalogIDs := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		catalogIDs = append(catalogIDs, id)
+	}
+	modelCounts := store.Counts(catalogIDs)
+	familyCounts := usage.AggregateByFamily(familyOf, modelCounts)
 
 	sortModelsByUsage(models, familyCounts, modelCounts)
 	items := withFamilyDividers(models, modelCounts, familyCounts)

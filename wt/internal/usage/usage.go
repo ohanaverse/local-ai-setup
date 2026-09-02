@@ -122,7 +122,15 @@ func pruneOlderThan(data []byte, asOf time.Time, window time.Duration) ([]byte, 
 	return out, nil
 }
 
-// Counts returns 1d/7d/30d counts for each model in modelIDs.
+// Counts returns 1d/7d/30d counts for each model in modelIDs, zero-filling
+// every requested ID (a missing file or a model with no recent events reads
+// as zero counts).
+//
+// Best-effort for display: if the scan aborts partway (e.g. a single corrupt
+// line exceeding bufio.Scanner's token limit), the counts accumulated so far
+// are returned with no error — a truncated read only skews displayed
+// numbers. Record's prune path is where scan errors are surfaced, because
+// there the result overwrites the on-disk history.
 func (s *Store) Counts(modelIDs []string) map[string]UsageCounts {
 	want := map[string]bool{}
 	for _, id := range modelIDs {
@@ -174,47 +182,29 @@ func CompositeScore(c UsageCounts) int {
 	return 3*c.OneDay + c.SevenDay + 2*c.ThirtyDay
 }
 
-// FamilyCounts returns 1d/7d/30d launch counts aggregated by model family.
-// familyOf maps every known model ID to its family and is built from the
-// full registry catalog (not the currently-eligible subset) so a family's
-// total usage is accurate even when a tag/family filter exposes only some of
-// its models. Events whose model ID is absent from familyOf are skipped. A
-// missing or unreadable usage file yields an empty map.
+// AggregateByFamily sums per-model usage counts into per-family buckets.
+// familyOf maps the FULL model catalog's IDs to their families (built from
+// the registry, not the currently-eligible subset, so a family's total
+// usage is accurate even when a tag/family filter exposes only some of its
+// models); counts are the per-model counts Store.Counts returned for those
+// same IDs. Counts entries for IDs absent from familyOf are ignored.
 //
-// Unlike Counts, families are not pre-seeded: only families with at least
-// one event within the retention window appear as keys, so a missing family
-// key means zero usage.
-func (s *Store) FamilyCounts(familyOf map[string]string) map[string]UsageCounts {
+// Families are not pre-seeded: only families with at least one model whose
+// counts are non-zero appear as keys, so a missing family key means zero
+// usage. (Counts zero-fills every requested model ID, which is why the
+// zero-count skip is what enforces the contract here.)
+func AggregateByFamily(familyOf map[string]string, counts map[string]UsageCounts) map[string]UsageCounts {
 	out := map[string]UsageCounts{}
-	f, err := os.Open(s.path())
-	if err != nil {
-		return out
-	}
-	defer f.Close()
-
-	today := now().UTC()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		var ev event
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+	for id, family := range familyOf {
+		c := counts[id]
+		if c == (UsageCounts{}) {
 			continue
 		}
-		family, found := familyOf[ev.ModelID]
-		if !found {
-			continue
-		}
-		c := out[family]
-		age := today.Sub(ev.Timestamp.UTC())
-		if age < 24*time.Hour {
-			c.OneDay++
-		}
-		if age < 7*24*time.Hour {
-			c.SevenDay++
-		}
-		if age < retentionWindow {
-			c.ThirtyDay++
-		}
-		out[family] = c
+		cur := out[family]
+		cur.OneDay += c.OneDay
+		cur.SevenDay += c.SevenDay
+		cur.ThirtyDay += c.ThirtyDay
+		out[family] = cur
 	}
 	return out
 }

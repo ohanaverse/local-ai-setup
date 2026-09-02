@@ -283,10 +283,69 @@ func TestCompositeScore(t *testing.T) {
 	}
 }
 
-// TestFamilyCountsAggregatesByFamily verifies events are grouped by family
-// via the familyOf map, that all catalog models in one family aggregate
-// together, and that events for models absent from the catalog are skipped.
-func TestFamilyCountsAggregatesByFamily(t *testing.T) {
+// TestAggregateByFamilySumsModelCounts verifies the pure per-family
+// aggregation the model picker runs after its single Counts pass: per-model
+// counts are summed into their family bucket, and counts for model IDs
+// absent from familyOf contribute nothing. This replaces the aggregation
+// half of the deleted Store.FamilyCounts, whose separate file scan duplicated
+// Counts' scan/bucket loop and made every picker entry read usage.jsonl
+// twice.
+func TestAggregateByFamilySumsModelCounts(t *testing.T) {
+	familyOf := map[string]string{
+		"ollama/gemma4:9b":   "gemma4",
+		"ollama/gemma4:14b":  "gemma4",
+		"ollama/qwen3.8:27b": "qwen3.8",
+	}
+	counts := map[string]UsageCounts{
+		"ollama/gemma4:9b":    {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"ollama/gemma4:14b":   {SevenDay: 1, ThirtyDay: 1},
+		"ollama/qwen3.8:27b":  {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"ollama/notincatalog": {OneDay: 5}, // absent from familyOf: must be ignored
+	}
+	got := AggregateByFamily(familyOf, counts)
+	if got["gemma4"] != (UsageCounts{OneDay: 1, SevenDay: 2, ThirtyDay: 2}) {
+		t.Fatalf("gemma4 = %+v, want {1,2,2}", got["gemma4"])
+	}
+	if got["qwen3.8"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("qwen3.8 = %+v, want {1,1,1}", got["qwen3.8"])
+	}
+	if _, ok := got["notincatalog"]; ok {
+		t.Fatalf("family for a model outside the catalog should be skipped, got %v", got["notincatalog"])
+	}
+}
+
+// TestAggregateByFamilyDoesNotPreSeedZeroFamilies verifies the family
+// aggregation contract carried over from the deleted Store.FamilyCounts:
+// families are not pre-seeded — a family whose every model has zero counts
+// (no events within the retention window) is absent from the result, so a
+// missing key reads as zero usage at the call site. The zero entry for the
+// silent family's model mirrors what Counts zero-fills for every requested
+// catalog ID.
+func TestAggregateByFamilyDoesNotPreSeedZeroFamilies(t *testing.T) {
+	familyOf := map[string]string{
+		"ollama/used:1":   "used",
+		"ollama/silent:1": "silent",
+	}
+	counts := map[string]UsageCounts{
+		"ollama/used:1":   {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"ollama/silent:1": {},
+	}
+	got := AggregateByFamily(familyOf, counts)
+	if got["used"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("used = %+v, want {1,1,1}", got["used"])
+	}
+	if _, ok := got["silent"]; ok {
+		t.Fatalf("silent family should be absent from result: %v", got["silent"])
+	}
+}
+
+// TestCountsThenAggregateByFamily verifies the picker's single-scan family
+// aggregation end to end: ONE Counts call over the FULL catalog's IDs (not
+// just a filtered eligible subset) followed by AggregateByFamily produces
+// the per-family totals the deleted Store.FamilyCounts computed with its own
+// second scan of usage.jsonl. Events for models absent from familyOf must
+// not leak into any family total.
+func TestCountsThenAggregateByFamily(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStoreAt(dir)
 	fixed := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
@@ -310,7 +369,12 @@ func TestFamilyCountsAggregatesByFamily(t *testing.T) {
 		"ollama/gemma4:14b":  "gemma4",
 		"ollama/qwen3.8:27b": "qwen3.8",
 	}
-	got := store.FamilyCounts(familyOf)
+	ids := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		ids = append(ids, id)
+	}
+	counts := store.Counts(ids)
+	got := AggregateByFamily(familyOf, counts)
 	if got["gemma4"] != (UsageCounts{OneDay: 1, SevenDay: 2, ThirtyDay: 2}) {
 		t.Fatalf("gemma4 = %+v, want {1,2,2}", got["gemma4"])
 	}
@@ -322,39 +386,22 @@ func TestFamilyCountsAggregatesByFamily(t *testing.T) {
 	}
 }
 
-// TestFamilyCountsMissingFile returns an empty map when usage.jsonl is absent.
-func TestFamilyCountsMissingFile(t *testing.T) {
-	dir := t.TempDir()
-	got := NewStoreAt(dir).FamilyCounts(map[string]string{"a": "fam"})
-	if len(got) != 0 {
-		t.Fatalf("FamilyCounts = %v, want empty", got)
-	}
-}
-
-// TestFamilyCountsDoesNotPreSeedZeroFamilies verifies FamilyCounts only emits
-// keys for families with at least one event in the retention window: a family
-// present in familyOf but with no events is absent from the result (a missing
-// key therefore means zero usage), unlike Counts which zero-fills every
-// requested model ID.
-func TestFamilyCountsDoesNotPreSeedZeroFamilies(t *testing.T) {
+// TestFamilyAggregationMissingFileIsEmpty verifies the picker's family
+// aggregation stays empty when usage.jsonl does not exist yet (fresh
+// install): Counts zero-fills the catalog IDs and AggregateByFamily emits no
+// family keys for all-zero counts. Replaces TestFamilyCountsMissingFile from
+// the deleted Store.FamilyCounts.
+func TestFamilyAggregationMissingFileIsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStoreAt(dir)
-	fixed := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
-	now = func() time.Time { return fixed }
-	defer func() { now = time.Now }()
-
-	line, _ := json.Marshal(event{ModelID: "ollama/used:1", Timestamp: fixed.Add(-30 * time.Minute)})
-	_ = os.WriteFile(store.path(), append(line, '\n'), 0o600)
-
-	familyOf := map[string]string{
-		"ollama/used:1":   "used",
-		"ollama/silent:1": "silent",
+	familyOf := map[string]string{"a": "fam"}
+	ids := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		ids = append(ids, id)
 	}
-	got := store.FamilyCounts(familyOf)
-	if got["used"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
-		t.Fatalf("used counts = %+v, want {1,1,1}", got["used"])
-	}
-	if _, ok := got["silent"]; ok {
-		t.Fatalf("silent family should be absent from result: %v", got["silent"])
+	counts := store.Counts(ids)
+	got := AggregateByFamily(familyOf, counts)
+	if len(got) != 0 {
+		t.Fatalf("family aggregation = %v, want empty", got)
 	}
 }

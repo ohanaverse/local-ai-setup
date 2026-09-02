@@ -306,6 +306,42 @@ func TestSnapSelectionOnModelContinuesDownwardAcrossDivider(t *testing.T) {
 	}
 }
 
+// TestBuildModelListWithFamiliesFamilyCountsUseFullCatalog verifies the
+// picker derives family totals from the FULL catalog's usage, not from the
+// eligible subset: the eligible list here contains only gemma4:9b, but the
+// usage store records a launch for gemma4:14b (same family, filtered out by
+// the -T/-F eligible narrowing), and the gemma4 divider must still show that
+// event in its 30d count. This pins the invariant that family counts come
+// from the full-catalog familyOf mapping — the reason
+// buildModelListWithFamilies runs ONE Counts pass over the catalog IDs and
+// aggregates per family (usage.AggregateByFamily) instead of counting only
+// the eligible slice.
+func TestBuildModelListWithFamiliesFamilyCountsUseFullCatalog(t *testing.T) {
+	dir := t.TempDir()
+	store := usage.NewStoreAt(dir)
+	if err := store.Record("ollama/gemma4:14b"); err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return store }
+	defer func() { newUsageStore = old }()
+
+	// Eligible list is narrowed (e.g. by a -T/-F filter) to one of the two
+	// gemma4 models; familyOf still maps the full catalog.
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
+	}
+	ml, _ := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
+	items := ml.Items()
+	d, ok := items[0].(dividerItem)
+	if !ok {
+		t.Fatalf("items[0] = %T, want the gemma4 divider", items[0])
+	}
+	if !strings.Contains(d.label, "30d:1") {
+		t.Fatalf("gemma4 divider label = %q, want 30d:1 (family total must include the non-eligible gemma4:14b launch)", d.label)
+	}
+}
+
 // TestFilterToSingleMatchKeepsSelectionValid verifies that filtering the
 // model picker down to exactly one match leaves SelectedItem() pointing at
 // that match, not nil. snapSelectionOnModel and the phaseModel wrap block
