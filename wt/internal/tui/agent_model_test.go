@@ -14,7 +14,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -58,7 +57,9 @@ func singleModelList(m config.Model) list.Model {
 // for the given agent+tag, with the cursor on the globally rotated model.
 // Tests that exercise rotation, the list, or the View use this helper
 // instead of constructing model literals (which would skip the list-build
-// path the production code uses).
+// path the production code uses). The usage counts come through the
+// newUsageStore seam so callers that stub the seam (or isolate
+// XDG_CONFIG_HOME via tempStateDir) never read the host's real usage.jsonl.
 func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
 	t.Helper()
 	models, err := cfg.EligibleModels(agent, tag, "")
@@ -68,7 +69,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
-	counts := usage.NewStore().Counts(modelIDs(models))
+	counts := newUsageStore().Counts(modelIDs(models))
 	m := model{
 		cfg:    cfg,
 		phase:  phaseModel,

@@ -228,9 +228,7 @@ func TestModelListDelegateRendersDivider(t *testing.T) {
 // index map accounts for inserted divider rows and always points at model
 // rows.
 func TestBuildModelListWithFamiliesIdIndex(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	models := modelFamilies()
 	ml, idIndex := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
@@ -255,9 +253,7 @@ func TestBuildModelListWithFamiliesIdIndex(t *testing.T) {
 // unknown). The assertion inspects m.models because list.Model stores its
 // cursor by value and snapSelectionOnModel mutates the model's own list copy.
 func TestSnapSelectionOnModelMovesOffDivider(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
 	ml.Select(3) // index 3 is the qwen3.8 divider
@@ -274,9 +270,7 @@ func TestSnapSelectionOnModelMovesOffDivider(t *testing.T) {
 // Fixture layout: [div gemma4(0), 9b(1), 14b(2), div qwen3.8(3), qwen3.8(4),
 // div other(5), loose(6)].
 func TestSnapSelectionOnModelContinuesUpwardAcrossDivider(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
 	// Up from qwen3.8(4) lands on divider(3).
@@ -292,9 +286,7 @@ func TestSnapSelectionOnModelContinuesUpwardAcrossDivider(t *testing.T) {
 // DOWN onto a divider continues down into the next family group, so a model
 // right before a divider is never stuck.
 func TestSnapSelectionOnModelContinuesDownwardAcrossDivider(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	ml, _ := buildModelListWithFamilies(modelFamilies(), familyOfFor(), themes.Default, 80, 24)
 	// Down from 14b(2) lands on divider(3).
@@ -317,14 +309,10 @@ func TestSnapSelectionOnModelContinuesDownwardAcrossDivider(t *testing.T) {
 // aggregates per family (usage.AggregateByFamily) instead of counting only
 // the eligible slice.
 func TestBuildModelListWithFamiliesFamilyCountsUseFullCatalog(t *testing.T) {
-	dir := t.TempDir()
-	store := usage.NewStoreAt(dir)
+	store := stubUsageStore(t)
 	if err := store.Record("ollama/gemma4:14b"); err != nil {
 		t.Fatalf("seed usage event: %v", err)
 	}
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return store }
-	defer func() { newUsageStore = old }()
 
 	// Eligible list is narrowed (e.g. by a -T/-F filter) to one of the two
 	// gemma4 models; familyOf still maps the full catalog.
@@ -358,9 +346,7 @@ func TestBuildModelListWithFamiliesFamilyCountsUseFullCatalog(t *testing.T) {
 // the filtered results too). The result: SelectedItem() silently returns
 // nil and Enter no-ops.
 func TestFilterToSingleMatchKeepsSelectionValid(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	models := modelFamilies() // gemma4:9b, gemma4:14b, qwen3.8:27b, loose
 	ml, _ := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
@@ -403,9 +389,7 @@ func TestFilterToSingleMatchKeepsSelectionValid(t *testing.T) {
 // coincides with the raw first-model index, presses "up", and asserts the
 // selection stays a real modelItem in-bounds rather than landing on nil.
 func TestWrapAroundStaysValidAfterFilterApplied(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	models := modelFamilies() // gemma4:9b, gemma4:14b, qwen3.8:27b, loose
 	ml, _ := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
@@ -463,9 +447,7 @@ func TestWrapAroundStaysValidAfterFilterApplied(t *testing.T) {
 // leading family divider. testConfig() models share an empty family, so the
 // first list item is the "— other" divider.
 func TestEnterModelPhaseCursorNeverOnDivider(t *testing.T) {
-	old := newUsageStore
-	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
-	defer func() { newUsageStore = old }()
+	stubUsageStore(t)
 
 	cfg := testConfig()
 	m := model{

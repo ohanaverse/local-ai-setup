@@ -699,6 +699,11 @@ func TestBranchWorktreeCreatedErrorReturnsToList(t *testing.T) {
 // TestOllamaWarnShownWhenUnavailable asserts that when the current model is an
 // unavailable ollama model, the TUI transitions to phaseOllamaWarn.
 func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
+	// Isolate usage (seam) and rotation (XDG) state: phaseModelWithList
+	// reads both via config.Dir(), so without isolation the fixture's cursor
+	// and counts depend on the host's real state files.
+	tempStateDir(t)
+	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "ollama"}},
@@ -754,6 +759,10 @@ func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 // served by any upstream behind LiteLLM, so a model absent from `ollama list`
 // must not trigger the unavailable-model warning.
 func TestNoOllamaWarnInLitellmMode(t *testing.T) {
+	// Isolate usage (seam) and rotation (XDG) state, as in
+	// TestOllamaWarnShownWhenUnavailable.
+	tempStateDir(t)
+	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
@@ -1502,6 +1511,11 @@ func TestPrePathInitSkipsWorktreePicker(t *testing.T) {
 // a pinned --agent: the worktree picker is skipped and the model phase opens
 // directly.
 func TestPrePathInitPinnedGoesToModel(t *testing.T) {
+	// Isolate usage (seam) and rotation (XDG) state: the pinned-agent path
+	// runs enterModelPhase, which scans usage.jsonl for the list build and
+	// reads rotation.state for cursor positioning.
+	tempStateDir(t)
+	stubUsageStore(t)
 	requireBinary(t, "claude")
 	m := model{prePath: "/repo/.worktrees/feat", cfg: testConfig(), initialAgent: "claude"}
 	msg := m.Init()()
