@@ -1203,10 +1203,15 @@ async def test_model_form_cost_section_default_hidden():
         assert app.screen.query_one("#per-token-checkbox", Checkbox).value is False
         assert app.screen.query_one("#subscription-checkbox", Checkbox).value is False
         assert app.screen.query_one("#input-price", Input).display is False
+        assert app.screen.query_one("#input-price-label", Label).display is False
         assert app.screen.query_one("#cache-price", Input).display is False
+        assert app.screen.query_one("#cache-price-label", Label).display is False
         assert app.screen.query_one("#output-price", Input).display is False
+        assert app.screen.query_one("#output-price-label", Label).display is False
         assert app.screen.query_one("#subscription-price", Input).display is False
+        assert app.screen.query_one("#subscription-price-label", Label).display is False
         assert app.screen.query_one("#subscription-period-select", Select).display is False
+        assert app.screen.query_one("#subscription-period-label", Label).display is False
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
@@ -1226,10 +1231,15 @@ async def test_model_form_cost_section_per_token_shows_inputs():
         app.screen.query_one("#per-token-checkbox", Checkbox).value = True
         await pilot.pause()
         assert app.screen.query_one("#input-price", Input).display is True
+        assert app.screen.query_one("#input-price-label", Label).display is True
         assert app.screen.query_one("#cache-price", Input).display is True
+        assert app.screen.query_one("#cache-price-label", Label).display is True
         assert app.screen.query_one("#output-price", Input).display is True
+        assert app.screen.query_one("#output-price-label", Label).display is True
         assert app.screen.query_one("#subscription-price", Input).display is False
+        assert app.screen.query_one("#subscription-price-label", Label).display is False
         assert app.screen.query_one("#subscription-period-select", Select).display is False
+        assert app.screen.query_one("#subscription-period-label", Label).display is False
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
@@ -1249,9 +1259,12 @@ async def test_model_form_cost_section_subscription_shows_inputs():
         app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
         assert app.screen.query_one("#subscription-price", Input).display is True
+        assert app.screen.query_one("#subscription-price-label", Label).display is True
         assert app.screen.query_one("#subscription-period-select", Select).display is True
+        assert app.screen.query_one("#subscription-period-label", Label).display is True
         assert str(app.screen.query_one("#subscription-period-select", Select).value) == "month"
         assert app.screen.query_one("#input-price", Input).display is False
+        assert app.screen.query_one("#input-price-label", Label).display is False
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
@@ -1293,7 +1306,9 @@ async def test_model_form_edit_prefills_cost():
         assert app.screen.query_one("#subscription-price", Input).value == "20"
         assert str(app.screen.query_one("#subscription-period-select", Select).value) == "month"
         assert app.screen.query_one("#input-price", Input).display is True
+        assert app.screen.query_one("#input-price-label", Label).display is True
         assert app.screen.query_one("#subscription-price", Input).display is True
+        assert app.screen.query_one("#subscription-price-label", Label).display is True
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 

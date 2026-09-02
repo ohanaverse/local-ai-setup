@@ -104,7 +104,7 @@ Then register models under it with the same `[[models]]` shape as Step 3 (`provi
 
 ### 3. Add a local model (Ollama)
 
-In the TUI: family screen `a` to add, or open a family (`enter`) and press `a` on the model screen — then edit (`enter`/`e`) to fill the fields. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
+In the TUI: family screen `a` to add, or open a family (`enter`) and press `a` on the model screen — then edit (`enter`/`e`) to fill the fields. The add/edit dialog includes optional **Per-token pricing** and **Subscription pricing** sections; check each section to reveal its labeled fields (Input / Cache / Output, each priced per million tokens, for per-token; Amount / Period for subscription) and fill them in. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
 
 Resulting `registry.toml` entry — real, as written on disk here (`~/.config/local-ai/registry.toml`, verified on this machine):
 
