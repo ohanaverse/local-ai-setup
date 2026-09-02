@@ -63,6 +63,41 @@ func TestSortModelsByUsageGroupsByFamilyScoreThenModelScore(t *testing.T) {
 	}
 }
 
+// TestSortModelsByUsageKeepsTiedFamiliesAdjacent verifies that when two
+// families have equal composite scores (the common case: a fresh install
+// with no usage history, where every score is 0), the sort still groups each
+// family's models adjacently instead of leaving them interleaved in whatever
+// order the registry lists them. Without a tie-break beyond composite score,
+// sort.SliceStable's stability preserves registry order on a tie, and the
+// real registry.toml interleaves families (e.g. gemma4 models are not
+// contiguous), so withFamilyDividers would emit a duplicate "◈ gemma4"
+// header split across two non-adjacent runs — contradicting both the sort's
+// own doc comment ("Same-family models end up adjacent") and the picker's
+// family-grouping contract. The tie-break is each family's first-occurrence
+// position in the input slice, so ties resolve to registry order at the
+// family level (gemma4 first, since it appears first) while still keeping
+// every family's models contiguous.
+func TestSortModelsByUsageKeepsTiedFamiliesAdjacent(t *testing.T) {
+	// Registry order interleaves gemma4 and qwen3.8; both families and all
+	// models are tied at zero usage (fresh install).
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
+		{ID: "ollama/qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
+		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4"},
+	}
+	sortModelsByUsage(models, nil, nil)
+
+	var families []string
+	for _, m := range models {
+		families = append(families, m.Family)
+	}
+	// gemma4 appears first in the input, so its tie-break wins; both its
+	// models must be contiguous rather than split around qwen3.8.
+	if got := strings.Join(families, ","); got != "gemma4,gemma4,qwen3.8" {
+		t.Fatalf("family order = %q, want gemma4,gemma4,qwen3.8 (tied families kept adjacent, in first-occurrence order)", got)
+	}
+}
+
 // TestWithFamilyDividersInsertsHeaderPerGroup verifies a divider row precedes
 // each distinct family group, model rows carry their family's 30d count, and
 // the empty family group is labeled otherFamily.

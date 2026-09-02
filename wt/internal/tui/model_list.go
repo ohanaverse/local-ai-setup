@@ -124,16 +124,33 @@ func (d modelListDelegate) Render(w io.Writer, m list.Model, index int, item lis
 }
 
 // sortModelsByUsage sorts models in place (stable) descending by family
-// composite score, then model composite score. Same-family models end up
-// adjacent and higher-usage families float to the top. familyCounts and
-// modelCounts come from usage.Store (missing entries read as zero, scoring 0
-// for a stable tie-break that preserves registry order).
+// composite score, then family first-occurrence order, then model composite
+// score. Same-family models end up adjacent and higher-usage families float
+// to the top. familyCounts and modelCounts come from usage.Store (missing
+// entries read as zero). The first-occurrence tie-break is what guarantees
+// adjacency: relying on sort.SliceStable's stability alone only preserves
+// registry order on a score tie, and the registry does not list one
+// family's models contiguously — without this key, a tie (e.g. every score
+// 0 on a fresh install with no usage.jsonl) would split a family's models
+// across two non-adjacent runs, producing a duplicate divider header for it.
+// First-occurrence (rather than alphabetical) keeps the pre-existing visible
+// order for the common single-score-tier case and avoids a surprise
+// reordering where the empty "other" family would otherwise sort first.
 func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[string]usage.UsageCounts) {
+	firstSeen := make(map[string]int, len(models))
+	for i, m := range models {
+		if _, ok := firstSeen[m.Family]; !ok {
+			firstSeen[m.Family] = i
+		}
+	}
 	sort.SliceStable(models, func(i, j int) bool {
 		fi := usage.CompositeScore(familyCounts[models[i].Family])
 		fj := usage.CompositeScore(familyCounts[models[j].Family])
 		if fi != fj {
 			return fi > fj
+		}
+		if models[i].Family != models[j].Family {
+			return firstSeen[models[i].Family] < firstSeen[models[j].Family]
 		}
 		return usage.CompositeScore(modelCounts[models[i].ID]) >
 			usage.CompositeScore(modelCounts[models[j].ID])
