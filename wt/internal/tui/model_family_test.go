@@ -5,10 +5,60 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
+
+// drainFilterMatches recursively executes cmd (and any nested tea.BatchMsg)
+// looking for a list.FilterMatchesMsg, mirroring how the real bubbletea
+// runtime resolves a Cmd tree before delivering the resulting Msg back to
+// Update. bubbles/list's handleFiltering only QUEUES a filterItems Cmd on
+// each keystroke — the visible/filtered item set is not narrowed until that
+// Cmd's message is fed back through Update, exactly as the real runtime loop
+// would do it. Returns nil if no FilterMatchesMsg is found.
+func drainFilterMatches(cmd tea.Cmd) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	switch v := msg.(type) {
+	case list.FilterMatchesMsg:
+		return v
+	case tea.BatchMsg:
+		for _, c := range v {
+			if found := drainFilterMatches(c); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// typeFilterQuery drives m through the model picker's '/' incremental
+// filter one rune at a time, draining each keystroke's filterItems Cmd back
+// through Update so m.models.VisibleItems() actually narrows — matching
+// what a real bubbletea session does. Returns the updated model.
+func typeFilterQuery(t *testing.T, m model, query string) model {
+	t.Helper()
+	for _, r := range query {
+		got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		var ok bool
+		m, ok = got.(model)
+		if !ok {
+			t.Fatalf("Update returned %T, want model", got)
+		}
+		if msg := drainFilterMatches(cmd); msg != nil {
+			got, _ = m.Update(msg)
+			m, ok = got.(model)
+			if !ok {
+				t.Fatalf("Update(FilterMatchesMsg) returned %T, want model", got)
+			}
+		}
+	}
+	return m
+}
 
 // modelFamilies returns a small catalog spanning two named families plus an
 // empty-family model, for group/divider/sort tests.
@@ -254,6 +304,122 @@ func TestSnapSelectionOnModelContinuesDownwardAcrossDivider(t *testing.T) {
 	if got := m.models.Index(); got != 4 {
 		t.Fatalf("after down-snap index = %d, want 4 (first model of qwen3.8 group)", got)
 	}
+}
+
+// TestFilterToSingleMatchKeepsSelectionValid verifies that filtering the
+// model picker down to exactly one match leaves SelectedItem() pointing at
+// that match, not nil. snapSelectionOnModel and the phaseModel wrap block
+// (app.go) read the cursor's item type from m.models.Items() (the
+// UNFILTERED slice) but move the cursor with Select() — which, per
+// bubbles/list v1.0.0, operates in VISIBLE-item coordinates once a filter is
+// active (Select/Index/SelectedItem are all filtered-coordinate; only
+// Items() stays unfiltered). Before the fix: the full list always starts
+// with a leading divider at index 0. Opening '/' calls bubbles' GoToStart
+// (Index()=0) and the post-Update snap sees items[0] is a dividerItem in the
+// FULL list, so it Selects full-list index 1 — a coordinate that, once the
+// filter has actually narrowed the visible set to one item, no longer
+// exists in VisibleItems() (dividers have empty FilterValue and vanish from
+// the filtered results too). The result: SelectedItem() silently returns
+// nil and Enter no-ops.
+func TestFilterToSingleMatchKeepsSelectionValid(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
+	models := modelFamilies() // gemma4:9b, gemma4:14b, qwen3.8:27b, loose
+	ml, _ := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
+	m := model{models: ml, phase: phaseModel, width: 80, height: 24}
+
+	// Open the filter like a user pressing '/', then type a query matching
+	// exactly one model ("qwen" only matches ollama/qwen3.8:27b).
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = got.(model)
+	if m.models.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.models.FilterState())
+	}
+	m = typeFilterQuery(t, m, "qwen")
+
+	if got := len(m.models.VisibleItems()); got != 1 {
+		t.Fatalf("visible items after filter = %d, want 1 (precondition: query narrowed to one match)", got)
+	}
+	item, ok := m.models.SelectedItem().(modelItem)
+	if !ok {
+		t.Fatalf("SelectedItem() = %v (%T), want the single filtered match (modelItem) — cursor is stuck at an unfiltered-coordinate index that no longer exists in the filtered view", m.models.SelectedItem(), m.models.SelectedItem())
+	}
+	if item.model.ID != "ollama/qwen3.8:27b" {
+		t.Fatalf("selected model = %q, want ollama/qwen3.8:27b", item.model.ID)
+	}
+}
+
+// TestWrapAroundStaysValidAfterFilterApplied verifies that the phaseModel
+// wrap-around handler (app.go's tea.KeyMsg case) never selects a cursor
+// position that falls outside the currently filtered view. Like
+// snapSelectionOnModel, this handler computed firstModelIndex/
+// lastModelIndex from m.models.Items() (the UNFILTERED slice) while
+// Index()/Select() are visible-item-coordinate once a filter is active — so
+// the "are we at the edge?" check (Index() == firstModelIndex(unfiltered))
+// can spuriously match by coincidence whenever a filtered-coordinate index
+// happens to equal the corresponding unfiltered-coordinate index, then jump
+// the cursor to Select(lastModelIndex(unfiltered)) — a raw full-list index
+// that can be entirely outside the filtered set's range. This test drives a
+// real filter (via typeFilterQuery/drainFilterMatches) that keeps all 4
+// models visible, positions the cursor on the row whose filtered index
+// coincides with the raw first-model index, presses "up", and asserts the
+// selection stays a real modelItem in-bounds rather than landing on nil.
+func TestWrapAroundStaysValidAfterFilterApplied(t *testing.T) {
+	old := newUsageStore
+	newUsageStore = func() *usage.Store { return usage.NewStoreAt(t.TempDir()) }
+	defer func() { newUsageStore = old }()
+
+	models := modelFamilies() // gemma4:9b, gemma4:14b, qwen3.8:27b, loose
+	ml, _ := buildModelListWithFamilies(models, familyOfFor(), themes.Default, 80, 24)
+	m := model{models: ml, phase: phaseModel, width: 80, height: 24}
+
+	// "ollama" is a substring of every model ID (all IDs are
+	// "ollama/<name>"), so this query keeps all 4 models visible while
+	// dropping the (empty-FilterValue) dividers — narrowing coordinates
+	// without narrowing the model set, so a wrap is meaningful to test.
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = got.(model)
+	m = typeFilterQuery(t, m, "ollama")
+	if got := len(m.models.VisibleItems()); got != 4 {
+		t.Fatalf("visible items after filter = %d, want 4 (precondition: all models still match)", got)
+	}
+	// Accept the filter (bubbles/list's AcceptWhileFiltering, bound to
+	// Enter) so FilterState becomes FilterApplied — the wrap handler's
+	// guard only skips Filtering, not FilterApplied.
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if m.models.FilterState() != list.FilterApplied {
+		t.Fatalf("filter state = %v, want FilterApplied", m.models.FilterState())
+	}
+
+	// Find the filtered-coordinate index of ollama/gemma4:14b — the model
+	// whose raw (unfiltered) list index is 2, one past firstModelIndex of
+	// the raw list (index 1, ollama/gemma4:9b, since index 0 is the leading
+	// divider). Placing the cursor at a filtered index that coincidentally
+	// equals a DIFFERENT model's raw index is what triggers the bug: pick
+	// the filtered index that equals firstModelIndex(m.models.Items()).
+	rawFirst := firstModelIndex(m.models.Items())
+	visible := m.models.VisibleItems()
+	if rawFirst < 0 || rawFirst >= len(visible) {
+		t.Fatalf("rawFirst = %d out of range of %d visible items; test fixture assumption broken", rawFirst, len(visible))
+	}
+	coincidentItem, ok := visible[rawFirst].(modelItem)
+	if !ok {
+		t.Fatalf("visible[%d] = %T, want modelItem (test fixture assumption broken)", rawFirst, visible[rawFirst])
+	}
+	m.models.Select(rawFirst)
+
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = got.(model)
+
+	item, ok := m.models.SelectedItem().(modelItem)
+	if !ok {
+		t.Fatalf("after 'up' from a coincidental raw/filtered index match: SelectedItem() = %v (%T), want a valid modelItem — cursor jumped to an out-of-range raw-list index (was on %s at filtered index %d)",
+			m.models.SelectedItem(), m.models.SelectedItem(), coincidentItem.model.ID, rawFirst)
+	}
+	_ = item
 }
 
 // TestEnterModelPhaseCursorNeverOnDivider verifies that entering the model

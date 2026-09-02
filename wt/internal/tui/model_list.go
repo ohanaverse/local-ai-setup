@@ -240,21 +240,54 @@ func lastModelIndex(items []list.Item) int {
 }
 
 // snapSelectionOnModel keeps the model-picker cursor on a model row, never on
-// a family divider. prev is the cursor index before the navigation step that
-// produced the current cursor; the snap resumes in the direction of travel so
-// moving up onto a divider continues up into the previous group (rather than
-// snapping back onto the row just left). When prev is <0 (no meaningful
-// direction, e.g. an initial land), it prefers the next model row.
+// a family divider and never past the end of the currently visible item set.
+// bubbles/list v1.0.0's Select/Index/SelectedItem all operate in
+// VISIBLE-item coordinates once a filter is active (VisibleItems() is the
+// filtered slice; Items() always stays unfiltered) — using Items() here to
+// reason about the cursor was the root cause of a corrupted selection the
+// moment the model picker's filter narrowed the list, so this must read and
+// index into VisibleItems() throughout.
+//
+// It also clamps a stale, now-out-of-range cursor: bubbles/list does not
+// adjust Index()/the cursor when a filter query narrows VisibleItems() (its
+// FilterMatchesMsg handler updates the filtered set and returns immediately,
+// skipping the pagination/cursor clamp that a keystroke would otherwise
+// trigger), so a cursor that was valid in the larger pre-narrow view can
+// point past the end of the new, smaller one — leaving SelectedItem() nil
+// until something else moves the cursor. Simply detecting "cursor is on a
+// divider" and bailing early (the pre-fix behavior) does not catch this
+// case, since the stale index may not even be in range to inspect.
+//
+// prev is the cursor index (also visible-item-coordinate) before the
+// navigation step that produced the current cursor; the snap resumes in the
+// direction of travel so moving up onto a divider continues up into the
+// previous group (rather than snapping back onto the row just left). When
+// prev is <0, or when the cursor needed an out-of-range clamp (a coordinate
+// space change, not a simple up/down step — the "direction of travel"
+// heuristic does not apply), it prefers the next model row.
 func (m *model) snapSelectionOnModel(prev int) {
-	items := m.models.Items()
-	idx := m.models.Index()
-	if idx < 0 || idx >= len(items) {
+	items := m.models.VisibleItems()
+	if len(items) == 0 {
 		return
+	}
+	idx := m.models.Index()
+	outOfRange := idx < 0 || idx >= len(items)
+	if outOfRange {
+		if idx < 0 {
+			idx = 0
+		} else {
+			idx = len(items) - 1
+		}
 	}
 	if _, ok := items[idx].(dividerItem); !ok {
+		if outOfRange {
+			// Not a divider, but the cursor coordinate was stale; correct it
+			// even though no divider-avoidance walk is needed.
+			m.models.Select(idx)
+		}
 		return
 	}
-	if prev >= 0 && idx < prev {
+	if !outOfRange && prev >= 0 && idx < prev {
 		// Moved backward (e.g. up arrow): continue backward.
 		for i := idx - 1; i >= 0; i-- {
 			if _, ok := items[i].(modelItem); ok {
@@ -263,7 +296,7 @@ func (m *model) snapSelectionOnModel(prev int) {
 			}
 		}
 	}
-	// Forward (or unknown direction).
+	// Forward (unknown direction, or a coordinate-space clamp).
 	for i := idx + 1; i < len(items); i++ {
 		if _, ok := items[i].(modelItem); ok {
 			m.models.Select(i)

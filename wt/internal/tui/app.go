@@ -113,8 +113,8 @@ func (m model) Init() tea.Cmd {
 
 // isTyping reports whether the current phase is actively receiving character
 // input, in which case 'q' must not quit. The new-worktree prompt is a
-// textinput; the list filters (worktree and agent+command) are bubbles/list's
-// incremental filter.
+// textinput; the list filters (worktree, agent+command, and model picker)
+// are bubbles/list's incremental filter.
 func (m model) isTyping() bool {
 	if m.phase == phaseNewWorktree {
 		return true
@@ -122,7 +122,10 @@ func (m model) isTyping() bool {
 	if m.phase == phaseList && m.ready && m.list.FilterState() == list.Filtering {
 		return true
 	}
-	return m.phase == phaseAgent && m.agentList.FilterState() == list.Filtering
+	if m.phase == phaseAgent && m.agentList.FilterState() == list.Filtering {
+		return true
+	}
+	return m.phase == phaseModel && m.models.FilterState() == list.Filtering
 }
 
 // openNewWorktreePrompt transitions to the new-worktree prompt, resetting the
@@ -257,8 +260,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
 		// typed into a filter query reach the text input instead of being
 		// swallowed as navigation.
+		//
+		// Uses VisibleItems(), not Items(): bubbles/list v1.0.0's
+		// Index()/Select() are visible-item-coordinate once a filter is
+		// applied (FilterApplied, not just Filtering — this guard only
+		// skips Filtering), while Items() always stays unfiltered.
+		// Computing first/lastModelIndex from the unfiltered slice let a
+		// filtered-coordinate Index() coincidentally match a DIFFERENT
+		// model's unfiltered index, then Select() a raw list index that
+		// could be entirely outside the filtered set's range.
 		if m.phase == phaseModel && m.models.FilterState() != list.Filtering {
-			items := m.models.Items()
+			items := m.models.VisibleItems()
 			switch msg.String() {
 			case "up", "k":
 				if fi := firstModelIndex(items); fi >= 0 && m.models.Index() == fi {
@@ -379,6 +391,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Enter launches straight through.
 				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
+				// While the '/' filter input is focused, Enter must apply
+				// the filter query (bubbles/list's own AcceptWhileFiltering
+				// binding), not launch the highlighted row. Falling through
+				// to the bottom m.models.Update(msg) below lets bubbles/list
+				// handle it. Without this guard, Enter always ran the launch
+				// path regardless of filter state — committing an ollama
+				// check (and potentially rotation/usage state) for whatever
+				// model happened to be highlighted underneath the filter
+				// overlay, instead of narrowing the list as the user typed.
+				if m.models.FilterState() == list.Filtering {
+					break
+				}
 				// The highlighted list item is what gets launched.
 				highlighted, ok := m.models.SelectedItem().(modelItem)
 				if !ok {

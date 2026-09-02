@@ -1169,6 +1169,73 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 	}
 }
 
+// TestQDoesNotQuitWhileFilteringModelList asserts that 'q' types into the
+// model picker's filter query instead of quitting the TUI. isTyping() had no
+// phaseModel case (only phaseList and phaseAgent), so a query like "qwen"
+// quit the app on the first 'q' — even though the model picker's '/' filter
+// is enabled by default and advertised in the wrap-around/filter-key tests
+// above. This is the isTyping() half of the PR-review finding covering
+// mishandled filter keystrokes in the model picker.
+func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
+	models := []config.Model{
+		{ID: "ollama/qwen3.8:27b"},
+		{ID: "ollama/other"},
+	}
+	m := model{phase: phaseModel, width: 80, height: 24}
+	m.models = buildModelList(models, nil, themes.Default, 78, 22)
+	// Open the filter exactly like a user pressing '/'.
+	m.models, _ = m.models.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.models.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.models.FilterState())
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if !strings.Contains(gotModel.models.FilterInput.Value(), "q") {
+		t.Errorf("filter input = %q, want to contain q (quit hijacked the key)", gotModel.models.FilterInput.Value())
+	}
+}
+
+// TestEnterWhileFilteringAppliesFilterNotLaunch asserts that Enter, while
+// the model picker's filter input is focused (FilterState == Filtering),
+// is handled by bubbles/list's own AcceptWhileFiltering binding rather than
+// being intercepted by the phaseModel Enter case, which runs the ollama
+// check and launches the highlighted model. Before the fix, the top-level
+// "enter" case switched on m.phase and ran the launch path unconditionally,
+// so a keystroke meant to commit the filter query instead launched (and,
+// via launchAndRecord, could commit rotation/usage state for) whatever
+// model happened to be highlighted underneath the filter overlay.
+func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
+	models := []config.Model{
+		{ID: "ollama/qwen3.8:27b"},
+		{ID: "ollama/other"},
+	}
+	m := model{cfg: testConfig(), phase: phaseModel, width: 80, height: 24}
+	m.models = buildModelList(models, nil, themes.Default, 78, 22)
+	m.models, _ = m.models.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.models.FilterState() != list.Filtering {
+		t.Fatalf("filter state = %v, want Filtering", m.models.FilterState())
+	}
+
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", got)
+	}
+	if gotModel.phase != phaseModel {
+		t.Errorf("phase = %v, want phaseModel (Enter while filtering must not advance past the picker)", gotModel.phase)
+	}
+	if cmd != nil {
+		t.Errorf("expected nil cmd (no launch) for Enter while filtering, got %v", cmd)
+	}
+	if gotModel.status != "" {
+		t.Errorf("status = %q, want empty (Enter while filtering must not run the ollama check)", gotModel.status)
+	}
+}
+
 // TestModelPickerFilterReceivesJKKeys verifies that "j"/"k" keystrokes typed
 // into the model picker's filter query reach the filter text input instead
 // of being intercepted as wrap-around navigation. bubbles/list's Filter key
