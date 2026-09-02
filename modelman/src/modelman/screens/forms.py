@@ -541,17 +541,23 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 value=initial_per_token,
                 id="per-token-checkbox",
             )
-            yield Label("Input:", classes="pricing-label", id="input-price-label")
+            yield Label(
+                "Input ($/M tokens):", classes="pricing-label", id="input-price-label"
+            )
             yield Input(
                 value=initial_input_price,
                 id="input-price",
             )
-            yield Label("Cache:", classes="pricing-label", id="cache-price-label")
+            yield Label(
+                "Cache ($/M tokens):", classes="pricing-label", id="cache-price-label"
+            )
             yield Input(
                 value=initial_cache_price,
                 id="cache-price",
             )
-            yield Label("Output:", classes="pricing-label", id="output-price-label")
+            yield Label(
+                "Output ($/M tokens):", classes="pricing-label", id="output-price-label"
+            )
             yield Input(
                 value=initial_output_price,
                 id="output-price",
