@@ -1503,7 +1503,7 @@ async def test_model_form_missing_subscription_price_shows_error():
 
 
 @pytest.mark.asyncio
-async def test_model_form_both_sections_combined():
+async def test_model_form_both_sections_combined(stub_ollama_caps):
     """Both per-token and subscription pricing can be enabled together."""
     form = ModelForm(
         providers=["ollama"],
