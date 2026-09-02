@@ -100,7 +100,7 @@ def _format_price(value: float | None) -> str:
     preserved, and trailing zeros beyond two decimals are stripped.
     """
     if value is None:
-        return "—"
+        return "-"
     s = f"{value:.10f}".rstrip("0").rstrip(".")
     if "." not in s:
         s += ".00"
@@ -115,21 +115,21 @@ def _format_price(value: float | None) -> str:
 def _format_per_token(cost: Cost | None) -> str:
     """COST column: input/cache/output per-million-token prices."""
     if cost is None:
-        return "—"
+        return "-"
     prices = (
         cost.input_price_per_million,
         cost.cache_price_per_million,
         cost.output_price_per_million,
     )
     if all(p is None for p in prices):
-        return "—"
+        return "-"
     return f"${'/'.join(_format_price(p).lstrip('$') for p in prices)}"
 
 
 def _format_subscription(cost: Cost | None) -> str:
     """SUB column: subscription price abbreviated as mo/yr."""
     if cost is None or cost.subscription_price is None:
-        return "—"
+        return "-"
     suffix = "mo" if cost.subscription_period == "month" else "yr"
     return f"{_format_price(cost.subscription_price)}/{suffix}"
 

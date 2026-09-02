@@ -62,4 +62,112 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			t.Errorf("Title() %q missing %q", it.Title(), want)
 		}
 	}
+	// The model has no cost data, so both pricing columns render as
+	// hyphens and still live on the compact Title() line.
+	if !strings.Contains(it.Title(), "  -  -") {
+		t.Errorf("Title() %q missing absent pricing markers", it.Title())
+	}
+}
+
+// TestModelItemLinePricingAfterUsageCounts verifies that per-token and
+// subscription pricing strings are appended to the compact model line right
+// after the 1d/7d/30d usage counts, and that absent pricing renders as an em
+// dash while preserving dynamic column padding.
+func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	in := 0.10
+	cache := 0.05
+	out := 0.20
+	sub := 19.99
+	models := []config.Model{
+		{
+			ID:         "priced",
+			ProviderID: "openrouter",
+			Family:     "test",
+			Location:   config.LocationCloud,
+			Tags:       []string{"code"},
+			Cost: config.ModelCost{
+				InputPricePerMillion:  &in,
+				CachePricePerMillion:  &cache,
+				OutputPricePerMillion: &out,
+				SubscriptionPrice:     &sub,
+				SubscriptionPeriod:    "month",
+			},
+		},
+		{
+			ID:         "unpriced",
+			ProviderID: "openrouter",
+			Family:     "test",
+			Location:   config.LocationCloud,
+			Tags:       []string{"code"},
+		},
+	}
+	items := buildModelItems(models, map[string]string{
+		"priced":   "test",
+		"unpriced": "test",
+	}, store)
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+
+	pricedLine := items[0].Title()
+	for _, want := range []string{"0/0/0", "$0.10/0.05/0.20", "$19.99/mo"} {
+		if !strings.Contains(pricedLine, want) {
+			t.Errorf("priced line %q missing %q", pricedLine, want)
+		}
+	}
+
+	countsIdx := strings.Index(pricedLine, "0/0/0")
+	ptIdx := strings.Index(pricedLine, "$0.10/0.05/0.20")
+	subIdx := strings.Index(pricedLine, "$19.99/mo")
+	if countsIdx == -1 || ptIdx == -1 || subIdx == -1 {
+		t.Fatalf("expected segments missing from %q", pricedLine)
+	}
+	if ptIdx < countsIdx {
+		t.Errorf("per-token pricing appears before usage counts in %q", pricedLine)
+	}
+	if subIdx < ptIdx {
+		t.Errorf("subscription pricing appears before per-token pricing in %q", pricedLine)
+	}
+
+	unpricedLine := items[1].Title()
+	unpricedCountsIdx := strings.Index(unpricedLine, "0/0/0")
+	unpricedDashIdx := strings.Index(unpricedLine, "-")
+	if unpricedCountsIdx == -1 || unpricedDashIdx == -1 || unpricedDashIdx < unpricedCountsIdx {
+		t.Errorf("unpriced line %q missing pricing markers after usage counts", unpricedLine)
+	}
+	if strings.Contains(unpricedLine, "$") {
+		t.Errorf("unpriced line %q unexpectedly contains price", unpricedLine)
+	}
+}
+
+// TestModelItemLinePartialPerTokenPricing verifies that when a model has
+// input and output per-token prices but no cache price, the per-token
+// segment renders with a single leading "$" and a hyphen for the missing
+// cache slot: "$0.50/-/1.00".
+func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	in := 0.50
+	out := 1.00
+	models := []config.Model{
+		{
+			ID:         "partial",
+			ProviderID: "openrouter",
+			Family:     "test",
+			Location:   config.LocationCloud,
+			Tags:       []string{"code"},
+			Cost: config.ModelCost{
+				InputPricePerMillion:  &in,
+				OutputPricePerMillion: &out,
+			},
+		},
+	}
+	items := buildModelItems(models, map[string]string{"partial": "test"}, store)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	line := items[0].Title()
+	if !strings.Contains(line, "$0.50/-/1.00") {
+		t.Errorf("partial pricing line %q missing expected $0.50/-/1.00", line)
+	}
 }

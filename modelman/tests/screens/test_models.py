@@ -135,7 +135,7 @@ def test_format_location_unexpected_value():
 
 
 def test_format_price_none():
-    assert _format_price(None) == "—"
+    assert _format_price(None) == "-"
 
 
 def test_format_price_whole():
@@ -167,12 +167,12 @@ def test_format_per_token_all_fields():
 
 def test_format_per_token_partial():
     c = Cost(input_price_per_million=2.0, output_price_per_million=3.0)
-    assert _format_per_token(c) == "$2.00/—/3.00"
+    assert _format_per_token(c) == "$2.00/-/3.00"
 
 
 def test_format_per_token_none():
-    assert _format_per_token(None) == "—"
-    assert _format_per_token(Cost()) == "—"
+    assert _format_per_token(None) == "-"
+    assert _format_per_token(Cost()) == "-"
 
 
 def test_format_subscription_month():
@@ -186,8 +186,8 @@ def test_format_subscription_year():
 
 
 def test_format_subscription_none():
-    assert _format_subscription(None) == "—"
-    assert _format_subscription(Cost()) == "—"
+    assert _format_subscription(None) == "-"
+    assert _format_subscription(Cost()) == "-"
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +562,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
         row0 = [str(c) for c in mt.get_row_at(0)]
         assert "▤" in row0  # local icon
         assert "$20.00/mo" in row0  # SUB column
-        assert "—" in row0  # COST column (no per-token prices)
+        assert "-" in row0  # COST column (no per-token prices)
         assert "Y" not in row0 and "–" in row0  # exposed off renders as "–"
 
 
@@ -630,8 +630,8 @@ async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path,
         subscription_row = next(r for r in rows if "subscription" in r)
 
         assert per_token_row[6] == "$1.00/0.50/2.00"
-        assert per_token_row[7] == "—"
-        assert subscription_row[6] == "—"
+        assert per_token_row[7] == "-"
+        assert subscription_row[6] == "-"
         assert subscription_row[7] == "$20.00/mo"
 
 
