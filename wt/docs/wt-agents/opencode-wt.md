@@ -49,12 +49,14 @@ The `opencode-wt` launcher does not manage credentials — it relies on the user
 
 OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects ollama models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable:
 ```json
-{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""}}}}
+{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""},"models":{"<model>":{"name":"<model>"}}}}}
 ```
 
 OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher constructs the literal `ollama/` prefix from the **bare** provider-specific name (`config.Model.ModelName`), not from `config.Model.ID`. Using `m.ID` here would produce `ollama/ollama/<model>` (a double prefix) because the registry already prefixes IDs with the provider id. This is the symmetric trap to the one in `claude-wt`/`codex-wt`/`copilot-wt`, where the launcher must NOT add a prefix.
 
 The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) with a `/v1` suffix. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`).
+
+The builtin `ollama` provider resolves model ids against OpenCode's own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. The explicit `models` map registers the bare name so OpenCode accepts it; this is the same catalog-bypass the gateway mode uses (below), just on the builtin provider instead of a custom one.
 
 ### Gateway mode (LiteLLM)
 
@@ -80,4 +82,4 @@ OpenCode reads `AGENTS.md` natively and also has its own `/init` command for pro
 
 ## Verified on this machine
 
-Verified on this machine, 2026-06-11 — opencode v1.17.3 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode); session-resume and project-id behavior were verified against the binary's `--help` output and `git rev-list` output on this repo.
+Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode); session-resume and project-id behavior were verified against the binary's `--help` output and `git rev-list` output on this repo. The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.
