@@ -221,6 +221,9 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 					Options struct {
 						BaseURL string `json:"baseURL"`
 					} `json:"options"`
+					Models map[string]struct {
+						Name string `json:"name"`
+					} `json:"models"`
 				} `json:"ollama"`
 			} `json:"provider"`
 		}
@@ -232,6 +235,13 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 		}
 		if parsed.Provider.Ollama.Options.BaseURL != "http://localhost:11434/v1" {
 			t.Errorf("baseURL = %q, want the Ollama /v1 endpoint", parsed.Provider.Ollama.Options.BaseURL)
+		}
+		entry, ok := parsed.Provider.Ollama.Models[m.ModelName]
+		if !ok {
+			t.Fatalf("provider models map lacks bare model name %q (opencode rejects catalog-unknown ids): %v", m.ModelName, parsed.Provider.Ollama.Models)
+		}
+		if entry.Name != m.ModelName {
+			t.Errorf("models[%q].name = %q, want %q", m.ModelName, entry.Name, m.ModelName)
 		}
 	})
 

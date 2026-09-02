@@ -63,10 +63,16 @@ func (opencodeDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		))
 		return lc
 	}
+	// The builtin "ollama" provider resolves model ids against opencode's own
+	// catalog (models.dev), so a registry model absent from that catalog —
+	// every local/cloud model wt launches — is rejected with
+	// ProviderModelNotFoundError. Declaring the bare name in the provider's
+	// models map registers it explicitly, the same workaround the litellm
+	// branch uses for the custom provider.
 	lc.Env = append(lc.Env,
 		"OPENCODE_CONFIG_CONTENT="+fmt.Sprintf(
-			`{"model":"ollama/%s","provider":{"ollama":{"options":{"baseURL":"%s","apiKey":""}}}}`,
-			m.ModelName, opencodeDriver{}.OllamaURL(),
+			`{"model":"ollama/%s","provider":{"ollama":{"options":{"baseURL":"%s","apiKey":""},"models":{%q:{"name":%q}}}}}`,
+			m.ModelName, opencodeDriver{}.OllamaURL(), m.ModelName, m.ModelName,
 		),
 	)
 	return lc
