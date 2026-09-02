@@ -32,23 +32,26 @@ type event struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Store reads and appends to the usage history file.
-type Store struct {
+// Store is an interface for recording and querying model-launch history.
+type Store interface {
+	Record(modelID string) error
+	Counts(modelIDs []string) map[string]UsageCounts
+}
+
+// StoreImpl reads and appends to the usage history file.
+type StoreImpl struct {
 	dir string
 }
 
-// NewStore returns a Store using the default config directory.
-func NewStore() *Store {
+func NewStore() *StoreImpl {
 	return NewStoreAt(config.Dir())
 }
 
-// NewStoreAt returns a Store using dir as the config directory.
-func NewStoreAt(dir string) *Store {
-	return &Store{dir: dir}
+func NewStoreAt(dir string) *StoreImpl {
+	return &StoreImpl{dir: dir}
 }
 
-// path returns the usage file path.
-func (s *Store) path() string {
+func (s *StoreImpl) path() string {
 	return filepath.Join(s.dir, "usage.jsonl")
 }
 
@@ -65,7 +68,7 @@ var now = time.Now
 // the same config dir) so neither's just-recorded event is silently dropped
 // by the other's later rename. The sidecar pattern keeps the lock attached
 // to the file's location while the target file is renamed freely.
-func (s *Store) Record(modelID string) error {
+func (s *StoreImpl) Record(modelID string) error {
 	e := event{ModelID: modelID, Timestamp: now().UTC()}
 	line, err := json.Marshal(e)
 	if err != nil {
@@ -131,7 +134,7 @@ func pruneOlderThan(data []byte, asOf time.Time, window time.Duration) ([]byte, 
 // are returned with no error — a truncated read only skews displayed
 // numbers. Record's prune path is where scan errors are surfaced, because
 // there the result overwrites the on-disk history.
-func (s *Store) Counts(modelIDs []string) map[string]UsageCounts {
+func (s *StoreImpl) Counts(modelIDs []string) map[string]UsageCounts {
 	want := map[string]bool{}
 	for _, id := range modelIDs {
 		want[id] = true
@@ -183,11 +186,9 @@ func CompositeScore(c UsageCounts) int {
 }
 
 // AggregateByFamily sums per-model usage counts into per-family buckets.
-// familyOf maps the FULL model catalog's IDs to their families (built from
-// the registry, not the currently-eligible subset, so a family's total
-// usage is accurate even when a tag/family filter exposes only some of its
-// models); counts are the per-model counts Store.Counts returned for those
-// same IDs. Counts entries for IDs absent from familyOf are ignored.
+// familyOf maps model IDs to their families; counts are the per-model counts
+// Store.Counts returned for those same IDs. Counts entries for IDs absent from
+// familyOf are ignored.
 //
 // Families are not pre-seeded: only families with at least one model whose
 // counts are non-zero appear as keys, so a missing family key means zero

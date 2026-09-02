@@ -2,11 +2,10 @@ package tui
 
 import (
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -19,40 +18,27 @@ var newUsageStore = realNewUsageStore
 
 // realNewUsageStore is the production implementation of the newUsageStore
 // seam: a Store rooted at the default config dir.
-func realNewUsageStore() *usage.Store { return usage.NewStore() }
+func realNewUsageStore() usage.Store { return usage.NewStore() }
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
 type modelItem struct {
 	model       config.Model
 	counts      usage.UsageCounts
 	familyCount int // 30-day launches for the model's family
+	line        string
 }
 
-// FilterValue returns the model ID so the list's built-in fuzzy filter
-// (currently unused) would narrow by ID.
-func (m modelItem) FilterValue() string { return m.model.ID }
+// FilterValue returns the full line so the list's built-in fuzzy filter
+// narrows by both family and ID.
+func (m modelItem) FilterValue() string { return m.line }
 
-// Title renders the model ID — the primary identifier users scan for.
-func (m modelItem) Title() string { return m.model.ID }
+// Title renders the compact one-line model representation.
+func (m modelItem) Title() string { return m.line }
 
-// Description renders the metadata columns: provider, location, tags, family
-// usage, and 1d/7d/30d model usage. Family usage helps the user see the sort
-// basis and spot family-selection bias.
-func (m modelItem) Description() string {
-	tags := strings.Join(m.model.Tags, ",")
-	if tags == "" {
-		tags = "-"
-	}
-	return fmt.Sprintf("%-10s %-6s %-20s fam:%-3d 1d:%-3d 7d:%-3d 30d:%-3d",
-		m.model.ProviderID,
-		string(m.model.Location),
-		tags,
-		m.familyCount,
-		m.counts.OneDay,
-		m.counts.SevenDay,
-		m.counts.ThirtyDay,
-	)
-}
+// Description returns empty because the compact view is one line per item.
+// list.DefaultDelegate.Render still calls this method; we keep it to satisfy
+// the interface while rendering nothing.
+func (m modelItem) Description() string { return "" }
 
 // indexOfModelID returns the index of the model with the given ID in models,
 // or -1 if not found. Used to validate a pinned -M model against the agent's
@@ -65,51 +51,6 @@ func indexOfModelID(models []config.Model, id string) int {
 		}
 	}
 	return -1
-}
-
-// otherFamily is the display label for models whose Family is empty.
-const otherFamily = "— other"
-
-// familyDividerLabel renders a family-group header: the family name (or
-// otherFamily when empty) plus its 30-day launch count.
-func familyDividerLabel(family string, thirtyDay int) string {
-	if family == "" {
-		family = otherFamily
-	}
-	return fmt.Sprintf("◈ %s · 30d:%d", family, thirtyDay)
-}
-
-// dividerItem is a non-selectable family header row in the model picker. It
-// renders the family name plus its 30-day count, separating model rows of
-// different families. It is never a launch target.
-type dividerItem struct {
-	label string
-}
-
-// FilterValue returns "" so dividers never match the list's fuzzy filter
-// (filtering shows only model rows).
-func (d dividerItem) FilterValue() string { return "" }
-
-// modelListDelegate wraps ThemedListDelegate so dividerItem rows render as
-// unhighlighted family headers regardless of the cursor position. Model rows
-// fall through to the themed DefaultDelegate. Embedding the value (not a
-// pointer) preserves Height/Spacing/Update/ShortHelp/FullHelp from
-// DefaultDelegate, all of which have value receivers.
-type modelListDelegate struct {
-	list.DefaultDelegate
-	headerStyle lipgloss.Style
-}
-
-func (d modelListDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
-	if dv, ok := item.(dividerItem); ok {
-		// No trailing newline: populatedView joins rows with its own
-		// Spacing()+1 newlines, matching DefaultDelegate's "title\ndesc"
-		// (no trailing newline) contract. A trailing "\n" here would double
-		// the blank-line gap under every family header.
-		_, _ = w.Write([]byte(d.headerStyle.Render(dv.label)))
-		return
-	}
-	d.DefaultDelegate.Render(w, m, index, item)
 }
 
 // sortModelsByUsage sorts models in place (stable) descending by family
@@ -146,165 +87,82 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 	})
 }
 
-// withFamilyDividers returns list items for the (already usage-sorted) models,
-// inserting a dividerItem before each distinct family group. Each model row
-// carries its own 1d/7d/30d counts plus its family's 30-day count for display.
-func withFamilyDividers(models []config.Model, modelCounts, familyCounts map[string]usage.UsageCounts) []list.Item {
-	items := make([]list.Item, 0, len(models)*2)
-	prevFamily := ""
-	havePrev := false
+// buildModelItems returns usage-sorted items for the model picker,
+// computing a compact one-line representation for each model that
+// includes family context and usage counts. familyOf maps the FULL
+// catalog's model IDs to families so family totals are accurate even
+// when tags or families narrow the eligible slice.
+func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store) []*modelItem {
+	// We need per-model and per-family counts for the line format.
+	// Count over the full catalog (familyOf's keys), not just the
+	// eligible subset, so a family's 30-day total includes launches of
+	// models that are currently filtered out.
+	catalogIDs := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		catalogIDs = append(catalogIDs, id)
+	}
+	modelCounts := s.Counts(catalogIDs)
+	familyCounts := usage.AggregateByFamily(familyOf, modelCounts)
+
+	// Sort the models in place.
+	sortModelsByUsage(models, familyCounts, modelCounts)
+
+	// Compute max widths for alignment.
+	famWidth := 0
+	idWidth := 0
+	for _, m := range models {
+		if len(m.Family) > famWidth {
+			famWidth = len(m.Family)
+		}
+		if len(m.ID) > idWidth {
+			idWidth = len(m.ID)
+		}
+	}
+
+	items := make([]*modelItem, 0, len(models))
 	for _, m := range models {
 		fam := m.Family
-		if !havePrev || fam != prevFamily {
-			items = append(items, dividerItem{label: familyDividerLabel(fam, familyCounts[fam].ThirtyDay)})
-			prevFamily = fam
-			havePrev = true
+		famDisp := fam
+		fam30d := 0
+		if fam == "" {
+			famDisp = "-"
+		} else {
+			fam30d = familyCounts[fam].ThirtyDay
 		}
-		items = append(items, modelItem{
+
+		c := modelCounts[m.ID]
+		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
+
+		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s",
+			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr)
+
+		if len(m.Tags) > 0 {
+			line += fmt.Sprintf(" [%s]", strings.Join(m.Tags, ","))
+		}
+
+		items = append(items, &modelItem{
 			model:       m,
-			counts:      modelCounts[m.ID],
-			familyCount: familyCounts[fam].ThirtyDay,
+			counts:      c,
+			familyCount: fam30d,
+			line:        line,
 		})
 	}
 	return items
 }
 
-// buildModelListWithFamilies builds the usage-sorted, family-grouped model
-// picker list. It sorts eligible models by family-then-model usage, inserts
-// family divider headers, and returns the list plus a modelID→list-index map
-// so callers can position the cursor (bypassing divider rows). familyOf maps
-// the FULL catalog's model IDs to their families (every eligible model must
-// appear in it, since it is also the source of the counted IDs), so a
-// family's total usage is accurate even when a tag/family filter narrows the
-// eligible set.
-func buildModelListWithFamilies(models []config.Model, familyOf map[string]string, theme themes.Theme, width, height int) (list.Model, map[string]int) {
-	store := newUsageStore()
-	// ONE pass over usage.jsonl: Counts runs over the full catalog's IDs
-	// (familyOf's keys), and family totals are summed in memory from those
-	// per-model counts. Calling Counts plus the former FamilyCounts made
-	// every picker entry open and scan the same file twice, and duplicated
-	// Counts' scan/bucket loop in a second place.
-	catalogIDs := make([]string, 0, len(familyOf))
-	for id := range familyOf {
-		catalogIDs = append(catalogIDs, id)
+// clampModelSelection guards against bubbles v1.0.0 leaving
+// m.Index() outside [0, len(VisibleItems())) after a filter
+// narrows the list. With dividers gone there is no
+// direction-of-travel walk or divider-skipping — just the clamp.
+func clampModelSelection(m *model) tea.Cmd {
+	visible := m.models.VisibleItems()
+	if len(visible) == 0 {
+		return nil
 	}
-	modelCounts := store.Counts(catalogIDs)
-	familyCounts := usage.AggregateByFamily(familyOf, modelCounts)
-
-	sortModelsByUsage(models, familyCounts, modelCounts)
-	items := withFamilyDividers(models, modelCounts, familyCounts)
-
-	delegate := modelListDelegate{
-		DefaultDelegate: ThemedListDelegate(theme),
-		headerStyle: lipgloss.NewStyle().
-			Foreground(theme.Token(themes.TokenHeader)).
-			Bold(true),
+	if i := m.models.Index(); i < 0 || i >= len(visible) {
+		m.models.Select(0)
 	}
-	ml := list.New(items, delegate, width, height)
-	ml.Title = "Models"
-	ml.SetShowStatusBar(false)
-
-	idIndex := make(map[string]int, len(models))
-	for i, it := range items {
-		if mi, ok := it.(modelItem); ok {
-			idIndex[mi.model.ID] = i
-		}
-	}
-	return ml, idIndex
-}
-
-// firstModelIndex returns the index of the first model row in items (skipping
-// leading family dividers), or -1 if there are no model rows.
-func firstModelIndex(items []list.Item) int {
-	for i, it := range items {
-		if _, ok := it.(modelItem); ok {
-			return i
-		}
-	}
-	return -1
-}
-
-// lastModelIndex returns the index of the last model row in items, or -1.
-func lastModelIndex(items []list.Item) int {
-	for i := len(items) - 1; i >= 0; i-- {
-		if _, ok := items[i].(modelItem); ok {
-			return i
-		}
-	}
-	return -1
-}
-
-// snapSelectionOnModel keeps the model-picker cursor on a model row, never on
-// a family divider and never past the end of the currently visible item set.
-// bubbles/list v1.0.0's Select/Index/SelectedItem all operate in
-// VISIBLE-item coordinates once a filter is active (VisibleItems() is the
-// filtered slice; Items() always stays unfiltered) — using Items() here to
-// reason about the cursor was the root cause of a corrupted selection the
-// moment the model picker's filter narrowed the list, so this must read and
-// index into VisibleItems() throughout.
-//
-// It also clamps a stale, now-out-of-range cursor: bubbles/list does not
-// adjust Index()/the cursor when a filter query narrows VisibleItems() (its
-// FilterMatchesMsg handler updates the filtered set and returns immediately,
-// skipping the pagination/cursor clamp that a keystroke would otherwise
-// trigger), so a cursor that was valid in the larger pre-narrow view can
-// point past the end of the new, smaller one — leaving SelectedItem() nil
-// until something else moves the cursor. Simply detecting "cursor is on a
-// divider" and bailing early (the pre-fix behavior) does not catch this
-// case, since the stale index may not even be in range to inspect.
-//
-// prev is the cursor index (also visible-item-coordinate) before the
-// navigation step that produced the current cursor; the snap resumes in the
-// direction of travel so moving up onto a divider continues up into the
-// previous group (rather than snapping back onto the row just left). When
-// prev is <0, or when the cursor needed an out-of-range clamp (a coordinate
-// space change, not a simple up/down step — the "direction of travel"
-// heuristic does not apply), it prefers the next model row.
-func (m *model) snapSelectionOnModel(prev int) {
-	items := m.models.VisibleItems()
-	if len(items) == 0 {
-		return
-	}
-	idx := m.models.Index()
-	outOfRange := idx < 0 || idx >= len(items)
-	if outOfRange {
-		if idx < 0 {
-			idx = 0
-		} else {
-			idx = len(items) - 1
-		}
-	}
-	if _, ok := items[idx].(dividerItem); !ok {
-		if outOfRange {
-			// Not a divider, but the cursor coordinate was stale; correct it
-			// even though no divider-avoidance walk is needed.
-			m.models.Select(idx)
-		}
-		return
-	}
-	if !outOfRange && prev >= 0 && idx < prev {
-		// Moved backward (e.g. up arrow): continue backward.
-		for i := idx - 1; i >= 0; i-- {
-			if _, ok := items[i].(modelItem); ok {
-				m.models.Select(i)
-				return
-			}
-		}
-	}
-	// Forward (unknown direction, or a coordinate-space clamp).
-	for i := idx + 1; i < len(items); i++ {
-		if _, ok := items[i].(modelItem); ok {
-			m.models.Select(i)
-			return
-		}
-	}
-	// Defensive: a divider is normally followed by a model row, but cover the edge where none exists.
-	for i := idx - 1; i >= 0; i-- {
-		if _, ok := items[i].(modelItem); ok {
-			m.models.Select(i)
-			return
-		}
-	}
+	return nil
 }
 
 // phaseModelView renders the model picker screen: the list of

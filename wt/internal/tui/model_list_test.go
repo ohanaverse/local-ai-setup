@@ -22,7 +22,7 @@ func TestPhaseModelViewRendersStatus(t *testing.T) {
 		tag:    "code",
 		status: "launch failed: exec: \"copilot\": executable file not found",
 		models: list.New(
-			[]list.Item{modelItem{model: config.Model{ID: "copilot/native"}}},
+			[]list.Item{&modelItem{model: config.Model{ID: "copilot/native"}}},
 			list.NewDefaultDelegate(), 78, 22),
 		width: 80, height: 24, theme: themes.Default,
 	}
@@ -32,20 +32,34 @@ func TestPhaseModelViewRendersStatus(t *testing.T) {
 	}
 }
 
-// TestModelItemDescriptionShowsCounts verifies the picker description line
-// exposes the 1d/7d/30d counts so users can see their model bias.
-func TestModelItemDescriptionShowsCounts(t *testing.T) {
-	it := modelItem{
-		model: config.Model{
+// TestModelItemDescriptionEmptyCountsInLine verifies the compact one-line
+// view: Description() is empty (the delegate's description row renders
+// nothing) and the 1d/7d/30d counts live on the Title() line instead.
+func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
+	store := &mockStore{
+		counts: map[string]usage.UsageCounts{
+			"ollama/gemma4:9b": {OneDay: 2, SevenDay: 5, ThirtyDay: 10},
+		},
+	}
+	items := buildModelItems([]config.Model{
+		{
 			ID:         "ollama/gemma4:9b",
 			ProviderID: "ollama",
+			Family:     "gemma4",
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-		counts: usage.UsageCounts{OneDay: 2, SevenDay: 5, ThirtyDay: 10},
+	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
 	}
-	desc := it.Description()
-	if !strings.Contains(desc, "1d:2") || !strings.Contains(desc, "7d:5") || !strings.Contains(desc, "30d:10") {
-		t.Fatalf("Description %q missing expected counts", desc)
+	it := items[0]
+	if desc := it.Description(); desc != "" {
+		t.Errorf("Description() = %q, want empty (compact view; counts render on the line)", desc)
+	}
+	for _, want := range []string{"gemma4", "2/5/10", "ollama/gemma4:9b"} {
+		if !strings.Contains(it.Title(), want) {
+			t.Errorf("Title() %q missing %q", it.Title(), want)
+		}
 	}
 }

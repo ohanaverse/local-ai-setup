@@ -171,22 +171,17 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	}
 
 	// Every model row in the picker must be in the gemma4 family; the
-	// design-tag llama3 model must be filtered out. Family divider header
-	// rows are expected (the gemma4 group gets a leading divider); they are
-	// not launch targets, so they are skipped here and their label is just
-	// the family header.
+	// design-tag llama3 model must be filtered out. The compact layout has
+	// no divider rows — every item is a launchable model row.
 	items := nm.models.Items()
 	if len(items) == 0 {
 		t.Fatal("picker list is empty after phaseAgent Enter")
 	}
 	sawModel := false
 	for _, it := range items {
-		if _, ok := it.(dividerItem); ok {
-			continue
-		}
-		mi, ok := it.(modelItem)
+		mi, ok := it.(*modelItem)
 		if !ok {
-			t.Fatalf("picker item is %T, want modelItem", it)
+			t.Fatalf("picker item is %T, want *modelItem", it)
 		}
 		sawModel = true
 		if mi.model.Family != "gemma4" {
