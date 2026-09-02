@@ -15,7 +15,7 @@ import (
 // Rotation reads and writes the single global rotation.state file.
 type Rotation struct {
 	dir   string
-	store *usage.Store
+	store usage.Store
 }
 
 // New returns a Rotation using the default config directory.

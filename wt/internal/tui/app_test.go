@@ -1186,21 +1186,15 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 // above. This is the isTyping() half of the PR-review finding covering
 // mishandled filter keystrokes in the model picker.
 func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
-	// Isolate the usage store: buildModelListWithFamilies scans it for the
-	// family-usage sort.
+	// Isolate the usage store: buildModelItems scans it for the family-usage
+	// sort.
 	stubUsageStore(t)
 	models := []config.Model{
-		{ID: "ollama/qwen3.8:27b"},
+		{ID: "ollama/qwen3.8:27b", Family: "qwen3.8"},
 		{ID: "ollama/other"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
-	// Build through the production family-aware path: divider(0),
-	// qwen3.8:27b(1), other(2).
-	ml, _ := buildModelListWithFamilies(models, map[string]string{
-		"ollama/qwen3.8:27b": "qwen3.8",
-		"ollama/other":       "",
-	}, themes.Default, 78, 22)
-	m.models = ml
+	m.models = compactModelList(t, models)
 	// Open the filter exactly like a user pressing '/'.
 	m.models, _ = m.models.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.models.FilterState() != list.Filtering {
@@ -1227,17 +1221,13 @@ func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
 // via launchAndRecord, could commit rotation/usage state for) whatever
 // model happened to be highlighted underneath the filter overlay.
 func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
-	stubUsageStore(t) // buildModelListWithFamilies scans the usage store
+	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
-		{ID: "ollama/qwen3.8:27b"},
+		{ID: "ollama/qwen3.8:27b", Family: "qwen3.8"},
 		{ID: "ollama/other"},
 	}
 	m := model{cfg: testConfig(), phase: phaseModel, width: 80, height: 24}
-	ml, _ := buildModelListWithFamilies(models, map[string]string{
-		"ollama/qwen3.8:27b": "qwen3.8",
-		"ollama/other":       "",
-	}, themes.Default, 78, 22)
-	m.models = ml
+	m.models = compactModelList(t, models)
 	m.models, _ = m.models.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.models.FilterState() != list.Filtering {
 		t.Fatalf("filter state = %v, want Filtering", m.models.FilterState())
@@ -1268,17 +1258,13 @@ func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
 // before bubbles/list's own filter input ever saw them. A query like
 // "kimi" would silently drop its leading "k". Flagged in PR #82 review.
 func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
-	stubUsageStore(t) // buildModelListWithFamilies scans the usage store
+	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
 		{ID: "ollama/kimi"},
 		{ID: "ollama/other"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
-	ml, _ := buildModelListWithFamilies(models, map[string]string{
-		"ollama/kimi":  "",
-		"ollama/other": "",
-	}, themes.Default, 78, 22)
-	m.models = ml
+	m.models = compactModelList(t, models)
 
 	// Open the filter exactly like a user pressing '/'.
 	m.models, _ = m.models.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
@@ -1286,7 +1272,7 @@ func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
 		t.Fatalf("filter state = %v, want Filtering", m.models.FilterState())
 	}
 	if idx := m.models.Index(); idx != 0 {
-		t.Fatalf("cursor index = %d, want 0 (bubbles/list resets to start on filter open; index 0 is the leading family divider in the family-aware layout)", idx)
+		t.Fatalf("cursor index = %d, want 0 (bubbles/list resets to start on filter open)", idx)
 	}
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
@@ -1304,28 +1290,24 @@ func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
 // wrap by default. Locks down the wrap-around behavior added in PR #82,
 // which previously had no direct test (flagged in review).
 func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
-	stubUsageStore(t) // buildModelListWithFamilies scans the usage store
+	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
 		{ID: "ollama/a"},
 		{ID: "ollama/b"},
 		{ID: "ollama/c"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
-	// Family-aware production layout: divider(0), a(1), b(2), c(3) — all
-	// three models share an empty family, so only the leading divider exists.
-	ml, _ := buildModelListWithFamilies(models, map[string]string{
-		"ollama/a": "", "ollama/b": "", "ollama/c": "",
-	}, themes.Default, 78, 22)
-	m.models = ml
-	m.models.Select(1) // first model row; index 0 is the leading divider
+	// Compact production layout: a(0), b(1), c(2) — no dividers.
+	m.models = compactModelList(t, models)
+	m.models.Select(0) // first model row
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	gotModel, ok := got.(model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", got)
 	}
-	if got := gotModel.models.Index(); got != 3 {
-		t.Errorf("index after up-wrap = %d, want 3 (last model row)", got)
+	if got := gotModel.models.Index(); got != 2 {
+		t.Errorf("index after up-wrap = %d, want 2 (last model row)", got)
 	}
 }
 
@@ -1334,27 +1316,24 @@ func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
 // wrap-around behavior added in PR #82, which previously had no direct
 // test (flagged in review).
 func TestModelPickerWrapsFromBottomToTop(t *testing.T) {
-	stubUsageStore(t) // buildModelListWithFamilies scans the usage store
+	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
 		{ID: "ollama/a"},
 		{ID: "ollama/b"},
 		{ID: "ollama/c"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
-	// Family-aware production layout: divider(0), a(1), b(2), c(3).
-	ml, _ := buildModelListWithFamilies(models, map[string]string{
-		"ollama/a": "", "ollama/b": "", "ollama/c": "",
-	}, themes.Default, 78, 22)
-	m.models = ml
-	m.models.Select(3) // last model row
+	// Compact production layout: a(0), b(1), c(2) — no dividers.
+	m.models = compactModelList(t, models)
+	m.models.Select(2) // last model row
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	gotModel, ok := got.(model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", got)
 	}
-	if got := gotModel.models.Index(); got != 1 {
-		t.Errorf("index after down-wrap = %d, want 1 (first model row; 0 is the leading divider)", got)
+	if got := gotModel.models.Index(); got != 0 {
+		t.Errorf("index after down-wrap = %d, want 0 (first model row)", got)
 	}
 }
 

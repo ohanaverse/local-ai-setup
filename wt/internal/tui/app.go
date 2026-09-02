@@ -52,11 +52,11 @@ type model struct {
 	list  list.Model
 	ready bool
 
-	phase    phase
-	agent    string             // current agent name
-	tag      string             // active rotation tag group
-	cfg      *config.Config // loaded config for the model catalog
-	theme    themes.Theme       // active color theme; passed from cmd/wt
+	phase phase
+	agent string         // current agent name
+	tag   string         // active rotation tag group
+	cfg   *config.Config // loaded config for the model catalog
+	theme themes.Theme   // active color theme; passed from cmd/wt
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
@@ -264,27 +264,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Uses VisibleItems(), not Items(): bubbles/list v1.0.0's
 		// Index()/Select() are visible-item-coordinate once a filter is
 		// applied (FilterApplied, not just Filtering — this guard only
-		// skips Filtering), while Items() always stays unfiltered.
-		// Computing first/lastModelIndex from the unfiltered slice let a
-		// filtered-coordinate Index() coincidentally match a DIFFERENT
-		// model's unfiltered index, then Select() a raw list index that
-		// could be entirely outside the filtered set's range.
+		// skips Filtering), so the wrap edges must be computed in the
+		// same filtered coordinates the cursor moves in.
 		if m.phase == phaseModel && m.models.FilterState() != list.Filtering {
 			items := m.models.VisibleItems()
 			switch msg.String() {
 			case "up", "k":
-				if fi := firstModelIndex(items); fi >= 0 && m.models.Index() == fi {
-					if li := lastModelIndex(items); li >= 0 {
-						m.models.Select(li)
-						return m, nil
-					}
+				if m.models.Index() == 0 {
+					m.models.Select(len(items) - 1)
+					return m, nil
 				}
 			case "down", "j":
-				if li := lastModelIndex(items); li >= 0 && m.models.Index() == li {
-					if fi := firstModelIndex(items); fi >= 0 {
-						m.models.Select(fi)
-						return m, nil
-					}
+				if m.models.Index() == len(items)-1 {
+					m.models.Select(0)
+					return m, nil
 				}
 			}
 		}
@@ -404,7 +397,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 				// The highlighted list item is what gets launched.
-				highlighted, ok := m.models.SelectedItem().(modelItem)
+				highlighted, ok := m.models.SelectedItem().(*modelItem)
 				if !ok {
 					return m, nil
 				}
@@ -488,10 +481,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.phase == phaseModel && m.width > 0 && m.height > 0 {
-		prev := m.models.Index()
 		var cmd tea.Cmd
 		m.models, cmd = m.models.Update(msg)
-		m.snapSelectionOnModel(prev)
+		clampModelSelection(&m)
 		return m, cmd
 	}
 	if m.phase == phaseAgent && m.width > 0 && m.height > 0 {
@@ -678,17 +670,29 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m, nil
 	}
 
-	// Build the sorted, family-grouped model list once. Family counts come
-	// from the full catalog (m.cfg.Models), so a family's total usage is
-	// accurate even when the -T/-F filters narrow the eligible models.
-	familyOf := make(map[string]string, len(m.cfg.Models))
-	for _, mm := range m.cfg.Models {
-		familyOf[mm.ID] = mm.Family
+	// Build the sorted, compact model list.
+	items := buildModelItems(models, newUsageStore())
+	delegate := ThemedListDelegate(m.theme)
+	delegate.ShowDescription = false
+	delegate.SetSpacing(0)
+
+	// Cast []*modelItem to []list.Item
+	listItems := make([]list.Item, len(items))
+	for i, it := range items {
+		listItems[i] = it
 	}
-	ml, idIndex := buildModelListWithFamilies(models, familyOf, m.theme, m.width-2, m.height-2)
+	ml := list.New(listItems, delegate, m.width-2, m.height-2)
+	ml.Title = "Models"
+	ml.SetShowStatusBar(false)
 	m.models = ml
 
-	// Pinned model: select its true list index (divider-aware) and launch.
+	// Map model IDs to their new dense list indices (0..n-1).
+	idIndex := make(map[string]int, len(models))
+	for i, it := range items {
+		idIndex[it.model.ID] = i
+	}
+
+	// Pinned model: select its true list index and launch.
 	if m.pinnedModel != "" {
 		if idx, ok := idIndex[m.pinnedModel]; ok {
 			m.models.Select(idx)
@@ -696,8 +700,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m.proceedToLaunch()
 	}
 
-	// Unpinned: prefer the rotation's next-to-use model; otherwise start at
-	// the first model row (skipping leading family dividers).
+	// Unpinned: prefer the rotation's next-to-use model; otherwise start at 0.
 	posSet := false
 	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
 		if idx, ok := idIndex[next.ID]; ok {
@@ -706,9 +709,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		}
 	}
 	if !posSet {
-		if fi := firstModelIndex(m.models.Items()); fi >= 0 {
-			m.models.Select(fi)
-		}
+		m.models.Select(0)
 	}
 
 	if len(models) == 1 {
@@ -725,7 +726,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.current is gone; m.models is the
 	// single source of truth.
-	highlighted, ok := m.models.SelectedItem().(modelItem)
+	highlighted, ok := m.models.SelectedItem().(*modelItem)
 	if !ok {
 		m.status = "no model selected"
 		return m, nil

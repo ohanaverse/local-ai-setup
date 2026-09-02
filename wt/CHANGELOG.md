@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- Model picker rows are now compact one-liners: each row renders as
+  `family  <fam-30d>  <provider/model>  <location>  <1d/7d/30d> [tags]`,
+  with the family name leading every row. The multi-line card layout and
+  the family divider header rows are gone — family context is inline on
+  each row. Typing a family name (or any part of a model ID) into the
+  picker's `/` filter narrows the list. Navigation indices are dense
+  (0..n-1); up at the first row wraps to the last and down at the last
+  wraps to the first.
+
 ### Breaking changes
 
 - `-w` short flag for `--worktree` has been removed. Use `-W` or `--worktree`.
