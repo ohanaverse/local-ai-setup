@@ -27,6 +27,10 @@ func (s *mockStore) Record(modelID string) error {
 	return nil
 }
 
+// TestModelItemLineFormat verifies the compact one-line model rendering:
+// family column, 30-day family count, model ID, location, per-model
+// 1d/7d/30d counts, and optional tag list. A regression here would make
+// the picker either unreadable or misleading about which model is selected.
 func TestModelItemLineFormat(t *testing.T) {
 	store := &mockStore{
 		counts: map[string]usage.UsageCounts{
@@ -73,7 +77,11 @@ func TestModelItemLineFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// We need to use the production sortModelsByUsage but without the actual file system.
 			// buildModelItems (Phase 1) will take the store.
-			items := buildModelItems(tt.models, store)
+			familyOf := make(map[string]string, len(tt.models))
+			for _, m := range tt.models {
+				familyOf[m.ID] = m.Family
+			}
+			items := buildModelItems(tt.models, familyOf, store)
 			if len(items) != len(tt.expected) {
 				t.Fatalf("expected %d items, got %d", len(tt.expected), len(items))
 			}

@@ -89,18 +89,19 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 
 // buildModelItems returns usage-sorted items for the model picker,
 // computing a compact one-line representation for each model that
-// includes family context and usage counts.
-func buildModelItems(models []config.Model, s usage.Store) []*modelItem {
+// includes family context and usage counts. familyOf maps the FULL
+// catalog's model IDs to families so family totals are accurate even
+// when tags or families narrow the eligible slice.
+func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store) []*modelItem {
 	// We need per-model and per-family counts for the line format.
-	catalogIDs := make([]string, 0, len(models))
-	for _, m := range models {
-		catalogIDs = append(catalogIDs, m.ID)
+	// Count over the full catalog (familyOf's keys), not just the
+	// eligible subset, so a family's 30-day total includes launches of
+	// models that are currently filtered out.
+	catalogIDs := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		catalogIDs = append(catalogIDs, id)
 	}
 	modelCounts := s.Counts(catalogIDs)
-	familyOf := make(map[string]string, len(models))
-	for _, m := range models {
-		familyOf[m.ID] = m.Family
-	}
 	familyCounts := usage.AggregateByFamily(familyOf, modelCounts)
 
 	// Sort the models in place.

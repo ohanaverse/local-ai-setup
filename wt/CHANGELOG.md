@@ -32,9 +32,11 @@
 - New `phaseAgent` picker screen after the worktree picker: lists agents
   and commands, `enter` on an agent transitions to the model picker,
   `enter` on a command launches immediately.
-- `Slot{Agent, Tag, Family}` rotation key replaces the bare tag. State
-  files are now named `rotation-<agent>-<tag>-<family>.state`; reads
-  fall back to legacy `rotation-<tag>.state` for backward compatibility.
+- Global rotation replaces the legacy per-tag rotation. State is kept in a
+  single file, `~/.config/agent-wt/rotation.state`, holding one bare model
+  id; the next picker entry lands on the model after the last-launched one
+  within the current `-T`/`-F` eligible set. Legacy `rotation-*.state` files
+  are folded in once on first launch and then removed.
 - Model picker now honors `-T` and `-F` filters from the CLI: only
   models matching the agent + tag set + family set are eligible.
 - When the eligible list contains exactly one model, the model picker is
@@ -42,6 +44,14 @@
   prior session exists). Reuses the existing session-check and
   rotation-recording flow, so cancelling the resume prompt leaves
   rotation untouched.
+
+### Fixed
+
+- Family 30-day counts in the compact model picker are now aggregated
+  from the agent's full catalog (`cfg.ModelsForAgent`) instead of only the
+  `-T`/`-F`-filtered eligible subset. This restores the invariant that a
+  family's usage total includes launches of models currently hidden by
+  tag/family filters, which the previous family-divider layout guaranteed.
 
 ### Removed
 
@@ -66,5 +76,5 @@
   to the new flag surface and three-input mental model (directory /
   agent-or-command / model). The legacy `-w` short flag references were
   removed; `-W`/`-A`/`-M`/`-T`/`-F` are now documented everywhere they
-  apply. The Rotation (Go) section reflects the slot-based rotation
-  (`Slot{Agent, Tag, Family}` + `NewForSlot`) introduced in PR 3.
+  apply. The Rotation (Go) section reflects the global rotation introduced
+  in PR 3.

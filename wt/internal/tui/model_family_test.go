@@ -155,7 +155,7 @@ func TestSortModelsByUsageKeepsTiedFamiliesAdjacent(t *testing.T) {
 func TestAdjacentModelsShareFamilyColumn(t *testing.T) {
 	stubUsageStore(t) // all-zero usage: registry order preserved
 
-	items := buildModelItems(modelFamilies(), newUsageStore())
+	items := buildModelItems(modelFamilies(), familyOfFor(), newUsageStore())
 	if len(items) != 4 {
 		t.Fatalf("got %d items, want 4", len(items))
 	}
@@ -190,7 +190,7 @@ func TestBuildModelItemsFamilyColumnShowsFamilyTotal(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
 		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4"},
 	}
-	items := buildModelItems(models, store)
+	items := buildModelItems(models, familyOfFor(), store)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -202,6 +202,38 @@ func TestBuildModelItemsFamilyColumnShowsFamilyTotal(t *testing.T) {
 		if fields[0] != "gemma4" || fields[1] != "1" {
 			t.Fatalf("line = %q, want family column %q with 30d aggregate %q (family total must include sibling launches)", it.line, "gemma4", "1")
 		}
+	}
+}
+
+// TestBuildModelItemsFamilyCountsUseFullCatalog verifies the compact picker
+// derives family totals from the FULL catalog, not just the eligible subset:
+// the eligible list contains only gemma4:9b, but the usage store records a
+// launch for gemma4:14b (same family, filtered out by -T/-F narrowing), and
+// the rendered family 30d count must still include that event. This pins the
+// invariant that family counts come from the full-catalog familyOf mapping —
+// the same reason buildModelItems runs ONE Counts pass over familyOf's keys
+// and aggregates per family instead of counting only the eligible slice.
+func TestBuildModelItemsFamilyCountsUseFullCatalog(t *testing.T) {
+	store := stubUsageStore(t)
+	if err := store.Record("ollama/gemma4:14b"); err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+
+	// Eligible list is narrowed to one of the two gemma4 models;
+	// familyOf still maps the full catalog.
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
+	}
+	items := buildModelItems(models, familyOfFor(), store)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	fields := strings.Fields(items[0].line)
+	if len(fields) < 2 {
+		t.Fatalf("line %q too short to hold a family column + 30d count", items[0].line)
+	}
+	if fields[0] != "gemma4" || fields[1] != "1" {
+		t.Fatalf("line = %q, want family column %q with 30d aggregate %q (family total must include the non-eligible gemma4:14b launch)", items[0].line, "gemma4", "1")
 	}
 }
 

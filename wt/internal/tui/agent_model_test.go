@@ -71,8 +71,17 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
-	// buildModelItems is the production list builder.
-	items := buildModelItems(models, newUsageStore())
+	// buildModelItems is the production list builder; family totals must
+	// come from the agent's full catalog, not just the tag-filtered slice.
+	fullCatalog, err := cfg.ModelsForAgent(agent)
+	if err != nil {
+		t.Fatalf("ModelsForAgent: %v", err)
+	}
+	familyOf := make(map[string]string, len(fullCatalog))
+	for _, m := range fullCatalog {
+		familyOf[m.ID] = m.Family
+	}
+	items := buildModelItems(models, familyOf, newUsageStore())
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)

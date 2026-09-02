@@ -672,8 +672,17 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m, nil
 	}
 
+	// Build the full-catalog family map so usage aggregation is accurate
+	// even when -T/-F filters narrow the eligible slice.
+	familyOf := make(map[string]string)
+	if fullCatalog, err := m.cfg.ModelsForAgent(agent); err == nil {
+		for _, mdl := range fullCatalog {
+			familyOf[mdl.ID] = mdl.Family
+		}
+	}
+
 	// Build the sorted, compact model list.
-	items := buildModelItems(models, newUsageStore())
+	items := buildModelItems(models, familyOf, newUsageStore())
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)

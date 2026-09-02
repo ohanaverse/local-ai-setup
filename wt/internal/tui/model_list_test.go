@@ -49,7 +49,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-	}, store)
+	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}

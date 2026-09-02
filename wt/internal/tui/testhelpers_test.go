@@ -15,7 +15,11 @@ import (
 // list.New so filter/wrap/cursor assertions run against the real layout.
 func compactModelList(t *testing.T, models []config.Model) list.Model {
 	t.Helper()
-	items := buildModelItems(models, newUsageStore())
+	familyOf := make(map[string]string, len(models))
+	for _, m := range models {
+		familyOf[m.ID] = m.Family
+	}
+	items := buildModelItems(models, familyOf, newUsageStore())
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
