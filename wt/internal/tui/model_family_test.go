@@ -145,6 +145,23 @@ func TestWithFamilyDividersInsertsHeaderPerGroup(t *testing.T) {
 	}
 }
 
+// TestModelListDelegateRenderHasNoTrailingNewline verifies dividerItem.Render
+// does not emit a trailing newline. bubbles/list's populatedView joins rows
+// with strings.Repeat("\n", Spacing()+1) and DefaultDelegate.Render writes
+// "title\ndesc" with no trailing newline; a divider's Render writing
+// label+"\n" therefore doubles the blank-line gap under every family header
+// (one newline from the row's own content, plus Spacing()+1 from the join)
+// compared to the single-newline gap between model rows.
+func TestModelListDelegateRenderHasNoTrailingNewline(t *testing.T) {
+	base := ThemedListDelegate(themes.Default)
+	dl := modelListDelegate{DefaultDelegate: base, headerStyle: base.Styles.NormalTitle}
+	var buf strings.Builder
+	dl.Render(&buf, list.Model{}, 0, dividerItem{label: "◈ gemma4 · 30d:7"})
+	if strings.HasSuffix(buf.String(), "\n") {
+		t.Fatalf("divider render = %q, must not end in a newline (would double-space under populatedView's own join separator)", buf.String())
+	}
+}
+
 // TestModelListDelegateRendersDivider verifies the divider row renders its
 // header label (not a model row).
 func TestModelListDelegateRendersDivider(t *testing.T) {

@@ -117,7 +117,11 @@ type modelListDelegate struct {
 
 func (d modelListDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	if dv, ok := item.(dividerItem); ok {
-		_, _ = w.Write([]byte(d.headerStyle.Render(dv.label) + "\n"))
+		// No trailing newline: populatedView joins rows with its own
+		// Spacing()+1 newlines, matching DefaultDelegate's "title\ndesc"
+		// (no trailing newline) contract. A trailing "\n" here would double
+		// the blank-line gap under every family header.
+		_, _ = w.Write([]byte(d.headerStyle.Render(dv.label)))
 		return
 	}
 	d.DefaultDelegate.Render(w, m, index, item)
