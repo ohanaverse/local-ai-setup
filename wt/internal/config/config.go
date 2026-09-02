@@ -570,9 +570,24 @@ func FirstTag(s, fallback string) string {
 // Errors:
 //   - agent not found
 func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error) {
-	ms, err := c.ModelsForAgent(agentName)
-	if err != nil {
-		return nil, err
+	return c.EligibleModelsIn(agentName, nil, tags, family)
+}
+
+// EligibleModelsIn is the single full-catalog traversal shared by
+// EligibleModels and the TUI model picker. It applies the tag/family
+// filters to a caller-supplied full catalog (agentName's models) and returns
+// the eligible slice — so a caller that needs both the full catalog (for
+// cross-filter family count aggregation) and the eligible subset only walks
+// the registry once. Order matches the provided catalog's order.
+//
+// See EligibleModels for the filter semantics.
+func (c *Config) EligibleModelsIn(agentName string, ms []Model, tags, family string) ([]Model, error) {
+	if ms == nil {
+		var err error
+		ms, err = c.ModelsForAgent(agentName)
+		if err != nil {
+			return nil, err
+		}
 	}
 	tagSet := map[string]bool{}
 	for _, t := range parseFilterList(tags) {

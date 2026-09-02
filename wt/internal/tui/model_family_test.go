@@ -237,6 +237,38 @@ func TestBuildModelItemsFamilyCountsUseFullCatalog(t *testing.T) {
 	}
 }
 
+// TestBuildModelItemsEmptyFamilyShowsAggregate pins the empty-family column:
+// a launch under the "" (unnamed "other") family must render its true 30d
+// aggregate, not a hardcoded 0. This guards the invariant that the row's
+// fam30d display matches the CompositeScore the sort uses to rank it — a
+// regression here would show an empty-family model ranked by family usage
+// while a 0 sat in its family column, contradicting named families.
+func TestBuildModelItemsEmptyFamilyShowsAggregate(t *testing.T) {
+	store := stubUsageStore(t)
+	if err := store.Record("ollama/loose"); err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+
+	items := buildModelItems(modelFamilies(), familyOfFor(), store)
+	if len(items) != 4 {
+		t.Fatalf("got %d items, want 4", len(items))
+	}
+	// The empty family's composite (2*ThirtyDay=2) beats the zero-usage named
+	// families, so loose sorts first; its "-" family column must still carry
+	// the empty-family 30d aggregate.
+	loose := items[0]
+	if loose.model.Family != "" || loose.model.ID != "ollama/loose" {
+		t.Fatalf("first sorted row = id %q family %q, want ollama/loose with empty family", loose.model.ID, loose.model.Family)
+	}
+	fields := strings.Fields(loose.line)
+	if len(fields) < 2 {
+		t.Fatalf("line %q too short to hold family column + 30d count", loose.line)
+	}
+	if fields[0] != "-" || fields[1] != "1" {
+		t.Fatalf("line = %q, want family column %q with empty-family 30d aggregate %q", loose.line, "-", "1")
+	}
+}
+
 // TestClampOnFilterNarrow exercises the bubbles v1.0.0 filter-narrowing
 // hazard through clampModelSelection: once a filter narrows the visible set,
 // bubbles' Select still operates in UNFILTERED coordinates (clamping to
@@ -403,11 +435,15 @@ func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
 		width:        80,
 		height:       24,
 	}
-	models, err := cfg.EligibleModels("claude", "code", "")
+	fullCatalog, err := cfg.ModelsForAgent("claude")
 	if err != nil {
-		t.Fatalf("EligibleModels: %v", err)
+		t.Fatalf("ModelsForAgent: %v", err)
 	}
-	got, _ := m.enterModelPhase("claude", models, "code")
+	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "code", "")
+	if err != nil {
+		t.Fatalf("EligibleModelsIn: %v", err)
+	}
+	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", got.phase)
 	}

@@ -341,12 +341,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Agent: validate the model catalog for the agent + active
 				// filters (-T/-F), then build the picker list and position
-				// the cursor. EligibleModels narrows the catalog by tag
-				// and family; the rotation slot is keyed by
-				// (agent, firstTag, family) so per-slot state matches
-				// the cmd/wt launchFiltered path.
+				// the cursor. FullCatalog is fetched ONCE here and reused by
+				// enterModelPhase — it needs the full catalog (for the
+				// cross-filter family-count map) and the eligible subset, so
+				// walking the registry twice per entry is avoided.
 				firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
-				models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
+				fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
+				if err != nil {
+					m.status = "config error: " + err.Error()
+					return m, nil
+				}
+				models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
 				if err != nil {
 					m.status = "config error: " + err.Error()
 					return m, nil
@@ -355,7 +360,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
 					return m, nil
 				}
-				return m.enterModelPhase(m.agent, models, firstTag)
+				return m.enterModelPhase(m.agent, models, fullCatalog, firstTag)
 			case phaseList:
 				if !m.ready {
 					return m, nil
@@ -612,11 +617,16 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 		}
 		// Pinned agent: skip the picker, run the same model setup
 		// that phaseAgent Enter would have run for an agent item.
-		// Use EligibleModels so -T/-F filters from CLI narrow the
-		// catalog consistently with the phaseAgent Enter path.
+		// EligibleModelsIn narrows the single fetched catalog by
+		// -T/-F filters consistently with the phaseAgent Enter path.
 		firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
 		m.tag = firstTag
-		models, err := m.cfg.EligibleModels(m.agent, m.activeTags, m.activeFamily)
+		fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
+		if err != nil {
+			m.status = "config error: " + err.Error()
+			return m, nil
+		}
+		models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
 		if err != nil {
 			m.status = "config error: " + err.Error()
 			return m, nil
@@ -625,7 +635,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
 			return m, nil
 		}
-		return m.enterModelPhase(m.agent, models, firstTag)
+		return m.enterModelPhase(m.agent, models, fullCatalog, firstTag)
 	}
 	// Unpinned: build the agent+command picker and hand off to phaseAgent.
 	// Clear any prior status so a stale error from a previous picker
@@ -653,8 +663,10 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 // cleared so re-entry validates fresh — without that, every agent pick
 // would re-trigger the same error).
 //
-// Caller is responsible for the len(models) == 0 guard.
-func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
+// Caller is responsible for the len(models) == 0 guard. fullCatalog is the
+// agent's full ModelsForAgent slice (models is a filtered subset of it); it is
+// used to build the family-count map so totals stay accurate across filters.
+func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
 	// Validate a -M pin BEFORE any list construction: a bad pin routes back to
@@ -673,12 +685,11 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	}
 
 	// Build the full-catalog family map so usage aggregation is accurate
-	// even when -T/-F filters narrow the eligible slice.
-	familyOf := make(map[string]string)
-	if fullCatalog, err := m.cfg.ModelsForAgent(agent); err == nil {
-		for _, mdl := range fullCatalog {
-			familyOf[mdl.ID] = mdl.Family
-		}
+	// even when -T/-F filters narrow the eligible slice. fullCatalog is
+	// the caller's already-fetched ModelsForAgent result — no re-scan.
+	familyOf := make(map[string]string, len(fullCatalog))
+	for _, mdl := range fullCatalog {
+		familyOf[mdl.ID] = mdl.Family
 	}
 
 	// Build the sorted, compact model list.

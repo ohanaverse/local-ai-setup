@@ -990,11 +990,15 @@ func TestPinnedModelValidSkipsPicker(t *testing.T) {
 	tempStateDir(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, agent: "claude", pinnedModel: "ollama/gemma4:9b", selectedPath: t.TempDir(), width: 80, height: 24}
-	models, err := cfg.EligibleModels("claude", "", "")
+	fullCatalog, err := cfg.ModelsForAgent("claude")
 	if err != nil {
-		t.Fatalf("EligibleModels: %v", err)
+		t.Fatalf("ModelsForAgent: %v", err)
 	}
-	got, cmd := m.enterModelPhase("claude", models, "code")
+	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "", "")
+	if err != nil {
+		t.Fatalf("EligibleModelsIn: %v", err)
+	}
+	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
 	if cmd == nil {
 		t.Fatal("expected a launch cmd (pinned model valid, picker skipped), got nil")
 	}
@@ -1010,11 +1014,15 @@ func TestPinnedModelInvalidShowsError(t *testing.T) {
 	tempStateDir(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, pinnedModel: "ollama/missing", width: 80, height: 24}
-	models, err := cfg.EligibleModels("claude", "", "")
+	fullCatalog, err := cfg.ModelsForAgent("claude")
 	if err != nil {
-		t.Fatalf("EligibleModels: %v", err)
+		t.Fatalf("ModelsForAgent: %v", err)
 	}
-	got, cmd := m.enterModelPhase("claude", models, "code")
+	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "", "")
+	if err != nil {
+		t.Fatalf("EligibleModelsIn: %v", err)
+	}
+	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
 	if cmd != nil {
 		t.Errorf("expected nil cmd (pinned model invalid), got %v", cmd)
 	}
