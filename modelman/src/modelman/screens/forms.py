@@ -541,17 +541,17 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 value=initial_per_token,
                 id="per-token-checkbox",
             )
-            yield Label("Input:", classes="pricing-label")
+            yield Label("Input:", classes="pricing-label", id="input-price-label")
             yield Input(
                 value=initial_input_price,
                 id="input-price",
             )
-            yield Label("Cache:", classes="pricing-label")
+            yield Label("Cache:", classes="pricing-label", id="cache-price-label")
             yield Input(
                 value=initial_cache_price,
                 id="cache-price",
             )
-            yield Label("Output:", classes="pricing-label")
+            yield Label("Output:", classes="pricing-label", id="output-price-label")
             yield Input(
                 value=initial_output_price,
                 id="output-price",
@@ -562,12 +562,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 value=initial_subscription,
                 id="subscription-checkbox",
             )
-            yield Label("Amount:", classes="pricing-label")
+            yield Label("Amount:", classes="pricing-label", id="subscription-price-label")
             yield Input(
                 value=initial_subscription_price,
                 id="subscription-price",
             )
-            yield Label("Period:", classes="pricing-label")
+            yield Label("Period:", classes="pricing-label", id="subscription-period-label")
             yield Select(
                 options=[("month", "month"), ("year", "year")],
                 value=initial_subscription_period,
@@ -609,10 +609,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         self._set_subscription_visibility(bool(sub_cb.value))
 
     def _set_per_token_visibility(self, show: bool) -> None:
-        """Show/hide the per-token price Inputs as a unit."""
+        """Show/hide the per-token labels and price Inputs as a unit."""
         try:
+            self.query_one("#input-price-label", Label).display = show
             self.query_one("#input-price", Input).display = show
+            self.query_one("#cache-price-label", Label).display = show
             self.query_one("#cache-price", Input).display = show
+            self.query_one("#output-price-label", Label).display = show
             self.query_one("#output-price", Input).display = show
         except NoMatches:
             # A Checkbox.Changed can arrive before the conditional fields
@@ -620,9 +623,11 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             return
 
     def _set_subscription_visibility(self, show: bool) -> None:
-        """Show/hide the subscription price Input and period Select."""
+        """Show/hide the subscription labels, price Input and period Select."""
         try:
+            self.query_one("#subscription-price-label", Label).display = show
             self.query_one("#subscription-price", Input).display = show
+            self.query_one("#subscription-period-label", Label).display = show
             self.query_one("#subscription-period-select", Select).display = show
         except NoMatches:
             return
