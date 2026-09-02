@@ -75,3 +75,69 @@ func TestEligibleModels(t *testing.T) {
 		})
 	}
 }
+
+// TestEligibleModelsInMatchesEligibleModels pins the shared-filter helper used
+// by the TUI model picker to avoid a second full-catalog traversal: it must
+// return exactly what EligibleModels returns when handed the same full catalog
+// directly. The two must never drift — if they did, the picker's eligible
+// slice would disagree with the non-TUI launch path.
+func TestEligibleModelsInMatchesEligibleModels(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "code",
+		Providers: []Provider{
+			{ID: "claude", Location: LocationCloud, Auth: AuthConfig{Type: "native"}},
+			{ID: "ollama", Location: LocationLocal, Auth: AuthConfig{Type: "none"}},
+		},
+		Models: []Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Location: LocationCloud, Tags: []string{"code"}},
+			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Family: "sonnet", Location: LocationCloud, Tags: []string{"code", "design"}},
+			{ID: "claude/native", ProviderID: "claude", ModelName: "native", Location: LocationCloud, Tags: []string{"code"}},
+			{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b", Family: "gemma4", Location: LocationLocal, Tags: []string{"code"}},
+			{ID: "ollama/llama3", ProviderID: "ollama", ModelName: "llama3", Family: "llama3", Location: LocationLocal, Tags: []string{"design"}},
+		},
+		Agents: []Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
+		},
+		exposed: map[string]bool{
+			"ollama/gemma4:9b": true,
+			"ollama/llama3":    true,
+		},
+	}
+	deriveNative(cfg)
+
+	catalog, err := cfg.ModelsForAgent("pi")
+	if err != nil {
+		t.Fatalf("ModelsForAgent: %v", err)
+	}
+	// A precomputed full catalog must filter identically to the eager path.
+	got, err := cfg.EligibleModelsIn("pi", catalog, "code", "gemma4")
+	if err != nil {
+		t.Fatalf("EligibleModelsIn with precomputed catalog: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "ollama/gemma4:9b" {
+		t.Fatalf("EligibleModelsIn(catalog) = %v, want [ollama/gemma4:9b]", idsOf(got))
+	}
+
+	want, err := cfg.EligibleModels("pi", "code", "gemma4")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("EligibleModelsIn = %v, EligibleModels = %v; lengths differ", idsOf(got), idsOf(want))
+	}
+	for i := range got {
+		if got[i].ID != want[i].ID {
+			t.Errorf("model[%d]: EligibleModelsIn = %q, EligibleModels = %q", i, got[i].ID, want[i].ID)
+		}
+	}
+}
+
+// idsOf returns the IDs of a model slice, for comparison in tests.
+func idsOf(ms []Model) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.ID
+	}
+	return out
+}

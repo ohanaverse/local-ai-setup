@@ -52,6 +52,15 @@
   `-T`/`-F`-filtered eligible subset. This restores the invariant that a
   family's usage total includes launches of models currently hidden by
   tag/family filters, which the previous family-divider layout guaranteed.
+<<<<<<< HEAD
+- The empty (unnamed "other") family's 30-day count is shown alongside its
+  `-` family column, matching the family sort key instead of a hardcoded 0.
+- The model picker (TUI) now fetches the agent's full catalog once and
+  filters it in place via `cfg.EligibleModelsIn`, sharing a single traversal
+  with `EligibleModels` instead of re-scanning the catalog to build the
+  family-count map.
+=======
+>>>>>>> origin/main
 
 ### Removed
 

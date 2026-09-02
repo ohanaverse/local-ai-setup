@@ -65,10 +65,11 @@ func TestModelItemLineFormat(t *testing.T) {
 			models: []config.Model{
 				{ID: "m1", Family: "", ProviderID: "p1", Location: "local", Tags: []string{}},
 			},
-			// famWidth: 0, but empty family renders as "-"
-			// fam30d for empty: 0
+			// famWidth: 0, but empty family renders as "-".
+			// fam30d still reflects the empty-family aggregate (3), so a
+			// launch under the "" family is not shown as 0 next to the sort.
 			expected: []string{
-				fmt.Sprintf("%-0s  %3d  %-2s  %-5s  %-11s", "-", 0, "m1", "local", "1/2/3"),
+				fmt.Sprintf("%-0s  %3d  %-2s  %-5s  %-11s", "-", 3, "m1", "local", "1/2/3"),
 			},
 		},
 	}

@@ -47,7 +47,10 @@ Example (from the current registry):
 - `fam30d` is right-aligned (reads as a column: `131`, ` 14`, `  5`).
 - Model counts are bare `65/127/127` in 1d/7d/30d order — no `1d:` labels.
 - Tags are appended as ` [a,b]` **only when non-empty**.
-- Empty family renders `-` in the family column.
+- Empty family renders `-` in the family column, but its right-aligned `fam30d`
+  still shows the real 30-day aggregate for the unnamed ("other") bucket — the
+  display matches the sort key (composite of the family's totals), never a
+  hardcoded 0.
 - Dropped from the old description line: **provider** (always the ID's
   prefix) and the per-model `fam:` count (moved up front next to the family).
 

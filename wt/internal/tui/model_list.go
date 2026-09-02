@@ -21,11 +21,12 @@ var newUsageStore = realNewUsageStore
 func realNewUsageStore() usage.Store { return usage.NewStore() }
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
+// The entire compact representation is baked onto .line; the list delegate
+// renders it via Title()/FilterValue(), so there is no separate state to keep
+// in sync with the render.
 type modelItem struct {
-	model       config.Model
-	counts      usage.UsageCounts
-	familyCount int // 30-day launches for the model's family
-	line        string
+	model config.Model
+	line  string
 }
 
 // FilterValue returns the full line so the list's built-in fuzzy filter
@@ -123,12 +124,14 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 	for _, m := range models {
 		fam := m.Family
 		famDisp := fam
-		fam30d := 0
 		if fam == "" {
 			famDisp = "-"
-		} else {
-			fam30d = familyCounts[fam].ThirtyDay
 		}
+		// Always read the aggregate, including for the empty ("other")
+		// family — AggregateByFamily sums launches under the "" key, so
+		// `fam30d` must match the family's CompositeScore sort key rather
+		// than hardcode 0. famDisp alone distinguishes the unnamed bucket.
+		fam30d := familyCounts[fam].ThirtyDay
 
 		c := modelCounts[m.ID]
 		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
@@ -141,10 +144,8 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		}
 
 		items = append(items, &modelItem{
-			model:       m,
-			counts:      c,
-			familyCount: fam30d,
-			line:        line,
+			model: m,
+			line:  line,
 		})
 	}
 	return items

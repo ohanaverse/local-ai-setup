@@ -135,9 +135,11 @@ function from new code):
        "%-*s  %3d  %-*s  %-5s  %-*s"
        ```
        where the args are `(famWidth, fam, fam30d, idWidth, id, location,
-       countsWidth, counts)`. `fam30d = s.Counts(it.family)["30d"]` (or 0
-       when family is empty — `Counts("")` is undefined; handle by
-       treating empty family as `-` with count 0). `counts = fmt.Sprintf(
+       countsWidth, counts)`. `fam30d = familyCounts[it.family].ThirtyDay`
+       — always read from the full-catalog aggregate, including when `family`
+       is the empty ("other") bucket, so the rendered count matches the sort
+       key; only the family *column* special-cases empty to `-`. `counts =
+       fmt.Sprintf(
        "%d/%d/%d", c["1d"], c["7d"], c["30d"])`.
        Append `fmt.Sprintf(" [%s]", strings.Join(it.tags, ","))` only when
        `len(it.tags) > 0`.
