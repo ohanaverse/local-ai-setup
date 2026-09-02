@@ -189,6 +189,7 @@ class ModelmanModal(ModalScreen[T]):
     ModelmanModal { align: center middle; }
     ModelmanModal > Vertical { width: 60; height: auto; padding: 1 2; border: round $primary; }
     ModelmanModal Label { margin-bottom: 1; }
+    ModelmanModal Label.pricing-label { margin-bottom: 0; }
     ModelmanModal Input { margin-bottom: 1; }
     ModelmanModal Horizontal { height: auto; align-horizontal: right; }
     ModelmanModal Button { margin-left: 1; }
@@ -540,19 +541,19 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 value=initial_per_token,
                 id="per-token-checkbox",
             )
+            yield Label("Input:", classes="pricing-label")
             yield Input(
                 value=initial_input_price,
-                placeholder="input price per million tokens",
                 id="input-price",
             )
+            yield Label("Cache:", classes="pricing-label")
             yield Input(
                 value=initial_cache_price,
-                placeholder="cache price per million tokens",
                 id="cache-price",
             )
+            yield Label("Output:", classes="pricing-label")
             yield Input(
                 value=initial_output_price,
-                placeholder="output price per million tokens",
                 id="output-price",
             )
             yield Label("Subscription pricing:")
@@ -561,11 +562,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 value=initial_subscription,
                 id="subscription-checkbox",
             )
+            yield Label("Amount:", classes="pricing-label")
             yield Input(
                 value=initial_subscription_price,
-                placeholder="subscription price",
                 id="subscription-price",
             )
+            yield Label("Period:", classes="pricing-label")
             yield Select(
                 options=[("month", "month"), ("year", "year")],
                 value=initial_subscription_period,
