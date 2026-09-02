@@ -268,16 +268,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// same filtered coordinates the cursor moves in.
 		if m.phase == phaseModel && m.models.FilterState() != list.Filtering {
 			items := m.models.VisibleItems()
-			switch msg.String() {
-			case "up", "k":
-				if m.models.Index() == 0 {
-					m.models.Select(len(items) - 1)
-					return m, nil
-				}
-			case "down", "j":
-				if m.models.Index() == len(items)-1 {
-					m.models.Select(0)
-					return m, nil
+			if len(items) > 1 {
+				switch msg.String() {
+				case "up", "k":
+					if m.models.Index() == 0 {
+						m.models.Select(len(items) - 1)
+						return m, nil
+					}
+				case "down", "j":
+					if m.models.Index() == len(items)-1 {
+						m.models.Select(0)
+						return m, nil
+					}
 				}
 			}
 		}

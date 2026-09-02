@@ -186,11 +186,9 @@ func CompositeScore(c UsageCounts) int {
 }
 
 // AggregateByFamily sums per-model usage counts into per-family buckets.
-// familyOf maps the FULL model catalog's IDs to their families (built from
-// the registry, not the currently-eligible subset, so a family's total
-// usage is accurate even when a tag/family filter exposes only some of its
-// models); counts are the per-model counts Store.Counts returned for those
-// same IDs. Counts entries for IDs absent from familyOf are ignored.
+// familyOf maps model IDs to their families; counts are the per-model counts
+// Store.Counts returned for those same IDs. Counts entries for IDs absent from
+// familyOf are ignored.
 //
 // Families are not pre-seeded: only families with at least one model whose
 // counts are non-zero appear as keys, so a missing family key means zero

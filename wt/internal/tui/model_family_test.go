@@ -320,6 +320,39 @@ func TestWrapAroundStaysValidAfterFilterApplied(t *testing.T) {
 	}
 }
 
+// TestWrapAroundNoOpWhenZeroOrOneVisibleItem verifies that wrap-around
+// keybinds (k/j/up/down) do not panic or select negative indices when
+// the visible list contains 0 or 1 item.
+func TestWrapAroundNoOpWhenZeroOrOneVisibleItem(t *testing.T) {
+	stubUsageStore(t)
+
+	// Single-item list:
+	m := model{models: compactModelList(t, []config.Model{
+		{ID: "ollama/single", ProviderID: "ollama", Family: "single"},
+	}), phase: phaseModel, width: 80, height: 24}
+
+	for _, key := range []rune{'k', 'j'} {
+		got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		m = got.(model)
+		if gotIdx := m.models.Index(); gotIdx != 0 {
+			t.Errorf("single item: index after %c = %d, want 0", key, gotIdx)
+		}
+	}
+
+	// Zero-item list:
+	m2 := model{models: compactModelList(t, []config.Model{}), phase: phaseModel, width: 80, height: 24}
+	if got := len(m2.models.VisibleItems()); got != 0 {
+		t.Fatalf("visible items = %d, want 0", got)
+	}
+	for _, key := range []rune{'k', 'j'} {
+		got, _ := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		m2 = got.(model)
+		if gotIdx := m2.models.Index(); gotIdx < 0 {
+			t.Errorf("empty visible items: index after %c = %d, want >= 0", key, gotIdx)
+		}
+	}
+}
+
 // TestEnterModelPhaseCursorOnFirstModel verifies that entering the model
 // phase (no rotation history) lands the cursor on a model row — index 0 in
 // the compact, divider-free layout. (There are no divider rows to skip
