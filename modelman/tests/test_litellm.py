@@ -13,7 +13,7 @@ from modelman.litellm import (
     save_litellm_config,
     set_exposed,
 )
-from modelman.registry import AuthConfig, ModelEntry, ProviderEntry
+from modelman.registry import AuthConfig, Cost, ModelEntry, ProviderEntry
 
 
 def _provider(pid, *, base_url=None, secret_ref=None, auth_type="none"):
@@ -24,13 +24,14 @@ def _provider(pid, *, base_url=None, secret_ref=None, auth_type="none"):
     )
 
 
-def _model(mid, provider_id, model_name, model_info=None):
+def _model(mid, provider_id, model_name, model_info=None, cost=None):
     return ModelEntry(
         id=mid,
         family="f",
         provider_id=provider_id,
         model_name=model_name,
         model_info=model_info or {},
+        cost=cost,
     )
 
 
@@ -44,6 +45,10 @@ def test_build_entry_ollama():
         "litellm_params": {
             "model": "ollama_chat/qwen3.8:27b-mlx",
             "api_base": "http://localhost:11434",
+        },
+        "model_info": {
+            "input_cost_per_token": 0,
+            "output_cost_per_token": 0,
         },
     }
 
@@ -90,7 +95,11 @@ def test_build_entry_copies_model_info():
         ),
         _provider("ollama", base_url="http://localhost:11434"),
     )
-    assert entry["model_info"] == {"supports_function_calling": True}
+    assert entry["model_info"] == {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "supports_function_calling": True,
+    }
 
 
 def test_build_entry_unknown_provider_raises():
@@ -98,6 +107,129 @@ def test_build_entry_unknown_provider_raises():
 
     with pytest.raises(ExposeError):
         build_model_list_entry(_model("foo/x", "foo", "x"), _provider("foo"))
+
+
+def test_build_entry_all_per_token_prices():
+    entry = build_model_list_entry(
+        _model(
+            "openrouter/paid",
+            "openrouter",
+            "paid",
+            cost=Cost(
+                input_price_per_million=1.0,
+                output_price_per_million=2.0,
+                cache_price_per_million=0.5,
+            ),
+        ),
+        _provider(
+            "openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            secret_ref="sk-or-v1-abc",
+            auth_type="api_key",
+        ),
+    )
+    assert entry["model_info"] == {
+        "input_cost_per_token": 1e-6,
+        "output_cost_per_token": 2e-6,
+        "cache_creation_input_token_cost": 5e-7,
+        "cache_read_input_token_cost": 5e-7,
+    }
+
+
+def test_build_entry_no_per_token_prices_writes_explicit_zeros():
+    entry = build_model_list_entry(
+        _model("ollama/free", "ollama", "free"),
+        _provider("ollama", base_url="http://localhost:11434"),
+    )
+    assert entry["model_info"] == {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+    }
+
+
+def test_build_entry_only_input_price_writes_zero_output():
+    entry = build_model_list_entry(
+        _model(
+            "ollama/input-only",
+            "ollama",
+            "input-only",
+            cost=Cost(input_price_per_million=3.0),
+        ),
+        _provider("ollama", base_url="http://localhost:11434"),
+    )
+    assert entry["model_info"] == {
+        "input_cost_per_token": 3e-6,
+        "output_cost_per_token": 0,
+    }
+
+
+def test_build_entry_only_cache_price_writes_zeros_for_input_output():
+    entry = build_model_list_entry(
+        _model(
+            "ollama/cache-only",
+            "ollama",
+            "cache-only",
+            cost=Cost(cache_price_per_million=0.5),
+        ),
+        _provider("ollama", base_url="http://localhost:11434"),
+    )
+    assert entry["model_info"] == {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "cache_creation_input_token_cost": 5e-7,
+        "cache_read_input_token_cost": 5e-7,
+    }
+
+
+def test_build_entry_model_info_overrides_derived_pricing():
+    entry = build_model_list_entry(
+        _model(
+            "openrouter/override",
+            "openrouter",
+            "override",
+            cost=Cost(
+                input_price_per_million=1.0,
+                output_price_per_million=2.0,
+            ),
+            model_info={
+                "input_cost_per_token": 9e-6,
+                "output_cost_per_token": 8e-6,
+                "custom_flag": True,
+            },
+        ),
+        _provider(
+            "openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            secret_ref="sk-or-v1-abc",
+            auth_type="api_key",
+        ),
+    )
+    assert entry["model_info"] == {
+        "input_cost_per_token": 9e-6,
+        "output_cost_per_token": 8e-6,
+        "custom_flag": True,
+    }
+
+
+def test_build_entry_subscription_price_not_passed_to_model_info():
+    entry = build_model_list_entry(
+        _model(
+            "openrouter/sub",
+            "openrouter",
+            "sub",
+            cost=Cost(subscription_price=20.0, subscription_period="month"),
+        ),
+        _provider(
+            "openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            secret_ref="sk-or-v1-abc",
+            auth_type="api_key",
+        ),
+    )
+    assert entry["model_info"] == {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+    }
 
 
 def test_is_cloud_reads_the_policy_table():
