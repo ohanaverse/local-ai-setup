@@ -268,3 +268,140 @@ func TestRecordLockFileCreated(t *testing.T) {
 		t.Fatalf("lock path is a directory, want a file: %s", lockPath)
 	}
 }
+
+// TestCompositeScore verifies the recency weights: recent launches dominate.
+// Formula: 3*OneDay + SevenDay + 2*ThirtyDay.
+func TestCompositeScore(t *testing.T) {
+	c := UsageCounts{OneDay: 2, SevenDay: 5, ThirtyDay: 10}
+	got := CompositeScore(c)
+	if got != 31 { // 3*2 + 5 + 2*10 = 31
+		t.Fatalf("CompositeScore = %d, want 31", got)
+	}
+	older := UsageCounts{OneDay: 1, SevenDay: 5, ThirtyDay: 10}
+	if got <= CompositeScore(older) {
+		t.Fatal("more recent launches should score strictly higher")
+	}
+}
+
+// TestAggregateByFamilySumsModelCounts verifies the pure per-family
+// aggregation the model picker runs after its single Counts pass: per-model
+// counts are summed into their family bucket, and counts for model IDs
+// absent from familyOf contribute nothing. This replaces the aggregation
+// half of the deleted Store.FamilyCounts, whose separate file scan duplicated
+// Counts' scan/bucket loop and made every picker entry read usage.jsonl
+// twice.
+func TestAggregateByFamilySumsModelCounts(t *testing.T) {
+	familyOf := map[string]string{
+		"ollama/gemma4:9b":   "gemma4",
+		"ollama/gemma4:14b":  "gemma4",
+		"ollama/qwen3.8:27b": "qwen3.8",
+	}
+	counts := map[string]UsageCounts{
+		"ollama/gemma4:9b":    {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"ollama/gemma4:14b":   {SevenDay: 1, ThirtyDay: 1},
+		"ollama/qwen3.8:27b":  {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"ollama/notincatalog": {OneDay: 5}, // absent from familyOf: must be ignored
+	}
+	got := AggregateByFamily(familyOf, counts)
+	if got["gemma4"] != (UsageCounts{OneDay: 1, SevenDay: 2, ThirtyDay: 2}) {
+		t.Fatalf("gemma4 = %+v, want {1,2,2}", got["gemma4"])
+	}
+	if got["qwen3.8"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("qwen3.8 = %+v, want {1,1,1}", got["qwen3.8"])
+	}
+	if _, ok := got["notincatalog"]; ok {
+		t.Fatalf("family for a model outside the catalog should be skipped, got %v", got["notincatalog"])
+	}
+}
+
+// TestAggregateByFamilyDoesNotPreSeedZeroFamilies verifies the family
+// aggregation contract carried over from the deleted Store.FamilyCounts:
+// families are not pre-seeded — a family whose every model has zero counts
+// (no events within the retention window) is absent from the result, so a
+// missing key reads as zero usage at the call site. The zero entry for the
+// silent family's model mirrors what Counts zero-fills for every requested
+// catalog ID.
+func TestAggregateByFamilyDoesNotPreSeedZeroFamilies(t *testing.T) {
+	familyOf := map[string]string{
+		"ollama/used:1":   "used",
+		"ollama/silent:1": "silent",
+	}
+	counts := map[string]UsageCounts{
+		"ollama/used:1":   {OneDay: 1, SevenDay: 1, ThirtyDay: 1},
+		"ollama/silent:1": {},
+	}
+	got := AggregateByFamily(familyOf, counts)
+	if got["used"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("used = %+v, want {1,1,1}", got["used"])
+	}
+	if _, ok := got["silent"]; ok {
+		t.Fatalf("silent family should be absent from result: %v", got["silent"])
+	}
+}
+
+// TestCountsThenAggregateByFamily verifies the picker's single-scan family
+// aggregation end to end: ONE Counts call over the FULL catalog's IDs (not
+// just a filtered eligible subset) followed by AggregateByFamily produces
+// the per-family totals the deleted Store.FamilyCounts computed with its own
+// second scan of usage.jsonl. Events for models absent from familyOf must
+// not leak into any family total.
+func TestCountsThenAggregateByFamily(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	fixed := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	var data []byte
+	for _, e := range []event{
+		{ModelID: "ollama/gemma4:9b", Timestamp: fixed.Add(-30 * time.Minute)},
+		{ModelID: "ollama/gemma4:14b", Timestamp: fixed.Add(-2 * 24 * time.Hour)},
+		{ModelID: "ollama/qwen3.8:27b", Timestamp: fixed.Add(-30 * time.Minute)},
+		{ModelID: "ollama/notincatalog:1", Timestamp: fixed.Add(-30 * time.Minute)},
+	} {
+		line, _ := json.Marshal(e)
+		data = append(data, append(line, '\n')...)
+	}
+	_ = os.WriteFile(store.path(), data, 0o600)
+
+	familyOf := map[string]string{
+		"ollama/gemma4:9b":   "gemma4",
+		"ollama/gemma4:14b":  "gemma4",
+		"ollama/qwen3.8:27b": "qwen3.8",
+	}
+	ids := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		ids = append(ids, id)
+	}
+	counts := store.Counts(ids)
+	got := AggregateByFamily(familyOf, counts)
+	if got["gemma4"] != (UsageCounts{OneDay: 1, SevenDay: 2, ThirtyDay: 2}) {
+		t.Fatalf("gemma4 = %+v, want {1,2,2}", got["gemma4"])
+	}
+	if got["qwen3.8"] != (UsageCounts{OneDay: 1, SevenDay: 1, ThirtyDay: 1}) {
+		t.Fatalf("qwen3.8 = %+v, want {1,1,1}", got["qwen3.8"])
+	}
+	if _, ok := got["notincatalog"]; ok {
+		t.Fatalf("family for a model outside the catalog should be skipped, got %v", got["notincatalog"])
+	}
+}
+
+// TestFamilyAggregationMissingFileIsEmpty verifies the picker's family
+// aggregation stays empty when usage.jsonl does not exist yet (fresh
+// install): Counts zero-fills the catalog IDs and AggregateByFamily emits no
+// family keys for all-zero counts. Replaces TestFamilyCountsMissingFile from
+// the deleted Store.FamilyCounts.
+func TestFamilyAggregationMissingFileIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	familyOf := map[string]string{"a": "fam"}
+	ids := make([]string, 0, len(familyOf))
+	for id := range familyOf {
+		ids = append(ids, id)
+	}
+	counts := store.Counts(ids)
+	got := AggregateByFamily(familyOf, counts)
+	if len(got) != 0 {
+		t.Fatalf("family aggregation = %v, want empty", got)
+	}
+}

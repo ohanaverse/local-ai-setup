@@ -112,6 +112,13 @@ func TestBuildAgentListOrdering(t *testing.T) {
 // filter-aware catalog narrowing; the other tests use the simpler
 // testConfig() shape.
 func TestPhaseModelHonorsFilters(t *testing.T) {
+	// Isolate both state seams the picker entry reads: the usage store (via
+	// the newUsageStore seam — the family-usage sort would otherwise rank
+	// fixture models by the host's real usage.jsonl) and rotation state (via
+	// XDG_CONFIG_HOME — enterModelPhase positions the cursor from the host's
+	// real rotation.state without it).
+	tempStateDir(t)
+	stubUsageStore(t)
 	t.Cleanup(stubInstalled("claude"))
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -163,21 +170,32 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 		t.Fatalf("phase = %v, want phaseModel after phaseAgent Enter", nm.phase)
 	}
 
-	// Every item in the picker must be in the gemma4 family; the
-	// design-tag llama3 model must be filtered out.
+	// Every model row in the picker must be in the gemma4 family; the
+	// design-tag llama3 model must be filtered out. Family divider header
+	// rows are expected (the gemma4 group gets a leading divider); they are
+	// not launch targets, so they are skipped here and their label is just
+	// the family header.
 	items := nm.models.Items()
 	if len(items) == 0 {
 		t.Fatal("picker list is empty after phaseAgent Enter")
 	}
+	sawModel := false
 	for _, it := range items {
+		if _, ok := it.(dividerItem); ok {
+			continue
+		}
 		mi, ok := it.(modelItem)
 		if !ok {
 			t.Fatalf("picker item is %T, want modelItem", it)
 		}
+		sawModel = true
 		if mi.model.Family != "gemma4" {
 			t.Errorf("model %s has family %q, want gemma4 (filter -F gemma4 not honored)",
 				mi.model.ID, mi.model.Family)
 		}
+	}
+	if !sawModel {
+		t.Fatal("picker list has no model rows after phaseAgent Enter")
 	}
 }
 
@@ -229,6 +247,10 @@ func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 // this branch, a user with one eligible model still sees a 1-item picker
 // and has to press Enter twice (once to confirm, once to launch).
 func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
+	// Isolate the usage store and rotation state the picker entry reads, so
+	// the single-model skip decision cannot depend on host state.
+	tempStateDir(t)
+	stubUsageStore(t)
 	requireBinary(t, "claude")
 	m := buildModelInPhaseAgent(t, singleModelConfig())
 	m.selectedPath = t.TempDir()
@@ -248,6 +270,8 @@ func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
 // path goes to phaseResume (the resume prompt still applies — skipping
 // the picker doesn't bypass the user's choice between resume/fresh).
 func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	repo := t.TempDir()
@@ -279,6 +303,11 @@ func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
 // enterModelPhase helper drives both code paths, so a regression here
 // would surface in either.
 func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
+	// Isolate the usage store and rotation state the pinned-agent
+	// enterModelPhase path reads (it scans usage for the list build and
+	// rotation for cursor positioning even when the picker is skipped).
+	tempStateDir(t)
+	stubUsageStore(t)
 	requireBinary(t, "claude")
 	t.Cleanup(stubInstalled("claude"))
 	m := model{

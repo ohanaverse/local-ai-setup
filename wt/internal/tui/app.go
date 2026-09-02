@@ -22,7 +22,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -114,8 +113,8 @@ func (m model) Init() tea.Cmd {
 
 // isTyping reports whether the current phase is actively receiving character
 // input, in which case 'q' must not quit. The new-worktree prompt is a
-// textinput; the list filters (worktree and agent+command) are bubbles/list's
-// incremental filter.
+// textinput; the list filters (worktree, agent+command, and model picker)
+// are bubbles/list's incremental filter.
 func (m model) isTyping() bool {
 	if m.phase == phaseNewWorktree {
 		return true
@@ -123,7 +122,10 @@ func (m model) isTyping() bool {
 	if m.phase == phaseList && m.ready && m.list.FilterState() == list.Filtering {
 		return true
 	}
-	return m.phase == phaseAgent && m.agentList.FilterState() == list.Filtering
+	if m.phase == phaseAgent && m.agentList.FilterState() == list.Filtering {
+		return true
+	}
+	return m.phase == phaseModel && m.models.FilterState() == list.Filtering
 }
 
 // openNewWorktreePrompt transitions to the new-worktree prompt, resetting the
@@ -258,17 +260,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
 		// typed into a filter query reach the text input instead of being
 		// swallowed as navigation.
+		//
+		// Uses VisibleItems(), not Items(): bubbles/list v1.0.0's
+		// Index()/Select() are visible-item-coordinate once a filter is
+		// applied (FilterApplied, not just Filtering — this guard only
+		// skips Filtering), while Items() always stays unfiltered.
+		// Computing first/lastModelIndex from the unfiltered slice let a
+		// filtered-coordinate Index() coincidentally match a DIFFERENT
+		// model's unfiltered index, then Select() a raw list index that
+		// could be entirely outside the filtered set's range.
 		if m.phase == phaseModel && m.models.FilterState() != list.Filtering {
+			items := m.models.VisibleItems()
 			switch msg.String() {
 			case "up", "k":
-				if m.models.Index() == 0 {
-					m.models.Select(len(m.models.Items()) - 1)
-					return m, nil
+				if fi := firstModelIndex(items); fi >= 0 && m.models.Index() == fi {
+					if li := lastModelIndex(items); li >= 0 {
+						m.models.Select(li)
+						return m, nil
+					}
 				}
 			case "down", "j":
-				if m.models.Index() == len(m.models.Items())-1 {
-					m.models.Select(0)
-					return m, nil
+				if li := lastModelIndex(items); li >= 0 && m.models.Index() == li {
+					if fi := firstModelIndex(items); fi >= 0 {
+						m.models.Select(fi)
+						return m, nil
+					}
 				}
 			}
 		}
@@ -375,6 +391,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Enter launches straight through.
 				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
+				// While the '/' filter input is focused, Enter must apply
+				// the filter query (bubbles/list's own AcceptWhileFiltering
+				// binding), not launch the highlighted row. Falling through
+				// to the bottom m.models.Update(msg) below lets bubbles/list
+				// handle it. Without this guard, Enter always ran the launch
+				// path regardless of filter state — committing an ollama
+				// check (and potentially rotation/usage state) for whatever
+				// model happened to be highlighted underneath the filter
+				// overlay, instead of narrowing the list as the user typed.
+				if m.models.FilterState() == list.Filtering {
+					break
+				}
 				// The highlighted list item is what gets launched.
 				highlighted, ok := m.models.SelectedItem().(modelItem)
 				if !ok {
@@ -460,8 +488,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.phase == phaseModel && m.width > 0 && m.height > 0 {
+		prev := m.models.Index()
 		var cmd tea.Cmd
 		m.models, cmd = m.models.Update(msg)
+		m.snapSelectionOnModel(prev)
 		return m, cmd
 	}
 	if m.phase == phaseAgent && m.width > 0 && m.height > 0 {
@@ -633,16 +663,11 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	// Validate the pinned model FIRST. Building the model list (which
-	// scans usage.jsonl and wraps every model with a usage badge) is
-	// wasted work when the pin is invalid — we'll just discard it.
-	if m.pinnedModel != "" {
-		if idx := indexOfModelID(models, m.pinnedModel); idx >= 0 {
-			counts := usage.NewStore().Counts(modelIDs(models))
-			m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
-			m.models.Select(idx)
-			return m.proceedToLaunch()
-		}
+	// Validate a -M pin BEFORE any list construction: a bad pin routes back to
+	// the agent picker without scanning usage.jsonl or wrapping models. The
+	// eligible slice is the source of truth; a pin that matches at all is one
+	// of these models.
+	if m.pinnedModel != "" && indexOfModelID(models, m.pinnedModel) < 0 {
 		m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
 		m.pinnedModel = ""
 		items := buildAgentList(m.cfg)
@@ -653,27 +678,44 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m, nil
 	}
 
-	counts := usage.NewStore().Counts(modelIDs(models))
-	m.models = buildModelList(models, counts, m.theme, m.width-2, m.height-2)
-	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
-		if idx := indexOfModelID(models, next.ID); idx >= 0 {
+	// Build the sorted, family-grouped model list once. Family counts come
+	// from the full catalog (m.cfg.Models), so a family's total usage is
+	// accurate even when the -T/-F filters narrow the eligible models.
+	familyOf := make(map[string]string, len(m.cfg.Models))
+	for _, mm := range m.cfg.Models {
+		familyOf[mm.ID] = mm.Family
+	}
+	ml, idIndex := buildModelListWithFamilies(models, familyOf, m.theme, m.width-2, m.height-2)
+	m.models = ml
+
+	// Pinned model: select its true list index (divider-aware) and launch.
+	if m.pinnedModel != "" {
+		if idx, ok := idIndex[m.pinnedModel]; ok {
 			m.models.Select(idx)
 		}
+		return m.proceedToLaunch()
 	}
+
+	// Unpinned: prefer the rotation's next-to-use model; otherwise start at
+	// the first model row (skipping leading family dividers).
+	posSet := false
+	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
+		if idx, ok := idIndex[next.ID]; ok {
+			m.models.Select(idx)
+			posSet = true
+		}
+	}
+	if !posSet {
+		if fi := firstModelIndex(m.models.Items()); fi >= 0 {
+			m.models.Select(fi)
+		}
+	}
+
 	if len(models) == 1 {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
 	return m, nil
-}
-
-// modelIDs extracts IDs from a model slice for usage-count lookups.
-func modelIDs(models []config.Model) []string {
-	ids := make([]string, len(models))
-	for i, m := range models {
-		ids[i] = m.ID
-	}
-	return ids
 }
 
 // proceedToLaunch checks for a prior session and either launches the agent

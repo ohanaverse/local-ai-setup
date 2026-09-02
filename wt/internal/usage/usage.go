@@ -122,7 +122,15 @@ func pruneOlderThan(data []byte, asOf time.Time, window time.Duration) ([]byte, 
 	return out, nil
 }
 
-// Counts returns 1d/7d/30d counts for each model in modelIDs.
+// Counts returns 1d/7d/30d counts for each model in modelIDs, zero-filling
+// every requested ID (a missing file or a model with no recent events reads
+// as zero counts).
+//
+// Best-effort for display: if the scan aborts partway (e.g. a single corrupt
+// line exceeding bufio.Scanner's token limit), the counts accumulated so far
+// are returned with no error — a truncated read only skews displayed
+// numbers. Record's prune path is where scan errors are surfaced, because
+// there the result overwrites the on-disk history.
 func (s *Store) Counts(modelIDs []string) map[string]UsageCounts {
 	want := map[string]bool{}
 	for _, id := range modelIDs {
@@ -161,6 +169,42 @@ func (s *Store) Counts(modelIDs []string) map[string]UsageCounts {
 			c.ThirtyDay++
 		}
 		out[ev.ModelID] = c
+	}
+	return out
+}
+
+// CompositeScore is a recency-weighted sort key for a UsageCounts bucket.
+// Each launch is counted exactly once, weighted by how fresh it is:
+// today's launches ≈3x, 1-7 days ≈1.5x, 8-30 days ≈1x. Expressed as
+// integer math (x2), 6*OneDay + 3*(SevenDay-OneDay) + 2*(ThirtyDay-SevenDay)
+// simplifies to 3*OneDay + SevenDay + 2*ThirtyDay.
+func CompositeScore(c UsageCounts) int {
+	return 3*c.OneDay + c.SevenDay + 2*c.ThirtyDay
+}
+
+// AggregateByFamily sums per-model usage counts into per-family buckets.
+// familyOf maps the FULL model catalog's IDs to their families (built from
+// the registry, not the currently-eligible subset, so a family's total
+// usage is accurate even when a tag/family filter exposes only some of its
+// models); counts are the per-model counts Store.Counts returned for those
+// same IDs. Counts entries for IDs absent from familyOf are ignored.
+//
+// Families are not pre-seeded: only families with at least one model whose
+// counts are non-zero appear as keys, so a missing family key means zero
+// usage. (Counts zero-fills every requested model ID, which is why the
+// zero-count skip is what enforces the contract here.)
+func AggregateByFamily(familyOf map[string]string, counts map[string]UsageCounts) map[string]UsageCounts {
+	out := map[string]UsageCounts{}
+	for id, family := range familyOf {
+		c := counts[id]
+		if c == (UsageCounts{}) {
+			continue
+		}
+		cur := out[family]
+		cur.OneDay += c.OneDay
+		cur.SevenDay += c.SevenDay
+		cur.ThirtyDay += c.ThirtyDay
+		out[family] = cur
 	}
 	return out
 }

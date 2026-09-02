@@ -65,7 +65,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
   tag   : code
   ```
 
-  The tag slot defaults to `default_tag = "code"` (see §6) unless `-T` narrows it. Model rows carry usage badges (launch counts from `usage.jsonl`), and the cursor starts on the rotation's next model (see §5).
+  The tag slot defaults to `default_tag = "code"` (see §6) unless `-T` narrows it. Model rows carry usage badges — a `fam:` column (the family's 30-day launch count) plus per-model `1d/7d/30d` counts from `usage.jsonl`. Rows are grouped under non-selectable family headers (`◈ family · 30d:N`) and sorted descending by family usage, then model usage (a recency-weighted composite: today ≈3×, 1–7d ≈1.5×, 8–30d ≈1×), so the families you rely on most float to the top. The cursor still starts on the rotation's next model (see §5).
 - **On the model screen:** `j`/`k`/arrows navigate (with wrap-around), `enter` launches, `q` quits, `esc` pops back. Footer reads `[↑/↓] navigate   [enter] launch   [q] quit`.
 - **Session resume:** for agents with resume (claude, opencode) the picker offers to resume the newest session or go fresh; `esc`/cancel returns to the model screen without launching or advancing rotation.
 - **There is no `d` tag-toggle key.** Use `-T code` / `-T design` instead; picker footer is `[↑/↓] navigate [enter] launch [q] quit`.
@@ -160,6 +160,8 @@ Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Rec
 ```json
 {"model_id":"ollama/glm-5.3-flash:cloud","timestamp":"2026-08-29T18:33:05.297099Z"}
 ```
+
+Family counts are not stored directly: the picker derives them at query time with one `Store.Counts` pass over the full catalog's model IDs, then maps each counted `model_id` to its `family` (from the registry) and aggregates in memory (`usage.AggregateByFamily`) — so no schema change and existing history stays valid. See `internal/usage` and [03-model-families](03-model-families.md).
 
 ## Verification
 

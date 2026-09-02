@@ -75,9 +75,10 @@ After the launched subprocess exits, both the TUI and non-TUI paths print a sing
 
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
-**Test seams.** TTY, installed-check, guard, and TUI behavior are stubbed via
-package-level var seams (`tuiRun`, `launchFiltered`, `stdinTTY`, `installed`,
-`maybeInstallGuard`) — production code calls the var, tests swap it. When adding
+**Test seams.** TTY, installed-check, guard, TUI behavior, and the model
+picker's usage store are stubbed via package-level var seams (`tuiRun`,
+`launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
+`newUsageStore`) — production code calls the var, tests swap it. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 
 ```bash
@@ -196,7 +197,7 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
   - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
 - State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model's picker footer — see `internal/usage`).
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model's picker footer — see `internal/usage`). The model picker runs ONE `Store.Counts` pass over the full catalog's IDs per entry and aggregates per-family totals in memory via `usage.AggregateByFamily` (model-id→family map from the registry), then sorts eligible models descending by family-then-model `CompositeScore` (a recency-weighted integer key) with non-selectable family header rows between groups.
 
 ```bash
 go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
