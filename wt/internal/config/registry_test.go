@@ -139,8 +139,6 @@ tags = ["code"]
 [models.model_info]
 supports_function_calling = true
 
-[models.cost]
-kind = "free"
 `)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		t.Fatal(err)
