@@ -108,7 +108,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog); helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
 | `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
-| `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model-picker badges, and the rotation module |
+| `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model picker's per-row usage columns, and the rotation module |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
@@ -197,7 +197,7 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
   - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
 - State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model's picker footer — see `internal/usage`). The model picker runs ONE `Store.Counts` pass over the full catalog's IDs per entry and aggregates per-family totals in memory via `usage.AggregateByFamily` (model-id→family map from the registry), then sorts eligible models descending by family-then-model `CompositeScore` (a recency-weighted integer key) with non-selectable family header rows between groups.
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model picker — see `internal/usage`). The picker's `buildModelItems` (`internal/tui/model_list.go`) runs ONE `Store.Counts` pass over the eligible models' IDs, aggregates per-family totals in memory via `usage.AggregateByFamily`, sorts eligible models descending by family-then-model `CompositeScore` (a recency-weighted integer key), and renders each model as one compact line — the family name and its 30-day count lead every row; there are no divider/header rows, family context is inline.
 
 ```bash
 go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
