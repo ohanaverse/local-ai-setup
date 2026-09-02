@@ -13,9 +13,13 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
-// newUsageStore is a seam for tests: production uses usage.NewStore() (the
+// newUsageStore is a seam for tests: production uses realNewUsageStore (the
 // default config dir); tests swap it to isolate from the real usage.jsonl.
-var newUsageStore = func() *usage.Store { return usage.NewStore() }
+var newUsageStore = realNewUsageStore
+
+// realNewUsageStore is the production implementation of the newUsageStore
+// seam: a Store rooted at the default config dir.
+func realNewUsageStore() *usage.Store { return usage.NewStore() }
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
 type modelItem struct {

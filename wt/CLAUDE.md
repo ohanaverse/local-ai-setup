@@ -75,9 +75,10 @@ After the launched subprocess exits, both the TUI and non-TUI paths print a sing
 
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
 
-**Test seams.** TTY, installed-check, guard, and TUI behavior are stubbed via
-package-level var seams (`tuiRun`, `launchFiltered`, `stdinTTY`, `installed`,
-`maybeInstallGuard`) — production code calls the var, tests swap it. When adding
+**Test seams.** TTY, installed-check, guard, TUI behavior, and the model
+picker's usage store are stubbed via package-level var seams (`tuiRun`,
+`launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
+`newUsageStore`) — production code calls the var, tests swap it. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 
 ```bash
