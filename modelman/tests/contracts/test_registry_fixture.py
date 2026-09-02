@@ -21,21 +21,20 @@ def test_load_registry_matches_shared_fixture():
     assert openrouter.auth.type == "api_key"
     assert openrouter.auth.secret_ref == "OPENROUTER_API_KEY"
 
-    assert len(registry.models) == 3
+    assert len(registry.models) == 2
+
     free_model = registry.model("ollama/contract-fixture:local")
-    assert free_model.cost.kind == "free"
+    assert free_model.cost is None
 
     cloud_model = registry.model("openrouter/contract-fixture:cloud")
     assert cloud_model.location == "cloud"
-    assert cloud_model.cost.kind == "per_token"
-    assert cloud_model.cost.price_per_million_tokens == 1.5
     assert cloud_model.model_info == {"supports_function_calling": True}
-
-    sub_model = registry.model("ollama/contract-fixture:subscription")
-    assert sub_model.cost.kind == "subscription"
-    assert sub_model.cost.price_per_period == 20.0
-    assert sub_model.cost.period == "month"
-    assert sub_model.usage_tier == "medium"
+    assert cloud_model.cost is not None
+    assert cloud_model.cost.input_price_per_million == 0.50
+    assert cloud_model.cost.cache_price_per_million == 0.25
+    assert cloud_model.cost.output_price_per_million == 1.00
+    assert cloud_model.cost.subscription_price == 19.99
+    assert cloud_model.cost.subscription_period == "month"
 
     family = registry.family("contract-fixture")
     assert family is not None
