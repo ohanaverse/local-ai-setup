@@ -56,8 +56,11 @@ func singleModelList(m config.Model) list.Model {
 // phaseModelWithList builds a model in phaseModel with m.models populated
 // for the given agent+tag, with the cursor on the globally rotated model.
 // Tests that exercise rotation, the list, or the View use this helper
-// instead of constructing model literals (which would skip the list-build
-// path the production code uses). The usage counts come through the
+// instead of constructing model literals. It routes through the production
+// list-build path (buildModelListWithFamilies, the same builder
+// enterModelPhase uses) so tests exercise the divider-aware, usage-sorted
+// item layout the picker actually renders — including the index offsets the
+// inserted family dividers produce. The usage counts come through the
 // newUsageStore seam so callers that stub the seam (or isolate
 // XDG_CONFIG_HOME via tempStateDir) never read the host's real usage.jsonl.
 func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
@@ -69,20 +72,31 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
-	counts := newUsageStore().Counts(modelIDs(models))
+	// familyOf maps the full catalog (mirroring enterModelPhase) so family
+	// totals are accurate for the eligible subset under test.
+	familyOf := make(map[string]string, len(cfg.Models))
+	for _, mm := range cfg.Models {
+		familyOf[mm.ID] = mm.Family
+	}
+	ml, idIndex := buildModelListWithFamilies(models, familyOf, themes.Default, 80, 24)
 	m := model{
 		cfg:    cfg,
 		phase:  phaseModel,
 		agent:  agent,
 		tag:    tag,
-		models: buildModelList(models, counts, themes.Default, 80, 24),
+		models: ml,
 		width:  80,
 		height: 24,
 	}
+	// Position the cursor exactly like production enterModelPhase: the
+	// rotation's next-to-use model when present, else the first model row
+	// (skipping the leading family divider).
 	if next, ok := rotation.New().Next(cfg, agent, tag, ""); ok {
-		if idx := indexOfModelID(models, next.ID); idx >= 0 {
+		if idx, ok := idIndex[next.ID]; ok {
 			m.models.Select(idx)
 		}
+	} else if fi := firstModelIndex(m.models.Items()); fi >= 0 {
+		m.models.Select(fi)
 	}
 	return m
 }
@@ -606,24 +620,26 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 
 // TestPhaseModelWithListBuildsAndPositionsCursor asserts the test
 // helper populates m.models and positions the cursor on the rotation's
-// next-to-use model. The production code uses the same list-build path
-// (in selectedEntryMsg), so this is a smoke test of the
-// shared infrastructure.
+// next-to-use model. The helper routes through the production list-build
+// path (buildModelListWithFamilies, the same builder enterModelPhase uses),
+// so this is a smoke test of the shared infrastructure.
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
 	// State file: rotation.state holding a single model-id-per-line
 	// ("ollama/gemma4:9b\n"). Last() reads that line and FindAfter
-	// returns the next model (gemma4:14b at index 1). The cursor
-	// lands on gemma4:14b.
+	// returns the next model (gemma4:14b). The cursor lands on gemma4:14b.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := phaseModelWithList(t, cfg, "claude", "code")
 
-	if got := len(m.models.Items()); got != 2 {
-		t.Errorf("models items = %d, want 2 (testConfig code models)", got)
+	// testConfig has two eligible code models; the family-aware builder
+	// inserts one leading "— other" divider (all testConfig models share
+	// an empty family): divider(0), gemma4:9b(1), gemma4:14b(2).
+	if got := len(m.models.Items()); got != 3 {
+		t.Errorf("models items = %d, want 3 (leading divider + 2 code models)", got)
 	}
-	if m.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1 (after gemma4:9b)", m.models.Index())
+	if m.models.Index() != 2 {
+		t.Errorf("cursor index = %d, want 2 (gemma4:14b; index 0 is the leading divider)", m.models.Index())
 	}
 }
 
@@ -645,22 +661,24 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 // This is the regression guard for the up/down bug.
 func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 	// Isolate rotation state so the host's real ~/.config/agent-wt
-	// rotation file can't position the cursor away from index 0 and
-	// break the precondition assertion.
+	// rotation file can't position the cursor away from the first model
+	// row and break the precondition assertion.
 	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	if m.models.Index() != 0 {
-		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
+	// No rotation state: the helper positions the cursor on the first
+	// model row, index 1 (index 0 is the leading family divider).
+	if m.models.Index() != 1 {
+		t.Fatalf("precondition: cursor = %d, want 1 (first model row; 0 is the divider)", m.models.Index())
 	}
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = got.(model)
-	if m.models.Index() != 1 {
-		t.Errorf("cursor after down = %d, want 1", m.models.Index())
+	if m.models.Index() != 2 {
+		t.Errorf("cursor after down = %d, want 2", m.models.Index())
 	}
 	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = got.(model)
-	if m.models.Index() != 0 {
-		t.Errorf("cursor after up = %d, want 0", m.models.Index())
+	if m.models.Index() != 1 {
+		t.Errorf("cursor after up = %d, want 1", m.models.Index())
 	}
 }
 
@@ -811,9 +829,10 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 	dir := tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 
-	// Cursor is at index 0 by default (no last-launched seed).
-	if m.models.Index() != 0 {
-		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
+	// Cursor is at the first model row (index 1; index 0 is the leading
+	// divider) since no last-launched seed exists.
+	if m.models.Index() != 1 {
+		t.Fatalf("precondition: cursor = %d, want 1", m.models.Index())
 	}
 
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -837,9 +856,11 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 func TestLaunchAndRecordWritesLast(t *testing.T) {
 	dir := tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	first, ok := m.models.Items()[0].(modelItem)
+	// First model row sits at index 1 (index 0 is the leading family
+	// divider the family-aware builder inserts).
+	first, ok := m.models.Items()[1].(modelItem)
 	if !ok {
-		t.Fatalf("items[0] is %T, want modelItem", m.models.Items()[0])
+		t.Fatalf("items[1] is %T, want modelItem", m.models.Items()[1])
 	}
 	// launchAndRecord records the model captured in m.launchModel, then
 	// returns a tea.Cmd that would run the agent. We discard that cmd so

@@ -54,21 +54,6 @@ func (m modelItem) Description() string {
 	)
 }
 
-// buildModelList builds a bubble/list from the given models. The caller
-// passes the desired width/height. The list is created with a themed
-// delegate (ThemedListDelegate) so the picker honors the active color
-// theme, and a fixed title. counts is attached to each item for display.
-func buildModelList(models []config.Model, counts map[string]usage.UsageCounts, theme themes.Theme, width, height int) list.Model {
-	items := make([]list.Item, 0, len(models))
-	for _, m := range models {
-		items = append(items, modelItem{model: m, counts: counts[m.ID]})
-	}
-	l := list.New(items, ThemedListDelegate(theme), width, height)
-	l.Title = "Models"
-	l.SetShowStatusBar(false)
-	return l
-}
-
 // indexOfModelID returns the index of the model with the given ID in models,
 // or -1 if not found. Used to validate a pinned -M model against the agent's
 // eligible list, and to position the list cursor on the rotation's

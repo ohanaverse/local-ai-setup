@@ -718,15 +718,6 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	return m, nil
 }
 
-// modelIDs extracts IDs from a model slice for usage-count lookups.
-func modelIDs(models []config.Model) []string {
-	ids := make([]string, len(models))
-	for i, m := range models {
-		ids[i] = m.ID
-	}
-	return ids
-}
-
 // proceedToLaunch checks for a prior session and either launches the agent
 // directly or transitions to the resume prompt. It is the shared flow used
 // by both the phaseModel enter handler and the ollama warning proceed choice.
