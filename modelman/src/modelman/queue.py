@@ -57,13 +57,50 @@ def _label(variant: VariantSpec) -> str:
 
 
 def _reason(exc: BaseException) -> str:
-    """First line of an exception, capped so a giant traceback doesn't
-    drown the StatusScreen."""
-    text = str(exc) or exc.__class__.__name__
-    first = text.splitlines()[0] if text else ""
-    if len(first) > 200:
-        first = first[:197] + "…"
-    return _sanitize(first)
+    """Format exception for display, preserving key details while capping length.
+
+    Shows exception type and full first line for common errors (disk space,
+    network, auth). Falls back to truncated message for very long tracebacks.
+    """
+    exc_type = exc.__class__.__name__
+    text = str(exc) or exc_type
+    lines = text.splitlines()
+    first = lines[0] if lines else ""
+
+    # Preserve full message for common actionable errors. Check the first
+    # line only — that is what the user actually sees rendered, and a
+    # keyword in a later line would otherwise prefix an unrelated first
+    # line. Bare numeric tokens (e.g. "401") are intentionally absent: they
+    # collide with errno codes and other unrelated numbers; the descriptive
+    # phrases ("unauthorized", "not found") are what real errors include.
+    actionable_keywords = [
+        "disk space", "no space left", "ENOSPC",
+        "permission denied", "EACCES",
+        "connection", "timeout", "network",
+        "authentication", "unauthorized",
+        "not found",
+        "certificate", "SSL",
+    ]
+    is_actionable = any(kw.lower() in first.lower() for kw in actionable_keywords)
+
+    if is_actionable:
+        # Show type + first line for actionable errors, but skip the
+        # prefix when the class name is already in the message.
+        if exc_type and exc_type.lower() not in first.lower():
+            result = f"{exc_type}: {first}"
+        else:
+            result = first
+    else:
+        # Non-actionable: just the first line.
+        result = first
+
+    # Cap the final formatted string so it always fits the renderer's
+    # 200-char bound (the RichLog has wrap=False, so overflow would
+    # cause horizontal scrolling). The ellipsis is included in the cap.
+    if len(result) > 200:
+        result = result[:197] + "…"
+
+    return _sanitize(result)
 
 
 @dataclass
@@ -140,6 +177,13 @@ class PendingChanges:
             return False
 
         if not self.ready and not self.deletes and not self.exposes and not self.moves:
+            # Empty-queue fast path. Today's only call site is the TUI's
+            # `_apply_queued`, which always has at least one queued item
+            # (the TUI only opens the apply confirm dialog with a non-empty
+            # queue). A future programmatic caller would see "All operations
+            # completed successfully" on the status screen — fine for the
+            # current contract, but if you reach this branch from elsewhere
+            # consider whether the user is misled by zero attempted work.
             emit("apply:done")
             return
 

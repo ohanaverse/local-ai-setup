@@ -1559,3 +1559,93 @@ def test_apply_expose_queue_identical_reexpose_does_not_restart(tmp_path, monkey
     assert warnings == []
     assert calls == []
     assert path.read_bytes() == before
+
+
+def test_reason_does_not_match_bare_numeric_substrings():
+    """Regression: _reason used to substring-match "401"/"403"/"404" anywhere
+    in the message, which false-positived on errno numbers like
+    [Errno 1401] or unrelated hostnames. The keyword list dropped those
+    bare numeric tokens; verify a message that only contains such a number
+    does NOT receive the actionable type-prefix."""
+    from modelman.queue import _reason
+
+    # Errno-like: contains "401" but no descriptive phrase.
+    exc = OSError("[Errno 1401] no such file")
+    formatted = _reason(exc)
+    # No actionable prefix added; first line only.
+    assert "OSError:" not in formatted
+    assert "no such file" in formatted
+
+
+def test_reason_checks_only_first_line_not_full_multiline_message():
+    """Regression: _reason used to scan the full multi-line text for
+    keywords, so a keyword in line 2+ would prefix an unrelated line 1.
+    The check now runs on the first line only."""
+    from modelman.queue import _reason
+
+    exc = ValueError("benign info on line one\nconnection refused on line two")
+    formatted = _reason(exc)
+    # "connection refused" lives on line 2 — must not trigger the prefix
+    # on line 1 ("benign info on line one").
+    assert "ValueError:" not in formatted
+    assert "benign info on line one" in formatted
+
+
+def test_reason_actionable_prefix_is_case_insensitive():
+    """Regression: the `exc_type not in first` check used to be
+    case-sensitive while the keyword check lowercased both sides. A
+    message that mentions the class name with different case
+    ('oserror' vs 'OSError') would double-prefix. The check is now
+    case-insensitive."""
+    from modelman.queue import _reason
+
+    exc = OSError("OSError: no space left on device")
+    formatted = _reason(exc)
+    # Class name already mentioned in the message — must not be re-prefixed.
+    assert formatted == "OSError: no space left on device" or formatted == "no space left on device"
+    # Explicit: no "OSError: OSError:" doubling.
+    assert "OSError: OSError" not in formatted
+
+
+def test_reason_caps_first_line_before_prefix():
+    """Regression: long actionable lines (SSL errors with full URLs/hostnames)
+    used to overflow the wrap=False RichLog. The 200-char cap now runs
+    on the first line before the type prefix is added, so the final
+    string is always bounded."""
+    from modelman.queue import _reason
+
+    long_line = "connection refused " + ("x" * 500)
+    exc = ConnectionError(long_line)
+    formatted = _reason(exc)
+    # Final formatted string is ≤ 200 chars (cap + ellipsis + prefix).
+    assert len(formatted) <= 200
+
+
+def test_apply_empty_queue_emits_apply_done(tmp_path):
+    """Regression guard: the empty-queue fast path in PendingChanges.apply()
+    must emit apply:done so the status screen writes its footer. Tests /
+    future programmatic callers depend on this; if it stops emitting, the
+    TUI's status screen would never write the success footer and `done`
+    would never flip."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[],
+    )
+    state = StateStore()
+
+    events: list[str] = []
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={},
+    )
+    pending.apply(on_event=events.append)
+    assert events == ["apply:done"]
+    # No work, no on-disk writes.
+    assert not reg_path.exists()
+    assert not state_path.exists()

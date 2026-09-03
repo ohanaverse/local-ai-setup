@@ -53,6 +53,14 @@ class StatusScreen(Screen[None]):
         self.cancelled = False
         self.pending: PendingChanges | None = None
         self._worker: Worker[None] | None = None
+        self._failure_count = 0
+        # Presentation-only copy of pending.failures, kept in the order
+        # the failure events arrive. Distinct from PendingChanges.failures
+        # (queue.py) so the screen can show labels and reasons in the
+        # rendered format without leaking exception objects into the
+        # presentation layer. Always appended in lockstep with
+        # `_failure_count` so the summary count and list never desync.
+        self._displayed_failures: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -76,18 +84,25 @@ class StatusScreen(Screen[None]):
             # apply() normally captures per-step failures and emits its own
             # failure events, but unexpected errors in the runner closure
             # (e.g. a provider that fails to instantiate with a real error)
-            # must not crash the worker silently.
-            self._emit(f"[red]Unexpected error during apply: {exc}[/red]")
-            self.app.call_from_thread(self._set_done)
+            # must not crash the worker silently. Emit a synthetic apply:done
+            # so the standard handler in _handle_event runs — it writes the
+            # failure summary block and flips `done` itself, in the same
+            # order as the happy path. (Earlier this path set `done` directly
+            # without emitting apply:done, which made the user-visible
+            # "Done with errors" summary never render and let Escape pop the
+            # screen before traceback lines were processed.)
+            import traceback
+            self._emit("[red]Unexpected error during apply:[/red]")
+            self._emit(f"[red]  {exc.__class__.__name__}: {exc}[/red]")
+            # Include traceback for debugging
+            tb_lines = traceback.format_exc().splitlines()
+            for line in tb_lines[-10:]:  # Last 10 lines to avoid flooding
+                self._emit(f"[dim]{line}[/dim]")
+            self._emit_threaded("apply:done")
             return
         # The closure calls _emit_threaded, which marshals to _emit on the UI
         # thread. After it returns, the apply:done (or apply:cancelled)
         # event has been processed and `done` is True.
-
-    def _set_done(self) -> None:
-        """Flip the done flag from the UI thread (used by _run on error)."""
-        self.done = True
-        self._refresh_bindings()
 
     def _register_pending(self, pending: PendingChanges) -> None:
         """Closure hook: store the PendingChanges so we can cancel it.
@@ -149,7 +164,7 @@ class StatusScreen(Screen[None]):
             # 4th field: target family.
             label = parts[2]
             detail = parts[3]
-        elif verb == "move:fail" and len(parts) == 4:
+        elif ((verb == "move:fail") or verb in ("expose:fail", "unexpose:fail")) and len(parts) == 4:
             # 4th field: failure reason.
             label = parts[2]
             detail = parts[3]
@@ -168,7 +183,16 @@ class StatusScreen(Screen[None]):
         elif verb == "delete:fail":
             log.write(f"  [red]✗[/red] Failed to delete {label}")
             if detail:
-                log.write(f"    [red dim]{detail}[/red dim]")
+                # Defense-in-depth cap: even if _reason didn't truncate,
+                # a malformed/long detail line should not overflow the
+                # wrap=False RichLog.
+                if len(detail) > 200:
+                    detail = detail[:197] + "…"
+                log.write(f"    [red]{detail}[/red]")
+            self._displayed_failures.append(
+                f"Delete failed for {label}: {detail or '(no reason provided)'}"
+            )
+            self._failure_count += 1
         elif verb == "download:start":
             log.write(f"· Downloading {label}...")
         elif verb == "download:done":
@@ -181,7 +205,13 @@ class StatusScreen(Screen[None]):
         elif verb == "download:fail":
             log.write(f"  [red]✗[/red] Failed to download {label}")
             if detail:
-                log.write(f"    [red dim]{detail}[/red dim]")
+                if len(detail) > 200:
+                    detail = detail[:197] + "…"
+                log.write(f"    [red]{detail}[/red]")
+            self._displayed_failures.append(
+                f"Download failed for {label}: {detail or '(no reason provided)'}"
+            )
+            self._failure_count += 1
         elif verb == "download:cancelled":
             log.write(f"  [yellow]![/yellow] Cancelled {label}")
         elif verb == "ready:start":
@@ -192,10 +222,27 @@ class StatusScreen(Screen[None]):
             log.write(f"· Moving {label} → {detail}...")
         elif verb == "move:done":
             log.write(f"  [green]✓[/green] Moved {label} → {detail}")
+        elif verb in ("expose:fail", "unexpose:fail"):
+            action = verb.split(":")[0]
+            log.write(f"  [red]✗[/red] Failed to {action} {label}")
+            if detail:
+                if len(detail) > 200:
+                    detail = detail[:197] + "…"
+                log.write(f"    [red]{detail}[/red]")
+            self._displayed_failures.append(
+                f"{action.title()} failed for {label}: {detail or '(no reason provided)'}"
+            )
+            self._failure_count += 1
         elif verb == "move:fail":
             log.write(f"  [red]✗[/red] Failed to move {label}")
             if detail:
-                log.write(f"    [red dim]{detail}[/red dim]")
+                if len(detail) > 200:
+                    detail = detail[:197] + "…"
+                log.write(f"    [red]{detail}[/red]")
+            self._displayed_failures.append(
+                f"Move failed for {label}: {detail or '(no reason provided)'}"
+            )
+            self._failure_count += 1
         elif verb == "expose:warning":
             # Non-fatal proxy-restart notice (command unset or failed).
             log.write(f"  [yellow]![/yellow] {detail}")
@@ -206,7 +253,13 @@ class StatusScreen(Screen[None]):
         elif verb == "save:fail":
             log.write("  [red]✗[/red] Failed to save manifest")
             if detail:
-                log.write(f"    [red dim]{detail}[/red dim]")
+                if len(detail) > 200:
+                    detail = detail[:197] + "…"
+                log.write(f"    [red]{detail}[/red]")
+            self._displayed_failures.append(
+                f"Save failed: {detail or '(no reason provided)'}"
+            )
+            self._failure_count += 1
         elif verb == "apply:cancelled":
             self.cancelled = True
             self.done = True
@@ -215,7 +268,16 @@ class StatusScreen(Screen[None]):
         elif verb == "apply:done":
             self.done = True
             self._refresh_bindings()
-            log.write("\n[bold]Done.[/bold] Press Escape to return.")
+            # Show failure summary if any failures occurred
+            if self._failure_count > 0:
+                log.write("\n" + "=" * 60)
+                log.write(f"[bold red]{self._failure_count} operation(s) failed:[/bold red]")
+                for i, failure in enumerate(self._displayed_failures, 1):
+                    log.write(f"[red]  {i}. {failure}[/red]")
+                log.write("\n[dim]Review the errors above. Fix the issue and retry.[/dim]")
+                log.write("\n[bold]Done with errors.[/bold] Press Escape to return.")
+            else:
+                log.write("\n[bold green]All operations completed successfully.[/bold green] Press Escape to return.")
 
     def _emit(self, line: str) -> None:
         """Helper for the worker to log a plain line (used before the loop)."""

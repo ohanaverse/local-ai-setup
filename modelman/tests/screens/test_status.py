@@ -368,7 +368,11 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
         assert "ornith:35b" in text
         assert "ornith:8b" in text
         assert "Saved" in text or "saving" in text.lower()
-        assert "Done" in text
+        # Success footer must include both the completion word and the
+        # "Press Escape to return" hint so a regression that drops
+        # either piece (e.g. an empty-queue path) does not silently pass.
+        assert "successfully" in text.lower()
+        assert "Escape to return" in text
 
 
 @pytest.mark.asyncio
@@ -487,3 +491,167 @@ async def test_status_screen_renders_move_events():
         assert "Moved gemma4:26b-mlx → gemma4" in text
         assert "Failed to move gemma4:12b-mlx" in text
         assert "boom" in text
+
+
+@pytest.mark.asyncio
+async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
+    """When operations fail, a summary should appear at the end."""
+    from textual.widgets import RichLog
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.status import StatusScreen
+
+    reg, state, reg_path, state_path = app_with_apply
+
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.delete.return_value = None
+    provider.download.side_effect = OSError(
+        "No space left on device (ENOSPC) - failed to write file"
+    )
+
+    def run_apply(log_event, _progress, _register):
+        pending = PendingChanges(
+            registry=reg,
+            state=state,
+            family="ornith",
+            registry_path=reg_path,
+            state_path=state_path,
+            providers={"ollama": provider},
+            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
+            deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
+        )
+        pending.apply(on_event=log_event)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        app.push_screen(screen)
+        for _ in range(20):
+            await pilot.pause()
+            if screen.done:
+                break
+        log = screen.query_one(RichLog)
+        text = "\n".join(line.text for line in log.lines)
+        # Check failure summary header
+        assert "operation(s) failed:" in text
+        # Check specific failure details
+        assert "Download failed for ornith:8b" in text
+        assert "No space left on device" in text
+        assert "Done with errors" in text
+
+
+@pytest.mark.asyncio
+async def test_status_screen_count_and_list_stay_in_sync_on_empty_detail():
+    """Regression: when a failure event arrives with no reason (detail
+    empty), the screen must still append a placeholder to
+    _displayed_failures so the summary count and the enumerated list
+    never desync. Synthesize the event directly so this test does not
+    depend on any provider producing a 3-part tag today."""
+    from textual.widgets import RichLog
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.status import StatusScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = StatusScreen(family="g", run_apply=lambda *_: None)
+        app.push_screen(screen)
+        await pilot.pause()
+        # Synthesize two 3-part failure events: move:fail + delete:fail,
+        # no 4th "reason" field. The pre-fix code would increment
+        # _failure_count twice but append nothing to _displayed_failures.
+        screen._handle_event("move:fail|ollama/m1|gemma4")
+        screen._handle_event("delete:fail|ollama/m2|gemma4-mlx")
+        screen._handle_event("apply:done")
+        await pilot.pause()
+
+        log = screen.query_one("#status-log", RichLog)
+        text = "\n".join(strip.text for strip in log.lines)
+        # Count and list must agree.
+        assert "2 operation(s) failed" in text
+        # Each failure got a placeholder "(no reason provided)".
+        assert "Move failed for gemma4: (no reason provided)" in text
+        assert "Delete failed for gemma4-mlx: (no reason provided)" in text
+        # And the summary footer still renders.
+        assert "Done with errors" in text
+
+
+@pytest.mark.asyncio
+async def test_status_screen_unexpected_error_still_renders_done_footer():
+    """Regression: an unexpected exception in run_apply used to call
+    _set_done directly without emitting apply:done, which skipped the
+    new failure-summary block entirely. The fix routes through
+    `_emit_threaded("apply:done")` so the standard handler in
+    `_handle_event` writes the footer (success or 'Done with errors')
+    and flips `done` itself, in the same order as the happy path."""
+    from textual.widgets import RichLog
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.status import StatusScreen
+
+    def run_apply(_event, _progress, _register):
+        # Unexpected error: apply() normally catches per-step failures
+        # and emits its own events, but a programming error in the
+        # closure (e.g. a typo) should still produce a clean footer.
+        raise RuntimeError("boom from runner")
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = StatusScreen(family="g", run_apply=run_apply)
+        app.push_screen(screen)
+        # Wait for the worker to finish; the error path emits a
+        # synthetic apply:done, so screen.done should flip to True.
+        for _ in range(50):
+            await pilot.pause()
+            if screen.done:
+                break
+        assert screen.done is True
+        log = screen.query_one("#status-log", RichLog)
+        text = "\n".join(strip.text for strip in log.lines)
+        # The unexpected-error banner is present.
+        assert "Unexpected error during apply" in text
+        assert "boom from runner" in text
+        # And the success footer still rendered via the synthetic
+        # apply:done (no failures recorded before the crash).
+        assert "successfully" in text.lower()
+        assert "Escape to return" in text
+
+
+@pytest.mark.asyncio
+async def test_status_screen_truncates_very_long_failure_detail():
+    """Regression: a long actionable exception line (SSL error with full
+    URL/hostname) used to overflow the wrap=False RichLog. The screen
+    now caps the rendered detail at 200 chars as defense-in-depth, even
+    if _reason somehow let one through. The cap applies both to the
+    inline log line and to the summary list entry, so a 500-char detail
+    becomes ~200 x's in each place."""
+    from textual.widgets import RichLog
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.status import StatusScreen
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = StatusScreen(family="g", run_apply=lambda *_: None)
+        app.push_screen(screen)
+        await pilot.pause()
+        long_detail = "x" * 500
+        screen._handle_event(f"download:fail|ollama/m1|gemma4|{long_detail}")
+        screen._handle_event("apply:done")
+        await pilot.pause()
+
+        log = screen.query_one("#status-log", RichLog)
+        # The 200-char cap applies twice: once in the inline detail line,
+        # once in the summary list entry. 500 x's would mean no cap;
+        # ~400 x's (200 + 200) means both were capped correctly.
+        x_count = sum(line.text.count("x") for line in log.lines)
+        # Allow some slack for the prefix text ("Download failed for gemma4: ")
+        # which adds ~30 chars, so 200 + 200 + 30 = 430 max.
+        assert x_count <= 430, f"long detail not truncated: {x_count} x's in log"
+        # And verify truncation actually happened (500 x's would be uncapped).
+        assert x_count < 500, f"detail was not capped at 200: {x_count} x's"
