@@ -165,7 +165,7 @@ grep -A5 '^\[model_state."ollama/qwen3.8:27b-mlx"\]' /Users/keith/.config/local-
 ```
 
 ```text
-7
+24
 [model_state."ollama/qwen3.8:27b-mlx"]
 ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
@@ -173,7 +173,7 @@ size_bytes = 19327352832
 litellm_exposed = true
 ```
 
-Historical note (2026-08-30): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. Seven in-registry ollama models are now modelman-exposed (the count above): the two local MLX downloads and five cloud-hosted ollama models. The omlx/openrouter/llama.cpp entries remain hand-managed by design and will still show `litellm_exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing; a `true` with no `config.yaml` row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
+Historical note (2026-08-30, updated 2026-09-03): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models) and eleven openrouter models. The omlx/llamacpp entries remain hand-managed by design and will still show `litellm_exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing; a `true` with no `config.yaml` row does mean modelman expects it and the row was lost → step 4 (re-expose replaces the row by id). (Drift is a known guide 04 gotcha.)
 
 **Step 4 — not exposed anywhere: expose it.** modelman writes the `model_list` row and flips the flag (local models must be downloaded first):
 
