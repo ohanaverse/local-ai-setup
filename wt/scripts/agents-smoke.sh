@@ -18,11 +18,16 @@ DEFAULT_MODES="direct,litellm"
 read -r -d '' MATRIX <<'EOF' || true
 claude|claude/native|-p @PROMPT@|own subscription, no model args
 claude|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|gateway round-trip
+claude|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 codex|DEFAULT_OLLAMA_MODEL|exec @PROMPT@|
+codex|openrouter/z-ai/glm-5.3-flash|exec @PROMPT@|OpenRouter GLM-5.3-Flash
 copilot|copilot/native|-p @PROMPT@|own subscription
 copilot|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
+copilot|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 opencode|DEFAULT_OLLAMA_MODEL|run @PROMPT@|
+opencode|openrouter/z-ai/glm-5.3-flash|run @PROMPT@|OpenRouter GLM-5.3-Flash
 pi|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
+pi|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 agy|agy/native|-p @PROMPT@|native model; driver ignores it
 shell|-|echo @PROMPT@|-- passthrough becomes argv
 EOF
@@ -299,7 +304,9 @@ run_row() {
 run_tests_for_mode() {
   local mode="$1" is_first_pass="$2"
   local runid rc fail_count=0 skip_count=0 total=0
-  runid="$(date +%s)-$RANDOM"
+  # Use alphanumeric runid to avoid Pi's privacy filter redacting numeric
+  # sequences as phone numbers. Format: run-<hex>-<random>
+  runid="run-$(date +%s | md5 | cut -c1-8)-$RANDOM"
   echo ""
   echo "=== Agents Smoke Run (gateway=${mode}, timeout=${TIMEOUT}s, runid=${runid}) ==="
   while IFS='|' read -r agent model args_template comment; do
