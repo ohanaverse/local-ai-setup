@@ -296,9 +296,7 @@ def is_local_location(location: str | None) -> bool:
     return location is None or location == "" or location == LOCATION_LOCAL
 
 
-def model_has_local_artifact(
-    model: ModelEntry, provider: ProviderEntry | None
-) -> bool:
+def model_has_local_artifact(model: ModelEntry, provider: ProviderEntry | None) -> bool:
     """True when reconcile can sync `state.ready` from the filesystem.
 
     Classification is config-driven (ModelEntry.location,
@@ -310,9 +308,9 @@ def model_has_local_artifact(
     model referencing a provider missing from the registry is treated
     the same way — there is no reconciled source either way.
     """
-    if model.location == "cloud":
+    if model.location == LOCATION_CLOUD:
         return False
-    if provider is not None and provider.location == "cloud":
+    if provider is not None and provider.location == LOCATION_CLOUD:
         return False
     return provider is not None
 

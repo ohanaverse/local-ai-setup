@@ -8,24 +8,20 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..providers.registry import ProviderRegistry
 from ..registry import (
     FamilyEntry,
-    ProviderEntry,
     Registry,
     RegistryError,
     family_display_name,
     is_local_location,
     known_families,
     load_registry,
-    model_has_local_artifact,
-    provider_config,
     save_registry,
 )
 from ..state import StateStore, load_state, save_state
-from . import reload_preserving_cursor
+from . import reconcile_model_state, reload_preserving_cursor
 from .forms import AddFamilyModal, ConfirmModal, EditFamilyModal
-from .models import ModelScreen, _model_entry_to_variant
+from .models import ModelScreen
 
 
 def _human_size(n) -> str:
@@ -194,90 +190,12 @@ class FamilyScreen(Screen[None]):
         this worker's token from _start_reconcile_worker, forwarded to
         _reconcile_done so a superseded worker can be told apart from
         the current one.
-        """
-        from dataclasses import replace
 
+        Delegates to the shared reconcile_model_state (screens/__init__.py)
+        so the write semantics can't drift from ModelScreen's version.
+        """
         try:
-            providers: dict[str, object] = {}
-            provider_entries: dict[str, ProviderEntry | None] = {}
-            for m in self.registry.models:
-                pname = m.provider_id
-                if pname not in provider_entries:
-                    try:
-                        provider_entries[pname] = self.registry.provider(pname)
-                    except KeyError:
-                        provider_entries[pname] = None
-                provider_entry = provider_entries[pname]
-                if pname not in providers:
-                    if provider_entry is None:
-                        continue
-                    try:
-                        providers[pname] = ProviderRegistry.get(
-                            pname, provider_config(provider_entry)
-                        )
-                    except Exception:
-                        continue
-                provider = providers.get(pname)
-                if provider is None:
-                    continue
-                spec = _model_entry_to_variant(m)
-                size: int | None = None
-                ready = False
-                try:
-                    ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
-                except Exception:
-                    ready = False
-                try:
-                    raw = provider.size_of(spec)  # type: ignore[attr-defined]
-                    if isinstance(raw, int):
-                        size = raw
-                except Exception:
-                    size = None
-                local_path: str | None = None
-                if ready and hasattr(provider, "list_local"):
-                    try:
-                        for lm in provider.list_local():
-                            lm_name = lm.get("name") or lm.get("variant_id")
-                            if lm_name == m.model_name or lm_name == m.id:
-                                lp = lm.get("local_path") or lm.get("path")
-                                if isinstance(lp, str):
-                                    local_path = lp
-                                break
-                    except Exception:
-                        pass
-                if model_has_local_artifact(m, provider_entry):
-                    existing = self.state.get(m.id)
-                    if ready:
-                        self.state.set(
-                            m.id,
-                            replace(
-                                existing,
-                                ready=True,
-                                # Only overwrite the path when reconcile
-                                # actually found one; a blank local_path must
-                                # not blank a known disk_path (matches
-                                # ModelScreen._run_apply).
-                                disk_path=(
-                                    local_path if local_path is not None else existing.disk_path
-                                ),
-                                size_bytes=size,
-                            ),
-                        )
-                    else:
-                        self.state.set(
-                            m.id,
-                            replace(existing, ready=False, disk_path=None, size_bytes=None),
-                        )
-                elif local_path is not None or size is not None:
-                    existing = self.state.get(m.id)
-                    self.state.set(
-                        m.id,
-                        replace(
-                            existing,
-                            disk_path=local_path if local_path is not None else existing.disk_path,
-                            size_bytes=size if size is not None else existing.size_bytes,
-                        ),
-                    )
+            reconcile_model_state(self.registry.models, self.registry, self.state)
         finally:
             self.app.call_from_thread(self._reconcile_done, generation)
 

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,7 +29,7 @@ from ..registry import (
     save_registry,
 )
 from ..state import ModelState, StateStore
-from . import reload_preserving_cursor
+from . import reconcile_model_state, reload_preserving_cursor
 from .forms import default_form_kind
 
 if TYPE_CHECKING:
@@ -133,7 +131,6 @@ def _format_subscription(cost: Cost | None) -> str:
         return "-"
     suffix = "mo" if cost.subscription_period == "month" else "yr"
     return f"{_format_price(cost.subscription_price)}/{suffix}"
-
 
 
 def _format_location(location: str | None) -> str:
@@ -245,6 +242,15 @@ class ModelScreen(Screen[None]):
         self.queued_deletes: dict[str, VariantSpec] = {}
         # model_id -> target exposed state (True to expose, False to unexpose).
         self.queued_exposes: dict[str, bool] = {}
+        # Ids whose queued_ready=True entry exists *only* because
+        # action_toggle_expose cascaded it in (the model wasn't ready and
+        # had no queued_ready entry of its own yet). Cancelling either half
+        # of such a pair must cancel the other half too, or apply() ends up
+        # running a download the user un-queued or an expose that fails
+        # with "model is not ready". A ready entry the user set explicitly
+        # (via 'r', or already present before the cascade) is never marked
+        # here, so undoing it never touches an independently-queued expose.
+        self._ready_cascade_for_expose: set[str] = set()
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
         # stays visible in this family's table with a → glyph.
@@ -297,77 +303,13 @@ class ModelScreen(Screen[None]):
         step — only disk_path/size_bytes are opportunistically updated
         when the provider reports them; their ready flag is driven by
         the ready-toggle's apply-time download/pull instead.
-        """
-        # `replace` is already imported at module level (top of this file).
-        from ..providers.registry import ProviderRegistry
 
-        family_models = self.registry.models_by_family(self.family)
-        by_provider: dict[str, list[ModelEntry]] = defaultdict(list)
-        for m in family_models:
-            by_provider[m.provider_id].append(m)
-        for provider_name, entries in by_provider.items():
-            try:
-                provider_entry = self.registry.provider(provider_name)
-                provider = ProviderRegistry.get(provider_name, provider_config(provider_entry))
-            except Exception:
-                continue
-            for m in entries:
-                size: int | None = None
-                spec = _model_entry_to_variant(m)
-                try:
-                    ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
-                except Exception:
-                    ready = False
-                try:
-                    raw = provider.size_of(spec)  # type: ignore[attr-defined]
-                    if isinstance(raw, int):
-                        size = raw
-                except Exception:
-                    size = None
-                local_path: str | None = None
-                if ready and hasattr(provider, "list_local"):
-                    try:
-                        for lm in provider.list_local():
-                            lm_name = lm.get("name") or lm.get("variant_id")
-                            if lm_name == m.model_name or lm_name == m.id:
-                                lp = lm.get("local_path") or lm.get("path")
-                                if isinstance(lp, str):
-                                    local_path = lp
-                                break
-                    except Exception:
-                        pass
-                if model_has_local_artifact(m, provider_entry):
-                    existing = self.state.get(m.id)
-                    if ready:
-                        self.state.set(
-                            m.id,
-                            replace(
-                                existing,
-                                ready=True,
-                                # Only overwrite the path when reconcile
-                                # actually found one; a blank local_path must
-                                # not blank a known disk_path.
-                                disk_path=(
-                                    local_path if local_path is not None else existing.disk_path
-                                ),
-                                size_bytes=size,
-                            ),
-                        )
-                    else:
-                        self.state.set(
-                            m.id,
-                            replace(existing, ready=False, disk_path=None, size_bytes=None),
-                        )
-                elif local_path is not None or size is not None:
-                    existing = self.state.get(m.id)
-                    self.state.set(
-                        m.id,
-                        replace(
-                            existing,
-                            disk_path=local_path if local_path is not None else existing.disk_path,
-                            size_bytes=size if size is not None else existing.size_bytes,
-                        ),
-                    )
+        Delegates to the shared reconcile_model_state (screens/__init__.py)
+        so the write semantics can't drift from FamilyScreen's version.
+        """
+        reconcile_model_state(
+            self.registry.models_by_family(self.family), self.registry, self.state
+        )
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
@@ -448,6 +390,13 @@ class ModelScreen(Screen[None]):
             # disk once any queued flip is dropped. Cancel it instead of
             # re-queuing a no-op.
             self.queued_ready.pop(mid, None)
+            if mid in self._ready_cascade_for_expose:
+                # This readiness was only queued because a prior 'x' press
+                # cascaded it in for an expose; cancelling it back to
+                # not-ready would otherwise leave that expose queued and
+                # failing at apply() with "model is not ready".
+                self.queued_exposes.pop(mid, None)
+                self._ready_cascade_for_expose.discard(mid)
             self.app.notify(f"Model already {'ready' if target else 'not ready'}")
             self._refresh_pending_bar()
             self.reload()
@@ -488,6 +437,12 @@ class ModelScreen(Screen[None]):
         target = not displayed_exposed
         if target == persisted_exposed:
             self.queued_exposes.pop(mid, None)
+            if mid in self._ready_cascade_for_expose:
+                # Undo the ready cascade this same expose queued in — the
+                # user never asked for a download, only for the model to
+                # be exposed, and that request is now cancelled.
+                self.queued_ready.pop(mid, None)
+                self._ready_cascade_for_expose.discard(mid)
             self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
             self._refresh_pending_bar()
             self.reload()
@@ -497,6 +452,8 @@ class ModelScreen(Screen[None]):
             # Cascade: exposing a not-ready model must download/pull it
             # first. apply() already runs the ready loop before the
             # expose loop, so queuing both here gives the right order.
+            if mid not in self.queued_ready:
+                self._ready_cascade_for_expose.add(mid)
             self.queued_ready[mid] = True
         self._refresh_pending_bar()
         self.reload()
@@ -588,6 +545,7 @@ class ModelScreen(Screen[None]):
         else:
             self.queued_deletes[mid] = spec
         self.queued_ready.pop(mid, None)
+        self._ready_cascade_for_expose.discard(mid)
         self._refresh_pending_bar()
         self.reload()
 
@@ -711,6 +669,7 @@ class ModelScreen(Screen[None]):
             self.queued_deletes.clear()
             self.queued_moves.clear()
             self.queued_exposes.clear()
+            self._ready_cascade_for_expose.clear()
             self._added_ids.clear()
             self.app.pop_screen()
             return
@@ -785,6 +744,7 @@ class ModelScreen(Screen[None]):
         self.queued_deletes.clear()
         self.queued_moves.clear()
         self.queued_exposes.clear()
+        self._ready_cascade_for_expose.clear()
         self._added_ids.clear()
 
     def _restore_snapshot(self) -> None:

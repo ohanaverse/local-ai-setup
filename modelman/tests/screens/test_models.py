@@ -1005,6 +1005,60 @@ async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatch):
+    """x on a not-ready model cascades queued_ready=True; pressing r right
+    after must cancel *both* halves of that cascade, not just queued_ready.
+    Regression test: previously r's cancel branch only popped queued_ready,
+    leaving queued_exposes=True queued against a model apply() would still
+    see as not-ready, so apply() failed with an unexpected ExposeError the
+    user never asked for."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_x_cancel_after_x_cascade_also_cancels_ready(tmp_path, monkeypatch):
+    """x, then x again on a not-ready model must fully cancel the round
+    trip, including the queued_ready=True the first x cascaded in.
+    Regression test: previously the second x's cancel branch only popped
+    queued_exposes, leaving queued_ready=True queued, so apply() would
+    still download/pull a model the user's two presses were meant to
+    leave untouched."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {}
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
 async def test_x_on_ready_model_queues_only_expose(tmp_path, monkeypatch):
     """x on an already-ready model must not touch queued_ready at all —
     no gratuitous re-download."""
