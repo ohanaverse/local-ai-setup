@@ -360,21 +360,21 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 **Run:** `./wt/scripts/agents-smoke.sh --modes current`  
 **RunID Format:** `run-<hex>-<random>` (alphanumeric to avoid Pi phone redaction)
 
-| Agent | Ollama Variant | OpenRouter Variant | Notes |
-|-------|---------------|-------------------|-------|
-| claude | ✅ PASS | ❌ FAIL | OpenRouter triggers Claude's prompt injection detection |
-| codex | ✅ PASS | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash |
-| copilot | ✅ PASS | ✅ PASS | Full support |
-| opencode | ✅ PASS | ❌ FAIL | ollama-only provider list (see Known Limitations #3) |
-| pi | ✅ PASS | ✅ PASS | Full support |
-| agy | ✅ PASS | N/A | Native model only |
-| shell | ✅ PASS | N/A | No model dependency |
+| Agent | Ollama Variant | OpenRouter (direct) | OpenRouter (litellm) | Notes |
+|-------|---------------|--------------------|--------------------|-------|
+| claude | ✅ PASS | ❌ FAIL | ❌ FAIL | direct: ollama can't resolve bare name; litellm: prompt injection detection |
+| codex | ✅ PASS | ❌ FAIL | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash |
+| copilot | ✅ PASS | ❌ FAIL | ✅ PASS | direct: 404 at ollama; litellm: full support |
+| opencode | ✅ PASS | ❌ FAIL | ❌ FAIL | ollama-only provider list (see Known Limitations #3) |
+| pi | ✅ PASS | ❌ FAIL | ✅ PASS | direct: 404 at ollama; litellm: full support |
+| agy | ✅ PASS | N/A | N/A | Native model only |
+| shell | ✅ PASS | N/A | N/A | No model dependency |
 
 ### Known Limitations
 
-**1. Claude Code + OpenRouter: Prompt Injection Detection**
+**1. Claude Code + OpenRouter: Prompt Injection Detection (litellm mode)**
 
-Claude Code's safety filters interpret the smoke test prompt format ("Reply with exactly this text and nothing else: WT-SMOKE-...") as a potential prompt injection attempt when sent through OpenRouter. This is a **Claude Code safety feature**, not a model issue.
+In **litellm mode**, Claude Code's safety filters interpret the smoke test prompt format ("Reply with exactly this text and nothing else: WT-SMOKE-...") as a potential prompt injection attempt when routed through the LiteLLM proxy. In **direct mode** the row fails for a different reason: the bare `z-ai/glm-5.3-flash` name goes to local ollama, which cannot resolve it (404). Both are expected; the direct-mode failure is environmental, not a Claude Code safety behavior.
 
 **Workaround:** Manual testing with natural prompts works fine:
 ```bash
@@ -397,8 +397,8 @@ step 4).
 
 For GLM-5.3-Flash via OpenRouter:
 
-1. **Automated tests:** Use copilot and pi agents (both pass)
-2. **Manual testing:** Test claude, codex, opencode with natural prompts
+1. **Automated tests:** Use copilot and pi agents in litellm mode (both pass)
+2. **Manual testing:** claude via OpenRouter works with natural prompts in litellm mode (the FAIL is specific to the smoke test's echo-exactly prompt); codex and opencode need the provider-list/catalog fixes above first
 3. **Document limitations:** Note which agents have compatibility issues
 
 ### Success Criteria
