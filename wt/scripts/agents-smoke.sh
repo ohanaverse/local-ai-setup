@@ -12,17 +12,28 @@ DEFAULT_TIMEOUT=180
 DEFAULT_OLLAMA_MODEL="ollama/glm-5.3-flash:cloud"
 DEFAULT_MODES="direct,litellm"
 
-# agent|model|one-shot-args-template|comment
+# agent|model|one-shot-args-template|comment|xfail
 # model "-" means launch without -M.
 # @PROMPT@ is replaced with the row's prompt (a single shell-quoted argument).
+# Optional 5th field marks a known-failing row: "xfail" (fails in every
+# gateway mode) or "xfail:direct"/"xfail:litellm" (mode-scoped). A marked
+# row that fails prints XFAIL and leaves the exit code alone; a marked row
+# that unexpectedly passes prints XPASS — a loud stale-mark warning. The
+# marks mirror the Known Limitations section of
+# docs/reference/glm-5.3-flash-openrouter.md.
 read -r -d '' MATRIX <<'EOF' || true
 claude|claude/native|-p @PROMPT@|own subscription, no model args
 claude|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|gateway round-trip
+claude|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
 codex|DEFAULT_OLLAMA_MODEL|exec @PROMPT@|
+codex|openrouter/z-ai/glm-5.3-flash|exec @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
 copilot|copilot/native|-p @PROMPT@|own subscription
 copilot|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
+copilot|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash|xfail:direct
 opencode|DEFAULT_OLLAMA_MODEL|run @PROMPT@|
+opencode|openrouter/z-ai/glm-5.3-flash|run @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
 pi|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
+pi|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash|xfail:direct
 agy|agy/native|-p @PROMPT@|native model; driver ignores it
 shell|-|echo @PROMPT@|-- passthrough becomes argv
 EOF
@@ -30,6 +41,25 @@ EOF
 build_prompt() {
   local agent="$1" runid="$2"
   echo "Reply with exactly this text and nothing else: WT-SMOKE-${agent}-${runid}"
+}
+
+# new_runid generates the run identifier embedded in every row's prompt.
+# The id must stay alphanumeric: Pi's privacy filter redacts numeric
+# sequences matching phone numbers (e.g. a 10-digit epoch timestamp), which
+# would turn the echoed marker into a false FAIL. The md5/md5sum hex digest
+# keeps the id phone-number-shaped-free; cksum was rejected because its
+# output is a ~10-digit decimal — exactly the redaction trigger this avoids.
+# md5 is macOS; md5sum is Linux — the fallback keeps the format stable when
+# the script runs on either platform (a missing digest command degrades to
+# timestamp+RANDOM, still prefixed, still alphanumeric).
+new_runid() {
+  local digest
+  if command -v md5 >/dev/null 2>&1; then
+    digest=$(date +%s | md5)
+  elif command -v md5sum >/dev/null 2>&1; then
+    digest=$(date +%s | md5sum)
+  fi
+  printf 'run-%s-%s\n' "${digest:0:8}" "$RANDOM"
 }
 
 print_cmd() {
@@ -167,7 +197,8 @@ restore_config() {
 # in file keeps the original's mode/ownership without a stat/chown dance.
 # Atomic mv (same directory). Fails when no [gateway] mode line exists: a
 # section-less config keeps wt in direct mode by default and the script
-# cannot flip what is not written.
+# cannot flip what is not written. Section/key patterns tolerate leading
+# whitespace: wt's config writer indents section bodies (e.g. two spaces).
 set_gateway_mode() {
   local mode="$1"
   local tmp
@@ -178,9 +209,9 @@ set_gateway_mode() {
   fi
   if ! awk -v mode="$mode" '
     BEGIN { ingw = 0 }
-    /^\[gateway\]$/ { ingw = 1; print; next }
-    /^\[/ { ingw = 0 }
-    ingw && /^mode[[:space:]]*=/ { sub(/^mode[[:space:]]*=.*/, "mode = \"" mode "\"") }
+    /^[[:space:]]*\[gateway\][[:space:]]*$/ { ingw = 1; print; next }
+    /^[[:space:]]*\[/ { ingw = 0 }
+    ingw && /^[[:space:]]*mode[[:space:]]*=/ { sub(/^[[:space:]]*mode[[:space:]]*=.*/, "mode = \"" mode "\"") }
     { print }
   ' "$CONFIG_FILE" >"$tmp"; then
     rm -f "$tmp"
@@ -196,15 +227,16 @@ set_gateway_mode() {
 
 # gateway_field reads one field from the [gateway] section (mode, url, or
 # api_key), stripping TOML quoting. Prints nothing when absent. The dynamic
-# regex "^<field>[[:space:]]*=" matches the same key forms as
-# set_gateway_mode's rewrite rule, so read and write stay in lockstep.
+# regex "^[[:space:]]*<field>[[:space:]]*=" matches the same key forms as
+# set_gateway_mode's rewrite rule, so read and write stay in lockstep. Both
+# tolerate leading whitespace: wt's config writer indents section bodies.
 gateway_field() {
   local field="$1"
   awk -v f="$field" '
     BEGIN { ingw = 0 }
-    /^\[gateway\]$/ { ingw = 1; next }
-    /^\[/ { ingw = 0 }
-    ingw && $0 ~ ("^" f "[[:space:]]*=") {
+    /^[[:space:]]*\[gateway\][[:space:]]*$/ { ingw = 1; next }
+    /^[[:space:]]*\[/ { ingw = 0 }
+    ingw && $0 ~ ("^[[:space:]]*" f "[[:space:]]*=") {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)
       gsub(/"/, "", line)
@@ -239,10 +271,23 @@ require_litellm_credentials() {
 
 # ── Matrix row execution ───────────────────────────────────────────────
 
+# xfail_applies reports whether a row's optional 5th matrix field marks it
+# as expected-to-fail under the current gateway mode: bare "xfail" covers
+# every mode; "xfail:<mode>" covers only that mode. Any other value is
+# treated as no mark, so a typo can't silently invert a row's verdict.
+xfail_applies() {
+  local mark="$1" mode="$2"
+  case "$mark" in
+    xfail) return 0 ;;
+    xfail:*) [[ "${mark#xfail:}" == "$mode" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 dry_run() {
   local runid
-  runid="$(date +%s)-$RANDOM"
-  while IFS='|' read -r agent model args_template comment; do
+  runid="$(new_runid)"
+  while IFS='|' read -r agent model args_template _ _; do
     [[ "$agent" =~ ^# ]] && continue
     [[ -z "$agent" ]] && continue
     should_run_agent "$agent" || continue
@@ -255,7 +300,7 @@ dry_run() {
 }
 
 run_row() {
-  local agent="$1" model="$2" args_template="$3" comment="$4" runid="$5"
+  local agent="$1" model="$2" args_template="$3" comment="$4" runid="$5" xfail_mark="$6"
   local prompt result status elapsed
   prompt=$(build_prompt "$agent" "$runid")
   local cmdline
@@ -278,8 +323,19 @@ run_row() {
     verdict="PASS"
   fi
 
-  printf '[%-4s] %-10s × %-28s (%ss)\n' "$verdict" "$agent" "$(display_model "$model")" "$elapsed"
-  if [[ "$verdict" == "FAIL" ]]; then
+  # XFAIL: a marked row failing as expected is not a regression and must not
+  # fail the suite. XPASS: a marked row passing means the underlying agent
+  # behavior changed — report loudly (never silent), but keep the exit code
+  # green so the stale mark surfaces without blocking.
+  if [[ $verdict == "FAIL" ]] && xfail_applies "$xfail_mark" "$GATEWAY_MODE"; then
+    verdict="XFAIL"
+  elif [[ $verdict == "PASS" ]] && xfail_applies "$xfail_mark" "$GATEWAY_MODE"; then
+    verdict="XPASS"
+  fi
+
+  printf '[%-5s] %-10s × %-28s (%ss)\n' "$verdict" "$agent" "$(display_model "$model")" "$elapsed"
+  if [[ "$verdict" == "FAIL" || "$verdict" == "XPASS" ]]; then
+    [[ "$verdict" == "XPASS" ]] && echo "  unexpected pass: xfail mark is stale, remove it from the matrix"
     echo "  command: $cmdline"
     echo "  output:"
     while IFS= read -r line; do
@@ -289,6 +345,8 @@ run_row() {
   case "$verdict" in
     PASS) return 0 ;;
     SKIP) return 2 ;;
+    XFAIL) return 3 ;;
+    XPASS) return 4 ;;
     *) return 1 ;;
   esac
 }
@@ -298,11 +356,12 @@ run_row() {
 # is_first_pass is "yes" — they already ran under the first mode.
 run_tests_for_mode() {
   local mode="$1" is_first_pass="$2"
-  local runid rc fail_count=0 skip_count=0 total=0
-  runid="$(date +%s)-$RANDOM"
+  GATEWAY_MODE="$mode"
+  local runid rc fail_count=0 skip_count=0 xfail_count=0 xpass_count=0 total=0
+  runid="$(new_runid)"
   echo ""
   echo "=== Agents Smoke Run (gateway=${mode}, timeout=${TIMEOUT}s, runid=${runid}) ==="
-  while IFS='|' read -r agent model args_template comment; do
+  while IFS='|' read -r agent model args_template comment xfail_mark; do
     [[ "$agent" =~ ^# ]] && continue
     [[ -z "$agent" ]] && continue
     should_run_agent "$agent" || continue
@@ -311,13 +370,15 @@ run_tests_for_mode() {
       continue
     fi
     model="${model/DEFAULT_OLLAMA_MODEL/$DEFAULT_OLLAMA_MODEL}"
-    run_row "$agent" "$model" "$args_template" "$comment" "$runid"
+    run_row "$agent" "$model" "$args_template" "$comment" "$runid" "$xfail_mark"
     rc=$?
     if [[ $rc -eq 1 ]]; then ((fail_count++)); fi
     if [[ $rc -eq 2 ]]; then ((skip_count++)); fi
+    if [[ $rc -eq 3 ]]; then ((xfail_count++)); fi
+    if [[ $rc -eq 4 ]]; then ((xpass_count++)); fi
     ((total++)) || true
   done <<<"$MATRIX"
-  echo "=== PASS: $((total - fail_count - skip_count)) FAIL: $fail_count SKIP: $skip_count (gateway=${mode}) ==="
+  echo "=== PASS: $((total - fail_count - skip_count - xfail_count - xpass_count)) FAIL: $fail_count SKIP: $skip_count XFAIL: $xfail_count XPASS: $xpass_count (gateway=${mode}) ==="
   [[ $fail_count -eq 0 ]]
 }
 
@@ -340,7 +401,7 @@ USAGE
 
 list_rows() {
   printf '%-10s %-30s %s\n' "AGENT" "MODEL" "COMMENT"
-  while IFS='|' read -r agent model _args comment; do
+  while IFS='|' read -r agent model _args comment _; do
     [[ "$agent" =~ ^# ]] && continue
     [[ -z "$agent" ]] && continue
     should_run_agent "$agent" || continue
@@ -352,6 +413,9 @@ list_rows() {
 ONLY_AGENTS=""
 TIMEOUT="$DEFAULT_TIMEOUT"
 MODES="$DEFAULT_MODES"
+# Gateway mode of the pass currently executing, set by run_tests_for_mode
+# before run_row classifies a row's xfail mark against it.
+GATEWAY_MODE=""
 
 parse_args() {
   ACTION=""
