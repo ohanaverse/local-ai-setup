@@ -296,6 +296,29 @@ def is_local_location(location: str | None) -> bool:
     return location is None or location == "" or location == LOCATION_LOCAL
 
 
+def model_has_local_artifact(
+    model: ModelEntry, provider: ProviderEntry | None
+) -> bool:
+    """True when reconcile can sync `state.ready` from the filesystem.
+
+    Classification is config-driven (ModelEntry.location,
+    ProviderEntry.location), never a hard-coded provider id list, so a
+    newly added local provider opts into reconcile-sync automatically.
+    A model tagged location="cloud" (the ollama-cloud case: local
+    provider, cloud model) or living on a cloud provider (openrouter,
+    native agents) has no on-disk artifact reconcile could observe. A
+    model referencing a provider missing from the registry is treated
+    the same way — there is no reconciled source either way.
+    """
+    if model.location == "cloud":
+        return False
+    if provider is not None and provider.location == "cloud":
+        return False
+    if provider is None:
+        return False
+    return True
+
+
 def default_provider_entry(provider_id: str) -> ProviderEntry:
     """Return a fresh default ProviderEntry for a reconcilable local provider.
 

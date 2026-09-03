@@ -22,6 +22,7 @@ from modelman.registry import (
     family_display_name,
     known_families,
     load_registry,
+    model_has_local_artifact,
     provider_config,
     save_registry,
     sync_agent_providers,
@@ -378,6 +379,50 @@ def test_provider_config_omits_model_dir_when_unset():
     # as a kwarg, or their constructors would raise on an unexpected arg.
     entry = ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
     assert provider_config(entry) == {}
+
+
+def test_model_has_local_artifact_true_for_local_model_and_provider():
+    """The common case: an unset/local model on an unset/local provider
+    (llamacpp, omlx) is reconcile-syncable from the filesystem."""
+    model = ModelEntry(id="llamacpp/a", family="f", provider_id="llamacpp", model_name="a")
+    provider = ProviderEntry(id="llamacpp", name="llama.cpp", location="local")
+    assert model_has_local_artifact(model, provider) is True
+
+
+def test_model_has_local_artifact_true_when_locations_unset():
+    """Legacy entries with no explicit location must default to local,
+    matching is_local_location's existing legacy-default semantics."""
+    model = ModelEntry(id="omlx/a", family="f", provider_id="omlx", model_name="a")
+    provider = ProviderEntry(id="omlx", name="oMLX")
+    assert model_has_local_artifact(model, provider) is True
+
+
+def test_model_has_local_artifact_false_for_ollama_cloud_model():
+    """The ollama-cloud case: provider is local, but the model itself is
+    tagged location='cloud' (e.g. glm-5.3:cloud) — no local file to
+    reconcile against."""
+    model = ModelEntry(
+        id="ollama/glm:cloud", family="f", provider_id="ollama", model_name="glm:cloud",
+        location="cloud",
+    )
+    provider = ProviderEntry(id="ollama", name="Ollama", location="local")
+    assert model_has_local_artifact(model, provider) is False
+
+
+def test_model_has_local_artifact_false_for_cloud_provider():
+    """A model on a cloud provider (openrouter, native agents) has no
+    local artifact regardless of the model's own location field."""
+    model = ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="x")
+    provider = ProviderEntry(id="openrouter", name="OpenRouter", location="cloud")
+    assert model_has_local_artifact(model, provider) is False
+
+
+def test_model_has_local_artifact_false_when_provider_missing():
+    """A model referencing a provider id no longer in the registry has no
+    reconciled source either way; treat as not having a local artifact
+    rather than guessing."""
+    model = ModelEntry(id="ghost/x", family="f", provider_id="ghost", model_name="x")
+    assert model_has_local_artifact(model, None) is False
 
 
 def test_load_registry_falls_back_to_legacy_location(tmp_path, monkeypatch):
