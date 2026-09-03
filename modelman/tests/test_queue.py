@@ -929,6 +929,37 @@ def test_apply_runs_expose_changes(tmp_path):
     assert config["model_list"][0]["model_name"] == "ollama/a"
 
 
+def test_apply_cascade_downloads_before_exposing(tmp_path):
+    """The toggle-expose cascade (ModelScreen.action_toggle_expose) relies
+    on apply() running the ready loop before the expose loop so a
+    not-ready model is downloaded/pulled before its LiteLLM model_list
+    entry is written. Pin that ordering here at the PendingChanges level
+    so a future reorder in apply() cannot silently break the cascade."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    providers["ollama"].download.return_value = str(tmp_path / "new-a")
+    litellm_path = tmp_path / "litellm.yaml"
+    litellm_path.write_text("model_list: []\n")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
+        exposes=[("ollama/a", True)],
+        litellm_path=litellm_path,
+    )
+    events: list[str] = []
+    pending.apply(on_event=events.append)
+
+    download_done = next(i for i, e in enumerate(events) if e.startswith("download:done"))
+    expose_start = next(i for i, e in enumerate(events) if e.startswith("expose:start"))
+    assert download_done < expose_start
+    assert state.models["ollama/a"].ready is True
+
+
 def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
     from modelman.litellm import apply_expose_queue, save_litellm_config
     from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
