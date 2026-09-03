@@ -231,7 +231,7 @@ async def test_family_screen_cursor_restored_after_reconcile(tmp_path, monkeypat
         table = app.screen.query_one("#family-table", DataTable)
         table.move_cursor(row=1)
         assert table.cursor_row == 1
-        app.screen.action_reconcile()
+        app.screen._start_reconcile_worker()
         await pilot.pause()
         # Worker is now running and gated.
         assert app.screen._reconciling is True
@@ -310,3 +310,137 @@ async def test_family_screen_downloaded_excludes_cloud(tmp_path, monkeypatch):
         row_key = next(k for k in table.rows if k.value == "alpha")
         assert _cell_text(table.get_row(row_key)[3]) == "1"
         assert _cell_text(table.get_row(row_key)[4]) == "—"
+
+
+@pytest.mark.asyncio
+async def test_family_screen_reconcile_sets_state_ready_for_local_artifact(tmp_path, monkeypatch):
+    """Regression for the reported bug: a local-artifact model (llamacpp/
+    omlx) whose files are on disk but whose modelman.toml still says
+    ready=False must have state.ready flipped to True by the automatic
+    reconcile that runs on mount — no manual 'r' press required, because
+    reconcile now writes state.py directly instead of a display-only
+    overlay the toggle could never see."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[
+            ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a"),
+        ],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=False))  # stale: files exist but flag says no
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 19530941006
+    stub.list_local.return_value = [{"variant_id": "a", "local_path": "/models/omlx/a"}]
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _wait_for_reconcile(pilot, app.screen)
+
+        assert app.screen.state.get("omlx/a").ready is True
+        assert app.screen.state.get("omlx/a").disk_path == "/models/omlx/a"
+        assert app.screen.state.get("omlx/a").size_bytes == 19530941006
+
+
+@pytest.mark.asyncio
+async def test_family_screen_reconcile_clears_state_when_files_removed(tmp_path, monkeypatch):
+    """The complementary direction: a local-artifact model marked ready
+    in modelman.toml whose files are gone must be flipped back to
+    ready=False with disk_path/size_bytes cleared."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, disk_path="/models/omlx/a", size_bytes=123))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _wait_for_reconcile(pilot, app.screen)
+
+        st = app.screen.state.get("omlx/a")
+        assert st.ready is False
+        assert st.disk_path is None
+        assert st.size_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_family_screen_reconcile_leaves_ready_alone_for_ollama_cloud(tmp_path, monkeypatch):
+    """An ollama-cloud model (provider local, model location='cloud') is
+    not a local artifact: reconcile must not touch state.ready for it,
+    even though `ollama show` (is_downloaded) reports it present. This
+    intentionally reverses the pre-change TUI behavior for this specific
+    case — it is out of scope for this bug fix (see design doc Non-goals
+    and the ollama-cloud row of the model_has_local_artifact truth
+    table); readiness for these models is driven by the ready toggle's
+    apply-time download/pull, not by reconcile."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        families=[FamilyEntry(name="glm")],
+        models=[
+            ModelEntry(
+                id="ollama/glm:cloud", family="glm", provider_id="ollama",
+                model_name="glm:cloud", location="cloud",
+            ),
+        ],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True  # `ollama show` succeeds: pulled
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _wait_for_reconcile(pilot, app.screen)
+
+        assert app.screen.state.get("ollama/glm:cloud").ready is False
+
+
+def test_family_screen_bindings_has_no_reconcile_key():
+    """Manual reconcile is gone from the family screen: reconcile now
+    runs automatically on mount and on_screen_resume."""
+    from modelman.screens.families import FamilyScreen
+
+    keys = [b[0] if isinstance(b, tuple) else b.key for b in FamilyScreen.BINDINGS]
+    assert "r" not in keys
+    assert not hasattr(FamilyScreen, "action_reconcile")

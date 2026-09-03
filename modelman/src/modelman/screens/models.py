@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,11 +24,12 @@ from ..registry import (
     _cost_from_dict,
     _cost_to_dict,
     known_families,
+    model_has_local_artifact,
     provider_config,
     save_registry,
 )
 from ..state import ModelState, StateStore
-from . import reload_preserving_cursor
+from . import reconcile_model_state, reload_preserving_cursor
 from .forms import default_form_kind
 
 if TYPE_CHECKING:
@@ -134,7 +133,6 @@ def _format_subscription(cost: Cost | None) -> str:
     return f"{_format_price(cost.subscription_price)}/{suffix}"
 
 
-
 def _format_location(location: str | None) -> str:
     """LOC column icon: cloud, local, or unknown."""
     if location is None or location == "":
@@ -191,13 +189,12 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
 class ModelScreen(Screen[None]):
     BINDINGS = [
         ("escape", "back", "Back"),
-        ("x", "toggle_ready", "Toggle ready"),
         ("a", "add_model", "Add"),
         ("d", "delete_model", "Delete"),
         ("e", "edit_model", "Edit"),
         Binding("enter", "select_row", "Edit", priority=True),
-        ("r", "reconcile", "Reconcile"),
-        ("l", "toggle_expose", "Toggle LiteLLM"),
+        ("r", "toggle_ready", "Toggle ready"),
+        ("x", "toggle_expose", "Toggle exposed"),
     ]
 
     def __init__(
@@ -245,6 +242,15 @@ class ModelScreen(Screen[None]):
         self.queued_deletes: dict[str, VariantSpec] = {}
         # model_id -> target exposed state (True to expose, False to unexpose).
         self.queued_exposes: dict[str, bool] = {}
+        # Ids whose queued_ready=True entry exists *only* because
+        # action_toggle_expose cascaded it in (the model wasn't ready and
+        # had no queued_ready entry of its own yet). Cancelling either half
+        # of such a pair must cancel the other half too, or apply() ends up
+        # running a download the user un-queued or an expose that fails
+        # with "model is not ready". A ready entry the user set explicitly
+        # (via 'r', or already present before the cascade) is never marked
+        # here, so undoing it never touches an independently-queued expose.
+        self._ready_cascade_for_expose: set[str] = set()
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
         # stays visible in this family's table with a → glyph.
@@ -253,8 +259,6 @@ class ModelScreen(Screen[None]):
         # _restore_snapshot: a model added into a *different* family
         # isn't caught by the family-scoped restore filter.
         self._added_ids: set[str] = set()
-        # Reconcile overlay: per-model-id reality from the provider.
-        self.reconciled: dict[str, dict] = {}
         # Snapshot for discard: restore if the user exits without applying.
         self._snapshot_models: list[ModelEntry] = [
             ModelEntry(**_entry_kwargs(m)) for m in registry.models if m.family == family
@@ -291,61 +295,28 @@ class ModelScreen(Screen[None]):
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def _run_reconcile(self) -> None:
-        """Ask each provider whether its models are on disk; cache results."""
-        from ..providers.registry import ProviderRegistry
+        """Ask each provider whether its models are on disk; write the
+        result straight into `state` for local-artifact models. Files
+        present -> ready=True + disk_path + size_bytes; absent ->
+        ready=False + cleared path/size. Non-local-artifact models
+        (cloud-located, or on a cloud provider) are left alone by this
+        step — only disk_path/size_bytes are opportunistically updated
+        when the provider reports them; their ready flag is driven by
+        the ready-toggle's apply-time download/pull instead.
 
-        family_models = self.registry.models_by_family(self.family)
-        by_provider: dict[str, list[ModelEntry]] = defaultdict(list)
-        for m in family_models:
-            by_provider[m.provider_id].append(m)
-        for provider_name, entries in by_provider.items():
-            try:
-                entry = self.registry.provider(provider_name)
-                provider = ProviderRegistry.get(provider_name, provider_config(entry))
-            except Exception:
-                continue
-            for m in entries:
-                size: int | None = None
-                spec = _model_entry_to_variant(m)
-                try:
-                    ready = bool(provider.is_downloaded(spec))  # type: ignore[attr-defined]
-                except Exception:
-                    ready = False
-                try:
-                    raw = provider.size_of(spec)  # type: ignore[attr-defined]
-                    if isinstance(raw, int):
-                        size = raw
-                except Exception:
-                    size = None
-                local_path: str | None = None
-                if ready and hasattr(provider, "list_local"):
-                    try:
-                        for lm in provider.list_local():
-                            lm_name = lm.get("name") or lm.get("variant_id")
-                            if lm_name == m.model_name or lm_name == m.id:
-                                lp = lm.get("local_path") or lm.get("path")
-                                if isinstance(lp, str):
-                                    local_path = lp
-                                break
-                    except Exception:
-                        pass
-                self.reconciled[m.id] = {
-                    "ready": ready,
-                    "size": size,
-                    "local_path": local_path,
-                }
+        Delegates to the shared reconcile_model_state (screens/__init__.py)
+        so the write semantics can't drift from FamilyScreen's version.
+        """
+        reconcile_model_state(
+            self.registry.models_by_family(self.family), self.registry, self.state
+        )
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
-
-    def action_reconcile(self) -> None:
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def reload(self) -> None:
         self._load_models()
 
     def _load_models(self) -> None:
-        from ..providers.registry import ProviderRegistry
-
         def _repopulate() -> None:
             mt = self.query_one("#model-table", DataTable)
             mt.clear()
@@ -354,21 +325,8 @@ class ModelScreen(Screen[None]):
                 key=lambda m: (m.provider_id, m.model_name),
             )
             for m in models:
-                rec = self.reconciled.get(m.id)
-                if rec is not None:
-                    ready = bool(rec.get("ready"))
-                    size_str = _human_size(rec.get("size")) if ready else "—"
-                else:
-                    state_entry = self.state.get(m.id)
-                    ready = state_entry.ready
-                    size_str = "—"
-                    if ready:
-                        try:
-                            entry = self.registry.provider(m.provider_id)
-                            prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
-                            size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
-                        except Exception:
-                            pass
+                ready = self._is_ready(m.id)
+                size_str = _human_size(self.state.get(m.id).size_bytes) if ready else "—"
                 if m.id in self.queued_deletes:
                     status = "[red]✗[/red]"
                 elif m.id in self.queued_ready:
@@ -402,14 +360,10 @@ class ModelScreen(Screen[None]):
         self._refresh_details_panel(self.query_one("#model-table", DataTable).cursor_row)
 
     def _is_ready(self, model_id: str) -> bool:
-        """Truth about whether a model is ready to use.
-
-        Prefers the reconcile overlay (reality); falls back to state
-        when reconcile hasn't run for this model yet.
-        """
-        rec = self.reconciled.get(model_id)
-        if rec is not None:
-            return bool(rec.get("ready"))
+        """Truth about whether a model is ready to use — a pure read of
+        state.ready. Reconcile (on mount/resume) is the only writer of
+        this flag for local-artifact models; the ready toggle's apply
+        step is the writer for cloud/native models."""
         return self.state.get(model_id).ready
 
     def _refresh_pending_bar(self) -> None:
@@ -428,13 +382,40 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        currently_ready = self._is_ready(mid)
-        target = not currently_ready
-        if mid in self.queued_ready:
-            # Toggling again cancels the queued flip.
-            self.queued_ready.pop(mid)
-        else:
-            self.queued_ready[mid] = target
+        persisted_ready = self.state.get(mid).ready
+        displayed_ready = self.queued_ready.get(mid, persisted_ready)
+        target = not displayed_ready
+        if target == persisted_ready:
+            # Repeated keypress: this target is exactly what's already on
+            # disk once any queued flip is dropped. Cancel it instead of
+            # re-queuing a no-op.
+            self.queued_ready.pop(mid, None)
+            if mid in self._ready_cascade_for_expose:
+                # This readiness was only queued because a prior 'x' press
+                # cascaded it in for an expose; cancelling it back to
+                # not-ready would otherwise leave that expose queued and
+                # failing at apply() with "model is not ready".
+                self.queued_exposes.pop(mid, None)
+                self._ready_cascade_for_expose.discard(mid)
+            self.app.notify(f"Model already {'ready' if target else 'not ready'}")
+            self._refresh_pending_bar()
+            self.reload()
+            return
+        try:
+            provider_entry = self.registry.provider(entry.provider_id)
+        except KeyError:
+            provider_entry = None
+        if target is False and model_has_local_artifact(entry, provider_entry):
+            # Reconcile is the only writer of ready=False for
+            # local-artifact models — the file is still on disk, so
+            # flipping the flag here would be invisible the moment the
+            # next reconcile re-syncs it back to True (the original
+            # reported bug).
+            self.app.notify(
+                "Reconcile controls local-model ready state; delete the file to mark not ready."
+            )
+            return
+        self.queued_ready[mid] = target
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
         self.reload()
@@ -448,16 +429,32 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        if not self._is_ready(mid):
-            self.app.notify("Model must be ready before exposing")
-            return
         if provider_policy(entry.provider_id) is None:
             self.app.notify("Provider has no LiteLLM mapping — cannot expose")
             return
-        current = self.state.get(mid).litellm_exposed
-        if mid in self.queued_exposes:
-            current = self.queued_exposes[mid]
-        self.queued_exposes[mid] = not current
+        persisted_exposed = self.state.get(mid).litellm_exposed
+        displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
+        target = not displayed_exposed
+        if target == persisted_exposed:
+            self.queued_exposes.pop(mid, None)
+            if mid in self._ready_cascade_for_expose:
+                # Undo the ready cascade this same expose queued in — the
+                # user never asked for a download, only for the model to
+                # be exposed, and that request is now cancelled.
+                self.queued_ready.pop(mid, None)
+                self._ready_cascade_for_expose.discard(mid)
+            self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
+            self._refresh_pending_bar()
+            self.reload()
+            return
+        self.queued_exposes[mid] = target
+        if target and not self._is_ready(mid):
+            # Cascade: exposing a not-ready model must download/pull it
+            # first. apply() already runs the ready loop before the
+            # expose loop, so queuing both here gives the right order.
+            if mid not in self.queued_ready:
+                self._ready_cascade_for_expose.add(mid)
+            self.queued_ready[mid] = True
         self._refresh_pending_bar()
         self.reload()
 
@@ -548,6 +545,7 @@ class ModelScreen(Screen[None]):
         else:
             self.queued_deletes[mid] = spec
         self.queued_ready.pop(mid, None)
+        self._ready_cascade_for_expose.discard(mid)
         self._refresh_pending_bar()
         self.reload()
 
@@ -586,9 +584,7 @@ class ModelScreen(Screen[None]):
         self._refresh_details_panel(event.cursor_row)
 
     def _refresh_details_panel(self, cursor_row: int) -> None:
-        """Show the on-disk path of the row under the cursor.
-
-        Prefers the reconcile overlay's local_path (reality), then
+        """Show the on-disk path of the row under the cursor, from
         state.disk_path; renders an em dash when the model isn't ready
         or its path is unknown.
         """
@@ -602,12 +598,7 @@ class ModelScreen(Screen[None]):
             return
         row_key = list(mt.rows.keys())[cursor_row]
         mid = str(row_key.value)
-        path: str | None = None
-        rec = self.reconciled.get(mid)
-        if rec is not None and rec.get("ready"):
-            path = rec.get("local_path")
-        if path is None and self._is_ready(mid):
-            path = self.state.get(mid).disk_path
+        path = self.state.get(mid).disk_path if self._is_ready(mid) else None
         details.update(Text(f"path: {path or '—'}"))
 
     def action_select_row(self) -> None:
@@ -678,6 +669,7 @@ class ModelScreen(Screen[None]):
             self.queued_deletes.clear()
             self.queued_moves.clear()
             self.queued_exposes.clear()
+            self._ready_cascade_for_expose.clear()
             self._added_ids.clear()
             self.app.pop_screen()
             return
@@ -730,22 +722,6 @@ class ModelScreen(Screen[None]):
                 continue
             # Other exceptions (bad config, import failure, etc.) are
             # real errors and must not be silently treated as flag-only.
-        # Merge any reconciled entries that state didn't know about,
-        # so the saved state reflects reality. Never remove existing
-        # entries; the user can queue a delete (d) for that. This also
-        # bridges the expose gate: the TUI accepts an expose based on
-        # the reconcile overlay, while the apply-time check reads
-        # state.ready — without this merge a model on disk with a
-        # stale ready=False would fail at apply with a spurious
-        # "not ready".
-        for mid, rec in self.reconciled.items():
-            if rec.get("ready") and not self.state.get(mid).ready:
-                updated = replace(self.state.get(mid), ready=True)
-                # Only overwrite the path when reconcile actually found
-                # one; a blank local_path must not blank a known one.
-                if rec.get("local_path"):
-                    updated.disk_path = rec["local_path"]
-                self.state.set(mid, updated)
         pending = PendingChanges(
             registry=self.registry,
             state=self.state,
@@ -768,6 +744,7 @@ class ModelScreen(Screen[None]):
         self.queued_deletes.clear()
         self.queued_moves.clear()
         self.queued_exposes.clear()
+        self._ready_cascade_for_expose.clear()
         self._added_ids.clear()
 
     def _restore_snapshot(self) -> None:

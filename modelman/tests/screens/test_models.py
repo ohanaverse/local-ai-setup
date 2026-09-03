@@ -25,6 +25,21 @@ from modelman.screens.models import (
 from modelman.state import ModelState, StateStore, load_state, save_state
 
 
+async def _open_model_screen(pilot):
+    """Press enter on the family screen and wait until the ModelScreen is
+    actually mounted before returning, so a subsequent keypress reliably
+    targets a model row. Without this, a keypress can land while the
+    family screen is still active (empty queue) under full-suite timing."""
+    from modelman.screens.models import ModelScreen
+
+    await pilot.press("enter")
+    for _ in range(200):
+        await pilot.pause()
+        if isinstance(pilot.app.screen, ModelScreen):
+            return
+    raise AssertionError("ModelScreen never mounted after enter")
+
+
 def _seed_registry_and_state(tmp_path, monkeypatch, *, models=()):
     """Seed registry.toml/modelman.toml in tmp_path and redirect the
     env vars. Mirrors the helper in tests/screens/test_app_navigation.py."""
@@ -305,11 +320,13 @@ async def test_d_on_downloaded_local_model_still_queues(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pulled_cloud_model_reconciles_as_ready(tmp_path, monkeypatch):
-    """A pulled ollama `:cloud` model has no local size (size_of() -> None)
-    but `ollama show` (is_downloaded()) succeeds. Reconcile must report it
-    ready — today it never can, because reconcile's truth signal is
-    size_of(), not is_downloaded()."""
+async def test_pulled_cloud_ollama_model_reconcile_leaves_ready_alone(tmp_path, monkeypatch):
+    """An ollama `:cloud` model (location='cloud' on the local ollama
+    provider) is not a local artifact per model_has_local_artifact:
+    reconcile must NOT set state.ready for it even though `ollama show`
+    (is_downloaded) succeeds. This is an intentional behavior change from
+    the pre-fix TUI (see design doc Non-goals) — ollama-cloud readiness
+    is driven by the ready toggle's apply-time pull, not by reconcile."""
     from unittest.mock import MagicMock
 
     from modelman.app import ModelmanApp
@@ -336,7 +353,7 @@ async def test_pulled_cloud_model_reconciles_as_ready(tmp_path, monkeypatch):
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert app.screen._is_ready("ollama/glm-5.2:cloud") is True
+        assert app.screen._is_ready("ollama/glm-5.2:cloud") is False
 
 
 @pytest.mark.asyncio
@@ -461,6 +478,32 @@ async def test_provider_list_sorted(tmp_path, monkeypatch):
         available_providers=["omlx", "ollama", "llamacpp"],
     )
     assert ms._provider_list() == ["llamacpp", "ollama", "omlx"]
+
+
+def test_model_screen_bindings_use_new_key_mapping():
+    """r = toggle ready, x = toggle exposed, no manual reconcile binding
+    (reconcile is automatic on mount/resume)."""
+    from modelman.screens.models import ModelScreen
+
+    binding_map = {
+        (b[0] if isinstance(b, tuple) else b.key): (
+            b[1] if isinstance(b, tuple) else b.action
+        )
+        for b in ModelScreen.BINDINGS
+    }
+    assert binding_map["r"] == "toggle_ready"
+    assert binding_map["x"] == "toggle_expose"
+    assert "l" not in binding_map
+    assert not any(action == "reconcile" for action in binding_map.values())
+    assert not hasattr(ModelScreen, "action_reconcile")
+
+    descriptions = {
+        (b[0] if isinstance(b, tuple) else b.key): (
+            b[2] if isinstance(b, tuple) else b.description
+        )
+        for b in ModelScreen.BINDINGS
+    }
+    assert descriptions["x"] == "Toggle exposed"
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +784,7 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
         assert reg_after_edit.model("ollama/glm-5.3:cloud").location == "local"
 
         # Queue another action so the exit dialog offers Discard.
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready
 
@@ -754,3 +797,370 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
     # After discarding, the registry file must be reverted to the original location.
     reg_after_discard = load_registry(reg_path)
     assert reg_after_discard.model("ollama/glm-5.3:cloud").location == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path, monkeypatch):
+    """Regression for the reported bug: an omlx model whose files are on
+    disk but whose modelman.toml still says ready=False must reconcile
+    to ready=True automatically on mount — this is the exact scenario
+    from the design doc's bug report (ornith-1.5/omlx)."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="omlx/ornith-1.5", family="ornith", provider_id="omlx", model_name="ornith-1.5",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"), location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/ornith-1.5", ModelState(ready=False))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 19530941006
+    stub.list_local.return_value = [
+        {"variant_id": "ornith-1.5", "local_path": "/Users/keith/.omlx/models/ornith-1.5"}
+    ]
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile worker settle
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.state.get("omlx/ornith-1.5").ready is True
+        assert (
+            app.screen.state.get("omlx/ornith-1.5").disk_path
+            == "/Users/keith/.omlx/models/ornith-1.5"
+        )
+        assert app.screen.state.get("omlx/ornith-1.5").size_bytes == 19530941006
+        # No overlay attribute survives the rewrite.
+        assert not hasattr(app.screen, "reconciled")
+
+
+@pytest.mark.asyncio
+async def test_r_on_not_ready_local_artifact_model_queues_download(tmp_path, monkeypatch):
+    """r on a not-ready llamacpp/omlx model queues a download — the
+    reconcilable-provider path through PendingChanges.apply()."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {"omlx/a": True}
+
+
+@pytest.mark.asyncio
+async def test_r_on_ready_local_artifact_model_noops_with_notification(tmp_path, monkeypatch):
+    """r on an already-ready local-artifact model must not queue a
+    delete — that used to be invisible (state flipped to ready=False,
+    but the next reconcile silently flipped it back). Reconcile is now
+    the only writer of ready=False for local-artifact models."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, disk_path="/models/a", size_bytes=10))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 10
+    stub.list_local.return_value = [{"variant_id": "a", "local_path": "/models/a"}]
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle so state.ready is confirmed True
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_r_on_not_ready_cloud_model_queues_download(tmp_path, monkeypatch):
+    """r on a not-ready non-local-artifact (ollama-cloud) model still
+    queues a download — the target-False no-op rule is local-artifact-
+    only; cloud models go through the reconcilable-provider ready loop
+    (ollama pull) exactly like before."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+
+
+@pytest.mark.asyncio
+async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypatch):
+    """Pressing r twice in a row on a not-ready model queues, then
+    cancels back to nothing (the second press's target, False, matches
+    the persisted state.ready, False — a no-op relative to disk)."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypatch):
+    """x on a not-ready model must queue BOTH ready=True and
+    exposed=True — the cascade that replaces the old 'must be ready
+    before exposing' refusal."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {"ollama/glm-5.2:cloud": True}
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+
+
+@pytest.mark.asyncio
+async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatch):
+    """x on a not-ready model cascades queued_ready=True; pressing r right
+    after must cancel *both* halves of that cascade, not just queued_ready.
+    Regression test: previously r's cancel branch only popped queued_ready,
+    leaving queued_exposes=True queued against a model apply() would still
+    see as not-ready, so apply() failed with an unexpected ExposeError the
+    user never asked for."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_x_cancel_after_x_cascade_also_cancels_ready(tmp_path, monkeypatch):
+    """x, then x again on a not-ready model must fully cancel the round
+    trip, including the queued_ready=True the first x cascaded in.
+    Regression test: previously the second x's cancel branch only popped
+    queued_exposes, leaving queued_ready=True queued, so apply() would
+    still download/pull a model the user's two presses were meant to
+    leave untouched."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {}
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_x_on_ready_model_queues_only_expose(tmp_path, monkeypatch):
+    """x on an already-ready model must not touch queued_ready at all —
+    no gratuitous re-download."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {"ollama/a": True}
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_x_twice_cancels_queued_expose_with_notification(tmp_path, monkeypatch):
+    """Pressing x twice cancels the queued expose flip (target returns to
+    the persisted litellm_exposed value) with a notification, mirroring
+    the ready toggle's repeated-keypress behavior."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = True
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {"ollama/glm-5.2:cloud": True}
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_x_on_provider_with_no_litellm_mapping_notifies(tmp_path, monkeypatch):
+    """The 'no LiteLLM mapping' gate is unchanged by this task — only the
+    'must be ready' gate is dropped."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="mystery/a", family="ornith", provider_id="mystery", model_name="a",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="mystery", name="Mystery", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "mystery"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {}
