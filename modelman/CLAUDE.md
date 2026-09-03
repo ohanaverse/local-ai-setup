@@ -42,10 +42,10 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
    ```
 4. Skip the slow Textual screen tests for local dev:
    ```bash
-   uv run pytest -k "not screen" -q                # ~3 min, 367 tests
+   uv run pytest -k "not screen" -q                # ~3 min, ~370+ tests
    ```
 
-The screen tests (`tests/screens/*.py`, 192 tests) use Textual's `App.run_test()` which creates many async event loops and account for most of the 5+ minute runtime. They're valuable for UI regression testing but should be run in CI or a separate session.
+The screen tests (`tests/screens/*.py`, ~210+ tests) use Textual's `App.run_test()` which creates many async event loops and account for most of the 5+ minute runtime. They're valuable for UI regression testing but should be run in CI or a separate session.
 
 ## Architecture
 
