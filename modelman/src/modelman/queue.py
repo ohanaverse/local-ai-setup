@@ -57,13 +57,37 @@ def _label(variant: VariantSpec) -> str:
 
 
 def _reason(exc: BaseException) -> str:
-    """First line of an exception, capped so a giant traceback doesn't
-    drown the StatusScreen."""
-    text = str(exc) or exc.__class__.__name__
-    first = text.splitlines()[0] if text else ""
-    if len(first) > 200:
-        first = first[:197] + "…"
-    return _sanitize(first)
+    """Format exception for display, preserving key details while capping length.
+
+    Shows exception type and full first line for common errors (disk space,
+    network, auth). Falls back to truncated message for very long tracebacks.
+    """
+    exc_type = exc.__class__.__name__
+    text = str(exc) or exc_type
+    lines = text.splitlines()
+    first = lines[0] if lines else ""
+
+    # Preserve full message for common actionable errors
+    actionable_keywords = [
+        "disk space", "no space left", "ENOSPC",
+        "permission denied", "EACCES",
+        "connection", "timeout", "network",
+        "authentication", "unauthorized", "401", "403",
+        "not found", "404",
+        "certificate", "SSL",
+    ]
+    is_actionable = any(kw.lower() in text.lower() for kw in actionable_keywords)
+
+    if is_actionable:
+        # Show type + full message for actionable errors
+        result = f"{exc_type}: {first}" if exc_type not in first else first
+    else:
+        # Truncate non-actionable long messages
+        result = first
+
+    if len(result) > 200:
+        result = result[:197] + "…"
+    return _sanitize(result)
 
 
 @dataclass

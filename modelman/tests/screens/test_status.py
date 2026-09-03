@@ -368,7 +368,7 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
         assert "ornith:35b" in text
         assert "ornith:8b" in text
         assert "Saved" in text or "saving" in text.lower()
-        assert "Done" in text
+        assert "Done" in text or "successfully" in text.lower()
 
 
 @pytest.mark.asyncio
@@ -487,3 +487,52 @@ async def test_status_screen_renders_move_events():
         assert "Moved gemma4:26b-mlx → gemma4" in text
         assert "Failed to move gemma4:12b-mlx" in text
         assert "boom" in text
+
+
+@pytest.mark.asyncio
+async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
+    """When operations fail, a summary should appear at the end."""
+    from textual.widgets import RichLog
+
+    from modelman.app import ModelmanApp
+    from modelman.screens.status import StatusScreen
+
+    reg, state, reg_path, state_path = app_with_apply
+
+    provider = MagicMock()
+    provider.name = "ollama"
+    provider.delete.return_value = None
+    provider.download.side_effect = OSError(
+        "No space left on device (ENOSPC) - failed to write file"
+    )
+
+    def run_apply(log_event, _progress, _register):
+        pending = PendingChanges(
+            registry=reg,
+            state=state,
+            family="ornith",
+            registry_path=reg_path,
+            state_path=state_path,
+            providers={"ollama": provider},
+            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
+            deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
+        )
+        pending.apply(on_event=log_event)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        app.push_screen(screen)
+        for _ in range(20):
+            await pilot.pause()
+            if screen.done:
+                break
+        log = screen.query_one(RichLog)
+        text = "\n".join(line.text for line in log.lines)
+        # Check failure summary header
+        assert "operation(s) failed:" in text
+        # Check specific failure details
+        assert "Download failed for ornith:8b" in text
+        assert "No space left on device" in text
+        assert "Done with errors" in text
