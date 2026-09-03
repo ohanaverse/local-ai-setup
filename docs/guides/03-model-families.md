@@ -36,7 +36,7 @@ uv sync
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman    # family screen: a add, e edit display name, d delete, enter open, r reconcile, q quit
+uv run modelman    # family screen: a add, e edit display name, d delete, enter open, q quit (reconcile is automatic)
 ```
 
 ```bash
@@ -93,8 +93,9 @@ The families screen keys, copied from the modelman README (§TUI):
 | `e` | Edit display name |
 | `d` | Delete (blocked if anything is downloaded) |
 | `enter` | Open family |
-| `r` | Reconcile |
 | `q` | Quit |
+
+Reconcile runs automatically on mount and when returning from a model screen — there is no manual key.
 
 (Note `d` deletes here — modelman's TUI. The wt README's `d` means tag-group toggle; different tool, and that one doesn't exist in the current build — see Gotchas.)
 

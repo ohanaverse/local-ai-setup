@@ -60,8 +60,8 @@ uv run modelman
 
 Three screens (README, verbatim):
 
-- **Family screen** — table of families with columns: family · display · variants · downloaded · size. Keys: `a` add, `e` edit display name, `d` delete (blocked if anything is downloaded), `enter` open, `r` reconcile, `q` quit. The `downloaded` column counts only local models; cloud entries are excluded from both the count and the `size` column.
-- **Model screen** — two-pane view: providers on the left, that provider's models on the right (columns: name · status ✓/○/↓/✗ · size · path · exposed). Keys: `a` add model, `e` edit (id/provider fixed), `d` queue delete (downloaded variants only), `x` toggle download (not-downloaded variants only), `l` toggle LiteLLM exposure (downloaded or cloud variants only), `r` reconcile, `enter` edit, `escape` back / apply queue.
+- **Family screen** — table of families with columns: family · display · variants · downloaded · size. Keys: `a` add, `e` edit display name, `d` delete (blocked if anything is downloaded), `enter` open, `q` quit. Reconcile runs automatically on mount/resume — no manual key. The `downloaded` column counts only local models; cloud entries are excluded from both the count and the `size` column.
+- **Model screen** — single table scoped to one family (columns: family · provider · model · loc · status · exposed · cost · sub · size), with a details panel below showing the row's on-disk path. Keys: `a` add model, `e` edit (id/provider fixed), `d` queue delete (any model — apply skips on-disk removal if the artifact is already gone), `r` toggle ready (queues download/pull; a no-op with a notification for a local-artifact model already on disk — delete the file instead), `x` toggle exposed (cascades a ready toggle first if needed), `enter` edit, `escape` back / apply queue.
 - **Status screen** — when you apply on exit, the model screen hands off to a status screen that streams per-item progress (`Deleting …`, `Downloaded …`, `Saving …`) into a scrollable log. `Escape` mid-run pops a Cancel-or-Wait dialog: `Cancel` kills any running subprocess (Ollama) and stops the queue; `Wait` keeps waiting. Once the run completes (or is cancelled), `Escape` returns to the family screen.
 
 The model screen derives its provider pane from each family model-variant's `provider_id` field in `registry.toml`; the add flow raises `KeyError` on a provider id that has no `[[providers]]` entry (`src/modelman/screens/models.py:40-43`). Keep provider entries ahead of model entries.
@@ -215,7 +215,7 @@ uv run modelman unexpose ollama/gpt-oss:20b
 Unexposed ollama/gpt-oss:20b.
 ```
 
-On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `l` on a model row (queued, applied on exit; the EXPOSED column shows `L`).
+On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y`).
 
 ## Verification
 

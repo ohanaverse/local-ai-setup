@@ -136,16 +136,17 @@ The TUI has three screens:
 
 - **Family screen** — table of families with columns: family · display ·
   variants · downloaded · size. Keys: `a` add, `e` edit display name,
-  `d` delete (blocked if anything is downloaded), `enter` open, `r`
-  reconcile, `q` quit. While the background size refresh runs after
-  mount/resume/`r`, the table is briefly disabled and a
+  `d` delete (blocked if anything is downloaded), `enter` open, `q` quit.
+  Reconcile runs automatically on mount and on returning from a model
+  screen — there is no manual reconcile key. While the background size
+  refresh runs, the table is briefly disabled and a
   "Refreshing sizes…" indicator is shown — actions (`a`, `e`, `d`,
-  `enter`, `r`) are no-ops during that window so the user can't click
+  `enter`) are no-ops during that window so the user can't click
   a row whose contents are about to mutate. The cursor survives the
   refresh: returning from a model screen leaves you on the same family.
   The `DOWNLOADED` column counts only local models (or legacy entries
-  with no explicit `location`); `cloud` entries are excluded from the
-  count and from the `SIZE` total.
+  with no explicit `location`) that reconcile verified on disk; `cloud`
+  entries are excluded from the count and from the `SIZE` total.
 - **Model screen** — single table scoped to one family (columns:
   family · provider · model · loc · status ✓/○/↓/↑/✗/→ · exposed · cost ·
   subscription · size). LOC is an icon (↗ cloud / ▤ local / `—` when unknown) and
@@ -156,12 +157,16 @@ The TUI has three screens:
   Keys: `a` add model, `e` edit (id/provider fixed; changing family queues
   a move), `d` queue delete (works on any model — apply skips the on-disk
   removal if the artifact is already gone, but still cleans
-  registry/state), `x` toggle ready (queues download/pull for
-  reconcilable providers, or a flag flip for cloud/native providers),
-  `l` toggle LiteLLM exposure (ready or cloud models), `r` reconcile,
-  `enter` edit, `escape` back / apply queue. The cursor survives every
-  reload — reconciling or toggling ready on a row leaves you on that
-  row. Provider and family dropdowns list options alphabetically; the
+  registry/state), `r` toggle ready (queues download/pull for
+  reconcilable providers, or a flag flip for cloud/native providers; a
+  no-op with a notification if the model is a local artifact that's
+  already on disk — reconcile is the only writer of ready=False for
+  those, so delete the file instead), `x` toggle exposed (cascades a
+  ready=True queue first if the model isn't ready yet), `enter` edit,
+  `escape` back / apply queue. Reconcile runs automatically on mount and
+  resume — there is no manual reconcile key. The cursor survives every
+  reload — reconciling or toggling a row leaves you on that row. Provider
+  and family dropdowns list options alphabetically; the
   family Select keeps the caller's order when the current family is
   already in the list.
 
@@ -207,8 +212,9 @@ modelman expose <model-id>    # add the model_list entry
 modelman unexpose <model-id>  # remove it
 ```
 
-In the TUI, press `l` on a model row to queue an exposure toggle; it applies
-on exit alongside downloads/deletes. The EXPOSED column shows `Y` when
+In the TUI, press `x` on a model row to queue an exposure toggle; it applies
+on exit alongside downloads/deletes (a not-ready model is downloaded/pulled
+first). The EXPOSED column shows `Y` when
 exposed (or queued to expose) and `–` otherwise.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
@@ -235,7 +241,7 @@ shell command that restarts your proxy (e.g. `launchctl kickstart -k gui/$(id -u
 Providers whose `auth.type` is `"native"` (or whose id matches an agent in
 `~/.config/agent-wt/config.toml`) represent models handled by external
 agents (e.g. `claude`, `codex`). They have no download mechanics:
-pressing `x` simply toggles the `ready` flag, and there is no disk path or
+pressing `r` simply toggles the `ready` flag, and there is no disk path or
 size. These providers are synced into `registry.toml` automatically on TUI
 launch from the wt config.
 
