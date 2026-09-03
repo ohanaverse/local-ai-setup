@@ -17,6 +17,7 @@ from ..registry import (
     is_local_location,
     known_families,
     load_registry,
+    model_has_local_artifact,
     provider_config,
     save_registry,
 )
@@ -44,17 +45,11 @@ class FamilyScreen(Screen[None]):
         ("e", "edit_family", "Edit"),
         ("d", "delete_family", "Delete"),
         ("enter", "open_family", "Open"),
-        ("r", "reconcile", "Reconcile"),
         ("q", "quit", "Quit"),
     ]
 
     def __init__(self) -> None:
         super().__init__()
-        # Per-model-id reconcile overlay: {downloaded: bool, size: int|None}.
-        # Populated by the background reconcile worker; read by reload() when
-        # computing the downloaded count and size column. Keyed by
-        # ModelEntry.id (globally unique), matching ModelScreen.reconciled.
-        self._reconciled: dict[str, dict] = {}
         # Providers from registry.toml, loaded once on mount and forwarded
         # to ModelScreen on Open so the model screen's provider pane always
         # shows every configured provider, even when the family has zero
@@ -156,17 +151,15 @@ class FamilyScreen(Screen[None]):
         self._available_providers = [p.id for p in self.registry.providers]
 
     def _refresh_from_disk(self) -> None:
-        """Reload registry.toml/modelman.toml, clear the cached reconcile
-        overlay, and re-run reconcile.
+        """Reload registry.toml/modelman.toml and re-run reconcile.
 
         Used both on screen resume (after popping back from a child
         screen that may have mutated the on-disk files — ModelScreen
-        saves on apply) and on explicit 'r'. Without clearing the
-        overlay, stale entries for deleted models would remain in
-        memory forever.
+        saves on apply) and by the family list's mount path. Reconcile
+        now writes state.py directly, so nothing needs clearing between
+        runs the way the old in-memory overlay did.
         """
         self._load_from_disk()
-        self._reconciled.clear()
         self.reload()  # show state-truth immediately
         self._start_reconcile_worker()
 
@@ -186,31 +179,46 @@ class FamilyScreen(Screen[None]):
         self._refresh_from_disk()
 
     def _run_reconcile(self, generation: int) -> None:
-        """Ask each provider whether its models are on disk; cache
-        results keyed by model id. Mirrors ModelScreen._run_reconcile
-        but across every model in the registry (not one family).
+        """Ask each provider whether its models are on disk; write the
+        result straight into `state` for local-artifact models (files
+        present -> ready=True + disk_path + size_bytes; absent ->
+        ready=False + cleared path/size). Non-local-artifact models
+        (cloud-located, or on a cloud provider) are never marked ready
+        by reconcile — only disk_path/size_bytes are opportunistically
+        updated when the provider reports them, mirroring
+        ModelScreen._run_reconcile.
 
-        The reconcile overlay is filled on this background thread, but
-        the UI toggles (lock release + reload) must run on the main
-        thread. We use `app.call_from_thread` for the unlock step so
-        the indicator disappears as soon as the worker finishes,
-        regardless of how long the per-model loops took.
-
-        `generation` is this worker's token from _start_reconcile_worker;
-        it is forwarded to _reconcile_done so a superseded worker can be
-        told apart from the current one.
+        The UI-toggle step (unlock + reload) must run on the main
+        thread; `app.call_from_thread` handles that. `generation` is
+        this worker's token from _start_reconcile_worker, forwarded to
+        _reconcile_done so a superseded worker can be told apart from
+        the current one.
         """
+        from dataclasses import replace
+
         try:
             providers: dict[str, object] = {}
+            provider_entries: dict[str, object] = {}
             for m in self.registry.models:
                 pname = m.provider_id
-                if pname not in providers:
+                if pname not in provider_entries:
                     try:
-                        entry = self.registry.provider(pname)
-                        providers[pname] = ProviderRegistry.get(pname, provider_config(entry))
+                        provider_entries[pname] = self.registry.provider(pname)
+                    except KeyError:
+                        provider_entries[pname] = None
+                provider_entry = provider_entries[pname]
+                if pname not in providers:
+                    if provider_entry is None:
+                        continue
+                    try:
+                        providers[pname] = ProviderRegistry.get(
+                            pname, provider_config(provider_entry)
+                        )
                     except Exception:
                         continue
-                provider = providers[pname]
+                provider = providers.get(pname)
+                if provider is None:
+                    continue
                 spec = _model_entry_to_variant(m)
                 size: int | None = None
                 ready = False
@@ -224,10 +232,40 @@ class FamilyScreen(Screen[None]):
                         size = raw
                 except Exception:
                     size = None
-                self._reconciled[m.id] = {
-                    "ready": ready,
-                    "size": size,
-                }
+                local_path: str | None = None
+                if ready and hasattr(provider, "list_local"):
+                    try:
+                        for lm in provider.list_local():
+                            lm_name = lm.get("name") or lm.get("variant_id")
+                            if lm_name == m.model_name or lm_name == m.id:
+                                lp = lm.get("local_path") or lm.get("path")
+                                if isinstance(lp, str):
+                                    local_path = lp
+                                break
+                    except Exception:
+                        pass
+                if model_has_local_artifact(m, provider_entry):
+                    existing = self.state.get(m.id)
+                    if ready:
+                        self.state.set(
+                            m.id,
+                            replace(existing, ready=True, disk_path=local_path, size_bytes=size),
+                        )
+                    else:
+                        self.state.set(
+                            m.id,
+                            replace(existing, ready=False, disk_path=None, size_bytes=None),
+                        )
+                elif local_path is not None or size is not None:
+                    existing = self.state.get(m.id)
+                    self.state.set(
+                        m.id,
+                        replace(
+                            existing,
+                            disk_path=local_path if local_path is not None else existing.disk_path,
+                            size_bytes=size if size is not None else existing.size_bytes,
+                        ),
+                    )
         finally:
             self.app.call_from_thread(self._reconcile_done, generation)
 
@@ -266,21 +304,14 @@ class FamilyScreen(Screen[None]):
                     # Legacy entries with location=None still count as local.
                     if not is_local_location(m.location):
                         continue
-                    rec = self._reconciled.get(m.id)
-                    if rec is not None:
-                        if rec["ready"]:
-                            downloaded_count += 1
-                            sz = rec["size"]
-                            if sz is None:
-                                unknown = True
-                            else:
-                                total_size += sz
-                        # If rec says not ready, don't fall through to
-                        # state (it could be stale on either side).
-                    elif self.state.get(m.id).ready:
-                        # No reconcile info yet; trust state for this model.
-                        downloaded_count += 1
-                        unknown = True  # size unknown until reconcile runs
+                    st = self.state.get(m.id)
+                    if not st.ready:
+                        continue
+                    downloaded_count += 1
+                    if st.size_bytes is None:
+                        unknown = True
+                    else:
+                        total_size += st.size_bytes
                 size_str = (
                     "—"
                     if downloaded_count == 0 or (unknown and total_size == 0)
@@ -296,11 +327,6 @@ class FamilyScreen(Screen[None]):
                 )
 
         reload_preserving_cursor(self.query_one(DataTable), _repopulate)
-
-    def action_reconcile(self) -> None:
-        if self._reconciling:
-            return
-        self._refresh_from_disk()
 
     def action_add_family(self) -> None:
         if self._reconciling:
