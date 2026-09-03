@@ -60,6 +60,8 @@ tags = []
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, LiteLLM exposure flags, and family display names.
 - **Env override:** `MODELMAN_STATE`.
 
+> Excerpt — 24 of the file's 40 entries are `litellm_exposed = true` today (13 `ollama/*` + 11 `openrouter/*`). The exposed `ollama/*` blocks are shown below; the openrouter blocks are omitted for brevity.
+
 ```toml
 [model_state."ollama/glm-5.3-flash:cloud"]
 ready = true
@@ -78,9 +80,24 @@ disk_path = "ollama:ornith-1.5:35b"
 size_bytes = 23622320128
 litellm_exposed = true
 
+[model_state."ollama/gemma4:cloud"]
+ready = true
+disk_path = "ollama:gemma4:cloud"
+litellm_exposed = true
+
 [model_state."ollama/kimi-k2.7-code:cloud"]
 ready = true
 disk_path = "ollama:kimi-k2.7-code:cloud"
+litellm_exposed = true
+
+[model_state."ollama/glm-5.2:cloud"]
+ready = true
+disk_path = "ollama:glm-5.2:cloud"
+litellm_exposed = true
+
+[model_state."ollama/minimax-m3:cloud"]
+ready = true
+disk_path = "ollama:minimax-m3:cloud"
 litellm_exposed = true
 
 [model_state."ollama/deepseek-v4-flash:cloud"]
@@ -96,6 +113,21 @@ litellm_exposed = true
 [model_state."ollama/glm-5.3:cloud"]
 ready = true
 disk_path = "ollama:glm-5.3:cloud"
+litellm_exposed = true
+
+[model_state."ollama/qwen3.5:397b-cloud"]
+ready = true
+disk_path = "ollama:qwen3.5:397b-cloud"
+litellm_exposed = true
+
+[model_state."ollama/minimax-m2.7:cloud"]
+ready = true
+disk_path = "ollama:minimax-m2.7:cloud"
+litellm_exposed = true
+
+[model_state."ollama/kimi-k3:cloud"]
+ready = true
+disk_path = "ollama:kimi-k3:cloud"
 litellm_exposed = true
 
 [families.deepseek-v4]
@@ -155,7 +187,7 @@ variants:
 ### `~/.config/litellm/config.yaml`
 
 - **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
-- **Hand-managed entries:** modelman owns only the two in-registry `ollama/*` models; the 9 omlx/openrouter/llama.cpp entries are deliberately hand-managed.
+- **Hand-managed entries:** of the 35 `model_list` rows, modelman owns the 24 exposed ids (13 `ollama/*` + 11 `openrouter/*`); the remaining 11 — 3 omlx variants, 2 llama.cpp rows, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed.
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
 - **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, llama.cpp, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
 - **Env override:** `MODELMAN_LITELLM_CONFIG`.
