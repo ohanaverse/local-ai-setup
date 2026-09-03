@@ -469,15 +469,34 @@ def test_default_restart_cmd_set(monkeypatch):
     assert default_litellm_restart_cmd() == "echo restart"
 
 
-def test_restart_proxy_noop_when_unset(monkeypatch):
+def test_restart_proxy_falls_back_when_unset(monkeypatch):
+    """Unset MODELMAN_LITELLM_RESTART_CMD must fall back to the canonical
+    launchctl kickstart instead of silently warning.
+
+    Regression: the var is exported only in ~/.zshrc, so a non-interactive
+    launch (script, agent, worktree launcher) never inherits it; exposes
+    from that context wrote config.yaml but never restarted the proxy,
+    leaving clients 400ing on newly exposed rows until a manual kickstart.
+    """
     monkeypatch.delenv("MODELMAN_LITELLM_RESTART_CMD", raising=False)
+    import subprocess
+
+    calls = []
+
+    def fake_run(cmd, *, shell, check, timeout):
+        calls.append((cmd, shell, check, timeout))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
     from modelman.litellm import restart_litellm_proxy
 
-    # Returns a warning (not a stderr print) telling the user to restart
-    # the proxy manually; must not raise.
-    warnings = restart_litellm_proxy()
-    assert len(warnings) == 1
-    assert "restart" in warnings[0].lower()
+    # No warnings on success, and the fallback command actually ran.
+    assert restart_litellm_proxy() == []
+    assert len(calls) == 1
+    cmd, shell, check, timeout = calls[0]
+    assert "launchctl kickstart -k" in cmd
+    assert "local.litellm.proxy" in cmd
+    assert shell is True and check is True and timeout == 30
 
 
 def test_restart_proxy_runs_command(monkeypatch):

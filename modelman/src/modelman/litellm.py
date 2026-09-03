@@ -540,6 +540,16 @@ def apply_expose_queue(
     return outcomes, []
 
 
+# Canonical restart command for the launchd-managed proxy, used when
+# MODELMAN_LITELLM_RESTART_CMD is unset. The env var is typically
+# exported only from an interactive shell (e.g. ~/.zshrc), so
+# non-interactive launches (scripts, agents, worktree launchers) would
+# otherwise silently skip the restart and leave the proxy stale — the
+# config write is the source of truth, but clients keep 400ing until a
+# manual kickstart.
+_FALLBACK_LITELLM_RESTART_CMD = "launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
+
+
 def default_litellm_restart_cmd() -> str | None:
     """The shell command used to restart the LiteLLM proxy, or None when
     unset (reconcile is a no-op with a warning). Read lazily so env
@@ -549,22 +559,18 @@ def default_litellm_restart_cmd() -> str | None:
 
 def restart_litellm_proxy() -> list[str]:
     """Best-effort reconcile of the running LiteLLM proxy after a config
-    write. Runs the configured restart command; when unset, returns a
-    warning that a manual restart is needed. Never raises: the config
-    write is the source of truth, and a failed restart just leaves the
-    proxy stale.
+    write. Runs the configured restart command, falling back to the
+    canonical launchctl kickstart when MODELMAN_LITELLM_RESTART_CMD is
+    unset. Never raises: the config write is the source of truth, and a
+    failed restart just leaves the proxy stale.
 
     Returns a list of warning strings (empty on success) rather than
     printing to stderr, so callers can surface them on the UI thread —
     a direct stderr write from a TUI worker thread would interleave with
-    and garble Textual's rendering.
+    and garble Textual's rendering. Only warning case left: the command
+    itself failed (timeout, non-zero exit, missing binary).
     """
-    cmd = default_litellm_restart_cmd()
-    if not cmd:
-        return [
-            "LiteLLM config changed but MODELMAN_LITELLM_RESTART_CMD is unset; "
-            "restart the proxy manually for the change to take effect."
-        ]
+    cmd = default_litellm_restart_cmd() or _FALLBACK_LITELLM_RESTART_CMD
     try:
         subprocess.run(cmd, shell=True, check=True, timeout=30)
     except Exception as exc:  # noqa: BLE001

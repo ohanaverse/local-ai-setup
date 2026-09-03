@@ -165,7 +165,7 @@ litellm_exposed = true                            # ← only field modelman flip
 
 This model is currently unexposed on this machine — running the command above would produce the "after" state.
 
-modelman does **not** restart LiteLLM — the new row is invisible to clients until the restart in §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
+modelman **does** restart LiteLLM after an exposing write — `expose`/`unexpose` run the restart command from `MODELMAN_LITELLM_RESTART_CMD`, falling back to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` when the var is unset, so a new row is live right away (proxy down ~10–20 s; if the start fails, KeepAlive crash-loops it and `~/.litellm.err.log` is the tell). The TUI status pane and CLI surface a non-fatal warning if the restart itself fails — restart manually per §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
 
 ### 3. Hand-editing
 

@@ -38,12 +38,21 @@ failed reconcile must not roll back or error out the expose operation.
    the natural owner of "make the running proxy reflect the new config." `wt`
    (a launcher) does not detect or restart the proxy; it is out of scope here.
 
-2. **Reconcile via a configurable restart command, not a hardcoded one.**
+2. **Reconcile via a configurable restart command, with a canonical fallback.**
    modelman is a general tool; `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`
    is this machine's answer. The restart command is read from the
    `MODELMAN_LITELLM_RESTART_CMD` env var (matching the existing
-   `MODELMAN_LITELLM_CONFIG` pattern). When unset, reconcile is a **no-op with a
-   warning** so other environments are not broken.
+   `MODELMAN_LITELLM_CONFIG` pattern); when unset, reconcile falls back to that
+   canonical kickstart rather than silently skipping. On platforms where the
+   fallback command fails or is absent, the failure degrades to the same
+   non-fatal warning, so other environments are not broken.
+
+   *Follow-up (2026-09-02):* the env var was exported only from interactive
+   shells (`~/.zshrc`), so non-interactive launches (scripts, agents, worktree
+   launchers) never inherited it — exposes from that context wrote
+   `config.yaml` but never restarted the proxy, leaving clients 400ing on the
+   new rows until a manual kickstart. The fallback closes that gap; the env
+   var remains honored when set (overrides the fallback).
 
 3. **Prefer a non-disruptive reload when available.** LiteLLM 1.98.0 (the
    version on this machine) exposes no HTTP config-reload endpoint (`/reload`
@@ -73,7 +82,8 @@ gains:
 - `default_litellm_restart_cmd() -> str | None` — reads
   `MODELMAN_LITELLM_RESTART_CMD` (lazily, so env overrides work in tests).
 - `restart_litellm_proxy() -> list[str]` — runs the configured command via
-  `subprocess` (bounded by a 30-second timeout); no-op when unset. Returns a
+  `subprocess` (bounded by a 30-second timeout); when unset, falls back to the
+  canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. Returns a
   list of warning strings (empty on success) rather than printing to stderr,
   so callers can surface them on the UI thread — a direct stderr write from a
   TUI worker thread would interleave with and garble Textual's rendering.
@@ -109,14 +119,14 @@ gains:
 
 ## Configuration
 
-- `MODELMAN_LITELLM_RESTART_CMD` — shell command to restart the proxy. Unset
-  by default (reconcile is a no-op with a warning). On this machine:
-  `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
+- `MODELMAN_LITELLM_RESTART_CMD` — shell command to restart the proxy.
+  Defaults to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`
+  when unset (the pre-2026-09-02 behavior of no-op-with-warning silently
+  skipped restarts in non-interactive launch contexts).
 
 ## Error Handling
 
-- **Restart command unset** — no-op; return a one-line warning that the proxy
-  must be restarted manually for the change to take effect.
+- **Restart command unset** — fall back to the canonical launchctl kickstart.
 - **Restart command fails** (non-zero exit, command not found, or a 30-second
   timeout) — warn, do not raise. The expose operation already succeeded.
 - **Config write fails** — unchanged: the expose operation errors out before
@@ -126,7 +136,8 @@ gains:
 
 - **`tests/test_litellm.py`** — `default_litellm_restart_cmd()` reads the env
   var (set/unset); `restart_litellm_proxy()` runs the command (monkeypatched
-  `subprocess`) and is a no-op when unset; failure is non-fatal.
+  `subprocess`) and falls back to the canonical kickstart when unset; failure
+  is non-fatal.
 - **`tests/test_expose.py`** — `expose_model`/`unexpose_model` call
   `restart_litellm_proxy()` after a successful write (monkeypatched to record
   the call); a failing restart does not raise.

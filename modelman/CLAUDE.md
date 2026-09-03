@@ -27,6 +27,26 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 
 The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
+### Running tests inside the pi agent
+
+**Known issue:** The pi agent (Node.js) loses its HTTP connection to LiteLLM whenever pytest runs for more than ~30 seconds on this macOS Apple Silicon setup. This appears to be a macOS + Node.js + Python interaction issue affecting the network stack during long-running Python test processes.
+
+**Workarounds:**
+1. Run the full test suite in a **separate terminal or tmux session** (not inside the agent)
+2. Use **GitHub Actions CI** for the complete test run
+3. Run tests in **short batches** (<30s each) when working inside the agent session:
+   ```bash
+   uv run pytest tests/test_litellm.py -q          # Fast unit tests
+   uv run pytest tests/test_expose.py -q           # Expose logic
+   uv run pytest tests/test_queue.py -q            # Queue apply logic
+   ```
+4. Skip the slow Textual screen tests for local dev:
+   ```bash
+   uv run pytest -k "not screen" -q                # ~3 min, 367 tests
+   ```
+
+The screen tests (`tests/screens/*.py`, 192 tests) use Textual's `App.run_test()` which creates many async event loops and account for most of the 5+ minute runtime. They're valuable for UI regression testing but should be run in CI or a separate session.
+
 ## Architecture
 
 ### Entry point
@@ -53,7 +73,7 @@ The Makefile wraps the standard dev commands. Run `make help` to list targets.
 - `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. (`get`/`set`/`forget_family`). Loaded from `modelman.toml` (`MODELMAN_STATE`); display-name resolution lives in `registry.family_display_name`/`known_families`.
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `wt` config) into the registry/state pair. Run once via `uv run modelman migrate`.
 - `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.
-- `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Every writer runs `ensure_litellm_settings()` before save (value-enforces `litellm_settings.drop_params: true`; adds `additional_drop_params: ["reasoning_effort"]` to every `ollama_chat/*` row missing it — the BerriAI/litellm#37452 codex workaround) and saves/restarts only when the parsed document or an exposed flag actually changed. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate). After a config write that actually changed the model list, `restart_litellm_proxy()` runs the `MODELMAN_LITELLM_RESTART_CMD` command (30s timeout) to reconcile the running proxy; it returns warning strings (command unset or failed) rather than printing to stderr, so the CLI surfaces them and the TUI routes them through the apply event channel (`expose:warning|…`). `_set_exposed_flag` returns whether the flag changed, so a no-op unexpose of an already-removed model does not bounce the proxy.
+- `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Every writer runs `ensure_litellm_settings()` before save (value-enforces `litellm_settings.drop_params: true`; adds `additional_drop_params: ["reasoning_effort"]` to every `ollama_chat/*` row missing it — the BerriAI/litellm#37452 codex workaround) and saves/restarts only when the parsed document or an exposed flag actually changed. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate). After a config write that actually changed the model list, `restart_litellm_proxy()` runs the `MODELMAN_LITELLM_RESTART_CMD` command (30s timeout) to reconcile the running proxy, falling back to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` when the var is unset (the var is exported only from interactive shells like ~/.zshrc — an unset env used to silently skip the restart and leave the proxy stale); it returns warning strings (command failed) rather than printing to stderr, so the CLI surfaces them and the TUI routes them through the apply event channel (`expose:warning|…`). `_set_exposed_flag` returns whether the flag changed, so a no-op unexpose of an already-removed model does not bounce the proxy.
 - `src/modelman/_toml_io.py` — minimal `tomllib`/`tomli_w` helpers (read/write dict-shaped TOML without external config libs).
 
 ### Provider plugin system
