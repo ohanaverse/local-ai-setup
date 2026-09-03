@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from textual.widgets import DataTable
 
@@ -672,7 +674,9 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
         await pilot.pause()  # let reconcile settle
         mt = app.screen.query_one("#model-table", DataTable)
         mt.cursor_coordinate = (0, 0)
-        await pilot.press("l")  # toggle expose — gate passes via the overlay
+        # Reconcile writes state.ready directly, so the expose gate sees
+        # a ready model; toggle expose with `x`.
+        await pilot.press("x")  # toggle expose
         await pilot.pause()
         assert "expose 1" in str(app.screen.query_one("#pending-bar").render())
         await pilot.press("escape")
@@ -737,11 +741,11 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
         await pilot.pause()
         await pilot.pause()  # let reconcile settle
         # Queue a download for q8 (which is not ready), so escape triggers
-        # the apply dialog.
+        # the apply dialog. `r` toggles ready (download); `x` is now expose.
         mt = app.screen.query_one("#model-table", DataTable)
         # Click on the q8 row.
         mt.cursor_coordinate = (1, 0)
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -792,7 +796,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("x")
+        await pilot.press("r")  # queue a download (ready) — `x` is now expose
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -1542,8 +1546,8 @@ def test_round_trip_preserves_quantizations():
 
 
 @pytest.mark.asyncio
-async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
-    """Pressing `l` on a downloaded model queues an exposure change and the
+async def test_x_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
+    """Pressing `x` on a downloaded model queues an exposure change and the
     EXPOSED column reflects the queued target state."""
     from textual.widgets import DataTable
 
@@ -1566,7 +1570,7 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
     )
     # Stub the provider so reconcile reports the model as on disk (size
     # non-None); otherwise the real ollama provider marks it not-downloaded
-    # and `l` refuses to queue.
+    # and `x` refuses to queue.
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1593,9 +1597,9 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
         pilot.app.push_screen(ms)
         await pilot.pause()
         mt = ms.query_one("#model-table", DataTable)
-        # Focus the model table so `l` targets a model row.
+        # Focus the model table so `x` targets a model row.
         mt.focus()
-        await pilot.press("l")
+        await pilot.press("x")
         await pilot.pause()
         assert "ollama/a" in ms.queued_exposes
         assert ms.queued_exposes["ollama/a"] is True
@@ -1775,6 +1779,19 @@ async def test_location_edit_survives_family_screen_round_trip(tmp_path, monkeyp
     )
     del reg_path
 
+    # Stub the provider so reconcile is fast and deterministic (this test
+    # previously relied on the real ollama provider, which made it
+    # environment-dependent and flaky).
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
     from modelman.app import ModelmanApp
     from modelman.screens.families import FamilyScreen
     from modelman.screens.forms import ModelForm
@@ -1824,7 +1841,9 @@ async def _wait_reconcile_done(screen) -> None:
     for _ in range(200):
         if not screen._reconciling:
             return
-        await screen.app._pilot_pause()
+        # Yield to the event loop so the worker's call_from_thread
+        # callback (which clears _reconciling) can run.
+        await asyncio.sleep(0)
 
 
 def test_families_list_includes_state_only_families(tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from ..providers.registry import ProviderRegistry
 from ..registry import (
     FamilyEntry,
+    ProviderEntry,
     Registry,
     RegistryError,
     family_display_name,
@@ -198,7 +199,7 @@ class FamilyScreen(Screen[None]):
 
         try:
             providers: dict[str, object] = {}
-            provider_entries: dict[str, object] = {}
+            provider_entries: dict[str, ProviderEntry | None] = {}
             for m in self.registry.models:
                 pname = m.provider_id
                 if pname not in provider_entries:

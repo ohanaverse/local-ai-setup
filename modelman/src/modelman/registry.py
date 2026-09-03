@@ -314,9 +314,7 @@ def model_has_local_artifact(
         return False
     if provider is not None and provider.location == "cloud":
         return False
-    if provider is None:
-        return False
-    return True
+    return provider is not None
 
 
 def default_provider_entry(provider_id: str) -> ProviderEntry:

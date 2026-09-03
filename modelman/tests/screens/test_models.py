@@ -25,6 +25,21 @@ from modelman.screens.models import (
 from modelman.state import ModelState, StateStore, load_state, save_state
 
 
+async def _open_model_screen(pilot):
+    """Press enter on the family screen and wait until the ModelScreen is
+    actually mounted before returning, so a subsequent keypress reliably
+    targets a model row. Without this, a keypress can land while the
+    family screen is still active (empty queue) under full-suite timing."""
+    from modelman.screens.models import ModelScreen
+
+    await pilot.press("enter")
+    for _ in range(200):
+        await pilot.pause()
+        if isinstance(pilot.app.screen, ModelScreen):
+            return
+    raise AssertionError("ModelScreen never mounted after enter")
+
+
 def _seed_registry_and_state(tmp_path, monkeypatch, *, models=()):
     """Seed registry.toml/modelman.toml in tmp_path and redirect the
     env vars. Mirrors the helper in tests/screens/test_app_navigation.py."""
@@ -823,8 +838,7 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.pause()  # let the reconcile worker settle
 
         from modelman.screens.models import ModelScreen
@@ -870,8 +884,7 @@ async def test_r_on_not_ready_local_artifact_model_queues_download(tmp_path, mon
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.press("r")
         await pilot.pause()
 
@@ -916,8 +929,7 @@ async def test_r_on_ready_local_artifact_model_noops_with_notification(tmp_path,
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.pause()  # let reconcile settle so state.ready is confirmed True
         await pilot.press("r")
         await pilot.pause()
@@ -940,8 +952,7 @@ async def test_r_on_not_ready_cloud_model_queues_download(tmp_path, monkeypatch)
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.press("r")
         await pilot.pause()
 
@@ -962,8 +973,7 @@ async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypat
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
@@ -983,8 +993,7 @@ async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypa
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.press("x")
         await pilot.pause()
 
@@ -1029,8 +1038,7 @@ async def test_x_on_ready_model_queues_only_expose(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.pause()  # let reconcile settle
         await pilot.press("x")
         await pilot.pause()
@@ -1053,8 +1061,7 @@ async def test_x_twice_cancels_queued_expose_with_notification(tmp_path, monkeyp
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.press("x")
         await pilot.pause()
         assert app.screen.queued_exposes == {"ollama/glm-5.2:cloud": True}
@@ -1095,8 +1102,7 @@ async def test_x_on_provider_with_no_litellm_mapping_notifies(tmp_path, monkeypa
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _open_model_screen(pilot)
         await pilot.press("x")
         await pilot.pause()
 
