@@ -191,13 +191,12 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
 class ModelScreen(Screen[None]):
     BINDINGS = [
         ("escape", "back", "Back"),
-        ("x", "toggle_ready", "Toggle ready"),
         ("a", "add_model", "Add"),
         ("d", "delete_model", "Delete"),
         ("e", "edit_model", "Edit"),
         Binding("enter", "select_row", "Edit", priority=True),
-        ("r", "reconcile", "Reconcile"),
-        ("l", "toggle_expose", "Toggle LiteLLM"),
+        ("r", "toggle_ready", "Toggle ready"),
+        ("x", "toggle_expose", "Toggle exposed"),
     ]
 
     def __init__(
@@ -336,9 +335,6 @@ class ModelScreen(Screen[None]):
                 }
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
-
-    def action_reconcile(self) -> None:
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def reload(self) -> None:
         self._load_models()

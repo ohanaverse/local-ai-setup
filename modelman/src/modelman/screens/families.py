@@ -249,7 +249,18 @@ class FamilyScreen(Screen[None]):
                     if ready:
                         self.state.set(
                             m.id,
-                            replace(existing, ready=True, disk_path=local_path, size_bytes=size),
+                            replace(
+                                existing,
+                                ready=True,
+                                # Only overwrite the path when reconcile
+                                # actually found one; a blank local_path must
+                                # not blank a known disk_path (matches
+                                # ModelScreen._run_apply).
+                                disk_path=(
+                                    local_path if local_path is not None else existing.disk_path
+                                ),
+                                size_bytes=size,
+                            ),
                         )
                     else:
                         self.state.set(

@@ -463,6 +463,32 @@ async def test_provider_list_sorted(tmp_path, monkeypatch):
     assert ms._provider_list() == ["llamacpp", "ollama", "omlx"]
 
 
+def test_model_screen_bindings_use_new_key_mapping():
+    """r = toggle ready, x = toggle exposed, no manual reconcile binding
+    (reconcile is automatic on mount/resume)."""
+    from modelman.screens.models import ModelScreen
+
+    binding_map = {
+        (b[0] if isinstance(b, tuple) else b.key): (
+            b[1] if isinstance(b, tuple) else b.action
+        )
+        for b in ModelScreen.BINDINGS
+    }
+    assert binding_map["r"] == "toggle_ready"
+    assert binding_map["x"] == "toggle_expose"
+    assert "l" not in binding_map
+    assert not any(action == "reconcile" for action in binding_map.values())
+    assert not hasattr(ModelScreen, "action_reconcile")
+
+    descriptions = {
+        (b[0] if isinstance(b, tuple) else b.key): (
+            b[2] if isinstance(b, tuple) else b.description
+        )
+        for b in ModelScreen.BINDINGS
+    }
+    assert descriptions["x"] == "Toggle exposed"
+
+
 # ---------------------------------------------------------------------------
 # Delete gating is removed: any model can be queued for delete
 # ---------------------------------------------------------------------------
@@ -741,7 +767,7 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
         assert reg_after_edit.model("ollama/glm-5.3:cloud").location == "local"
 
         # Queue another action so the exit dialog offers Discard.
-        await pilot.press("x")
+        await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready
 
