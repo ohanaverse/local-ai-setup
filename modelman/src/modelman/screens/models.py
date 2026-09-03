@@ -26,6 +26,7 @@ from ..registry import (
     _cost_from_dict,
     _cost_to_dict,
     known_families,
+    model_has_local_artifact,
     provider_config,
     save_registry,
 )
@@ -252,8 +253,6 @@ class ModelScreen(Screen[None]):
         # _restore_snapshot: a model added into a *different* family
         # isn't caught by the family-scoped restore filter.
         self._added_ids: set[str] = set()
-        # Reconcile overlay: per-model-id reality from the provider.
-        self.reconciled: dict[str, dict] = {}
         # Snapshot for discard: restore if the user exits without applying.
         self._snapshot_models: list[ModelEntry] = [
             ModelEntry(**_entry_kwargs(m)) for m in registry.models if m.family == family
@@ -290,7 +289,16 @@ class ModelScreen(Screen[None]):
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
     def _run_reconcile(self) -> None:
-        """Ask each provider whether its models are on disk; cache results."""
+        """Ask each provider whether its models are on disk; write the
+        result straight into `state` for local-artifact models. Files
+        present -> ready=True + disk_path + size_bytes; absent ->
+        ready=False + cleared path/size. Non-local-artifact models
+        (cloud-located, or on a cloud provider) are left alone by this
+        step — only disk_path/size_bytes are opportunistically updated
+        when the provider reports them; their ready flag is driven by
+        the ready-toggle's apply-time download/pull instead.
+        """
+        # `replace` is already imported at module level (top of this file).
         from ..providers.registry import ProviderRegistry
 
         family_models = self.registry.models_by_family(self.family)
@@ -299,8 +307,8 @@ class ModelScreen(Screen[None]):
             by_provider[m.provider_id].append(m)
         for provider_name, entries in by_provider.items():
             try:
-                entry = self.registry.provider(provider_name)
-                provider = ProviderRegistry.get(provider_name, provider_config(entry))
+                provider_entry = self.registry.provider(provider_name)
+                provider = ProviderRegistry.get(provider_name, provider_config(provider_entry))
             except Exception:
                 continue
             for m in entries:
@@ -328,11 +336,38 @@ class ModelScreen(Screen[None]):
                                 break
                     except Exception:
                         pass
-                self.reconciled[m.id] = {
-                    "ready": ready,
-                    "size": size,
-                    "local_path": local_path,
-                }
+                if model_has_local_artifact(m, provider_entry):
+                    existing = self.state.get(m.id)
+                    if ready:
+                        self.state.set(
+                            m.id,
+                            replace(
+                                existing,
+                                ready=True,
+                                # Only overwrite the path when reconcile
+                                # actually found one; a blank local_path must
+                                # not blank a known disk_path.
+                                disk_path=(
+                                    local_path if local_path is not None else existing.disk_path
+                                ),
+                                size_bytes=size,
+                            ),
+                        )
+                    else:
+                        self.state.set(
+                            m.id,
+                            replace(existing, ready=False, disk_path=None, size_bytes=None),
+                        )
+                elif local_path is not None or size is not None:
+                    existing = self.state.get(m.id)
+                    self.state.set(
+                        m.id,
+                        replace(
+                            existing,
+                            disk_path=local_path if local_path is not None else existing.disk_path,
+                            size_bytes=size if size is not None else existing.size_bytes,
+                        ),
+                    )
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
@@ -340,8 +375,6 @@ class ModelScreen(Screen[None]):
         self._load_models()
 
     def _load_models(self) -> None:
-        from ..providers.registry import ProviderRegistry
-
         def _repopulate() -> None:
             mt = self.query_one("#model-table", DataTable)
             mt.clear()
@@ -350,21 +383,8 @@ class ModelScreen(Screen[None]):
                 key=lambda m: (m.provider_id, m.model_name),
             )
             for m in models:
-                rec = self.reconciled.get(m.id)
-                if rec is not None:
-                    ready = bool(rec.get("ready"))
-                    size_str = _human_size(rec.get("size")) if ready else "—"
-                else:
-                    state_entry = self.state.get(m.id)
-                    ready = state_entry.ready
-                    size_str = "—"
-                    if ready:
-                        try:
-                            entry = self.registry.provider(m.provider_id)
-                            prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
-                            size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
-                        except Exception:
-                            pass
+                ready = self._is_ready(m.id)
+                size_str = _human_size(self.state.get(m.id).size_bytes) if ready else "—"
                 if m.id in self.queued_deletes:
                     status = "[red]✗[/red]"
                 elif m.id in self.queued_ready:
@@ -398,14 +418,10 @@ class ModelScreen(Screen[None]):
         self._refresh_details_panel(self.query_one("#model-table", DataTable).cursor_row)
 
     def _is_ready(self, model_id: str) -> bool:
-        """Truth about whether a model is ready to use.
-
-        Prefers the reconcile overlay (reality); falls back to state
-        when reconcile hasn't run for this model yet.
-        """
-        rec = self.reconciled.get(model_id)
-        if rec is not None:
-            return bool(rec.get("ready"))
+        """Truth about whether a model is ready to use — a pure read of
+        state.ready. Reconcile (on mount/resume) is the only writer of
+        this flag for local-artifact models; the ready toggle's apply
+        step is the writer for cloud/native models."""
         return self.state.get(model_id).ready
 
     def _refresh_pending_bar(self) -> None:
@@ -582,9 +598,7 @@ class ModelScreen(Screen[None]):
         self._refresh_details_panel(event.cursor_row)
 
     def _refresh_details_panel(self, cursor_row: int) -> None:
-        """Show the on-disk path of the row under the cursor.
-
-        Prefers the reconcile overlay's local_path (reality), then
+        """Show the on-disk path of the row under the cursor, from
         state.disk_path; renders an em dash when the model isn't ready
         or its path is unknown.
         """
@@ -598,12 +612,7 @@ class ModelScreen(Screen[None]):
             return
         row_key = list(mt.rows.keys())[cursor_row]
         mid = str(row_key.value)
-        path: str | None = None
-        rec = self.reconciled.get(mid)
-        if rec is not None and rec.get("ready"):
-            path = rec.get("local_path")
-        if path is None and self._is_ready(mid):
-            path = self.state.get(mid).disk_path
+        path = self.state.get(mid).disk_path if self._is_ready(mid) else None
         details.update(Text(f"path: {path or '—'}"))
 
     def action_select_row(self) -> None:
@@ -726,22 +735,6 @@ class ModelScreen(Screen[None]):
                 continue
             # Other exceptions (bad config, import failure, etc.) are
             # real errors and must not be silently treated as flag-only.
-        # Merge any reconciled entries that state didn't know about,
-        # so the saved state reflects reality. Never remove existing
-        # entries; the user can queue a delete (d) for that. This also
-        # bridges the expose gate: the TUI accepts an expose based on
-        # the reconcile overlay, while the apply-time check reads
-        # state.ready — without this merge a model on disk with a
-        # stale ready=False would fail at apply with a spurious
-        # "not ready".
-        for mid, rec in self.reconciled.items():
-            if rec.get("ready") and not self.state.get(mid).ready:
-                updated = replace(self.state.get(mid), ready=True)
-                # Only overwrite the path when reconcile actually found
-                # one; a blank local_path must not blank a known one.
-                if rec.get("local_path"):
-                    updated.disk_path = rec["local_path"]
-                self.state.set(mid, updated)
         pending = PendingChanges(
             registry=self.registry,
             state=self.state,

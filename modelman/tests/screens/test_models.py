@@ -305,11 +305,13 @@ async def test_d_on_downloaded_local_model_still_queues(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pulled_cloud_model_reconciles_as_ready(tmp_path, monkeypatch):
-    """A pulled ollama `:cloud` model has no local size (size_of() -> None)
-    but `ollama show` (is_downloaded()) succeeds. Reconcile must report it
-    ready — today it never can, because reconcile's truth signal is
-    size_of(), not is_downloaded()."""
+async def test_pulled_cloud_ollama_model_reconcile_leaves_ready_alone(tmp_path, monkeypatch):
+    """An ollama `:cloud` model (location='cloud' on the local ollama
+    provider) is not a local artifact per model_has_local_artifact:
+    reconcile must NOT set state.ready for it even though `ollama show`
+    (is_downloaded) succeeds. This is an intentional behavior change from
+    the pre-fix TUI (see design doc Non-goals) — ollama-cloud readiness
+    is driven by the ready toggle's apply-time pull, not by reconcile."""
     from unittest.mock import MagicMock
 
     from modelman.app import ModelmanApp
@@ -336,7 +338,7 @@ async def test_pulled_cloud_model_reconciles_as_ready(tmp_path, monkeypatch):
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert app.screen._is_ready("ollama/glm-5.2:cloud") is True
+        assert app.screen._is_ready("ollama/glm-5.2:cloud") is False
 
 
 @pytest.mark.asyncio
@@ -780,3 +782,59 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
     # After discarding, the registry file must be reverted to the original location.
     reg_after_discard = load_registry(reg_path)
     assert reg_after_discard.model("ollama/glm-5.3:cloud").location == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path, monkeypatch):
+    """Regression for the reported bug: an omlx model whose files are on
+    disk but whose modelman.toml still says ready=False must reconcile
+    to ready=True automatically on mount — this is the exact scenario
+    from the design doc's bug report (ornith-1.5/omlx)."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="omlx/ornith-1.5", family="ornith", provider_id="omlx", model_name="ornith-1.5",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"), location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/ornith-1.5", ModelState(ready=False))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 19530941006
+    stub.list_local.return_value = [
+        {"variant_id": "ornith-1.5", "local_path": "/Users/keith/.omlx/models/ornith-1.5"}
+    ]
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()  # let the reconcile worker settle
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.state.get("omlx/ornith-1.5").ready is True
+        assert (
+            app.screen.state.get("omlx/ornith-1.5").disk_path
+            == "/Users/keith/.omlx/models/ornith-1.5"
+        )
+        assert app.screen.state.get("omlx/ornith-1.5").size_bytes == 19530941006
+        # No overlay attribute survives the rewrite.
+        assert not hasattr(app.screen, "reconciled")
