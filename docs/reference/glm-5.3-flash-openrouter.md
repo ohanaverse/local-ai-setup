@@ -25,9 +25,9 @@ name = "OpenRouter"
 location = "cloud"
 
 [providers.auth]
-type = "secret_ref"
+type = "api_key"
 base_url = "https://openrouter.ai/api/v1"
-secret_ref = "sk-or-v1-..."
+secret_ref = "OPENROUTER_API_KEY"
 
 [[models]]
 id = "openrouter/z-ai/glm-5.3-flash"
@@ -51,12 +51,10 @@ supports_vision = true
 ```
 
 **2. `~/.config/local-ai/modelman.toml`** — Model state tracking
-```toml
-[model_state."openrouter/z-ai/glm-5.3-flash"]
-ready = true
-disk_path = "openrouter:z-ai/glm-5.3-flash"
-litellm_exposed = true
-```
+
+Exposure (`litellm_exposed`) is managed by modelman (TUI `l` toggle or
+`modelman expose`); see guide 04 for the workflow. No TOML to copy here —
+the state file is machine state, not a config to hand-edit.
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration
 ```yaml
@@ -66,23 +64,24 @@ litellm_exposed = true
     api_key: sk-or-v1-...
     api_base: https://openrouter.ai/api/v1
   model_info:
-    supports_function_calling = true
-    supports_vision = true
+    supports_function_calling: true
+    supports_vision: true
 ```
 
-**4. `~/.config/agent-wt/config.toml`** — wt agent model availability
+**4. `~/.config/agent-wt/config.toml`** — wt agent provider access
+
+wt's models come from `registry.toml` (joined on every load) — **never add
+`[[models]]` to this file**; wt ignores and overwrites them. The only wt-side
+change needed is listing `openrouter` in each agent's `supported_providers`:
+
 ```toml
-[[models]]
-  id = "openrouter/z-ai/glm-5.3-flash"
-  family = "glm-5.3-flash"
-  provider_id = "openrouter"
-  model_name = "z-ai/glm-5.3-flash"
-  location = "cloud"
-  tags = ["code", "design"]
-
-# Agents updated to support openrouter provider:
-# copilot, claude, codex, opencode, pi
+[[agents]]
+  name = "pi"
+  supported_providers = ["ollama", "openrouter"]
 ```
+
+Add `openrouter` to every agent that should launch the model
+(copilot, claude, codex, opencode, pi).
 
 ## Usage
 
@@ -276,8 +275,8 @@ grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/modelman.toml
 # Check LiteLLM config
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/litellm/config.yaml
 
-# Check wt config
-grep "openrouter/z-ai/glm-5.3-flash" ~/.config/agent-wt/config.toml
+# Check wt agent provider access (models come from the registry, not this file)
+grep 'openrouter' ~/.config/agent-wt/config.toml
 
 # Test model via proxy
 LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)
@@ -294,12 +293,15 @@ wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Say hello"
 
 **Symptom:** `wt` doesn't show `openrouter/z-ai/glm-5.3-flash` in model list
 
-**Cause:** Model not in `~/.config/agent-wt/config.toml` or agent doesn't support `openrouter` provider
+**Cause:** Either (a) the model is missing from `~/.config/local-ai/registry.toml`
+(wt joins models from the registry — wt's own config.toml holds no models), or
+(b) the agent's `supported_providers` in `~/.config/agent-wt/config.toml` lacks
+`openrouter`.
 
 **Fix:**
 ```bash
-# Verify model entry exists
-grep -A 5 'openrouter/z-ai/glm-5.3-flash' ~/.config/agent-wt/config.toml
+# Verify model entry exists in the registry
+grep -A 5 'openrouter/z-ai/glm-5.3-flash' ~/.config/local-ai/registry.toml
 
 # Verify agent supports openrouter provider
 grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
@@ -337,9 +339,9 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 
 ## Related Documentation
 
-- [02-providers-and-models.md](02-providers-and-models.md) — Provider configuration overview
-- [04-litellm-config.md](04-litellm-config.md) — LiteLLM exposure and management
-- [06-wt-agents-and-models.md](06-wt-agents-and-models.md) — wt agent model selection
+- [02-providers-and-models.md](../guides/02-providers-and-models.md) — Provider configuration overview
+- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM exposure and management
+- [06-wt-agents-and-models.md](../guides/06-wt-agents-and-models.md) — wt agent model selection
 - [OpenRouter GLM-5.3-Flash page](https://openrouter.ai/z-ai/glm-5.3-flash) — Pricing and benchmarks
 
 ## Changelog
@@ -363,7 +365,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 | claude | ✅ PASS | ❌ FAIL | OpenRouter triggers Claude's prompt injection detection |
 | codex | ✅ PASS | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash |
 | copilot | ✅ PASS | ✅ PASS | Full support |
-| opencode | ✅ PASS | ❌ FAIL | Model not in eligible list (config sync issue) |
+| opencode | ✅ PASS | ❌ FAIL | ollama-only provider list (see Known Limitations #3) |
 | pi | ✅ PASS | ✅ PASS | Full support |
 | agy | ✅ PASS | N/A | Native model only |
 | shell | ✅ PASS | N/A | No model dependency |
@@ -385,7 +387,11 @@ Codex (OpenAI's agent) doesn't recognize `openrouter/z-ai/glm-5.3-flash` in its 
 
 **3. Opencode: Model Eligibility**
 
-Opencode may require a config reload or restart to recognize newly added models.
+Opencode's wt agent entry only lists `supported_providers = ["ollama"]`, so
+`openrouter/*` models are never eligible for it. Root cause, not a reload
+issue. To enable OpenRouter for opencode, add `openrouter` to its
+`supported_providers` in `~/.config/agent-wt/config.toml` (see Configuration
+step 4).
 
 ### Recommended Testing Approach
 
