@@ -440,13 +440,33 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        currently_ready = self._is_ready(mid)
-        target = not currently_ready
-        if mid in self.queued_ready:
-            # Toggling again cancels the queued flip.
-            self.queued_ready.pop(mid)
-        else:
-            self.queued_ready[mid] = target
+        persisted_ready = self.state.get(mid).ready
+        displayed_ready = self.queued_ready.get(mid, persisted_ready)
+        target = not displayed_ready
+        if target == persisted_ready:
+            # Repeated keypress: this target is exactly what's already on
+            # disk once any queued flip is dropped. Cancel it instead of
+            # re-queuing a no-op.
+            self.queued_ready.pop(mid, None)
+            self.app.notify(f"Model already {'ready' if target else 'not ready'}")
+            self._refresh_pending_bar()
+            self.reload()
+            return
+        try:
+            provider_entry = self.registry.provider(entry.provider_id)
+        except KeyError:
+            provider_entry = None
+        if target is False and model_has_local_artifact(entry, provider_entry):
+            # Reconcile is the only writer of ready=False for
+            # local-artifact models — the file is still on disk, so
+            # flipping the flag here would be invisible the moment the
+            # next reconcile re-syncs it back to True (the original
+            # reported bug).
+            self.app.notify(
+                "Reconcile controls local-model ready state; delete the file to mark not ready."
+            )
+            return
+        self.queued_ready[mid] = target
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
         self.reload()

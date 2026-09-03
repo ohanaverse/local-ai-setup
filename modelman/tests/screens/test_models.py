@@ -838,3 +838,135 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
         assert app.screen.state.get("omlx/ornith-1.5").size_bytes == 19530941006
         # No overlay attribute survives the rewrite.
         assert not hasattr(app.screen, "reconciled")
+
+
+@pytest.mark.asyncio
+async def test_r_on_not_ready_local_artifact_model_queues_download(tmp_path, monkeypatch):
+    """r on a not-ready llamacpp/omlx model queues a download — the
+    reconcilable-provider path through PendingChanges.apply()."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {"omlx/a": True}
+
+
+@pytest.mark.asyncio
+async def test_r_on_ready_local_artifact_model_noops_with_notification(tmp_path, monkeypatch):
+    """r on an already-ready local-artifact model must not queue a
+    delete — that used to be invisible (state flipped to ready=False,
+    but the next reconcile silently flipped it back). Reconcile is now
+    the only writer of ready=False for local-artifact models."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, disk_path="/models/a", size_bytes=10))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 10
+    stub.list_local.return_value = [{"variant_id": "a", "local_path": "/models/a"}]
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()  # let reconcile settle so state.ready is confirmed True
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_r_on_not_ready_cloud_model_queues_download(tmp_path, monkeypatch):
+    """r on a not-ready non-local-artifact (ollama-cloud) model still
+    queues a download — the target-False no-op rule is local-artifact-
+    only; cloud models go through the reconcilable-provider ready loop
+    (ollama pull) exactly like before."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+
+
+@pytest.mark.asyncio
+async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypatch):
+    """Pressing r twice in a row on a not-ready model queues, then
+    cancels back to nothing (the second press's target, False, matches
+    the persisted state.ready, False — a no-op relative to disk)."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {}
