@@ -60,14 +60,9 @@ tags = []
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, LiteLLM exposure flags, and family display names.
 - **Env override:** `MODELMAN_STATE`.
 
-> Excerpt — 24 of the file's 40 entries are `litellm_exposed = true` today (13 `ollama/*` + 11 `openrouter/*`). The exposed `ollama/*` blocks are shown below; the openrouter blocks are omitted for brevity.
+> Excerpt — 24 of the file's 41 `model_state` entries are `litellm_exposed = true` today (13 `ollama/*` + 11 `openrouter/*`). The two exposed local-ollama blocks and one representative exposed `:cloud` block are shown; the other 10 `:cloud` ollama blocks have the identical shape to the `kimi-k3:cloud` example (`ready = false`, `litellm_exposed = true`), and the openrouter blocks are omitted for brevity.
 
 ```toml
-[model_state."ollama/glm-5.3-flash:cloud"]
-ready = true
-disk_path = "ollama:glm-5.3-flash:cloud"
-litellm_exposed = true
-
 [model_state."ollama/qwen3.8:27b-mlx"]
 ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
@@ -80,54 +75,8 @@ disk_path = "ollama:ornith-1.5:35b"
 size_bytes = 23622320128
 litellm_exposed = true
 
-[model_state."ollama/gemma4:cloud"]
-ready = true
-disk_path = "ollama:gemma4:cloud"
-litellm_exposed = true
-
-[model_state."ollama/kimi-k2.7-code:cloud"]
-ready = true
-disk_path = "ollama:kimi-k2.7-code:cloud"
-litellm_exposed = true
-
-[model_state."ollama/glm-5.2:cloud"]
-ready = true
-disk_path = "ollama:glm-5.2:cloud"
-litellm_exposed = true
-
-[model_state."ollama/minimax-m3:cloud"]
-ready = true
-disk_path = "ollama:minimax-m3:cloud"
-litellm_exposed = true
-
-[model_state."ollama/deepseek-v4-flash:cloud"]
-ready = true
-disk_path = "ollama:deepseek-v4-flash:cloud"
-litellm_exposed = true
-
-[model_state."ollama/deepseek-v4-pro:cloud"]
-ready = true
-disk_path = "ollama:deepseek-v4-pro:cloud"
-litellm_exposed = true
-
-[model_state."ollama/glm-5.3:cloud"]
-ready = true
-disk_path = "ollama:glm-5.3:cloud"
-litellm_exposed = true
-
-[model_state."ollama/qwen3.5:397b-cloud"]
-ready = true
-disk_path = "ollama:qwen3.5:397b-cloud"
-litellm_exposed = true
-
-[model_state."ollama/minimax-m2.7:cloud"]
-ready = true
-disk_path = "ollama:minimax-m2.7:cloud"
-litellm_exposed = true
-
 [model_state."ollama/kimi-k3:cloud"]
-ready = true
-disk_path = "ollama:kimi-k3:cloud"
+ready = false
 litellm_exposed = true
 
 [families.deepseek-v4]

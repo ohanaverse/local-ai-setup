@@ -178,17 +178,16 @@ uv run modelman sync
 ```
 
 ```text
-Synced: 13 downloaded, 9 not downloaded.
+Synced: 15 downloaded, 13 not downloaded.
 ```
 
-(Run live 2026-08-29 — exactly this single line, exit 0. `sync` takes no options at all; `sync --help` shows only `--help`.)
+(Run live 2026-08-29; re-run 2026-09-03 — exactly this single line, exit 0. `sync` takes no options at all; `sync --help` shows only `--help`.)
 
 What it did / didn't do, as observed:
 
-- The counts match the registry exactly: 13 local Ollama models present on disk with sizes, and the 9 `:cloud` registry rows — `ollama list` shows cloud rows with size `-`, and sync marks them `downloaded = false`. In the TUI family screen, those `:cloud` rows do not count toward the `downloaded` column and do not contribute to the family's `size` total.
-- Models in `ollama list` but absent from `registry.toml` (e.g. `glm-5.3:cloud`) were ignored — sync only reconciles **configured** models.
-- `modelman.toml` was rewritten with identical values (mtime bumped; no field changed — nothing had drifted). It updated/reaffirmed `downloaded`/`disk_path`/`size_bytes` per model; `litellm_exposed` was left untouched (sync preserves exposure state — it's owned by the LiteLLM feature).
-- It did **not** add models, did not touch `registry.toml`, and printed no `Added provider entries:` line — that line only appears when sync has to repair a missing provider entry.
+- The counts span every reconcilable provider (ollama + llamacpp + omlx, per `DEFAULT_PROVIDER_IDS`), not just ollama. 15 downloaded = 13 local Ollama models on disk with sizes + the HF-cache `llamacpp/unsloth--Qwen3.8-27B-GGUF` + the `omlx/ornith-ai--Ornith-1.5-35B-A3B-MLX-4bit` model-dir (the omlx block flipped `ready = false → true` on this run — files were on disk but state had drifted, the Bug 1 fixed in PR #24). 13 not downloaded = the 12 `:cloud` ollama registry rows (`ollama list` shows them with size `-`, and sync marks them `ready = false`) + the newly state-blocked `llamacpp/ornith-ai--Ornith-1.5-35B-A3B-GGUF` (configured, files not yet fetched). In the TUI family screen, those `:cloud` rows do not count toward the `downloaded` column and do not contribute to the family's `size` total.
+- Only **configured** models are reconciled. This run created a `model_state` block for `llamacpp/ornith-ai--Ornith-1.5-35B-A3B-GGUF` (a configured model that had no state entry); models not in `registry.toml` are ignored — sync never adds models to the registry. (`glm-5.3:cloud`, the old absent-from-registry example, has since been added to `registry.toml`, so it reconciles now.)
+- `modelman.toml` was rewritten with non-identical values this run (the 2026-08-29 run had nothing drift; this one did). Corrected: the 12 `:cloud` ollama rows above were stale at `ready = true` with `disk_path` and got flipped to `ready = false` with the `disk_path` dropped; the omlx ornith row gained `ready`/`disk_path`/`size_bytes`; the llamacpp GGUF ornith row gained a state block. `litellm_exposed` was left untouched (sync preserves exposure state — it's owned by the LiteLLM feature; the 24 exposed ids are unchanged).
 - Cloud providers (OpenRouter) are never reconciled. Documented reconcilable set is `("ollama", "llamacpp", "omlx")` (`src/modelman/sync.py:31`).
 
 Semantics summary: `sync` = read-only over providers (`ollama list`, HF cache, oMLX model dir), writes `~/.config/local-ai/modelman.toml` always; touches `registry.toml` only to repair missing provider entries (prints `Added provider entries: …`), never adds models.
