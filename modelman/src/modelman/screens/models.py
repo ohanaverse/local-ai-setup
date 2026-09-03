@@ -480,16 +480,24 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        if not self._is_ready(mid):
-            self.app.notify("Model must be ready before exposing")
-            return
         if provider_policy(entry.provider_id) is None:
             self.app.notify("Provider has no LiteLLM mapping — cannot expose")
             return
-        current = self.state.get(mid).litellm_exposed
-        if mid in self.queued_exposes:
-            current = self.queued_exposes[mid]
-        self.queued_exposes[mid] = not current
+        persisted_exposed = self.state.get(mid).litellm_exposed
+        displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
+        target = not displayed_exposed
+        if target == persisted_exposed:
+            self.queued_exposes.pop(mid, None)
+            self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
+            self._refresh_pending_bar()
+            self.reload()
+            return
+        self.queued_exposes[mid] = target
+        if target and not self._is_ready(mid):
+            # Cascade: exposing a not-ready model must download/pull it
+            # first. apply() already runs the ready loop before the
+            # expose loop, so queuing both here gives the right order.
+            self.queued_ready[mid] = True
         self._refresh_pending_bar()
         self.reload()
 

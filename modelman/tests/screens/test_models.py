@@ -970,3 +970,137 @@ async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypat
         await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypatch):
+    """x on a not-ready model must queue BOTH ready=True and
+    exposed=True — the cascade that replaces the old 'must be ready
+    before exposing' refusal."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {"ollama/glm-5.2:cloud": True}
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+
+
+@pytest.mark.asyncio
+async def test_x_on_ready_model_queues_only_expose(tmp_path, monkeypatch):
+    """x on an already-ready model must not touch queued_ready at all —
+    no gratuitous re-download."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {"ollama/a": True}
+        assert app.screen.queued_ready == {}
+
+
+@pytest.mark.asyncio
+async def test_x_twice_cancels_queued_expose_with_notification(tmp_path, monkeypatch):
+    """Pressing x twice cancels the queued expose flip (target returns to
+    the persisted litellm_exposed value) with a notification, mirroring
+    the ready toggle's repeated-keypress behavior."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = True
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {"ollama/glm-5.2:cloud": True}
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_x_on_provider_with_no_litellm_mapping_notifies(tmp_path, monkeypatch):
+    """The 'no LiteLLM mapping' gate is unchanged by this task — only the
+    'must be ready' gate is dropped."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="mystery/a", family="ornith", provider_id="mystery", model_name="a",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="mystery", name="Mystery", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "mystery"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {}
