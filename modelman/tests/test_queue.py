@@ -538,6 +538,61 @@ def test_apply_clear_state_for_deleted_model(tmp_path):
     assert "ollama/a" not in reloaded_state.models
 
 
+def test_apply_ready_loop_skips_deleted_ids(tmp_path):
+    """A model queued for both delete and ready=False must not be re-deleted
+    by the ready loop. The deletes loop already removed the file and the
+    registry/state rows; the ready loop re-running _delete would surface a
+    spurious 'clear <id>' failure (e.g. a second 'ollama rm' on a gone model).
+    This guards the invariant even if a caller queues both."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+    )
+    pending.apply()
+
+    # The provider's delete() must be called exactly once (by the deletes
+    # loop), not a second time by the ready loop.
+    assert providers["ollama"].delete.call_count == 1
+    assert pending.failures == []
+
+
+def test_apply_ready_loop_skips_deleted_ids_redownload(tmp_path):
+    """A model queued for both delete and ready=True (the x-then-d cascade)
+    must NOT be re-downloaded by the ready loop after the deletes loop removed
+    it. Re-downloading would recreate a 'ghost' model — file on disk + state
+    row, but no registry row — violating the user's delete intent. The guard
+    must skip target=True entries too, not just target=False."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
+    )
+    pending.apply()
+
+    # The ready loop must not re-download: provider.download() never called,
+    # and the model stays out of state (no ghost row).
+    assert providers["ollama"].download.call_count == 0
+    assert "ollama/a" not in state.models
+    assert pending.failures == []
+
+
 def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     """Deleting a model that is exposed through LiteLLM must also remove
     its model_list row — otherwise LiteLLM keeps routing requests to a

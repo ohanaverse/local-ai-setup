@@ -288,6 +288,11 @@ class PendingChanges:
         for model_id, variant, target in self.ready:
             if aborted():
                 return
+            if model_id in deleted_ids:
+                # Deleted earlier in this apply; its ready toggle is moot.
+                # Re-running _delete here would re-delete an already-removed
+                # file and surface a spurious failure.
+                continue
             assert variant["id"] == model_id, (
                 f"variant id {variant['id']!r} != queued model_id {model_id!r}"
             )
