@@ -22,9 +22,8 @@ from ..registry import (
     ModelEntry,
     Registry,
     _cost_from_dict,
-    _cost_to_dict,
     known_families,
-    model_has_local_artifact,
+    model_entry_to_variant,
     provider_config,
     save_registry,
 )
@@ -156,34 +155,6 @@ def _state_kwargs(s: ModelState) -> dict:
     from dataclasses import asdict
 
     return asdict(s)
-
-
-def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
-    """Build a VariantSpec-shaped dict from a ModelEntry for provider APIs.
-
-    Providers consume the legacy TypedDict (provider, name, repo,
-    files, model_info). ModelEntry stores repo/files in `fetch`. We
-    don't carry `model_info` from the registry into the provider call
-    (providers read what they need from their own state).
-
-    `cost` is serialized to a plain dict so any provider that JSON-
-    serializes its VariantSpec argument does not receive a non-JSON
-    dataclass.
-    """
-    repo = entry.fetch.repo if entry.fetch else None
-    files = entry.fetch.files if entry.fetch else None
-    quantizations = entry.fetch.quantizations if entry.fetch else None
-    return {
-        "id": entry.id,
-        "provider": entry.provider_id,
-        "name": entry.model_name,
-        "repo": repo,
-        "files": files,
-        "quantizations": quantizations,
-        "location": entry.location,
-        "model_info": dict(entry.model_info),
-        "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
-    }
 
 
 class ModelScreen(Screen[None]):
@@ -342,13 +313,12 @@ class ModelScreen(Screen[None]):
                 exposed = self.state.get(m.id).litellm_exposed
                 if m.id in self.queued_exposes:
                     exposed = self.queued_exposes[m.id]
-                # A model is only "effectively exposed" in this column if the
-                # exposure flag is set AND the model is ready. Cloud models
-                # (openrouter, or ollama rows with location="cloud") are
-                # exempt from the ready gate — the same exemption
-                # `litellm._validated_entry` applies at the apply gate — so
-                # they render 'Y' as long as the flag is on.
-                ready_or_cloud = ready or is_cloud_effective(m)
+                # Effective exposure = the (queued or persisted) flag AND the
+                # *projected* ready value — the same gate `_validated_entry`
+                # applies at apply time, so the column shows what the model
+                # will be after apply, not what it was before the queue.
+                # Cloud rows are exempt from the ready gate.
+                ready_or_cloud = self._projected_ready(m.id) or is_cloud_effective(m)
                 exposed_str = "Y" if (exposed and ready_or_cloud) else "–"
                 mt.add_row(
                     m.family,
@@ -368,10 +338,32 @@ class ModelScreen(Screen[None]):
 
     def _is_ready(self, model_id: str) -> bool:
         """Truth about whether a model is ready to use — a pure read of
-        state.ready. Reconcile (on mount/resume) is the only writer of
-        this flag for local-artifact models; the ready toggle's apply
-        step is the writer for cloud/native models."""
+        state.ready. Two writers: reconcile (on mount/resume) sets it from
+        disk truth for local-artifact models, and the ready toggle's apply
+        step writes it in both directions (ready-on downloads or flips the
+        flag, ready-off clears the artifact and the flag) for models in
+        any location."""
         return self.state.get(model_id).ready
+
+    def _projected_ready(self, model_id: str) -> bool:
+        """The ready value this model will have after apply(): the queued
+        target if one exists, otherwise the persisted flag."""
+        return self.queued_ready.get(model_id, self.state.get(model_id).ready)
+
+    def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
+        """Single invariant: expose depends on ready. A queued expose=True
+        cannot survive a model whose projected ready is False — apply()
+        enforces the same rule at the gate (_validated_entry rejects the
+        expose with 'model is not ready'); this keeps the queue consistent
+        with it instead of leaving a doomed entry for apply() to fail on.
+        Cloud rows are exempt, matching _validated_entry. Drops the expose
+        with a notification rather than silently overwriting the user's
+        request."""
+        if is_cloud_effective(entry):
+            return
+        if self.queued_exposes.get(mid) is True and not self._projected_ready(mid):
+            self.queued_exposes.pop(mid, None)
+            self.app.notify(f"Expose cancelled: {mid} will not be ready")
 
     def _refresh_pending_bar(self) -> None:
         bar = self.query_one("#pending-bar", Static)
@@ -399,30 +391,24 @@ class ModelScreen(Screen[None]):
             self.queued_ready.pop(mid, None)
             if mid in self._ready_cascade_for_expose:
                 # This readiness was only queued because a prior 'x' press
-                # cascaded it in for an expose; cancelling it back to
-                # not-ready would otherwise leave that expose queued and
-                # failing at apply() with "model is not ready".
+                # cascaded it in for an expose; cancel that expose with it.
                 self.queued_exposes.pop(mid, None)
                 self._ready_cascade_for_expose.discard(mid)
+            # The invariant covers every other case: a user-queued expose
+            # stranded by this cancel is dropped (with a notification).
+            self._enforce_expose_ready_rule(mid, entry)
             self.app.notify(f"Model already {'ready' if target else 'not ready'}")
             self._refresh_pending_bar()
             self.reload()
             return
-        try:
-            provider_entry = self.registry.provider(entry.provider_id)
-        except KeyError:
-            provider_entry = None
-        if target is False and model_has_local_artifact(entry, provider_entry):
-            # Reconcile is the only writer of ready=False for
-            # local-artifact models — the file is still on disk, so
-            # flipping the flag here would be invisible the moment the
-            # next reconcile re-syncs it back to True (the original
-            # reported bug).
-            self.app.notify(
-                "Reconcile controls local-model ready state; delete the file to mark not ready."
-            )
-            return
+        # Queue the ready target only. apply() owns the consequences — it
+        # removes the artifact (provider delete, or the recorded disk_path
+        # for flag-only providers) on ready-off and re-derives the unexpose
+        # cascade from the persisted exposure flag — and the invariant below
+        # drops any queued expose the new ready value makes impossible, so
+        # the screen queue can never strand a doomed expose.
         self.queued_ready[mid] = target
+        self._enforce_expose_ready_rule(mid, entry)
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
         self.reload()
@@ -443,25 +429,31 @@ class ModelScreen(Screen[None]):
         displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
         target = not displayed_exposed
         if target == persisted_exposed:
+            # Repeated keypress: cancel the queued expose toggle.
             self.queued_exposes.pop(mid, None)
             if mid in self._ready_cascade_for_expose:
-                # Undo the ready cascade this same expose queued in — the
-                # user never asked for a download, only for the model to
-                # be exposed, and that request is now cancelled.
+                # The download was only queued to serve this expose; the
+                # user never asked for it independently.
                 self.queued_ready.pop(mid, None)
                 self._ready_cascade_for_expose.discard(mid)
             self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
             self._refresh_pending_bar()
             self.reload()
             return
-        self.queued_exposes[mid] = target
-        if target and not self._is_ready(mid):
-            # Cascade: exposing a not-ready model must download/pull it
-            # first. apply() already runs the ready loop before the
-            # expose loop, so queuing both here gives the right order.
-            if mid not in self.queued_ready:
-                self._ready_cascade_for_expose.add(mid)
+        if target and not self._projected_ready(mid) and not is_cloud_effective(entry):
+            # Exposing requires ready — the same gate _validated_entry
+            # applies at apply time. If the user has a ready toggle queued
+            # that leaves the model not-ready, refuse rather than overwrite
+            # their request; otherwise cascade the download in (apply runs
+            # the ready loop before the expose loop, so the order works).
+            if mid in self.queued_ready:
+                self.app.notify(
+                    "Model is queued to be made not ready — cancel that before exposing"
+                )
+                return
+            self._ready_cascade_for_expose.add(mid)
             self.queued_ready[mid] = True
+        self.queued_exposes[mid] = target
         self._refresh_pending_bar()
         self.reload()
 
@@ -543,16 +535,16 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        # No not-ready gate: any model can be queued for delete.
-        # Apply() handles the absent-artifact case (skips the on-disk
-        # removal when provider.is_downloaded() reports False).
-        spec = _model_entry_to_variant(entry)
+        # "d" queues only the registry removal. apply()'s deletes loop already
+        # removes the on-disk file, drops the registry/state rows, and cascades
+        # the unexpose — queueing ready=False/expose=False here would double-
+        # delete the file and, on cancel, leave orphaned queues that still
+        # destroy the model. A second "d" toggles the delete back off.
+        spec = model_entry_to_variant(entry)
         if mid in self.queued_deletes:
             self.queued_deletes.pop(mid)
         else:
             self.queued_deletes[mid] = spec
-        self.queued_ready.pop(mid, None)
-        self._ready_cascade_for_expose.discard(mid)
         self._refresh_pending_bar()
         self.reload()
 
@@ -571,7 +563,7 @@ class ModelScreen(Screen[None]):
             return
         from .forms import ModelForm
 
-        spec = _model_entry_to_variant(entry)
+        spec = model_entry_to_variant(entry)
         self.app.push_screen(
             ModelForm(
                 providers=self._provider_list(),
@@ -712,7 +704,7 @@ class ModelScreen(Screen[None]):
 
         providers: dict[str, object] = {}
         specs_by_id = {
-            m.id: _model_entry_to_variant(m)
+            m.id: model_entry_to_variant(m)
             for m in self.registry.models
             if m.id in self.queued_ready
         }

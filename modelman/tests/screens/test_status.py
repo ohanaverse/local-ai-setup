@@ -59,6 +59,12 @@ def _provider_with_events(tmp_path, events: list[str]):
 
     p.delete.side_effect = fake_delete
     p.download.side_effect = fake_download
+    # Distinct on-disk paths per variant: apply()'s shared-artifact guard
+    # consults provider.path_of(), and a MagicMock's cached return_value
+    # would make every same-provider registry entry "share" one artifact,
+    # firing a false conflict on delete (this fixture's registry has two
+    # ollama entries) and flipping the apply from success to error.
+    p.path_of.side_effect = lambda v: str(tmp_path / v["id"])
     return p
 
 
@@ -388,6 +394,10 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
     provider = MagicMock()
     provider.name = "ollama"
     provider.delete.return_value = None
+    # No resolvable on-disk path: the shared-artifact guard reads path_of(),
+    # and a MagicMock's cached return_value would make the registry's other
+    # ollama entry look like it shares o35's artifact (false conflict).
+    provider.path_of.return_value = None
     provider.download.side_effect = ConnectionError("dial tcp: i/o timeout")
 
     def run_apply(log_event, _progress, _register):
@@ -431,6 +441,7 @@ async def test_status_screen_shows_size_on_download_done(app_with_apply, tmp_pat
     provider = MagicMock()
     provider.name = "ollama"
     provider.delete.return_value = None
+    provider.path_of.return_value = None  # avoid a false shared-artifact conflict
 
     real_path = tmp_path / "downloaded-q8.bin"
     real_path.write_bytes(b"x" * (2 * 1024 * 1024 * 1024))
@@ -506,6 +517,7 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
     provider = MagicMock()
     provider.name = "ollama"
     provider.delete.return_value = None
+    provider.path_of.return_value = None  # avoid a false shared-artifact conflict
     provider.download.side_effect = OSError(
         "No space left on device (ENOSPC) - failed to write file"
     )

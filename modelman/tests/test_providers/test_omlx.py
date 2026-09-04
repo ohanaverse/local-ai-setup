@@ -220,3 +220,43 @@ def test_path_of_returns_none_when_dir_empty(tmp_path):
         )
         is None
     )
+
+
+def test_delete_removes_model_dir(tmp_path):
+    """delete() removes the model's whole on-disk directory (keyed on the
+    repo basename under model_dir) while preserving the model_dir root
+    itself. Important: ready-off and delete flows both rely on delete()
+    actually reclaiming the multi-GB artifact, and a delete that removed
+    the parent model_dir would wipe every other omlx model's files."""
+    model_dir = tmp_path / "models" / "test-repo"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.safetensors").write_bytes(b"fake data")
+    (model_dir / "config.json").write_bytes(b"{}")
+
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant = {
+        "id": "test--model",
+        "provider": "omlx",
+        "repo": "test-org/test-repo",
+    }
+
+    provider.delete(variant)
+
+    assert not model_dir.exists()
+    assert (tmp_path / "models").exists()  # parent dir preserved
+
+
+def test_delete_noop_if_dir_absent(tmp_path):
+    """delete() on a model whose directory is already gone must be a silent
+    no-op, not a raise. Important: the ready-off loop and the apply() deletes
+    loop both call delete() after an is_downloaded() guard that can race with
+    an externally removed artifact — a raise there would abort the whole
+    apply run and leave registry/state cleanup unwritten."""
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant = {
+        "id": "test--model",
+        "provider": "omlx",
+        "repo": "test-org/test-repo",
+    }
+
+    provider.delete(variant)  # must not raise

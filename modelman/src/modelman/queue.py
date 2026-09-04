@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING
 
 from .litellm import apply_expose_queue
 from .providers._progress import DownloadCancelled
-from .registry import FamilyEntry, save_registry
+from .registry import (
+    FamilyEntry,
+    ModelEntry,
+    model_entry_to_variant,
+    save_registry,
+)
 from .state import save_state
 
 if TYPE_CHECKING:
@@ -103,6 +108,63 @@ def _reason(exc: BaseException) -> str:
     return _sanitize(result)
 
 
+def _remove_local_artifact(state: StateStore, variant: VariantSpec) -> None:
+    """Best-effort removal of the on-disk artifact recorded in state.
+
+    Used when no provider delete() runs — flag-only providers (native or
+    unmapped) on ready-off, or a provider class without a delete
+    implementation: unlink the recorded disk_path file (or dangling
+    symlink), or an empty directory at that path. A non-empty directory
+    is left alone — it may hold content the registry doesn't know about.
+    """
+    import os
+    import shutil
+
+    local_path = state.get(variant["id"]).disk_path
+    if not local_path:
+        return
+    p = Path(local_path)
+    if p.is_symlink() or p.is_file():
+        p.unlink()
+    elif p.is_dir() and not os.listdir(p):
+        shutil.rmtree(p)
+
+
+def _shared_artifact_owner(
+    registry: Registry, provider: object, variant: VariantSpec
+) -> ModelEntry | None:
+    """Another registry entry whose provider artifact resolves to the same
+    on-disk target as `variant`'s, or None.
+
+    Dir-based providers key their storage on a coarse segment of the repo
+    id (omlx uses the repo *basename*), so two registry entries can share
+    one artifact directory; removing it for one silently destroys the
+    other's weights. path_of() is the provider-neutral way to ask "where
+    does this variant live on disk". Returns None when the provider has
+    no path_of or the target can't be resolved — callers treat that as
+    "no conflict" and proceed with the normal delete.
+    """
+    path_of = getattr(provider, "path_of", None)
+    if not callable(path_of):
+        return None
+    try:
+        mine = path_of(variant)
+    except Exception:  # noqa: BLE001
+        return None
+    if mine is None:
+        return None
+    for m in registry.models:
+        if m.id == variant["id"] or m.provider_id != variant["provider"]:
+            continue
+        try:
+            theirs = path_of(model_entry_to_variant(m))
+        except Exception:  # noqa: BLE001
+            continue
+        if theirs == mine:
+            return m
+    return None
+
+
 @dataclass
 class PendingChanges:
     registry: Registry
@@ -114,8 +176,9 @@ class PendingChanges:
     # Each queued item carries (model_id, VariantSpec, target_ready). For a
     # provider present in `providers`, target=True downloads / target=False
     # clears (rm) without touching the registry entry. For a provider absent
-    # from `providers` (flag-only: native or unmapped), either target just
-    # flips state.ready — no provider call is made.
+    # from `providers` (flag-only: native or unmapped), target=True just
+    # flips state.ready (no provider call), while target=False flips it AND
+    # removes the on-disk artifact recorded in state.disk_path.
     ready: list[tuple[str, VariantSpec, bool]] = field(default_factory=list)
     deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
     # (model_id, target_exposed) pairs applied after downloads, before save.
@@ -213,15 +276,25 @@ class PendingChanges:
                     artifact_present = True
             emit(f"delete:start|{model_id}|{label}")
             if provider is not None and artifact_present:
-                # Reconcilable provider with an actual artifact to remove:
-                # ask it to delete the file.
-                try:
-                    self._delete(variant)
-                except Exception as exc:  # noqa: BLE001
-                    reason = _reason(exc)
-                    self.failures.append(f"delete {model_id}: {exc}")
+                conflict = _shared_artifact_owner(self.registry, provider, variant)
+                if conflict is not None:
+                    # Another registry entry resolves to the same on-disk
+                    # artifact; removing it would destroy that entry's
+                    # weights. Keep the file, still drop this entry's
+                    # registry/state rows, and surface why.
+                    reason = f"artifact shared with {conflict.id} — not removed"
+                    self.failures.append(f"delete {model_id}: {reason}")
                     emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    continue
+                else:
+                    # Reconcilable provider with an actual artifact to remove:
+                    # ask it to delete the file.
+                    try:
+                        self._delete(variant)
+                    except Exception as exc:  # noqa: BLE001
+                        reason = _reason(exc)
+                        self.failures.append(f"delete {model_id}: {exc}")
+                        emit(f"delete:fail|{model_id}|{label}|{reason}")
+                        continue
             # Either:
             # - flag-only provider (native/unmapped): no on-disk artifact,
             # - or reconcilable provider with no artifact: nothing to delete.
@@ -285,9 +358,18 @@ class PendingChanges:
                 family_entry.display_name = legacy.display_name
             self.state.forget_family(f)
 
+        # Ids queued for deletion in this apply, whether or not the delete
+        # succeeded. The ready loop must not touch any of them: a successful
+        # delete already removed the rows, and a failed one has already
+        # surfaced its failure — re-running _delete would only duplicate it.
+        attempted_deletes = {mid for mid, _ in self.deletes}
         for model_id, variant, target in self.ready:
             if aborted():
                 return
+            if model_id in attempted_deletes:
+                # Queued for deletion in this same apply (succeeded or
+                # failed); the ready toggle is moot either way.
+                continue
             assert variant["id"] == model_id, (
                 f"variant id {variant['id']!r} != queued model_id {model_id!r}"
             )
@@ -295,10 +377,41 @@ class PendingChanges:
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
             if provider is None:
-                # Flag-only provider (native or unmapped): no download/delete
-                # mechanics exist. Just flip the flag.
+                # Flag-only provider (native or unmapped): no provider call
+                # exists — but ready-off still means "remove the artifact",
+                # so drop the file recorded in state.disk_path, mirroring
+                # what a mapped provider's delete() would do.
                 emit(f"ready:start|{model_id}|{label}")
-                self.state.set(model_id, replace(self.state.get(model_id), ready=target))
+                if not target:
+                    try:
+                        _remove_local_artifact(self.state, variant)
+                    except Exception as exc:  # noqa: BLE001
+                        # The artifact couldn't be removed (read-only volume,
+                        # unreadable directory). Record the failure and still
+                        # fall through to the state clear + unexpose cascade
+                        # — like the mapped branch, the artifact stays but
+                        # state stays consistent. This must never propagate:
+                        # deletes/moves already ran destructively and the
+                        # final save hasn't happened yet, so an abort here
+                        # would resurrect a registry pointing at deleted
+                        # files.
+                        reason = _reason(exc)
+                        self.failures.append(f"clear {model_id}: {reason}")
+                        emit(f"delete:fail|{model_id}|{label}|{reason}")
+                    # Wipe the cached path/size like the reconcilable clear
+                    # below, so modelman.toml doesn't keep pointing at a
+                    # file that was just removed.
+                    self.state.set(
+                        model_id,
+                        replace(
+                            self.state.get(model_id),
+                            ready=target,
+                            disk_path=None,
+                            size_bytes=None,
+                        ),
+                    )
+                else:
+                    self.state.set(model_id, replace(self.state.get(model_id), ready=target))
                 emit(f"ready:done|{model_id}|{label}")
             elif target:
                 emit(f"download:start|{model_id}|{label}")
@@ -329,13 +442,36 @@ class PendingChanges:
                     emit(f"download:done|{model_id}|{label}")
             else:
                 emit(f"delete:start|{model_id}|{label}")
-                try:
-                    self._delete(variant)
-                except Exception as exc:  # noqa: BLE001
-                    reason = _reason(exc)
-                    self.failures.append(f"clear {model_id}: {exc}")
-                    emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    continue
+                # Mirror the deletes loop's guard: a stale-ready model whose
+                # artifact is already gone must clear cleanly, not fail and
+                # strand state.ready=True with the unexpose cascade skipped.
+                artifact_present = True
+                if provider is not None:
+                    try:
+                        artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001
+                        # Cannot confirm absence; fall back to "try the call".
+                        artifact_present = True
+                if artifact_present:
+                    conflict = (
+                        _shared_artifact_owner(self.registry, provider, variant)
+                        if provider is not None
+                        else None
+                    )
+                    if conflict is not None:
+                        reason = f"artifact shared with {conflict.id} — not removed"
+                        self.failures.append(f"clear {model_id}: {reason}")
+                        emit(f"delete:fail|{model_id}|{label}|{reason}")
+                    else:
+                        try:
+                            self._delete(variant)
+                        except Exception as exc:  # noqa: BLE001
+                            reason = _reason(exc)
+                            self.failures.append(f"clear {model_id}: {exc}")
+                            emit(f"delete:fail|{model_id}|{label}|{reason}")
+                            continue
+                # (state clear + cascade code below, unchanged — runs whether
+                # the artifact was removed, shared-kept, or already absent)
                 # Unlike the full-delete step above, the ModelEntry stays in
                 # the registry — only its ready state and on-disk artifact
                 # are cleared. Wipe the cached path/size so modelman.toml
@@ -427,18 +563,5 @@ class PendingChanges:
         if hasattr(provider, "delete"):
             provider.delete(variant)  # type: ignore[attr-defined]
             return
-        # Fallback: providers without delete() just unlink the file.
-        # Locate the local path from state (the legacy code read
-        # self.manifest.downloaded[vid]["local_path"]; the equivalent
-        # here is state.models[vid].disk_path).
-        import os
-        import shutil
-        from pathlib import Path as _P
-
-        local_path = self.state.get(variant["id"]).disk_path
-        if local_path:
-            p = _P(local_path)
-            if p.is_file():
-                p.unlink()
-            elif p.is_dir() and not os.listdir(p):
-                shutil.rmtree(p)
+        # Fallback: providers without delete() just remove the recorded file.
+        _remove_local_artifact(self.state, variant)

@@ -13,6 +13,7 @@ Registry/StateStore mutation; VariantSpec feeds the provider call.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -23,6 +24,7 @@ from modelman.queue import PendingChanges
 from modelman.registry import (
     AuthConfig,
     FamilyEntry,
+    Fetch,
     ModelEntry,
     ProviderEntry,
     Registry,
@@ -536,6 +538,86 @@ def test_apply_clear_state_for_deleted_model(tmp_path):
 
     reloaded_state = load_state(state_path)
     assert "ollama/a" not in reloaded_state.models
+
+
+def test_apply_ready_loop_skips_deleted_ids(tmp_path):
+    """A model queued for both delete and ready=False must not be re-deleted
+    by the ready loop. The deletes loop already removed the file and the
+    registry/state rows; the ready loop re-running _delete would surface a
+    spurious 'clear <id>' failure (e.g. a second 'ollama rm' on a gone model).
+    This guards the invariant even if a caller queues both."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+    )
+    pending.apply()
+
+    # The provider's delete() must be called exactly once (by the deletes
+    # loop), not a second time by the ready loop.
+    assert providers["ollama"].delete.call_count == 1
+    assert pending.failures == []
+
+
+def test_apply_ready_loop_skips_deleted_ids_redownload(tmp_path):
+    """A model queued for both delete and ready=True (the x-then-d cascade)
+    must NOT be re-downloaded by the ready loop after the deletes loop removed
+    it. Re-downloading would recreate a 'ghost' model — file on disk + state
+    row, but no registry row — violating the user's delete intent. The guard
+    must skip target=True entries too, not just target=False."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
+    )
+    pending.apply()
+
+    # The ready loop must not re-download: provider.download() never called,
+    # and the model stays out of state (no ghost row).
+    assert providers["ollama"].download.call_count == 0
+    assert "ollama/a" not in state.models
+    assert pending.failures == []
+
+
+def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
+    """A model queued for both delete and ready=False whose provider.delete()
+    fails must surface exactly one failure, not two. Regression: deleted_ids
+    only recorded successful deletes, so the ready loop re-ran _delete on the
+    same model and appended a duplicate 'clear <id>' failure for the same
+    underlying problem (e.g. ollama daemon down)."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
+    providers["ollama"].is_downloaded.return_value = True
+    providers["ollama"].delete.side_effect = RuntimeError("daemon down")
+
+    pending = PendingChanges(
+        registry=reg, state=state, family="f",
+        registry_path=reg_path, state_path=state_path,
+        providers=providers,
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+    )
+    pending.apply()
+
+    assert providers["ollama"].delete.call_count == 1  # deletes loop only
+    delete_failures = [f for f in pending.failures if "daemon down" in f]
+    assert len(delete_failures) == 1                   # one failure, not two
 
 
 def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
@@ -1484,6 +1566,98 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     assert state.get("claude/native").litellm_exposed is False
 
 
+def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
+    """Ready-off on a flag-only provider (a [[providers]] entry with no
+    registered Provider class — e.g. a hand-edited registry) must remove the
+    artifact recorded in state.disk_path. Regression: the branch only
+    flipped state.ready=False, so the file stayed on disk forever while
+    state claimed not-ready, with no writer (reconcile skips unmapped
+    providers) ever correcting the contradiction."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    model = ModelEntry(
+        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
+                                  auth=AuthConfig(type="none"))],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    artifact = tmp_path / "weights.bin"
+    artifact.write_bytes(b"weights")
+    state = StateStore()
+    state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
+
+    pending = PendingChanges(
+        registry=reg, state=state, family="f",
+        registry_path=reg_path, state_path=state_path,
+        providers={},  # no Provider class registered for 'mlx' → flag-only
+        ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
+    )
+    pending.apply()
+
+    assert not artifact.exists()                    # recorded artifact removed
+    assert state.get("mlx/a").ready is False
+    assert state.get("mlx/a").disk_path is None
+    assert pending.failures == []
+
+
+def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
+    tmp_path,
+):
+    """Ready-off on a flag-only provider whose recorded artifact can't be
+    removed (read-only parent directory) must record the failure and still
+    complete the apply: state is cleared (ready=False, disk_path=None) and
+    the run reaches the final save instead of propagating the OSError.
+
+    Importance: apply() runs deletes and moves destructively BEFORE the
+    final save_registry/save_state. An unguarded removal error used to
+    propagate out of apply() at that point — every already-executed
+    delete/move would be lost from the persisted files on the next load,
+    leaving registry rows pointing at deleted artifacts. The artifact
+    staying on disk is acceptable; a half-applied registry is not."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    model = ModelEntry(
+        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
+                                  auth=AuthConfig(type="none"))],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    # Artifact lives in a directory we make read-only so unlink() raises
+    # PermissionError (an OSError) inside _remove_local_artifact.
+    parent = tmp_path / "readonly-dir"
+    parent.mkdir()
+    artifact = parent / "weights.bin"
+    artifact.write_bytes(b"weights")
+    state = StateStore()
+    state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
+
+    pending = PendingChanges(
+        registry=reg, state=state, family="f",
+        registry_path=reg_path, state_path=state_path,
+        providers={},  # no Provider class registered for 'mlx' → flag-only
+        ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
+    )
+
+    os.chmod(parent, 0o500)  # strip write permission: unlink() will fail
+    try:
+        pending.apply()  # must NOT raise
+    finally:
+        os.chmod(parent, 0o700)  # restore so tmp_path cleanup succeeds
+
+    assert artifact.exists()  # removal failed — the file is still there
+    assert state.get("mlx/a").ready is False
+    assert state.get("mlx/a").disk_path is None
+    assert len(pending.failures) == 1
+    assert "mlx/a" in pending.failures[0]
+    assert pending.failures[0].startswith("clear mlx/a:")
+
+
 def test_apply_expose_queue_ensures_settings_when_all_items_fail(tmp_path, monkeypatch):
     # A fully-failed queue (model not ready) must still persist the
     # owned-settings fix and bounce the proxy: the ensure is orthogonal
@@ -1649,3 +1823,162 @@ def test_apply_empty_queue_emits_apply_done(tmp_path):
     # No work, no on-disk writes.
     assert not reg_path.exists()
     assert not state_path.exists()
+
+
+def test_apply_delete_skips_artifact_shared_with_other_entry(tmp_path):
+    """Deleting an entry whose on-disk artifact is shared with another
+    registry entry (omlx keys its dir on the repo *basename*, so org1/qwen
+    and org2/qwen collide) must not remove the file — that would destroy
+    the other entry's weights. The registry/state cleanup must still run."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    a = ModelEntry(
+        id="omlx/a",
+        family="f",
+        provider_id="omlx",
+        model_name="a",
+        fetch=Fetch(repo="org1/qwen", files=None, quantizations=None),
+    )
+    b = ModelEntry(
+        id="omlx/b",
+        family="f",
+        provider_id="omlx",
+        model_name="b",
+        fetch=Fetch(repo="org2/qwen", files=None, quantizations=None),
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True))
+
+    omlx = MagicMock()
+    omlx.name = "omlx"
+    # Both entries resolve to ~/.omlx/models/qwen — the basename collision.
+    omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.is_downloaded.return_value = True
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"omlx": omlx},
+        deletes=[("omlx/a", _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen"))],
+    )
+    pending.apply()
+
+    assert omlx.delete.call_count == 0  # the shared file was kept
+    assert all(m.id != "omlx/a" for m in reg.models)  # registry row still removed
+    assert "omlx/a" not in state.models  # state row still removed
+    assert any("shared with omlx/b" in f for f in pending.failures)
+
+
+def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
+    """Ready-off on an entry whose artifact directory is shared with another
+    registry entry must not remove the file. Regression: the ready-off loop
+    called provider.delete() unconditionally, rmtree'ing the directory the
+    other entry's weights live in. State still clears and the unexpose
+    cascade still runs — only the file survives."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    a = ModelEntry(
+        id="omlx/a",
+        family="f",
+        provider_id="omlx",
+        model_name="a",
+        fetch=Fetch(repo="org1/qwen", files=None, quantizations=None),
+    )
+    b = ModelEntry(
+        id="omlx/b",
+        family="f",
+        provider_id="omlx",
+        model_name="b",
+        fetch=Fetch(repo="org2/qwen", files=None, quantizations=None),
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, litellm_exposed=True))
+    # The unexpose cascade routes through the LiteLLM config writer for
+    # reconcilable providers, so seed a config the unexpose can actually
+    # apply — without it the flag flip is unreachable and the cascade
+    # assertion below could never pass.
+    from modelman.litellm import save_litellm_config
+
+    litellm_path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {"model_list": [{"model_name": "omlx/a"}], "general_settings": {}}, litellm_path
+    )
+
+    omlx = MagicMock()
+    omlx.name = "omlx"
+    omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.is_downloaded.return_value = True
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"omlx": omlx},
+        ready=[
+            ("omlx/a", _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen"), False)
+        ],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    assert omlx.delete.call_count == 0
+    assert state.get("omlx/a").ready is False  # state cleared
+    assert state.get("omlx/a").litellm_exposed is False  # cascade still ran
+    assert any("shared with omlx/b" in f for f in pending.failures)
+    # Ready-off never removes registry rows — the entry survives.
+    assert any(m.id == "omlx/a" for m in reg.models)
+
+
+def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_path):
+    """Ready-off on a stale-ready model (artifact removed outside modelman,
+    reconcile hasn't run since) must clear cleanly, not fail. Regression:
+    the ready-off branch lacked the deletes loop's is_downloaded() guard,
+    so `ollama rm` on an absent tag raised, state.ready stayed stale-True,
+    and the unexpose cascade was skipped via continue — leaving a route in
+    config.yaml to a model whose file is gone."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    providers["ollama"].is_downloaded.return_value = False  # artifact already gone
+    # The unexpose cascade routes through the LiteLLM config writer for
+    # reconcilable providers, so seed a config the unexpose can actually
+    # apply — without it the flag flip is unreachable and the cascade
+    # assertion below could never pass (same constraint as the Task 2
+    # shared-artifact test above).
+    from modelman.litellm import save_litellm_config
+
+    litellm_path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}}, litellm_path
+    )
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    assert providers["ollama"].delete.call_count == 0     # no rm on a gone model
+    assert state.get("ollama/a").ready is False           # stale flag cleared
+    assert state.get("ollama/a").litellm_exposed is False # cascade ran
+    assert pending.failures == []

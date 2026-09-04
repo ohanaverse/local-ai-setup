@@ -13,6 +13,7 @@ from ..registry import (
     ModelEntry,
     ProviderEntry,
     Registry,
+    model_entry_to_variant,
     model_has_local_artifact,
     provider_config,
 )
@@ -67,10 +68,11 @@ def reconcile_model_state(
     the size of the ready set.
     """
     # Deferred import: this module is imported by screens/models.py at
-    # module load time, and models.py is where _model_entry_to_variant
-    # lives — importing it at the top of this file would be circular.
+    # module load time, and models.py imports ProviderRegistry back —
+    # importing the provider registry at the top would be circular.
+    # model_entry_to_variant now lives in ..registry (imported at the top
+    # here), so only the provider registry stays deferred.
     from ..providers.registry import ProviderRegistry
-    from .models import _model_entry_to_variant
 
     by_provider: dict[str, list[ModelEntry]] = defaultdict(list)
     for m in models:
@@ -96,7 +98,7 @@ def reconcile_model_state(
         checked: list[tuple[ModelEntry, bool, int | None]] = []
         any_ready = False
         for m in entries:
-            spec = _model_entry_to_variant(m)
+            spec = model_entry_to_variant(m)
             try:
                 ready = bool(provider.is_downloaded(spec))
             except Exception:
