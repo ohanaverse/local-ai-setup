@@ -610,6 +610,91 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeypatch):
+    """The EXPOSED column renders 'Y' only when the exposure flag is set AND
+    the model is ready. Cloud models are exempt from the ready gate (a remote
+    model has no local 'ready' state) — the same exemption _validated_entry
+    applies at the apply gate — so a flagged cloud row always renders 'Y'.
+
+    Regression: the readiness-AND rule was added without a test, and a
+    stricter revert would pass the rest of the suite silently.
+    """
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    # Three models in one family so the row order is deterministic.
+    not_ready_local = ModelEntry(
+        id="ollama/ornith-1.5:35b",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith-1.5:35b",
+    )
+    ready_local = ModelEntry(
+        id="ollama/ornith-1.5:7b",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith-1.5:7b",
+    )
+    cloud_model = ModelEntry(
+        id="openrouter/anthropic/claude-sonnet-4.5",
+        family="ornith",
+        provider_id="openrouter",
+        model_name="anthropic/claude-sonnet-4.5",
+        location="cloud",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none")),
+            ProviderEntry(id="openrouter", name="OpenRouter", auth=AuthConfig(type="secret_ref")),
+        ],
+        families=[FamilyEntry(name="ornith")],
+        models=[not_ready_local, ready_local, cloud_model],
+    )
+    save_registry(reg, reg_path)
+    # Flag the not-ready and cloud models; the ready-local model is unflagged.
+    state = StateStore()
+    state.set(
+        "ollama/ornith-1.5:35b",
+        ModelState(ready=False, litellm_exposed=True),
+    )
+    state.set(
+        "ollama/ornith-1.5:7b",
+        ModelState(ready=True, litellm_exposed=False, disk_path="/tmp/ornith-7b"),
+    )
+    state.set(
+        "openrouter/anthropic/claude-sonnet-4.5",
+        ModelState(ready=False, litellm_exposed=True),
+    )
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
+    stub.list_local.return_value = []
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()  # let the reconcile worker settle
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        rows = {str(mt.get_row_at(i)[2]): [str(c) for c in mt.get_row_at(i)] for i in range(mt.row_count)}
+        # Provider sort + name sort: ollama/ornith-1.5:35b, ollama/ornith-1.5:7b, openrouter/anthropic/claude-sonnet-4.5
+        assert "–" in rows["ornith-1.5:35b"][5]  # not-ready + exposed → '–' (new rule)
+        assert "–" in rows["ornith-1.5:7b"][5]   # ready + unexposed → '–' (flag off)
+        assert "Y" in rows["anthropic/claude-sonnet-4.5"][5]  # cloud + exposed → 'Y' (cloud exemption)
+
+
+@pytest.mark.asyncio
 async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path, monkeypatch):
     """The COST column renders per-token prices and the SUB column renders
     subscription prices using the new flat Cost fields."""
