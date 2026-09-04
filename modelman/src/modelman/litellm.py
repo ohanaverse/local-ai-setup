@@ -93,6 +93,24 @@ def is_cloud(provider_id: str) -> bool:
     return policy.cloud if policy is not None else False
 
 
+def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
+    """True when a model should be exempt from the ready gate.
+
+    A model is "effectively cloud" for exposure purposes when:
+    - its provider policy declares it cloud (openrouter), or
+    - the model itself is explicitly marked `location = "cloud"`.
+
+    Note: a provider whose *provider* location is "cloud" (native/agent
+    providers) is *not* included here; those rows are flag-only and are
+    never routed through LiteLLM, mirroring `model_has_local_artifact`.
+    """
+    if is_cloud(model.provider_id):
+        return True
+    if model.location == "cloud":
+        return True
+    return False
+
+
 class LiteLLMConfigError(Exception):
     """Raised when LiteLLM's config.yaml is missing or malformed."""
 
@@ -411,7 +429,7 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
     policy = provider_policy(model.provider_id)
     if policy is None:
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
-    if not policy.cloud and not state.get(model_id).ready:
+    if not is_cloud_effective(model, registry) and not state.get(model_id).ready:
         raise ExposeError(f"model {model_id!r} is not ready")
     return build_model_list_entry(model, provider)
 
