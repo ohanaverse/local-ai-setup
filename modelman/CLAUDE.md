@@ -75,6 +75,7 @@ The screen tests (`tests/screens/*.py`, ~210+ tests) use Textual's `App.run_test
 - `src/modelman/providers/registry.py` — `ProviderRegistry.register(cls)` / `.get(name, config)`.
 - Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
 - `src/modelman/providers/__init__.py` imports every provider module solely to trigger registration. Code that needs providers should import from `modelman.providers` rather than a single submodule.
+- `src/modelman/providers/_progress.py` — shared progress-callback helpers (`llamacpp.py`/`omlx.py`/`ollama.py` all use it) plus `DownloadCancelled`, raised by the HF `ProgressTqdm` bar when its `should_cancel` callable returns True. `PendingChanges.apply()` (`queue.py`) catches `DownloadCancelled` around the download step — this is what makes `StatusScreen`'s Cancel button actually interrupt an in-flight HuggingFace download instead of waiting for it to finish.
 
 ### Ollama capability detection
 
