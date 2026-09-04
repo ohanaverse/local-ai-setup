@@ -1,3 +1,5 @@
+import hashlib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -203,3 +205,95 @@ def test_path_of_returns_none_when_not_in_cache(tmp_path, monkeypatch):
         )
         is None
     )
+
+
+def test_delete_preserves_blob_referenced_by_nested_file(tmp_path):
+    """A blob whose only surviving reference is a file inside a snapshot
+    subdirectory (nested layout, common in HF GGUF repos) must not be judged
+    orphaned. Regression: the reference scan was non-recursive (iterdir +
+    is_file), so it never saw the nested reference and deleted the shared
+    blob — silently destroying another variant's multi-GB weights."""
+    hub_dir = tmp_path / "hub"
+    repo_dir = hub_dir / "models--org--repo" / "snapshots"
+    blobs_dir = hub_dir / "models--org--repo" / "blobs"
+    snap1 = repo_dir / "aaa"
+    snap2 = repo_dir / "bbb" / "GGUF"
+    snap1.mkdir(parents=True)
+    snap2.mkdir(parents=True)
+    blobs_dir.mkdir(parents=True)
+
+    blob_hash = hashlib.sha256(b"weights").hexdigest()
+    blob = blobs_dir / blob_hash
+    blob.write_bytes(b"weights")
+    # Snapshot 1 keeps the file top-level; snapshot 2 keeps identical
+    # content nested under GGUF/ — the layout real HF GGUF repos use.
+    (snap1 / "model.gguf").symlink_to(blob)
+    (snap2 / "model.gguf").symlink_to(blob)
+
+    provider = LlamaCppProvider({})
+    variant = {"id": "org--repo", "provider": "llamacpp",
+               "repo": "org/repo", "files": ["model.gguf"]}
+
+    with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
+        provider.delete(variant)
+
+    assert not (snap1 / "model.gguf").exists()      # deleted variant's link gone
+    assert (snap2 / "model.gguf").exists()          # nested reference survives
+    assert blob.exists()                            # shared blob NOT orphan-deleted
+
+
+def test_delete_unlinks_dangling_snapshot_symlink(tmp_path):
+    """A snapshot file whose blob is already gone (dangling symlink) must
+    still be unlinked. Regression: exists() follows symlinks and returned
+    False for the dangling link, so the stale entry survived every delete
+    and would break later stat() walks in reconcile/list_local."""
+    hub_dir = tmp_path / "hub"
+    repo_dir = hub_dir / "models--org--repo" / "snapshots"
+    snap = repo_dir / "aaa"
+    snap.mkdir(parents=True)
+    (hub_dir / "models--org--repo" / "blobs").mkdir()
+
+    gguf = snap / "model.gguf"
+    gguf.symlink_to(hub_dir / "models--org--repo" / "blobs" / "deadbeef")
+    assert not gguf.exists()  # precondition: the link dangles
+
+    provider = LlamaCppProvider({})
+    variant = {"id": "org--repo", "provider": "llamacpp",
+               "repo": "org/repo", "files": ["model.gguf"]}
+
+    with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
+        provider.delete(variant)
+
+    assert not gguf.is_symlink()  # the stale link itself was removed
+
+
+def test_delete_never_reads_file_via_read_bytes(tmp_path, monkeypatch):
+    """The non-symlink fallback hash must read files in bounded chunks, never
+    read_bytes(). Regression: the fallback loaded whole multi-GB GGUFs into
+    memory on no-symlink filesystems (exFAT/SMB, HF_HUB_DISABLE_SYMLINKS=1)
+    — the exact OOM the symlink fast path exists to prevent. Patching
+    read_bytes to raise makes any regression fail loudly instead of OOMing
+    the CI runner."""
+    def _no_read_bytes(self):
+        raise AssertionError("read_bytes() called — multi-GB OOM regression")
+
+    monkeypatch.setattr(Path, "read_bytes", _no_read_bytes)
+
+    hub_dir = tmp_path / "hub"
+    repo_dir = hub_dir / "models--org--repo"
+    snap = repo_dir / "snapshots" / "aaa"
+    snap.mkdir(parents=True)
+    (repo_dir / "blobs").mkdir()
+    # A regular file, not a symlink — forces the content-hash fallback.
+    (snap / "model.gguf").write_bytes(b"weights")
+    (repo_dir / "blobs" / hashlib.sha256(b"weights").hexdigest()).write_bytes(b"weights")
+
+    provider = LlamaCppProvider({})
+    variant = {"id": "org--repo", "provider": "llamacpp",
+               "repo": "org/repo", "files": ["model.gguf"]}
+
+    with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
+        provider.delete(variant)  # must not raise
+
+    assert not (snap / "model.gguf").exists()
+    assert not list((repo_dir / "blobs").iterdir())  # orphan blob removed via chunked hash
