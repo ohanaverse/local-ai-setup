@@ -1,6 +1,6 @@
 # modelman test hermeticity + location-aware cloud exemption — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make the modelman test suite safe to run while agents (pi, Claude) are using the local LiteLLM proxy (zero real proxy restarts, zero real `ollama` daemon hits), and fix PR #27's cloud-exemption gap so the TUI EXPOSED column and the apply gate both honor `location = "cloud"` for ollama `:cloud` rows.
 
@@ -33,7 +33,7 @@
 **Files:**
 - Modify: `modelman/src/modelman/litellm.py` (add helper after `is_cloud`, ~line 93; update `_validated_entry`, ~line 414)
 
-- [ ] **Step 1: Add the helper after `is_cloud()`**
+- [x] **Step 1: Add the helper after `is_cloud()`**
 
 ```python
 def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
@@ -54,7 +54,7 @@ def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
     return False
 ```
 
-- [ ] **Step 2: Replace the `policy.cloud` ready check in `_validated_entry()`**
+- [x] **Step 2: Replace the `policy.cloud` ready check in `_validated_entry()`**
 
 Old block (around line 410-414):
 
@@ -76,7 +76,7 @@ New block:
         raise ExposeError(f"model {model_id!r} is not ready")
 ```
 
-- [ ] **Step 3: Run the litellm module tests to catch import/type errors**
+- [x] **Step 3: Run the litellm module tests to catch import/type errors**
 
 Run:
 ```bash
@@ -85,7 +85,7 @@ cd modelman && uv run pytest tests/test_litellm.py -q
 
 Expected: PASS (existing behavior should be unchanged; openrouter rows still exempt, local rows still require ready).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add modelman/src/modelman/litellm.py
@@ -104,7 +104,7 @@ a not-ready ollama/:cloud model can be exposed again."
 **Files:**
 - Modify: `modelman/src/modelman/screens/models.py:16` and `:348-353`
 
-- [ ] **Step 1: Change the import from `is_cloud` to `is_cloud_effective`**
+- [x] **Step 1: Change the import from `is_cloud` to `is_cloud_effective`**
 
 Old:
 ```python
@@ -116,7 +116,7 @@ New:
 from ..litellm import default_litellm_config_path, is_cloud_effective, provider_policy
 ```
 
-- [ ] **Step 2: Replace the column gate and comment**
+- [x] **Step 2: Replace the column gate and comment**
 
 Old:
 ```python
@@ -139,7 +139,7 @@ New:
                 ready_or_cloud = ready or is_cloud_effective(m, self.registry)
 ```
 
-- [ ] **Step 3: Run the screen tests that exercise the EXPOSED column**
+- [x] **Step 3: Run the screen tests that exercise the EXPOSED column**
 
 Run:
 ```bash
@@ -148,7 +148,7 @@ cd modelman && uv run pytest tests/screens/test_models.py::test_exposed_column_r
 
 Expected: FAIL (the new `:cloud` row isn't in the test yet, and the existing openrouter case should still pass).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add modelman/src/modelman/screens/models.py
@@ -165,7 +165,7 @@ exposed and not ready, matching the apply gate."
 **Files:**
 - Modify: `modelman/tests/conftest.py`
 
-- [ ] **Step 1: Add imports and the fake ollama runner**
+- [x] **Step 1: Add imports and the fake ollama runner**
 
 At the top of `modelman/tests/conftest.py`, change:
 
@@ -205,7 +205,7 @@ def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedP
     )
 ```
 
-- [ ] **Step 2: Add the two autouse fixtures at the end of the file**
+- [x] **Step 2: Add the two autouse fixtures at the end of the file**
 
 ```python
 @pytest.fixture(autouse=True)
@@ -229,7 +229,7 @@ def _never_call_real_ollama(monkeypatch):
     monkeypatch.setattr("modelman.ollama_caps._default_runner", _fake_ollama_runner)
 ```
 
-- [ ] **Step 3: Verify the restart-behavior tests still pass**
+- [x] **Step 3: Verify the restart-behavior tests still pass**
 
 Run:
 ```bash
@@ -238,7 +238,7 @@ cd modelman && uv run pytest tests/test_litellm.py -k "restart" -v
 
 Expected: 5 PASS. These tests monkeypatch `MODELMAN_LITELLM_RESTART_CMD` themselves, overriding the autouse fixture.
 
-- [ ] **Step 4: Run the flooding test files and confirm they still pass**
+- [x] **Step 4: Run the flooding test files and confirm they still pass**
 
 Run:
 ```bash
@@ -247,7 +247,7 @@ cd modelman && uv run pytest tests/screens/test_forms.py tests/screens/test_fami
 
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add modelman/tests/conftest.py
@@ -268,7 +268,7 @@ inject explicit runners override these defaults as before."
 **Files:**
 - Modify: `modelman/tests/screens/test_models.py::test_exposed_column_requires_ready_but_exempts_cloud`
 
-- [ ] **Step 1: Add the fourth model and state entry**
+- [x] **Step 1: Add the fourth model and state entry**
 
 After the `cloud_model` definition, add:
 
@@ -297,7 +297,7 @@ After the existing state entries, add:
     )
 ```
 
-- [ ] **Step 2: Add the assertion**
+- [x] **Step 2: Add the assertion**
 
 After the existing three assertions, add:
 
@@ -305,7 +305,7 @@ After the existing three assertions, add:
         assert "Y" in rows["ornith-1.5:cloud"][5]  # ollama cloud-located + exposed → 'Y' (location exemption)
 ```
 
-- [ ] **Step 3: Run the extended test**
+- [x] **Step 3: Run the extended test**
 
 Run:
 ```bash
@@ -314,7 +314,7 @@ cd modelman && uv run pytest tests/screens/test_models.py::test_exposed_column_r
 
 Expected: PASS (all four cases).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add modelman/tests/screens/test_models.py
@@ -331,7 +331,7 @@ based cloud exemption is pinned alongside the openrouter case."
 **Files:**
 - Modify: `modelman/tests/test_litellm.py`
 
-- [ ] **Step 1: Import `_validated_entry` if not already imported**
+- [x] **Step 1: Import `_validated_entry` if not already imported**
 
 Add to the existing imports from `modelman.litellm`:
 
@@ -345,7 +345,7 @@ from modelman.litellm import (
 
 If `_validated_entry` is already imported, skip this step.
 
-- [ ] **Step 2: Add the test**
+- [x] **Step 2: Add the test**
 
 Append near the other `_validated_entry` / expose tests:
 
@@ -374,7 +374,7 @@ def test_validated_entry_accepts_not_ready_location_cloud_model():
     assert entry["model_name"] == "ollama/kimi-k3:cloud"
 ```
 
-- [ ] **Step 3: Verify it fails before the code change (if run in isolation)**
+- [x] **Step 3: Verify it fails before the code change (if run in isolation)**
 
 This is already covered by Task 1, but confirm with:
 
@@ -384,7 +384,7 @@ cd modelman && uv run pytest tests/test_litellm.py::test_validated_entry_accepts
 
 Expected: PASS (Task 1 already updated `_validated_entry`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add modelman/tests/test_litellm.py
@@ -401,7 +401,7 @@ ollama model, matching the TUI column's location-aware cloud exemption."
 **Files:**
 - Modify: `modelman/tests/screens/test_app_navigation.py`
 
-- [ ] **Step 1: Add the test**
+- [x] **Step 1: Add the test**
 
 Append to `tests/screens/test_app_navigation.py`:
 
@@ -428,7 +428,7 @@ async def test_app_mounts_without_live_daemon_or_proxy_restart():
         assert table.row_count >= 0
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 ```bash
 cd modelman && uv run pytest tests/screens/test_app_navigation.py::test_app_mounts_without_live_daemon_or_proxy_restart -v
@@ -436,7 +436,7 @@ cd modelman && uv run pytest tests/screens/test_app_navigation.py::test_app_moun
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add modelman/tests/screens/test_app_navigation.py
@@ -454,7 +454,7 @@ interference issues."
 **Files:**
 - Modify: `docs/guides/00-config-map.md`, `docs/guides/02-providers-and-models.md`, `docs/guides/04-litellm-config.md`, `docs/guides/08-maintenance-and-troubleshooting.md`, `modelman/CLAUDE.md`
 
-- [ ] **Step 1: `docs/guides/00-config-map.md`**
+- [x] **Step 1: `docs/guides/00-config-map.md`**
 
 Find the paragraph that reads (introduced by this PR):
 
@@ -464,7 +464,7 @@ Keep it; it is already accurate after the code change. No edit needed unless the
 
 > Cloud models (`openrouter/*`, or `ollama/<name>:cloud` where `location = "cloud"`) are exempt from the ready gate, so a flagged cloud row always renders `Y` even though `ready = false`.
 
-- [ ] **Step 2: `docs/guides/02-providers-and-models.md`**
+- [x] **Step 2: `docs/guides/02-providers-and-models.md`**
 
 Find the sentence (line ~217):
 
@@ -474,7 +474,7 @@ Change to:
 
 > ... the EXPOSED column shows `Y` if both the flag is set and the model is ready (cloud models — `openrouter/*` or `location = "cloud"` rows — are exempt from the ready gate).
 
-- [ ] **Step 3: `docs/guides/04-litellm-config.md`**
+- [x] **Step 3: `docs/guides/04-litellm-config.md`**
 
 Find the sentence (line ~128):
 
@@ -484,7 +484,7 @@ Change to:
 
 > ... the EXPOSED column shows `Y` once the flag is set AND the model is ready (cloud models — `openrouter/*` or `location = "cloud"` rows — are exempt from the ready gate — see [02-providers-and-models]).
 
-- [ ] **Step 4: `docs/guides/08-maintenance-and-troubleshooting.md`**
+- [x] **Step 4: `docs/guides/08-maintenance-and-troubleshooting.md`**
 
 Verify the bullet:
 
@@ -492,7 +492,7 @@ Verify the bullet:
 
 It is accurate. No change.
 
-- [ ] **Step 5: `modelman/CLAUDE.md`**
+- [x] **Step 5: `modelman/CLAUDE.md`**
 
 Find the EXPOSED column contract paragraph (line ~61):
 
@@ -502,7 +502,7 @@ Change to:
 
 > **EXPOSED is the AND of the exposure flag and readiness** — a flagged but not-ready model renders `–` until apply finishes the queued download... **Cloud models are exempt from the readiness gate** — via `is_cloud_effective(model, registry)` in `litellm.py` (`openrouter` provider policy, or any model with `location = "cloud"`) used by both the TUI column and `_validated_entry` — so a flagged cloud row always renders `Y`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/guides/00-config-map.md docs/guides/02-providers-and-models.md docs/guides/04-litellm-config.md docs/guides/08-maintenance-and-troubleshooting.md modelman/CLAUDE.md
@@ -518,7 +518,7 @@ location-aware cloud exemption (openrouter or location='cloud')."
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the full modelman suite**
+- [x] **Step 1: Run the full modelman suite**
 
 ```bash
 cd modelman && uv run pytest -q
@@ -526,7 +526,7 @@ cd modelman && uv run pytest -q
 
 Expected: `597 passed` (or current count + 3 new tests = 600 passed).
 
-- [ ] **Step 2: Verify zero live-service hits with shims**
+- [x] **Step 2: Verify zero live-service hits with shims**
 
 Create the same shims used during investigation:
 
@@ -563,7 +563,7 @@ echo "ollama calls: $(grep -c OLLAMA /tmp/fakebin-mt/calls.log 2>/dev/null || ec
 
 Expected: both `0`. Any non-zero count means a test path is bypassing the autouse fixture — investigate and fix.
 
-- [ ] **Step 3: Run repo-level `make test-all`**
+- [x] **Step 3: Run repo-level `make test-all`**
 
 ```bash
 cd /Users/keith/github/ohanaverse/local-ai-setup && make test-all
@@ -571,7 +571,7 @@ cd /Users/keith/github/ohanaverse/local-ai-setup && make test-all
 
 Expected: lint + modelman check/test + wt build/vet/test all green.
 
-- [ ] **Step 4: Final commit (if any fixes from verification)**
+- [x] **Step 4: Final commit (if any fixes from verification)**
 
 If the shim run or `make test-all` required fixes, commit them with a clear message; otherwise no extra commit.
 
