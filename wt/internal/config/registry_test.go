@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,8 +115,23 @@ func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when registry.toml is missing")
 	}
+	if !errors.Is(err, ErrRegistryMissing) {
+		t.Errorf("error should wrap ErrRegistryMissing, got: %v", err)
+	}
 	if !strings.Contains(err.Error(), "modelman migrate") {
 		t.Errorf("error should point at `modelman migrate`, got: %v", err)
+	}
+}
+
+// loadRegistry must return the ErrRegistryMissing sentinel (not just any
+// error) when registry.toml is absent, so cmd/wt can distinguish "no
+// registry yet" (tolerable for command agents) from a genuine config
+// problem (malformed file, etc.).
+func TestLoadRegistryMissingReturnsSentinel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, _, err := loadRegistry()
+	if !errors.Is(err, ErrRegistryMissing) {
+		t.Fatalf("loadRegistry() error = %v, want ErrRegistryMissing", err)
 	}
 }
 
