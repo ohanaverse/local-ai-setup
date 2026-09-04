@@ -104,11 +104,7 @@ def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
     providers) is *not* included here; those rows are flag-only and are
     never routed through LiteLLM, mirroring `model_has_local_artifact`.
     """
-    if is_cloud(model.provider_id):
-        return True
-    if model.location == "cloud":
-        return True
-    return False
+    return is_cloud(model.provider_id) or model.location == "cloud"
 
 
 class LiteLLMConfigError(Exception):
