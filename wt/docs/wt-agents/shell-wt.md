@@ -2,7 +2,9 @@
 
 ## Overview
 
-`shell-wt` is the worktree launcher for executing a single command with arguments. Unlike other `*-wt` wrappers, it does not launch an AI agent. Instead, it presents the worktree/branch picker, changes into the chosen directory, and executes a command. Shell metacharacters (`|`, `>`, `&&`, etc.) are not interpreted as shell syntax — each argument is shell-quoted individually. To run pipelines or redirections, use an explicit shell: `shell-wt -- bash -lc 'cmd1 | cmd2'`.
+`shell-wt` is the worktree launcher for executing a single command with arguments. Unlike other `*-wt` wrappers, it does not launch an AI agent. Instead, it presents the worktree/branch picker, changes into the chosen directory, and executes a command.
+
+Because it has no model layer, `shell-wt` works on a fresh machine without a `modelman` registry; model-driven agents still require `modelman migrate` to populate `registry.toml`. Shell metacharacters (`|`, `>`, `&&`, etc.) are not interpreted as shell syntax — each argument is shell-quoted individually. To run pipelines or redirections, use an explicit shell: `shell-wt -- bash -lc 'cmd1 | cmd2'`.
 
 ## Installation
 
