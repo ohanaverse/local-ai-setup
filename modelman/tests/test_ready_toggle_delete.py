@@ -138,6 +138,45 @@ class TestLlamaCppDelete:
         # Blob preserved (still referenced by other.gguf)
         assert blob_file.exists()
 
+    def test_delete_uses_symlink_target_not_file_contents(self, tmp_path):
+        """Deleting a GGUF must derive the blob hash from the snapshot file's
+        symlink target (blobs/<sha256>), never by reading the file body — reading
+        a multi-GB GGUF into memory to hash it OOMs the process. This test makes
+        the snapshot file a symlink to a blob and asserts the blob is removed
+        without the file's contents ever being read."""
+        from modelman.providers.llamacpp import LlamaCppProvider
+        import hashlib
+
+        hub_dir = tmp_path / "hub"
+        repo_dir = hub_dir / "models--test-org--test-repo"
+        snapshots_dir = repo_dir / "snapshots" / "abc123"
+        blobs_dir = repo_dir / "blobs"
+        snapshots_dir.mkdir(parents=True)
+        blobs_dir.mkdir()
+
+        # A real blob whose content we deliberately do NOT want read.
+        blob_hash = hashlib.sha256(b"real blob content").hexdigest()
+        blob_file = blobs_dir / blob_hash
+        blob_file.write_bytes(b"real blob content")
+
+        # The snapshot file is a symlink to the blob, as in a real HF cache.
+        gguf_file = snapshots_dir / "model.gguf"
+        gguf_file.symlink_to(blob_file)
+
+        provider = LlamaCppProvider({})
+        variant: VariantSpec = {
+            "id": "test--model",
+            "provider": "llamacpp",
+            "repo": "test-org/test-repo",
+            "files": ["model.gguf"],
+        }
+
+        with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
+            provider.delete(variant)
+
+        assert not gguf_file.exists()
+        assert not blob_file.exists()
+
 
 class TestReadyToggleCascade:
     """Test ready toggle cascades to expose."""

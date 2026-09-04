@@ -22,6 +22,21 @@ def _hf_cache_dir() -> Path:
     return Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser() / "hub"
 
 
+def _blob_hash_of(snapshot_file: Path) -> str | None:
+    """Return the blob SHA256 a snapshot file points at, without reading it.
+
+    HF snapshot files are symlinks to ../../blobs/<sha256>; the blob's name
+    is its content hash. Reading the link target is O(1) and avoids loading
+    a multi-GB GGUF into memory just to re-derive a hash we already have.
+    Returns None when the file is not a symlink (e.g. a test fixture that
+    wrote a regular file) so callers can fall back to hashing the content.
+    """
+    if not snapshot_file.is_symlink():
+        return None
+    target = os.readlink(snapshot_file)
+    return Path(target).name
+
+
 def _files_in_hf_cache(repo: str, files: list[str]) -> bool:
     """Return True if every `file` exists somewhere in the repo's HF cache snapshots."""
     hf_org, hf_name = repo.split("/", 1)
@@ -144,7 +159,6 @@ class LlamaCppProvider(Provider):
         referenced by other snapshots. If not, we remove the blob too.
         """
         import hashlib
-        from pathlib import Path as _Path
 
         repo = variant.get("repo")
         files = variant.get("files")
@@ -169,12 +183,17 @@ class LlamaCppProvider(Provider):
             for f in files:
                 file_path = snap / f
                 if file_path.exists():
-                    # Compute blob hash before deletion (blobs are named by SHA256)
-                    try:
-                        blob_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    # Blobs are named by their SHA256; the snapshot file is a
+                    # symlink to blobs/<hash>, so read the link target instead
+                    # of re-hashing the (multi-GB) file body.
+                    blob_hash = _blob_hash_of(file_path)
+                    if blob_hash is None:
+                        try:
+                            blob_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                        except OSError:
+                            blob_hash = None
+                    if blob_hash is not None:
                         blobs_to_check.add(blob_hash)
-                    except OSError:
-                        pass  # File unreadable, skip blob cleanup
                     file_path.unlink()
 
         # Clean up orphaned blobs
@@ -188,11 +207,14 @@ class LlamaCppProvider(Provider):
                 continue
             for f in snap.iterdir():
                 if f.is_file():
-                    try:
-                        blob_hash = hashlib.sha256(f.read_bytes()).hexdigest()
+                    blob_hash = _blob_hash_of(f)
+                    if blob_hash is None:
+                        try:
+                            blob_hash = hashlib.sha256(f.read_bytes()).hexdigest()
+                        except OSError:
+                            blob_hash = None
+                    if blob_hash is not None:
                         referenced_blobs.add(blob_hash)
-                    except OSError:
-                        pass  # Can't read, assume still referenced
 
         # Delete blobs no longer referenced
         if blobs_dir.exists():
