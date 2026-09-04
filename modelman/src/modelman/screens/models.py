@@ -251,6 +251,13 @@ class ModelScreen(Screen[None]):
         # (via 'r', or already present before the cascade) is never marked
         # here, so undoing it never touches an independently-queued expose.
         self._ready_cascade_for_expose: set[str] = set()
+        # Ids whose queued_exposes=False entry exists *only* because a ready
+        # toggle cascaded it in (ready=False must unexpose). Mirrors
+        # _ready_cascade_for_expose for the opposite direction: cancelling the
+        # ready toggle must also cancel the unexpose it cascaded, or apply()
+        # unexposes a model the user's two 'r' presses were meant to leave
+        # untouched.
+        self._expose_cascade_for_ready: set[str] = set()
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
         # stays visible in this family's table with a → glyph.
@@ -404,6 +411,9 @@ class ModelScreen(Screen[None]):
                 # failing at apply() with "model is not ready".
                 self.queued_exposes.pop(mid, None)
                 self._ready_cascade_for_expose.discard(mid)
+            if mid in self._expose_cascade_for_ready:
+                self.queued_exposes.pop(mid, None)
+                self._expose_cascade_for_ready.discard(mid)
             self.app.notify(f"Model already {'ready' if target else 'not ready'}")
             self._refresh_pending_bar()
             self.reload()
@@ -424,6 +434,7 @@ class ModelScreen(Screen[None]):
             current_exposed = self.queued_exposes.get(mid, self.state.get(mid).litellm_exposed)
             if current_exposed:
                 self.queued_exposes[mid] = False
+                self._expose_cascade_for_ready.add(mid)
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
         self.reload()
@@ -678,6 +689,7 @@ class ModelScreen(Screen[None]):
             self.queued_moves.clear()
             self.queued_exposes.clear()
             self._ready_cascade_for_expose.clear()
+            self._expose_cascade_for_ready.clear()
             self._added_ids.clear()
             self.app.pop_screen()
             return
@@ -753,6 +765,7 @@ class ModelScreen(Screen[None]):
         self.queued_moves.clear()
         self.queued_exposes.clear()
         self._ready_cascade_for_expose.clear()
+        self._expose_cascade_for_ready.clear()
         self._added_ids.clear()
 
     def _restore_snapshot(self) -> None:

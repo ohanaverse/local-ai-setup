@@ -1331,3 +1331,56 @@ async def test_x_on_provider_with_no_litellm_mapping_notifies(tmp_path, monkeypa
 
         assert isinstance(app.screen, ModelScreen)
         assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_r_twice_on_ready_exposed_cancels_unexpose_cascade(tmp_path, monkeypatch):
+    """Pressing 'r' twice on a ready+exposed model must cancel both the
+    ready=False toggle and the expose=False it cascaded in. Regression: the
+    cancel branch only cleared queued_exposes for the expose→ready direction,
+    so the ready→expose cascade was orphaned and apply() unexposed a model the
+    user's two presses were meant to leave untouched."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/a": False}
+        assert app.screen.queued_exposes == {"ollama/a": False}
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}
+        assert app.screen.queued_exposes == {}
