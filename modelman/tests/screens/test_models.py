@@ -643,6 +643,13 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
         model_name="anthropic/claude-sonnet-4.5",
         location="cloud",
     )
+    cloud_ollama = ModelEntry(
+        id="ollama/ornith-1.5:cloud",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith-1.5:cloud",
+        location="cloud",
+    )
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
@@ -651,7 +658,7 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
             ProviderEntry(id="openrouter", name="OpenRouter", auth=AuthConfig(type="secret_ref")),
         ],
         families=[FamilyEntry(name="ornith")],
-        models=[not_ready_local, ready_local, cloud_model],
+        models=[not_ready_local, ready_local, cloud_model, cloud_ollama],
     )
     save_registry(reg, reg_path)
     # Flag the not-ready and cloud models; the ready-local model is unflagged.
@@ -666,6 +673,10 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
     )
     state.set(
         "openrouter/anthropic/claude-sonnet-4.5",
+        ModelState(ready=False, litellm_exposed=True),
+    )
+    state.set(
+        "ollama/ornith-1.5:cloud",
         ModelState(ready=False, litellm_exposed=True),
     )
     save_state(state, state_path)
@@ -688,10 +699,11 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
 
         mt = app.screen.query_one("#model-table", DataTable)
         rows = {str(mt.get_row_at(i)[2]): [str(c) for c in mt.get_row_at(i)] for i in range(mt.row_count)}
-        # Provider sort + name sort: ollama/ornith-1.5:35b, ollama/ornith-1.5:7b, openrouter/anthropic/claude-sonnet-4.5
+        # Provider sort + name sort: ollama/ornith-1.5:35b, ollama/ornith-1.5:7b, ollama/ornith-1.5:cloud, openrouter/anthropic/claude-sonnet-4.5
         assert "–" in rows["ornith-1.5:35b"][5]  # not-ready + exposed → '–' (new rule)
         assert "–" in rows["ornith-1.5:7b"][5]   # ready + unexposed → '–' (flag off)
-        assert "Y" in rows["anthropic/claude-sonnet-4.5"][5]  # cloud + exposed → 'Y' (cloud exemption)
+        assert "Y" in rows["anthropic/claude-sonnet-4.5"][5]  # openrouter cloud + exposed → 'Y' (provider-policy exemption)
+        assert "Y" in rows["ornith-1.5:cloud"][5]  # ollama cloud-located + exposed → 'Y' (location exemption)
 
 
 @pytest.mark.asyncio
