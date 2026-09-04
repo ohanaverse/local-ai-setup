@@ -544,29 +544,16 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        # "d" cascades: expose=off → ready=off (delete file) → registry removal.
-        # Queue in dependency order (apply() processes deletes last, so the
-        # registry entry survives long enough for ready/expose to apply).
+        # "d" queues only the registry removal. apply()'s deletes loop already
+        # removes the on-disk file, drops the registry/state rows, and cascades
+        # the unexpose — queueing ready=False/expose=False here would double-
+        # delete the file and, on cancel, leave orphaned queues that still
+        # destroy the model. A second "d" toggles the delete back off.
         spec = _model_entry_to_variant(entry)
-        
-        # Step 1: Queue expose=off if currently exposed
-        current_exposed = self.queued_exposes.get(mid, self.state.get(mid).litellm_exposed)
-        if current_exposed:
-            self.queued_exposes[mid] = False
-        
-        # Step 2: Queue ready=off (will delete file) if currently ready
-        current_ready = self.queued_ready.get(mid, self.state.get(mid).ready)
-        if current_ready:
-            self.queued_ready[mid] = False
-        
-        # Step 3: Queue registry removal (processed last by apply())
         if mid in self.queued_deletes:
             self.queued_deletes.pop(mid)
         else:
             self.queued_deletes[mid] = spec
-        
-        # Clear any conflicting queues
-        self._ready_cascade_for_expose.discard(mid)
         self._refresh_pending_bar()
         self.reload()
 

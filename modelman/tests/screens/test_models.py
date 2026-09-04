@@ -320,6 +320,58 @@ async def test_d_on_downloaded_local_model_still_queues(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_d_queues_only_delete_not_ready_or_expose(tmp_path, monkeypatch):
+    """'d' must queue only the registry removal, not ready=False or
+    expose=False. apply()'s deletes loop already removes the file, drops the
+    registry/state rows, and cascades the unexpose — queueing those again
+    causes a double-delete (spurious 'ollama rm' failure) and, on cancel,
+    leaves orphaned queues that still destroy the file."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location=None)
+    stub.is_downloaded.return_value = True
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("d")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert "ollama/glm-5.2:cloud" in app.screen.queued_deletes
+        assert app.screen.queued_ready == {}
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_d_twice_cancels_delete_cleanly(tmp_path, monkeypatch):
+    """Pressing 'd' twice must cancel the delete with no orphaned ready or
+    expose queues left behind. Regression: the second 'd' only popped
+    queued_deletes, leaving ready=False/expose=False queued, so apply() still
+    deleted the file and unexposed the model the user cancelled."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location=None)
+    stub.is_downloaded.return_value = True
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("d")
+        await pilot.pause()
+        assert "ollama/glm-5.2:cloud" in app.screen.queued_deletes
+        await pilot.press("d")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_deletes == {}
+        assert app.screen.queued_ready == {}
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
 async def test_pulled_cloud_ollama_model_reconcile_leaves_ready_alone(tmp_path, monkeypatch):
     """An ollama `:cloud` model (location='cloud' on the local ollama
     provider) is not a local artifact per model_has_local_artifact:
