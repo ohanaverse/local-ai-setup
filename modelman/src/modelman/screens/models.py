@@ -222,13 +222,6 @@ class ModelScreen(Screen[None]):
         # (via 'r', or already present before the cascade) is never marked
         # here, so undoing it never touches an independently-queued expose.
         self._ready_cascade_for_expose: set[str] = set()
-        # Ids whose queued_exposes=False entry exists *only* because a ready
-        # toggle cascaded it in (ready=False must unexpose). Mirrors
-        # _ready_cascade_for_expose for the opposite direction: cancelling the
-        # ready toggle must also cancel the unexpose it cascaded, or apply()
-        # unexposes a model the user's two 'r' presses were meant to leave
-        # untouched.
-        self._expose_cascade_for_ready: set[str] = set()
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
         # stays visible in this family's table with a → glyph.
@@ -320,13 +313,12 @@ class ModelScreen(Screen[None]):
                 exposed = self.state.get(m.id).litellm_exposed
                 if m.id in self.queued_exposes:
                     exposed = self.queued_exposes[m.id]
-                # A model is only "effectively exposed" in this column if the
-                # exposure flag is set AND the model is ready. Cloud models
-                # (openrouter, or ollama rows with location="cloud") are
-                # exempt from the ready gate — the same exemption
-                # `litellm._validated_entry` applies at the apply gate — so
-                # they render 'Y' as long as the flag is on.
-                ready_or_cloud = ready or is_cloud_effective(m)
+                # Effective exposure = the (queued or persisted) flag AND the
+                # *projected* ready value — the same gate `_validated_entry`
+                # applies at apply time, so the column shows what the model
+                # will be after apply, not what it was before the queue.
+                # Cloud rows are exempt from the ready gate.
+                ready_or_cloud = self._projected_ready(m.id) or is_cloud_effective(m)
                 exposed_str = "Y" if (exposed and ready_or_cloud) else "–"
                 mt.add_row(
                     m.family,
@@ -350,6 +342,26 @@ class ModelScreen(Screen[None]):
         this flag for local-artifact models; the ready toggle's apply
         step is the writer for cloud/native models."""
         return self.state.get(model_id).ready
+
+    def _projected_ready(self, model_id: str) -> bool:
+        """The ready value this model will have after apply(): the queued
+        target if one exists, otherwise the persisted flag."""
+        return self.queued_ready.get(model_id, self.state.get(model_id).ready)
+
+    def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
+        """Single invariant: expose depends on ready. A queued expose=True
+        cannot survive a model whose projected ready is False — apply()
+        enforces the same rule at the gate (_validated_entry rejects the
+        expose with 'model is not ready'); this keeps the queue consistent
+        with it instead of leaving a doomed entry for apply() to fail on.
+        Cloud rows are exempt, matching _validated_entry. Drops the expose
+        with a notification rather than silently overwriting the user's
+        request."""
+        if is_cloud_effective(entry):
+            return
+        if self.queued_exposes.get(mid) is True and not self._projected_ready(mid):
+            self.queued_exposes.pop(mid, None)
+            self.app.notify(f"Expose cancelled: {mid} will not be ready")
 
     def _refresh_pending_bar(self) -> None:
         bar = self.query_one("#pending-bar", Static)
@@ -377,32 +389,24 @@ class ModelScreen(Screen[None]):
             self.queued_ready.pop(mid, None)
             if mid in self._ready_cascade_for_expose:
                 # This readiness was only queued because a prior 'x' press
-                # cascaded it in for an expose; cancelling it back to
-                # not-ready would otherwise leave that expose queued and
-                # failing at apply() with "model is not ready".
+                # cascaded it in for an expose; cancel that expose with it.
                 self.queued_exposes.pop(mid, None)
                 self._ready_cascade_for_expose.discard(mid)
-            if mid in self._expose_cascade_for_ready:
-                self.queued_exposes.pop(mid, None)
-                self._expose_cascade_for_ready.discard(mid)
+            # The invariant covers every other case: a user-queued expose
+            # stranded by this cancel is dropped (with a notification).
+            self._enforce_expose_ready_rule(mid, entry)
             self.app.notify(f"Model already {'ready' if target else 'not ready'}")
             self._refresh_pending_bar()
             self.reload()
             return
-        # Allow ready=False for all models. The apply() step removes the
-        # on-disk artifact — provider.delete() for mapped providers, or the
-        # disk_path recorded in state for flag-only ones — then cascades the
-        # unexpose if the model was exposed. Reconcile re-syncs ready=True
-        # only if the file somehow still exists after delete.
+        # Queue the ready target only. apply() owns the consequences — it
+        # removes the artifact (provider delete, or the recorded disk_path
+        # for flag-only providers) on ready-off and re-derives the unexpose
+        # cascade from the persisted exposure flag — and the invariant below
+        # drops any queued expose the new ready value makes impossible, so
+        # the screen queue can never strand a doomed expose.
         self.queued_ready[mid] = target
-        # Cascade: ready=False must unexpose the model (expose depends on ready).
-        # Only queue this cascade if the model is currently exposed (or queued
-        # to be exposed) and we're toggling to not-ready.
-        if target is False:
-            current_exposed = self.queued_exposes.get(mid, self.state.get(mid).litellm_exposed)
-            if current_exposed:
-                self.queued_exposes[mid] = False
-                self._expose_cascade_for_ready.add(mid)
+        self._enforce_expose_ready_rule(mid, entry)
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
         self.reload()
@@ -423,35 +427,31 @@ class ModelScreen(Screen[None]):
         displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
         target = not displayed_exposed
         if target == persisted_exposed:
+            # Repeated keypress: cancel the queued expose toggle.
             self.queued_exposes.pop(mid, None)
             if mid in self._ready_cascade_for_expose:
-                # Undo the ready cascade this same expose queued in — the
-                # user never asked for a download, only for the model to
-                # be exposed, and that request is now cancelled.
+                # The download was only queued to serve this expose; the
+                # user never asked for it independently.
                 self.queued_ready.pop(mid, None)
                 self._ready_cascade_for_expose.discard(mid)
-            # A prior 'r' press may have cascaded an unexpose in for this
-            # model; cancelling the expose toggle back to its persisted
-            # value must also drop that cascade marker, or a later 'r'
-            # cancel would reclaim an independently-queued unexpose.
-            self._expose_cascade_for_ready.discard(mid)
             self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
             self._refresh_pending_bar()
             self.reload()
             return
-        self.queued_exposes[mid] = target
-        # This expose is now queued independently of any ready cascade, so
-        # a later ready-cancel must never reclaim it. Drop the marker for
-        # symmetry with _ready_cascade_for_expose, which is only ever added,
-        # never left stale.
-        self._expose_cascade_for_ready.discard(mid)
-        if target and not self._is_ready(mid):
-            # Cascade: exposing a not-ready model must download/pull it
-            # first. apply() already runs the ready loop before the
-            # expose loop, so queuing both here gives the right order.
-            if mid not in self.queued_ready:
-                self._ready_cascade_for_expose.add(mid)
+        if target and not self._projected_ready(mid) and not is_cloud_effective(entry):
+            # Exposing requires ready — the same gate _validated_entry
+            # applies at apply time. If the user has a ready toggle queued
+            # that leaves the model not-ready, refuse rather than overwrite
+            # their request; otherwise cascade the download in (apply runs
+            # the ready loop before the expose loop, so the order works).
+            if mid in self.queued_ready:
+                self.app.notify(
+                    "Model is queued to be made not ready — cancel that before exposing"
+                )
+                return
+            self._ready_cascade_for_expose.add(mid)
             self.queued_ready[mid] = True
+        self.queued_exposes[mid] = target
         self._refresh_pending_bar()
         self.reload()
 
@@ -667,7 +667,6 @@ class ModelScreen(Screen[None]):
             self.queued_moves.clear()
             self.queued_exposes.clear()
             self._ready_cascade_for_expose.clear()
-            self._expose_cascade_for_ready.clear()
             self._added_ids.clear()
             self.app.pop_screen()
             return
@@ -743,7 +742,6 @@ class ModelScreen(Screen[None]):
         self.queued_moves.clear()
         self.queued_exposes.clear()
         self._ready_cascade_for_expose.clear()
-        self._expose_cascade_for_ready.clear()
         self._added_ids.clear()
 
     def _restore_snapshot(self) -> None:

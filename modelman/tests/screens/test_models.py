@@ -1151,10 +1151,12 @@ async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypatch):
-    """x on a not-ready model must queue BOTH ready=True and
+    """x on a not-ready *local* model must queue BOTH ready=True and
     exposed=True — the cascade that replaces the old 'must be ready
-    before exposing' refusal."""
-    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    before exposing' refusal. Seeded local (not cloud) because cloud rows
+    are exempt from the ready gate (is_cloud_effective), so the cascade
+    never fires for them."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="local")
     stub.is_downloaded.return_value = False
 
     app = ModelmanApp()
@@ -1173,13 +1175,16 @@ async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatch):
-    """x on a not-ready model cascades queued_ready=True; pressing r right
-    after must cancel *both* halves of that cascade, not just queued_ready.
+    """x on a not-ready *local* model cascades queued_ready=True; pressing
+    r right after must cancel *both* halves of that cascade, not just
+    queued_ready.
     Regression test: previously r's cancel branch only popped queued_ready,
     leaving queued_exposes=True queued against a model apply() would still
     see as not-ready, so apply() failed with an unexpected ExposeError the
-    user never asked for."""
-    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    user never asked for. Re-seeded local (was cloud): cloud rows are
+    exempt from the ready gate, so the x-cascade never fires for them and
+    this cancel path would go untested."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="local")
     stub.is_downloaded.return_value = False
 
     app = ModelmanApp()
@@ -1200,13 +1205,15 @@ async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_x_cancel_after_x_cascade_also_cancels_ready(tmp_path, monkeypatch):
-    """x, then x again on a not-ready model must fully cancel the round
-    trip, including the queued_ready=True the first x cascaded in.
+    """x, then x again on a not-ready *local* model must fully cancel the
+    round trip, including the queued_ready=True the first x cascaded in.
     Regression test: previously the second x's cancel branch only popped
     queued_exposes, leaving queued_ready=True queued, so apply() would
     still download/pull a model the user's two presses were meant to
-    leave untouched."""
-    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    leave untouched. Seeded local (not cloud): cloud rows are exempt from
+    the ready gate, so the x-cascade never queues a ready entry for them
+    and this cancel path would never fire."""
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="local")
     stub.is_downloaded.return_value = False
 
     app = ModelmanApp()
@@ -1334,18 +1341,21 @@ async def test_x_on_provider_with_no_litellm_mapping_notifies(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_r_twice_on_ready_exposed_cancels_unexpose_cascade(tmp_path, monkeypatch):
-    """Pressing 'r' twice on a ready+exposed model must cancel both the
-    ready=False toggle and the expose=False it cascaded in. Regression: the
-    cancel branch only cleared queued_exposes for the expose→ready direction,
-    so the ready→expose cascade was orphaned and apply() unexposed a model the
-    user's two presses were meant to leave untouched."""
+async def test_r_twice_on_ready_exposed_leaves_queue_empty(tmp_path, monkeypatch):
+    """Pressing 'r' twice on a ready+exposed *local* model must leave the
+    queue completely empty. The screen no longer queues a phantom unexpose
+    next to the ready-off flip: apply() re-derives the unexpose from the
+    persisted exposure flag when the ready loop makes the model
+    not-ready, so the queue only ever holds what the user asked for.
+    Seeded local to match the behavior-spec table rows for a local
+    ready+exposed model (the outcome is identical for cloud rows, which
+    are exempt from the ready gate)."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
 
     model = ModelEntry(
-        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud",
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local",
     )
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
@@ -1375,7 +1385,7 @@ async def test_r_twice_on_ready_exposed_cancels_unexpose_cascade(tmp_path, monke
         await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready == {"ollama/a": False}
-        assert app.screen.queued_exposes == {"ollama/a": False}
+        assert app.screen.queued_exposes == {}
         await pilot.press("r")
         await pilot.pause()
 
@@ -1387,18 +1397,21 @@ async def test_r_twice_on_ready_exposed_cancels_unexpose_cascade(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_r_x_x_r_interleaving_preserves_independent_unexpose(tmp_path, monkeypatch):
-    """The r → x → x → r interleaving on a ready+exposed model must leave the
-    user's independent unexpose queued. Regression: the expose-cancel branch
-    dropped the cascaded expose=False but left the _expose_cascade_for_ready
-    marker, so the final 'r' cancel reclaimed the independently-queued
-    unexpose and the model stayed exposed against the user's request."""
+async def test_r_x_r_preserves_independent_unexpose(tmp_path, monkeypatch):
+    """The r → x → r interleaving on a ready+exposed *local* model must
+    leave the user's independent unexpose queued. 'x' flips toward
+    unexpose, which needs no ready gate, and the final 'r' cancels the
+    ready-off flip without touching it: the expose-depends-on-ready
+    invariant only drops expose=True entries, so an unexpose survives
+    the cancel. Regression: the old mirrored-cascade machinery reclaimed
+    the independently-queued unexpose on the ready cancel, silently
+    leaving the model exposed against the user's request."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
 
     model = ModelEntry(
-        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud",
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local",
     )
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
@@ -1425,20 +1438,16 @@ async def test_r_x_x_r_interleaving_preserves_independent_unexpose(tmp_path, mon
         await pilot.pause()
         await _open_model_screen(pilot)
         await pilot.pause()  # let reconcile settle
-        # 1. 'r' queues ready=False and cascades expose=False.
+        # 1. 'r' queues ready=False — no phantom unexpose is queued.
         await pilot.press("r")
         await pilot.pause()
         assert app.screen.queued_ready == {"ollama/a": False}
-        assert app.screen.queued_exposes == {"ollama/a": False}
-        # 2. 'x' cancels the cascaded expose=False back to persisted True.
-        await pilot.press("x")
-        await pilot.pause()
         assert app.screen.queued_exposes == {}
-        # 3. 'x' again queues an independent expose=False.
+        # 2. 'x' queues an independent unexpose — no ready gate needed.
         await pilot.press("x")
         await pilot.pause()
         assert app.screen.queued_exposes == {"ollama/a": False}
-        # 4. 'r' cancels the ready toggle; the independent unexpose must survive.
+        # 3. 'r' cancels the ready toggle; the unexpose must survive.
         await pilot.press("r")
         await pilot.pause()
 
@@ -1447,4 +1456,225 @@ async def test_r_x_x_r_interleaving_preserves_independent_unexpose(tmp_path, mon
         assert isinstance(app.screen, ModelScreen)
         assert app.screen.queued_ready == {}
         assert app.screen.queued_exposes == {"ollama/a": False}
+
+
+@pytest.mark.asyncio
+async def test_x_then_r_drops_queued_expose_with_notification(tmp_path, monkeypatch):
+    """'x' then 'r' on a ready, not-exposed local model must drop the queued
+    expose, not silently overwrite it. Regression: the ready→expose cascade
+    overwrote queued_exposes[mid]=False even when the entry was the user's
+    explicit expose=True, discarding their request with no notification and
+    showing a phantom 'unexpose' for a model that was never exposed."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama",
+                       model_name="a", location="local")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get",
+                        staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {"ollama/a": True}
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {"ollama/a": False}
+        # The user's expose was cancelled (with a notification), not
+        # silently flipped to a phantom unexpose.
+        assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_r_then_x_refuses_expose_when_ready_off_queued(tmp_path, monkeypatch):
+    """'r' then 'x' on a ready, not-exposed local model must refuse the
+    expose. Regression: 'x' validated against *persisted* ready=True, queued
+    the expose, and apply() always failed with 'model is not ready' after
+    the ready loop deleted the file."""
+    # (Identical seeding block to the test above: ready=True, exposed=False,
+    #  location="local".)
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama",
+                       model_name="a", location="local")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get",
+                        staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/a": False}
+        await pilot.press("x")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_exposes == {}   # refused, not queued
+        assert app.screen.queued_ready == {"ollama/a": False}  # user's ready kept
+
+
+@pytest.mark.asyncio
+async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypatch):
+    """'r' → 'x' → 'r' on a not-ready, not-exposed local model must end with
+    an empty queue. Regression: the third 'r' cancelled the ready flip but
+    left the expose queued (it was never cascade-marked because 'r' had
+    already queued ready=True), and apply() always failed with 'model is
+    not ready'."""
+    # (Identical seeding block, except ModelState(ready=False,
+    #  litellm_exposed=False).)
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama",
+                       model_name="a", location="local")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=False, litellm_exposed=False))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get",
+                        staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/a": True}
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {"ollama/a": True}
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}      # ready flip cancelled
+        assert app.screen.queued_exposes == {}     # stranded expose dropped
+
+
+@pytest.mark.asyncio
+async def test_exposed_column_gates_on_projected_ready(tmp_path, monkeypatch):
+    """The EXPOSED column must read the *projected* ready value, not the
+    persisted one: after 'r' queues ready-off on a ready+exposed model, the
+    row renders '–' even before apply runs. Regression: the column kept
+    rendering 'Y' because the screen no longer queues a phantom unexpose
+    entry for it to pick up."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama",
+                       model_name="a", location="local")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get",
+                        staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()
+        from textual.widgets import DataTable
+
+        def _exposed_cell() -> str:
+            table = app.screen.query_one("#model-table", DataTable)
+            # add_columns() auto-generates the ColumnKey, so the "EXPOSED"
+            # label is not itself a valid key — resolve the real one by
+            # label before get_cell.
+            column_key = next(
+                key for key, col in table.columns.items() if str(col.label) == "EXPOSED"
+            )
+            return str(table.get_cell(list(table.rows.keys())[0], column_key))
+
+        assert _exposed_cell() == "Y"   # ready+exposed renders Y
+        await pilot.press("r")
+        await pilot.pause()
+        assert _exposed_cell() == "–"    # projected not-ready gates it to –
 
