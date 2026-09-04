@@ -129,6 +129,79 @@ class LlamaCppProvider(Provider):
                 return str(candidate)
         return None
 
+    def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
+        """Remove the GGUF file(s) from HF cache and clean up orphaned blobs.
+
+        Deletes the specific file(s) listed in the variant from all snapshot
+        directories, then removes any orphaned blobs from the blobs/ directory.
+
+        HF cache structure:
+          hub/models--<org>--<repo>/
+            snapshots/<commit-hash>/<files>  (hard-links to blobs)
+            blobs/<sha256-hash>              (actual file content)
+
+        We delete the snapshot file links, then check if each blob is still
+        referenced by other snapshots. If not, we remove the blob too.
+        """
+        import hashlib
+        from pathlib import Path as _Path
+
+        repo = variant.get("repo")
+        files = variant.get("files")
+        if not repo or not files:
+            raise ValueError(f"llamacpp variant {variant['id']} missing repo/files")
+
+        hf_org, hf_name = repo.split("/", 1)
+        repo_dir = _hf_cache_dir() / f"models--{hf_org}--{hf_name}"
+        snapshots_dir = repo_dir / "snapshots"
+        blobs_dir = repo_dir / "blobs"
+
+        if not snapshots_dir.exists():
+            return  # Already absent
+
+        # Collect all files we're about to delete (for blob cleanup)
+        blobs_to_check: set[str] = set()
+
+        # Delete specified files from all snapshots
+        for snap in snapshots_dir.iterdir():
+            if not snap.is_dir():
+                continue
+            for f in files:
+                file_path = snap / f
+                if file_path.exists():
+                    # Compute blob hash before deletion (blobs are named by SHA256)
+                    try:
+                        blob_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                        blobs_to_check.add(blob_hash)
+                    except OSError:
+                        pass  # File unreadable, skip blob cleanup
+                    file_path.unlink()
+
+        # Clean up orphaned blobs
+        if not blobs_to_check:
+            return
+
+        # Build set of all files still referenced by remaining snapshots
+        referenced_blobs: set[str] = set()
+        for snap in snapshots_dir.iterdir():
+            if not snap.is_dir():
+                continue
+            for f in snap.iterdir():
+                if f.is_file():
+                    try:
+                        blob_hash = hashlib.sha256(f.read_bytes()).hexdigest()
+                        referenced_blobs.add(blob_hash)
+                    except OSError:
+                        pass  # Can't read, assume still referenced
+
+        # Delete blobs no longer referenced
+        if blobs_dir.exists():
+            for blob_hash in blobs_to_check:
+                if blob_hash not in referenced_blobs:
+                    blob_path = blobs_dir / blob_hash
+                    if blob_path.exists():
+                        blob_path.unlink()
+
     def list_local(self, runner: _Runner | None = None) -> list[LocalModel]:
         models: list[LocalModel] = []
         hub = _hf_cache_dir()

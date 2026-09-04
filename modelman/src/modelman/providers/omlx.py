@@ -117,5 +117,20 @@ class OMLXProvider(Provider):
             return None
         return str(target)
 
+    def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
+        """Remove the model directory (~/.omlx/models/<repo-basename>).
+
+        Deletes the entire directory for the repo. Safe to call even if
+        the directory is already absent (no-op).
+        """
+        import shutil
+
+        repo = variant.get("repo")
+        if not repo:
+            raise ValueError(f"omlx variant {variant['id']} missing repo")
+        target = _model_dir(self.config) / _basename(repo)
+        if target.exists():
+            shutil.rmtree(target)
+
 
 ProviderRegistry.register(OMLXProvider)

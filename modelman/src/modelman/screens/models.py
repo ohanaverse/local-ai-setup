@@ -412,17 +412,18 @@ class ModelScreen(Screen[None]):
             provider_entry = self.registry.provider(entry.provider_id)
         except KeyError:
             provider_entry = None
-        if target is False and model_has_local_artifact(entry, provider_entry):
-            # Reconcile is the only writer of ready=False for
-            # local-artifact models — the file is still on disk, so
-            # flipping the flag here would be invisible the moment the
-            # next reconcile re-syncs it back to True (the original
-            # reported bug).
-            self.app.notify(
-                "Reconcile controls local-model ready state; delete the file to mark not ready."
-            )
-            return
+        # Allow ready=False for all models. The apply() step will call
+        # provider.delete() to remove the file, then cascade unexpose if
+        # the model was exposed. Reconcile will re-sync ready=True only if
+        # the file somehow still exists after delete.
         self.queued_ready[mid] = target
+        # Cascade: ready=False must unexpose the model (expose depends on ready).
+        # Only queue this cascade if the model is currently exposed (or queued
+        # to be exposed) and we're toggling to not-ready.
+        if target is False:
+            current_exposed = self.queued_exposes.get(mid, self.state.get(mid).litellm_exposed)
+            if current_exposed:
+                self.queued_exposes[mid] = False
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()
         self.reload()
@@ -543,15 +544,28 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
-        # No not-ready gate: any model can be queued for delete.
-        # Apply() handles the absent-artifact case (skips the on-disk
-        # removal when provider.is_downloaded() reports False).
+        # "d" cascades: expose=off → ready=off (delete file) → registry removal.
+        # Queue in dependency order (apply() processes deletes last, so the
+        # registry entry survives long enough for ready/expose to apply).
         spec = _model_entry_to_variant(entry)
+        
+        # Step 1: Queue expose=off if currently exposed
+        current_exposed = self.queued_exposes.get(mid, self.state.get(mid).litellm_exposed)
+        if current_exposed:
+            self.queued_exposes[mid] = False
+        
+        # Step 2: Queue ready=off (will delete file) if currently ready
+        current_ready = self.queued_ready.get(mid, self.state.get(mid).ready)
+        if current_ready:
+            self.queued_ready[mid] = False
+        
+        # Step 3: Queue registry removal (processed last by apply())
         if mid in self.queued_deletes:
             self.queued_deletes.pop(mid)
         else:
             self.queued_deletes[mid] = spec
-        self.queued_ready.pop(mid, None)
+        
+        # Clear any conflicting queues
         self._ready_cascade_for_expose.discard(mid)
         self._refresh_pending_bar()
         self.reload()
