@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING
 
 from .litellm import apply_expose_queue
 from .providers._progress import DownloadCancelled
-from .registry import FamilyEntry, save_registry
+from .registry import (
+    FamilyEntry,
+    ModelEntry,
+    model_entry_to_variant,
+    save_registry,
+)
 from .state import save_state
 
 if TYPE_CHECKING:
@@ -101,6 +106,41 @@ def _reason(exc: BaseException) -> str:
         result = result[:197] + "…"
 
     return _sanitize(result)
+
+
+def _shared_artifact_owner(
+    registry: Registry, provider: object, variant: VariantSpec
+) -> ModelEntry | None:
+    """Another registry entry whose provider artifact resolves to the same
+    on-disk target as `variant`'s, or None.
+
+    Dir-based providers key their storage on a coarse segment of the repo
+    id (omlx uses the repo *basename*), so two registry entries can share
+    one artifact directory; removing it for one silently destroys the
+    other's weights. path_of() is the provider-neutral way to ask "where
+    does this variant live on disk". Returns None when the provider has
+    no path_of or the target can't be resolved — callers treat that as
+    "no conflict" and proceed with the normal delete.
+    """
+    path_of = getattr(provider, "path_of", None)
+    if not callable(path_of):
+        return None
+    try:
+        mine = path_of(variant)
+    except Exception:  # noqa: BLE001
+        return None
+    if mine is None:
+        return None
+    for m in registry.models:
+        if m.id == variant["id"] or m.provider_id != variant["provider"]:
+            continue
+        try:
+            theirs = path_of(model_entry_to_variant(m))
+        except Exception:  # noqa: BLE001
+            continue
+        if theirs == mine:
+            return m
+    return None
 
 
 @dataclass
@@ -213,15 +253,25 @@ class PendingChanges:
                     artifact_present = True
             emit(f"delete:start|{model_id}|{label}")
             if provider is not None and artifact_present:
-                # Reconcilable provider with an actual artifact to remove:
-                # ask it to delete the file.
-                try:
-                    self._delete(variant)
-                except Exception as exc:  # noqa: BLE001
-                    reason = _reason(exc)
-                    self.failures.append(f"delete {model_id}: {exc}")
+                conflict = _shared_artifact_owner(self.registry, provider, variant)
+                if conflict is not None:
+                    # Another registry entry resolves to the same on-disk
+                    # artifact; removing it would destroy that entry's
+                    # weights. Keep the file, still drop this entry's
+                    # registry/state rows, and surface why.
+                    reason = f"artifact shared with {conflict.id} — not removed"
+                    self.failures.append(f"delete {model_id}: {reason}")
                     emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    continue
+                else:
+                    # Reconcilable provider with an actual artifact to remove:
+                    # ask it to delete the file.
+                    try:
+                        self._delete(variant)
+                    except Exception as exc:  # noqa: BLE001
+                        reason = _reason(exc)
+                        self.failures.append(f"delete {model_id}: {exc}")
+                        emit(f"delete:fail|{model_id}|{label}|{reason}")
+                        continue
             # Either:
             # - flag-only provider (native/unmapped): no on-disk artifact,
             # - or reconcilable provider with no artifact: nothing to delete.
@@ -334,13 +384,23 @@ class PendingChanges:
                     emit(f"download:done|{model_id}|{label}")
             else:
                 emit(f"delete:start|{model_id}|{label}")
-                try:
-                    self._delete(variant)
-                except Exception as exc:  # noqa: BLE001
-                    reason = _reason(exc)
-                    self.failures.append(f"clear {model_id}: {exc}")
+                conflict = (
+                    _shared_artifact_owner(self.registry, provider, variant)
+                    if provider is not None
+                    else None
+                )
+                if conflict is not None:
+                    reason = f"artifact shared with {conflict.id} — not removed"
+                    self.failures.append(f"clear {model_id}: {reason}")
                     emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    continue
+                else:
+                    try:
+                        self._delete(variant)
+                    except Exception as exc:  # noqa: BLE001
+                        reason = _reason(exc)
+                        self.failures.append(f"clear {model_id}: {exc}")
+                        emit(f"delete:fail|{model_id}|{label}|{reason}")
+                        continue
                 # Unlike the full-delete step above, the ModelEntry stays in
                 # the registry — only its ready state and on-disk artifact
                 # are cleared. Wipe the cached path/size so modelman.toml

@@ -1497,7 +1497,7 @@ def test_run_apply_does_not_swallow_provider_instantiation_errors(tmp_path, monk
 def test_model_entry_to_variant_preserves_location():
     """Editing a cloud-located ollama model must pass its location into
     the ModelForm so the Location select doesn't default back to local."""
-    from modelman.screens.models import _model_entry_to_variant
+    from modelman.registry import model_entry_to_variant
 
     entry = ModelEntry(
         id="ollama/glm-5.2:cloud",
@@ -1506,20 +1506,18 @@ def test_model_entry_to_variant_preserves_location():
         model_name="glm-5.2:cloud",
         location="cloud",
     )
-    variant = _model_entry_to_variant(entry)
+    variant = model_entry_to_variant(entry)
     assert variant.get("location") == "cloud"
 
 
 def test_round_trip_preserves_quantizations():
-    """`_variant_to_model_entry` followed by `_model_entry_to_variant`
+    """`_variant_to_model_entry` followed by `model_entry_to_variant`
     must preserve every field, including `quantizations`. Catches the
     silent round-trip loss documented in the PR 2 final review
-    (Important #1: `_model_entry_to_variant` used to emit
+    (Important #1: `model_entry_to_variant` used to emit
     `quantizations: None` regardless of the entry's stored Fetch)."""
-    from modelman.screens.models import (
-        _model_entry_to_variant,
-        _variant_to_model_entry,
-    )
+    from modelman.registry import model_entry_to_variant
+    from modelman.screens.models import _variant_to_model_entry
 
     quants = ["Q4_K_M", "Q5_K_M", "Q8_0"]
     variant = {
@@ -1539,7 +1537,7 @@ def test_round_trip_preserves_quantizations():
     assert entry.fetch is not None
     assert entry.fetch.quantizations == quants
 
-    roundtripped = _model_entry_to_variant(entry)
+    roundtripped = model_entry_to_variant(entry)
     assert roundtripped["quantizations"] == quants
     assert roundtripped["repo"] == "o/r"
     assert roundtripped["files"] == ["x.gguf"]

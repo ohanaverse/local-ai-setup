@@ -22,8 +22,8 @@ from ..registry import (
     ModelEntry,
     Registry,
     _cost_from_dict,
-    _cost_to_dict,
     known_families,
+    model_entry_to_variant,
     provider_config,
     save_registry,
 )
@@ -155,34 +155,6 @@ def _state_kwargs(s: ModelState) -> dict:
     from dataclasses import asdict
 
     return asdict(s)
-
-
-def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
-    """Build a VariantSpec-shaped dict from a ModelEntry for provider APIs.
-
-    Providers consume the legacy TypedDict (provider, name, repo,
-    files, model_info). ModelEntry stores repo/files in `fetch`. We
-    don't carry `model_info` from the registry into the provider call
-    (providers read what they need from their own state).
-
-    `cost` is serialized to a plain dict so any provider that JSON-
-    serializes its VariantSpec argument does not receive a non-JSON
-    dataclass.
-    """
-    repo = entry.fetch.repo if entry.fetch else None
-    files = entry.fetch.files if entry.fetch else None
-    quantizations = entry.fetch.quantizations if entry.fetch else None
-    return {
-        "id": entry.id,
-        "provider": entry.provider_id,
-        "name": entry.model_name,
-        "repo": repo,
-        "files": files,
-        "quantizations": quantizations,
-        "location": entry.location,
-        "model_info": dict(entry.model_info),
-        "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
-    }
 
 
 class ModelScreen(Screen[None]):
@@ -565,7 +537,7 @@ class ModelScreen(Screen[None]):
         # the unexpose — queueing ready=False/expose=False here would double-
         # delete the file and, on cancel, leave orphaned queues that still
         # destroy the model. A second "d" toggles the delete back off.
-        spec = _model_entry_to_variant(entry)
+        spec = model_entry_to_variant(entry)
         if mid in self.queued_deletes:
             self.queued_deletes.pop(mid)
         else:
@@ -588,7 +560,7 @@ class ModelScreen(Screen[None]):
             return
         from .forms import ModelForm
 
-        spec = _model_entry_to_variant(entry)
+        spec = model_entry_to_variant(entry)
         self.app.push_screen(
             ModelForm(
                 providers=self._provider_list(),
@@ -730,7 +702,7 @@ class ModelScreen(Screen[None]):
 
         providers: dict[str, object] = {}
         specs_by_id = {
-            m.id: _model_entry_to_variant(m)
+            m.id: model_entry_to_variant(m)
             for m in self.registry.models
             if m.id in self.queued_ready
         }

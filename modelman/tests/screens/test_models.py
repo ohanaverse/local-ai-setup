@@ -12,6 +12,7 @@ from modelman.registry import (
     ProviderEntry,
     Registry,
     load_registry,
+    model_entry_to_variant,
     save_registry,
 )
 from modelman.screens.models import (
@@ -19,7 +20,6 @@ from modelman.screens.models import (
     _format_per_token,
     _format_price,
     _format_subscription,
-    _model_entry_to_variant,
     _variant_to_model_entry,
 )
 from modelman.state import ModelState, StateStore, load_state, save_state
@@ -106,7 +106,7 @@ def test_model_entry_to_variant_carries_cost():
         location="cloud",
         cost=Cost(subscription_price=20.0, subscription_period="month"),
     )
-    spec = _model_entry_to_variant(entry)
+    spec = model_entry_to_variant(entry)
     assert spec["cost"] == {
         "subscription_price": 20.0,
         "subscription_period": "month",

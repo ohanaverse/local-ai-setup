@@ -23,6 +23,7 @@ from modelman.queue import PendingChanges
 from modelman.registry import (
     AuthConfig,
     FamilyEntry,
+    Fetch,
     ModelEntry,
     ProviderEntry,
     Registry,
@@ -1704,3 +1705,122 @@ def test_apply_empty_queue_emits_apply_done(tmp_path):
     # No work, no on-disk writes.
     assert not reg_path.exists()
     assert not state_path.exists()
+
+
+def test_apply_delete_skips_artifact_shared_with_other_entry(tmp_path):
+    """Deleting an entry whose on-disk artifact is shared with another
+    registry entry (omlx keys its dir on the repo *basename*, so org1/qwen
+    and org2/qwen collide) must not remove the file — that would destroy
+    the other entry's weights. The registry/state cleanup must still run."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    a = ModelEntry(
+        id="omlx/a",
+        family="f",
+        provider_id="omlx",
+        model_name="a",
+        fetch=Fetch(repo="org1/qwen", files=None, quantizations=None),
+    )
+    b = ModelEntry(
+        id="omlx/b",
+        family="f",
+        provider_id="omlx",
+        model_name="b",
+        fetch=Fetch(repo="org2/qwen", files=None, quantizations=None),
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True))
+
+    omlx = MagicMock()
+    omlx.name = "omlx"
+    # Both entries resolve to ~/.omlx/models/qwen — the basename collision.
+    omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.is_downloaded.return_value = True
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"omlx": omlx},
+        deletes=[("omlx/a", _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen"))],
+    )
+    pending.apply()
+
+    assert omlx.delete.call_count == 0  # the shared file was kept
+    assert all(m.id != "omlx/a" for m in reg.models)  # registry row still removed
+    assert "omlx/a" not in state.models  # state row still removed
+    assert any("shared with omlx/b" in f for f in pending.failures)
+
+
+def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
+    """Ready-off on an entry whose artifact directory is shared with another
+    registry entry must not remove the file. Regression: the ready-off loop
+    called provider.delete() unconditionally, rmtree'ing the directory the
+    other entry's weights live in. State still clears and the unexpose
+    cascade still runs — only the file survives."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    a = ModelEntry(
+        id="omlx/a",
+        family="f",
+        provider_id="omlx",
+        model_name="a",
+        fetch=Fetch(repo="org1/qwen", files=None, quantizations=None),
+    )
+    b = ModelEntry(
+        id="omlx/b",
+        family="f",
+        provider_id="omlx",
+        model_name="b",
+        fetch=Fetch(repo="org2/qwen", files=None, quantizations=None),
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, litellm_exposed=True))
+    # The unexpose cascade routes through the LiteLLM config writer for
+    # reconcilable providers, so seed a config the unexpose can actually
+    # apply — without it the flag flip is unreachable and the cascade
+    # assertion below could never pass.
+    from modelman.litellm import save_litellm_config
+
+    litellm_path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {"model_list": [{"model_name": "omlx/a"}], "general_settings": {}}, litellm_path
+    )
+
+    omlx = MagicMock()
+    omlx.name = "omlx"
+    omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.is_downloaded.return_value = True
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"omlx": omlx},
+        ready=[
+            ("omlx/a", _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen"), False)
+        ],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    assert omlx.delete.call_count == 0
+    assert state.get("omlx/a").ready is False  # state cleared
+    assert state.get("omlx/a").litellm_exposed is False  # cascade still ran
+    assert any("shared with omlx/b" in f for f in pending.failures)
+    # Ready-off never removes registry rows — the entry survives.
+    assert any(m.id == "omlx/a" for m in reg.models)

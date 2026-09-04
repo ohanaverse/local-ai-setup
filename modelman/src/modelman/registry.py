@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 
 if TYPE_CHECKING:
+    from .providers.base import VariantSpec
     from .state import StateStore
 
 
@@ -384,6 +385,38 @@ def _cost_from_dict(d: dict[str, Any]) -> Cost:
         subscription_period=d.get("subscription_period"),
         extra=unknown_keys(d, _COST_FIELDS | _LEGACY_COST_FIELDS),
     )
+
+
+def model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
+    """Build a VariantSpec-shaped dict from a ModelEntry for provider APIs.
+
+    Providers consume the legacy TypedDict (provider, name, repo,
+    files, model_info). ModelEntry stores repo/files in `fetch`. We
+    don't carry `model_info` from the registry into the provider call
+    (providers read what they need from their own state).
+
+    `cost` is serialized to a plain dict so any provider that JSON-
+    serializes its VariantSpec argument does not receive a non-JSON
+    dataclass.
+
+    Lives here (not in the screen layer) so queue.py and sync-adjacent
+    callers can build specs without importing screens (screens import
+    queue — importing back would be circular).
+    """
+    repo = entry.fetch.repo if entry.fetch else None
+    files = entry.fetch.files if entry.fetch else None
+    quantizations = entry.fetch.quantizations if entry.fetch else None
+    return {
+        "id": entry.id,
+        "provider": entry.provider_id,
+        "name": entry.model_name,
+        "repo": repo,
+        "files": files,
+        "quantizations": quantizations,
+        "location": entry.location,
+        "model_info": dict(entry.model_info),
+        "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
+    }
 
 
 def _fetch_to_dict(f: Fetch) -> dict[str, Any]:
