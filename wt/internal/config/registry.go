@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,11 @@ import (
 
 	"github.com/BurntSushi/toml"
 )
+
+// ErrRegistryMissing is returned by loadRegistry when the modelman-owned
+// registry.toml does not exist yet. cmd/wt tolerates it for command agents
+// (which have no model layer) while still failing closed for real agents.
+var ErrRegistryMissing = errors.New("model registry not found")
 
 // RegistryPath returns the modelman-owned registry.toml location. It honors
 // MODELMAN_REGISTRY as an explicit override, then XDG_CONFIG_HOME, falling
@@ -81,7 +87,7 @@ func loadRegistry() ([]Provider, []Model, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf(
-			"model registry not found at %s — seed it with `modelman migrate`", path)
+			"%w at %s — seed it with `modelman migrate`", ErrRegistryMissing, path)
 	}
 	if err != nil {
 		return nil, nil, err

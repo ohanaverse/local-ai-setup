@@ -477,6 +477,126 @@ func TestUnknownAgentFailsFast(t *testing.T) {
 	}
 }
 
+// A command agent (shell) must launch even when registry.toml is missing:
+// commands have no model layer, so the missing-registry config error must
+// not block the worktree picker. Regression guard for the a.cfgErr gate.
+func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	oldInstallGuard := maybeInstallGuard
+	maybeInstallGuard = func() {}
+	defer func() { maybeInstallGuard = oldInstallGuard }()
+
+	var called bool
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+		called = true
+		return nil
+	}
+	defer func() { tuiRun = oldTuiRun }()
+	oldStdinTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = oldStdinTTY }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--agent", "shell"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected tuiRun to be called (gate should be skipped for command agent)")
+	}
+}
+
+// A real (model-driven) agent must still fail closed with the clear
+// "seed with modelman migrate" message when registry.toml is missing.
+func TestNonCommandAgentStillFailsWithoutRegistry(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--agent", "claude"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected config error for non-command agent with missing registry")
+	}
+	if !strings.Contains(err.Error(), "modelman migrate") {
+		t.Errorf("error should point at `modelman migrate`, got: %v", err)
+	}
+}
+
+// TestCommandAgentDirectLaunchSkipsMissingRegistry guards the non-TUI
+// launch path: wt --cwd --agent shell on a fresh machine must skip the
+// missing-registry gate and proceed to launchFiltered.
+func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	withCleanConfigEnv(t, t.TempDir())
+
+	var called bool
+	var gotAgent string
+	var gotPath string
+	oldLaunchFiltered := launchFiltered
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+		called = true
+		gotAgent = agent
+		gotPath = worktreePath
+		return nil
+	}
+	defer func() { launchFiltered = oldLaunchFiltered }()
+	oldMaybeInstallGuard := maybeInstallGuard
+	maybeInstallGuard = func() {}
+	defer func() { maybeInstallGuard = oldMaybeInstallGuard }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--cwd", "--agent", "shell"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected launchFiltered to be called (gate should be skipped for command agent)")
+	}
+	if gotAgent != "shell" {
+		t.Errorf("agent = %q, want shell", gotAgent)
+	}
+	// macOS /var is a symlink to /private/var; normalize before comparing.
+	realGot, errGot := filepath.EvalSymlinks(gotPath)
+	realWant, errWant := filepath.EvalSymlinks(dir)
+	if errGot != nil || errWant != nil {
+		if gotPath != dir {
+			t.Errorf("worktreePath = %q, want %q", gotPath, dir)
+		}
+	} else if realGot != realWant {
+		t.Errorf("worktreePath = %q, want %q", gotPath, dir)
+	}
+}
+
 // TestRunLaunchPath verifies the shared dispatcher routes each entry point
 // to the right outcome: inside-repo branches install the guard and launch;
 // the outside-repo branch skips the guard; and the TUI branch

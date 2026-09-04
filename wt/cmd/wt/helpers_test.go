@@ -49,6 +49,7 @@ func writeEmptyRegistry(t *testing.T, home string) {
 // real registry instead of the temp fixture.
 func withCleanConfigEnv(t *testing.T, home string) {
 	t.Helper()
+	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("MODELMAN_REGISTRY", "")
 }
