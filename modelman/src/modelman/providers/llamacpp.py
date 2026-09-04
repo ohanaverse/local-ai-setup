@@ -205,12 +205,12 @@ class LlamaCppProvider(Provider):
         for snap in snapshots_dir.iterdir():
             if not snap.is_dir():
                 continue
-            for f in snap.iterdir():
-                if f.is_file():
-                    blob_hash = _blob_hash_of(f)
+            for entry in snap.iterdir():
+                if entry.is_file():
+                    blob_hash = _blob_hash_of(entry)
                     if blob_hash is None:
                         try:
-                            blob_hash = hashlib.sha256(f.read_bytes()).hexdigest()
+                            blob_hash = hashlib.sha256(entry.read_bytes()).hexdigest()
                         except OSError:
                             blob_hash = None
                     if blob_hash is not None:
