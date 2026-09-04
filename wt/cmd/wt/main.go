@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -275,8 +276,11 @@ func rootCmd() *cobra.Command {
 			pinned := mustGetString(cmd, "model")
 
 			// Launch paths require a valid config. The `wt config` subcommand
-			// bypasses this so it can repair a broken config.toml.
-			if a.cfgErr != nil {
+			// bypasses this so it can repair a broken config.toml. Command
+			// agents (shell, etc.) have no model layer, so a missing modelman
+			// registry is tolerated for them — only real agents need the
+			// registry, and they still fail closed with the migrate hint.
+			if a.cfgErr != nil && !(agent != "" && agents.IsCommand(agent) && errors.Is(a.cfgErr, config.ErrRegistryMissing)) {
 				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
 			}
 
