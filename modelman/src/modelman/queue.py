@@ -384,23 +384,36 @@ class PendingChanges:
                     emit(f"download:done|{model_id}|{label}")
             else:
                 emit(f"delete:start|{model_id}|{label}")
-                conflict = (
-                    _shared_artifact_owner(self.registry, provider, variant)
-                    if provider is not None
-                    else None
-                )
-                if conflict is not None:
-                    reason = f"artifact shared with {conflict.id} — not removed"
-                    self.failures.append(f"clear {model_id}: {reason}")
-                    emit(f"delete:fail|{model_id}|{label}|{reason}")
-                else:
+                # Mirror the deletes loop's guard: a stale-ready model whose
+                # artifact is already gone must clear cleanly, not fail and
+                # strand state.ready=True with the unexpose cascade skipped.
+                artifact_present = True
+                if provider is not None:
                     try:
-                        self._delete(variant)
-                    except Exception as exc:  # noqa: BLE001
-                        reason = _reason(exc)
-                        self.failures.append(f"clear {model_id}: {exc}")
+                        artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001
+                        # Cannot confirm absence; fall back to "try the call".
+                        artifact_present = True
+                if artifact_present:
+                    conflict = (
+                        _shared_artifact_owner(self.registry, provider, variant)
+                        if provider is not None
+                        else None
+                    )
+                    if conflict is not None:
+                        reason = f"artifact shared with {conflict.id} — not removed"
+                        self.failures.append(f"clear {model_id}: {reason}")
                         emit(f"delete:fail|{model_id}|{label}|{reason}")
-                        continue
+                    else:
+                        try:
+                            self._delete(variant)
+                        except Exception as exc:  # noqa: BLE001
+                            reason = _reason(exc)
+                            self.failures.append(f"clear {model_id}: {exc}")
+                            emit(f"delete:fail|{model_id}|{label}|{reason}")
+                            continue
+                # (state clear + cascade code below, unchanged — runs whether
+                # the artifact was removed, shared-kept, or already absent)
                 # Unlike the full-delete step above, the ModelEntry stays in
                 # the registry — only its ready state and on-disk artifact
                 # are cleared. Wipe the cached path/size so modelman.toml

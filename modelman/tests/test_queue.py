@@ -1824,3 +1824,43 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     assert any("shared with omlx/b" in f for f in pending.failures)
     # Ready-off never removes registry rows — the entry survives.
     assert any(m.id == "omlx/a" for m in reg.models)
+
+
+def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_path):
+    """Ready-off on a stale-ready model (artifact removed outside modelman,
+    reconcile hasn't run since) must clear cleanly, not fail. Regression:
+    the ready-off branch lacked the deletes loop's is_downloaded() guard,
+    so `ollama rm` on an absent tag raised, state.ready stayed stale-True,
+    and the unexpose cascade was skipped via continue — leaving a route in
+    config.yaml to a model whose file is gone."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    providers["ollama"].is_downloaded.return_value = False  # artifact already gone
+    # The unexpose cascade routes through the LiteLLM config writer for
+    # reconcilable providers, so seed a config the unexpose can actually
+    # apply — without it the flag flip is unreachable and the cascade
+    # assertion below could never pass (same constraint as the Task 2
+    # shared-artifact test above).
+    from modelman.litellm import save_litellm_config
+
+    litellm_path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}}, litellm_path
+    )
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers=providers,
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+        litellm_path=litellm_path,
+    )
+    pending.apply()
+
+    assert providers["ollama"].delete.call_count == 0     # no rm on a gone model
+    assert state.get("ollama/a").ready is False           # stale flag cleared
+    assert state.get("ollama/a").litellm_exposed is False # cascade ran
+    assert pending.failures == []
