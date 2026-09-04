@@ -338,9 +338,11 @@ class ModelScreen(Screen[None]):
 
     def _is_ready(self, model_id: str) -> bool:
         """Truth about whether a model is ready to use — a pure read of
-        state.ready. Reconcile (on mount/resume) is the only writer of
-        this flag for local-artifact models; the ready toggle's apply
-        step is the writer for cloud/native models."""
+        state.ready. Two writers: reconcile (on mount/resume) sets it from
+        disk truth for local-artifact models, and the ready toggle's apply
+        step writes it in both directions (ready-on downloads or flips the
+        flag, ready-off clears the artifact and the flag) for models in
+        any location."""
         return self.state.get(model_id).ready
 
     def _projected_ready(self, model_id: str) -> bool:

@@ -13,6 +13,7 @@ Registry/StateStore mutation; VariantSpec feeds the provider call.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -1600,6 +1601,61 @@ def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
     assert state.get("mlx/a").ready is False
     assert state.get("mlx/a").disk_path is None
     assert pending.failures == []
+
+
+def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
+    tmp_path,
+):
+    """Ready-off on a flag-only provider whose recorded artifact can't be
+    removed (read-only parent directory) must record the failure and still
+    complete the apply: state is cleared (ready=False, disk_path=None) and
+    the run reaches the final save instead of propagating the OSError.
+
+    Importance: apply() runs deletes and moves destructively BEFORE the
+    final save_registry/save_state. An unguarded removal error used to
+    propagate out of apply() at that point — every already-executed
+    delete/move would be lost from the persisted files on the next load,
+    leaving registry rows pointing at deleted artifacts. The artifact
+    staying on disk is acceptable; a half-applied registry is not."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    model = ModelEntry(
+        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
+                                  auth=AuthConfig(type="none"))],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    # Artifact lives in a directory we make read-only so unlink() raises
+    # PermissionError (an OSError) inside _remove_local_artifact.
+    parent = tmp_path / "readonly-dir"
+    parent.mkdir()
+    artifact = parent / "weights.bin"
+    artifact.write_bytes(b"weights")
+    state = StateStore()
+    state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
+
+    pending = PendingChanges(
+        registry=reg, state=state, family="f",
+        registry_path=reg_path, state_path=state_path,
+        providers={},  # no Provider class registered for 'mlx' → flag-only
+        ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
+    )
+
+    os.chmod(parent, 0o500)  # strip write permission: unlink() will fail
+    try:
+        pending.apply()  # must NOT raise
+    finally:
+        os.chmod(parent, 0o700)  # restore so tmp_path cleanup succeeds
+
+    assert artifact.exists()  # removal failed — the file is still there
+    assert state.get("mlx/a").ready is False
+    assert state.get("mlx/a").disk_path is None
+    assert len(pending.failures) == 1
+    assert "mlx/a" in pending.failures[0]
+    assert pending.failures[0].startswith("clear mlx/a:")
 
 
 def test_apply_expose_queue_ensures_settings_when_all_items_fail(tmp_path, monkeypatch):

@@ -176,8 +176,9 @@ class PendingChanges:
     # Each queued item carries (model_id, VariantSpec, target_ready). For a
     # provider present in `providers`, target=True downloads / target=False
     # clears (rm) without touching the registry entry. For a provider absent
-    # from `providers` (flag-only: native or unmapped), either target just
-    # flips state.ready — no provider call is made.
+    # from `providers` (flag-only: native or unmapped), target=True just
+    # flips state.ready (no provider call), while target=False flips it AND
+    # removes the on-disk artifact recorded in state.disk_path.
     ready: list[tuple[str, VariantSpec, bool]] = field(default_factory=list)
     deletes: list[tuple[str, VariantSpec]] = field(default_factory=list)
     # (model_id, target_exposed) pairs applied after downloads, before save.
@@ -382,7 +383,21 @@ class PendingChanges:
                 # what a mapped provider's delete() would do.
                 emit(f"ready:start|{model_id}|{label}")
                 if not target:
-                    _remove_local_artifact(self.state, variant)
+                    try:
+                        _remove_local_artifact(self.state, variant)
+                    except Exception as exc:  # noqa: BLE001
+                        # The artifact couldn't be removed (read-only volume,
+                        # unreadable directory). Record the failure and still
+                        # fall through to the state clear + unexpose cascade
+                        # — like the mapped branch, the artifact stays but
+                        # state stays consistent. This must never propagate:
+                        # deletes/moves already ran destructively and the
+                        # final save hasn't happened yet, so an abort here
+                        # would resurrect a registry pointing at deleted
+                        # files.
+                        reason = _reason(exc)
+                        self.failures.append(f"clear {model_id}: {reason}")
+                        emit(f"delete:fail|{model_id}|{label}|{reason}")
                     # Wipe the cached path/size like the reconcilable clear
                     # below, so modelman.toml doesn't keep pointing at a
                     # file that was just removed.
