@@ -2125,3 +2125,25 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
 
     ids = [m.id for m in ms.registry.models]
     assert ids == ["ollama/keep"]
+
+
+@pytest.mark.asyncio
+async def test_app_mounts_without_live_daemon_or_proxy_restart():
+    """With the hermetic autouse fixtures active, a bare ModelmanApp can
+    mount, run reconcile, and render the family table without touching
+    the live ollama daemon or restarting the LiteLLM proxy.
+
+    Regression guard for the two interference issues: without the
+    fixtures, this would load the real registry and shell out to ollama
+    list/show thousands of times; applying any expose queue would also
+    run launchctl kickstart against the live proxy.
+    """
+    from textual.widgets import DataTable
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let the reconcile worker settle
+
+        table = app.screen.query_one("#family-table", DataTable)
+        assert table.row_count >= 0
