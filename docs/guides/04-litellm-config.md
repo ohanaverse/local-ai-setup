@@ -125,7 +125,7 @@ Exposed ollama/gemma4:12b-mlx through LiteLLM.
 Unexposed ollama/gemma4:12b-mlx.
 ```
 
-TUI — same toggle from the interactive UI (bare `uv run modelman`): press `x` on a model row; it queues the change and applies it on exit (downloading/pulling first if the model isn't ready yet); the EXPOSED column shows `Y` (see [02-providers-and-models](02-providers-and-models.md)).
+TUI — same toggle from the interactive UI (bare `uv run modelman`): press `x` on a model row; it queues the change and applies it on exit (downloading/pulling first if the model isn't ready yet); the EXPOSED column shows `Y` once the flag is set AND the model is ready (cloud models — `openrouter/*` or `location = "cloud"` rows — are exempt from the ready gate — see [02-providers-and-models](02-providers-and-models.md)).
 
 Before/after, using the real files read-only. This illustrates the `expose` operation on `ollama/gpt-oss:20b`, a model that is in the registry and ready but currently has no LiteLLM row and `litellm_exposed = false`:
 

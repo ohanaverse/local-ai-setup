@@ -6,6 +6,7 @@ from modelman.litellm import (
     LiteLLMConfigError,
     _database_url_from_config,
     _reverse_model_index,
+    _validated_entry,
     build_model_list_entry,
     ensure_litellm_settings,
     load_litellm_config,
@@ -13,7 +14,8 @@ from modelman.litellm import (
     save_litellm_config,
     set_exposed,
 )
-from modelman.registry import AuthConfig, Cost, ModelEntry, ProviderEntry
+from modelman.registry import AuthConfig, Cost, ModelEntry, ProviderEntry, Registry
+from modelman.state import ModelState, StateStore
 
 
 def _provider(pid, *, base_url=None, secret_ref=None, auth_type="none"):
@@ -525,6 +527,30 @@ def test_restart_proxy_failure_is_nonfatal(monkeypatch):
     warnings = restart_litellm_proxy()
     assert len(warnings) == 1
     assert "restart" in warnings[0].lower()
+
+
+def test_validated_entry_accepts_not_ready_location_cloud_model():
+    """An ollama model explicitly marked location='cloud' is exempt from
+    the ready gate at apply time, matching the TUI EXPOSED column's
+    location-aware cloud exemption."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none")),
+        ],
+        models=[
+            ModelEntry(
+                id="ollama/kimi-k3:cloud",
+                family="f",
+                provider_id="ollama",
+                model_name="kimi-k3:cloud",
+                location="cloud",
+            )
+        ],
+    )
+    state = StateStore()
+    state.set("ollama/kimi-k3:cloud", ModelState(ready=False))
+    entry = _validated_entry(registry, state, "ollama/kimi-k3:cloud")
+    assert entry["model_name"] == "ollama/kimi-k3:cloud"
 
 
 def test_roundtrip_preserves_comments_byte_identical(tmp_path):

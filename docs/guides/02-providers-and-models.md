@@ -214,7 +214,7 @@ uv run modelman unexpose ollama/gpt-oss:20b
 Unexposed ollama/gpt-oss:20b.
 ```
 
-On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y`).
+On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y` if both the flag is set and the model is ready, with cloud models — `openrouter/*` or `location = "cloud"` rows — exempt from the ready gate).
 
 ## Verification
 
