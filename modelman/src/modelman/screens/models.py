@@ -389,10 +389,11 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        # Allow ready=False for all models. The apply() step will call
-        # provider.delete() to remove the file, then cascade unexpose if
-        # the model was exposed. Reconcile will re-sync ready=True only if
-        # the file somehow still exists after delete.
+        # Allow ready=False for all models. The apply() step removes the
+        # on-disk artifact — provider.delete() for mapped providers, or the
+        # disk_path recorded in state for flag-only ones — then cascades the
+        # unexpose if the model was exposed. Reconcile re-syncs ready=True
+        # only if the file somehow still exists after delete.
         self.queued_ready[mid] = target
         # Cascade: ready=False must unexpose the model (expose depends on ready).
         # Only queue this cascade if the model is currently exposed (or queued

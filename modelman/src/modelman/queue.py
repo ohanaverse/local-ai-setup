@@ -108,6 +108,28 @@ def _reason(exc: BaseException) -> str:
     return _sanitize(result)
 
 
+def _remove_local_artifact(state: StateStore, variant: VariantSpec) -> None:
+    """Best-effort removal of the on-disk artifact recorded in state.
+
+    Used when no provider delete() runs — flag-only providers (native or
+    unmapped) on ready-off, or a provider class without a delete
+    implementation: unlink the recorded disk_path file (or dangling
+    symlink), or an empty directory at that path. A non-empty directory
+    is left alone — it may hold content the registry doesn't know about.
+    """
+    import os
+    import shutil
+
+    local_path = state.get(variant["id"]).disk_path
+    if not local_path:
+        return
+    p = Path(local_path)
+    if p.is_symlink() or p.is_file():
+        p.unlink()
+    elif p.is_dir() and not os.listdir(p):
+        shutil.rmtree(p)
+
+
 def _shared_artifact_owner(
     registry: Registry, provider: object, variant: VariantSpec
 ) -> ModelEntry | None:
@@ -354,10 +376,27 @@ class PendingChanges:
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
             if provider is None:
-                # Flag-only provider (native or unmapped): no download/delete
-                # mechanics exist. Just flip the flag.
+                # Flag-only provider (native or unmapped): no provider call
+                # exists — but ready-off still means "remove the artifact",
+                # so drop the file recorded in state.disk_path, mirroring
+                # what a mapped provider's delete() would do.
                 emit(f"ready:start|{model_id}|{label}")
-                self.state.set(model_id, replace(self.state.get(model_id), ready=target))
+                if not target:
+                    _remove_local_artifact(self.state, variant)
+                    # Wipe the cached path/size like the reconcilable clear
+                    # below, so modelman.toml doesn't keep pointing at a
+                    # file that was just removed.
+                    self.state.set(
+                        model_id,
+                        replace(
+                            self.state.get(model_id),
+                            ready=target,
+                            disk_path=None,
+                            size_bytes=None,
+                        ),
+                    )
+                else:
+                    self.state.set(model_id, replace(self.state.get(model_id), ready=target))
                 emit(f"ready:done|{model_id}|{label}")
             elif target:
                 emit(f"download:start|{model_id}|{label}")
@@ -509,18 +548,5 @@ class PendingChanges:
         if hasattr(provider, "delete"):
             provider.delete(variant)  # type: ignore[attr-defined]
             return
-        # Fallback: providers without delete() just unlink the file.
-        # Locate the local path from state (the legacy code read
-        # self.manifest.downloaded[vid]["local_path"]; the equivalent
-        # here is state.models[vid].disk_path).
-        import os
-        import shutil
-        from pathlib import Path as _P
-
-        local_path = self.state.get(variant["id"]).disk_path
-        if local_path:
-            p = _P(local_path)
-            if p.is_file():
-                p.unlink()
-            elif p.is_dir() and not os.listdir(p):
-                shutil.rmtree(p)
+        # Fallback: providers without delete() just remove the recorded file.
+        _remove_local_artifact(self.state, variant)

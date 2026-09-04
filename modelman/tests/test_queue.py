@@ -1565,6 +1565,43 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     assert state.get("claude/native").litellm_exposed is False
 
 
+def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
+    """Ready-off on a flag-only provider (a [[providers]] entry with no
+    registered Provider class — e.g. a hand-edited registry) must remove the
+    artifact recorded in state.disk_path. Regression: the branch only
+    flipped state.ready=False, so the file stayed on disk forever while
+    state claimed not-ready, with no writer (reconcile skips unmapped
+    providers) ever correcting the contradiction."""
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    model = ModelEntry(
+        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
+                                  auth=AuthConfig(type="none"))],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    artifact = tmp_path / "weights.bin"
+    artifact.write_bytes(b"weights")
+    state = StateStore()
+    state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
+
+    pending = PendingChanges(
+        registry=reg, state=state, family="f",
+        registry_path=reg_path, state_path=state_path,
+        providers={},  # no Provider class registered for 'mlx' → flag-only
+        ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
+    )
+    pending.apply()
+
+    assert not artifact.exists()                    # recorded artifact removed
+    assert state.get("mlx/a").ready is False
+    assert state.get("mlx/a").disk_path is None
+    assert pending.failures == []
+
+
 def test_apply_expose_queue_ensures_settings_when_all_items_fail(tmp_path, monkeypatch):
     # A fully-failed queue (model not ready) must still persist the
     # owned-settings fix and bounce the proxy: the ensure is orthogonal
