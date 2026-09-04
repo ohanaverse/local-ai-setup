@@ -13,7 +13,7 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..litellm import default_litellm_config_path, is_cloud, provider_policy
+from ..litellm import default_litellm_config_path, is_cloud_effective, provider_policy
 from ..queue import PendingChanges
 from ..registry import (
     DEFAULT_PROVIDER_IDS,
@@ -344,10 +344,11 @@ class ModelScreen(Screen[None]):
                     exposed = self.queued_exposes[m.id]
                 # A model is only "effectively exposed" in this column if the
                 # exposure flag is set AND the model is ready. Cloud models
-                # (no local download) are exempt from the ready gate — the
-                # same exemption `litellm._validated_entry` applies at the
-                # apply gate — so they render 'Y' as long as the flag is on.
-                ready_or_cloud = ready or is_cloud(m.provider_id)
+                # (openrouter, or ollama rows with location="cloud") are
+                # exempt from the ready gate — the same exemption
+                # `litellm._validated_entry` applies at the apply gate — so
+                # they render 'Y' as long as the flag is on.
+                ready_or_cloud = ready or is_cloud_effective(m, self.registry)
                 exposed_str = "Y" if (exposed and ready_or_cloud) else "–"
                 mt.add_row(
                     m.family,
