@@ -24,7 +24,6 @@ from ..registry import (
     _cost_from_dict,
     _cost_to_dict,
     known_families,
-    model_has_local_artifact,
     provider_config,
     save_registry,
 )
@@ -418,10 +417,6 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        try:
-            provider_entry = self.registry.provider(entry.provider_id)
-        except KeyError:
-            provider_entry = None
         # Allow ready=False for all models. The apply() step will call
         # provider.delete() to remove the file, then cascade unexpose if
         # the model was exposed. Reconcile will re-sync ready=True only if
