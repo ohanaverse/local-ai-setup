@@ -457,11 +457,21 @@ class ModelScreen(Screen[None]):
                 # be exposed, and that request is now cancelled.
                 self.queued_ready.pop(mid, None)
                 self._ready_cascade_for_expose.discard(mid)
+            # A prior 'r' press may have cascaded an unexpose in for this
+            # model; cancelling the expose toggle back to its persisted
+            # value must also drop that cascade marker, or a later 'r'
+            # cancel would reclaim an independently-queued unexpose.
+            self._expose_cascade_for_ready.discard(mid)
             self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
             self._refresh_pending_bar()
             self.reload()
             return
         self.queued_exposes[mid] = target
+        # This expose is now queued independently of any ready cascade, so
+        # a later ready-cancel must never reclaim it. Drop the marker for
+        # symmetry with _ready_cascade_for_expose, which is only ever added,
+        # never left stale.
+        self._expose_cascade_for_ready.discard(mid)
         if target and not self._is_ready(mid):
             # Cascade: exposing a not-ready model must download/pull it
             # first. apply() already runs the ready loop before the

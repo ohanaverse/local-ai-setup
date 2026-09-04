@@ -1384,3 +1384,67 @@ async def test_r_twice_on_ready_exposed_cancels_unexpose_cascade(tmp_path, monke
         assert isinstance(app.screen, ModelScreen)
         assert app.screen.queued_ready == {}
         assert app.screen.queued_exposes == {}
+
+
+@pytest.mark.asyncio
+async def test_r_x_x_r_interleaving_preserves_independent_unexpose(tmp_path, monkeypatch):
+    """The r → x → x → r interleaving on a ready+exposed model must leave the
+    user's independent unexpose queued. Regression: the expose-cancel branch
+    dropped the cascaded expose=False but left the _expose_cascade_for_ready
+    marker, so the final 'r' cancel reclaimed the independently-queued
+    unexpose and the model stayed exposed against the user's request."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud",
+    )
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    save_state(state, state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        # 1. 'r' queues ready=False and cascades expose=False.
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/a": False}
+        assert app.screen.queued_exposes == {"ollama/a": False}
+        # 2. 'x' cancels the cascaded expose=False back to persisted True.
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {}
+        # 3. 'x' again queues an independent expose=False.
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen.queued_exposes == {"ollama/a": False}
+        # 4. 'r' cancels the ready toggle; the independent unexpose must survive.
+        await pilot.press("r")
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+        assert app.screen.queued_ready == {}
+        assert app.screen.queued_exposes == {"ollama/a": False}
+

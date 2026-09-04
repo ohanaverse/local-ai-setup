@@ -3,7 +3,7 @@
 Verifies that:
 1. "r" toggles file presence (download on ready=ON, delete on ready=OFF)
 2. "r" on ready model cascades to unexpose
-3. "d" cascades: unexpose → ready=off (delete file) → registry removal
+3. "d" queues only the registry removal; apply()'s deletes loop does the file removal + unexpose cascade
 4. Provider delete() methods work correctly
 """
 
@@ -168,7 +168,15 @@ class TestLlamaCppDelete:
             "files": ["model.gguf"],
         }
 
-        with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
+        # The fast path derives the blob hash from the symlink target via
+        # os.readlink, never by reading the file body. Patch read_bytes to
+        # raise so a regression back to hashing the file contents fails.
+        with (
+            patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir),
+            patch.object(
+                type(gguf_file), "read_bytes", side_effect=AssertionError("read_bytes called — OOM regression")
+            ),
+        ):
             provider.delete(variant)
 
         assert not gguf_file.exists()
@@ -205,36 +213,3 @@ class TestReadyToggleCascade:
         # Verify
         assert queued_ready["test"] is False
         assert queued_exposes["test"] is False
-
-
-class TestDeleteCascade:
-    """Test delete cascades to expose and ready."""
-
-    def test_delete_cascades_logic(self):
-        """Verify the cascade logic for delete: expose=off → ready=off → registry."""
-        # Simulate state
-        persisted_ready = True
-        persisted_exposed = True
-        queued_ready = {}
-        queued_exposes = {}
-        queued_deletes = {}
-
-        model_id = "test"
-
-        # Step 1: Queue expose=off if currently exposed
-        current_exposed = queued_exposes.get(model_id, persisted_exposed)
-        if current_exposed:
-            queued_exposes[model_id] = False
-
-        # Step 2: Queue ready=off if currently ready
-        current_ready = queued_ready.get(model_id, persisted_ready)
-        if current_ready:
-            queued_ready[model_id] = False
-
-        # Step 3: Queue registry removal
-        queued_deletes[model_id] = {"id": model_id}
-
-        # Verify all three queued
-        assert queued_exposes[model_id] is False
-        assert queued_ready[model_id] is False
-        assert model_id in queued_deletes
