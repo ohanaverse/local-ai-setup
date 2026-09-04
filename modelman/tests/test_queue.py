@@ -594,6 +594,31 @@ def test_apply_ready_loop_skips_deleted_ids_redownload(tmp_path):
     assert pending.failures == []
 
 
+def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
+    """A model queued for both delete and ready=False whose provider.delete()
+    fails must surface exactly one failure, not two. Regression: deleted_ids
+    only recorded successful deletes, so the ready loop re-ran _delete on the
+    same model and appended a duplicate 'clear <id>' failure for the same
+    underlying problem (e.g. ollama daemon down)."""
+    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
+    state.set("ollama/a", ModelState(ready=True, disk_path="/old/path"))
+    providers["ollama"].is_downloaded.return_value = True
+    providers["ollama"].delete.side_effect = RuntimeError("daemon down")
+
+    pending = PendingChanges(
+        registry=reg, state=state, family="f",
+        registry_path=reg_path, state_path=state_path,
+        providers=providers,
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
+    )
+    pending.apply()
+
+    assert providers["ollama"].delete.call_count == 1  # deletes loop only
+    delete_failures = [f for f in pending.failures if "daemon down" in f]
+    assert len(delete_failures) == 1                   # one failure, not two
+
+
 def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     """Deleting a model that is exposed through LiteLLM must also remove
     its model_list row — otherwise LiteLLM keeps routing requests to a

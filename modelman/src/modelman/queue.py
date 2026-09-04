@@ -335,13 +335,17 @@ class PendingChanges:
                 family_entry.display_name = legacy.display_name
             self.state.forget_family(f)
 
+        # Ids queued for deletion in this apply, whether or not the delete
+        # succeeded. The ready loop must not touch any of them: a successful
+        # delete already removed the rows, and a failed one has already
+        # surfaced its failure — re-running _delete would only duplicate it.
+        attempted_deletes = {mid for mid, _ in self.deletes}
         for model_id, variant, target in self.ready:
             if aborted():
                 return
-            if model_id in deleted_ids:
-                # Deleted earlier in this apply; its ready toggle is moot.
-                # Re-running _delete here would re-delete an already-removed
-                # file and surface a spurious failure.
+            if model_id in attempted_deletes:
+                # Queued for deletion in this same apply (succeeded or
+                # failed); the ready toggle is moot either way.
                 continue
             assert variant["id"] == model_id, (
                 f"variant id {variant['id']!r} != queued model_id {model_id!r}"
