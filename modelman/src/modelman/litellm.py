@@ -93,7 +93,7 @@ def is_cloud(provider_id: str) -> bool:
     return policy.cloud if policy is not None else False
 
 
-def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
+def is_cloud_effective(model: ModelEntry) -> bool:
     """True when a model should be exempt from the ready gate.
 
     A model is "effectively cloud" for exposure purposes when:
@@ -425,7 +425,7 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
     policy = provider_policy(model.provider_id)
     if policy is None:
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
-    if not is_cloud_effective(model, registry) and not state.get(model_id).ready:
+    if not is_cloud_effective(model) and not state.get(model_id).ready:
         raise ExposeError(f"model {model_id!r} is not ready")
     return build_model_list_entry(model, provider)
 

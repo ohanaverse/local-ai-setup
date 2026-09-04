@@ -636,6 +636,12 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
         provider_id="ollama",
         model_name="ornith-1.5:7b",
     )
+    ready_local_exposed = ModelEntry(
+        id="ollama/ornith-1.5:14b",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith-1.5:14b",
+    )
     cloud_model = ModelEntry(
         id="openrouter/anthropic/claude-sonnet-4.5",
         family="ornith",
@@ -658,7 +664,7 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
             ProviderEntry(id="openrouter", name="OpenRouter", auth=AuthConfig(type="secret_ref")),
         ],
         families=[FamilyEntry(name="ornith")],
-        models=[not_ready_local, ready_local, cloud_model, cloud_ollama],
+        models=[not_ready_local, ready_local, ready_local_exposed, cloud_model, cloud_ollama],
     )
     save_registry(reg, reg_path)
     # Flag the not-ready and cloud models; the ready-local model is unflagged.
@@ -672,6 +678,10 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
         ModelState(ready=True, litellm_exposed=False, disk_path="/tmp/ornith-7b"),
     )
     state.set(
+        "ollama/ornith-1.5:14b",
+        ModelState(ready=True, litellm_exposed=True, disk_path="/tmp/ornith-14b"),
+    )
+    state.set(
         "openrouter/anthropic/claude-sonnet-4.5",
         ModelState(ready=False, litellm_exposed=True),
     )
@@ -683,10 +693,17 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
+    # Reconcile calls `is_downloaded` for every model in the provider's
+    # batch and writes the result straight into state.ready — so it must
+    # mirror the seeded state per-model, otherwise reconcile silently
+    # flips the two "ready" fixtures above back to not-ready before the
+    # table is ever read, and the positive branch of the AND rule below
+    # goes untested.
+    ready_names = {"ornith-1.5:7b", "ornith-1.5:14b"}
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
-    stub.is_downloaded.return_value = False
+    stub.is_downloaded.side_effect = lambda spec: spec.get("name") in ready_names
     stub.list_local.return_value = []
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
@@ -702,6 +719,7 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
         # Provider sort + name sort: ollama/ornith-1.5:35b, ollama/ornith-1.5:7b, ollama/ornith-1.5:cloud, openrouter/anthropic/claude-sonnet-4.5
         assert "–" in rows["ornith-1.5:35b"][5]  # not-ready + exposed → '–' (new rule)
         assert "–" in rows["ornith-1.5:7b"][5]   # ready + unexposed → '–' (flag off)
+        assert "Y" in rows["ornith-1.5:14b"][5]  # ready + exposed → 'Y' (positive case of the AND rule)
         assert "Y" in rows["anthropic/claude-sonnet-4.5"][5]  # openrouter cloud + exposed → 'Y' (provider-policy exemption)
         assert "Y" in rows["ornith-1.5:cloud"][5]  # ollama cloud-located + exposed → 'Y' (location exemption)
 

@@ -348,7 +348,7 @@ class ModelScreen(Screen[None]):
                 # exempt from the ready gate — the same exemption
                 # `litellm._validated_entry` applies at the apply gate — so
                 # they render 'Y' as long as the flag is on.
-                ready_or_cloud = ready or is_cloud_effective(m, self.registry)
+                ready_or_cloud = ready or is_cloud_effective(m)
                 exposed_str = "Y" if (exposed and ready_or_cloud) else "–"
                 mt.add_row(
                     m.family,
