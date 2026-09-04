@@ -1062,11 +1062,11 @@ async def test_r_on_not_ready_local_artifact_model_queues_download(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_r_on_ready_local_artifact_model_noops_with_notification(tmp_path, monkeypatch):
-    """r on an already-ready local-artifact model must not queue a
-    delete — that used to be invisible (state flipped to ready=False,
-    but the next reconcile silently flipped it back). Reconcile is now
-    the only writer of ready=False for local-artifact models."""
+async def test_r_on_ready_local_artifact_model_queues_delete(tmp_path, monkeypatch):
+    """r on an already-ready local-artifact model now queues ready=False
+    (file deletion), per the ready-toggle-delete design: 'r' is a true
+    toggle of file presence for all models, not a flag flip. The old
+    no-op-with-notification behavior was removed by the feature commit."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1104,7 +1104,7 @@ async def test_r_on_ready_local_artifact_model_noops_with_notification(tmp_path,
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert app.screen.queued_ready == {}
+        assert app.screen.queued_ready == {"omlx/a": False}
 
 
 @pytest.mark.asyncio
