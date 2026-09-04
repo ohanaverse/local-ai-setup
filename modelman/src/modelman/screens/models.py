@@ -342,7 +342,8 @@ class ModelScreen(Screen[None]):
                 exposed = self.state.get(m.id).litellm_exposed
                 if m.id in self.queued_exposes:
                     exposed = self.queued_exposes[m.id]
-                exposed_str = "Y" if exposed else "–"
+                # A model is only effectively exposed if it is flagged for exposure AND it is ready.
+                exposed_str = "Y" if (exposed and ready) else "–"
                 mt.add_row(
                     m.family,
                     m.provider_id,
