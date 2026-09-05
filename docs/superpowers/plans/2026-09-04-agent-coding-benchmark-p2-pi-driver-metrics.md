@@ -14,7 +14,7 @@
 - Test: `modelman/tests/benchmark/agent/test_pidriver.py`
 
 **Interfaces:**
-- Produces: `RowConfig` (`label, model_id, thinking, route, provider_id`), `DirectRouteConfig` (`base_url, api`), `PiTarget` (`pi_provider, launch_id, base_url, api, api_key, context_window, reasoning`, property `.model_arg`), `resolve_pi_target(row, model_name, routes_direct, live_models_path=LIVE_PI_MODELS_PATH) -> PiTarget`, `build_models_json(target) -> dict`, `write_pi_config(target, config_dir) -> Path`, `build_pi_command(target, thinking, session_dir, prompt) -> list[str]`. `suite.py` (Task 14) imports `RowConfig`/`DirectRouteConfig`; `runner.py` (Task 16) imports everything else from this module.
+- Produces: `RowConfig` (`label, model_id, thinking, route, provider_id, direct_model=None`), `DirectRouteConfig` (`base_url, api`), `PiTarget` (`pi_provider, launch_id, base_url, api, api_key, context_window, reasoning`, property `.model_arg`), `resolve_pi_target(row, model_name, routes_direct, live_models_path=LIVE_PI_MODELS_PATH) -> PiTarget`, `build_models_json(target) -> dict`, `write_pi_config(target, config_dir) -> Path`, `build_pi_command(target, thinking, session_dir, prompt) -> list[str]`. `suite.py` (Task 12) imports `RowConfig`/`DirectRouteConfig`; `runner.py` (Task 14) imports everything else from this module.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -89,6 +89,23 @@ def test_direct_route_keys_by_bare_model_name(tmp_path):
     assert target.model_arg == "omlx/Ornith-1.5-35B-A3B-MLX-6bit"
     assert target.base_url == "http://localhost:8000/v1"
     assert target.api_key == "ollama"  # placeholder — pi rejects an empty apiKey
+
+
+def test_direct_route_can_override_the_launch_id(tmp_path):
+    """direct_model names what the backend actually serves when the registry
+    model_name does not — omlx registers `mlx-community/X` but serves `X`. A
+    wrong launch id is not a 404 the harness can tell apart from a model that
+    failed the task, so the escape hatch has to exist."""
+    row = RowConfig(
+        label="r1", model_id="omlx/mlx-community--Qwen3.8-27B-4bit", thinking="off", route="direct",
+        provider_id="omlx", direct_model="Qwen3.8-27B-4bit",
+    )
+    routes_direct = {"omlx": DirectRouteConfig(base_url="http://localhost:8000/v1", api="openai-completions")}
+
+    target = resolve_pi_target(row, "mlx-community/Qwen3.8-27B-4bit", routes_direct, live_models_path=tmp_path / "missing.json")
+
+    assert target.launch_id == "Qwen3.8-27B-4bit"
+    assert target.model_arg == "omlx/Qwen3.8-27B-4bit"
 
 
 def test_direct_route_missing_config_block_raises(tmp_path):
@@ -184,6 +201,7 @@ class RowConfig:
     thinking: str
     route: str  # "direct" | "litellm"
     provider_id: str
+    direct_model: str | None = None  # overrides the launch id for route=direct
 
 
 @dataclass
@@ -255,7 +273,13 @@ def resolve_pi_target(
                 f"but no [routes.direct.{row.provider_id}] block is configured"
             )
         pi_provider = row.provider_id
-        launch_id = model_name
+        # Registry model_name is the launch id only when the backend serves
+        # that exact string (true for ollama, whose model_names are bare).
+        # omlx registers `mlx-community/Qwen3.8-27B-4bit` while serving the
+        # basename, so a direct omlx row needs direct_model. A misaddressed
+        # agent row is indistinguishable from a model that failed the task,
+        # which is the one confusion this harness must not allow.
+        launch_id = row.direct_model or model_name
         base_url = direct_cfg.base_url
         api = direct_cfg.api
         api_key = "ollama"  # pi rejects an empty apiKey even for keyless local backends
@@ -324,7 +348,7 @@ def build_pi_command(target: PiTarget, thinking: str, session_dir: Path, prompt:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_pidriver.py -v`
-Expected: PASS (7 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -342,9 +366,16 @@ git commit -m "feat(agent-bench): add pi route resolution + config gen - complet
 - Modify: `modelman/tests/benchmark/agent/test_pidriver.py`
 
 **Interfaces:**
-- Produces: `PiRunResult` (`completed: bool, timed_out: bool, wall_ms: int, events: list[dict], unparsed_lines: int, message_end_seen: bool`); `run_pi_process(cmd: list[str], cwd: Path, env: dict[str, str], timeout_s: float) -> PiRunResult`. `gates.py` (Task 10) and `runner.py` (Task 16) consume `PiRunResult` exactly as named here; Task 7's `compute_metrics` consumes it too.
+- Produces: `PiRunResult` (`completed: bool, timed_out: bool, wall_ms: int, events: list[dict], unparsed_lines: int, message_end_seen: bool`); `run_pi_process(cmd: list[str], cwd: Path, env: dict[str, str], timeout_s: float) -> PiRunResult`. `gates.py` (Task 8) and `runner.py` (Task 14) consume `PiRunResult` exactly as named here; Task 7's `compute_metrics` consumes it too.
 
-The fake agent pins the exact JSONL event shape from the spec's "Verified against the live setup" section (`session, agent_start, turn_start, message_start, message_update` with `thinking_delta`/`text_delta`, `message_end` with `usage.input/output/reasoning`, `tool_execution_start`/`tool_execution_end`, `turn_end, agent_end, agent_settled`) so every later test builds on one fixed, known-good fixture.
+The fake agent pins the exact JSONL event shape from the spec's "Verified against the live setup" section, which was re-captured from a real `pi --mode json` run while reviewing this plan. **The nesting is not guessable**, and a fixture written from memory is the one thing that can make this whole phase pass its tests while reporting zeros against real runs:
+
+- deltas arrive as `message_update.assistantMessageEvent` with the text in a string field called `delta` — there is no top-level `delta` object and no `text` key.
+- authoritative usage is `message_end.message.usage`, with **camelCase** `cacheRead`/`cacheWrite` — not `message_end.usage`, not `cache_read`.
+- `message_start`/`message_end` fire for the **user** message as well as the assistant's, so anything that counts requests or watches for `message_end` must filter on `message.role == "assistant"`.
+- tool events carry `toolCallId`/`toolName` (not `name`), and are paired by `toolCallId`.
+
+The fixture emits that shape — `session, agent_start, turn_start`, the user `message_start`/`message_end` pair, the assistant `message_start`, `message_update` thinking/text deltas, a `tool_execution_start`/`end` pair, the assistant `message_end` with its nested `usage`, then `turn_end, agent_end, agent_settled` — so every later test builds on one fixed, known-good stream.
 
 - [ ] **Step 1: Write the fake agent fixture**
 
@@ -353,12 +384,17 @@ The fake agent pins the exact JSONL event shape from the spec's "Verified agains
 #!/usr/bin/env python3
 """Deterministic stand-in for `pi --mode json`, used by pidriver tests.
 
-Emits exactly the event shape pidriver.py parses (see the spec's "Verified
-against the live setup" section): session, agent_start, turn_start,
-message_start, message_update (thinking_delta/text_delta), message_end
-with usage.input/output/reasoning, tool_execution_start/end, turn_end,
-agent_end, agent_settled. --hang/--delay/--malformed-line exercise the
-timeout and unparsed-line paths without a real multi-minute agent run.
+Emits the event shape captured from a real `pi --mode json` run (see the
+spec's "Verified against the live setup"): the user message gets its own
+message_start/message_end pair, assistant deltas arrive as
+message_update.assistantMessageEvent with a string `delta`, authoritative
+usage is message_end.message.usage with camelCase cacheRead, and tool
+events carry toolName. Written from the capture rather than from memory on
+purpose — a fixture that guesses the nesting is what would let every
+pidriver test pass while real rows report zero tokens.
+
+--hang/--delay/--malformed-line exercise the timeout and unparsed-line
+paths without a real multi-minute agent run.
 """
 
 import argparse
@@ -371,33 +407,89 @@ def _emit(event: dict) -> None:
     print(json.dumps(event), flush=True)
 
 
+def _usage(**overrides) -> dict:
+    usage = {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0},
+    }
+    usage.update(overrides)
+    usage["totalTokens"] = usage["input"] + usage["output"] + usage.get("reasoning", 0)
+    return usage
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hang", action="store_true")
     parser.add_argument("--delay", type=float, default=0.0)
     parser.add_argument("--malformed-line", action="store_true")
+    parser.add_argument("--no-assistant-reply", action="store_true")
     args, _ = parser.parse_known_args()
 
-    _emit({"type": "session", "id": "fake-session"})
+    _emit({
+        "type": "session",
+        "version": 3,
+        "id": "fake-session",
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "cwd": "/tmp/does-not-matter",
+    })
     _emit({"type": "agent_start"})
     _emit({"type": "turn_start"})
-    _emit({"type": "message_start", "role": "assistant"})
+
+    # pi echoes the user message as its own start/end pair. Nothing here may
+    # count it as a request or treat its message_end as "the agent replied".
+    user_message = {"role": "user", "content": [{"type": "text", "text": "fake prompt"}], "timestamp": 0}
+    _emit({"type": "message_start", "message": user_message})
+    _emit({"type": "message_end", "message": user_message})
+    if args.no_assistant_reply:
+        return
+
+    _emit({
+        "type": "message_start",
+        "message": {
+            "role": "assistant", "content": [], "api": "openai-completions", "provider": "litellm",
+            "model": "litellm/fake", "usage": _usage(), "stopReason": "pending", "timestamp": 0,
+        },
+    })
     time.sleep(args.delay)
-    _emit({"type": "message_update", "delta": {"type": "thinking_delta", "text": "..."}})
-    _emit({"type": "message_update", "delta": {"type": "text_delta", "text": "Looking into it"}})
+
+    def _update(assistant_event: dict) -> None:
+        # message_update carries cumulative usage (zero until the provider
+        # reports it) and the delta itself; there is no `message` key.
+        _emit({"type": "message_update", "usage": _usage(), "assistantMessageEvent": assistant_event})
+
+    _update({"type": "thinking_start", "contentIndex": 0})
+    _update({"type": "thinking_delta", "contentIndex": 0, "delta": "..."})
+    _update({"type": "thinking_end", "contentIndex": 0})
+    _update({"type": "text_start", "contentIndex": 1})
+    _update({"type": "text_delta", "contentIndex": 1, "delta": "Looking into it"})
+    _update({"type": "text_end", "contentIndex": 1, "delta": "Looking into it"})
     if args.malformed_line:
         print("{not json", flush=True)
-    _emit({"type": "tool_execution_start", "name": "read_file"})
+
+    _emit({"type": "tool_execution_start", "toolCallId": "tc-1", "toolName": "read", "args": {"path": "pkg/__init__.py"}})
     time.sleep(0.05)
-    _emit({"type": "tool_execution_end", "name": "read_file"})
-    _emit(
-        {
-            "type": "message_end",
-            "usage": {"input": 382, "output": 38, "reasoning": 33, "cache_read": 0, "cost": {"total": 0.0}},
-        }
-    )
-    _emit({"type": "turn_end"})
-    _emit({"type": "agent_end"})
+    _emit({"type": "tool_execution_end", "toolCallId": "tc-1", "toolName": "read", "result": {"content": []}, "isError": False})
+
+    final_message = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "..."},
+            {"type": "text", "text": "Looking into it"},
+        ],
+        "api": "openai-completions",
+        "provider": "litellm",
+        "model": "litellm/fake",
+        "usage": _usage(input=382, output=38, reasoning=33),
+        "stopReason": "stop",
+        "timestamp": 0,
+    }
+    _emit({"type": "message_end", "message": final_message})
+    _emit({"type": "turn_end", "message": final_message, "toolResults": []})
+    _emit({"type": "agent_end", "messages": [user_message, final_message], "willRetry": False})
     _emit({"type": "agent_settled"})
 
     if args.hang:
@@ -428,6 +520,18 @@ def test_run_pi_process_completes_normally():
     assert result.message_end_seen is True
     assert result.unparsed_lines == 0
     assert len(result.events) >= 8
+
+
+def test_run_pi_process_ignores_the_user_message_end_when_checking_for_a_reply():
+    """pi echoes the user message as its own message_start/message_end pair,
+    so message_end_seen must mean 'the assistant answered', not 'some
+    message_end arrived' — otherwise gate 1 passes for an agent that crashed
+    before its first reply."""
+    result = run_pi_process(
+        [sys.executable, str(FAKE_AGENT), "--no-assistant-reply"], cwd=Path.cwd(), env=os.environ.copy(), timeout_s=10
+    )
+    assert result.completed is True
+    assert result.message_end_seen is False
 
 
 def test_run_pi_process_counts_unparsed_lines_without_failing():
@@ -518,7 +622,9 @@ def run_pi_process(cmd: list[str], cwd: Path, env: dict[str, str], timeout_s: fl
         except json.JSONDecodeError:
             unparsed_lines += 1
             continue
-        if event.get("type") == "message_end":
+        if event.get("type") == "message_end" and (event.get("message") or {}).get("role") == "assistant":
+            # pi emits message_end for the echoed user message too; only an
+            # assistant message_end is evidence the agent actually replied.
             message_end_seen = True
         events.append({"ts": time.time(), "event": event})
 
@@ -550,7 +656,7 @@ def run_pi_process(cmd: list[str], cwd: Path, env: dict[str, str], timeout_s: fl
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_pidriver.py -v`
-Expected: PASS (10 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 6: Commit**
 
@@ -569,32 +675,59 @@ git commit -m "feat(agent-bench): stream pi process with hard timeout kill - com
 
 **Interfaces:**
 - Consumes: `PiRunResult` (Task 6).
-- Produces: `RowMetrics` dataclass (`wall_ms, requests, turns, ttft_first_ms, ttft_mean_ms, ttft_max_ms, gen_tok_s, e2e_tok_s, in_tok, out_tok, cache_read_tok, reasoning_tok, tool_ms, cost_usd, unparsed_lines, thinking_noop, cold_first_token`); `compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetrics`. `gates.py` doesn't touch this; `report.py` (Task 22) and `runner.py` (Task 16) both consume `RowMetrics` by these exact field names — the summary table's Speed columns (Task 23) read them directly.
+- Produces: `RowMetrics` dataclass (`wall_ms, requests, turns, ttft_first_ms, ttft_mean_ms, ttft_max_ms, gen_tok_s, e2e_tok_s, in_tok, out_tok, cache_read_tok, reasoning_tok, tool_ms, cost_usd, unparsed_lines, thinking_noop, reasoning_while_off, cold_first_token`); `compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetrics`. `gates.py` doesn't touch this; `report.py` (Task 20) and `runner.py` (Task 14) both consume `RowMetrics` by these exact field names — the summary table's Speed columns (Task 20) read them directly.
 
 This closes out Phase 2 — the spec calls this "where `gen_tok_s`/`e2e_tok_s` semantics get frozen," so the test below pins the arithmetic with a synthetic, hand-computed event sequence rather than trusting the fake agent's real timing (which is not deterministic enough to assert exact numbers on).
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `modelman/tests/benchmark/agent/test_pidriver.py`:
+Append to `modelman/tests/benchmark/agent/test_pidriver.py` (merge `import os`,
+`import sys` and the new `from modelman...` line into the file's existing
+top-of-file import block — ruff's `E402` rejects imports placed after module
+code, and `make check` runs `ruff check tests/`):
 ```python
 from modelman.benchmark.agent.pidriver import PiRunResult, compute_metrics
 
 
+def _usage(**overrides) -> dict:
+    usage = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"total": 0.0}}
+    usage.update(overrides)
+    return usage
+
+
+def _assistant_start(ts: float) -> dict:
+    return {"ts": ts, "event": {"type": "message_start", "message": {"role": "assistant", "usage": _usage()}}}
+
+
+def _assistant_end(ts: float, usage: dict) -> dict:
+    return {"ts": ts, "event": {"type": "message_end", "message": {"role": "assistant", "content": [], "usage": usage}}}
+
+
+def _text_delta(ts: float, delta: str) -> dict:
+    return {
+        "ts": ts,
+        "event": {"type": "message_update", "usage": _usage(), "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": delta}},
+    }
+
+
 def _synthetic_run(*, reasoning_tok: int = 33) -> PiRunResult:
-    """A hand-timed two-request run: request 1 takes 1.0s wall (0.2s to
-    first token), request 2 takes 0.5s wall (0.1s to first token); one
-    0.3s tool call sits between them. Total wall clock is fixed at 2000ms
-    so e2e_tok_s has a known denominator."""
+    """A hand-timed two-request run, in pi's real wire shape: request 1 takes
+    1.0s wall (0.2s to first token), request 2 takes 0.5s wall (0.1s to first
+    token); one 0.3s tool call sits between them. The user message's own
+    start/end pair is present on purpose — it must not be counted."""
+    user_message = {"role": "user", "content": [{"type": "text", "text": "do the task"}]}
     events = [
-        {"ts": 0.0, "event": {"type": "message_start"}},
-        {"ts": 0.2, "event": {"type": "message_update", "delta": {"type": "text_delta", "text": "a"}}},
-        {"ts": 1.0, "event": {"type": "message_end", "usage": {"input": 100, "output": 20, "reasoning": reasoning_tok}}},
-        {"ts": 1.0, "event": {"type": "tool_execution_start"}},
-        {"ts": 1.3, "event": {"type": "tool_execution_end"}},
-        {"ts": 1.3, "event": {"type": "message_start"}},
-        {"ts": 1.4, "event": {"type": "message_update", "delta": {"type": "text_delta", "text": "b"}}},
-        {"ts": 1.8, "event": {"type": "message_end", "usage": {"input": 50, "output": 10, "reasoning": 0}}},
-        {"ts": 1.8, "event": {"type": "turn_start"}},
+        {"ts": 0.0, "event": {"type": "turn_start"}},
+        {"ts": 0.0, "event": {"type": "message_start", "message": user_message}},
+        {"ts": 0.0, "event": {"type": "message_end", "message": user_message}},
+        _assistant_start(0.0),
+        _text_delta(0.2, "a"),
+        _assistant_end(1.0, _usage(input=100, output=20, reasoning=reasoning_tok)),
+        {"ts": 1.0, "event": {"type": "tool_execution_start", "toolCallId": "tc-1", "toolName": "bash"}},
+        {"ts": 1.3, "event": {"type": "tool_execution_end", "toolCallId": "tc-1", "toolName": "bash", "isError": False}},
+        _assistant_start(1.3),
+        _text_delta(1.4, "b"),
+        _assistant_end(1.8, _usage(input=50, output=10, reasoning=0)),
     ]
     return PiRunResult(
         completed=True, timed_out=False, wall_ms=2000, events=events, unparsed_lines=0, message_end_seen=True
@@ -603,10 +736,13 @@ def _synthetic_run(*, reasoning_tok: int = 33) -> PiRunResult:
 
 def test_compute_metrics_ttft_and_throughput():
     """gen_tok_s excludes tool time (busy throughput); e2e_tok_s divides by
-    wall clock (spec: the gap between the two is diagnostic on its own)."""
+    wall clock (spec: the gap between the two is diagnostic on its own).
+    requests == 2 also proves the user message's message_start/message_end
+    pair is filtered out rather than counted as a request."""
     metrics = compute_metrics(_synthetic_run(), thinking_level="high")
 
     assert metrics.requests == 2
+    assert metrics.turns == 1
     assert metrics.ttft_first_ms == 200
     assert metrics.ttft_mean_ms == pytest.approx(150.0)
     assert metrics.ttft_max_ms == 200
@@ -618,6 +754,7 @@ def test_compute_metrics_ttft_and_throughput():
     assert metrics.gen_tok_s == pytest.approx(30 / 1.5, rel=1e-3)
     # e2e uses the full 2000ms wall clock, not just busy time
     assert metrics.e2e_tok_s == pytest.approx(30 / 2.0, rel=1e-3)
+    assert metrics.cold_first_token is False  # 200ms first vs 100ms subsequent
 
 
 def test_compute_metrics_flags_thinking_noop():
@@ -632,31 +769,56 @@ def test_compute_metrics_thinking_off_is_never_flagged_as_noop():
     assert metrics.thinking_noop is False
 
 
+def test_compute_metrics_flags_reasoning_while_off():
+    """The inverse mismatch, observed live: --thinking off against
+    ollama/glm-5.3-flash:cloud still returned usage.reasoning=11 and a
+    thinking content block. Such a row pays thinking cost while claiming not
+    to, so it is not comparable to another row's off baseline."""
+    metrics = compute_metrics(_synthetic_run(reasoning_tok=11), thinking_level="off")
+    assert metrics.reasoning_while_off is True
+    assert metrics.thinking_noop is False
+
+
 def test_compute_metrics_flags_cold_first_token():
-    """ttft_first_ms >= 3x ttft_mean_ms means the model was still loading
-    despite warmup — flagged, not silently averaged into the mean."""
+    """Cold start compares the first TTFT against the median of the
+    *subsequent* requests. Comparing it against a mean that includes the
+    first sample can barely fire at two requests (3000 >= 3*1525 is false),
+    which is exactly the case the flag exists to catch."""
     events = [
-        {"ts": 0.0, "event": {"type": "message_start"}},
-        {"ts": 3.0, "event": {"type": "message_update", "delta": {"type": "text_delta", "text": "a"}}},
-        {"ts": 3.1, "event": {"type": "message_end", "usage": {"input": 10, "output": 5, "reasoning": 0}}},
-        {"ts": 3.1, "event": {"type": "message_start"}},
-        {"ts": 3.15, "event": {"type": "message_update", "delta": {"type": "text_delta", "text": "b"}}},
-        {"ts": 3.2, "event": {"type": "message_end", "usage": {"input": 10, "output": 5, "reasoning": 0}}},
+        _assistant_start(0.0),
+        _text_delta(3.0, "a"),
+        _assistant_end(3.1, _usage(input=10, output=5)),
+        _assistant_start(3.1),
+        _text_delta(3.15, "b"),
+        _assistant_end(3.2, _usage(input=10, output=5)),
     ]
     run_result = PiRunResult(completed=True, timed_out=False, wall_ms=3200, events=events, unparsed_lines=0, message_end_seen=True)
     metrics = compute_metrics(run_result, thinking_level="off")
+    assert metrics.ttft_first_ms == 3000
     assert metrics.cold_first_token is True
+
+
+def test_compute_metrics_single_request_row_is_never_flagged_cold():
+    """With no subsequent request there is nothing to compare against, so
+    the flag stays False rather than firing on the row's own mean."""
+    events = [_assistant_start(0.0), _text_delta(2.0, "a"), _assistant_end(2.1, _usage(input=10, output=5))]
+    run_result = PiRunResult(completed=True, timed_out=False, wall_ms=2100, events=events, unparsed_lines=0, message_end_seen=True)
+    metrics = compute_metrics(run_result, thinking_level="off")
+    assert metrics.requests == 1
+    assert metrics.cold_first_token is False
 
 
 def test_compute_metrics_end_to_end_with_fake_agent():
     """Sanity check against the real subprocess path (Task 6's fixture),
     not just synthetic event lists — proves compute_metrics accepts exactly
-    what run_pi_process actually produces."""
+    what run_pi_process actually produces, including the nested usage."""
     result = run_pi_process([sys.executable, str(FAKE_AGENT)], cwd=Path.cwd(), env=os.environ.copy(), timeout_s=10)
     metrics = compute_metrics(result, thinking_level="off")
     assert metrics.in_tok == 382
     assert metrics.out_tok == 38
     assert metrics.reasoning_tok == 33
+    assert metrics.requests == 1  # the fixture's user message pair is filtered
+    assert metrics.ttft_first_ms is not None
     assert metrics.tool_ms >= 40  # fixture sleeps 0.05s between tool start/end
 ```
 
@@ -687,10 +849,24 @@ class RowMetrics:
     cost_usd: float
     unparsed_lines: int
     thinking_noop: bool
+    reasoning_while_off: bool
     cold_first_token: bool
 
 
+def _role(event: dict) -> str | None:
+    return (event.get("message") or {}).get("role")
+
+
 def compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetrics:
+    """Derive the speed columns from pi's own wire shape (spec, "Verified
+    against the live setup"):
+
+    - message_start/message_end fire for the user message too, so requests,
+      gen_seconds and message_end all gate on message.role == "assistant";
+      message_update is assistant-only on the wire and carries no message key.
+    - the delta text is assistantMessageEvent.delta, a string.
+    - usage is message_end.message.usage, camelCase cacheRead.
+    - tool events pair on toolCallId, not on arrival order."""
     requests = turns = 0
     in_tok = out_tok = cache_read_tok = reasoning_tok = 0
     cost_usd = 0.0
@@ -701,7 +877,7 @@ def compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetri
 
     msg_start_ts: float | None = None
     first_text_seen = False
-    tool_start_ts: float | None = None
+    tool_starts: dict[str, float] = {}
 
     for entry in run_result.events:
         ts = entry["ts"]
@@ -710,31 +886,32 @@ def compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetri
 
         if etype == "turn_start":
             turns += 1
-        elif etype == "message_start":
+        elif etype == "message_start" and _role(ev) == "assistant":
             requests += 1
             msg_start_ts = ts
             first_text_seen = False
         elif etype == "message_update":
-            delta = ev.get("delta", {})
+            delta = ev.get("assistantMessageEvent", {})
             if delta.get("type") == "text_delta" and not first_text_seen and msg_start_ts is not None:
                 first_text_seen = True
                 ttfts.append(ts - msg_start_ts)
-        elif etype == "message_end":
+        elif etype == "message_end" and _role(ev) == "assistant":
             if msg_start_ts is not None:
                 gen_seconds += max(ts - msg_start_ts, 0.0)
-            usage = ev.get("usage", {})
+            usage = (ev.get("message") or {}).get("usage") or {}
             in_tok += usage.get("input", 0)
             out_tok += usage.get("output", 0)
             reasoning_tok += usage.get("reasoning", 0)
-            cache_read_tok += usage.get("cache_read", 0)
-            cost_usd += usage.get("cost", {}).get("total", 0.0)
+            cache_read_tok += usage.get("cacheRead", 0)
+            cost_usd += (usage.get("cost") or {}).get("total", 0.0)
             gen_tokens += usage.get("output", 0)
             msg_start_ts = None
         elif etype == "tool_execution_start":
-            tool_start_ts = ts
-        elif etype == "tool_execution_end" and tool_start_ts is not None:
-            tool_ms += int((ts - tool_start_ts) * 1000)
-            tool_start_ts = None
+            tool_starts[ev.get("toolCallId", "")] = ts
+        elif etype == "tool_execution_end":
+            started = tool_starts.pop(ev.get("toolCallId", ""), None)
+            if started is not None:
+                tool_ms += int((ts - started) * 1000)
 
     ttft_first_ms = int(ttfts[0] * 1000) if ttfts else None
     ttft_mean_ms = round(sum(ttfts) / len(ttfts) * 1000, 2) if ttfts else None
@@ -744,8 +921,13 @@ def compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetri
     e2e_tok_s = round(out_tok / (run_result.wall_ms / 1000), 2) if run_result.wall_ms > 0 else None
 
     thinking_noop = thinking_level != "off" and reasoning_tok == 0
+    reasoning_while_off = thinking_level == "off" and reasoning_tok > 0
+    # Cold start is the first request being far out of family with the rest.
+    # The comparator excludes the first sample: with it included, a two-request
+    # row needs first >= 5x second before the flag can fire at all.
+    subsequent_ms = [t * 1000 for t in ttfts[1:]]
     cold_first_token = bool(
-        ttft_first_ms is not None and ttft_mean_ms and ttft_first_ms >= 3 * ttft_mean_ms
+        ttft_first_ms is not None and subsequent_ms and ttft_first_ms >= 3 * median(subsequent_ms)
     )
 
     return RowMetrics(
@@ -765,16 +947,17 @@ def compute_metrics(run_result: PiRunResult, *, thinking_level: str) -> RowMetri
         cost_usd=round(cost_usd, 6),
         unparsed_lines=run_result.unparsed_lines,
         thinking_noop=thinking_noop,
+        reasoning_while_off=reasoning_while_off,
         cold_first_token=cold_first_token,
     )
 ```
 
-Also add `import pytest` at the top of `test_pidriver.py` (used by `pytest.approx` in this task's tests).
+Also add `from statistics import median` to `pidriver.py`'s top-level import block, and `import pytest` to `test_pidriver.py`'s — **merge both into the existing top-of-file import blocks rather than appending them mid-file**: `make check` runs `ruff check src/ tests/` with `E` selected, so a mid-file import is an `E402` failure in CI.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_pidriver.py -v`
-Expected: PASS (15 tests)
+Expected: PASS (19 tests)
 
 - [ ] **Step 5: Run the full pidriver+workspace+task test slice and commit**
 

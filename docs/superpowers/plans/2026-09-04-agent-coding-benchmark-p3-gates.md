@@ -13,7 +13,7 @@
 
 **Interfaces:**
 - Consumes: `TaskBundle` (Task 1), `Workspace` (Task 2), `PiRunResult` (Task 6).
-- Produces: `GateResult` (`gate_number, name, outcome, code, detail`), `GatesReport` (`results: list[GateResult], hidden_pass: int, hidden_total: int, hidden_evaluated: bool, cap: float`, property `.triggered_codes`), `evaluate(workspace, task, run_result, *, session_file_present: bool) -> GatesReport`. `runner.py` (Task 16) and `report.py` (Task 22) both consume `GatesReport` exactly as named here.
+- Produces: `GateResult` (`gate_number, name, outcome, code, detail`), `GatesReport` (`results: list[GateResult], hidden_pass: int, hidden_total: int, hidden_evaluated: bool, cap: float`, property `.triggered_codes`), `evaluate(workspace, task, run_result, *, session_file_present: bool) -> GatesReport`. `runner.py` (Task 14) and `report.py` (Task 19) both consume `GatesReport` exactly as named here.
 
 This task builds the short-circuit skeleton (`SHORT_CIRCUIT_CODES`, the `add()`/`finish()` closures) and the first four gates; Tasks 9–10 extend the same `evaluate()` function.
 
@@ -441,20 +441,41 @@ Append to `modelman/tests/benchmark/agent/test_gates.py`:
 def test_vacuous_test_detected_when_new_test_passes_on_unfixed_baseline(workspace):
     """A new test that would pass even without the fix is VACUOUS_TEST —
     the spec's highest-value check."""
+    # pkg IS fixed here, deliberately. With the real bug still present the
+    # all-hidden-failing cap (x0.25) also fires and wins the min(), so the
+    # row's cap would no longer isolate the x0.70 vacuous cap this test pins
+    # (see the next test for that combination). assertTrue(True) still passes
+    # on the unfixed baseline, which is what makes the test vacuous.
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
+    )
     (workspace.root / "tests" / "test_regression.py").write_text(
         "import unittest\n\nclass T(unittest.TestCase):\n    def test_trivial(self):\n        self.assertTrue(True)\n",
         encoding="utf-8",
     )
-    # Deliberately don't fix pkg/__init__.py — the "fix" here is a no-op,
-    # only the vacuous test is added, so the diff is non-empty (satisfies
-    # gate 3) but the bug is untouched.
+    report = evaluate(workspace, _task(), _ok_run(), session_file_present=True)
+    assert report.results[7].code == "VACUOUS_TEST"
+    assert (report.hidden_pass, report.hidden_total) == (2, 2)  # real fix, hollow test
+    assert report.cap == 0.70
+
+
+def test_cap_is_the_minimum_across_every_triggered_condition(workspace):
+    """VACUOUS_TEST (x0.70) and all-hidden-failing (x0.25) firing on one row
+    must yield 0.25 — the min across triggered conditions, not whichever gate
+    happened to run last."""
+    (workspace.root / "tests" / "test_regression.py").write_text(
+        "import unittest\n\nclass T(unittest.TestCase):\n    def test_trivial(self):\n        self.assertTrue(True)\n",
+        encoding="utf-8",
+    )
+    # pkg left buggy — only a comment is appended, so the diff is non-empty
+    # (gate 3) while both hidden tests still fail.
     (workspace.root / "pkg" / "__init__.py").write_text(
         (workspace.root / "pkg" / "__init__.py").read_text(encoding="utf-8") + "\n# comment\n",
         encoding="utf-8",
     )
     report = evaluate(workspace, _task(), _ok_run(), session_file_present=True)
-    assert report.results[7].code == "VACUOUS_TEST"
-    assert report.cap == 0.70
+    assert report.triggered_codes == ["VACUOUS_TEST", "HIDDEN_TESTS_FAILED 0/2"]
+    assert report.cap == 0.25
 
 
 def test_real_regression_test_is_not_vacuous(workspace):
@@ -584,7 +605,7 @@ def _check_vacuous(workspace: Workspace, new_tests: list[Path], tests_dir: str) 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_gates.py -v`
-Expected: PASS (13 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -623,7 +644,8 @@ from modelman.benchmark.agent.workspace import create_workspace, destroy_workspa
 
 from .test_day31_drift_bundle import CORRECT_CALENDARLIB, SYMPTOM_PATCH_BILLING
 
-TASK_ROOT = Path(__file__).resolve().parents[3] / "benchmarks" / "tasks" / "day31-drift"
+TASK_ROOT = Path(__file__).resolve().parents[4] / "benchmarks" / "tasks" / "day31-drift"
+# parents[4] = monorepo root from modelman/tests/benchmark/agent/ (see Task 4).
 
 REAL_REGRESSION_TEST = (
     "import unittest\nfrom datetime import date\nfrom kettlecomb import add_months\n\n"

@@ -163,6 +163,34 @@ provider = "omlx-6bit"
     assert suite.rows[0].provider_id == "omlx-6bit"
 
 
+def test_direct_model_override_is_parsed(tmp_path):
+    """direct_model carries the name a backend actually serves for a
+    route=direct row. The registry model_name is org-prefixed for omlx
+    (`mlx-community/X`) while the server knows only `X`, and resolve_pi_target
+    (Task 5) needs the override to address it."""
+    body = """
+name = "test suite"
+task = "some/task"
+
+[judge]
+model = "x"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[[rows]]
+label = "omlx-direct"
+model = "omlx/b"
+thinking = "off"
+route = "direct"
+direct_model = "X"
+"""
+    suite = load_suite(_write_suite(tmp_path, body), _registry())
+    assert suite.rows[0].direct_model == "X"
+
+
 def test_judge_route_direct_is_rejected(tmp_path):
     """[judge] supports route=litellm only in v1 — direct has no place
     judging cloud-sequenced rows (spec review resolution)."""
@@ -281,7 +309,14 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             provider_id = raw.get("provider") or _provider_for(model_id, registry)
             label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{raw['thinking']}--{raw['route']}"
             rows.append(
-                RowConfig(label=label, model_id=model_id, thinking=raw["thinking"], route=raw["route"], provider_id=provider_id)
+                RowConfig(
+                    label=label,
+                    model_id=model_id,
+                    thinking=raw["thinking"],
+                    route=raw["route"],
+                    provider_id=provider_id,
+                    direct_model=raw.get("direct_model"),
+                )
             )
             continue
 
@@ -292,7 +327,16 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             index += 1
             provider_id = raw.get("provider") or _provider_for(model_id, registry)
             label = f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
-            rows.append(RowConfig(label=label, model_id=model_id, thinking=thinking, route=route, provider_id=provider_id))
+            rows.append(
+                RowConfig(
+                    label=label,
+                    model_id=model_id,
+                    thinking=thinking,
+                    route=route,
+                    provider_id=provider_id,
+                    direct_model=raw.get("direct_model"),
+                )
+            )
     return rows
 
 
@@ -341,7 +385,7 @@ def load_suite(path: Path, registry: Registry) -> Suite:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_suite.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -509,7 +553,7 @@ def preflight(suite: Suite, registry: Registry, task: TaskBundle, *, plist_path:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_suite.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -527,7 +571,7 @@ git commit -m "feat(agent-bench): add suite preflight validation - completes pla
 
 **Interfaces:**
 - Consumes: `Suite`/`preflight` (Task 13), `RowConfig` (Task 5), `TaskBundle`/`load_task` (Task 1), `Workspace`/`create_workspace`/`destroy_workspace` (Task 2), `GatesReport`/`evaluate` (Task 10), everything in `pidriver.py` (Tasks 5–7), `modelman.benchmark.isolation.isolate_provider`/`restore_providers` (existing module).
-- Produces: `RowRunResult` (`row, pass_number, row_dir, gates, metrics, diff_raw, error`), `run_suite(suite, registry, *, row_filter=None, results_dir=None, live_models_path=pidriver.LIVE_PI_MODELS_PATH) -> tuple[Path, list[RowRunResult]]`. `cli.py` (Task 15) calls `run_suite`; `report.py` (Task 22) and `judge.py`-wiring (Task 21) both consume `RowRunResult` by these exact field names.
+- Produces: `RowRunResult` (`row, pass_number, row_dir, gates, metrics, diff_raw, error`), `run_suite(suite, registry, *, row_filter=None, results_dir=None, live_models_path=pidriver.LIVE_PI_MODELS_PATH) -> tuple[Path, list[RowRunResult]]`. `cli.py` (Task 15) calls `run_suite`; `report.py` (Task 19) and the judge wiring (Task 18) both consume `RowRunResult` by these exact field names.
 
 **Important:** call every `pidriver` function as `pidriver.some_function(...)` (module-qualified — `from modelman.benchmark.agent import pidriver`), not `from ... import run_pi_process`. A direct-name import binds a private copy in `runner.py`'s namespace that a test's `monkeypatch.setattr(pidriver_module, "run_pi_process", fake)` cannot reach; the existing `isolation` import already follows the module-qualified pattern for the same reason.
 
@@ -545,6 +589,7 @@ sweep if they regress. run_pi_process itself is mocked here — Tasks 5-7
 already cover its own correctness against a real subprocess.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -600,8 +645,32 @@ def _write_suite(tmp_path: Path, body: str, name: str = "suite.toml") -> Path:
     return path
 
 
-def _no_diff_run(*args, **kwargs) -> PiRunResult:
-    return PiRunResult(completed=True, timed_out=False, wall_ms=50, events=[], unparsed_lines=0, message_end_seen=True)
+def _fake_run(session: bool = True):
+    """Build a stand-in for a real pi subprocess.
+
+    pi is never launched here (Tasks 5–7 already cover run_pi_process against
+    a real process), so nothing writes a session file — but gate 1 requires
+    one, and the runner passes `--session-dir <row_dir>` in `cmd`. Recreating
+    that single side effect is what keeps these rows reaching the gate they
+    are meant to exercise: without it every mocked row short-circuits at
+    AGENT_ERROR and the NO_DIFF assertions below become unreachable.
+    """
+
+    def _run(cmd, *args, **kwargs) -> PiRunResult:
+        if session:
+            session_dir = Path(cmd[cmd.index("--session-dir") + 1])
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "2026-01-01T00-00-00-000Z-fake.jsonl").write_text(
+                json.dumps({"type": "session", "version": 3, "id": "fake"}) + "\n", encoding="utf-8"
+            )
+        return PiRunResult(
+            completed=True, timed_out=False, wall_ms=50, events=[], unparsed_lines=0, message_end_seen=True
+        )
+
+    return _run
+
+
+_no_diff_run = _fake_run()
 
 
 @pytest.fixture(autouse=True)
@@ -648,6 +717,28 @@ def test_run_suite_contains_isolation_failure_to_its_group(tmp_path, monkeypatch
     assert len(results) == 1
     assert results[0].error == "isolation failed for ollama"
     assert results[0].gates is None
+
+
+def test_run_suite_marks_agent_error_when_the_agent_writes_no_session_file(tmp_path, monkeypatch):
+    """Gate 1's session-file evidence is a real requirement, not decoration:
+    a process that exits 0 without ever producing a session must not be scored
+    as a completed row (nothing downstream can be trusted about what it did)."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _fake_run(session=False))
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite, _registry(), results_dir=tmp_path / "results", live_models_path=tmp_path / "missing.json"
+    )
+
+    assert results[0].gates.results[0].code == "AGENT_ERROR"
+    assert results[0].gates.cap == 0.0
+
+    # NOTE for Task 18: once run_suite grows its judge phase, add
+    # skip_judge=True to the call above — this row has gates (an
+    # AGENT_ERROR report), so _judge_all would otherwise try to build a real
+    # LiteLLM transport from the missing live_models_path and raise.
 
 
 def test_run_suite_row_filter_selects_by_label(tmp_path, monkeypatch):
@@ -748,7 +839,12 @@ def _run_single_row(
         env = {**os.environ, "PI_CODING_AGENT_DIR": str(config_dir)}
         run_result = pidriver.run_pi_process(cmd, cwd=workspace.root, env=env, timeout_s=suite.agent_timeout_s)
         metrics = pidriver.compute_metrics(run_result, thinking_level=row.thinking)
-        session_present = any(row_dir.iterdir())
+        # pi writes its own session file into --session-dir (== row_dir), so
+        # the presence of a *.jsonl there is evidence the session really
+        # happened. Glob the extension rather than "anything in the dir":
+        # gates.json/metrics.json land in the same directory later, so a bare
+        # iterdir() would read as present on a re-run of a finished row.
+        session_present = any(row_dir.glob("*.jsonl"))
         gates = evaluate_gates(workspace, task, run_result, session_file_present=session_present)
         diff_raw = workspace.diff()
         return RowRunResult(
@@ -826,7 +922,7 @@ def run_suite(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_runner.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 

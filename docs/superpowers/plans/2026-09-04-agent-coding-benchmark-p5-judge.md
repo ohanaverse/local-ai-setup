@@ -551,7 +551,9 @@ Judging runs **after** `isolation.restore_providers()` on purpose (spec): the ju
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `modelman/tests/benchmark/agent/test_runner.py` (add `import json` to the existing import block):
+Append to `modelman/tests/benchmark/agent/test_runner.py` (no new imports — `json` already arrived with Task 14's test double):
+
+Also, while extending this file: add `skip_judge=True` to the `run_suite(...)` call in Task 14's `test_run_suite_marks_agent_error_when_the_agent_writes_no_session_file`, as that test's own note asks — this row has gates, so the new judge phase would otherwise try to build a real transport from the missing live-models path and raise.
 ```python
 def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkeypatch):
     """Judging happens after restore_providers, on every row with gates
@@ -707,24 +709,27 @@ with:
 Add this helper above `_run_single_row`:
 ```python
 def _closing_message(run_result: pidriver.PiRunResult) -> str:
-    """Concatenate text_delta content from the agent's final message only —
-    resets on every message_start, so only the last assistant message's
-    text survives."""
-    parts: list[str] = []
-    capturing = False
+    """The text blocks of the last assistant `message_end`.
+
+    json.md: "A message_end contains the final authoritative message", and it
+    nests under message_end.message.content (a list of typed blocks — the
+    thinking block is excluded, only `text` blocks are the closing message).
+    Reading the final message rather than concatenating deltas is what keeps
+    this correct when a provider reports usage/content only at completion."""
+    last_text = ""
     for entry in run_result.events:
         ev = entry["event"]
-        etype = ev.get("type")
-        if etype == "message_start":
-            parts = []
-            capturing = True
-        elif etype == "message_update" and capturing:
-            delta = ev.get("delta", {})
-            if delta.get("type") == "text_delta":
-                parts.append(delta.get("text", ""))
-        elif etype == "message_end":
-            capturing = False
-    return "".join(parts)
+        if ev.get("type") != "message_end":
+            continue
+        message = ev.get("message") or {}
+        if message.get("role") != "assistant":
+            continue  # pi emits the user message as a message_end too
+        content = message.get("content")
+        if isinstance(content, list):
+            last_text = "".join(
+                block.get("text", "") for block in content if block.get("type") == "text"
+            )
+    return last_text
 
 
 def _build_judge_transport(judge_cfg: JudgeConfig, live_models_path: Path) -> judge.JudgeTransport:

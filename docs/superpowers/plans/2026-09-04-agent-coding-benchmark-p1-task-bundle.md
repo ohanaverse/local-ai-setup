@@ -515,7 +515,6 @@ git commit -m "feat(agent-bench): add git-backed workspace - completes plan item
 
 **Files:**
 - Create: `benchmarks/tasks/day31-drift/task.md`
-- Create: `benchmarks/tasks/day31-drift/README.md` (copied into `visible/README.md`, see below)
 - Create: `benchmarks/tasks/day31-drift/visible/README.md`
 - Create: `benchmarks/tasks/day31-drift/visible/kettlecomb/__init__.py`
 - Create: `benchmarks/tasks/day31-drift/visible/kettlecomb/calendarlib.py`
@@ -865,7 +864,11 @@ from pathlib import Path
 from modelman.benchmark.agent.task import load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 
-TASK_ROOT = Path(__file__).resolve().parents[3] / "benchmarks" / "tasks" / "day31-drift"
+TASK_ROOT = Path(__file__).resolve().parents[4] / "benchmarks" / "tasks" / "day31-drift"
+# parents[4] is the monorepo root from modelman/tests/benchmark/agent/. parents[3]
+# is modelman/, and the task bundles live one level up — CI runs this file with
+# working-directory=modelman, so the repo root must be derived from the file, not
+# from Path.cwd().
 
 CORRECT_CALENDARLIB = '''"""Calendar arithmetic for kettlecomb billing cycles."""
 

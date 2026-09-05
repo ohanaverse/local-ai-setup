@@ -50,7 +50,8 @@ def _metrics() -> RowMetrics:
     return RowMetrics(
         wall_ms=1000, requests=2, turns=1, ttft_first_ms=100, ttft_mean_ms=100.0, ttft_max_ms=100,
         gen_tok_s=10.0, e2e_tok_s=8.0, in_tok=100, out_tok=50, cache_read_tok=0, reasoning_tok=0,
-        tool_ms=200, cost_usd=0.0, unparsed_lines=0, thinking_noop=False, cold_first_token=False,
+        tool_ms=200, cost_usd=0.0, unparsed_lines=0, thinking_noop=False, reasoning_while_off=False,
+        cold_first_token=False,
     )
 
 
@@ -232,7 +233,8 @@ def _row(label, *, wall_ms, composite, gates=None, judge=None) -> RowReport:
     metrics = RowMetrics(
         wall_ms=wall_ms, requests=1, turns=1, ttft_first_ms=10, ttft_mean_ms=10.0, ttft_max_ms=10,
         gen_tok_s=5.0, e2e_tok_s=4.0, in_tok=10, out_tok=5, cache_read_tok=0, reasoning_tok=0,
-        tool_ms=0, cost_usd=0.0, unparsed_lines=0, thinking_noop=False, cold_first_token=False,
+        tool_ms=0, cost_usd=0.0, unparsed_lines=0, thinking_noop=False, reasoning_while_off=False,
+        cold_first_token=False,
     )
     return RowReport(
         label=label, model_id="ollama/a", thinking="off", route="direct",
@@ -276,6 +278,21 @@ def test_render_summary_na_composite_rows_are_never_starred():
     lines = [line for line in two_axis_section.splitlines() if line.startswith("|")]
     assert lines[-1].split("|")[1].strip() == "judge-failed"  # N/A row sorts last
     assert "*" not in lines[-1]
+
+
+def test_render_summary_lists_all_three_thinking_latency_anomalies():
+    """The Anomalies table is the only place a reader learns a row is not
+    comparable to its partner row, so each flag from RowMetrics must surface
+    there — including reasoning_while_off, the mismatch observed live when
+    --thinking off still returned reasoning tokens."""
+    row = _row("r1", wall_ms=1000, composite=80, judge=_judge_outcome(80))
+    row.metrics.thinking_noop = True
+    row.metrics.reasoning_while_off = True
+    row.metrics.cold_first_token = True
+    anomalies = render_summary("run-1", [row]).split("## Anomalies")[1]
+    assert "thinking no-op" in anomalies
+    assert "reasoning emitted with thinking=off" in anomalies
+    assert "cold first token" in anomalies
 
 
 def test_write_metrics_jsonl_one_line_per_row(tmp_path):
@@ -401,6 +418,8 @@ def _anomalies_table(reports: list[RowReport]) -> str:
         if r.metrics is not None:
             if r.metrics.thinking_noop:
                 lines.append(f"| {r.label} | thinking no-op |")
+            if r.metrics.reasoning_while_off:
+                lines.append(f"| {r.label} | reasoning emitted with thinking=off |")
             if r.metrics.cold_first_token:
                 lines.append(f"| {r.label} | cold first token |")
     if len(lines) == 2:
@@ -441,12 +460,12 @@ def write_metrics_jsonl(path: Path, reports: list[RowReport]) -> None:
             )
 ```
 
-Also add, near the top of the test file (alongside the existing imports): `from modelman.benchmark.agent.pidriver import RowMetrics` and `import json` — both are already imported by Task 19's version of the file if following this plan in order; add only what's missing.
+Also add, near the top of the test file (alongside the existing imports, not mid-file — `make check` runs `ruff check tests/` with `E402` enabled): `from modelman.benchmark.agent.pidriver import RowMetrics` and `import json` — both are already imported by Task 19's version of the file if following this plan in order; add only what's missing.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/benchmark/agent/test_report.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -467,7 +486,8 @@ git commit -m "feat(agent-bench): add summary report tables + metrics.jsonl - co
 - Modify: `modelman/tests/benchmark/agent/test_cli.py`
 
 **Interfaces:**
-- `write_row_artifacts` gains two optional keyword params (`seed_contents`, `closing_message`) and writes a small `row.json` sidecar when given — this is what makes `agent judge` able to rebuild a judge prompt from disk without re-running the agent.
+- `write_row_artifacts` gains several optional keyword params (`seed_contents`, `closing_message`, `label`, `model_id`, `thinking`, `route`) and writes a small `row.json` sidecar when given — this is what makes `agent judge` able to rebuild a judge prompt from disk without re-running the agent.
+- `write_judge_json(row_dir, judge_outcome) -> None` is new: the re-judge path's only write. `rejudge_run` must **not** go through `write_row_artifacts`, because that helper gzip-writes `agent.jsonl.gz` from its `events` argument, so passing `events=[]` (the obvious shortcut) truncates the raw event stream — the only record of what the agent actually did.
 - `runner.py` gains `rejudge_run(run_dir, *, row_filter=None, samples_override=None, judge_transport_factory=None) -> list[dict]` (returns one `{"label", "rubric_total", "composite", "verdict"}` dict per re-judged row).
 - `run_suite` now writes `run.toml`, `summary.md`, and `metrics.jsonl` into `run_dir` before returning — the CLI's `run`/`show` commands read these files, not the in-memory `RowRunResult` list.
 
@@ -540,7 +560,44 @@ def write_row_artifacts(
         (row_dir / "row.json").write_text(json.dumps(row_info, indent=2), encoding="utf-8")
 ```
 
-Run again — PASSES (7 tests total in `test_report.py`).
+Run again — PASSES (8 tests total in `test_report.py`).
+
+Also append the new write helper to `modelman/src/modelman/benchmark/agent/report.py`, and its test to `test_report.py`:
+
+```python
+def write_judge_json(row_dir: Path, judge_outcome: JudgeOutcome) -> None:
+    """Rewrite a row's judge.json and nothing else.
+
+    This exists so rejudge_run does not call write_row_artifacts: that helper
+    gzip-writes agent.jsonl.gz from its events argument, so re-judging through
+    it with events=[] would silently destroy the raw event stream that is the
+    row's only primary record."""
+    row_dir.mkdir(parents=True, exist_ok=True)
+    (row_dir / "judge.json").write_text(
+        json.dumps(_judge_to_dict(judge_outcome), indent=2), encoding="utf-8"
+    )
+```
+
+```python
+def test_write_judge_json_leaves_other_artifacts_alone(tmp_path):
+    """The re-judge path must not disturb agent.jsonl.gz — the bug this helper
+    exists to prevent was write_row_artifacts(events=[]) truncating it."""
+    row_dir = tmp_path / "row3"
+    write_row_artifacts(
+        row_dir,
+        events=[{"ts": 1.0, "event": {"type": "agent_settled"}}],
+        diff_raw="",
+        gates=_gates(),
+        metrics=_metrics(),
+        judge_outcome=None,
+    )
+    write_judge_json(row_dir, _judge_outcome(80))
+    with gzip.open(row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
+        assert json.loads(f.readline())["event"]["type"] == "agent_settled"
+    assert json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))["combined"]["total"] == 80
+```
+
+(Again: `write_judge_json` into `test_report.py`'s existing top-of-file import line, and `_judge_outcome` is the helper Task 20 already added.)
 
 - [ ] **Step 2: Write the failing runner test**
 
@@ -689,7 +746,7 @@ def test_show_prints_persisted_summary(tmp_path, monkeypatch):
     (run_dir / "summary.md").write_text("# hello from disk\n", encoding="utf-8")
     monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
 
-    from modelman.state import ModelState, StateStore, save_state
+    from modelman.state import StateStore, save_state
 
     state = StateStore()
     state.extra["benchmarks"] = {"agent_last_run": str(run_dir)}
@@ -704,7 +761,8 @@ Append to `modelman/tests/benchmark/agent/test_runner.py`:
 ```python
 def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monkeypatch):
     """agent judge re-scores from row.json/diff.patch/gates.json alone —
-    no agent process, no workspace, no isolation."""
+    no agent process, no workspace, no isolation — and leaves every other
+    artifact in the row directory byte-identical."""
     monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
@@ -723,13 +781,19 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
                  "total": 100, "verdict": "principled_fix", "flags": [], "rationale": "ok"}
             )
 
+    # Seed a raw event stream so "the re-judge left it alone" is assertable.
+    with gzip.open(results[0].row_dir / "agent.jsonl.gz", "wt", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": 1.0, "event": {"type": "agent_settled"}}) + "\n")
+
     outcomes = rejudge_run(run_dir, judge_transport_factory=lambda cfg, path: _FakeJudgeTransport())
     assert len(outcomes) == 1
     assert outcomes[0]["rubric_total"] == 100
     assert json.loads((results[0].row_dir / "judge.json").read_text(encoding="utf-8"))["combined"]["total"] == 100
+    with gzip.open(results[0].row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
+        assert json.loads(f.readline())["event"]["type"] == "agent_settled"  # not truncated
 ```
 
-Run both (`uv run pytest tests/benchmark/agent/test_runner.py tests/benchmark/agent/test_cli.py -v`) — FAIL (`rejudge_run`, `show`, `judge` don't exist yet).
+Run both (`uv run pytest tests/benchmark/agent/test_runner.py tests/benchmark/agent/test_cli.py -v`) — FAIL (`rejudge_run`, `show`, `judge` don't exist yet). Add `import gzip` to `test_runner.py`'s existing top-of-file import block while you are there.
 
 Add to `modelman/src/modelman/benchmark/agent/runner.py`:
 ```python
@@ -778,14 +842,11 @@ def rejudge_run(
         )
         gates_data = json.loads((row_dir / "gates.json").read_text(encoding="utf-8")) if (row_dir / "gates.json").exists() else {"cap": 0.0}
         composite = judge.apply_cap(outcome.combined.total, gates_data["cap"]) if outcome.status == "scored" else None
-        report.write_row_artifacts(
-            row_dir,
-            events=[],
-            diff_raw=diff_path.read_text(encoding="utf-8"),
-            gates=None,
-            metrics=None,
-            judge_outcome=outcome,
-        )
+        # write_judge_json, NOT write_row_artifacts: the latter rewrites
+        # agent.jsonl.gz from its events argument, so re-judging would truncate
+        # the row's raw event stream (and rewrite diff.raw.patch from the
+        # already-anonymized diff.patch, corrupting it in place).
+        report.write_judge_json(row_dir, outcome)
         outcomes.append(
             {
                 "label": row_info["label"],
@@ -914,10 +975,31 @@ base_url = "http://localhost:8080/v1"
 api = "openai-completions"
 
 [[rows]]
-models   = ["ollama/qwen3.8:27b-mlx", "omlx/Ornith-1.5-35B-A3B-MLX-6bit"]
+models   = ["ollama/qwen3.8:27b-mlx"]
 thinking = ["off", "high"]
 routes   = ["direct", "litellm"]
+
+[[rows]]
+models   = ["omlx/mlx-community--Qwen3.8-27B-4bit"]
+thinking = ["off", "high"]
+routes   = ["litellm"]
+
+# omlx over the direct route needs the name the server actually serves,
+# because the registry model_name is org-prefixed (`mlx-community/…`) while
+# omlx keys on the repo basename. Confirm with
+#   curl -s localhost:8000/v1/models
+# and then uncomment this row, correcting direct_model to whatever it prints.
+# [[rows]]
+# label        = "qwen3.8-27b-omlx-direct"
+# model        = "omlx/mlx-community--Qwen3.8-27B-4bit"
+# thinking     = "off"
+# route        = "direct"
+# direct_model = "Qwen3.8-27B-4bit"
 ```
+
+Every id here is checked against `~/.config/local-ai/registry.toml` by `load_suite`, which refuses the file otherwise — so this list is deliberately restricted to ids that exist today. `ollama/qwen3.8:27b-mlx` and `omlx/mlx-community--Qwen3.8-27B-4bit` do. The `Ornith-1.5-35B-A3B-MLX-6bit` variant this task originally listed does **not** exist as a registry model (it is a LiteLLM deployment name and an `llm-isolate-provider omlx-6bit` target only), so it belongs in a commented row rather than an active one: a sweep file that cannot load is a sweep that never runs.
+
+When an `omlx` 6-bit registry entry does get added, that row is also where the `provider =` override earns its keep — isolate the exact variant with `provider = "omlx-6bit"` while `model =` stays the registry id, exactly as `modelman benchmark`'s own isolation does.
 
 - [ ] **Step 2: Add the bench workspace temp-dir pattern to `.gitignore`**
 
@@ -1008,7 +1090,7 @@ uv run modelman benchmark agent show --latest
 uv run modelman benchmark agent show --run-id <run-id>
 ```
 
-`summary.md` (also archived under `benchmarks/results/` per the existing dated convention) has four tables: **Quality** (outcome code, hidden n/m, rubric, cap, composite, verdict), **Speed** (TTFT, `gen_tok_s`/`e2e_tok_s`, tool time, tokens, cost), **Two-axis** (sorted by composite, Pareto-nondominated rows starred — "fastest config at ≥ this quality"), and **Anomalies** (every cap applied, vacuous test, thinking no-op, cold-first-token, overclaim, and any row scoring ≥70 rubric points despite failing every hidden test). A `JUDGE_FAIL` row keeps its gates/speed data and shows `N/A` for quality — it never voids the row, and it never earns a Pareto star.
+`summary.md` (copy it into `benchmarks/results/` yourself if you want it version-controlled, same as the bash benchmarks' results) has four tables: **Quality** (outcome code, hidden n/m, rubric, cap, composite, verdict), **Speed** (TTFT, `gen_tok_s`/`e2e_tok_s`, tool time, tokens, cost), **Two-axis** (sorted by composite, Pareto-nondominated rows starred — "fastest config at ≥ this quality"), and **Anomalies** (every cap applied, vacuous test, thinking no-op, reasoning emitted with `thinking=off`, cold-first-token, overclaim, and any row scoring ≥70 rubric points despite failing every hidden test). A `JUDGE_FAIL` row keeps its gates/speed data and shows `N/A` for quality — it never voids the row, and it never earns a Pareto star.
 
 Per-row artifacts live under `~/.config/local-ai/benchmarks/<run-id>/<row-dir>/`: `agent.jsonl.gz` (raw event stream), `agent.session.jsonl` (pi's own session file), `diff.raw.patch`/`diff.patch` (as-produced / anonymized), `gates.json`, `metrics.json`, `judge.json`, `row.json` (what `agent judge` needs to re-score later).
 
@@ -1033,6 +1115,8 @@ ls ~/.config/local-ai/benchmarks/<run-id>/
 - **`pi` needs no permission-bypass flag** for this harness — tool execution works under `--no-approve` in `--mode json` because non-interactive modes never prompt; see the spec's "Verified against the live setup" for why `--no-approve` is passed anyway (pinning project-trust behavior, not enabling tools).
 - **`route = "direct"` requires a matching `[routes.direct.<provider>]` block** in the suite — preflight fails immediately, naming the missing provider, rather than after an agent has already run.
 - **`omlx` 4-bit and 6-bit share one provider.** Use a row's `provider =` override (not just the model id) to isolate the exact variant — same rule as `modelman benchmark`'s own isolation, see [05-benchmarks](05-benchmarks.md) Gotchas.
+- **`route = "direct"` sends the registry `model_name`, which is not always what the backend serves.** True for `ollama` (bare names), not for `omlx`, whose registry entries are org-prefixed (`mlx-community/X`) while the server knows `X`. Set the row's `direct_model = "X"` (check `curl -s localhost:8000/v1/models`) or the row's pi requests will 400. A misaddressed row does not look like a configuration error here — it looks like a model that failed the task, which is the one misreading this harness cannot allow.
+- **`thinking = "off"` is a request, not a guarantee.** Observed live: `--thinking off` against `ollama/glm-5.3-flash:cloud` still returned `usage.reasoning = 11` and a thinking block. The Anomalies table flags those rows (`reasoning emitted with thinking=off`); treat an off/high pair as uncomparable when either is flagged.
 - **`repair_rounds` is accepted but rejected if non-zero.** The seam exists (per-turn retry after a failed run) but is disabled in v1 — see the spec's "Deferred: the repair round."
 - **Local-model timeouts are a config input, not a bug.** A 27B model in a six-round agentic task can exceed `agent_timeout_s`; `TIMEOUT` caps the composite at 0 but is reported as its own outcome class — raise `agent_timeout_s` per-backend rather than reading a timeout as "this model can't do it."
 - **Judging costs cloud API spend on every row.** `--skip-judge` exists for plumbing checks; `agent judge --row` re-scores a subset of an existing run without re-running agents.
@@ -1127,16 +1211,16 @@ uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml --dr
 ```
 Expected: `day31-drift` listed with its hidden-file count; both suites listed with their row counts; the dry-run prints exactly one resolved row for `smoke.toml`.
 
-- [ ] **Step 4 (optional, costs real judge tokens): live smoke run**
+- [ ] **Step 4: Live smoke run (required — capture the real output)**
 
-If you have a working `pi` install, a seeded LiteLLM apiKey, and `OPENROUTER_API_KEY` (or whichever key your judge model needs) available:
+This is the plan's only end-to-end proof that route resolution, `models.json` generation, the pi process driver, gates, judging, and artifact writes agree on a real run. Costs one fast cloud agent row plus one judge call.
 
 ```bash
 uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml
 uv run modelman benchmark agent show --latest
 ```
 
-Paste the real output into `docs/guides/09-agent-benchmarks.md`'s two `<!-- UNVERIFIED -->` blocks (TL;DR and Verification), replacing the comment with the actual command output, exactly as guide 05 does for its own not-yet-run-live sections. If this step is skipped, leave the `<!-- UNVERIFIED -->` markers in place — do not fabricate output.
+Paste the real output into `docs/guides/09-agent-benchmarks.md`'s two `<!-- UNVERIFIED -->` blocks (TL;DR and Verification), replacing the comment with the actual command output, exactly as guide 05 does for its own not-yet-run-live sections. Do not hand-edit or beautify the captured text — its value is that it is what the harness really printed. If the run cannot complete (no LiteLLM key, proxy down), record the *failure* honestly in the guide's place and leave the markers, and say so in the final report — do not fabricate output.
 
 - [ ] **Step 5: Run `make test-all` from the monorepo root**
 
@@ -1146,15 +1230,14 @@ make test-all
 ```
 Expected: PASS — this is the umbrella target (lint + modelman `make check`/`make test` + wt `go build`/`vet`/`test`) and is CLAUDE.md's own definition of "done" for a change touching `modelman/`.
 
+One thing to watch here, specific to this plan: the new agent-bench tests exercise `git init`/`git worktree` and `git -c`-free `subprocess` calls inside the OS temp dir. If the sandbox that runs `make test-all` denies `git` writes anywhere but the repo, these are the tests that fail first — report that as an environment limitation rather than "fixing" it by skipping.
+
 - [ ] **Step 6: Final commit**
 
 ```bash
 git add -A
 git status   # confirm only expected files are staged before committing
-git commit -m "$(cat <<'EOF'
-docs(agent-bench): capture live smoke run output - completes plan item #24
-EOF
-)"
+git commit -m "docs(agent-bench): capture live smoke run output - completes plan item #24"
 ```
 (Skip this commit entirely if Step 4 was skipped and nothing changed.)
 
