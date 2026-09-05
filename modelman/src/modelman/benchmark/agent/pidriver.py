@@ -574,6 +574,7 @@ def compute_metrics(
     # measurement, so gating on it would gate on the thing being measured).
     if thinking == "off" and m.reasoning_tok > 0:
         m.thinking_off_reasoning = True
+        m.anomaly = f"{m.anomaly}+THINKING_OFF_REASONING" if m.anomaly else "THINKING_OFF_REASONING"
         log(
             f"THINKING_OFF_REASONING: --thinking off but {m.reasoning_tok} reasoning "
             "tokens emitted; the backend ignores the toggle and this row's thinking "

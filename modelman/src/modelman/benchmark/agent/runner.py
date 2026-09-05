@@ -407,7 +407,7 @@ def rejudge_run(
         gates_data = json.loads(gates_path.read_text(encoding="utf-8")) if gates_path.exists() else {"cap": 0.0}
         combined = outcome.combined
         composite = (
-            judge.apply_cap(combined.total, gates_data["cap"])
+            judge.apply_cap(combined.total, gates_data.get("cap", 0.0))
             if outcome.status == "scored" and combined is not None
             else None
         )

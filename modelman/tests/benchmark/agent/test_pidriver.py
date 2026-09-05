@@ -479,7 +479,7 @@ def test_compute_metrics_flags_thinking_off_reasoning_leak():
     events = [_session_event(), _assistant_message_start(1), _assistant_message_end(2, reasoning=11)]
     m = compute_metrics(events, start_wall=0.0, end_wall=1.0, thinking="off")
     assert m.thinking_off_reasoning is True
-    assert m.anomaly == ""
+    assert m.anomaly == "THINKING_OFF_REASONING"
 
 
 def test_compute_metrics_no_reasoning_leak_flag_when_thinking_on():
