@@ -232,23 +232,6 @@ def _detect_and_evaluate_gate8(
     return outcomes
 
 
-def compute_composite(gates: GatesReport, judge: object | None = None) -> float:
-    """hidden_ratio * 0.60 + judge_score/100 * 0.40 * cap, both weights
-    carried from the spec. No composite is computed without hidden tests —
-    spec: "No composite score is computed when hidden_tests_available ==
-    false"."""
-    if not gates.hidden_evaluated:
-        return 0.0
-    hidden_ratio = gates.hidden_pass / gates.hidden_total if gates.hidden_total else 0.0
-    judge_score = getattr(judge, "total", 0.0) if judge is not None else 0.0
-    return hidden_ratio * 0.60 + (judge_score / 100.0) * 0.40 * gates.cap
-
-
-def score_row(gates: GatesReport, judge: object | None = None) -> float:
-    """Convenience alias callers use to name the two inputs explicitly."""
-    return compute_composite(gates, judge)
-
-
 def evaluate(
     workspace: Workspace,
     task: TaskBundle,
