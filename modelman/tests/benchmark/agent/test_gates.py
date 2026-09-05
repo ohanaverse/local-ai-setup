@@ -104,3 +104,66 @@ def test_broken_build_short_circuits(workspace):
     assert report.results[3].code == "BROKEN_BUILD"
     assert all(r.outcome == "skipped" for r in report.results[4:])
     assert report.cap == 0.25
+
+
+def _fix_and_add_regression_test(workspace, extra: str = "") -> None:
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
+    )
+    (workspace.root / "tests" / "test_regression.py").write_text(
+        "import unittest\nfrom pkg import add_one\n\n"
+        "class T(unittest.TestCase):\n    def test_even(self):\n        self.assertEqual(add_one(4), 5)\n"
+        + extra,
+        encoding="utf-8",
+    )
+
+
+def _evaluate(workspace):
+    return evaluate(
+        workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True
+    )
+
+
+def test_visible_regression_does_not_short_circuit(workspace):
+    """Breaking a shipped test (without touching its file) fails gate 5 but
+    still lets gates 6-7 run — VISIBLE_REGRESSION is diagnostic, not fatal to
+    later gates, per the spec."""
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "def add_one(n: int) -> int:\n    return n\n", encoding="utf-8"
+    )  # still importable, but now every call is wrong -> shipped test fails
+    report = _evaluate(workspace)
+    assert report.results[4].code == "VISIBLE_REGRESSION"
+    assert report.results[5].outcome != "skipped"  # gate 6 still ran
+    assert report.results[6].outcome != "skipped"  # gate 7 still ran
+
+
+def test_tampered_tests_short_circuits(workspace):
+    """Editing the pre-existing shipped test file is TAMPERED_TESTS and does
+    short-circuit — gates 7-9 cannot tell a real new test from a doctored old
+    one once this has happened."""
+    _fix_and_add_regression_test(workspace)
+    (workspace.root / "tests" / "test_pkg.py").write_text(
+        "import unittest\n\nclass T(unittest.TestCase):\n    def test_noop(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    report = _evaluate(workspace)
+    assert report.results[5].code == "TAMPERED_TESTS"
+    assert all(r.outcome == "skipped" for r in report.results[6:])
+    assert report.cap == 0.0
+
+
+def test_no_regression_test_when_no_new_test_file_added(workspace):
+    """A fix with no accompanying new test file fails gate 7 but is not a
+    short-circuit — gate 9 (hidden tests) still has to run on it."""
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
+    )
+    report = _evaluate(workspace)
+    assert report.results[6].code == "NO_REGRESSION_TEST"
+    assert report.cap <= 0.85
+
+
+def test_gate_seven_passes_when_new_test_file_added(workspace):
+    _fix_and_add_regression_test(workspace)
+    report = _evaluate(workspace)
+    assert report.results[6].outcome == "pass"

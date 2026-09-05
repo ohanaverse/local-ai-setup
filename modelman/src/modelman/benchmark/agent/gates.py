@@ -71,9 +71,12 @@ def _run_discover(root: Path, tests_dir: str) -> tuple[int, int, int] | None:
     failing test — unittest's own discover() already converts an import error
     in a test module into a failing pseudo-test, so only a subprocess-level
     crash needs this None case."""
+    # No top_level_dir: neither bundle puts an __init__.py in its tests dir, and
+    # discover(..., top_level_dir=".") then aborts with "Start directory is not
+    # importable", which would read as BROKEN_BUILD on every healthy run.
     script = (
         "import json, sys, unittest\n"
-        "suite = unittest.defaultTestLoader.discover(sys.argv[1], top_level_dir='.')\n"
+        "suite = unittest.defaultTestLoader.discover(sys.argv[1])\n"
         "runner = unittest.TextTestRunner(stream=sys.stderr, verbosity=0)\n"
         "result = runner.run(suite)\n"
         "json.dump({'total': result.testsRun, 'failures': len(result.failures), "
@@ -107,7 +110,7 @@ def evaluate(
     the result); gate 1 reads the assistant reply out of it."""
     report = GatesReport()
 
-    def add(gate_number: int, passed: bool, code: str | None, detail: str = "") -> bool:
+    def add(gate_number: int, passed: bool, code: str | None = None, detail: str = "") -> bool:
         outcome = "pass" if passed else "fail"
         report.results.append(GateResult(gate_number, GATE_NAMES[gate_number], outcome, code, detail))
         return passed
@@ -116,10 +119,16 @@ def evaluate(
         for gn in range(gate_number, 10):
             report.results.append(GateResult(gn, GATE_NAMES[gn], "skipped"))
 
-    def finish(short_circuit_code: str | None, last_gate_number: int) -> GatesReport:
+    def finish(short_circuit_code: str | None = None, last_gate_number: int = 9) -> GatesReport:
+        """Mark everything after `last_gate_number` unevaluated and apply the
+        cap table to whatever fired.
+
+        The cap is recomputed from triggered_codes rather than taken from the
+        short-circuit argument alone: NO_REGRESSION_TEST and VACUOUS_TEST cap
+        without short-circuiting, so a code-only cap would miss them."""
         if short_circuit_code:
-            report.cap = min(report.cap, CAP_TABLE[short_circuit_code])
             skipped_from(last_gate_number + 1)
+        report.cap = min([1.0, *[CAP_TABLE[c] for c in report.triggered_codes if c in CAP_TABLE]])
         return report
 
     # Gate 1: agent exited cleanly
@@ -150,14 +159,54 @@ def evaluate(
     if not add(3, has_diff, "NO_DIFF"):
         return finish("NO_DIFF", 3)
 
+    tests_dir = task.gates_config["build"]["tests_dir"]
+
     # Gate 4: build intact (visible import + visible tests still run)
     module = task.gates_config["build"]["import_check"]
     build_ok = _import_check(workspace.root, module)
-    discover = _run_discover(workspace.root, task.gates_config["build"]["tests_dir"])
+    discover = _run_discover(workspace.root, tests_dir)
     build_ok = build_ok and discover is not None
     if not add(4, build_ok, "BROKEN_BUILD"):
         return finish("BROKEN_BUILD", 4)
 
-    # Gates 5–9 continue in Tasks 9–10.
-    skipped_from(5)
-    return report
+    # Gate 5: visible regression. Deliberately not a short-circuit: a broken
+    # visible test does not make gates 6-9 un-evaluable (spec, gate 5).
+    assert discover is not None  # gate 4 above returns finish() when it is
+    total, failures, errors = discover
+    if total > 0 and failures == 0 and errors == 0:
+        add(5, True)
+    else:
+        add(5, False, "VISIBLE_REGRESSION", f"{failures} failures, {errors} errors of {total}")
+
+    # Gate 6: tests not tampered. Editing a pre-existing test file is fatal,
+    # and complementary to gate 7 rather than contradictory: adding a new file
+    # is required, changing an old one is not allowed.
+    tampered = [
+        p for p in workspace.modified_or_deleted_since_baseline()
+        if p.relative_to(workspace.root).parts[0] == tests_dir
+    ]
+    if not tampered:
+        add(6, True)
+    else:
+        add(
+            6,
+            False,
+            "TAMPERED_TESTS",
+            ", ".join(str(p.relative_to(workspace.root)) for p in tampered),
+        )
+        return finish("TAMPERED_TESTS", 6)
+
+    # Gate 7: has a regression test (a new file in the tests dir).
+    new_tests = [
+        p
+        for p in workspace.new_files_since_baseline()
+        if p.relative_to(workspace.root).parts[0] == tests_dir and p.name.startswith("test_")
+    ]
+    if new_tests:
+        add(7, True)
+    else:
+        add(7, False, "NO_REGRESSION_TEST")
+
+    # Gates 8-9 are added in Task 10.
+    skipped_from(8)
+    return finish()
