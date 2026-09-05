@@ -24,7 +24,7 @@ from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, prefli
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 from modelman.benchmark.errors import BenchmarkError
-from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
+from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
 
@@ -415,12 +415,11 @@ def rejudge_run(
 
 
 
-# What bin/llm-isolate-provider can actually isolate. DEFAULT_PROVIDER_IDS is
-# the registry's local set (ollama, llamacpp, omlx); omlx-6bit is only ever a
-# row-level provider override, so it is absent from that constant and must be
-# named here or the 6-bit variant — the one row that most needs isolation, since
-# 4-bit and 6-bit share a process — silently stops being isolated.
-ISOLATABLE_PROVIDERS = set(DEFAULT_PROVIDER_IDS) | {"omlx-6bit"}
+# What bin/llm-isolate-provider can actually isolate — see
+# modelman.benchmark.isolation.SUPPORTED_PROVIDER_IDS, the single source of
+# truth this set now aliases instead of rebuilding from an unrelated
+# registry constant plus a one-off addition.
+ISOLATABLE_PROVIDERS = isolation.SUPPORTED_PROVIDER_IDS
 
 
 def run_suite(

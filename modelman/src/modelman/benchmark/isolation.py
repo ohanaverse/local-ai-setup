@@ -9,6 +9,13 @@ from dataclasses import dataclass
 
 from modelman.benchmark.errors import BenchmarkError
 
+# What bin/llm-isolate-provider can actually isolate, mirroring that script's
+# own "Supported:" header comment — the shell script is the real source of
+# truth (it owns the case statement), and this constant is the one place
+# modelman code checks isolability, kept here next to the rest of the
+# subprocess contract with that script rather than rebuilt ad hoc elsewhere.
+SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset({"ollama", "llamacpp", "omlx", "omlx-6bit"})
+
 
 @dataclass
 class IsolateResult:
