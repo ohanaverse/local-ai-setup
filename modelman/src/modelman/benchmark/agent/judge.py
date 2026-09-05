@@ -108,6 +108,9 @@ def build_prompt(
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
+_ANSWER_KEYS = {"scores", "total", "verdict"}
+
+
 def _json_candidate(raw_text: str) -> str:
     """The part of a reply that should be parsed as JSON.
 
@@ -116,22 +119,33 @@ def _json_candidate(raw_text: str) -> str:
     wraps its object in a markdown fence, or says "Here is my assessment:" first,
     is answering correctly — and with `max_attempts` retrying the identical
     prompt, a wrapper-intolerant parser turns that into a permanent JUDGE_FAIL on
-    every row, which is the only quality axis this harness has."""
+    every row, which is the only quality axis this harness has.
+
+    Scans every '{' for a parseable dict rather than stopping at the first one,
+    because a reply can contain an incidental JSON-looking fragment (an example,
+    a restated schema) before the judge's actual answer. The first candidate with
+    all three answer keys wins; failing that, the first parseable dict is kept as
+    a fallback so a genuinely malformed reply still surfaces its own parse error
+    from parse_response rather than a misleading one about an unrelated fragment."""
     fenced = _FENCE_RE.search(raw_text)
     text = fenced.group(1) if fenced else raw_text
     decoder = json.JSONDecoder()
     idx = 0
+    fallback: str | None = None
     while idx < len(text):
         # Skip whitespace and stray leading characters to find the first object.
         if text[idx] == "{":
             try:
-                obj, _ = decoder.raw_decode(text, idx)
+                obj, end = decoder.raw_decode(text, idx)
                 if isinstance(obj, dict):
-                    return text[idx : _]
+                    if obj.keys() >= _ANSWER_KEYS:
+                        return text[idx:end]
+                    if fallback is None:
+                        fallback = text[idx:end]
             except json.JSONDecodeError:
                 pass
         idx += 1
-    return raw_text
+    return fallback if fallback is not None else raw_text
 
 
 def parse_response(raw_text: str) -> JudgeScore:

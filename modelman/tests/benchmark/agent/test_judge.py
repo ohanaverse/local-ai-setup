@@ -120,6 +120,22 @@ def test_parse_response_extracts_json_around_unbalanced_braces_in_strings():
     assert score.rationale == "fixes the {off-by-one} issue"
 
 
+def test_parse_response_skips_a_decoy_dict_before_the_real_answer():
+    """A judge reply can contain a small, unrelated JSON-looking dict (an
+    illustrative example, or the model echoing the schema) before its actual
+    answer. Stopping at the first parseable '{' would return that decoy
+    instead of the real object, either raising a spurious JudgeContractError
+    or, worse, silently scoring the row against the wrong data. The scanner
+    must prefer the first candidate that actually has the answer's keys."""
+    raw = (
+        'For reference, the schema looks like {"example": true}.\n'
+        f"{VALID_RESPONSE}"
+    )
+    score = parse_response(raw)
+    assert score.total == 80
+    assert score.verdict == "principled_fix"
+
+
 def test_parse_response_rejects_a_boolean_score():
     """Python's bool is an int subclass, so `isinstance(value, int)` alone
     lets a JSON `true`/`false` through as a valid 0-30 score — a plausible

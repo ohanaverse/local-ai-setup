@@ -45,6 +45,17 @@ def load_task(path: Path) -> TaskBundle:
     with (path / "meta.toml").open("rb") as f:
         meta = tomllib.load(f)
 
+    tests_dir = gates_config.get("build", {}).get("tests_dir")
+    if tests_dir is not None and not Path(tests_dir).parts:
+        # gates.py's tests_dir-prefix checks (gates 6/7) compare a file's
+        # leading path parts against Path(tests_dir).parts; "." or "" both
+        # produce an empty tuple, which is a prefix of every path, so every
+        # file in the workspace would silently count as "under tests_dir".
+        raise BenchmarkError(
+            f"task bundle {path} has degenerate gates.toml tests_dir={tests_dir!r} "
+            "(must name a real subdirectory, not '.' or empty)"
+        )
+
     return TaskBundle(
         task_id=path.name,
         path=path,

@@ -47,6 +47,24 @@ def test_load_task_missing_required_file_raises(tmp_path):
         load_task(bundle)
 
 
+def test_load_task_degenerate_tests_dir_raises(tmp_path):
+    """gates.toml's tests_dir = "." (or "") produces Path(tests_dir).parts == (),
+    which is a prefix of every path — so gates.py's tests_dir-membership checks
+    would silently treat every file in the workspace as "under tests_dir".
+    Rejecting it at load time (like every other malformed bundle) keeps that
+    failure at preflight instead of a wrong gate verdict mid-run."""
+    bundle = tmp_path / "broken"
+    bundle.mkdir()
+    (bundle / "task.md").write_text("x", encoding="utf-8")
+    (bundle / "rubric.md").write_text("x", encoding="utf-8")
+    (bundle / "meta.toml").write_text("", encoding="utf-8")
+    (bundle / "gates.toml").write_text('[build]\ntests_dir = "."\n', encoding="utf-8")
+    (bundle / "visible").mkdir()
+
+    with pytest.raises(BenchmarkError, match="tests_dir"):
+        load_task(bundle)
+
+
 def test_load_task_missing_visible_dir_raises(tmp_path):
     """A bundle with no visible/ directory can't seed a workspace at all."""
     bundle = tmp_path / "broken"
