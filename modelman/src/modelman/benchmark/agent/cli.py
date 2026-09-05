@@ -54,6 +54,7 @@ def run_cmd(
         None, "--results-dir", help="Directory for run artifacts"
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Resolve and print the row matrix; run nothing"),
+    skip_judge: bool = typer.Option(False, "--skip-judge", help="Skip the judge phase"),
 ) -> None:
     """Run a suite against a real coding task."""
     registry = load_registry()
@@ -78,7 +79,7 @@ def run_cmd(
         return
 
     try:
-        run_dir, results = run_suite(loaded_suite, registry, row_filter=row or None, results_dir=results_dir)
+        run_dir, results = run_suite(loaded_suite, registry, row_filter=row or None, results_dir=results_dir, skip_judge=skip_judge)
     except BenchmarkError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

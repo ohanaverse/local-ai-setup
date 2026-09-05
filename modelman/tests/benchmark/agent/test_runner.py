@@ -117,7 +117,11 @@ def test_run_suite_isolates_once_per_provider_group(tmp_path, monkeypatch):
     body = _suite_toml(MINI_DRIFT, models='["ollama/a", "ollama/a"]')
     suite = load_suite(_write_suite(tmp_path, body), _registry())
     run_dir, results = run_suite(
-        suite, _registry(), results_dir=tmp_path / "results", live_models_path=tmp_path / "missing.json"
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,  # phase 1 only; the judge transport is Task 18's concern
     )
 
     assert calls == ["ollama", "restore"]
@@ -140,7 +144,11 @@ def test_run_suite_contains_isolation_failure_to_its_group(tmp_path, monkeypatch
 
     suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
     run_dir, results = run_suite(
-        suite, _registry(), results_dir=tmp_path / "results", live_models_path=tmp_path / "missing.json"
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,  # phase 1 only; the judge transport is Task 18's concern
     )
 
     assert len(results) == 1
@@ -158,7 +166,11 @@ def test_run_suite_marks_agent_error_when_the_agent_writes_no_session_file(tmp_p
 
     suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
     run_dir, results = run_suite(
-        suite, _registry(), results_dir=tmp_path / "results", live_models_path=tmp_path / "missing.json"
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,  # phase 1 only; the judge transport is Task 18's concern
     )
 
     assert results[0].gates.results[0].code == "AGENT_ERROR"
@@ -184,7 +196,61 @@ def test_run_suite_row_filter_selects_by_label(tmp_path, monkeypatch):
         row_filter=[wanted_label],
         results_dir=tmp_path / "results",
         live_models_path=tmp_path / "missing.json",
+        skip_judge=True,  # phase 1 only; the judge transport is Task 18's concern
     )
     assert len(results) == 1
     assert results[0].row.label == wanted_label
 
+def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkeypatch):
+    """Judging happens after restore_providers, on every row with gates
+    evaluated, and the composite is rubric_total x cap (spec Scoring)."""
+    order = []
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: order.append(("isolate", pid)))
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: order.append(("restore",)))
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    class _FakeJudgeTransport:
+        def complete(self, prompt, *, temperature):
+            order.append(("judge",))
+            return json.dumps(
+                {
+                    "scores": {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
+                    "total": 100,
+                    "verdict": "principled_fix",
+                    "flags": [],
+                    "rationale": "ok",
+                }
+            )
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        judge_transport_factory=lambda judge_cfg, path: _FakeJudgeTransport(),
+    )
+
+    assert order == [("isolate", "ollama"), ("restore",), ("judge",)]
+    assert results[0].judge is not None
+    assert results[0].judge.status == "scored"
+    # This row is NO_DIFF (cap x0.00), so the composite is 0 regardless of
+    # the (fake, maximal) rubric score — proving the cap is actually applied.
+    assert results[0].composite == 0
+
+
+def test_run_suite_skip_judge_leaves_composite_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    assert results[0].judge is None
+    assert results[0].composite is None

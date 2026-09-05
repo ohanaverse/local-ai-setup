@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from modelman.benchmark import isolation
-from modelman.benchmark.agent import pidriver
+from modelman.benchmark.agent import judge, pidriver
 from modelman.benchmark.agent.gates import GatesReport
 from modelman.benchmark.agent.gates import evaluate as evaluate_gates
-from modelman.benchmark.agent.suite import RowConfig, Suite, preflight
+from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, preflight
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 from modelman.benchmark.errors import BenchmarkError
@@ -32,6 +34,10 @@ class RowRunResult:
     gates: GatesReport | None
     metrics: pidriver.AgentMetrics | None
     diff_raw: str
+    seed_contents: dict[str, str] = field(default_factory=dict)
+    closing_message: str = ""
+    judge: judge.JudgeOutcome | None = None
+    composite: int | None = None
     error: str | None = None
 
 
@@ -45,6 +51,82 @@ def _prompt_for(task: TaskBundle) -> str:
         "Work only inside this repository. When you believe the bug is fixed, "
         "add a regression test under tests/ and stop."
     )
+
+
+def _closing_message(events: list[dict]) -> str:
+    """The text blocks of the last assistant `message_end`.
+
+    pi's `message_end` "contains the final authoritative message", nested at
+    message_end.message.content as typed blocks; the thinking block is excluded
+    because only `text` blocks are the closing message. Reading the final
+    message rather than concatenating deltas is what keeps this correct when a
+    provider reports content only at completion.
+
+    Distinct from `metrics.final_text` on purpose: that is the streamed view,
+    this is the authoritative one, and the judge scores against this."""
+    last_text = ""
+    for event in events:
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message") or {}
+        if message.get("role") != "assistant":
+            continue  # pi emits the echoed prompt as a message_end too
+        blocks = message.get("content")
+        if isinstance(blocks, list):
+            last_text = "".join(
+                b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
+            )
+    return last_text
+
+
+def _build_judge_transport(judge_cfg: JudgeConfig, live_models_path: Path) -> judge.JudgeTransport:
+    try:
+        live = json.loads(live_models_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        live = {}
+    litellm_entry = live.get("providers", {}).get("litellm", {})
+    api_key = litellm_entry.get("apiKey")
+    if not api_key:
+        raise BenchmarkError(
+            "no LiteLLM apiKey found in ~/.pi/agent/models.json for the judge transport"
+        )
+    base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
+    return judge.LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=judge_cfg.model)
+
+
+def _judge_all(
+    suite: Suite,
+    task: TaskBundle,
+    results: list[RowRunResult],
+    live_models_path: Path,
+    factory: Callable[[JudgeConfig, Path], judge.JudgeTransport],
+) -> None:
+    """Phase 2. Runs after restore_providers(): judging is a cloud call and
+    must not hold the local GPU while it works."""
+    transport = factory(suite.judge, live_models_path)
+    for result in results:
+        if result.error is not None or result.gates is None or result.metrics is None:
+            continue
+        prompt = judge.build_prompt(
+            task_md=task.task_md,
+            seed_contents=result.seed_contents,
+            diff_text=judge.anonymize_diff(result.diff_raw),
+            closing_message=judge.anonymize_message(result.closing_message),
+            rubric_md=task.rubric_md,
+        )
+        outcome = judge.judge_row(
+            transport,
+            prompt,
+            temperature=suite.judge.temperature,
+            samples=suite.judge.samples,
+            max_attempts=suite.judge.max_attempts,
+        )
+        result.judge = outcome
+        result.composite = (
+            judge.apply_cap(outcome.combined.total, result.gates.cap)
+            if outcome.status == "scored" and outcome.combined is not None
+            else None
+        )
 
 
 def _run_single_row(
@@ -94,8 +176,24 @@ def _run_single_row(
             workspace, task, run_result, events=events, session_file_present=session_present
         )
         diff_raw = workspace.diff()
+        # what the agent touched, paired with what those files held at the
+        # baseline: the judge needs the before-state to read a diff at all
+        touched = workspace.modified_or_deleted_since_baseline() + workspace.new_files_since_baseline()
+        seed_contents: dict[str, str] = {}
+        for path in touched:
+            rel = str(path.relative_to(workspace.root))
+            content = workspace.file_at_baseline(rel)
+            if content is not None:
+                seed_contents[rel] = content
         return RowRunResult(
-            row=row, pass_number=pass_number, row_dir=row_dir, gates=gates, metrics=metrics, diff_raw=diff_raw
+            row=row,
+            pass_number=pass_number,
+            row_dir=row_dir,
+            gates=gates,
+            metrics=metrics,
+            diff_raw=diff_raw,
+            seed_contents=seed_contents,
+            closing_message=_closing_message(events),
         )
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -116,6 +214,8 @@ def run_suite(
     row_filter: list[str] | None = None,
     results_dir: Path | None = None,
     live_models_path: Path = pidriver.LIVE_PI_MODELS_PATH,
+    skip_judge: bool = False,
+    judge_transport_factory: Callable[[JudgeConfig, Path], judge.JudgeTransport] | None = None,
 ) -> tuple[Path, list[RowRunResult]]:
     """Phase 0 (preflight) + phase 1 (execute): group rows by provider,
     isolate once per group, run each row's agent + gates, restore at the
@@ -163,5 +263,11 @@ def run_suite(
                     time.sleep(suite.cooldown_s)
 
     isolation.restore_providers()
+
+    if not skip_judge:
+        _judge_all(
+            suite, task, results, live_models_path, judge_transport_factory or _build_judge_transport
+        )
+
     return run_dir, results
 

@@ -109,3 +109,39 @@ routes = ["direct"]
 
     state = load_state()
     assert state.extra["benchmarks"]["agent_last_run"] == str(fake_run_dir)
+
+def test_run_passes_skip_judge_through_to_run_suite(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_run_suite(suite_obj, registry_obj, **kwargs):
+        captured.update(kwargs)
+        return tmp_path / "results" / "run1", []
+
+    monkeypatch.setattr(cli_module, "load_registry", lambda: _registry())
+    monkeypatch.setattr(cli_module, "run_suite", _fake_run_suite)
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        """
+name = "s"
+task = "some/task"
+
+[judge]
+model = "x"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[[rows]]
+models = ["ollama/a"]
+thinking = ["off"]
+routes = ["direct"]
+""",
+        encoding="utf-8",
+    )
+    result = runner.invoke(agent_app, ["run", "--suite", str(suite_path), "--skip-judge"])
+    assert result.exit_code == 0
+    assert captured["skip_judge"] is True
