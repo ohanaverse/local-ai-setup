@@ -98,11 +98,6 @@ def run_cmd(
         raise typer.Exit(1) from exc
 
     _record_run_and_report(run_dir, results)
-    for result in results:
-        if result.error:
-            typer.echo(
-                f"  {result.row.label} pass {result.pass_number}: {result.error}", err=True
-            )
 
 
 __all__ = ["agent_app"]
