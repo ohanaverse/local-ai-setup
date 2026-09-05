@@ -10,8 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md` — this plan implements it section by section; executors should read both. Anything this plan doesn't spell out in full is settled by the spec.
 
-**Status:** items #1–#7 (Phases 1–2) are complete; #8–#24 remain. The Phase 2
-listings were rebuilt from the shipped code — see its corrections section.
+**Status:** items #1–#11 (Phases 1–3) are complete; #12–#24 remain. Phase 2's listings were
+rebuilt from the shipped code; Phase 3's original listings stand, with a corrections
+section and the shipped files at the end of that file.
 
 ## Global Constraints
 
@@ -143,3 +144,15 @@ Plan self-review (below) is global; the phase files carry no review section.
 14. **`_read_stdout` used `proc` as a free variable** at module level — a `NameError` on the first line of the first real run, which empties `events` and makes every row report zero tokens. `proc` is a parameter now.
 15. **The poll loop exited on "assistant `message_end` seen AND process gone"**, so a run whose model never replied burned its whole timeout (a 40-minute row that died at second three cost 40 minutes) and risked losing the `agent_end` tail. It exits when the child exits and lets the reader drain to EOF.
 16. **`compute_metrics` timed off `event["ts_ms"]`, which pi never emits** — `turn_start` has no timestamp and an assistant `message_end` repeats its `message_start`'s `message.timestamp`. The plan's index-proportional fallback produced a constant TTFT and, for a turn whose start and end share an index bucket, `gen_seconds = 0.0`: a silent zero on the metric the sweep exists to measure. `run_pi_process` now stamps `_ts` (seconds since run start) as the reader reads each line, and the metrics are documented as arrival-based rather than provider-side.
+
+**Found while executing Phase 3 (full write-up plus the shipped `gates.py` in [Phase 3](2026-09-04-agent-coding-benchmark-p3-gates.md)):**
+
+17. Tasks 8–11 were written against the pre-Phase-2 `PiRunResult`; `evaluate()` now takes pi's event list as an `events=` keyword.
+18. Gate 1's condition also failed a timed-out run, so `TIMEOUT` was unreachable and the task's own test asserted a code the code could not emit.
+19. `mini-drift/gates.toml` had no `[build]` section, so gates 4–6 `KeyError`ed on a bundle `load_task` accepted.
+20. `_run_discover` used `top_level_dir="."`, which cannot import a `tests/` dir with no `__init__.py` — every healthy run would have read `BROKEN_BUILD` and capped at 0.25.
+21. Gate 3 used `git diff --quiet HEAD`, ignoring untracked files, so an agent whose only change was a new test file scored `NO_DIFF` and zero.
+22. `ALL_HIDDEN_FAILING` (×0.25) was missing from `CAP_TABLE` despite being the spec's own row.
+23. `PARTIAL_HIDDEN_PASS` (×0.50) was missing too — and Task 11 asserts the spec's worked example that needs it.
+24. Task 10's minimum-across-conditions test asserted a hidden ratio the fixture cannot produce; rewritten to fire two caps together.
+25. `add()` stamped a failure code onto gates that passed, so a `Pass` row could read `AGENT_ERROR`.

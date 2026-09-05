@@ -84,6 +84,10 @@ Two independent test methods, not one, so Phase 3's gate tests can exercise a ge
 
 `modelman/tests/benchmark/agent/fixtures/tasks/mini-drift/gates.toml`:
 ```toml
+[build]
+import_check = "pkg"
+tests_dir = "tests"
+
 [hidden]
 files = ["test_hidden.py"]
 ```
