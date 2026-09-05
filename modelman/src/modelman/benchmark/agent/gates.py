@@ -16,6 +16,7 @@ CAP_TABLE = {
     "NO_REGRESSION_TEST": 0.85,
     "VACUOUS_TEST": 0.70,
     "BROKEN_BUILD": 0.25,
+    "PARTIAL_HIDDEN_PASS": 0.50,
     "ALL_HIDDEN_FAILING": 0.25,
     "TAMPERED_TESTS": 0.0,
     "TIMEOUT": 0.0,
@@ -388,14 +389,19 @@ def evaluate(
         report.hidden_pass = hidden_pass
         report.hidden_total = hidden_total
         report.hidden_evaluated = True
-        if hidden_total > 0 and hidden_pass == hidden_total:
+        if hidden_pass == hidden_total and hidden_total > 0:
             add(9, True)
-        elif hidden_total > 0 and hidden_pass == 0:
-            # the spec's cap table: "all hidden tests fail, or BROKEN_BUILD" is
-            # a x0.25 outcome, distinct from a partial pass
+        elif hidden_pass == 0:
+            # "all hidden tests fail, or BROKEN_BUILD" is a x0.25 outcome. A
+            # hidden file that would not even load lands here too, which is the
+            # right verdict: nothing about that row's correctness was measured.
             add(9, False, "ALL_HIDDEN_FAILING", f"0/{hidden_total}")
         else:
-            add(9, False, "HIDDEN_TESTS_FAILED", f"{hidden_pass}/{hidden_total}")
+            # the spec's cap table row "partial hidden-test pass (>=1 of m, not
+            # all) x0.50"; its worked example pairs this with
+            # NO_REGRESSION_TEST (x0.85) and expects the minimum, 0.50
+            add(9, False, "PARTIAL_HIDDEN_PASS", f"{hidden_pass}/{hidden_total}")
+
     else:
         report.results.append(GateResult(9, GATE_NAMES[9], "skipped"))
 
