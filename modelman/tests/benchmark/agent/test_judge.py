@@ -10,11 +10,14 @@ not just that scores parse correctly.
 import json
 
 import pytest
+import requests
 
+import modelman.benchmark.agent.judge as judge_module
 from modelman.benchmark.agent.judge import (
     DIMENSIONS,
     JudgeContractError,
     JudgeTransportError,
+    LiteLLMJudgeTransport,
     anonymize_diff,
     anonymize_message,
     apply_cap,
@@ -167,3 +170,65 @@ def test_detect_overclaim_false_when_claim_matches_reality():
 
 def test_detect_overclaim_false_when_no_claim_made():
     assert detect_overclaim("I fixed the calendar arithmetic.", hidden_pass=0, hidden_total=6) is False
+
+
+
+
+class _FakeResponse:
+    def __init__(self, status=200, payload=None):
+        self.status_code = status
+        self._payload = payload or {"choices": [{"message": {"content": "hi"}}]}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"status {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+def test_litellm_transport_posts_expected_payload(monkeypatch):
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        return _FakeResponse(payload={"choices": [{"message": {"content": '{"total": 1}'}}]})
+
+    monkeypatch.setattr(judge_module.requests, "post", fake_post)
+    transport = LiteLLMJudgeTransport(
+        base_url="http://localhost:4000/v1", api_key="sk-test", model="openrouter/anthropic/claude-opus-4"
+    )
+    result = transport.complete("prompt text", temperature=0.0)
+
+    assert result == '{"total": 1}'
+    assert captured["url"] == "http://localhost:4000/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    assert captured["json"]["model"] == "openrouter/anthropic/claude-opus-4"
+    assert captured["json"]["temperature"] == 0.0
+
+
+def test_litellm_transport_retries_once_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky_post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.ConnectionError("boom")
+        return _FakeResponse(payload={"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(judge_module.requests, "post", flaky_post)
+    transport = LiteLLMJudgeTransport(base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0)
+    assert transport.complete("p", temperature=0.0) == "ok"
+    assert calls["n"] == 2
+
+
+def test_litellm_transport_raises_judge_transport_error_after_retry_exhausted(monkeypatch):
+    def always_fails(url, headers=None, json=None, timeout=None):
+        raise requests.ConnectionError("still down")
+
+    monkeypatch.setattr(judge_module.requests, "post", always_fails)
+    transport = LiteLLMJudgeTransport(base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0)
+    with pytest.raises(JudgeTransportError):
+        transport.complete("p", temperature=0.0)

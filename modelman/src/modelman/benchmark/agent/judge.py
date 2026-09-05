@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from statistics import median
 from typing import Protocol
+
+import requests
 
 DIMENSIONS = ("root_cause", "approach", "test_quality", "scope", "coherence")
 MAX_POINTS = {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10}
@@ -178,3 +181,41 @@ def detect_overclaim(closing_message: str, hidden_pass: int, hidden_total: int) 
     compare against the actual hidden-test ratio — a computed column, not
     a judge dimension."""
     return bool(_TEST_PASS_CLAIM_RE.search(closing_message)) and hidden_pass < hidden_total
+
+class LiteLLMJudgeTransport:
+    """Direct chat-completions call through LiteLLM at a fixed temperature.
+    Not a pi subprocess: pi has no temperature flag, and a fresh HTTP
+    request gives the same context isolation a fresh process would, more
+    cheaply."""
+
+    def __init__(self, base_url: str, api_key: str, model: str, *, retry_backoff_s: float = 2.0):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.retry_backoff_s = retry_backoff_s
+
+    def complete(self, prompt: str, *, temperature: float) -> str:
+        try:
+            return self._post(prompt, temperature)
+        except requests.RequestException:
+            time.sleep(self.retry_backoff_s)
+            try:
+                return self._post(prompt, temperature)
+            except requests.RequestException as exc:
+                raise JudgeTransportError(f"judge transport failed after retry: {exc}") from exc
+
+    def _post(self, prompt: str, temperature: float) -> str:
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "stream": False,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
