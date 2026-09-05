@@ -10,8 +10,11 @@ import signal
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import median
 
 from modelman.benchmark.errors import BenchmarkError
 
@@ -196,10 +199,15 @@ class PiRunResult:
 
 
 def _read_stdout(
-    proc: subprocess.Popen[bytes], lines: list[bytes], stop: threading.Event
+    proc: subprocess.Popen[bytes],
+    lines: list[tuple[float, bytes]],
+    stop: threading.Event,
 ) -> None:
-    """Reader thread: drain stdout into `lines`, exiting promptly on `stop`
-    instead of blocking forever on readline() if the child wedged.
+    """Reader thread: drain stdout into `lines` as (monotonic arrival, text).
+
+    The arrival time is recorded here, at the moment the line is read, not when
+    the poll loop parses it — that gap is the whole basis for the timing
+    metrics, since pi's own events carry no clock (see _arrival_s).
 
     `proc` is a parameter, not a free variable: this is a module-level function
     and would otherwise NameError the first time a real row ran it.
@@ -210,7 +218,7 @@ def _read_stdout(
             return
         if not raw_line.strip():
             continue
-        lines.append(raw_line)
+        lines.append((time.monotonic(), raw_line))
 
 
 def run_pi_process(
@@ -230,7 +238,7 @@ def run_pi_process(
     much to this driver.
     """
     abort = abort_event or threading.Event()
-    stdout_lines: list[bytes] = []
+    stdout_lines: list[tuple[float, bytes]] = []
     stderr_chunks: list[bytes] = []
     events: list[dict] = []
     seen_message_end = False
@@ -239,6 +247,7 @@ def run_pi_process(
     timed_out = False
     aborted = False
 
+    started_monotonic = time.monotonic()
     proc = subprocess.Popen(
         cmd,
         cwd=workspace_path,
@@ -255,7 +264,7 @@ def run_pi_process(
     def _drain_new_lines() -> None:
         nonlocal unparsed_lines, seen_message_end
         consumed = len(events) + unparsed_lines
-        for raw_line in stdout_lines[consumed:]:
+        for arrival, raw_line in stdout_lines[consumed:]:
             try:
                 event = json.loads(raw_line)
             except json.JSONDecodeError:
@@ -264,6 +273,7 @@ def run_pi_process(
             if not isinstance(event, dict):
                 unparsed_lines += 1
                 continue
+            event["_ts"] = arrival - started_monotonic
             events.append(event)
             if event.get("type") == "message_end" and (
                 (event.get("message") or {}).get("role") == "assistant"
@@ -340,3 +350,229 @@ def run_pi_process(
         unparsed_lines=unparsed_lines,
         stderr_tail=stderr_tail,
     )
+
+
+# ---------------------------------------------------------------------------
+# Metrics extraction
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AgentMetrics:
+    requests: int = 0
+    turns: int = 0
+    gen_seconds: float = 0.0
+    input_tok: int = 0
+    output_tok: int = 0
+    cache_read_tok: int = 0
+    cache_write_tok: int = 0
+    reasoning_tok: int = 0
+    tool_call_count: int = 0
+    ttfts_ms: list[float] = field(default_factory=list)
+    ttft_first_ms: float = 0.0
+    ttft_subseq_median_ms: float = 0.0
+    cold_first_token: bool = False
+    thinking_off_reasoning: bool = False
+    wall_seconds: float = 0.0
+    final_text: str = ""
+    anomaly: str = ""
+
+
+def _extract_text(message_end_event: dict) -> str:
+    message = message_end_event.get("message") or {}
+    parts = []
+    for block in message.get("content", []):
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    return "".join(parts)
+
+
+def _summarize_event(event: dict) -> str:
+    etype = event.get("type", "?")
+    ame = event.get("assistantMessageEvent") or {}
+    if etype == "message_update" and ame.get("type") == "text_delta":
+        return f"text_delta {len(ame.get('delta', ''))!r} chars"
+    if etype == "message_update" and ame.get("type") == "thinking_delta":
+        return "thinking_delta"
+    if etype == "message_update":
+        return ame.get("type", "update")
+    if etype == "message_end":
+        message = event.get("message") or {}
+        usage = message.get("usage") or {}
+        parts = [f"role={message.get('role')}"]
+        if usage:
+            parts.append(f"in={usage.get('input', 0)} out={usage.get('output', 0)}")
+        return " ".join(parts)
+    if etype == "tool_execution_start":
+        return event.get("toolName", "?")
+    if etype == "tool_execution_end":
+        return f"{event.get('toolName', '?')} err={event.get('isError')}"
+    if etype == "turn_end":
+        return f"tools={len(event.get('toolResults', []))}"
+    if etype == "agent_end":
+        return f"messages={len(event.get('messages', []))} willRetry={event.get('willRetry')}"
+    return ""
+
+
+def _arrival_s(event: dict, index: int, total: int, duration_s: float) -> float:
+    """Seconds since run start for this event.
+
+    pi puts no clock on its events — turn_start has no timestamp at all, and an
+    assistant message_end repeats the message.timestamp its message_start
+    already carried (verified against the live capture, both 1788614844374) —
+    so timing comes from the `_ts` run_pi_process stamps as each line is read
+    off stdout. The proportional fallback exists for hand-built event lists.
+    """
+    ts = event.get("_ts")
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    return duration_s * (index / max(total, 1))
+
+
+def _log(message: str, log_path: Path) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(message + "\n")
+
+
+def compute_metrics(
+    events: Sequence[dict],
+    start_wall: float,
+    end_wall: float,
+    log_fn: Callable[[str], None] | None = None,
+    thinking: str = "off",
+) -> AgentMetrics:
+    """Scan a pi JSONL event stream and compute every metric the spec's
+    Metrics table defines. Pure function of the event list — no I/O,
+    trivially testable.
+
+    Nesting follows the real pi stream (spec, "Verified against the live
+    setup"): the user message gets its own message_start/message_end pair, so
+    request counting and generation timing key off the assistant role or they
+    overcount; text deltas arrive as message_update.assistantMessageEvent with
+    a string `delta`; usage arrives on message_end.message.usage with camelCase
+    cacheRead; tool events carry toolName.
+    """
+    m = AgentMetrics()
+    m.wall_seconds = end_wall - start_wall
+
+    gen_seconds = 0.0
+    in_gen = False
+    gen_start_s = 0.0
+    turn_start_s: float | None = None
+    tool_starts: dict[str, str] = {}
+    tool_name_by_call: dict[str, str] = {}
+    deltas: list[str] = []
+    seq = 0
+    log = log_fn or (lambda msg: None)
+
+    total = len(events)
+    for event in events:
+        etype = event.get("type")
+        ts_s = _arrival_s(event, seq, total, m.wall_seconds)
+        summary = _summarize_event(event)
+        log(f"[seq {seq}] {etype} {summary}".rstrip())
+        seq += 1
+
+        if etype == "turn_start":
+            m.turns += 1
+            turn_start_s = ts_s
+        elif etype == "message_start":
+            message = event.get("message") or {}
+            if message.get("role") != "assistant":
+                continue  # pi echoes the prompt as a user-role message pair
+            m.requests += 1
+            if turn_start_s is not None:
+                m.ttfts_ms.append((ts_s - turn_start_s) * 1000.0)
+            in_gen = True
+            gen_start_s = ts_s
+        elif etype == "message_update":
+            ame = event.get("assistantMessageEvent") or {}
+            if ame.get("type") == "text_delta":
+                delta = ame.get("delta", "")
+                if isinstance(delta, str):
+                    deltas.append(delta)
+        elif etype == "message_end":
+            message = event.get("message") or {}
+            if message.get("role") != "assistant":
+                continue  # the user echo must not end generation or add text
+            usage = message.get("usage") or {}
+            m.input_tok += usage.get("input", 0)
+            m.output_tok += usage.get("output", 0)
+            m.cache_read_tok += usage.get("cacheRead", 0)
+            m.cache_write_tok += usage.get("cacheWrite", 0)
+            m.reasoning_tok += usage.get("reasoning", 0)
+            if in_gen:
+                gen_seconds += ts_s - gen_start_s
+                in_gen = False
+        elif etype == "tool_execution_start":
+            tool_starts[event.get("toolCallId", "")] = event.get("toolName", "")
+        elif etype == "tool_execution_end":
+            call_id = event.get("toolCallId", "")
+            tool_starts.pop(call_id, None)
+            name = event.get("toolName") or tool_name_by_call.get(call_id, "")
+            tool_name_by_call[call_id] = name
+
+    m.gen_seconds = gen_seconds
+
+    # A tool call is anything the agent issued, including one interrupted by a
+    # timeout with no matching end event, so count starts and pair separately.
+    m.tool_call_count = len(tool_name_by_call) + len(tool_starts)
+
+    # final_text: incremental deltas concatenated, falling back to the last
+    # assistant message_end's text blocks when a provider reports nothing
+    # incrementally. Without the fallback a row could pass the reply
+    # requirement in gate 6 while metrics recorded no closing message at all.
+    m.final_text = "".join(deltas)
+    if not m.final_text:
+        for event in reversed(list(events)):
+            if event.get("type") == "message_end" and (event.get("message") or {}).get("role") == "assistant":
+                m.final_text = _extract_text(event)
+                break
+
+    if m.ttfts_ms:
+        m.ttft_first_ms = m.ttfts_ms[0]
+        m.ttft_subseq_median_ms = median(m.ttfts_ms[1:]) if len(m.ttfts_ms) > 1 else m.ttft_first_ms
+        # A median over requests 2..n rather than a mean over all of them: the
+        # mean includes the first request, so a slow cold start raises its own
+        # comparison value and the flag can never fire below 4 requests. A
+        # single-request run compares against itself and must not flag.
+        if len(m.ttfts_ms) >= 2 and m.ttft_first_ms >= 3 * m.ttft_subseq_median_ms:
+            m.cold_first_token = True
+
+    # CACHE_ANOMALY — same relative check as compute_total_tokens() in
+    # modelman/benchmark/runner.py, applied per-row.
+    total_in = m.input_tok + m.cache_read_tok + m.cache_write_tok
+    if total_in > 0:
+        cache_ratio = (m.cache_read_tok + m.cache_write_tok) / total_in
+        if m.input_tok > 0 and m.cache_read_tok > 10 * m.input_tok and cache_ratio > 0.9:
+            m.anomaly = "CACHE_ANOMALY"
+
+    # COLD_FIRST_TOKEN rides in the same field, joined rather than overwriting:
+    # the spec lists both as flags and a row can genuinely have both problems.
+    if m.cold_first_token:
+        m.anomaly = f"{m.anomaly}+COLD_FIRST_TOKEN" if m.anomaly else "COLD_FIRST_TOKEN"
+
+    # REPEATED_FAILURE — 4+ tool calls of one name, per the spec's "same tool,
+    # same error 4 times". Counting starts (not ends) because a call interrupted
+    # by a timeout never gets an end event.
+    if m.tool_call_count:
+        calls_per_name = Counter(tool_name_by_call.values())
+        calls_per_name.update(tool_starts.values())
+        for name, count in calls_per_name.items():
+            if count >= 4:
+                m.anomaly = f"{m.anomaly}+REPEATED_FAILURE({name})" if m.anomaly else f"REPEATED_FAILURE({name})"
+                break
+
+    # thinking=off but the backend still emitted reasoning tokens: a flag and a
+    # log line, never a gate (comparing off vs high is the subject of the
+    # measurement, so gating on it would gate on the thing being measured).
+    if thinking == "off" and m.reasoning_tok > 0:
+        m.thinking_off_reasoning = True
+        log(
+            f"THINKING_OFF_REASONING: --thinking off but {m.reasoning_tok} reasoning "
+            "tokens emitted; the backend ignores the toggle and this row's thinking "
+            "level is not what the label says"
+        )
+
+    return m
