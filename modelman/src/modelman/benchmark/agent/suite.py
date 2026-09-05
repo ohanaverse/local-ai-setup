@@ -94,6 +94,27 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
     return rows
 
 
+def _resolve_task_path(raw: str, suite_path: Path) -> Path:
+    """Resolve a suite's `task` path, which suites write repo-relative
+    (`benchmarks/tasks/day31-drift`).
+
+    The CLI is run from `modelman/` — as the guide, CI and `uv run` all require
+    — so a path relative to the caller's cwd does not exist there, and every
+    real suite would die at "task bundle not found". Falling back to the suite
+    file's own ancestors keeps a suite portable: it lives in the same repository
+    as the bundles it names. An absolute path, or one that resolves from the cwd,
+    still wins, and an unresolvable path is returned untouched so `load_task`
+    raises its own canonical error."""
+    candidate = Path(raw)
+    if candidate.is_absolute() or candidate.exists():
+        return candidate
+    for parent in suite_path.resolve().parents:
+        ancestor_candidate = parent / candidate
+        if ancestor_candidate.exists():
+            return ancestor_candidate
+    return candidate
+
+
 def load_suite(path: Path, registry: Registry) -> Suite:
     path = Path(path)
     with path.open("rb") as f:
@@ -125,7 +146,7 @@ def load_suite(path: Path, registry: Registry) -> Suite:
 
     return Suite(
         name=raw["name"],
-        task_path=Path(raw["task"]),
+        task_path=_resolve_task_path(str(raw["task"]), path),
         passes=raw.get("passes", 1),
         cooldown_s=raw.get("cooldown_s", 20),
         agent_timeout_s=raw.get("agent_timeout_s", 420),

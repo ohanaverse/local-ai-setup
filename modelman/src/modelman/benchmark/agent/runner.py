@@ -420,7 +420,15 @@ def run_suite(
                 if pass_number < suite.passes:
                     time.sleep(suite.cooldown_s)
 
-    isolation.restore_providers()
+    # A failed restore must not discard a completed sweep: the local backends
+    # are the least valuable thing in play here, the row data is not, and on
+    # this host `llm-restore-providers` can time out on llama.cpp while every
+    # row's data is perfectly good. Persist first, then surface the failure.
+    restore_error: str | None = None
+    try:
+        isolation.restore_providers()
+    except BenchmarkError as exc:
+        restore_error = str(exc)
 
     # before judging, so a judge crash still leaves a row's raw stream on disk
     for result in results:
@@ -443,5 +451,10 @@ def run_suite(
         pi_version=_pi_version(),
     )
 
+    if restore_error is not None:
+        raise BenchmarkError(
+            f"providers failed to restore after the run (all results were saved "
+            f"to {run_dir}): {restore_error}"
+        )
     return run_dir, results
 

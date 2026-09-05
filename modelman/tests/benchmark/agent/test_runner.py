@@ -319,3 +319,37 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
     assert json.loads(judge_json.read_text(encoding="utf-8"))["combined"]["total"] == 100
     with gzip.open(results[0].row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
         assert json.loads(f.readline())["type"] == "agent_settled", "re-judging truncated the raw stream"
+
+
+def test_failed_restore_still_persists_the_sweep(tmp_path, monkeypatch):
+    """On this host llm-restore-providers can time out on llama.cpp with every
+    row's data intact; the failure must surface, but never by discarding the
+    run it happened to interrupt."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    def _boom() -> None:
+        raise BenchmarkError("llamacpp did not come back up")
+
+    monkeypatch.setattr(isolation_module, "restore_providers", _boom)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    with pytest.raises(BenchmarkError, match="llamacpp did not come back up"):
+        run_suite(
+            suite,
+            _registry(),
+            results_dir=tmp_path / "results",
+            live_models_path=tmp_path / "missing.json",
+            skip_judge=True,
+        )
+
+    # row artifacts from before judging, so a row's raw stream also survives
+    streams = sorted((tmp_path / "results").rglob("agent.jsonl.gz"))
+    assert streams, "no row stream was persisted"
+    for path in streams:
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            assert json.loads(f.readline())["type"] == "message_end"
+    run_dirs = list((tmp_path / "results").iterdir())
+    assert run_dirs, "the run directory vanished with the results"
+    assert (run_dirs[0] / "summary.md").exists()
+    assert (run_dirs[0] / "metrics.jsonl").exists()

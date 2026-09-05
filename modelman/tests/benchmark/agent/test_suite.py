@@ -295,3 +295,38 @@ def test_preflight_missing_openrouter_key_raises(tmp_path, monkeypatch):
     task = load_task(MINI_DRIFT)
     with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
         preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
+
+
+def test_task_path_resolves_from_the_suite_file_ancestors(tmp_path, monkeypatch):
+    """Suites name their task repo-relative, but the CLI runs from modelman/,
+    where `benchmarks/tasks/...` does not exist relative to the cwd - every
+    real suite would fail preflight with "task bundle not found"."""
+    import shutil
+
+    monkeypatch.chdir(tmp_path)  # simulate a cwd that is not the repo root
+    bundle = tmp_path / "repo" / "benchmarks" / "tasks" / "mini-drift"
+    bundle.parent.mkdir(parents=True)
+    shutil.copytree(MINI_DRIFT, bundle)
+    suite_dir = tmp_path / "repo" / "benchmarks" / "suites"
+    suite_dir.mkdir()
+    suite_path = suite_dir / "suite.toml"
+    suite_path.write_text(
+        _passing_suite_toml().replace("task = \"some/task\"", "task = \"benchmarks/tasks/mini-drift\""),
+        encoding="utf-8",
+    )
+
+    suite = load_suite(suite_path, _registry())
+    assert suite.task_path == bundle
+    load_task(suite.task_path)  # the resolved path really is a bundle
+
+
+def test_task_path_left_alone_when_unresolvable(tmp_path):
+    """An unresolvable task is not silently rewritten into something else: it
+    stays as written so load_task raises its own named error."""
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        _passing_suite_toml().replace("task = \"some/task\"", "task = \"nope/missing\""),
+        encoding="utf-8",
+    )
+    suite = load_suite(suite_path, _registry())
+    assert suite.task_path == Path("nope/missing")
