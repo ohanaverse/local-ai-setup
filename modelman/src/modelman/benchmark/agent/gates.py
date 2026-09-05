@@ -16,6 +16,7 @@ CAP_TABLE = {
     "NO_REGRESSION_TEST": 0.85,
     "VACUOUS_TEST": 0.70,
     "BROKEN_BUILD": 0.25,
+    "ALL_HIDDEN_FAILING": 0.25,
     "TAMPERED_TESTS": 0.0,
     "TIMEOUT": 0.0,
     "NO_DIFF": 0.0,
@@ -95,6 +96,158 @@ def _run_discover(root: Path, tests_dir: str) -> tuple[int, int, int] | None:
 SHORT_CIRCUIT_CODES = {"AGENT_ERROR", "TIMEOUT", "NO_DIFF", "BROKEN_BUILD", "TAMPERED_TESTS"}
 
 
+@dataclass
+class TestOutcome:
+    name: str
+    passed: bool
+    skipped: bool = False
+    duration_ms: int = 0
+    message: str | None = None
+
+
+def run_test_file(root: Path, module_name: str) -> list[TestOutcome]:
+    """Run one `unittest` module by dotted name (e.g. `tests.test_day31`).
+
+    Returns one outcome per test, not one per file: a module holds N tests and
+    gate 9's pass ratio is over tests. Uses a JSON summary protocol on stdout,
+    mirroring _run_discover(). A crashed subprocess (non-zero returncode with no
+    valid JSON) is reported as a failing outcome, not an exception — a hidden
+    test file that throws on import is a real result the row should see, not a
+    harness bug."""
+    import subprocess
+
+    script = (
+        "import io, json, sys, time, unittest\n"
+        "class RecordedResult(unittest.TextTestResult):\n"
+        "    def __init__(self, *args, **kwargs):\n"
+        "        super().__init__(*args, **kwargs)\n"
+        "        self.outcomes = []\n"
+        "    def addSuccess(self, test):\n"
+        "        super().addSuccess(test)\n"
+        "        self.outcomes.append(('pass', test, None))\n"
+        "    def addFailure(self, test, err):\n"
+        "        super().addFailure(test, err)\n"
+        "        self.outcomes.append(('fail', test, err))\n"
+        "    def addError(self, test, err):\n"
+        "        super().addError(test, err)\n"
+        "        self.outcomes.append(('error', test, err))\n"
+        "    def addSkip(self, test, reason):\n"
+        "        super().addSkip(test, reason)\n"
+        "        self.outcomes.append(('skip', test, reason))\n"
+        "class RecordingRunner(unittest.TextTestRunner):\n"
+        "    resultclass = RecordedResult\n"
+        "suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])\n"
+        "start = time.monotonic()\n"
+        "result = RecordingRunner(stream=io.StringIO(), verbosity=0).run(suite)\n"
+        "duration_ms = int((time.monotonic() - start) * 1000)\n"
+        "n = max(len(result.outcomes), 1)\n"
+        "outcomes = []\n"
+        "for status, test, payload in result.outcomes:\n"
+        "    outcomes.append({\n"
+        "        'name': f'{test.__class__.__name__}.{test._testMethodName}',\n"
+        "        'passed': status == 'pass',\n"
+        "        'skipped': status == 'skip',\n"
+        "        'duration_ms': duration_ms if n == 1 else max(duration_ms // n, 1),\n"
+        "        'message': (str(payload[1]) if isinstance(payload, tuple) else str(payload)) if payload else None,\n"
+        "    })\n"
+        "print(json.dumps({'outcomes': outcomes, 'total': result.testsRun,\n"
+        "                  'failures': len(result.failures), 'errors': len(result.errors)}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, module_name], cwd=root, capture_output=True, text=True
+    )
+    try:
+        summary_line = result.stdout.strip().splitlines()[-1]
+        data = json.loads(summary_line)
+    except (IndexError, json.JSONDecodeError):
+        return [
+            TestOutcome(
+                name=f"{module_name}:crash",
+                passed=False,
+                message=(result.stderr or result.stdout or "test runner produced no summary")[-500:],
+            )
+        ]
+    return [
+        TestOutcome(
+            name=o["name"],
+            passed=o["passed"],
+            skipped=o["skipped"],
+            duration_ms=o["duration_ms"],
+            message=o.get("message"),
+        )
+        for o in data["outcomes"]
+    ]
+
+
+def _run_hidden_tests(workspace: Workspace, task: TaskBundle) -> tuple[int, int]:
+    """Seed and run the bundle's hidden test files. Returns (passed, total).
+
+    The bundle's tests_dir is the workspace-relative directory the visible
+    suite also lives in; seeding copies hidden files there, so discovery uses
+    the same dotted-name convention as run_test_file's own tests."""
+    tests_dir = task.gates_config["build"]["tests_dir"]
+    hidden_files = task.gates_config.get("hidden", {}).get("files", [])
+    workspace.seed_hidden(task)
+    outcomes: list[TestOutcome] = []
+    for filename in hidden_files:
+        outcomes.extend(run_test_file(workspace.root, f"{tests_dir}.{Path(filename).stem}"))
+    passed = sum(1 for o in outcomes if o.passed)
+    return passed, len(outcomes)
+
+
+def _detect_and_evaluate_gate8(
+    workspace: Workspace, task: TaskBundle, new_tests: list[Path]
+) -> list[TestOutcome]:
+    """For each new test file, copy it into a baseline worktree and run it
+    there. If it PASSES on the unfixed baseline, it is vacuous — proof the
+    agent's "regression test" asserts nothing about the bug.
+
+    Returns per-file outcomes (one row per file, named after it) so a report
+    reader can tell which file was the hollow one. A file that fails to import
+    in the baseline worktree is recorded as a failing outcome rather than
+    raised: `loadTestsFromName` raises for that case, and an agent's test
+    erroring on the baseline is not vacuous — which is the correct answer."""
+    tests_dir = task.gates_config["build"]["tests_dir"]
+    dest = workspace.root.parent / f"{workspace.root.name}-gate8-baseline"
+    workspace.checkout_baseline_worktree(dest)
+    outcomes: list[TestOutcome] = []
+    try:
+        for test_file in new_tests:
+            target = dest / test_file.relative_to(workspace.root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(test_file.read_text(encoding="utf-8"), encoding="utf-8")
+            outcomes.extend(
+                TestOutcome(
+                    name=f"{test_file.name}:{o.name}",
+                    passed=o.passed,
+                    skipped=o.skipped,
+                    duration_ms=o.duration_ms,
+                    message=o.message,
+                )
+                for o in run_test_file(dest, f"{tests_dir}.{test_file.stem}")
+            )
+    finally:
+        workspace.remove_worktree(dest)
+    return outcomes
+
+
+def compute_composite(gates: GatesReport, judge: object | None = None) -> float:
+    """hidden_ratio * 0.60 + judge_score/100 * 0.40 * cap, both weights
+    carried from the spec. No composite is computed without hidden tests —
+    spec: "No composite score is computed when hidden_tests_available ==
+    false"."""
+    if not gates.hidden_evaluated:
+        return 0.0
+    hidden_ratio = gates.hidden_pass / gates.hidden_total if gates.hidden_total else 0.0
+    judge_score = getattr(judge, "total", 0.0) if judge is not None else 0.0
+    return hidden_ratio * 0.60 + (judge_score / 100.0) * 0.40 * gates.cap
+
+
+def score_row(gates: GatesReport, judge: object | None = None) -> float:
+    """Convenience alias callers use to name the two inputs explicitly."""
+    return compute_composite(gates, judge)
+
+
 def evaluate(
     workspace: Workspace,
     task: TaskBundle,
@@ -112,7 +265,11 @@ def evaluate(
 
     def add(gate_number: int, passed: bool, code: str | None = None, detail: str = "") -> bool:
         outcome = "pass" if passed else "fail"
-        report.results.append(GateResult(gate_number, GATE_NAMES[gate_number], outcome, code, detail))
+        # a code is a failure label: recording AGENT_ERROR on a gate that passed
+        # would make the report's Pass/Fail column contradict itself
+        report.results.append(
+            GateResult(gate_number, GATE_NAMES[gate_number], outcome, code if not passed else None, detail)
+        )
         return passed
 
     def skipped_from(gate_number: int) -> None:
@@ -152,10 +309,12 @@ def evaluate(
         return finish("TIMEOUT", 2)
 
     # Gate 3: non-empty diff
-    diff_result = subprocess.run(
-        ["git", "diff", "--quiet", "HEAD"], cwd=workspace.root, capture_output=True, text=True
-    )
-    has_diff = diff_result.returncode != 0
+    # Untracked files count: `git diff --quiet HEAD` ignores them, so an agent
+    # whose work is "add a test file, change nothing else" — a legitimate, if
+    # incomplete, answer — was reported as having produced no diff at all and
+    # capped at 0.
+    changed = workspace.modified_or_deleted_since_baseline() or workspace.new_files_since_baseline()
+    has_diff = bool(changed)
     if not add(3, has_diff, "NO_DIFF"):
         return finish("NO_DIFF", 3)
 
@@ -207,6 +366,37 @@ def evaluate(
     else:
         add(7, False, "NO_REGRESSION_TEST")
 
-    # Gates 8-9 are added in Task 10.
-    skipped_from(8)
+    # Gate 8: the regression test must not be vacuous. Only meaningful when a
+    # new test file exists at all — otherwise there is nothing to check and the
+    # gate is skipped, not passed.
+    if new_tests:
+        gate8_results = _detect_and_evaluate_gate8(workspace, task, new_tests)
+        vacuous = any(o.passed for o in gate8_results)
+        if vacuous:
+            add(8, False, "VACUOUS_TEST")
+        else:
+            add(8, True)
+        report.results[-1].detail = f"{len(new_tests)} new test file(s) checked against the baseline"
+    else:
+        report.results.append(GateResult(8, GATE_NAMES[8], "skipped"))
+
+    # Gate 9: hidden acceptance tests. Seeded only now, after the agent's
+    # process has exited, so no model can have seen them during the run.
+    hidden_files = task.gates_config.get("hidden", {}).get("files", [])
+    if hidden_files:
+        hidden_pass, hidden_total = _run_hidden_tests(workspace, task)
+        report.hidden_pass = hidden_pass
+        report.hidden_total = hidden_total
+        report.hidden_evaluated = True
+        if hidden_total > 0 and hidden_pass == hidden_total:
+            add(9, True)
+        elif hidden_total > 0 and hidden_pass == 0:
+            # the spec's cap table: "all hidden tests fail, or BROKEN_BUILD" is
+            # a x0.25 outcome, distinct from a partial pass
+            add(9, False, "ALL_HIDDEN_FAILING", f"0/{hidden_total}")
+        else:
+            add(9, False, "HIDDEN_TESTS_FAILED", f"{hidden_pass}/{hidden_total}")
+    else:
+        report.results.append(GateResult(9, GATE_NAMES[9], "skipped"))
+
     return finish()
