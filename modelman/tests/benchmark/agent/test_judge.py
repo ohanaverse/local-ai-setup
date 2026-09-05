@@ -104,6 +104,18 @@ def test_parse_response_rejects_unknown_verdict():
         parse_response(json.dumps(bad))
 
 
+def test_parse_response_rejects_a_boolean_score():
+    """Python's bool is an int subclass, so `isinstance(value, int)` alone
+    lets a JSON `true`/`false` through as a valid 0-30 score — a plausible
+    malformed reply from a less-compliant judge model. Without this check the
+    row is silently scored 1 (True == 1) instead of raising JudgeContractError
+    and retrying, corrupting rubric_total/composite with no error anywhere."""
+    bad = json.loads(VALID_RESPONSE)
+    bad["scores"]["root_cause"] = True
+    with pytest.raises(JudgeContractError, match="root_cause"):
+        parse_response(json.dumps(bad))
+
+
 class _FakeTransport:
     def __init__(self, responses: list[str | Exception]):
         self.responses = list(responses)

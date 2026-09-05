@@ -145,7 +145,7 @@ def parse_response(raw_text: str) -> JudgeScore:
         raise JudgeContractError(f"scores missing dimensions: {missing_dims}")
     for dim in DIMENSIONS:
         value = scores[dim]
-        if not isinstance(value, int) or not (0 <= value <= MAX_POINTS[dim]):
+        if isinstance(value, bool) or not isinstance(value, int) or not (0 <= value <= MAX_POINTS[dim]):
             raise JudgeContractError(f"invalid score for {dim}: {value!r}")
 
     if data["verdict"] not in VERDICTS:
