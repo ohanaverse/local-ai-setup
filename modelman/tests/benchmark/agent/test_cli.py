@@ -162,3 +162,34 @@ def test_show_prints_persisted_summary(tmp_path, monkeypatch):
     result = runner.invoke(agent_app, ["show", "--latest"])
     assert result.exit_code == 0
     assert "hello from disk" in result.output
+
+
+def test_run_records_the_pointer_even_when_restore_failed(tmp_path, monkeypatch):
+    """The sweep is finished and persisted; only a backend is down. The operator
+    still gets the row count, the Results path, the --latest pointer, and a
+    nonzero exit — the two facts are not in conflict."""
+    from modelman.benchmark.agent.runner import RunSavedButRestoreFailed
+
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+    run_dir = tmp_path / "results" / "20260101-000000"
+    run_dir.mkdir(parents=True)
+
+    def _raise(*args, **kwargs):
+        raise RunSavedButRestoreFailed(
+            f"providers failed to restore (saved to {run_dir}): llamacpp down",
+            run_dir=run_dir,
+            results=[],
+        )
+
+    monkeypatch.setattr(cli_module, "run_suite", _raise)
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text("name = \"x\"\n", encoding="utf-8")
+    monkeypatch.setattr(cli_module, "load_suite", lambda *a, **k: type("S", (), {"rows": []})())
+
+    result = runner.invoke(agent_app, ["run", "--suite", str(suite_path)])
+    assert result.exit_code == 1
+    assert "Agent benchmark complete" in result.output
+    assert "llamacpp down" in result.output
+    from modelman.state import load_state
+
+    assert load_state().extra["benchmarks"]["agent_last_run"] == str(run_dir)

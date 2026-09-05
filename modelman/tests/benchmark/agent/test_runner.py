@@ -487,3 +487,24 @@ def test_judge_transport_without_openrouter_key_names_the_missing_key(monkeypatc
     )
     with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
         _build_judge_transport(cfg, Path("/nonexistent/models.json"), plist_path=Path("/nonexistent.plist"))
+
+
+def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_models_json):
+    """The metrics trace is half a megabyte of prose per row restating the
+    compressed event stream beside it; the first live run wrote four."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+    monkeypatch.delenv("MODELMAN_AGENT_DEBUG", raising=False)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=litellm_models_json,
+        skip_judge=True,
+    )
+    assert not (results[0].row_dir / "metrics.log").exists()
+    assert (results[0].row_dir / "agent.jsonl.gz").exists()
+    assert run_dir.exists()

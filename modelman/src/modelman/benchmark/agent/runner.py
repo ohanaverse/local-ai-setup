@@ -45,6 +45,21 @@ class RowRunResult:
     error: str | None = None
 
 
+class RunSavedButRestoreFailed(BenchmarkError):
+    """Every row completed and is on disk; only putting the backends back failed.
+
+    Carries `run_dir` and `results` so the CLI can still record the `--latest`
+    pointer and report the row count. Without it, a host whose llama.cpp
+    LaunchAgent cannot start — this one, since its GGUF no longer exists — turns a
+    finished, fully persisted sweep into an exit code with nothing to show for it,
+    and `agent show --latest` has no idea the run ever happened."""
+
+    def __init__(self, message: str, *, run_dir: Path, results: list[RowRunResult]) -> None:
+        super().__init__(message)
+        self.run_dir = run_dir
+        self.results = results
+
+
 def _row_dir(run_dir: Path, index: int, row: RowConfig, pass_number: int) -> Path:
     return run_dir / f"{index:02d}--{row.label}--p{pass_number}"
 
@@ -189,12 +204,20 @@ def _run_single_row(
             env=env,
         )
         end_wall = time.monotonic()
+        # A per-event trace of how the metrics were derived — about 0.5 MB per
+        # row of prose duplicating the gzip'd agent.jsonl.gz that sits next to
+        # it, and the first live run wrote four of them. Opt-in only.
+        log_fn = (
+            (lambda msg: pidriver._log(msg, row_dir / "metrics.log"))
+            if os.environ.get("MODELMAN_AGENT_DEBUG")
+            else None
+        )
         metrics = pidriver.compute_metrics(
             events,
             start_wall=start_wall,
             end_wall=end_wall,
             thinking=row.thinking,
-            log_fn=lambda msg: pidriver._log(msg, row_dir / "metrics.log"),
+            log_fn=log_fn,
         )
         # pi writes its own session file into --session-dir (== row_dir), so
         # the presence of a *.jsonl there is evidence the session really
@@ -498,9 +521,11 @@ def run_suite(
     )
 
     if restore_error is not None:
-        raise BenchmarkError(
+        raise RunSavedButRestoreFailed(
             f"providers failed to restore after the run (all results were saved "
-            f"to {run_dir}): {restore_error}"
+            f"to {run_dir}): {restore_error}",
+            run_dir=run_dir,
+            results=results,
         )
     return run_dir, results
 

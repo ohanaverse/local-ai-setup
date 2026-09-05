@@ -6,7 +6,12 @@ from pathlib import Path
 
 import typer
 
-from modelman.benchmark.agent.runner import DEFAULT_RESULTS_DIR, rejudge_run, run_suite
+from modelman.benchmark.agent.runner import (
+    DEFAULT_RESULTS_DIR,
+    RunSavedButRestoreFailed,
+    rejudge_run,
+    run_suite,
+)
 from modelman.benchmark.agent.suite import load_suite
 from modelman.benchmark.agent.task import list_task_bundles
 from modelman.benchmark.errors import BenchmarkError
@@ -79,11 +84,31 @@ def run_cmd(
         return
 
     try:
-        run_dir, results = run_suite(loaded_suite, registry, row_filter=row or None, results_dir=results_dir, skip_judge=skip_judge)
+        run_dir, results = run_suite(
+            loaded_suite, registry, row_filter=row or None, results_dir=results_dir, skip_judge=skip_judge
+        )
+    except RunSavedButRestoreFailed as exc:
+        # The sweep is finished and persisted; only a backend failed to come
+        # back. Record it like any other run, then fail loudly.
+        _record_run_and_report(exc.run_dir, exc.results)
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
     except BenchmarkError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
+    _record_run_and_report(run_dir, results)
+    for result in results:
+        if result.error:
+            typer.echo(
+                f"  {result.row.label} pass {result.pass_number}: {result.error}", err=True
+            )
+
+
+__all__ = ["agent_app"]
+
+
+def _record_run_and_report(run_dir: Path, results: list) -> None:
     state = load_state()
     benchmarks = state.extra.setdefault("benchmarks", {})
     benchmarks["agent_last_run"] = str(run_dir)
@@ -94,12 +119,7 @@ def run_cmd(
     typer.echo(f"Results: {run_dir}")
     for result in results:
         if result.error:
-            typer.echo(
-                f"  {result.row.label} pass {result.pass_number}: {result.error}", err=True
-            )
-
-
-__all__ = ["agent_app"]
+            typer.echo(f"  {result.row.label} pass {result.pass_number}: {result.error}", err=True)
 
 
 @agent_app.command("show")

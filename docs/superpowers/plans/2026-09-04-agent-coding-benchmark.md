@@ -10,9 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md` — this plan implements it section by section; executors should read both. Anything this plan doesn't spell out in full is settled by the spec.
 
-**Status:** items #1–#11 (Phases 1–3) are complete; #12–#24 remain. Phase 2's listings were
-rebuilt from the shipped code; Phase 3's original listings stand, with a corrections
-section and the shipped files at the end of that file.
+**Status:** items #1–#24 complete, including the live smoke run (2026-09-05): one
+`ollama/glm-5.3-flash:cloud` row on `day31-drift`, judged by `anthropic/claude-opus-5`
+through OpenRouter — 5/6 hidden, rubric 87, `VACUOUS_TEST`, cap ×0.5, composite 44, and
+`agent judge --latest` re-scored the same artifacts to 95/48 without re-running anything.
+That run is what found corrections 32–38; every one of them was invisible to the 134
+hermetic tests that passed beforehand. Phase 2's listings were rebuilt
+from the shipped code; Phase 3's original listings stand, with a corrections section and
+the shipped files at the end of that file. From Phase 4 onward the numbered corrections
+below are the record: where a defect was *in* a listing the phase file was rebuilt, and
+where it was in the design the shipped code is authoritative over the plan's draft —
+reading a phase file's listing for Phase 4–6 is reading a draft, not the API.
 
 ## Global Constraints
 
@@ -156,3 +164,28 @@ Plan self-review (below) is global; the phase files carry no review section.
 23. `PARTIAL_HIDDEN_PASS` (×0.50) was missing too — and Task 11 asserts the spec's worked example that needs it.
 24. Task 10's minimum-across-conditions test asserted a hidden ratio the fixture cannot produce; rewritten to fire two caps together.
 25. `add()` stamped a failure code onto gates that passed, so a `Pass` row could read `AGENT_ERROR`.
+
+**Found while executing Phase 4:**
+
+26. Task 14's runner listing was written against the pre-Phase-2 driver API (`RowMetrics`, `run_pi_process(cmd, cwd, env, timeout_s)`, `compute_metrics(run_result)`) and could not import. It was rebuilt against what shipped: events come back alongside the result, metrics need start/end walls plus a log writer, and `evaluate` takes `events=` as a keyword.
+27. **`run_pi_process` had no `env` parameter at all**, so `PI_CODING_AGENT_DIR` could never reach the child. Every row would have run against the user's own `~/.pi/agent` provider list, `write_pi_config` was dead code, and the per-run `models.json` the plan built in Task 5 was never read. It takes `env` now, with a test that reads the value back out of the session file the fake agent writes.
+
+**Found while executing Phase 5:**
+
+28. Task 16's `build_prompt` test asserted the phrase "do not speculate" while passing `rubric_md="score this"` — that sentence lives in the task rubric, not the prompt template, so the assertion could never hold. The stub now carries the real rubric's anti-speculation line, which is also what the assertion was meant to prove: the rubric reaches the judge verbatim.
+29. Task 16's test file imported `JudgeScore`/`JudgeOutcome`, which only Task 17's tests use — `F401`, so `make check` failed at Task 16.
+30. Task 17's appended listings put `import requests`, the judge-module alias and `LiteLLMJudgeTransport` mid-file, which is `E402` (constraint 6's rule, still biting).
+31. Task 18's `_closing_message` was still written against the pre-Phase-2 `{"ts","event"}` wrapper and a `PiRunResult.events` field that no longer exists; and because judging is on by default, Task 14's three phase-1-only runner tests had to opt out with `skip_judge=True` — a standing consequence for any future runner test.
+
+**Found while executing Phase 6 — all four of these were invisible to 128 hermetic tests and appeared only in the live smoke run:**
+
+32. Suites name their task repo-relative (`task = "benchmarks/tasks/day31-drift"`), but the CLI is run from `modelman/` as the guide, CI and `uv run` require — so *every* real suite died at "task bundle not found" while every test passed, because all test suites pass absolute `tmp_path` task paths. `load_suite` now falls back to the suite file's own ancestors (an absolute or cwd-resolvable path still wins; an unresolvable path is returned untouched so `load_task` raises its own error).
+33. `run_suite` let `isolation.restore_providers()` raise between the rows and the persistence phase, so a completed sweep — raw streams, gates, metrics, judge verdicts — vanished with an exception after minutes of real work. This host triggered it immediately: the `local.llamacpp.server` LaunchAgent points at a GGUF that no longer exists (`~/.cache/huggingface/hub` holds no models; 90k failed-load retries in `~/.llamacpp.err.log`; its log has no "server listening" line ever), so `llm-restore-providers` can never succeed here. Artifacts, judging and the summary are now written before the failure surfaces, and the error names the directory that survived. (The single-turn `modelman benchmark` runner has the same shape — `finally: restore_providers()` before `write_results` — and was left alone as out of scope.)
+34. A row's error text lived only in `RowRunResult.error`: the live run's summary.md read `ISOLATION_ERROR` in every quality cell with no reason on disk or console, which is this harness's own "the one misreading it cannot allow" failure mode in another guise — an operator cannot distinguish a broken backend from a model that failed the task. `summary.md` gained an Errors table and `agent run` echoes each errored row's reason to stderr.
+35. `run_suite` called the isolation helper for *every* provider group, so a row on a non-local provider failed `bin/llm-isolate-provider` (it knows only the four local backends) and was recorded `ISOLATION_ERROR` before a single request went out — which blocked the cloud baseline the two-axis table exists to compare local rows against. Guarded by `ISOLATABLE_PROVIDERS` = `DEFAULT_PROVIDER_IDS` ∪ `{omlx-6bit}` (the constant omits the 6-bit override, which is the variant that most needs isolating), and `restore_providers()` now runs only if something was isolated.
+36. `bin/llm-isolate-provider`'s stdout is its contract — `isolation.py` parses it as a single JSON object — but `omlx stop` shells out to brew, which narrates ("Stopping `omlx`…") on **stdout**. Isolating any provider while oMLX happened to be running produced prose-then-JSON and "isolation helper returned invalid JSON"; because the narration only occurs when the service is up, and every isolate stops the others, it failed *every other* run, including a re-run that had just succeeded. It is a pre-existing bug in a monorepo-wide helper: `modelman benchmark`'s single-turn runs hit it identically. Service narration now goes through `narrate_on_stderr`.
+37. `[judge].route` was parsed, validated as `litellm`-only, and then never read — `_build_judge_transport` always built a gateway transport. The local gateway serves 37 models and none of them are claude, so both suites named `openrouter/anthropic/claude-opus-4` (no such deployment) and every row could only `JUDGE_FAIL`, with `judge.json` recording the status and no reason because `judge_row` discarded the exception. Fixed as one defect with three parts: route selects the endpoint (`openrouter` goes direct and drops the LiteLLM-style prefix OpenRouter does not know), HTTP failures carry the response body that names the missing deployment, `JudgeOutcome.error` persists to `judge.json`, and the sweep's judge is `anthropic/claude-opus-5`, verified against `openrouter.ai/api/v1/models` on 2026-09-05.
+
+**Recorded as a limitation rather than fixed (found while executing Phase 6):**
+
+38. **`[judge].thinking` is parsed, validated and never applied.** `LiteLLMJudgeTransport` sends `model`, `messages` and `temperature` only, so the judge runs at whatever its model defaults to. Applying it means a reasoning-effort field whose shape differs between the gateway and OpenRouter direct — inventing that unverified was worse than recording it. A suite that needs a specific judge reasoning level has to say so in the prompt until this lands.
