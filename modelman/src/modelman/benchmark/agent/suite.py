@@ -152,13 +152,6 @@ def load_suite(path: Path, registry: Registry) -> Suite:
     if repair_rounds != 0:
         raise BenchmarkError("repair_rounds is not yet supported (v1 ships repair_rounds = 0 only)")
 
-    if raw.get("judge", {}).get("route", "litellm") not in JUDGE_ROUTES:
-        raise BenchmarkError(
-            f"[judge].route = {raw['judge'].get('route')!r} is not one of {JUDGE_ROUTES}. "
-            "The field used to be accepted and ignored, which is worse than rejecting it: "
-            "a suite asking for a judge the gateway cannot reach scores JUDGE_FAIL on every row."
-        )
-
     return Suite(
         name=raw["name"],
         task_path=_resolve_task_path(str(raw["task"]), path),
