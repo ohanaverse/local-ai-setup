@@ -259,3 +259,33 @@ def test_http_error_reports_the_response_body(monkeypatch):
     transport = judge_module.LiteLLMJudgeTransport(base_url="http://x/v1", api_key="k", model="m")
     with pytest.raises(JudgeTransportError, match="No deployment found"):
         transport.complete("prompt", temperature=0.0)
+
+
+def test_parse_response_tolerates_a_markdown_fence():
+    """Every key and range is still validated; only the wrapper is forgiven. A
+    judge that fences its JSON is answering correctly, and with max_attempts
+    re-sending the identical prompt a wrapper-intolerant parser makes that a
+    permanent JUDGE_FAIL on every row."""
+    fenced = "```json\n" + VALID_RESPONSE + "\n```"
+    assert parse_response(fenced).total == 80
+
+
+def test_parse_response_tolerates_a_preamble_sentence():
+    prose = "Here is my assessment of this diff:\n" + VALID_RESPONSE + "\nHope that helps."
+    assert parse_response(prose).verdict == "principled_fix"
+
+
+def test_parse_response_still_rejects_a_valid_wrapper_with_bad_scores():
+    wrapped = "note: ```json\n" + json.dumps(
+        {
+            "scores": {"root_cause": 99, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
+            "total": 169, "verdict": "principled_fix",
+        }
+    ) + "\n```"
+    with pytest.raises(JudgeContractError, match="root_cause"):
+        parse_response(wrapped)
+
+
+def test_parse_response_still_rejects_text_with_no_object_at_all():
+    with pytest.raises(JudgeContractError, match="not valid JSON"):
+        parse_response("I cannot score this diff without more context.")

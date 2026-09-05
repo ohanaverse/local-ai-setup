@@ -105,9 +105,30 @@ def build_prompt(
     )
 
 
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+def _json_candidate(raw_text: str) -> str:
+    """The part of a reply that should be parsed as JSON.
+
+    Tolerating the *wrapper* is not tolerating a bad score: `parse_response`
+    still validates every key, dimension, range and verdict below. A judge that
+    wraps its object in a markdown fence, or says "Here is my assessment:" first,
+    is answering correctly — and with `max_attempts` retrying the identical
+    prompt, a wrapper-intolerant parser turns that into a permanent JUDGE_FAIL on
+    every row, which is the only quality axis this harness has."""
+    fenced = _FENCE_RE.search(raw_text)
+    text = fenced.group(1) if fenced else raw_text
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        return text[start : end + 1]
+    return raw_text
+
+
 def parse_response(raw_text: str) -> JudgeScore:
     try:
-        data = json.loads(raw_text)
+        data = json.loads(_json_candidate(raw_text))
     except json.JSONDecodeError as exc:
         raise JudgeContractError(f"response is not valid JSON: {exc}") from exc
 
