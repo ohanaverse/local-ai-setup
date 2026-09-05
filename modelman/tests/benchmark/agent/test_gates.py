@@ -16,6 +16,7 @@ from modelman.benchmark.agent.gates import evaluate
 from modelman.benchmark.agent.pidriver import PiRunResult
 from modelman.benchmark.agent.task import load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
+from modelman.benchmark.errors import BenchmarkError
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "tasks"
 
@@ -135,6 +136,42 @@ def test_visible_regression_does_not_short_circuit(workspace):
     assert report.results[4].code == "VISIBLE_REGRESSION"
     assert report.results[5].outcome != "skipped"  # gate 6 still ran
     assert report.results[6].outcome != "skipped"  # gate 7 still ran
+
+
+def test_finish_raises_on_a_triggered_code_missing_from_cap_table(workspace, monkeypatch):
+    """A typo'd failure code at a future call site (e.g. "Broken_Build"
+    instead of "BROKEN_BUILD") used to silently drop out of the cap
+    computation — the row would be capped as if nothing had failed. Simulate
+    the typo by deleting BROKEN_BUILD's real cap-table entry and confirm a
+    row that trips gate 4 now raises instead of scoring cap=1.0."""
+    import modelman.benchmark.agent.gates as gates_module
+
+    monkeypatch.delitem(gates_module.CAP_TABLE, "BROKEN_BUILD")
+    (workspace.root / "pkg" / "__init__.py").write_text("this is not valid python(((", encoding="utf-8")
+    with pytest.raises(BenchmarkError, match="BROKEN_BUILD"):
+        evaluate(workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True)
+
+
+def test_visible_regression_still_does_not_raise_despite_no_cap_table_entry(workspace):
+    """VISIBLE_REGRESSION is deliberately absent from CAP_TABLE (gate 5 is
+    diagnostic-only per the spec and never affects the cap) — the
+    consistency check above must not mistake that intentional omission for a
+    typo and start raising on every broken-visible-test row."""
+    # Only the visible (odd-input) test breaks; hidden (even-input) tests
+    # still pass and the new regression test is non-vacuous, so
+    # VISIBLE_REGRESSION is the sole triggered code and the cap stays 1.0.
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "def add_one(n: int) -> int:\n    return n + 1 if n % 2 == 0 else n\n", encoding="utf-8"
+    )
+    (workspace.root / "tests" / "test_regression.py").write_text(
+        "import unittest\nfrom pkg import add_one\n\n"
+        "class T(unittest.TestCase):\n    def test_even_ten(self):\n"
+        "        self.assertEqual(add_one(10), 11)\n",
+        encoding="utf-8",
+    )
+    report = _evaluate(workspace)
+    assert report.results[4].code == "VISIBLE_REGRESSION"
+    assert report.cap == 1.0
 
 
 def test_tampered_tests_short_circuits(workspace):

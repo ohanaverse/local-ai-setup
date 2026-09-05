@@ -11,6 +11,7 @@ from pathlib import Path
 from modelman.benchmark.agent.pidriver import PiRunResult
 from modelman.benchmark.agent.task import TaskBundle
 from modelman.benchmark.agent.workspace import Workspace
+from modelman.benchmark.errors import BenchmarkError
 
 CAP_TABLE = {
     "NO_REGRESSION_TEST": 0.85,
@@ -35,6 +36,12 @@ GATE_NAMES = {
     8: "REGRESSION_TEST_NOT_VACUOUS",
     9: "HIDDEN_TESTS",
 }
+
+# Codes that are deliberately absent from CAP_TABLE: gate 5 is diagnostic-only
+# per the spec (it never short-circuits and never affects the cap), so
+# VISIBLE_REGRESSION triggering must not be mistaken for a call-site typo by
+# the consistency check in finish() below.
+NO_CAP_CODES = {"VISIBLE_REGRESSION"}
 
 
 @dataclass
@@ -269,6 +276,9 @@ def evaluate(
         without short-circuiting, so a code-only cap would miss them."""
         if short_circuit_code:
             skipped_from(last_gate_number + 1)
+        unmapped = [c for c in report.triggered_codes if c not in CAP_TABLE and c not in NO_CAP_CODES]
+        if unmapped:
+            raise BenchmarkError(f"gate failure code(s) have no CAP_TABLE entry: {unmapped}")
         report.cap = min([1.0, *[CAP_TABLE[c] for c in report.triggered_codes if c in CAP_TABLE]])
         return report
 
