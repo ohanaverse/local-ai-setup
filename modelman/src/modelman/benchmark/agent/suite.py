@@ -17,6 +17,13 @@ from modelman.registry import Registry
 
 LITELLM_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.litellm.proxy.plist"
 
+# What [judge].route accepts, and where the direct route goes. The gateway is
+# the default because it is already running and already holds a key pi uses;
+# "openrouter" exists because a local gateway carries no frontier model, and
+# the judge is the one role in this harness that requires one.
+JUDGE_ROUTES = ("litellm", "openrouter")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 @dataclass
 class JudgeConfig:
@@ -121,10 +128,11 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         raw = tomllib.load(f)
 
     judge_raw = raw["judge"]
-    if judge_raw["route"] != "litellm":
+    if judge_raw["route"] not in JUDGE_ROUTES:
         raise BenchmarkError(
-            f"[judge] route must be 'litellm' in v1, got {judge_raw['route']!r} — "
-            "the judge is a robust cloud model reached through the existing proxy"
+            f"[judge] route must be one of {list(JUDGE_ROUTES)}, got {judge_raw['route']!r} — "
+            "'litellm' reaches the judge through the local proxy, 'openrouter' calls "
+            "OpenRouter directly, which is what a gateway with no frontier model needs"
         )
     judge = JudgeConfig(
         model=judge_raw["model"],
@@ -144,6 +152,13 @@ def load_suite(path: Path, registry: Registry) -> Suite:
     if repair_rounds != 0:
         raise BenchmarkError("repair_rounds is not yet supported (v1 ships repair_rounds = 0 only)")
 
+    if raw.get("judge", {}).get("route", "litellm") not in JUDGE_ROUTES:
+        raise BenchmarkError(
+            f"[judge].route = {raw['judge'].get('route')!r} is not one of {JUDGE_ROUTES}. "
+            "The field used to be accepted and ignored, which is worse than rejecting it: "
+            "a suite asking for a judge the gateway cannot reach scores JUDGE_FAIL on every row."
+        )
+
     return Suite(
         name=raw["name"],
         task_path=_resolve_task_path(str(raw["task"]), path),
@@ -156,17 +171,27 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         repair_rounds=repair_rounds,
     )
 
-def _openrouter_key_available(plist_path: Path) -> bool:
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return True
+def openrouter_key(plist_path: Path = LITELLM_PLIST) -> str | None:
+    """The OpenRouter key, from the environment or the LiteLLM LaunchAgent.
+
+    Same two places preflight already looks; a judge on route=openrouter needs
+    the value, not just the knowledge that one exists."""
+    env_key = os.environ.get("OPENROUTER_API_KEY")
+    if env_key:
+        return env_key
     if not plist_path.exists():
-        return False
+        return None
     try:
         with plist_path.open("rb") as f:
             data = plistlib.load(f)
     except Exception:
-        return False
-    return bool(data.get("EnvironmentVariables", {}).get("OPENROUTER_API_KEY"))
+        return None
+    key = data.get("EnvironmentVariables", {}).get("OPENROUTER_API_KEY")
+    return str(key) if key else None
+
+
+def _openrouter_key_available(plist_path: Path) -> bool:
+    return openrouter_key(plist_path) is not None
 
 
 def preflight(suite: Suite, registry: Registry, task: TaskBundle, *, plist_path: Path = LITELLM_PLIST) -> None:
@@ -195,8 +220,12 @@ def preflight(suite: Suite, registry: Registry, task: TaskBundle, *, plist_path:
         if leaked:
             raise BenchmarkError(f"hidden/ file name(s) also present under visible/: {', '.join(sorted(leaked))}")
 
-    if suite.judge.model.split("/")[0] == "openrouter" and not _openrouter_key_available(plist_path):
+    needs_openrouter = (
+        suite.judge.route == "openrouter" or suite.judge.model.split("/")[0] == "openrouter"
+    )
+    if needs_openrouter and not _openrouter_key_available(plist_path):
         raise BenchmarkError(
-            f"OPENROUTER_API_KEY not found for judge model {suite.judge.model!r}; "
-            "check ~/Library/LaunchAgents/local.litellm.proxy.plist"
+            f"OPENROUTER_API_KEY not found for judge model {suite.judge.model!r} "
+            f"(route={suite.judge.route!r}); check the environment or "
+            "~/Library/LaunchAgents/local.litellm.proxy.plist"
         )

@@ -330,3 +330,14 @@ def test_task_path_left_alone_when_unresolvable(tmp_path):
     )
     suite = load_suite(suite_path, _registry())
     assert suite.task_path == Path("nope/missing")
+
+
+def test_load_suite_rejects_an_unknown_judge_route(tmp_path):
+    """[judge].route used to be stored and ignored, so a suite asking for a
+    route the harness does not implement looked configured while every row
+    silently judge_failed."""
+    body = _passing_suite_toml().replace('route = "litellm"', 'route = "openai"')
+    path = tmp_path / "suite.toml"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(BenchmarkError, match="judge.*route|route"):
+        load_suite(path, _registry())

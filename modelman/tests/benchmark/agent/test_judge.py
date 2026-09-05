@@ -232,3 +232,30 @@ def test_litellm_transport_raises_judge_transport_error_after_retry_exhausted(mo
     transport = LiteLLMJudgeTransport(base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0)
     with pytest.raises(JudgeTransportError):
         transport.complete("p", temperature=0.0)
+
+
+def test_judge_fail_carries_the_reason():
+    """`judge_fail` alone is not actionable: a 404 (the suite names a model this
+    gateway does not serve), a 401 (no key) and a malformed reply are three
+    different fixes, and the row's own gates and speed data are fine in all
+    three cases — so the reason has to survive to judge.json."""
+    transport = _FakeTransport(
+        [JudgeTransportError("HTTP 404: no deployment for model x")] * 2
+    )
+    outcome = judge_row(transport, "prompt", temperature=0.0, samples=1, max_attempts=2)
+    assert outcome.status == "judge_fail"
+    assert outcome.error and "404" in outcome.error
+
+
+def test_http_error_reports_the_response_body(monkeypatch):
+    """The status says the request failed; the body says why, and the body is
+    the part that names the model the suite got wrong."""
+
+    class _Resp:
+        status_code = 404
+        text = '{"error": "No deployment found for model openrouter/anthropic/claude-opus-4"}'
+
+    monkeypatch.setattr(judge_module.requests, "post", lambda *a, **k: _Resp())
+    transport = judge_module.LiteLLMJudgeTransport(base_url="http://x/v1", api_key="k", model="m")
+    with pytest.raises(JudgeTransportError, match="No deployment found"):
+        transport.complete("prompt", temperature=0.0)

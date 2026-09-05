@@ -54,6 +54,7 @@ def _judge_to_dict(outcome: JudgeOutcome) -> dict[str, Any]:
         "attempts_used": outcome.attempts_used,
         "samples": [asdict(s) for s in outcome.samples],
         "combined": asdict(outcome.combined) if outcome.combined else None,
+        "error": outcome.error,
     }
 
 

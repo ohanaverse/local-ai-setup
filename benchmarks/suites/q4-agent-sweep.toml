@@ -5,12 +5,17 @@ cooldown_s = 20
 agent_timeout_s = 420
 
 [judge]
-model = "openrouter/anthropic/claude-opus-4"
+# anthropic/claude-opus-5, verified against openrouter.ai/api/v1/models on
+# 2026-09-05 — `claude-opus-4`, which this file originally named, has no
+# deployment and every row would have judge_failed on it. route=openrouter
+# because the local gateway serves 37 models and none of them are claude: a
+# frontier judge is exactly the thing it does not have.
+model = "openrouter/anthropic/claude-opus-5"
 thinking = "low"
 temperature = 0.0
 samples = 1
 max_attempts = 2
-route = "litellm"
+route = "openrouter"
 
 [routes.direct.omlx]
 base_url = "http://localhost:8000/v1"

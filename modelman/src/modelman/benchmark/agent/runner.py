@@ -17,6 +17,7 @@ from pathlib import Path
 
 from modelman.benchmark import isolation
 from modelman.benchmark.agent import judge, pidriver, report
+from modelman.benchmark.agent import suite as suite_module
 from modelman.benchmark.agent.gates import GatesReport
 from modelman.benchmark.agent.gates import evaluate as evaluate_gates
 from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, preflight
@@ -82,7 +83,33 @@ def _closing_message(events: list[dict]) -> str:
     return last_text
 
 
-def _build_judge_transport(judge_cfg: JudgeConfig, live_models_path: Path) -> judge.JudgeTransport:
+def _build_judge_transport(
+    judge_cfg: JudgeConfig,
+    live_models_path: Path,
+    *,
+    plist_path: Path = suite_module.LITELLM_PLIST,
+) -> judge.JudgeTransport:
+    """Build the judge's transport for the suite's `[judge].route`.
+
+    `litellm` sends the judge through the local gateway using the apiKey pi
+    already has; `openrouter` calls OpenRouter directly, which is the only way
+    to reach a frontier judge on a gateway that serves none — the local gateway
+    here has 37 models and no claude among them. A suite's judge model keeps its
+    LiteLLM-style `openrouter/` prefix either way; on the direct route it is
+    stripped, because OpenRouter itself does not know that prefix."""
+    if judge_cfg.route == "openrouter":
+        key = suite_module.openrouter_key(plist_path)
+        if not key:
+            raise BenchmarkError(
+                f"judge route=openrouter needs OPENROUTER_API_KEY (environment or "
+                f"{plist_path}); preflight passed, so it appeared and disappeared"
+            )
+        model = judge_cfg.model
+        if model.startswith("openrouter/"):
+            model = model[len("openrouter/") :]
+        return judge.LiteLLMJudgeTransport(
+            base_url=suite_module.OPENROUTER_BASE_URL, api_key=key, model=model
+        )
     try:
         live = json.loads(live_models_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):

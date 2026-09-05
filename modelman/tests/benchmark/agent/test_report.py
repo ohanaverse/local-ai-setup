@@ -222,3 +222,16 @@ def test_summary_lists_error_reasons():
 def test_summary_omits_errors_section_when_clean():
     md = render_summary("run1", [_row("good", wall_ms=1000.0, composite=0.8)])
     assert "## Errors" not in md
+
+
+def test_judge_json_includes_the_failure_reason(tmp_path):
+    from modelman.benchmark.agent.judge import JudgeOutcome
+
+    row_dir = tmp_path / "rowj"
+    write_judge_json(
+        row_dir,
+        JudgeOutcome(status="judge_fail", samples=[], combined=None, attempts_used=2,
+                     error='HTTP 404: no deployment for model "opus-4"'),
+    )
+    data = json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))
+    assert "no deployment" in data["error"]

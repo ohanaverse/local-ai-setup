@@ -49,6 +49,11 @@ class JudgeOutcome:
     samples: list[JudgeScore]
     combined: JudgeScore | None
     attempts_used: int
+    # Why judging failed. "judge_fail" alone cannot be acted on: a 404 (the
+    # model id does not exist at this gateway) and a 401 (no key) and a
+    # malformed reply are three different fixes, and the row's own data is fine
+    # in all three cases.
+    error: str | None = None
 
 
 _DIFF_HEADER_RE = re.compile(r"^diff --git a/\S+ b/\S+$", re.MULTILINE)
@@ -140,6 +145,7 @@ def judge_row(
 ) -> JudgeOutcome:
     collected: list[JudgeScore] = []
     attempts_used = 0
+    last_error: str | None = None
     for _ in range(samples):
         score: JudgeScore | None = None
         for _attempt in range(max_attempts):
@@ -147,11 +153,19 @@ def judge_row(
             try:
                 raw = transport.complete(prompt, temperature=temperature)
                 score = parse_response(raw)
+                last_error = None
                 break
-            except (JudgeContractError, JudgeTransportError):
+            except (JudgeContractError, JudgeTransportError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 continue
         if score is None:
-            return JudgeOutcome(status="judge_fail", samples=collected, combined=None, attempts_used=attempts_used)
+            return JudgeOutcome(
+                status="judge_fail",
+                samples=collected,
+                combined=None,
+                attempts_used=attempts_used,
+                error=last_error,
+            )
         collected.append(score)
 
     if len(collected) == 1:
@@ -183,7 +197,7 @@ def detect_overclaim(closing_message: str, hidden_pass: int, hidden_total: int) 
     return bool(_TEST_PASS_CLAIM_RE.search(closing_message)) and hidden_pass < hidden_total
 
 class LiteLLMJudgeTransport:
-    """Direct chat-completions call through LiteLLM at a fixed temperature.
+    """A plain OpenAI-compatible chat-completions call at a fixed temperature.
     Not a pi subprocess: pi has no temperature flag, and a fresh HTTP
     request gives the same context isolation a fresh process would, more
     cheaply."""
@@ -216,6 +230,14 @@ class LiteLLMJudgeTransport:
             },
             timeout=120,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # The body, not just the status: "404" tells you the request failed,
+            # "No deployment found for model openrouter/anthropic/claude-opus-4"
+            # tells you the suite names a model this gateway does not serve —
+            # and the judge's own status field carries this text to judge.json.
+            raise JudgeTransportError(
+                f"HTTP {response.status_code} from {self.base_url}/chat/completions: "
+                f"{response.text[:200]}"
+            )
         data = response.json()
         return data["choices"][0]["message"]["content"]

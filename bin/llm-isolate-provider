@@ -18,6 +18,17 @@ LLAMACPP_MODEL="${LLM_ISOLATE_LLAMACPP_MODEL:-local-llama}"
 OMLX_4BIT_MODEL="${LLM_ISOLATE_OMLX_4BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-4bit}"
 OMLX_6BIT_MODEL="${LLM_ISOLATE_OMLX_6BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-6bit}"
 
+# This script's stdout is its contract: isolation.py parses it as a single JSON
+# object. `omlx stop` shells out to brew, which narrates ("Stopping `omlx`...")
+# on *stdout*, so an isolate whose target needed oMLX stopped produced
+# prose-then-JSON and the caller died with "isolation helper returned invalid
+# JSON" — which, because the stop only happens when the service is up, made
+# every other run fail. Route a command's stdout into stderr, keeping its
+# stderr (which stays stderr) alongside it.
+narrate_on_stderr() {
+    "$@" 1>&2
+}
+
 warmup_payload() {
     local model="$1"
     python3 - "$model" <<'PYEOF'
@@ -35,14 +46,14 @@ PYEOF
 stop_all_local() {
     local keep="$1"
     if [ "$keep" != "ollama" ]; then
-        ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
+        narrate_on_stderr ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
         # `ollama stop` unloads the model but keeps the daemon (port 11434) up,
         # so poll `ollama ps` for an empty model list, not the port.
         wait_for_ollama_unloaded 5 \
             || echo "warning: ollama still has $OLLAMA_MODEL loaded" >&2
     fi
     if [ "$keep" != "omlx" ]; then
-        omlx stop 2>/dev/null || true
+        narrate_on_stderr omlx stop 2>/dev/null || true
         wait_for_port_closed http://localhost:8000/v1/models 5 \
             || echo "warning: omlx still listening on port 8000" >&2
     fi

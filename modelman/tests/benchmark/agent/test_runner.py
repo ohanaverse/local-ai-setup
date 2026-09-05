@@ -18,7 +18,7 @@ import modelman.benchmark.isolation as isolation_module
 from modelman.benchmark.agent import pidriver as pidriver_module
 from modelman.benchmark.agent.pidriver import PiRunResult
 from modelman.benchmark.agent.runner import run_suite
-from modelman.benchmark.agent.suite import load_suite
+from modelman.benchmark.agent.suite import JudgeConfig, load_suite
 from modelman.benchmark.errors import BenchmarkError
 from modelman.registry import ModelEntry, ProviderEntry, Registry
 
@@ -449,3 +449,41 @@ def test_omlx_6bit_override_still_isolates(tmp_path, monkeypatch, litellm_models
         skip_judge=True,
     )
     assert isolated == ["omlx-6bit"]
+
+
+def test_judge_transport_follows_the_suites_route(tmp_path, monkeypatch, litellm_models_json):
+    """A frontier judge is the one thing a local gateway may not have (this
+    host's serves 37 models and no claude among them), so [judge].route =
+    "openrouter" has to actually reach OpenRouter rather than the gateway — and
+    it must drop the LiteLLM-style openrouter/ prefix, which OpenRouter itself
+    does not know."""
+    from modelman.benchmark.agent.runner import _build_judge_transport
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    cfg = JudgeConfig(
+        model="openrouter/anthropic/claude-opus-5", thinking="low", temperature=0.0,
+        samples=1, max_attempts=2, route="openrouter",
+    )
+    transport = _build_judge_transport(cfg, litellm_models_json)
+    assert transport.base_url == "https://openrouter.ai/api/v1"
+    assert transport.model == "anthropic/claude-opus-5", "the openrouter/ prefix is LiteLLM's, not OpenRouter's"
+    assert transport.api_key == "sk-or-test"
+
+    cfg2 = JudgeConfig(
+        model="some/model", thinking="low", temperature=0.0, samples=1, max_attempts=2, route="litellm",
+    )
+    gateway = _build_judge_transport(cfg2, litellm_models_json)
+    assert gateway.base_url == "http://localhost:4000/v1"
+    assert gateway.model == "some/model"
+
+
+def test_judge_transport_without_openrouter_key_names_the_missing_key(monkeypatch):
+    from modelman.benchmark.agent.runner import _build_judge_transport
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = JudgeConfig(
+        model="openrouter/x", thinking="low", temperature=0.0, samples=1, max_attempts=2,
+        route="openrouter",
+    )
+    with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
+        _build_judge_transport(cfg, Path("/nonexistent/models.json"), plist_path=Path("/nonexistent.plist"))
