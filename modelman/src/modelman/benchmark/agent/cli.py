@@ -92,6 +92,11 @@ def run_cmd(
     ok = sum(1 for r in results if r.error is None)
     typer.echo(f"Agent benchmark complete: {len(results)} row(s), {ok} ran without an isolation error")
     typer.echo(f"Results: {run_dir}")
+    for result in results:
+        if result.error:
+            typer.echo(
+                f"  {result.row.label} pass {result.pass_number}: {result.error}", err=True
+            )
 
 
 __all__ = ["agent_app"]

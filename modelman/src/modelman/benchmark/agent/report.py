@@ -281,14 +281,30 @@ def _anomalies_table(reports: list[RowReport]) -> str:
     return "\n".join(lines)
 
 
+def _errors_table(reports: list[RowReport]) -> str:
+    """Why a row has no data. ISOLATION_ERROR alone does not tell an operator
+    whether their GGUF is missing, pi is not on PATH, or the model refused the
+    task, and that distinction is the whole next action."""
+    lines = ["| label | model | error |", "|---|---|---|"]
+    for r in reports:
+        error = r.error
+        if error:
+            lines.append(f"| {r.label} | {r.model_id} | {error[:200]} |")
+    return "" if len(lines) == 2 else "\n".join(lines)
+
+
 def render_summary(run_id: str, reports: list[RowReport]) -> str:
-    return (
+    out = (
         f"# Agent benchmark run {run_id}\n\n"
         f"## Quality\n\n{_quality_table(reports)}\n\n"
         f"## Speed\n\n{_speed_table(reports)}\n\n"
         f"## Two-axis\n\n{_two_axis_table(reports)}\n\n"
         f"## Anomalies\n\n{_anomalies_table(reports)}\n"
     )
+    errors = _errors_table(reports)
+    if errors:
+        out += f"\n## Errors\n\n{errors}\n"
+    return out
 
 
 def write_metrics_jsonl(path: Path, reports: list[RowReport]) -> None:

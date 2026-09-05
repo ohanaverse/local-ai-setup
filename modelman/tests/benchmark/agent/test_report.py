@@ -204,3 +204,21 @@ def test_write_judge_json_leaves_other_artifacts_alone(tmp_path):
     with gzip.open(row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
         assert json.loads(f.readline())["type"] == "agent_settled"
     assert json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))["combined"]["total"] == 80
+
+
+def test_summary_lists_error_reasons():
+    """A row with no data must say why: an outcome code alone leaves the
+    operator guessing between a missing model file and a refused task."""
+    reports = [
+        RowReport(label="bad", model_id="ollama/y", thinking="off", route="litellm",
+                  gates=None, metrics=None, judge=None, composite=None, closing_message="",
+                  error="failed to isolate ollama: llamacpp did not come back up"),
+    ]
+    md = render_summary("run1", reports)
+    assert "## Errors" in md
+    assert "llamacpp did not come back up" in md
+
+
+def test_summary_omits_errors_section_when_clean():
+    md = render_summary("run1", [_row("good", wall_ms=1000.0, composite=0.8)])
+    assert "## Errors" not in md
