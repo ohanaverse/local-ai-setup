@@ -62,6 +62,25 @@ def test_write_row_artifacts_writes_expected_files(tmp_path):
     assert not (row_dir / "judge.json").exists()  # no judge_outcome -> no file
 
 
+def test_write_row_artifacts_preserves_unicode_in_jsonl(tmp_path):
+    r"""Non-ASCII content in the pi stream must not be escaped as \uXXXX in the
+    gzipped JSONL archive: the event log is the primary debugging record, and
+    escaped Unicode inflates it and makes post-hoc inspection harder."""
+    row_dir = tmp_path / "row1"
+    write_row_artifacts(
+        row_dir,
+        events=[{"type": "message_update", "delta": "café 🚀"}],
+        diff_raw="",
+        gates=None,
+        metrics=None,
+        judge_outcome=None,
+    )
+    with gzip.open(row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
+        line = f.readline()
+    assert "café 🚀" in line
+    assert "\\u" not in line
+
+
 def test_write_run_toml_masks_api_keys(tmp_path):
     suite_dict = {
         "judge": {"model": "x"},

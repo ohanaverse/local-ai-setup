@@ -75,7 +75,7 @@ def write_row_artifacts(
     row_dir.mkdir(parents=True, exist_ok=True)
     with gzip.open(row_dir / "agent.jsonl.gz", "wt", encoding="utf-8") as f:
         for entry in events:
-            f.write(json.dumps(entry) + "\n")
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     (row_dir / "diff.raw.patch").write_text(diff_raw, encoding="utf-8")
     (row_dir / "diff.patch").write_text(anonymize_diff(diff_raw), encoding="utf-8")
     if gates is not None:
