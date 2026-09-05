@@ -8,6 +8,7 @@ Task 11 re-runs the same taxonomy against the real day31-drift bundle with
 hand-authored patches.
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -263,3 +264,56 @@ def test_no_hidden_tests_skips_gate_9(workspace):
     report = _evaluate(workspace)  # NO_DIFF short-circuits before gate 9
     assert report.results[8].outcome == "skipped"
     assert report.hidden_evaluated is False
+
+
+def _make_nested_bundle(tmp_path: Path) -> Path:
+    """Create a mini-drift clone where tests live under tests/sub so the
+    harness's tests_dir prefix matching is exercised."""
+    src = FIXTURE_ROOT / "mini-drift"
+    dest = tmp_path / "nested-drift"
+    shutil.copytree(src, dest)
+    (dest / "visible" / "tests" / "sub").mkdir(parents=True, exist_ok=True)
+    (dest / "visible" / "tests" / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    (dest / "visible" / "tests" / "test_pkg.py").rename(
+        dest / "visible" / "tests" / "sub" / "test_pkg.py"
+    )
+    visible_pycache = dest / "visible" / "tests" / "__pycache__"
+    if visible_pycache.exists():
+        visible_pycache.rename(dest / "visible" / "tests" / "sub" / "__pycache__")
+    (dest / "gates.toml").write_text(
+        '[build]\nimport_check = "pkg"\ntests_dir = "tests/sub"\n\n[hidden]\nfiles = ["test_hidden.py"]\n',
+        encoding="utf-8",
+    )
+    return dest
+
+
+def test_nested_tests_dir_detects_tampering_regression_and_hidden(tmp_path):
+    """A bundle using a nested tests_dir must still:
+    - treat edits under tests/sub as tampering (gate 6),
+    - find new tests/sub/test_*.py files as regression tests (gate 7),
+    - import hidden tests by dotted module name (gate 9).
+    Before the prefix normalization this failed on all three counts."""
+    bundle = _make_nested_bundle(tmp_path)
+    task = load_task(bundle)
+    ws = create_workspace(task, base_dir=tmp_path)
+    try:
+        (ws.root / "pkg" / "__init__.py").write_text(
+            "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
+        )
+        (ws.root / "tests" / "sub" / "test_regression.py").write_text(
+            "import unittest\nfrom pkg import add_one\n\n"
+            "class T(unittest.TestCase):\n    def test_even(self):\n"
+            "        self.assertEqual(add_one(4), 5)\n",
+            encoding="utf-8",
+        )
+        report = evaluate(ws, task, _ok_run(), events=_reply_events(), session_file_present=True)
+        assert report.results[5].outcome == "pass", "gate 6 should not flag a new test file"
+        assert report.results[6].outcome == "pass", "gate 7 must find new tests/sub/test_regression.py"
+        assert report.results[8].outcome == "pass", (
+            f"gate 9 must run hidden tests via dotted module; got {report.results[8].code} "
+            f"({report.results[8].detail})"
+        )
+        assert report.hidden_total == 2
+        assert report.hidden_pass == 2
+    finally:
+        destroy_workspace(ws)

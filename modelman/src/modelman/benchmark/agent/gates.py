@@ -66,6 +66,11 @@ class GatesReport:
         return [r.code for r in self.results if r.outcome == "fail" and r.code]
 
 
+def _tests_module_prefix(tests_dir: str) -> str:
+    """Convert a path like tests or tests/sub to a dotted module prefix."""
+    return tests_dir.replace("/", ".").replace("\\", ".")
+
+
 def _import_check(root: Path, module_name: str) -> bool:
     result = subprocess.run(
         [sys.executable, "-c", f"import {module_name}"], cwd=root, capture_output=True, text=True
@@ -198,7 +203,8 @@ def _run_hidden_tests(workspace: Workspace, task: TaskBundle) -> tuple[int, int]
     workspace.seed_hidden(task)
     outcomes: list[TestOutcome] = []
     for filename in hidden_files:
-        outcomes.extend(run_test_file(workspace.root, f"{tests_dir}.{Path(filename).stem}"))
+        module_prefix = _tests_module_prefix(tests_dir)
+        outcomes.extend(run_test_file(workspace.root, f"{module_prefix}.{Path(filename).stem}"))
     passed = sum(1 for o in outcomes if o.passed)
     return passed, len(outcomes)
 
@@ -220,6 +226,7 @@ def _detect_and_evaluate_gate8(
     workspace.checkout_baseline_worktree(dest)
     outcomes: list[TestOutcome] = []
     try:
+        module_prefix = _tests_module_prefix(tests_dir)
         for test_file in new_tests:
             target = dest / test_file.relative_to(workspace.root)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -232,7 +239,7 @@ def _detect_and_evaluate_gate8(
                     duration_ms=o.duration_ms,
                     message=o.message,
                 )
-                for o in run_test_file(dest, f"{tests_dir}.{test_file.stem}")
+                for o in run_test_file(dest, f"{module_prefix}.{test_file.stem}")
             )
     finally:
         workspace.remove_worktree(dest)
@@ -334,9 +341,10 @@ def evaluate(
     # Gate 6: tests not tampered. Editing a pre-existing test file is fatal,
     # and complementary to gate 7 rather than contradictory: adding a new file
     # is required, changing an old one is not allowed.
+    tests_dir_parts = Path(tests_dir).parts
     tampered = [
         p for p in workspace.modified_or_deleted_since_baseline()
-        if p.relative_to(workspace.root).parts[0] == tests_dir
+        if p.relative_to(workspace.root).parts[: len(tests_dir_parts)] == tests_dir_parts
     ]
     if not tampered:
         add(6, True)
@@ -353,7 +361,8 @@ def evaluate(
     new_tests = [
         p
         for p in workspace.new_files_since_baseline()
-        if p.relative_to(workspace.root).parts[0] == tests_dir and p.name.startswith("test_")
+        if p.relative_to(workspace.root).parts[: len(tests_dir_parts)] == tests_dir_parts
+        and p.name.startswith("test_")
     ]
     if new_tests:
         add(7, True)
