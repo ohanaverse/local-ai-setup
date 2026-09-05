@@ -580,3 +580,20 @@ def test_metrics_log_written_per_run(tmp_path):
         assert "in=100 out=20" in content
     finally:
         destroy_workspace(ws)
+
+
+def test_run_pi_process_forwards_env_to_the_child(tmp_path):
+    """The runner points PI_CODING_AGENT_DIR at a per-run directory holding the
+    generated models.json. If env did not reach the child, every row would
+    silently run against the user's own ~/.pi/agent provider list instead of
+    the row's target, and the config generation would be dead code."""
+    session_dir = tmp_path / "session"
+    run_pi_process(
+        _fake_agent_cmd(session_dir),
+        workspace_path=tmp_path,
+        timeout_seconds=10,
+        poll_interval=0.01,
+        env={**__import__("os").environ, "PI_CODING_AGENT_DIR": "/per-run/config-dir"},
+    )
+    written = json.loads(next(session_dir.glob("*.jsonl")).read_text(encoding="utf-8"))
+    assert written["agent_dir"] == "/per-run/config-dir"

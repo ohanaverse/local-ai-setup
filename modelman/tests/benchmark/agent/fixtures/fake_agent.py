@@ -16,6 +16,7 @@ unparsed-line and gate-1 paths without a real multi-minute agent run.
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
@@ -57,8 +58,18 @@ def main() -> None:
             return
         session_dir = Path(args.session_dir)
         session_dir.mkdir(parents=True, exist_ok=True)
+        # PI_CODING_AGENT_DIR lands in the session file so a test can confirm
+        # the driver actually forwarded env to the child.
         (session_dir / f"{session_id}.jsonl").write_text(
-            json.dumps({"type": "session", "id": session_id}) + "\n", encoding="utf-8"
+            json.dumps(
+                {
+                    "type": "session",
+                    "id": session_id,
+                    "agent_dir": os.environ.get("PI_CODING_AGENT_DIR", ""),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
         )
 
     _emit({

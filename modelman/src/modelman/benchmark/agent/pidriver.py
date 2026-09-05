@@ -228,6 +228,7 @@ def run_pi_process(
     poll_interval: float = 0.5,
     abort_event: threading.Event | None = None,
     idle_seconds: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[list[dict], PiRunResult]:
     """Run one pi session, streaming and parsing its JSONL event output.
 
@@ -248,9 +249,13 @@ def run_pi_process(
     aborted = False
 
     started_monotonic = time.monotonic()
+    # env must reach the child: the runner points PI_CODING_AGENT_DIR at a
+    # per-run directory holding the generated models.json, and without it pi
+    # would read the user's own provider list instead of the row's target.
     proc = subprocess.Popen(
         cmd,
         cwd=workspace_path,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
