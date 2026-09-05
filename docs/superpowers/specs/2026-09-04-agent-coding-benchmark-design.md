@@ -140,10 +140,8 @@ as a sub-Typer:
 | `gates.py` | ordered gate evaluation, pass ratios, failure taxonomy codes, vacuous-test check | `workspace.py` |
 | `judge.py` | anonymize diff, build judge prompt, call transport, validate score contract, retry, apply cap | `task.py` (rubric), injected transport |
 | `report.py` | per-row artifact writes, `summary.md` four tables, `metrics.jsonl` | results of the above |
+| `runner.py` | orchestrates phases 1–3, owns the isolation loop; the only module that imports `benchmark.isolation` | `suite.py`, `pidriver.py`, `gates.py`, `judge.py`, `report.py`, `benchmark.isolation` |
 | `cli.py` | `agent run` / `agent list-tasks` / `agent list-suites` / `agent show --latest` | all |
-
-`agent/runner.py` orchestrates phases 1–3 and owns the isolation loop; it is the
-only module that imports `benchmark.isolation`.
 
 ### CLI surface
 
@@ -420,6 +418,11 @@ classifiable instead of one FAIL bucket.
 - A row short-circuits at the first hard gate that makes later gates
   un-evaluable (`TIMEOUT`, `NO_DIFF`, `BROKEN_BUILD`, `TAMPERED_TESTS`), and the
   skipped gates are recorded as `skipped`, not `pass`.
+- Gate 5 (`VISIBLE_REGRESSION`) is deliberately **not** a short-circuit
+  condition: a broken visible test doesn't make gates 6–9 un-evaluable, and
+  running them anyway is diagnostic — e.g. hidden tests passing despite a
+  visible regression says something different about the fix than hidden tests
+  also failing.
 
 ## Scoring
 
@@ -434,6 +437,14 @@ outcome:
 | partial hidden-test pass (≥1 of m, not all) | ×0.50 |
 | all hidden tests fail, or `BROKEN_BUILD` | ×0.25 |
 | `TAMPERED_TESTS`, `TIMEOUT`, `NO_DIFF`, `AGENT_ERROR` | ×0.00 |
+
+These rows are not mutually exclusive — a row can trigger more than one at
+once (e.g. `NO_REGRESSION_TEST` at gate 7 while gate 9 independently reports a
+partial hidden-test pass, since hidden tests run regardless of whether the
+agent added its own test). "Worst" is explicit: **the cap is the minimum
+multiplier across every triggered row**, evaluated after all gates have run
+(or short-circuited). A row failing both `NO_REGRESSION_TEST` (×0.85) and
+partial hidden tests (×0.50) gets ×0.50.
 
 The cap is where the expectation "some configurations run quickly but produce
 inferior or invalid output" gets enforced structurally: a 40-second row with an
@@ -491,6 +502,11 @@ than guess past.
 patterns. Not a pi subprocess: pi has no temperature flag, and a fresh request gives
 the same context isolation a fresh process would, cheaper. `judge.samples > 1` issues
 N independent requests and takes the per-dimension median before summing.
+`[judge]` supports `route = "litellm"` only in v1 — the judge is meant to be a
+robust cloud model reachable through the existing proxy, and `direct` (which
+exists for local backends under isolation) has no place judging cloud-sequenced
+rows. Preflight rejects `route = "direct"` under `[judge]` with a clear error
+rather than silently resolving it.
 
 **Overclaim metric (free).** The agent's closing message is grepped for
 test-passing/success claims and compared against gate 9 — a computed column, not a
@@ -520,7 +536,9 @@ in the table.
    reasoning tok · tool_ms · requests · cost
 3. **Two-axis** — sorted by composite, with rows that are Pareto-nondominated
    (no other row is both faster and higher-quality) starred: the "fastest config
-   at ≥ this quality" reading
+   at ≥ this quality" reading. `N/A`-composite rows (`JUDGE_FAIL`) sort to the
+   bottom, are never Pareto-starred (no quality axis to compare on), and are
+   still visible with their speed columns intact
 4. **Anomalies** — every cap applied, every `VACUOUS_TEST`, every thinking no-op,
    every cold-first-token flag, every overclaim mismatch, and every row where
    `rubric_total ≥ 70` while all hidden tests failed. That last class is a finding
