@@ -9,18 +9,23 @@ exactly as the spec's Route resolution section states them.
 """
 
 import json
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from modelman.benchmark.agent.pidriver import (
     DirectRouteConfig,
+    PiTarget,
     RowConfig,
     build_models_json,
     build_pi_command,
     resolve_pi_target,
+    run_pi_process,
     write_pi_config,
 )
+from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 from modelman.benchmark.errors import BenchmarkError
 
 LITELLM_ID = "ollama/qwen3.8:27b-mlx"
@@ -197,3 +202,95 @@ def test_build_pi_command_shape(tmp_path):
     assert cmd[cmd.index("--thinking") + 1] == "high"
     assert cmd[-1] == "do the task"
     assert "--no-approve" in cmd
+
+
+FAKE_AGENT = Path(__file__).parent / "fixtures" / "fake_agent.py"
+
+
+def _fake_agent_cmd(session_dir: Path, extra_args: list[str] | None = None) -> list[str]:
+    """Every invocation carries --session-dir, as the real command does: gate 1
+    needs a session file on disk, and a fake that wrote none would leave the
+    whole session-continuity path untested."""
+    return [sys.executable, str(FAKE_AGENT), *(extra_args or []), "--session-dir", str(session_dir)]
+
+
+def test_run_pi_process_completes_normally(tmp_path):
+    # the session dir sits inside the run root, which is how the real runner lays it out
+    events, result = run_pi_process(
+        _fake_agent_cmd(tmp_path), workspace_path=tmp_path, timeout_seconds=10, poll_interval=0.01
+    )
+    assert result.timed_out is False
+    assert result.exit_code == 0
+    assert events[-1]["type"] == "agent_settled"
+    assert any(e["type"] == "message_end" for e in events)
+    # real pi writes the transcript into --session-dir; gate 1 needs that proof
+    assert any(p.suffix == ".jsonl" for p in tmp_path.rglob("*.jsonl"))
+
+
+def test_run_pi_process_ignores_the_user_message_end_when_checking_for_a_reply(tmp_path):
+    """`--no-assistant-reply` ends the stream right after the *user* message's
+    message_end. Real pi echoes the prompt as its own message_start/message_end
+    pair, so a seen_message_end that fired on it would call a run that never
+    produced a reply a clean one."""
+    events, result = run_pi_process(
+        _fake_agent_cmd(tmp_path / "session", ["--no-assistant-reply"]),
+        workspace_path=tmp_path,
+        timeout_seconds=10,
+        poll_interval=0.01,
+    )
+    assert any(
+        e["type"] == "message_end" and e["message"]["role"] == "user" for e in events
+    ), "the fixture must actually emit the user message_end this test is about"
+    assert result.timed_out is False
+    assert result.seen_message_end is False
+    assert result.exit_code == 0
+
+
+def test_run_pi_process_counts_unparsed_lines(tmp_path):
+    _, result = run_pi_process(
+        _fake_agent_cmd(tmp_path / "session", ["--malformed-line"]),
+        workspace_path=tmp_path, timeout_seconds=10, poll_interval=0.01,
+    )
+    assert result.unparsed_lines == 1
+
+
+def test_run_pi_process_kills_process_group_on_hard_timeout(tmp_path):
+    # --hang sleeps 3600s *after* already emitting agent_settled; the only way
+    # the loop can still be waiting on the stdout reader thread — and therefore
+    # the only way this test can prove the process-group kill path runs at all —
+    # is an overall timeout below when stdout actually closes on its own.
+    start = time.monotonic()
+    _, result = run_pi_process(
+        _fake_agent_cmd(tmp_path / "session", ["--hang"]),
+        workspace_path=tmp_path, timeout_seconds=1.0, poll_interval=0.01,
+    )
+    elapsed = time.monotonic() - start
+    assert result.timed_out is True
+    assert elapsed < 10
+
+
+def test_run_pi_process_writes_a_session_file_the_gates_can_find(tmp_path):
+    """Gate 1 (SESSION_CONTINUITY) looks for a *.jsonl under the run's root, so
+    a driver that never produced one could never pass a run. Mirrors wt's
+    launchPi: session_dir goes in the command, the agent writes it."""
+    from modelman.benchmark.agent.task import load_task
+
+    # parents[4] is the monorepo root; see the note in test_day31_drift_bundle.py
+    bundle = load_task(Path(__file__).resolve().parents[4] / "benchmarks" / "tasks" / "day31-drift")
+    ws = create_workspace(bundle)
+    session_dir = ws.root / "pi-session"
+    try:
+        target = PiTarget(
+            pi_provider="litellm", launch_id="x", base_url="http://x",
+            api="openai-completions", api_key="k", context_window=1000, reasoning=False,
+        )
+        cmd = build_pi_command(target, "off", session_dir, "do the task")
+        assert cmd[cmd.index("--session-dir") + 1] == str(session_dir)
+        # --session-dir takes exactly one argument and must not swallow the next flag
+        assert cmd[cmd.index("--session-dir") + 2] == "--model"
+        run_pi_process(
+            _fake_agent_cmd(session_dir), workspace_path=ws.root, timeout_seconds=10, poll_interval=0.01
+        )
+        assert any(p.name.endswith(".jsonl") for p in session_dir.glob("*.jsonl"))
+    finally:
+        destroy_workspace(ws)
