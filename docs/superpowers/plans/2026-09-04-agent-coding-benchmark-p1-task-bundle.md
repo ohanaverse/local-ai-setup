@@ -20,6 +20,8 @@
 - Create: `modelman/tests/benchmark/agent/fixtures/tasks/mini-drift/hidden/test_hidden.py`
 - Test: `modelman/tests/benchmark/agent/test_task.py`
 
+> **Collection warning:** the `test_pkg.py` / `test_hidden.py` files in this fixture are collected by pytest as real tests and fail at import (`from pkg import add_one` — `pkg` only exists inside a seeded workspace). That is unavoidable, since those names are what unittest discovery requires inside a workspace. Task 2 adds `tests/benchmark/agent/conftest.py` with `collect_ignore = ["fixtures"]` to fix it, so between this task and that one, run only `uv run pytest tests/benchmark/agent/test_task.py` — a directory-wide run fails at collection.
+
 **Interfaces:**
 - Produces: `TaskBundle` dataclass (`task_id: str`, `path: Path`, `task_md: str`, `rubric_md: str`, `gates_config: dict`, `meta: dict`, `visible_dir: Path`, `hidden_dir: Path`); `load_task(path: Path) -> TaskBundle`; `list_task_bundles(root: Path) -> list[TaskBundle]`. Every later module that touches a task bundle imports `TaskBundle`/`load_task` from here — this is the shared vocabulary for the rest of the plan.
 
@@ -105,8 +107,10 @@ files = ["test_hidden.py"]
 intended_fix = "remove the `n % 2 == 0` special case"
 
 [tiers]
-frontier = "6/6"
+frontier = "2/2"
 ```
+
+(`2/2`, matching this fixture's two hidden tests — not the `6/6` of the real `day31-drift` bundle.)
 
 - [ ] **Step 2: Write the failing test**
 
@@ -244,7 +248,7 @@ def load_task(path: Path) -> TaskBundle:
 
 def list_task_bundles(root: Path) -> list[TaskBundle]:
     """Return every valid task bundle directly under root, sorted by id."""
-    bundles = []
+    bundles: list[TaskBundle] = []
     root = Path(root)
     if not root.is_dir():
         return bundles
@@ -274,7 +278,28 @@ git commit -m "feat(agent-bench): add task bundle loader - completes plan item #
 
 **Files:**
 - Create: `modelman/src/modelman/benchmark/agent/workspace.py`
+- Create: `modelman/tests/benchmark/agent/conftest.py`
 - Test: `modelman/tests/benchmark/agent/test_workspace.py`
+
+**Step 0 (do this first): keep pytest out of the fixtures tree.** Task 1's task-bundle fixture ships `visible/tests/test_pkg.py` and `hidden/test_hidden.py`, which pytest collects as ordinary tests and then fails to import (`pkg` exists only inside a seeded workspace) — so `uv run pytest tests/benchmark/agent/`, `make test`, and CI all die at collection, not at an assertion. Write `modelman/tests/benchmark/agent/conftest.py`:
+
+```python
+"""Collection config for the agent-benchmark tests.
+
+fixtures/tasks/ holds *task bundles* — miniature repositories that are data
+for these tests, not tests. Their files are named test_pkg.py /
+test_hidden.py on purpose (that is the layout unittest discovery expects
+inside a seeded workspace, and the same layout as the real
+benchmarks/tasks/day31-drift bundle), which is exactly the name pytest
+collects. Collected in place they import `pkg`, a module that only exists
+inside a seeded temp workspace, so the entire suite fails at collection
+rather than just these fixtures.
+"""
+
+collect_ignore = ["fixtures"]
+```
+
+(The real bundle lives under `benchmarks/tasks/`, outside `testpaths = ["tests"]`, so it never needed the guard — this is purely about fixtures under `tests/`.)
 
 **Interfaces:**
 - Consumes: `TaskBundle` from Task 1 (`task.visible_dir`, `task.hidden_dir`).
@@ -507,6 +532,7 @@ Expected: PASS (5 tests)
 
 ```bash
 git add modelman/src/modelman/benchmark/agent/workspace.py \
+        modelman/tests/benchmark/agent/conftest.py \
         modelman/tests/benchmark/agent/test_workspace.py
 git commit -m "feat(agent-bench): add git-backed workspace - completes plan item #2"
 ```

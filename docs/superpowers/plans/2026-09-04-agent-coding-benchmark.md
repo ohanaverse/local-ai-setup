@@ -21,6 +21,7 @@
 - Run focused tests per task (`uv run pytest tests/benchmark/agent/test_X.py -v`) — run `make check`/`make test` in full only on the final task of each phase.
 - Commit after every task, referencing this plan (e.g. `feat(agent-bench): add task bundle loader - completes plan item #1`).
 - **Keep every import at the top of its file.** Each task below says "append to `test_X.py`", and appending an `import` after module code is an `E402` error — `make check` runs `ruff check src/ tests/` (with `E` selected) in CI, so a mid-file import fails the build. Merge each task's new imports into the existing top-of-file block, and delete any import a later task makes unused (`F401`).
+- **Annotate every empty collection literal.** `make check` also runs `mypy src/`, which rejects `bundles = []` with `var-annotated` even when the next line appends a value — write `bundles: list[TaskBundle] = []`. Any bare `x = []` / `x = {}` in a `src/` module needs the annotation; the plan's listings were not all written with that in mind.
 - **Task numbers in cross-references are the ones in this index's phase list**, not the ones the draft used: `pidriver`/`suite`/`gates` prose written before the renumbering said "Task 16" for the runner and "Task 22" for the report. The phase files have been corrected; if you find a stale one, fix it in place.
 
 ## Cross-phase contracts
@@ -125,3 +126,9 @@ Plan self-review (below) is global; the phase files carry no review section.
 6. **Appended imports would have failed CI** (`E402`, and one unused `ModelState` import as `F401`) — import placement is now a Global Constraint.
 7. **Task 22's sweep named `omlx/Ornith-1.5-35B-A3B-MLX-6bit`, which is not a registry model id**, so `load_suite` rejected the file — the sweep now lists only ids that exist, with the 6-bit and `direct_model` cases as documented commented rows. Reviewing that row also surfaced a live-only hazard the plan had no answer for: a `route = "direct"` omlx row would send the registry's org-prefixed `model_name` to a server that knows the basename, so `RowConfig` gained an optional `direct_model` override (Tasks 5, 12).
 8. **Task 21's `rejudge_run` truncated each row's `agent.jsonl.gz`** by re-writing artifacts with `events=[]` — it now uses a `write_judge_json` that touches only `judge.json`, with a test asserting the stream survives.
+
+**Found while executing Phase 1 (fixed in the phase files above):**
+
+9. **pytest collected the fixture task bundles as tests.** Task 1's `mini-drift` ships `visible/tests/test_pkg.py` and `hidden/test_hidden.py`, which import `pkg` — a module that exists only inside a seeded temp workspace — so every directory-wide run (`pytest tests/benchmark/agent/`, `make test`, CI) aborted at *collection*, not on an assertion. Task 2 now has a Step 0 creating `tests/benchmark/agent/conftest.py` with `collect_ignore = ["fixtures"]`. The plan missed this because every one of its own verification commands named a single test file; the first command wide enough to trip it was Task 7 Step 5's `pytest tests/benchmark/agent/`.
+10. **`mypy` rejected `bundles = []`** in Task 1's `list_task_bundles` (`var-annotated`), so `make check` failed on the plan's own code — now annotated, and a Global Constraint.
+11. **Task 1's `mini-drift/meta.toml` claimed `[tiers] frontier = "6/6"`**, carried over from the 6-hidden-test `day31-drift` bundle; the fixture has 2 hidden tests, so it is `2/2`.
