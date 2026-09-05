@@ -538,6 +538,27 @@ def test_compute_metrics_flags_repeated_failure():
     assert "REPEATED_FAILURE" in m.anomaly
 
 
+def test_compute_metrics_flags_repeated_failure_when_end_event_omits_tool_name():
+    """The stream contract only requires the toolName on the start event. The
+    end event may omit it, but the name must still be counted for the
+    repeated-failure heuristic; otherwise genuinely repeated calls are
+    silently grouped under an empty name and the anomaly is lost."""
+    def _end_no_name(seq, call_id):
+        return {"type": "tool_execution_end", "seq": seq, "toolCallId": call_id}
+
+    events = [
+        _session_event(), {"type": "agent_start", "seq": 1},
+        _tool_execution_start(2, "tc-1", "read"), _end_no_name(3, "tc-1"),
+        _tool_execution_start(4, "tc-2", "read"), _end_no_name(5, "tc-2"),
+        _tool_execution_start(6, "tc-3", "read"), _end_no_name(7, "tc-3"),
+        _tool_execution_start(8, "tc-4", "read"), _end_no_name(9, "tc-4"),
+        {"type": "agent_end", "seq": 10, "willRetry": False},
+    ]
+    m = compute_metrics(events, start_wall=0.0, end_wall=1.0)
+    assert m.tool_call_count == 4
+    assert "REPEATED_FAILURE(read)" in m.anomaly
+
+
 def test_compute_metrics_empty_stream_is_all_zero_not_crash():
     m = compute_metrics([], start_wall=0.0, end_wall=1.0)
     assert m.requests == 0 and m.input_tok == 0 and m.output_tok == 0

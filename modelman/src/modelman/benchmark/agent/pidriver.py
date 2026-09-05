@@ -514,8 +514,8 @@ def compute_metrics(
             tool_starts[event.get("toolCallId", "")] = event.get("toolName", "")
         elif etype == "tool_execution_end":
             call_id = event.get("toolCallId", "")
-            tool_starts.pop(call_id, None)
-            name = event.get("toolName") or tool_name_by_call.get(call_id, "")
+            start_name = tool_starts.pop(call_id, None)
+            name = event.get("toolName") or start_name or tool_name_by_call.get(call_id, "")
             tool_name_by_call[call_id] = name
 
     m.gen_seconds = gen_seconds
