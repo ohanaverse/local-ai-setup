@@ -8,6 +8,7 @@ sweep if they regress. run_pi_process itself is mocked here — Tasks 5-7
 already cover its own correctness against a real subprocess.
 """
 
+import gzip
 import json
 from pathlib import Path
 
@@ -254,3 +255,67 @@ def test_run_suite_skip_judge_leaves_composite_none(tmp_path, monkeypatch):
     )
     assert results[0].judge is None
     assert results[0].composite is None
+
+
+def test_run_suite_writes_run_artifacts(tmp_path, monkeypatch):
+    """run_suite persists run.toml, summary.md, and metrics.jsonl — the CLI's
+    show command reads these files, not the in-memory result list."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+
+    assert (run_dir / "run.toml").exists()
+    assert (run_dir / "summary.md").exists()
+    assert (run_dir / "metrics.jsonl").exists()
+    assert (results[0].row_dir / "gates.json").exists()
+    assert (results[0].row_dir / "row.json").exists()
+
+
+def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monkeypatch):
+    """`agent judge` re-scores from row.json/diff.patch/gates.json alone — no
+    agent process, no workspace, no isolation — and leaves every other artifact
+    in the row directory byte-identical."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+
+    from modelman.benchmark.agent.runner import rejudge_run
+
+    class _FakeJudgeTransport:
+        def complete(self, prompt, *, temperature):
+            return json.dumps(
+                {
+                    "scores": {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
+                    "total": 100, "verdict": "principled_fix", "flags": [], "rationale": "ok",
+                }
+            )
+
+    # Seed a raw event stream so "the re-judge left it alone" is assertable.
+    with gzip.open(results[0].row_dir / "agent.jsonl.gz", "wt", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "agent_settled"}) + "\n")
+
+    outcomes = rejudge_run(run_dir, judge_transport_factory=lambda cfg, path: _FakeJudgeTransport())
+    assert len(outcomes) == 1
+    assert outcomes[0]["rubric_total"] == 100
+    judge_json = results[0].row_dir / "judge.json"
+    assert json.loads(judge_json.read_text(encoding="utf-8"))["combined"]["total"] == 100
+    with gzip.open(results[0].row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
+        assert json.loads(f.readline())["type"] == "agent_settled", "re-judging truncated the raw stream"

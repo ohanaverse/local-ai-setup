@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from modelman.benchmark.agent.runner import run_suite
+from modelman.benchmark.agent.runner import DEFAULT_RESULTS_DIR, rejudge_run, run_suite
 from modelman.benchmark.agent.suite import load_suite
 from modelman.benchmark.agent.task import list_task_bundles
 from modelman.benchmark.errors import BenchmarkError
@@ -95,3 +95,65 @@ def run_cmd(
 
 
 __all__ = ["agent_app"]
+
+
+@agent_app.command("show")
+def show_cmd(
+    latest: bool = typer.Option(False, "--latest", help="Show the latest agent run"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Run id to show"),  # noqa: B008
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
+) -> None:
+    """Print the persisted summary.md for an agent benchmark run."""
+    if not latest and not run_id:
+        typer.echo("error: specify --latest or --run-id", err=True)
+        raise typer.Exit(1)
+    if latest:
+        state = load_state()
+        run_dir_str = state.extra.get("benchmarks", {}).get("agent_last_run")
+        if not run_dir_str:
+            typer.echo("error: no latest agent run recorded", err=True)
+            raise typer.Exit(1)
+        md_path = Path(run_dir_str) / "summary.md"
+    else:
+        md_path = results_dir / str(run_id) / "summary.md"
+    if not md_path.exists():
+        typer.echo(f"error: results not found: {md_path}", err=True)
+        raise typer.Exit(1)
+    typer.echo(md_path.read_text(encoding="utf-8"))
+
+
+@agent_app.command("judge")
+def judge_cmd(
+    latest: bool = typer.Option(False, "--latest", help="Re-judge the latest agent run"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Run id to re-judge"),  # noqa: B008
+    row: list[str] = typer.Option([], "--row", help="Row directory name to re-judge (repeatable)"),  # noqa: B008
+    samples: int | None = typer.Option(  # noqa: B008
+        None, "--samples", help="Override [judge].samples for this re-judge"
+    ),
+    results_dir: Path = typer.Option(DEFAULT_RESULTS_DIR, "--results-dir"),  # noqa: B008
+) -> None:
+    """Re-score an existing run's persisted artifacts without re-running any agent."""
+    if not latest and not run_id:
+        typer.echo("error: specify --latest or --run-id", err=True)
+        raise typer.Exit(1)
+    if latest:
+        state = load_state()
+        run_dir_str = state.extra.get("benchmarks", {}).get("agent_last_run")
+        if not run_dir_str:
+            typer.echo("error: no latest agent run recorded", err=True)
+            raise typer.Exit(1)
+        target_dir = Path(run_dir_str)
+    else:
+        target_dir = results_dir / str(run_id)
+
+    try:
+        outcomes = rejudge_run(target_dir, row_filter=row or None, samples_override=samples)
+    except (BenchmarkError, FileNotFoundError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    for outcome in outcomes:
+        typer.echo(
+            f"{outcome['label']}: rubric={outcome['rubric_total']} "
+            f"composite={outcome['composite']} verdict={outcome['verdict']}"
+        )

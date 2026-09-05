@@ -145,3 +145,20 @@ routes = ["direct"]
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path), "--skip-judge"])
     assert result.exit_code == 0
     assert captured["skip_judge"] is True
+
+
+def test_show_prints_persisted_summary(tmp_path, monkeypatch):
+    run_dir = tmp_path / "results" / "run1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.md").write_text("# hello from disk\n", encoding="utf-8")
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    from modelman.state import StateStore, save_state
+
+    state = StateStore()
+    state.extra["benchmarks"] = {"agent_last_run": str(run_dir)}
+    save_state(state)
+
+    result = runner.invoke(agent_app, ["show", "--latest"])
+    assert result.exit_code == 0
+    assert "hello from disk" in result.output

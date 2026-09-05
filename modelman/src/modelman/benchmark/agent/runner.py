@@ -6,15 +6,17 @@ import itertools
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from modelman.benchmark import isolation
-from modelman.benchmark.agent import judge, pidriver
+from modelman.benchmark.agent import judge, pidriver, report
 from modelman.benchmark.agent.gates import GatesReport
 from modelman.benchmark.agent.gates import evaluate as evaluate_gates
 from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, preflight
@@ -34,6 +36,7 @@ class RowRunResult:
     gates: GatesReport | None
     metrics: pidriver.AgentMetrics | None
     diff_raw: str
+    events: list[dict] = field(default_factory=list)
     seed_contents: dict[str, str] = field(default_factory=dict)
     closing_message: str = ""
     judge: judge.JudgeOutcome | None = None
@@ -185,6 +188,7 @@ def _run_single_row(
             content = workspace.file_at_baseline(rel)
             if content is not None:
                 seed_contents[rel] = content
+        closing_message = _closing_message(events)
         return RowRunResult(
             row=row,
             pass_number=pass_number,
@@ -192,8 +196,9 @@ def _run_single_row(
             gates=gates,
             metrics=metrics,
             diff_raw=diff_raw,
+            events=events,
             seed_contents=seed_contents,
-            closing_message=_closing_message(events),
+            closing_message=closing_message,
         )
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -205,6 +210,159 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
         return list(rows)
     wanted = set(row_filter)
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
+
+
+def _git_sha() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+        )
+        return result.stdout.strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _pi_version() -> str:
+    try:
+        result = subprocess.run(["pi", "--version"], capture_output=True, text=True, check=False)
+        return result.stdout.strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _suite_to_dict(suite: Suite) -> dict:
+    return {
+        "name": suite.name,
+        "task": str(suite.task_path),
+        "passes": suite.passes,
+        "cooldown_s": suite.cooldown_s,
+        "agent_timeout_s": suite.agent_timeout_s,
+        "judge": {
+            "model": suite.judge.model,
+            "thinking": suite.judge.thinking,
+            "temperature": suite.judge.temperature,
+            "samples": suite.judge.samples,
+            "max_attempts": suite.judge.max_attempts,
+            "route": suite.judge.route,
+        },
+        "routes_direct": {
+            pid: {"base_url": c.base_url, "api": c.api} for pid, c in suite.routes_direct.items()
+        },
+        "rows": [
+            {
+                "label": row.label,
+                "model_id": row.model_id,
+                "thinking": row.thinking,
+                "route": row.route,
+                "provider_id": row.provider_id,
+            }
+            for row in suite.rows
+        ],
+    }
+
+
+def _to_row_report(result: RowRunResult) -> report.RowReport:
+    return report.RowReport(
+        label=result.row.label,
+        model_id=result.row.model_id,
+        thinking=result.row.thinking,
+        route=result.row.route,
+        gates=result.gates,
+        metrics=result.metrics,
+        judge=result.judge,
+        composite=result.composite,
+        closing_message=result.closing_message,
+        error=result.error,
+    )
+
+
+def _persist_row_artifacts(result: RowRunResult) -> None:
+    """Write a row's artifacts. Called twice in run_suite — once before
+    judging so a row's raw stream survives a judge crash, once after so
+    judge.json exists — and it is idempotent for everything except judge.json."""
+    if result.error is not None or result.gates is None or result.metrics is None:
+        return
+    report.write_row_artifacts(
+        result.row_dir,
+        events=result.events,
+        diff_raw=result.diff_raw,
+        gates=result.gates,
+        metrics=result.metrics,
+        judge_outcome=result.judge,
+        seed_contents=result.seed_contents,
+        closing_message=result.closing_message,
+        label=result.row.label,
+        model_id=result.row.model_id,
+        thinking=result.row.thinking,
+        route=result.row.route,
+    )
+
+
+def rejudge_run(
+    run_dir: Path,
+    *,
+    row_filter: list[str] | None = None,
+    samples_override: int | None = None,
+    judge_transport_factory: Callable[[JudgeConfig, Path], judge.JudgeTransport] | None = None,
+) -> list[dict]:
+    """Re-score every row's persisted diff/row.json against the current rubric,
+    without re-running any agent. Rewrites each row's judge.json; does not
+    regenerate summary.md or metrics.jsonl."""
+    with (run_dir / "run.toml").open("rb") as f:
+        run_data = tomllib.load(f)
+    suite_data = run_data["suite"]
+    task = load_task(Path(suite_data["task"]))
+    judge_cfg = JudgeConfig(**suite_data["judge"])
+    if samples_override is not None:
+        judge_cfg.samples = samples_override
+
+    transport = (judge_transport_factory or _build_judge_transport)(
+        judge_cfg, pidriver.LIVE_PI_MODELS_PATH
+    )
+
+    outcomes = []
+    for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
+        if row_filter and row_dir.name not in row_filter:
+            continue
+        row_json_path = row_dir / "row.json"
+        diff_path = row_dir / "diff.patch"
+        if not (row_json_path.exists() and diff_path.exists()):
+            continue
+        row_info = json.loads(row_json_path.read_text(encoding="utf-8"))
+        prompt = judge.build_prompt(
+            task_md=task.task_md,
+            seed_contents=row_info["seed_contents"],
+            diff_text=diff_path.read_text(encoding="utf-8"),
+            closing_message=row_info["closing_message"],
+            rubric_md=task.rubric_md,
+        )
+        outcome = judge.judge_row(
+            transport,
+            prompt,
+            temperature=judge_cfg.temperature,
+            samples=judge_cfg.samples,
+            max_attempts=judge_cfg.max_attempts,
+        )
+        gates_path = row_dir / "gates.json"
+        gates_data = json.loads(gates_path.read_text(encoding="utf-8")) if gates_path.exists() else {"cap": 0.0}
+        combined = outcome.combined
+        composite = (
+            judge.apply_cap(combined.total, gates_data["cap"])
+            if outcome.status == "scored" and combined is not None
+            else None
+        )
+        # write_judge_json, NOT write_row_artifacts: see that helper's docstring.
+        report.write_judge_json(row_dir, outcome)
+        outcomes.append(
+            {
+                "label": row_info["label"],
+                "rubric_total": combined.total if outcome.status == "scored" and combined else None,
+                "composite": composite,
+                "verdict": combined.verdict if outcome.status == "scored" and combined else "JUDGE_FAIL",
+            }
+        )
+    return outcomes
+
 
 
 def run_suite(
@@ -264,10 +422,26 @@ def run_suite(
 
     isolation.restore_providers()
 
+    # before judging, so a judge crash still leaves a row's raw stream on disk
+    for result in results:
+        _persist_row_artifacts(result)
+
     if not skip_judge:
         _judge_all(
             suite, task, results, live_models_path, judge_transport_factory or _build_judge_transport
         )
+        for result in results:
+            _persist_row_artifacts(result)
+
+    row_reports = [_to_row_report(r) for r in results]
+    (run_dir / "summary.md").write_text(report.render_summary(run_id, row_reports), encoding="utf-8")
+    report.write_metrics_jsonl(run_dir / "metrics.jsonl", row_reports)
+    report.write_run_toml(
+        run_dir / "run.toml",
+        _suite_to_dict(suite),
+        git_sha=_git_sha(),
+        pi_version=_pi_version(),
+    )
 
     return run_dir, results
 

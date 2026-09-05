@@ -65,6 +65,12 @@ def write_row_artifacts(
     gates: GatesReport | None,
     metrics: AgentMetrics | None,
     judge_outcome: JudgeOutcome | None,
+    seed_contents: dict[str, str] | None = None,
+    closing_message: str = "",
+    label: str = "",
+    model_id: str = "",
+    thinking: str = "",
+    route: str = "",
 ) -> None:
     row_dir.mkdir(parents=True, exist_ok=True)
     with gzip.open(row_dir / "agent.jsonl.gz", "wt", encoding="utf-8") as f:
@@ -78,6 +84,38 @@ def write_row_artifacts(
         (row_dir / "metrics.json").write_text(json.dumps(asdict(metrics), indent=2), encoding="utf-8")
     if judge_outcome is not None:
         (row_dir / "judge.json").write_text(json.dumps(_judge_to_dict(judge_outcome), indent=2), encoding="utf-8")
+    if seed_contents is not None:
+        # row.json is what makes `agent judge` possible without re-running
+        # anything: the diff alone is unreadable to the judge without the
+        # baseline contents of the files it touches.
+        (row_dir / "row.json").write_text(
+            json.dumps(
+                {
+                    "seed_contents": seed_contents,
+                    "closing_message": closing_message,
+                    "label": label,
+                    "model_id": model_id,
+                    "thinking": thinking,
+                    "route": route,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+
+def write_judge_json(row_dir: Path, judge_outcome: JudgeOutcome) -> None:
+    """Rewrite a row's judge.json and nothing else.
+
+    This exists so rejudge_run does not call write_row_artifacts: that helper
+    gzip-writes agent.jsonl.gz from its events argument, so re-judging through
+    it with events=[] would silently destroy the raw event stream that is the
+    row's only primary record — and rewrite diff.raw.patch from the
+    already-anonymized diff.patch, corrupting it in place."""
+    row_dir.mkdir(parents=True, exist_ok=True)
+    (row_dir / "judge.json").write_text(
+        json.dumps(_judge_to_dict(judge_outcome), indent=2), encoding="utf-8"
+    )
 
 
 def _mask_keys(value: Any) -> Any:

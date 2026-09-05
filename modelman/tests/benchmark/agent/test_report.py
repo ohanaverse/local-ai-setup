@@ -14,6 +14,7 @@ from modelman.benchmark.agent.report import (
     RowReport,
     compute_pareto_stars,
     render_summary,
+    write_judge_json,
     write_metrics_jsonl,
     write_row_artifacts,
     write_run_toml,
@@ -163,3 +164,43 @@ def test_write_metrics_jsonl_one_line_per_row(tmp_path):
     assert len(lines) == 2
     assert json.loads(lines[0])["label"] == "r1"
     assert json.loads(lines[0])["composite"] == 80
+
+
+def test_write_row_artifacts_writes_row_json_sidecar_when_given(tmp_path):
+    row_dir = tmp_path / "row2"
+    write_row_artifacts(
+        row_dir,
+        events=[],
+        diff_raw="",
+        gates=_gates(),
+        metrics=_metrics(),
+        judge_outcome=None,
+        seed_contents={"a.py": "original"},
+        closing_message="Fixed it.",
+        label="r1",
+        model_id="ollama/a",
+        thinking="off",
+        route="direct",
+    )
+    row_info = json.loads((row_dir / "row.json").read_text(encoding="utf-8"))
+    assert row_info["seed_contents"] == {"a.py": "original"}
+    assert row_info["closing_message"] == "Fixed it."
+    assert row_info["label"] == "r1"
+
+
+def test_write_judge_json_leaves_other_artifacts_alone(tmp_path):
+    """The re-judge path must not disturb agent.jsonl.gz — the bug this helper
+    exists to prevent was write_row_artifacts(events=[]) truncating it."""
+    row_dir = tmp_path / "row3"
+    write_row_artifacts(
+        row_dir,
+        events=[{"type": "agent_settled", "_ts": 1.0}],
+        diff_raw="",
+        gates=_gates(),
+        metrics=_metrics(),
+        judge_outcome=None,
+    )
+    write_judge_json(row_dir, _judge_outcome(80))
+    with gzip.open(row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
+        assert json.loads(f.readline())["type"] == "agent_settled"
+    assert json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))["combined"]["total"] == 80
