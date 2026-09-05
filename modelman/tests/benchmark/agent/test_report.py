@@ -8,8 +8,16 @@ import gzip
 import json
 
 from modelman.benchmark.agent.gates import GateResult, GatesReport
+from modelman.benchmark.agent.judge import JudgeOutcome, JudgeScore
 from modelman.benchmark.agent.pidriver import AgentMetrics
-from modelman.benchmark.agent.report import write_row_artifacts, write_run_toml
+from modelman.benchmark.agent.report import (
+    RowReport,
+    compute_pareto_stars,
+    render_summary,
+    write_metrics_jsonl,
+    write_row_artifacts,
+    write_run_toml,
+)
 
 
 def _gates() -> GatesReport:
@@ -63,3 +71,95 @@ def test_write_run_toml_masks_api_keys(tmp_path):
     assert "sk-super-secret-value" not in text
     assert "abc123" in text
     assert "1.2.3" in text
+
+
+
+def _judge_outcome(total: int, verdict: str = "principled_fix") -> JudgeOutcome:
+    score = JudgeScore(
+        scores={"root_cause": total, "approach": 0, "test_quality": 0, "scope": 0, "coherence": 0},
+        total=total, verdict=verdict, flags=[], rationale="", raw_text="{}",
+    )
+    return JudgeOutcome(status="scored", samples=[score], combined=score, attempts_used=1)
+
+
+def _row(label, *, wall_ms, composite, gates=None, judge=None) -> RowReport:
+    # wall_ms keeps the call sites readable; AgentMetrics stores seconds
+    metrics = AgentMetrics(
+        requests=1, turns=1, gen_seconds=wall_ms / 1000.0, input_tok=10, output_tok=5,
+        cache_read_tok=0, cache_write_tok=0, reasoning_tok=0, tool_call_count=0,
+        ttfts_ms=[10.0], ttft_first_ms=10.0, ttft_subseq_median_ms=10.0,
+        wall_seconds=wall_ms / 1000.0, final_text="", anomaly="",
+    )
+    return RowReport(
+        label=label, model_id="ollama/a", thinking="off", route="direct",
+        gates=gates or _gates(), metrics=metrics, judge=judge, composite=composite,
+    )
+
+
+def test_compute_pareto_stars_only_stars_nondominated_rows():
+    """No other row is both faster and higher-quality — row 'slow-good' and
+    'fast-bad' are each nondominated even though neither is best on both
+    axes; 'dominated' loses to 'fast-bad' on both."""
+    rows = [
+        _row("fast-bad", wall_ms=1000, composite=40),
+        _row("slow-good", wall_ms=5000, composite=90),
+        _row("dominated", wall_ms=2000, composite=30),  # slower AND worse than fast-bad
+    ]
+    stars = compute_pareto_stars(rows)
+    assert stars == {"fast-bad", "slow-good"}
+
+
+def test_render_summary_includes_all_four_tables():
+    rows = [_row("r1", wall_ms=1000, composite=80, judge=_judge_outcome(80))]
+    summary = render_summary("run-1", rows)
+    assert "## Quality" in summary
+    assert "## Speed" in summary
+    assert "## Two-axis" in summary
+    assert "## Anomalies" in summary
+    assert "r1" in summary
+
+
+def test_render_summary_na_composite_rows_are_never_starred():
+    """A JUDGE_FAIL row (composite None) sorts to the bottom of the
+    two-axis table and never earns a Pareto star (spec review resolution)."""
+    fail_gates = _gates()
+    rows = [
+        _row("scored", wall_ms=1000, composite=80, judge=_judge_outcome(80)),
+        _row("judge-failed", wall_ms=500, composite=None, gates=fail_gates, judge=None),
+    ]
+    summary = render_summary("run-1", rows)
+    two_axis_section = summary.split("## Two-axis")[1].split("## Anomalies")[0]
+    lines = [line for line in two_axis_section.splitlines() if line.startswith("|")]
+    assert lines[-1].split("|")[1].strip() == "judge-failed"  # N/A row sorts last
+    assert "*" not in lines[-1]
+
+
+def test_render_summary_lists_every_derived_anomaly():
+    """The Anomalies table is the only place a reader learns a row is not
+    comparable to its partner row, so each flag compute_metrics can derive
+    must surface there — including the thinking=off reasoning leak observed
+    live, and the CACHE_ANOMALY/COLD_FIRST_TOKEN pair that rides in the single
+    `anomaly` string.
+
+    "thinking no-op" is deliberately absent: whether --thinking has any effect
+    is a comparison across the off/high rows of a suite, not a property of one
+    row's event stream, so it belongs in the guide's analysis rather than a
+    per-row flag that would silently assert something unobservable."""
+    row = _row("r1", wall_ms=1000, composite=80, judge=_judge_outcome(80))
+    row.metrics.thinking_off_reasoning = True
+    row.metrics.reasoning_tok = 11
+    row.metrics.cold_first_token = True
+    row.metrics.anomaly = "CACHE_ANOMALY+COLD_FIRST_TOKEN"
+    anomalies = render_summary("run-1", [row]).split("## Anomalies")[1]
+    assert "thinking=off but 11 reasoning tokens" in anomalies
+    assert "CACHE_ANOMALY+COLD_FIRST_TOKEN" in anomalies
+
+
+def test_write_metrics_jsonl_one_line_per_row(tmp_path):
+    rows = [_row("r1", wall_ms=1000, composite=80, judge=_judge_outcome(80)), _row("r2", wall_ms=2000, composite=50)]
+    path = tmp_path / "metrics.jsonl"
+    write_metrics_jsonl(path, rows)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["label"] == "r1"
+    assert json.loads(lines[0])["composite"] == 80
