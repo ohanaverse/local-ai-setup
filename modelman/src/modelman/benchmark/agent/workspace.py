@@ -52,6 +52,8 @@ class Workspace:
         entries = []
         for line in result.stdout.splitlines():
             status, _, name = line.partition("\t")
+            if _is_build_artifact(name):
+                continue
             entries.append((status, name))
         return entries
 
@@ -84,6 +86,34 @@ class Workspace:
         shutil.rmtree(dest, ignore_errors=True)
 
 
+# Bytecode a run leaves behind: `python -m unittest` imports the tests, and the
+# agent runs `python3` freely in there. `_status_since_baseline` stages with
+# `git add -A`, so without this a `test_day31.cpython-313.pyc` becomes an added
+# file — which gate 7's `test_` prefix then reads as a new regression test and
+# gate 8 tries to decode as UTF-8 source. Written to .git/info/exclude rather
+# than a tracked .gitignore so the agent sees exactly the tree the bundle
+# describes, and so a bundle cannot reintroduce the problem with its own
+# ignore file.
+EXCLUDE_PATTERNS = ("__pycache__/", "*.pyc", "*.pyo")
+
+
+def _write_info_exclude(root: Path) -> None:
+    exclude = root / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    missing = [pat for pat in EXCLUDE_PATTERNS if pat not in existing]
+    if missing:
+        exclude.write_text(existing + "\n".join(missing) + "\n", encoding="utf-8")
+
+
+def _is_build_artifact(name: str) -> bool:
+    """Belt to info/exclude's braces: an already-staged artifact (or one a
+    bundle's own ignore rules let through) must never reach the diff the judge
+    reads or the new-test-file list gate 7 uses."""
+    parts = name.split("/")
+    return name.endswith((".pyc", ".pyo")) or "__pycache__" in parts
+
+
 def create_workspace(task: TaskBundle, base_dir: Path | None = None) -> Workspace:
     """Copy visible/ into a fresh temp dir, git init, commit as baseline."""
     root = Path(tempfile.mkdtemp(prefix="agent-bench-", dir=str(base_dir) if base_dir else None))
@@ -91,6 +121,7 @@ def create_workspace(task: TaskBundle, base_dir: Path | None = None) -> Workspac
     _git(["init", "-q"], cwd=root)
     _git(["config", "user.email", "agent-bench@local"], cwd=root)
     _git(["config", "user.name", "agent-bench"], cwd=root)
+    _write_info_exclude(root)
     _git(["add", "-A"], cwd=root)
     _git(["commit", "-q", "-m", BASELINE_COMMIT_MESSAGE], cwd=root)
     sha = _git(["rev-parse", "HEAD"], cwd=root).stdout.strip()

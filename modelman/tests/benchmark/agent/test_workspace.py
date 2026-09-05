@@ -100,3 +100,31 @@ def test_file_at_baseline_returns_none_for_new_file():
         assert ws.file_at_baseline("does/not/exist.py") is None
     finally:
         destroy_workspace(ws)
+
+
+def test_bytecode_written_after_baseline_is_not_reported_as_a_change(tmp_path):
+    """The visible-test run and the agent itself both produce __pycache__ in the
+    workspace; `git add -A` would stage it, gate 7's `test_` prefix would read
+    `test_x.cpython-313.pyc` as a new regression test, and gate 8 would try to
+    decode bytecode as source — which is exactly how this passed on a machine
+    with a global gitignore and failed on CI."""
+    ws = create_workspace(_task(), base_dir=tmp_path)
+    try:
+        (ws.root / "tests" / "__pycache__").mkdir(parents=True, exist_ok=True)
+        (ws.root / "tests" / "__pycache__" / "test_pkg.cpython-313.pyc").write_bytes(b"\xf3\r\n\x00junk")
+        (ws.root / "tests" / "stale.pyc").write_bytes(b"\xf3\r\n\x00junk")
+        assert ws.new_files_since_baseline() == []
+        assert ws.modified_or_deleted_since_baseline() == []
+    finally:
+        destroy_workspace(ws)
+
+
+def test_real_new_test_file_is_still_reported(tmp_path):
+    """The exclusion must not blind gate 7 to the thing it looks for."""
+    ws = create_workspace(_task(), base_dir=tmp_path)
+    try:
+        (ws.root / "tests" / "test_genuine.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+        names = [p.name for p in ws.new_files_since_baseline()]
+        assert names == ["test_genuine.py"]
+    finally:
+        destroy_workspace(ws)

@@ -171,6 +171,10 @@ def test_run_records_the_pointer_even_when_restore_failed(tmp_path, monkeypatch)
     from modelman.benchmark.agent.runner import RunSavedButRestoreFailed
 
     monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+    # run_cmd loads the registry before anything else, and load_registry reads
+    # ~/.config/local-ai/registry.toml — a real run passed this test on a dev
+    # machine that happens to own that file and failed on CI that does not.
+    monkeypatch.setattr(cli_module, "load_registry", lambda: _registry())
     run_dir = tmp_path / "results" / "20260101-000000"
     run_dir.mkdir(parents=True)
 
