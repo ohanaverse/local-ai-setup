@@ -91,8 +91,13 @@ ls ~/.config/local-ai/benchmarks/20260905-160301/
 ls ~/.config/local-ai/benchmarks/20260905-160301/01--smoke--p1/
 # → 2026-09-05T16-03-03-589Z_01a0724f-2124-75c8-b185-56575a5b49e3.jsonl
 #   agent.jsonl.gz  diff.patch  diff.raw.patch  gates.json  judge.json
-#   metrics.json  row.json
+#   metrics.json  metrics.log  row.json
 ```
+
+(`metrics.log` is in this listing because the run predates the flag that made it
+opt-in — a fresh run's row directory has nine entries minus that one.)
+
+This run is archived in the repo at `benchmarks/results/agent-bench-smoke-20260905-160301.md`; the live directory above is what `agent show --latest` and `agent judge --latest` read.
 
 That row's `summary.md`, in full — what the four tables look like on real data:
 
