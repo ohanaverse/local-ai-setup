@@ -327,9 +327,9 @@ def _to_row_report(result: RowRunResult) -> report.RowReport:
 
 
 def _persist_row_artifacts(result: RowRunResult) -> None:
-    """Write a row's artifacts. Called twice in run_suite — once before
-    judging so a row's raw stream survives a judge crash, once after so
-    judge.json exists — and it is idempotent for everything except judge.json."""
+    """Write a row's artifacts, once, before judging — so a row's raw stream
+    survives a judge crash. The post-judge step uses _persist_judge_artifact
+    instead, which writes only judge.json."""
     if result.error is not None or result.gates is None or result.metrics is None:
         return
     report.write_row_artifacts(
@@ -346,6 +346,16 @@ def _persist_row_artifacts(result: RowRunResult) -> None:
         thinking=result.row.thinking,
         route=result.row.route,
     )
+
+
+def _persist_judge_artifact(result: RowRunResult) -> None:
+    """Write only judge.json for a row that has just been judged, via the
+    same cheap path rejudge_run uses — write_row_artifacts would otherwise
+    re-gzip the whole event stream and rewrite diff/gates/metrics files that
+    did not change, just to add this one field."""
+    if result.error is not None or result.gates is None or result.metrics is None or result.judge is None:
+        return
+    report.write_judge_json(result.row_dir, result.judge)
 
 
 def rejudge_run(
@@ -507,7 +517,7 @@ def run_suite(
             suite, task, results, live_models_path, judge_transport_factory or _build_judge_transport
         )
         for result in results:
-            _persist_row_artifacts(result)
+            _persist_judge_artifact(result)
 
     row_reports = [_to_row_report(r) for r in results]
     (run_dir / "summary.md").write_text(report.render_summary(run_id, row_reports), encoding="utf-8")

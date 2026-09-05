@@ -240,6 +240,51 @@ def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkey
     assert results[0].composite == 0
 
 
+def test_persist_judge_artifact_does_not_rewrite_the_full_row(tmp_path, monkeypatch):
+    """The post-judge persist step must add judge.json through the cheap
+    write_judge_json() path (already used by rejudge_run for this exact
+    purpose), not by re-running the full write_row_artifacts() — which
+    re-gzips the entire event stream and rewrites diff/gates/metrics files
+    that did not change, a second time, per row, on every sweep with any
+    judge phase at all."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    import modelman.benchmark.agent.report as report_module
+
+    calls = {"write_row_artifacts": 0}
+    original = report_module.write_row_artifacts
+
+    def _counting(*args, **kwargs):
+        calls["write_row_artifacts"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(report_module, "write_row_artifacts", _counting)
+
+    class _FakeJudgeTransport:
+        def complete(self, prompt, *, temperature):
+            return json.dumps(
+                {
+                    "scores": {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
+                    "total": 100, "verdict": "principled_fix", "flags": [], "rationale": "ok",
+                }
+            )
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        judge_transport_factory=lambda cfg, path: _FakeJudgeTransport(),
+    )
+
+    assert calls["write_row_artifacts"] == 1, "write_row_artifacts ran a second time just to add judge.json"
+    judge_json = json.loads((results[0].row_dir / "judge.json").read_text(encoding="utf-8"))
+    assert judge_json["combined"]["total"] == 100
+
+
 def test_run_suite_skip_judge_leaves_composite_none(tmp_path, monkeypatch):
     monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
