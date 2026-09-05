@@ -9,8 +9,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-import tomli_w
-
+from modelman._toml_io import atomic_write_toml
 from modelman.benchmark.agent.gates import GatesReport
 from modelman.benchmark.agent.judge import (
     JudgeOutcome,
@@ -132,8 +131,7 @@ def write_run_toml(path: Path, suite_dict: dict[str, Any], *, git_sha: str, pi_v
         "run": {"git_sha": git_sha, "pi_version": pi_version},
         "suite": _mask_keys(suite_dict),
     }
-    with path.open("wb") as f:
-        tomli_w.dump(payload, f)
+    atomic_write_toml(payload, path)
 
 def _outcome_code(report: RowReport) -> str:
     if report.error:

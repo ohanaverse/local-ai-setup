@@ -7,6 +7,8 @@ not just a bug (spec: "run.toml and all logs mask key values").
 import gzip
 import json
 
+import pytest
+
 from modelman.benchmark.agent.gates import GateResult, GatesReport
 from modelman.benchmark.agent.judge import JudgeOutcome, JudgeScore
 from modelman.benchmark.agent.pidriver import AgentMetrics
@@ -72,6 +74,27 @@ def test_write_run_toml_masks_api_keys(tmp_path):
     assert "sk-super-secret-value" not in text
     assert "abc123" in text
     assert "1.2.3" in text
+
+
+def test_write_run_toml_leaves_an_existing_file_untouched_on_failure(tmp_path, monkeypatch):
+    """A crash mid-write must never leave a truncated run.toml — rejudge_run()
+    later does tomllib.load() on this file, and a partial write there makes a
+    previously-completed run's data un-rejudgeable even though every row's own
+    artifacts are intact. Simulates the crash by making the TOML encoder
+    raise partway through, after the file would already be open for writing
+    under the old direct-write implementation."""
+    import modelman._toml_io as toml_io_module
+
+    path = tmp_path / "run.toml"
+    path.write_text("previous contents\n", encoding="utf-8")
+
+    def _boom(payload, f):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(toml_io_module.tomli_w, "dump", _boom)
+    with pytest.raises(OSError):
+        write_run_toml(path, {"judge": {"model": "x"}}, git_sha="abc123", pi_version="1.2.3")
+    assert path.read_text(encoding="utf-8") == "previous contents\n"
 
 
 
