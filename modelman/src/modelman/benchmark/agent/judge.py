@@ -119,10 +119,18 @@ def _json_candidate(raw_text: str) -> str:
     every row, which is the only quality axis this harness has."""
     fenced = _FENCE_RE.search(raw_text)
     text = fenced.group(1) if fenced else raw_text
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        return text[start : end + 1]
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        # Skip whitespace and stray leading characters to find the first object.
+        if text[idx] == "{":
+            try:
+                obj, _ = decoder.raw_decode(text, idx)
+                if isinstance(obj, dict):
+                    return text[idx : _]
+            except json.JSONDecodeError:
+                pass
+        idx += 1
     return raw_text
 
 

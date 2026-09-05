@@ -104,6 +104,22 @@ def test_parse_response_rejects_unknown_verdict():
         parse_response(json.dumps(bad))
 
 
+def test_parse_response_extracts_json_around_unbalanced_braces_in_strings():
+    """A judge's rationale string may contain a literal '{' or '}' that is not
+    JSON structure. The parser must use a real JSON scanner so it still finds the
+    outer object; slicing by first '{' / last '}' would truncate the object and
+    fail."""
+    raw = (
+        'Here is my assessment:\n{"scores": {"root_cause": 30, "approach": 25, '
+        '"test_quality": 20, "scope": 15, "coherence": 10}, "total": 100, '
+        '"verdict": "principled_fix", "flags": [], "rationale": "fixes the {off-by-one} issue"}'
+    )
+    score = parse_response(raw)
+    assert score.total == 100
+    assert score.verdict == "principled_fix"
+    assert score.rationale == "fixes the {off-by-one} issue"
+
+
 def test_parse_response_rejects_a_boolean_score():
     """Python's bool is an int subclass, so `isinstance(value, int)` alone
     lets a JSON `true`/`false` through as a valid 0-30 score — a plausible
