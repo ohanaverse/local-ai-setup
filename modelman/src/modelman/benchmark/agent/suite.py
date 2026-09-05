@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import itertools
+import os
+import plistlib
+import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from modelman.benchmark.agent.pidriver import DirectRouteConfig, RowConfig
+from modelman.benchmark.agent.task import TaskBundle
 from modelman.benchmark.errors import BenchmarkError
 from modelman.registry import Registry
+
+LITELLM_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.litellm.proxy.plist"
 
 
 @dataclass
@@ -128,3 +134,48 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         rows=_expand_rows(raw.get("rows", []), registry),
         repair_rounds=repair_rounds,
     )
+
+def _openrouter_key_available(plist_path: Path) -> bool:
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return True
+    if not plist_path.exists():
+        return False
+    try:
+        with plist_path.open("rb") as f:
+            data = plistlib.load(f)
+    except Exception:
+        return False
+    return bool(data.get("EnvironmentVariables", {}).get("OPENROUTER_API_KEY"))
+
+
+def preflight(suite: Suite, registry: Registry, task: TaskBundle, *, plist_path: Path = LITELLM_PLIST) -> None:
+    """Fail fast on everything that would otherwise die mid-run, after
+    already paying for the agent rows."""
+    missing_helpers = [
+        name for name in ("llm-isolate-provider", "llm-restore-providers") if shutil.which(name) is None
+    ]
+    if missing_helpers:
+        raise BenchmarkError(
+            f"isolation helper(s) not found on PATH: {', '.join(missing_helpers)}. "
+            "Ensure local-ai-setup/bin is on PATH."
+        )
+
+    for row in suite.rows:
+        if row.route == "direct" and row.provider_id not in suite.routes_direct:
+            raise BenchmarkError(
+                f"row {row.label!r} uses route=direct for provider {row.provider_id!r} "
+                f"but no [routes.direct.{row.provider_id}] block is configured"
+            )
+
+    if task.hidden_dir.is_dir():
+        hidden_names = {p.name for p in task.hidden_dir.rglob("*") if p.is_file()}
+        visible_names = {p.name for p in task.visible_dir.rglob("*") if p.is_file()}
+        leaked = hidden_names & visible_names
+        if leaked:
+            raise BenchmarkError(f"hidden/ file name(s) also present under visible/: {', '.join(sorted(leaked))}")
+
+    if suite.judge.model.split("/")[0] == "openrouter" and not _openrouter_key_available(plist_path):
+        raise BenchmarkError(
+            f"OPENROUTER_API_KEY not found for judge model {suite.judge.model!r}; "
+            "check ~/Library/LaunchAgents/local.litellm.proxy.plist"
+        )

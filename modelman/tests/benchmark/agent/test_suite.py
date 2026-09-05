@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from modelman.benchmark.agent.pidriver import DirectRouteConfig
-from modelman.benchmark.agent.suite import load_suite
+from modelman.benchmark.agent.suite import load_suite, preflight
+from modelman.benchmark.agent.task import load_task
 from modelman.benchmark.errors import BenchmarkError
 from modelman.registry import ModelEntry, ProviderEntry, Registry
 
@@ -218,3 +219,79 @@ routes = ["direct"]
 """
     suite = load_suite(_write_suite(tmp_path, body), _registry())
     assert suite.routes_direct["omlx"] == DirectRouteConfig(base_url="http://localhost:8000/v1", api="openai-completions")
+
+MINI_DRIFT = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
+
+
+def _passing_suite_toml() -> str:
+    return """
+name = "test suite"
+task = "some/task"
+
+[judge]
+model = "openrouter/anthropic/claude-opus-4"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[routes.direct.ollama]
+base_url = "http://localhost:11434/v1"
+api = "openai-completions"
+
+[[rows]]
+models = ["ollama/a"]
+thinking = ["off"]
+routes = ["direct"]
+"""
+
+
+def test_preflight_passes_when_everything_is_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+    suite = load_suite(_write_suite(tmp_path, _passing_suite_toml()), _registry())
+    task = load_task(MINI_DRIFT)
+    preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
+
+
+def test_preflight_missing_isolation_helper_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    suite = load_suite(_write_suite(tmp_path, _passing_suite_toml()), _registry())
+    task = load_task(MINI_DRIFT)
+    with pytest.raises(BenchmarkError, match="llm-isolate-provider"):
+        preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
+
+
+def test_preflight_missing_direct_route_block_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+    body = _passing_suite_toml().replace("[routes.direct.ollama]", "[routes.direct.something-else]")
+    suite = load_suite(_write_suite(tmp_path, body), _registry())
+    task = load_task(MINI_DRIFT)
+    with pytest.raises(BenchmarkError, match="ollama"):
+        preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
+
+
+def test_preflight_hidden_leaked_into_visible_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+    leaky_task_dir = tmp_path / "leaky-task"
+    import shutil as _shutil
+
+    _shutil.copytree(MINI_DRIFT, leaky_task_dir)
+    _shutil.copy(leaky_task_dir / "hidden" / "test_hidden.py", leaky_task_dir / "visible" / "tests" / "test_hidden.py")
+    suite = load_suite(_write_suite(tmp_path, _passing_suite_toml()), _registry())
+    task = load_task(leaky_task_dir)
+    with pytest.raises(BenchmarkError, match="test_hidden.py"):
+        preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
+
+
+def test_preflight_missing_openrouter_key_raises(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+    suite = load_suite(_write_suite(tmp_path, _passing_suite_toml()), _registry())
+    task = load_task(MINI_DRIFT)
+    with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
+        preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
