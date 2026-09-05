@@ -10,6 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md` — this plan implements it section by section; executors should read both. Anything this plan doesn't spell out in full is settled by the spec.
 
+**Status:** items #1–#7 (Phases 1–2) are complete; #8–#24 remain. The Phase 2
+listings were rebuilt from the shipped code — see its corrections section.
+
 ## Global Constraints
 
 - Python `==3.13.*`, everything runs via `uv run` (`modelman/CLAUDE.md`) — never invoke `python`/`pytest` directly.
@@ -132,3 +135,11 @@ Plan self-review (below) is global; the phase files carry no review section.
 9. **pytest collected the fixture task bundles as tests.** Task 1's `mini-drift` ships `visible/tests/test_pkg.py` and `hidden/test_hidden.py`, which import `pkg` — a module that exists only inside a seeded temp workspace — so every directory-wide run (`pytest tests/benchmark/agent/`, `make test`, CI) aborted at *collection*, not on an assertion. Task 2 now has a Step 0 creating `tests/benchmark/agent/conftest.py` with `collect_ignore = ["fixtures"]`. The plan missed this because every one of its own verification commands named a single test file; the first command wide enough to trip it was Task 7 Step 5's `pytest tests/benchmark/agent/`.
 10. **`mypy` rejected `bundles = []`** in Task 1's `list_task_bundles` (`var-annotated`), so `make check` failed on the plan's own code — now annotated, and a Global Constraint.
 11. **Task 1's `mini-drift/meta.toml` claimed `[tiers] frontier = "6/6"`**, carried over from the 6-hidden-test `day31-drift` bundle; the fixture has 2 hidden tests, so it is `2/2`.
+
+**Found while executing Phase 2 (full write-up and rebuilt listings in [Phase 2](2026-09-04-agent-coding-benchmark-p2-pi-driver-metrics.md)):**
+
+12. Task 5's tests 6–8 resolved a `route=litellm` row against a deliberately missing `models.json`, which raises `BenchmarkError` — 3 of 7 tests could never pass. Fixed with a `_live_litellm_path()` fixture.
+13. Task 6's fake agent wrote no session file and its helper passed `--session-dir` only sometimes, so gate 1 had nothing to find. The fake writes one now and the helper always passes the flag.
+14. **`_read_stdout` used `proc` as a free variable** at module level — a `NameError` on the first line of the first real run, which empties `events` and makes every row report zero tokens. `proc` is a parameter now.
+15. **The poll loop exited on "assistant `message_end` seen AND process gone"**, so a run whose model never replied burned its whole timeout (a 40-minute row that died at second three cost 40 minutes) and risked losing the `agent_end` tail. It exits when the child exits and lets the reader drain to EOF.
+16. **`compute_metrics` timed off `event["ts_ms"]`, which pi never emits** — `turn_start` has no timestamp and an assistant `message_end` repeats its `message_start`'s `message.timestamp`. The plan's index-proportional fallback produced a constant TTFT and, for a turn whose start and end share an index bucket, `gen_seconds = 0.0`: a silent zero on the metric the sweep exists to measure. `run_pi_process` now stamps `_ts` (seconds since run start) as the reader reads each line, and the metrics are documented as arrival-based rather than provider-side.
