@@ -353,3 +353,99 @@ def test_failed_restore_still_persists_the_sweep(tmp_path, monkeypatch):
     assert run_dirs, "the run directory vanished with the results"
     assert (run_dirs[0] / "summary.md").exists()
     assert (run_dirs[0] / "metrics.jsonl").exists()
+
+
+def _cloud_registry() -> Registry:
+    return Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", location="local"),
+            ProviderEntry(id="openrouter", name="OpenRouter", location="cloud"),
+        ],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+            ModelEntry(id="openrouter/z", family="f", provider_id="openrouter", model_name="z"),
+        ],
+    )
+
+
+def _cloud_suite(tmp_path: Path) -> Path:
+    return _write_suite(
+        tmp_path,
+        _suite_toml(MINI_DRIFT, models='["openrouter/z"]').replace('routes = ["direct"]', 'routes = ["litellm"]'),
+    )
+
+
+def test_run_suite_never_isolates_a_cloud_provider(tmp_path, monkeypatch, litellm_models_json):
+    """bin/llm-isolate-provider knows only the local backends; isolating
+    openrouter fails the helper and used to mark every cloud row ISOLATION_ERROR
+    - and a cloud row contends with nothing on this machine."""
+    isolated: list[str] = []
+
+    def _isolate(pid: str) -> None:
+        isolated.append(pid)
+        if pid not in ("ollama", "llamacpp", "omlx", "omlx-6bit"):
+            raise BenchmarkError(f"[llm-isolate-provider] unknown provider: {pid}")
+
+    restored: list[bool] = []
+    monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: restored.append(True))
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    suite = load_suite(_cloud_suite(tmp_path), _cloud_registry())
+    run_dir, results = run_suite(
+        suite,
+        _cloud_registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=litellm_models_json,
+        skip_judge=True,
+    )
+    assert isolated == [], f"a cloud row was isolated: {isolated}"
+    assert restored == [], "a run that isolated nothing still restarted services"
+    assert results[0].error is None
+    assert results[0].gates is not None
+
+
+def test_run_suite_still_isolates_local_rows_once(tmp_path, monkeypatch):
+    """The guard must not quietly disable isolation for the local backends it
+    exists to protect - that is the whole point of the harness."""
+    isolated: list[str] = []
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: isolated.append(pid))
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    assert isolated == ["ollama"]
+
+
+def test_omlx_6bit_override_still_isolates(tmp_path, monkeypatch, litellm_models_json):
+    """omlx-6bit is a row-level provider override and is not in
+    DEFAULT_PROVIDER_IDS, so a guard built from that constant alone would skip
+    isolating the variant that most needs it (4-bit and 6-bit share one
+    process, and isolating the wrong one benchmarks the wrong weights)."""
+    isolated: list[str] = []
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: isolated.append(pid))
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    old = '[[rows]]\nmodels = ["ollama/a"]\nthinking = ["off"]\nroutes = ["direct"]'
+    new = (
+        '[[rows]]\nmodel = "ollama/a"\nthinking = "off"\n'
+        'route = "litellm"\nprovider = "omlx-6bit"'
+    )
+    toml = _suite_toml(MINI_DRIFT).replace(old, new)
+    assert new in toml, "the fixture suite's row block changed shape"
+    run_suite(
+        load_suite(_write_suite(tmp_path, toml), _registry()),
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=litellm_models_json,
+        skip_judge=True,
+    )
+    assert isolated == ["omlx-6bit"]

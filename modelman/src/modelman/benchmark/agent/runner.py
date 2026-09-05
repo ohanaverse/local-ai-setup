@@ -23,7 +23,7 @@ from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, prefli
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 from modelman.benchmark.errors import BenchmarkError
-from modelman.registry import Registry
+from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
 
@@ -365,6 +365,14 @@ def rejudge_run(
 
 
 
+# What bin/llm-isolate-provider can actually isolate. DEFAULT_PROVIDER_IDS is
+# the registry's local set (ollama, llamacpp, omlx); omlx-6bit is only ever a
+# row-level provider override, so it is absent from that constant and must be
+# named here or the 6-bit variant — the one row that most needs isolation, since
+# 4-bit and 6-bit share a process — silently stops being isolated.
+ISOLATABLE_PROVIDERS = set(DEFAULT_PROVIDER_IDS) | {"omlx-6bit"}
+
+
 def run_suite(
     suite: Suite,
     registry: Registry,
@@ -390,33 +398,43 @@ def run_suite(
 
     results: list[RowRunResult] = []
     index = 0
-    ordered = sorted(rows, key=lambda r: r.provider_id)
-    for provider_id, group in itertools.groupby(ordered, key=lambda r: r.provider_id):
+    isolated_any = False
+    for provider_id, group in itertools.groupby(
+        sorted(rows, key=lambda r: r.provider_id), key=lambda r: r.provider_id
+    ):
         group_rows = list(group)
-        try:
-            isolation.isolate_provider(provider_id)
-        except BenchmarkError as exc:
-            for row in group_rows:
-                index += 1
-                for pass_number in range(1, suite.passes + 1):
-                    results.append(
-                        RowRunResult(
-                            row=row,
-                            pass_number=pass_number,
-                            row_dir=_row_dir(run_dir, index, row, pass_number),
-                            gates=None,
-                            metrics=None,
-                            diff_raw="",
-                            error=str(exc),
+        if provider_id in ISOLATABLE_PROVIDERS:
+            # A cloud row contends with nothing on this machine, and running the
+            # helper for it fails outright — bin/llm-isolate-provider knows only
+            # the local backends — which used to mark every cloud row
+            # ISOLATION_ERROR before a single request was made.
+            try:
+                isolation.isolate_provider(provider_id)
+                isolated_any = True
+            except BenchmarkError as exc:
+                for row in group_rows:
+                    index += 1
+                    for pass_number in range(1, suite.passes + 1):
+                        results.append(
+                            RowRunResult(
+                                row=row,
+                                pass_number=pass_number,
+                                row_dir=_row_dir(run_dir, index, row, pass_number),
+                                gates=None,
+                                metrics=None,
+                                diff_raw="",
+                                error=str(exc),
+                            )
                         )
-                    )
-            continue
+                continue
 
         for row in group_rows:
             index += 1
             for pass_number in range(1, suite.passes + 1):
                 row_dir = _row_dir(run_dir, index, row, pass_number)
-                results.append(_run_single_row(row, pass_number, task, suite, registry, row_dir, live_models_path))
+                results.append(
+                    _run_single_row(row, pass_number, task, suite, registry, row_dir, live_models_path)
+                )
                 if pass_number < suite.passes:
                     time.sleep(suite.cooldown_s)
 
@@ -425,10 +443,11 @@ def run_suite(
     # this host `llm-restore-providers` can time out on llama.cpp while every
     # row's data is perfectly good. Persist first, then surface the failure.
     restore_error: str | None = None
-    try:
-        isolation.restore_providers()
-    except BenchmarkError as exc:
-        restore_error = str(exc)
+    if isolated_any:
+        try:
+            isolation.restore_providers()
+        except BenchmarkError as exc:
+            restore_error = str(exc)
 
     # before judging, so a judge crash still leaves a row's raw stream on disk
     for result in results:
