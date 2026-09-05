@@ -7,6 +7,7 @@ test file against it; if the workspace seeding or the baseline commit is
 wrong, every gate built on top of it is unreliable.
 """
 
+import subprocess
 from pathlib import Path
 
 from modelman.benchmark.agent.task import load_task
@@ -126,5 +127,31 @@ def test_real_new_test_file_is_still_reported(tmp_path):
         (ws.root / "tests" / "test_genuine.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
         names = [p.name for p in ws.new_files_since_baseline()]
         assert names == ["test_genuine.py"]
+    finally:
+        destroy_workspace(ws)
+
+
+def test_rename_detected_when_diff_renames_is_enabled(tmp_path):
+    """A repo with `diff.renames` enabled (a common global git config
+    override, independent of any -M flag this code passes) reports a
+    moved-and-edited file as a single R100 status line with three
+    tab-separated fields (status, old-name, new-name), not the two fields
+    A/M/D lines have. The old single-tab .partition() folded old+new into
+    one mangled `name` field and the status matched neither "A" nor
+    ("M", "D") in either caller — the file silently vanished from both
+    new_files_since_baseline() and modified_or_deleted_since_baseline(),
+    which gates 3 and 7 rely on to see real agent changes."""
+    ws = create_workspace(_task(), base_dir=tmp_path)
+    try:
+        subprocess.run(["git", "config", "diff.renames", "true"], cwd=ws.root, check=True)
+        original = (ws.root / "tests" / "test_pkg.py").read_text(encoding="utf-8")
+        (ws.root / "tests" / "test_pkg.py").unlink()
+        (ws.root / "tests" / "test_pkg_moved.py").write_text(
+            original + "\n# renamed with a small edit\n", encoding="utf-8"
+        )
+        new_names = [p.name for p in ws.new_files_since_baseline()]
+        changed_names = [p.name for p in ws.modified_or_deleted_since_baseline()]
+        assert "test_pkg_moved.py" in new_names
+        assert "test_pkg.py" in changed_names
     finally:
         destroy_workspace(ws)

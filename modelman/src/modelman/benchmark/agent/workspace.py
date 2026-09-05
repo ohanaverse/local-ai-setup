@@ -51,7 +51,22 @@ class Workspace:
         )
         entries = []
         for line in result.stdout.splitlines():
-            status, _, name = line.partition("\t")
+            parts = line.split("\t")
+            status = parts[0]
+            if status[0] in ("R", "C"):
+                # A rename/copy line is "R100\told\tnew" (three fields, and
+                # the letter carries a similarity percentage) rather than the
+                # two-field "A"/"M"/"D" lines the callers below match on.
+                # Treat it as the old path disappearing and the new path
+                # appearing, which is what gates 3/7 and the judge's
+                # seed_contents actually need to see.
+                old_name, new_name = parts[1], parts[2]
+                if not _is_build_artifact(old_name):
+                    entries.append(("D", old_name))
+                if not _is_build_artifact(new_name):
+                    entries.append(("A", new_name))
+                continue
+            name = parts[1]
             if _is_build_artifact(name):
                 continue
             entries.append((status, name))
