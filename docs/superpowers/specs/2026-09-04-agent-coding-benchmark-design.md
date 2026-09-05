@@ -81,13 +81,60 @@ reports both axes without letting either one contaminate the other.
 These were confirmed empirically before designing, not assumed:
 
 - `pi --mode json` streams `session`, `agent_start`, `turn_start`,
-  `message_start`, `message_update` (with `thinking_delta` / `text_delta` /
-  `toolcall_*`), `message_end`, `turn_end`, `agent_end`, `agent_settled`.
-  Client-side wall-clock timestamps on those lines yield TTFT and per-message
-  duration. `usage` is zero on early deltas and populated on the final
-  `message_end`/`turn_end` (observed: `input=382, output=38, reasoning=33`),
-  which is the authoritative token source. `message_end` carries the final
-  content.
+  `message_start`, `message_update`, `message_end`, `turn_end`, `agent_end`,
+  `agent_settled`. Client-side wall-clock timestamps on those lines yield TTFT
+  and per-message duration (the *server* timestamps on `message_start` and
+  `message_end` are identical for a fast response, so they are useless as a
+  duration source — timestamp every line on read).
+
+  **The exact field nesting matters and is not what a guess would produce.**
+  Captured live (`ollama/glm-5.3-flash:cloud` through the LiteLLM gateway, one
+  trivial prompt; `tool_execution_*` shapes from `json.md`, the probe used no
+  tools):
+
+  ```jsonc
+  {"type":"session","version":3,"id":"<uuid>","timestamp":"…","cwd":"…"}
+  {"type":"agent_start"}
+  {"type":"turn_start"}
+  // the USER message is echoed as its own start/end pair before the assistant's
+  {"type":"message_start","message":{"role":"user","content":[…],"timestamp":…}}
+  {"type":"message_end","message":{"role":"user",…}}
+  {"type":"message_start","message":{"role":"assistant","content":[…],
+      "api":"openai-completions","provider":"litellm","model":"ollama/glm-5.3-flash:cloud",
+      "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+               "cost":{…, "total":0}},"stopReason":"pending",…}}
+  {"type":"message_update","usage":{…cumulative, zero until the end…},
+      "assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"OK"}}
+  {"type":"message_end","message":{"role":"assistant",…,
+      "usage":{"input":1383,"output":14,"cacheRead":0,"cacheWrite":0,"reasoning":11,
+               "totalTokens":1397,"cost":{"input":0,"output":0,"cacheRead":0,
+               "cacheWrite":0,"total":0}},"stopReason":"stop",…}}
+  {"type":"turn_end","message":{…},"toolResults":[…]}
+  {"type":"agent_end","messages":[…],"willRetry":false}
+  {"type":"agent_settled"}
+  // when a tool runs (from json.md, not this probe):
+  {"type":"tool_execution_start","toolCallId":"…","toolName":"bash","args":{…}}
+  {"type":"tool_execution_end","toolCallId":"…","toolName":"bash","result":{…},"isError":false}
+  ```
+
+  Consequences the driver must respect — each of these reads zeros if you
+  guess instead of looking:
+  - deltas nest under `assistantMessageEvent`, and the text field is **`delta`
+    (a string)**, not `delta.text`; `message_update` has no top-level `delta`.
+  - usage is **`message_end.message.usage`**, not `message_end.usage`, and it is
+    **camelCase `cacheRead`/`cacheWrite`**, not `cache_read`.
+  - `assistantMessageEvent.type` is one of `text_start|text_delta|text_end`,
+    `thinking_start|thinking_delta|thinking_end`, `toolcall_*` — TTFT keys on
+    `text_delta`.
+  - `message_start`/`message_end` fire for the **user** message too, so request
+    counting, `gen_seconds`, and `message_end_seen` must filter on
+    `message.role == "assistant"`. Counting every `message_start` inflates
+    `requests` by one per turn; accepting every `message_end` makes
+    `message_end_seen` true even when the assistant never answered.
+  - `tool_execution_*` carries `toolName`, not `name`.
+  - the final assistant text lives in `message_end.message.content[]` items of
+    type `text`; `text_delta` deltas are the streaming equivalent and are what
+    the closing-message extractor concatenates.
 - Pi has **no built-in Ollama provider** — but `~/.pi/agent/models.json` already
   contains one, created by wt. It currently holds two providers, both
   `api = "openai-completions"`: `litellm` → `http://localhost:4000/v1` with 42
@@ -365,13 +412,13 @@ meaningless unless defined. Per row:
 | metric | definition |
 |---|---|
 | `wall_ms` | process spawn → exit |
-| `requests`, `turns` | count of assistant messages / tool rounds |
+| `requests`, `turns` | count of **assistant-role** `message_start` events / `turn_start` events (user-message `message_start` is excluded — see "Verified against the live setup") |
 | `ttft_first_ms` | client timestamp of first `text_delta` minus first request start |
 | `ttft_mean_ms`, `ttft_max_ms` | across all requests; later requests expose cache effects |
-| `gen_tok_s` | Σ output tokens ÷ Σ(`message_start`→`message_end`) — **busy** throughput, excludes tool exec and prompt assembly |
+| `gen_tok_s` | Σ output tokens ÷ Σ(*assistant* `message_start`→`message_end`) — **busy** throughput, excludes tool exec and prompt assembly |
 | `e2e_tok_s` | Σ output tokens ÷ `wall_ms` |
-| `in_tok`, `out_tok`, `cache_read_tok`, `reasoning_tok` | summed from `usage` on each `message_end` |
-| `tool_ms` | Σ `tool_execution_start`→`tool_execution_end` |
+| `in_tok`, `out_tok`, `cache_read_tok`, `reasoning_tok` | summed from `message_end.message.usage` (`cacheRead` → `cache_read_tok`) on assistant messages |
+| `tool_ms` | Σ `tool_execution_start`→`tool_execution_end` (paired by `toolCallId`) |
 | `cost_usd` | Σ `usage.cost.total` (0 for local, nonzero for OpenRouter) |
 
 `gen_tok_s` is the figure directly comparable to the existing
@@ -380,12 +427,24 @@ gap is diagnostic on its own: a slow row with healthy busy throughput is spendin
 its time in tool rounds, which is a reasoning cost, not an inference cost, and the
 two require different remedies.
 
-Two derived anomaly flags:
+Three derived anomaly flags:
 - **thinking no-op** — `thinking` is non-`off` but `reasoning_tok == 0`: the backend
   silently ignored the level, so the row is not comparable to its partner row.
-- **cold first token** — `ttft_first_ms` grossly out of family with `ttft_mean_ms`
-  (≥3× median): the model was still loading despite warmup. Flagged, not averaged
-  away.
+- **thinking-off reasoning leak** — `thinking` is `off` but `reasoning_tok > 0`:
+  the inverse mismatch, and the more common one. Observed live — `--thinking off`
+  against `ollama/glm-5.3-flash:cloud` still returned `reasoning: 11` and a
+  `thinking` content block, because a backend that maps the level onto
+  `thinking_mode`/`reasoning_effort` (or ignores `off` entirely) keeps emitting
+  reasoning tokens. A row with this flag is not a clean `thinking=off` baseline:
+  its latency and output-token budget include thinking the config claims is off,
+  so it is not comparable to another row's `off` baseline either.
+- **cold first token** — `ttft_first_ms` is ≥3× the **median of the subsequent
+  requests' TTFT** (`median(ttfts[1:])`): the model was still loading despite
+  warmup. Flagged, not averaged away. Comparing the first sample against a mean
+  that *includes* it cannot fire at small request counts — with two requests the
+  mean is `(first + second) / 2`, so `first ≥ 3 × mean` requires `first ≥ 5 ×
+  second`; excluding the first sample keeps the flag meaningful on a 2-request
+  row. A single-request row has no subsequent sample and is never flagged.
 
 ## Gates and failure taxonomy
 
@@ -540,15 +599,18 @@ in the table.
    bottom, are never Pareto-starred (no quality axis to compare on), and are
    still visible with their speed columns intact
 4. **Anomalies** — every cap applied, every `VACUOUS_TEST`, every thinking no-op,
-   every cold-first-token flag, every overclaim mismatch, and every row where
+   every thinking-off-reasoning-leak flag, every cold-first-token flag, every
+   overclaim mismatch, and every row where
    `rubric_total ≥ 70` while all hidden tests failed. That last class is a finding
    about the task or the judge, and is listed rather than silently averaged.
 
 `state.extra["benchmarks"]` gains an `agent_last_run` pointer alongside the existing
 `last_run`/`last_run_dir` keys (same `extra` dict pattern, no schema migration), so
 `modelman benchmark agent show --latest` works like `benchmark show-results --latest`.
-Per-run `summary.md` copies into `benchmarks/results/` under the existing dated
-archive convention.
+Run artifacts stay under `~/.config/local-ai/benchmarks/<run-id>/`; copying a
+`summary.md` into `benchmarks/results/` remains the same manual archiving step the
+bash benchmarks use (CLAUDE.md: "Results go to `/tmp/<benchmark>-<timestamp>.md`;
+archive into `benchmarks/results/`"), not something the harness does for you.
 
 ## Testing
 
