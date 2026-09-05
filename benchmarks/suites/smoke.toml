@@ -1,0 +1,19 @@
+name = "agent bench smoke test"
+task = "benchmarks/tasks/day31-drift"
+passes = 1
+cooldown_s = 0
+agent_timeout_s = 180
+
+[judge]
+model = "ollama/glm-5.3-flash:cloud"
+thinking = "off"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[[rows]]
+label = "smoke"
+model = "ollama/glm-5.3-flash:cloud"
+thinking = "off"
+route = "litellm"

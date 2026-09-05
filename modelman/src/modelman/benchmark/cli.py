@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from modelman.benchmark.agent.cli import agent_app
 from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.runner import DEFAULT_RESULTS_DIR, run_benchmark
 from modelman.benchmark.workloads import get_workload, list_workloads
@@ -14,6 +15,7 @@ from modelman.registry import load_registry
 from modelman.state import load_state, save_state
 
 benchmark_app = typer.Typer(help="Benchmark local LLM models.")
+benchmark_app.add_typer(agent_app, name="agent")
 
 
 @benchmark_app.command("list-workloads")
