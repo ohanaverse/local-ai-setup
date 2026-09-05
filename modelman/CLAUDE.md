@@ -88,6 +88,8 @@ The screen tests (`tests/screens/*.py`, ~210+ tests) use Textual's `App.run_test
 - `src/modelman/benchmark/runner.py` — drives a workload against a target model and times/scores it.
 - `src/modelman/benchmark/results.py` — persists and loads benchmark run results.
 - `src/modelman/benchmark/workloads/` — workload definitions `run` selects between.
+- `src/modelman/benchmark/agent/` — the agentic coding benchmark (`modelman benchmark agent`): `suite.py` (TOML parsing + row expansion + preflight), `task.py` (task bundle loading), `workspace.py` (scratch git repo per row), `pidriver.py` (route resolution, pi process driver, speed metrics), `gates.py` (nine-gate deterministic taxonomy + composite cap), `judge.py` (blind LLM rubric judge), `report.py` (artifact writes + summary tables), `runner.py` (phase orchestration + isolation loop), `cli.py` (`run`/`list-tasks`/`list-suites`/`show`/`judge`). Design: `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md`.
+- Tests: `tests/benchmark/agent/` (one file per module above, plus `fixtures/fake_agent.py` and `fixtures/tasks/mini-drift/`).
 - Tests: `tests/benchmark/` (cli, errors, isolation, results, runner, state_pointer, workload_registry, workloads — one file per module above).
 
 ### Usage/spend tracking

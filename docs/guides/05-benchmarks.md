@@ -207,3 +207,4 @@ ls /Users/keith/.config/local-ai/benchmarks/
 - modelman source: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` helper adapter)
 - Launching `wt` agents against the benchmarked models: [06-wt-agents-and-models](06-wt-agents-and-models.md)
 - Spend/usage data the proxy logs per benchmark request: [07-usage-and-spend](07-usage-and-spend.md)
+- Agentic (not single-turn) coding benchmarks — real task, gates + judge: [09-agent-benchmarks](09-agent-benchmarks.md)

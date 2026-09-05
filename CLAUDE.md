@@ -9,6 +9,7 @@
 - `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (4 qwen3.8 backends)
 - `./benchmarks/qwen3.8-benchmark-multi N [max_tokens] [cooldown]` — multi-pass for stable medians
 - `./benchmarks/ornith-1.5-benchmark [max_tokens]` — single-pass (4 Ornith-1.5-35B variants)
+- `modelman benchmark agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
 - `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
@@ -20,7 +21,7 @@
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
 - `bin/` — isolation helpers (`llm-isolate-provider`, `llm-restore-providers`) invoked by both `modelman benchmark` (via `modelman/src/modelman/benchmark/isolation.py`, by PATH) and the legacy benchmark scripts. These are monorepo-wide utilities; the modelman package calls them through `$PATH`, not by importing Python code.
-- `modelman/` — model registry TUI/CLI (Python/uv; `src/modelman`, own `CLAUDE.md`, own `Makefile`). Canonical owner of `registry.toml`, `modelman.toml` (exposure state), LiteLLM config writes, and the `modelman benchmark` tool
+- `modelman/` — model registry TUI/CLI (Python/uv; `src/modelman`, own `CLAUDE.md`, own `Makefile`). Canonical owner of `registry.toml`, `modelman.toml` (exposure state), LiteLLM config writes, and the `modelman benchmark` tool; the agentic coding benchmark (`benchmark/agent/`) is a separate module tree under the same package
 - `wt/` — worktree agent launcher (Go module; `cmd/wt`, `internal/`, own `CLAUDE.md`, own `Makefile`). Reads modelman's `registry.toml` and `modelman.toml` (exposure) read-only; owns `~/.config/agent-wt/config.toml`, rotation + usage state
 - `Makefile` — lint target for shell scripts (root + wt), `check-links` (all tracked markdown), `test-all` (aggregates modelman + wt)
 - `docs/` — guides/ (user playbooks — see Docs above), reference/, contracts/ (cross-language config-format fixtures, read by wt Go + modelman Python contract tests), archive/ (dated docs), superpowers/ (plans+specs)
@@ -35,7 +36,7 @@
 - **Shebang split**: benchmark scripts use `#!/opt/homebrew/bin/bash` (Homebrew bash); `bin/` helpers use `#!/bin/bash`. Exception: `bin/check-links` uses `#!/usr/bin/env python3` — regex/URL-decoding markdown link parsing isn't reasonable in bash.
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
 - **OpenRouter rows are skipped (N/A) without an API key**: the benchmark reads `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`; missing key → OpenRouter rows written as N/A.
-- **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all five go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift.
+- **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all five go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift. Guide 09 is exempt — it carries no exposure snapshots.
 
 ## Adding a New Benchmark Backend
 Isolation logic lives in **one place**: `bin/llm-isolate-provider`. The bash

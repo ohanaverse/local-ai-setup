@@ -1,0 +1,52 @@
+name = "q4 agent sweep"
+task = "benchmarks/tasks/day31-drift"
+passes = 1
+cooldown_s = 20
+agent_timeout_s = 420
+
+[judge]
+# anthropic/claude-opus-5, verified against openrouter.ai/api/v1/models on
+# 2026-09-05 — `claude-opus-4`, which this file originally named, has no
+# deployment and every row would have judge_failed on it. route=openrouter
+# because the local gateway serves 37 models and none of them are claude: a
+# frontier judge is exactly the thing it does not have.
+model = "openrouter/anthropic/claude-opus-5"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "openrouter"
+
+[routes.direct.omlx]
+base_url = "http://localhost:8000/v1"
+api = "openai-completions"
+
+[routes.direct.ollama]
+base_url = "http://localhost:11434/v1"
+api = "openai-completions"
+
+[routes.direct.llamacpp]
+base_url = "http://localhost:8080/v1"
+api = "openai-completions"
+
+[[rows]]
+models   = ["ollama/qwen3.8:27b-mlx"]
+thinking = ["off", "high"]
+routes   = ["direct", "litellm"]
+
+[[rows]]
+models   = ["omlx/mlx-community--Qwen3.8-27B-4bit"]
+thinking = ["off", "high"]
+routes   = ["litellm"]
+
+# omlx over the direct route needs the name the server actually serves,
+# because the registry model_name is org-prefixed (`mlx-community/…`) while
+# omlx keys on the repo basename. Confirm with
+#   curl -s localhost:8000/v1/models
+# and then uncomment this row, correcting direct_model to whatever it prints.
+# [[rows]]
+# label        = "qwen3.8-27b-omlx-direct"
+# model        = "omlx/mlx-community--Qwen3.8-27B-4bit"
+# thinking     = "off"
+# route        = "direct"
+# direct_model = "Qwen3.8-27B-4bit"

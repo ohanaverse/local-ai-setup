@@ -1,0 +1,24 @@
+name = "agent bench smoke test"
+task = "benchmarks/tasks/day31-drift"
+passes = 1
+cooldown_s = 0
+agent_timeout_s = 180
+
+[judge]
+# Deliberately not the row's own model, and deliberately on route=openrouter:
+# judging plumbing is only proven by a row that reaches status=scored, and the
+# gateway here serves no frontier model for the role (the first live run judged
+# with glm-5.3-flash:cloud and got prose back where the contract needs JSON,
+# which is a JUDGE_FAIL with a perfectly good agent run behind it).
+model = "openrouter/anthropic/claude-opus-5"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "openrouter"
+
+[[rows]]
+label = "smoke"
+model = "ollama/glm-5.3-flash:cloud"
+thinking = "off"
+route = "litellm"
