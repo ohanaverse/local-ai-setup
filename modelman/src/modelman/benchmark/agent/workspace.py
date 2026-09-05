@@ -29,13 +29,14 @@ class Workspace:
     baseline_sha: str
 
     def seed_hidden(self, task: TaskBundle) -> None:
-        """Copy hidden/'s contents into tests/, joining the visible test
-        package so unittest's dotted module names (tests.test_x) resolve.
-        Called only after the agent run has already finished — hidden
-        tests must never be visible during the run itself."""
+        """Copy hidden/'s contents into the bundle's configured tests_dir,
+        joining the visible test package so unittest's dotted module names
+        resolve. Called only after the agent run has already finished —
+        hidden tests must never be visible during the run itself."""
         if not task.hidden_dir.is_dir():
             return
-        shutil.copytree(task.hidden_dir, self.root / "tests", dirs_exist_ok=True)
+        tests_dir = task.gates_config["build"]["tests_dir"]
+        shutil.copytree(task.hidden_dir, self.root / tests_dir, dirs_exist_ok=True)
 
     def diff(self) -> str:
         """Diff of everything since the baseline commit, tracked mods and

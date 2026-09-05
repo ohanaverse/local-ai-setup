@@ -7,6 +7,7 @@ test file against it; if the workspace seeding or the baseline commit is
 wrong, every gate built on top of it is unreliable.
 """
 
+import dataclasses
 import subprocess
 from pathlib import Path
 
@@ -127,6 +128,31 @@ def test_real_new_test_file_is_still_reported(tmp_path):
         (ws.root / "tests" / "test_genuine.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
         names = [p.name for p in ws.new_files_since_baseline()]
         assert names == ["test_genuine.py"]
+    finally:
+        destroy_workspace(ws)
+
+
+def test_seed_hidden_respects_a_configured_tests_dir_other_than_tests():
+    """seed_hidden() must read gates_config's tests_dir the same way gates.py
+    does, not hardcode "tests". Both shipped bundles happen to use "tests"
+    today, so a hardcoded destination is silent right up until a bundle
+    configures a different regression directory — then hidden tests land in
+    the wrong place while gate 9 looks for them, by dotted module name, under
+    the configured tests_dir, and the row is misreported as
+    ALL_HIDDEN_FAILING instead of the harness config bug it actually is."""
+    task = _task()
+    custom = dataclasses.replace(
+        task,
+        gates_config={
+            **task.gates_config,
+            "build": {**task.gates_config["build"], "tests_dir": "regression_tests"},
+        },
+    )
+    ws = create_workspace(task)
+    try:
+        ws.seed_hidden(custom)
+        assert (ws.root / "regression_tests" / "test_hidden.py").exists()
+        assert not (ws.root / "tests" / "test_hidden.py").exists()
     finally:
         destroy_workspace(ws)
 
