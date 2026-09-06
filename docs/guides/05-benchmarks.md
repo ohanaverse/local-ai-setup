@@ -8,9 +8,9 @@
 
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
 - Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models with `litellm_exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` (24 models are exposed in total — thirteen ollama, the two local MLX downloads plus eleven cloud — and eleven openrouter — but only those two are local MLX downloads). If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
-- Backends healthy: the four-port block in Verification answers (llama.cpp `:8080`, oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`).
+- Backends healthy: the three-port block in Verification answers (oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`). llama.cpp was retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).
 - modelman runnable from its repo (`uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`; modelman is not installed globally). Isolation helpers callable:
-  `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` and `bin/llm-restore-providers` from `/Users/keith/github/ohanaverse/local-ai-setup`.
+  `bin/llm-isolate-provider <ollama|omlx|omlx-6bit>` and `bin/llm-restore-providers` from `/Users/keith/github/ohanaverse/local-ai-setup`.
 
 ## TL;DR
 
@@ -64,14 +64,13 @@ Per-argument behavior (from the script itself, `bin/llm-isolate-provider`):
 
 | Arg | Stops | Starts + warms (model) | Serves on |
 |-----|-------|------------------------|-----------|
-| `ollama` | oMLX (`omlx stop`), llama.cpp (`launchctl unload`) | ollama daemon via `launchctl kickstart` if down; warmup `ornith-1.5:35b` | `http://localhost:11434/v1/chat/completions` |
-| `llamacpp` | ollama (`ollama stop` + `ollama ps` poll), oMLX (`omlx stop` + port poll) | `launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist`; warmup `local-llama` | `http://localhost:8080/v1/chat/completions` |
-| `omlx` | ollama (`ollama stop` + `ollama ps` poll), llama.cpp | `omlx start`; warmup Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`) | `http://localhost:8000/v1/chat/completions` |
-| `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll), llama.cpp | `omlx start`; warmup Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`) | `http://localhost:8000/v1/chat/completions` |
+| `ollama` | oMLX (`omlx stop`) | ollama daemon via `launchctl kickstart` if down; warmup `ornith-1.5:35b` | `http://localhost:11434/v1/chat/completions` |
+| `omlx` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`) | `http://localhost:8000/v1/chat/completions` |
+| `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`) | `http://localhost:8000/v1/chat/completions` |
 
-Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_LLAMACPP_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL`. On success it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — that contract is what modelman's adapter parses (`~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/isolation.py`).
+Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL`. On success it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — that contract is what modelman's adapter parses (`~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/isolation.py`).
 
-`bin/llm-restore-providers` restarts all four services in parallel (ollama, oMLX, llama.cpp, LiteLLM), skips any already answering its health URL, and exits 1 if any fails to come back.
+`bin/llm-restore-providers` restarts all three services in parallel (ollama, oMLX, LiteLLM), skips any already answering its health URL, and exits 1 if any fails to come back.
 
 ### 2. Run `modelman benchmark`
 
@@ -96,7 +95,7 @@ Flag semantics (from `uv run modelman benchmark run --help` and `src/modelman/be
 - `--direct` / `--litellm` — scope to one route; default benchmarks BOTH (direct URL + `http://localhost:4000/v1`), meaning every pass issues two requests per target.
 - `--passes N` (default 1), `--cooldown <seconds>` (default 15.0) — sleep between passes, not between routes.
 - `--results-dir <path>` — default `/Users/keith/.config/local-ai/benchmarks`.
-- Targets are local providers only (`ollama`, `llamacpp`, `omlx`); OpenRouter/cloud rows are out of scope for modelman runs. This machine's registry currently carries only the `ollama` provider, so every target today is `ollama/*`.
+- Targets are local providers only (`ollama`, `omlx`; llamacpp retired 2026-09-07); OpenRouter/cloud rows are out of scope for modelman runs. This machine's registry currently carries only the `ollama` provider, so every target today is `ollama/*`.
 
 ### 3. Multi-pass methodology
 
@@ -159,14 +158,12 @@ Backends back after a restore — four-port block (consistent with guides 01/04;
 ```bash
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
 curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
-curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"
 ```
 
 ```text
 11434(ollama):200
 8000(omlx):200
-8080(llama.cpp):200
 4000(litellm):401
 ```
 
@@ -189,7 +186,7 @@ ls /Users/keith/.config/local-ai/benchmarks/
 ## Gotchas
 
 - **Isolation is mandatory.** Local models share Apple Silicon GPU/RAM; a second loaded model skews every number in the run (this repo's `CLAUDE.md`). modelman enforces it internally — each target is isolated through `bin/llm-isolate-provider` before its requests and the whole stack is restored in a `finally` — which is why that helper must be on PATH — modelman locates it via `shutil.which` (`src/modelman/benchmark/isolation.py:23`).
-- **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service; llama.cpp: `launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist`.
+- **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service.
 - **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `bin/llm-isolate-provider omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. modelman always passes the provider id (`omlx`, never `omlx-6bit`), so an oMLX 6-bit target would be warmed as 4-bit — dormant today (no `omlx` provider in the registry yet), keep in mind for future backends.
 - **The isolate helper only stops the *named* ollama model.** `ollama stop` targets `ornith-1.5:35b` by default (`LLM_ISOLATE_OLLAMA_MODEL`); a different ollama model you left loaded earlier survives isolation and will still fight for GPU/RAM. Unload it by hand or override the env var.
 - **Fixed warmup model for `ollama` isolation.** `bin/llm-isolate-provider ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, default `ornith-1.5:35b`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `modelman benchmark run` (this also makes the `ollama stop`/poll path correct when isolating other backends). Two resident models = GPU/RAM contention = garbage timings.

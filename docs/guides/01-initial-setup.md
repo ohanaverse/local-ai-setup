@@ -1,4 +1,4 @@
-# Initial setup — LiteLLM proxy + Ollama, llama.cpp, oMLX, Postgres/Redis
+# Initial setup — LiteLLM proxy + Ollama, oMLX, Postgres/Redis (llama.cpp retired)
 
 > Use this to: install and auto-start the full local-AI stack on a fresh macOS (Apple Silicon) machine and smoke-test it through the LiteLLM proxy on :4000.
 >
@@ -11,8 +11,8 @@ Check what's already installed before installing anything:
 ```bash
 uv tool list | grep -i litellm
 ollama --version
-brew list --versions 2>/dev/null | grep -E 'llama.cpp|redis|postgresql|omlx'
-which omlx llama-server litellm hf
+brew list --versions 2>/dev/null | grep -E 'redis|postgresql|omlx'
+which omlx litellm hf
 ```
 
 ```text
@@ -20,19 +20,17 @@ litellm v1.98.0
 - litellm
 - litellm-proxy
 ollama version is 0.33.2
-llama.cpp 0.3.0
 omlx 0.6.3rc3
 postgresql@16 16.15
 redis 8.10.1
 /opt/homebrew/bin/omlx
-/opt/homebrew/bin/llama-server
 /Users/keith/.local/bin/litellm
 /Users/keith/.local/bin/hf
 ```
 
 You need:
 
-- macOS Apple Silicon (Homebrew's llama.cpp build enables Metal automatically).
+- macOS Apple Silicon.
 - Homebrew (`brew --version`).
 - `uv` (`brew install uv` — LiteLLM is installed through it).
 - Go — only to build `wt` ([06-wt-agents-and-models](06-wt-agents-and-models.md)).
@@ -51,7 +49,7 @@ On this machine Ollama ships as the Ollama.app login item, not a brew service �
 # (LiteLLM §7); on a clean machine do Steps first, then rerun this block.
 
 # 1. brew installs (versions above are what's on this machine)
-brew install llama.cpp omlx postgresql@16 redis
+brew install omlx postgresql@16 redis
 brew services start postgresql@16
 brew services start redis
 # Ollama: brew install ollama, or install Ollama.app from ollama.com
@@ -87,11 +85,9 @@ openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
 openrouter/qwen/qwen3.8-2.4t-a95b
 openrouter/qwen/qwen3.8-max
-llama.cpp/local-llama
 ollama/ornith-1.5:35b
 omlx/Ornith-1.5-35B-A3B-MLX-4bit
 omlx/Ornith-1.5-35B-A3B-MLX-6bit
-llama.cpp/ornith-1.5-35b
 
 # (your registry's ids differ — ≥1 model present = success)
 ```
@@ -217,101 +213,14 @@ curl -s http://localhost:11434/api/tags | head -3
 
 (Output is a single JSON line — `head -3` shows it whole in a terminal; elided here after two entries. Verified live 2026-08-29: 23 models, first entry is the `qwen3.8:27b-mlx` pulled above.)
 
-### 3. llama.cpp
+### 3. llama.cpp — RETIRED
 
-```bash
-brew install llama.cpp    # also wants xcode-select --install if CLT is missing
-which llama-server
-```
-
-```text
-/opt/homebrew/bin/llama-server
-```
-
-Download a `.gguf` via the HF CLI (repo-local cache):
-
-<!-- UNVERIFIED — model already on disk on this machine. -->
-
-```bash
-hf download unsloth/Qwen3.8-27B-GGUF
-```
-
-```text
-Qwen3.8-27B-UD-Q4_K_M.gguf:  100%|██████████| 16.7G/16.7G [04:12<00:00, 66.2MB/s]
-Fetching 8 files: 100%|██████████| 8/8 [05:34<00:00, 41.8s/file]
-/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502
-```
-
-`llama-server` serves OpenAI-compatible endpoints on `http://localhost:8080/v1` (port 8080, **not** 8000 — that's oMLX). It loads one `.gguf` file at startup, so this backend gets a pinned model in its LaunchAgent:
-
-```bash
-grep -A1 '<string>--port</string>' ~/Library/LaunchAgents/local.llamacpp.server.plist
-grep -o '<string>.*\.gguf</string>' ~/Library/LaunchAgents/local.llamacpp.server.plist
-```
-
-```text
-        <string>--port</string>
-        <string>8080</string>
-<string>/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf</string>
-```
-
-To (re)create the plist and load it — adjust the `-m` path to an actual `.gguf` in `~/.cache/huggingface/hub/`:
-
-<!-- UNVERIFIED — plist already exists and is loaded on this machine; template from the archive doc with the live `-m` path. -->
-
-```bash
-cat > ~/Library/LaunchAgents/local.llamacpp.server.plist << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>local.llamacpp.server</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/opt/homebrew/bin/llama-server</string>
-        <string>-m</string>
-        <string>REPLACE_WITH_HF_CACHE_SNAPSHOT_GGUF_PATH</string>
-        <string>--host</string>
-        <string>127.0.0.1</string>
-        <string>--port</string>
-        <string>8080</string>
-        <string>--n-gpu-layers</string>
-        <string>999</string>
-        <string>--ctx-size</string>
-        <string>16384</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/keith/.llamacpp.log</string>
-    <key>StandardErrorPath</string>
-    <string>/Users/keith/.llamacpp.err.log</string>
-</dict>
-</plist>
-EOF
-
-launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist   # (modern equivalent: launchctl bootstrap gui/$(id -u) <plist>; unload via launchctl bootout)
-launchctl list | grep llamacpp
-```
-
-```text
-94631	0	local.llamacpp.server
-```
-
-(PID in column 1, exit status 0 = running.)
-
-Direct verification:
-
-```bash
-curl -s http://localhost:8080/v1/models | head -c 300
-```
-
-```text
-{"models":[{"name":"/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf","model":"/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/...
-```
+> **Retired 2026-09-07** (issue #33): the LaunchAgent's pinned GGUF no longer
+> existed, so the agent crash-looped at every login and
+> `bin/llm-restore-providers` could never succeed. Removed from this host:
+> both plists, the logs, and the Homebrew formula. The verbatim plist, the
+> litellm rows, the registry block, and the full re-enable procedure live in
+> [provider-artifacts.md](../reference/provider-artifacts.md).
 
 ### 4. oMLX
 
@@ -552,11 +461,9 @@ openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
 openrouter/qwen/qwen3.8-2.4t-a95b
 openrouter/qwen/qwen3.8-max
-llama.cpp/local-llama
 ollama/ornith-1.5:35b
 omlx/Ornith-1.5-35B-A3B-MLX-4bit
 omlx/Ornith-1.5-35B-A3B-MLX-6bit
-llama.cpp/ornith-1.5-35b
 
 # (your registry's ids differ — ≥1 model present = success)
 ```

@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the five LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `local.llamacpp.server.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`).
+- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the four LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
 - This repo checked out — `bin/llm-isolate-provider` / `bin/llm-restore-providers` live here (guide 05), and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
@@ -17,23 +17,20 @@ Full health check — every answer is read-only, safe to run any time. Run it af
 
 ```bash
 curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"   # 401 = proxy up, demanding key
-curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
-launchctl list | grep -E 'litellm|llamacpp|omlx|postgresql|redis|ollama'
+launchctl list | grep -E 'litellm|omlx|postgresql|redis|ollama'
 pg_isready -h localhost
 redis-cli ping
 ```
 
 ```text
 4000(litellm):401
-8080(llama.cpp):200
 8000(omlx):200
 11434(ollama):200
 -	0	com.ollama.ollama
 96295	-15	local.litellm.proxy
 80374	0	homebrew.mxcl.postgresql@16
-94631	0	local.llamacpp.server
 97297	0	homebrew.mxcl.omlx
 88057	0	homebrew.mxcl.redis
 17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
@@ -44,7 +41,7 @@ PONG
 Reading it fast:
 
 - 401 on `:4000` = healthy (proxy up, correctly refusing keyless requests); 200 elsewhere.
-- `launchctl list` columns are PID / last-exit-status / label. `local.llamacpp.server` has `RunAtLoad` and `KeepAlive` both `true` in its plist (verified) — **:8080 is expected to be up at every login**, and launchd respawns it if it dies. Same two keys are `true` in all five plists.
+- `launchctl list` columns are PID / last-exit-status / label. Same two keys are `true` in all four remaining plists.
 - `local.litellm.proxy` shows status `-15` here because it was SIGTERMed by a `kickstart -k` earlier that day (see Gotchas — `0`/`-15` are the only healthy readings for the middle column).
 - Ollama row has no PID (`-`) and no LaunchAgent plist exists for it — the `com.ollama.ollama` login item (Ollama.app) owns the daemon; the `application.com.electron.ollama.*` row appears only while the app window is open.
 - Any line that differs → §1 for restart mechanics, §3 for logs.
@@ -56,14 +53,10 @@ Reading it fast:
 Read the plists, not memory. All five launchd jobs carry both keys (verified live on 2026-08-29):
 
 ```bash
-grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.llamacpp.server.plist ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist
+grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist
 ```
 
 ```text
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <key>RunAtLoad</key>
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <true/>
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <key>KeepAlive</key>
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <true/>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>RunAtLoad</key>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>KeepAlive</key>
@@ -76,11 +69,11 @@ grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.llamacpp.server.pli
 
 (`postgresql@16` and `redis` plists also carry `RunAtLoad`/`KeepAlive` `true` — verified by reading those two files directly; same shape, skipped above for brevity.)
 
-So after login: LiteLLM (:4000), llama.cpp (:8080), oMLX (:8000), Postgres, Redis all come up on their own — llama.cpp included, because of its `RunAtLoad`/`KeepAlive`. KeepAlive also means **if any of them crash, launchd restarts them automatically**; a service that stays down means it is crash-looping against KeepAlive, not waiting for you (go to §3).
+So after login: LiteLLM (:4000), oMLX (:8000), Postgres, Redis all come up on their own. KeepAlive also means **if any of them crash, launchd restarts them automatically**; a service that stays down means it is crash-looping against KeepAlive, not waiting for you (go to §3).
 
 Ollama is the exception: **no plist exists** — the daemon is owned by the Ollama.app login item (`com.ollama.ollama`), which starts at login only if the app is enabled as a login item and launches. When :11434 is dead after a reboot, open Ollama.app and wait a few seconds.
 
-Run `brew services list` to see which of your jobs brew considers its own (this is the trio you manage via `brew services`; LiteLLM and llama.cpp are hand-rolled plists outside brew):
+Run `brew services list` to see which of your jobs brew considers its own (this is the trio you manage via `brew services`; LiteLLM is a hand-rolled plist outside brew):
 
 ```bash
 brew services list
@@ -100,7 +93,6 @@ Per-backend reference — commands and log paths verified against the live plist
 | Backend | Check (§TL;DR) | Restart | Logs |
 |---------|----------------|---------|------|
 | LiteLLM :4000 | `401` curl | `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | `/Users/keith/.litellm.err.log` (+ `/Users/keith/.litellm.log`) |
-| llama.cpp :8080 | `200` curl | `launchctl kickstart -k gui/$(id -u)/local.llamacpp.server` | `/Users/keith/.llamacpp.err.log` (+ `/Users/keith/.llamacpp.log`) |
 | oMLX :8000 | `200` on `/health` | `omlx restart` or `brew services restart omlx` | `/opt/homebrew/var/log/omlx.log` |
 | Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `/Users/keith/.ollama/logs/server.log` |
 | Postgres 5432 | `pg_isready -h localhost` | `brew services restart postgresql@16` | `/opt/homebrew/var/log/postgresql@16.log` |
