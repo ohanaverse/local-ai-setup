@@ -51,13 +51,10 @@ declare -A DIRECT_MODELS
 declare -A LITELLM_MODELS
 DIRECT_URLS[ollama]="http://localhost:11434/api/chat"
 DIRECT_URLS[omlx]="http://localhost:8000/v1/chat/completions"
-DIRECT_URLS[llama_cpp]="http://localhost:8080/v1/chat/completions"
 DIRECT_MODELS[ollama]="qwen3.8:27b-mlx"
 DIRECT_MODELS[omlx]="Qwen3.8-27B-4bit"
-DIRECT_MODELS[llama_cpp]="local-llama"
 LITELLM_MODELS[ollama]="ollama/qwen3.8:27b-mlx"
 LITELLM_MODELS[omlx]="omlx/Qwen3.8-27B-4bit"
-LITELLM_MODELS[llama_cpp]="llama.cpp/local-llama"
 
 LITELLM_URL="http://localhost:4000/v1/chat/completions"
 # Prefer the LaunchAgent-exported env var; fall back to reading the plist directly
@@ -79,7 +76,6 @@ declare -a OPENROUTER_MODELS=(
 
 display_key() {
     case "$1" in
-        llama_cpp) echo "llama.cpp" ;;
         *) echo "$1" ;;
     esac
 }
@@ -96,13 +92,11 @@ ISOLATE_HELPER="$(cd "$(dirname "$0")/../bin" && pwd)/llm-isolate-provider"
 declare -A ISOLATE_ID
 ISOLATE_ID[ollama]="ollama"
 ISOLATE_ID[omlx]="omlx"
-ISOLATE_ID[llama_cpp]="llamacpp"
 
 # Env var per backend (helper naming: LLM_ISOLATE_<PROVIDER>_MODEL).
 declare -A ISOLATE_ENV
 ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
 ISOLATE_ENV[omlx]="LLM_ISOLATE_OMLX_4BIT_MODEL"
-ISOLATE_ENV[llama_cpp]="LLM_ISOLATE_LLAMACPP_MODEL"
 
 # Stop all local providers, then start+warmup only the requested backend's
 # model (the helper polls until the model actually answers).
@@ -121,11 +115,6 @@ ensure_all_local_started() {
     fi
     if ! curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
         omlx start > /dev/null 2>&1 || true
-    fi
-    if ! curl -s -m 2 http://localhost:8080/v1/models > /dev/null 2>&1; then
-        if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
-            launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
-        fi
     fi
     # LiteLLM proxy
     if ! curl -s -m 2 http://localhost:4000/v1/models > /dev/null 2>&1; then
@@ -260,7 +249,7 @@ echo ""
 } >> "$OUTFILE"
 
 echo "## Direct backend (ISOLATED, one model loaded at a time):"
-for backend in ollama omlx llama_cpp; do
+for backend in ollama omlx; do
     display_name=$(display_key "$backend")
     echo ""
     isolate_one "$backend"
@@ -279,7 +268,7 @@ done
 
 echo ""
 echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"
-for backend in ollama omlx llama_cpp; do
+for backend in ollama omlx; do
     display_name=$(display_key "$backend")
     echo ""
     isolate_one "$backend"

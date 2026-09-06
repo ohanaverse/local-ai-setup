@@ -44,21 +44,17 @@ declare -A LITELLM_MODELS
 DIRECT_URLS[ollama]="http://localhost:11434/api/chat"
 DIRECT_URLS[omlx_4bit]="http://localhost:8000/v1/chat/completions"
 DIRECT_URLS[omlx_6bit]="http://localhost:8000/v1/chat/completions"
-DIRECT_URLS[llama_cpp]="http://localhost:8080/v1/chat/completions"
 DIRECT_MODELS[ollama]="ornith-1.5:35b"
 DIRECT_MODELS[omlx_4bit]="Ornith-1.5-35B-A3B-MLX-4bit"
 DIRECT_MODELS[omlx_6bit]="Ornith-1.5-35B-A3B-MLX-6bit"
-DIRECT_MODELS[llama_cpp]="local-llama"
 LITELLM_MODELS[ollama]="ollama/ornith-1.5:35b"
 LITELLM_MODELS[omlx_4bit]="omlx/Ornith-1.5-35B-A3B-MLX-4bit"
 LITELLM_MODELS[omlx_6bit]="omlx/Ornith-1.5-35B-A3B-MLX-6bit"
-LITELLM_MODELS[llama_cpp]="llama.cpp/ornith-1.5-35b"
 
 LITELLM_URL="http://localhost:4000/v1/chat/completions"
 
 display_key() {
     case "$1" in
-        llama_cpp) echo "llama.cpp" ;;
         omlx_4bit) echo "omlx 4-bit" ;;
         omlx_6bit) echo "omlx 6-bit" ;;
         *) echo "$1" ;;
@@ -77,14 +73,12 @@ declare -A ISOLATE_ID
 ISOLATE_ID[ollama]="ollama"
 ISOLATE_ID[omlx_4bit]="omlx"
 ISOLATE_ID[omlx_6bit]="omlx-6bit"
-ISOLATE_ID[llama_cpp]="llamacpp"
 
 # Env var per backend (helper naming: LLM_ISOLATE_<PROVIDER>_MODEL).
 declare -A ISOLATE_ENV
 ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
 ISOLATE_ENV[omlx_4bit]="LLM_ISOLATE_OMLX_4BIT_MODEL"
 ISOLATE_ENV[omlx_6bit]="LLM_ISOLATE_OMLX_6BIT_MODEL"
-ISOLATE_ENV[llama_cpp]="LLM_ISOLATE_LLAMACPP_MODEL"
 
 # Stop all local providers, then start+warmup only the requested backend's
 # model (the helper polls until the model actually answers).
@@ -104,11 +98,6 @@ ensure_all_local_started() {
     if ! curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
         omlx start > /dev/null 2>&1 || true
     fi
-    if ! curl -s -m 2 http://localhost:8080/v1/models > /dev/null 2>&1; then
-        if [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
-            launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
-        fi
-    fi
     if ! curl -s -m 2 http://localhost:4000/v1/models > /dev/null 2>&1; then
         if [ -f ~/Library/LaunchAgents/local.litellm.proxy.plist ]; then
             launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null || true
@@ -120,7 +109,6 @@ ensure_all_local_started() {
         ok=true
         curl -s -m 1 http://localhost:11434/api/tags > /dev/null 2>&1 || ok=false
         curl -s -m 1 http://localhost:8000/v1/models > /dev/null 2>&1 || ok=false
-        curl -s -m 1 http://localhost:8080/v1/models > /dev/null 2>&1 || ok=false
         curl -s -m 1 http://localhost:4000/v1/models > /dev/null 2>&1 || ok=false
         [ "$ok" = "true" ] && break
         sleep 2
@@ -217,7 +205,7 @@ echo ""
 } >> "$OUTFILE"
 
 echo "## Direct backend (ISOLATED, one model loaded at a time):"
-for backend in ollama omlx_4bit omlx_6bit llama_cpp; do
+for backend in ollama omlx_4bit omlx_6bit; do
     display_name=$(display_key "$backend")
     echo ""
     isolate_one "$backend"
@@ -236,7 +224,7 @@ done
 
 echo ""
 echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"
-for backend in ollama omlx_4bit omlx_6bit llama_cpp; do
+for backend in ollama omlx_4bit omlx_6bit; do
     display_name=$(display_key "$backend")
     echo ""
     isolate_one "$backend"
