@@ -55,8 +55,11 @@ litellm_exposed = true
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
-	if !exposed["exposed-model"] {
-		t.Errorf("exposed[exposed-model] = false, want true")
+	st, ok := exposed["exposed-model"]
+	if !ok {
+		t.Errorf("exposed[exposed-model] missing, want present")
+	} else if !st.LitellmExposed {
+		t.Errorf("exposed[exposed-model].LitellmExposed = false, want true")
 	}
 	if len(exposed) != 1 {
 		t.Errorf("len(exposed) = %d, want 1", len(exposed))
@@ -132,12 +135,15 @@ tags = ["code"]
 
 [model_state."ollama/exposed"]
 litellm_exposed = true
+ready = true
 
 [model_state."ollama/unexposed"]
 litellm_exposed = false
+ready = false
 
 [model_state."agy/native"]
 litellm_exposed = false
+ready = false
 `)
 
 	cfgDir := Dir()
@@ -162,7 +168,7 @@ litellm_exposed = false
 		t.Errorf("agy/native (native provider) must always be exposed")
 	}
 	if !cfg.IsExposed(byID["ollama/exposed"]) {
-		t.Errorf("ollama/exposed (litellm_exposed=true) must be exposed")
+		t.Errorf("ollama/exposed (litellm_exposed=true, ready=true) must be exposed")
 	}
 	if cfg.IsExposed(byID["ollama/unexposed"]) {
 		t.Errorf("ollama/unexposed (litellm_exposed=false) must not be exposed")
@@ -199,5 +205,124 @@ func TestModelmanPathExpandsTildeInXDG(t *testing.T) {
 	want := filepath.Join(home, "custom-xdg", "local-ai", "modelman.toml")
 	if got := ModelmanPath(); got != want {
 		t.Errorf("ModelmanPath() = %q, want %q", got, want)
+	}
+}
+
+// TestIsExposedPredicate implements the exposure rule:
+// native OR (litellm_exposed AND (ready OR cloud location)).
+func TestIsExposedPredicate(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+
+	writeRegistry(t, dir, `
+[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+auth = { type = "none", base_url = "http://localhost:11434" }
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+auth = { type = "api_key", secret_ref = "OPENROUTER_API_KEY" }
+
+[[providers]]
+id = "native-provider"
+name = "Native Provider"
+location = "local"
+auth = { type = "native" }
+
+[[models]]
+id = "native-provider/native-model"
+family = "native"
+provider_id = "native-provider"
+model_name = "native-model"
+location = "local"
+tags = ["code"]
+
+[[models]]
+id = "ollama/local-flag-ready"
+family = "local-flag-ready"
+provider_id = "ollama"
+model_name = "local-flag-ready"
+location = "local"
+tags = ["code"]
+
+[[models]]
+id = "ollama/local-flag-not-ready"
+family = "local-flag-not-ready"
+provider_id = "ollama"
+model_name = "local-flag-not-ready"
+location = "local"
+tags = ["code"]
+
+[[models]]
+id = "openrouter/cloud-flag"
+family = "cloud-flag"
+provider_id = "openrouter"
+model_name = "cloud-flag"
+location = "cloud"
+tags = ["code"]
+`)
+
+	cfgDir := Dir()
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Native model: always exposed regardless of flag
+	// Local model with flag+ready: exposed
+	// Local model with flag+not-ready: NOT exposed
+	// Cloud model with flag (no ready key): exposed
+	writeModelmanState(t, dir, `
+[model_state]
+
+[model_state."native-provider/native-model"]
+litellm_exposed = false
+ready = false
+
+[model_state."ollama/local-flag-ready"]
+litellm_exposed = true
+ready = true
+
+[model_state."ollama/local-flag-not-ready"]
+litellm_exposed = true
+ready = false
+
+[model_state."openrouter/cloud-flag"]
+litellm_exposed = true
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	byID := map[string]Model{}
+	for _, m := range cfg.Models {
+		byID[m.ID] = m
+	}
+
+	tests := []struct {
+		id       string
+		expected bool
+		reason   string
+	}{
+		{"native-provider/native-model", true, "native models are always exposed"},
+		{"ollama/local-flag-ready", true, "flag + ready = exposed"},
+		{"ollama/local-flag-not-ready", false, "flag + not-ready (local) = not exposed"},
+		{"openrouter/cloud-flag", true, "cloud location exempts from ready gate"},
+	}
+
+	for _, tt := range tests {
+		m := byID[tt.id]
+		if got := cfg.IsExposed(m); got != tt.expected {
+			t.Errorf("IsExposed(%q) = %v, want %v (%s)", tt.id, got, tt.expected, tt.reason)
+		}
 	}
 }

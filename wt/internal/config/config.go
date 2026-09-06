@@ -120,7 +120,10 @@ type Config struct {
 	Providers  []Provider      `toml:"providers"`
 	Models     []Model         `toml:"models"`
 	Agents     []Agent         `toml:"agents"`
-	exposed    map[string]bool `toml:"-"` // from modelman.toml
+	exposed    map[string]struct {
+		LitellmExposed bool
+		Ready          bool
+	} `toml:"-"` // from modelman.toml
 }
 
 // Dir returns the base config directory (~/.config/agent-wt, or
@@ -356,26 +359,44 @@ func deriveNative(cfg *Config) {
 
 // IsExposed reports whether m should appear in wt's model catalog.
 // Native models are always exposed (they cannot route through LiteLLM).
+// Non-native models require litellm_exposed AND (ready OR cloud location).
 func (c *Config) IsExposed(m Model) bool {
 	if m.Native {
 		return true
 	}
-	return c.exposed[m.ID]
+	st, ok := c.exposed[m.ID]
+	if !ok || !st.LitellmExposed {
+		return false
+	}
+	if m.Location == "cloud" {
+		return true
+	}
+	return st.Ready
 }
 
 // SetExposedForTest replaces the in-memory exposed set. Tests only.
-func (c *Config) SetExposedForTest(exposed map[string]bool) {
+func (c *Config) SetExposedForTest(exposed map[string]struct {
+	LitellmExposed bool
+	Ready          bool
+}) {
 	c.exposed = exposed
 }
 
-// ExposeAllForTest marks every non-native model in cfg as exposed. Tests only.
+// ExposeAllForTest marks every non-native model in cfg as exposed and ready.
+// Tests only.
 func (c *Config) ExposeAllForTest() {
 	if c.exposed == nil {
-		c.exposed = make(map[string]bool)
+		c.exposed = make(map[string]struct {
+			LitellmExposed bool
+			Ready          bool
+		})
 	}
 	for _, m := range c.Models {
 		if !m.Native {
-			c.exposed[m.ID] = true
+			c.exposed[m.ID] = struct {
+				LitellmExposed bool
+				Ready          bool
+			}{LitellmExposed: true, Ready: true}
 		}
 	}
 }
