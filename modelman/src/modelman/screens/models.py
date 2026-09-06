@@ -13,7 +13,12 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..litellm import default_litellm_config_path, is_cloud_effective, provider_policy
+from ..litellm import (
+    default_litellm_config_path,
+    is_cloud_effective,
+    is_effectively_exposed,
+    provider_policy,
+)
 from ..queue import PendingChanges
 from ..registry import (
     DEFAULT_PROVIDER_IDS,
@@ -310,16 +315,25 @@ class ModelScreen(Screen[None]):
                     status = "[green]✓[/green]"
                 else:
                     status = "[dim]○[/dim]"
-                exposed = self.state.get(m.id).litellm_exposed
-                if m.id in self.queued_exposes:
-                    exposed = self.queued_exposes[m.id]
+                # Use the queued expose value as the override for projected state.
+                exposed_override = self.queued_exposes.get(m.id)
+                # Use the projected ready value for the EXPOSED column preview.
+                ready_override = self._projected_ready(m.id)
                 # Effective exposure = the (queued or persisted) flag AND the
                 # *projected* ready value — the same gate `_validated_entry`
                 # applies at apply time, so the column shows what the model
                 # will be after apply, not what it was before the queue.
-                # Cloud rows are exempt from the ready gate.
-                ready_or_cloud = self._projected_ready(m.id) or is_cloud_effective(m)
-                exposed_str = "Y" if (exposed and ready_or_cloud) else "–"
+                exposed_str = (
+                    "Y"
+                    if is_effectively_exposed(
+                        m.id,
+                        self.registry,
+                        self.state,
+                        exposed_override=exposed_override,
+                        ready_override=ready_override,
+                    )
+                    else "–"
+                )
                 mt.add_row(
                     m.family,
                     m.provider_id,
