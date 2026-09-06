@@ -467,7 +467,7 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
     policy = provider_policy(model.provider_id)
     if policy is None:
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
-    if not is_cloud_effective(model) and not state.get(model_id).ready:
+    if not is_effectively_exposed(model_id, registry, state, exposed_override=True):
         raise ExposeError(f"model {model_id!r} is not ready")
     return build_model_list_entry(model, provider)
 
