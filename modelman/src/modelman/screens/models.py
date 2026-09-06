@@ -373,9 +373,17 @@ class ModelScreen(Screen[None]):
         Cloud rows are exempt, matching _validated_entry. Drops the expose
         with a notification rather than silently overwriting the user's
         request."""
+        # Use the helper with exposed_override=True to check if the queued
+        # expose would be valid. Cloud rows are exempt per is_cloud_effective.
         if is_cloud_effective(entry):
             return
-        if self.queued_exposes.get(mid) is True and not self._projected_ready(mid):
+        if self.queued_exposes.get(mid) is True and not is_effectively_exposed(
+            mid,
+            self.registry,
+            self.state,
+            exposed_override=True,
+            ready_override=self._projected_ready(mid),
+        ):
             self.queued_exposes.pop(mid, None)
             self.app.notify(f"Expose cancelled: {mid} will not be ready")
 
