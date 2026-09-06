@@ -10,7 +10,7 @@ def test_load_state_matches_shared_fixture():
     (wt/internal/config/modelman_fixture_test.go reads the same file,
     for the litellm_exposed and ready flags its model picker filters on).
     A schema change not reflected in both tests fails both CI jobs.
-    
+
     Exposure predicate (both tools): native OR (litellm_exposed AND (ready OR cloud location)).
     """
     state = load_state(path=FIXTURE)
