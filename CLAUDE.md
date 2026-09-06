@@ -6,12 +6,12 @@
 - Package-level context: `modelman/CLAUDE.md` (Python TUI/CLI) and `wt/CLAUDE.md` (Go worktree launcher) contain per-package commands, architecture, and gotchas.
 
 ## Commands
-- `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (4 qwen3.8 backends)
+- `./benchmarks/qwen3.8-benchmark [max_tokens]` — single-pass benchmark (2 qwen3.8 local backends + OpenRouter)
 - `./benchmarks/qwen3.8-benchmark-multi N [max_tokens] [cooldown]` — multi-pass for stable medians
-- `./benchmarks/ornith-1.5-benchmark [max_tokens]` — single-pass (4 Ornith-1.5-35B variants)
+- `./benchmarks/ornith-1.5-benchmark [max_tokens]` — single-pass (3 Ornith-1.5-35B local variants + OpenRouter)
 - `modelman benchmark agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
-- `bin/llm-isolate-provider <ollama|llamacpp|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`)
+- `bin/llm-isolate-provider <ollama|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp branch retained but disabled — see `docs/reference/provider-artifacts.md`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
 - `make lint` — umbrella target (`lint-shell` + `check-links`)
@@ -27,11 +27,11 @@
 - `docs/` — guides/ (user playbooks — see Docs above), reference/, contracts/ (cross-language config-format fixtures, read by wt Go + modelman Python contract tests), archive/ (dated docs), superpowers/ (plans+specs)
 - `.github/workflows/` — shell-ci (root lint), wt-ci (Go + wt lint), modelman-ci (Python)
 - LiteLLM config: `~/.config/litellm/config.yaml`
-- LaunchAgent plists: `~/Library/LaunchAgents/local.llamacpp.server.plist` (llama.cpp), `local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers
+- LaunchAgent plists: `~/Library/LaunchAgents/local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers. (The llama.cpp plist was retired 2026-09-07 — artifact + restore steps in `docs/reference/provider-artifacts.md`.)
 
 ## Key Gotchas
 - **Isolation is mandatory**: local MLX/GGUF models share Apple Silicon GPU/RAM and distort each other's benchmarks. Only one local model loaded at a time.
-- **Stop mechanisms per backend**: Ollama `ollama stop <model>` (daemon stays up), oMLX `omlx stop` (halts service), llama.cpp `launchctl unload` (halts LaunchAgent).
+- **Stop mechanisms per backend**: Ollama `ollama stop <model>` (daemon stays up), oMLX `omlx stop` (halts service). (llama.cpp — formerly `launchctl unload` — was retired 2026-09-07; see `docs/reference/provider-artifacts.md`.)
 - **oMLX serves both 4-bit and 6-bit variants** — warmup must name the exact variant (`omlx` vs `omlx-6bit`).
 - **Shebang split**: benchmark scripts use `#!/opt/homebrew/bin/bash` (Homebrew bash); `bin/` helpers use `#!/bin/bash`. Exception: `bin/check-links` uses `#!/usr/bin/env python3` — regex/URL-decoding markdown link parsing isn't reasonable in bash.
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
