@@ -14,7 +14,10 @@ from modelman.benchmark.errors import BenchmarkError
 # truth (it owns the case statement), and this constant is the one place
 # modelman code checks isolability, kept here next to the rest of the
 # subprocess contract with that script rather than rebuilt ad hoc elsewhere.
-SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset({"ollama", "llamacpp", "omlx", "omlx-6bit"})
+# llamacpp retired 2026-09-07 (issue #33): kept as a case branch in
+# bin/llm-isolate-provider but not isolatable. Re-enable steps:
+# docs/reference/provider-artifacts.md
+SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset({"ollama", "omlx", "omlx-6bit"})
 
 
 @dataclass

@@ -1,8 +1,8 @@
 # modelman
 
 A terminal UI for managing LLM models across providers (Ollama,
-llama.cpp, oMLX, OpenRouter, and native agent providers like `claude`,
-`codex`). Models and providers live in a shared `registry.toml`;
+oMLX, OpenRouter, and native agent providers like `claude`, `codex`; the
+llama.cpp provider is retired — see `../docs/reference/provider-artifacts.md`). Models and providers live in a shared `registry.toml`;
 per-machine state (ready markers, LiteLLM exposure) lives in
 `modelman.toml`. The TUI lets you browse families, drill into a family's
 model list, and queue changes (add/edit/delete/ready/expose) that are
@@ -106,7 +106,7 @@ litellm_exposed = false
 ```
 
 `ready` is the provider-agnostic readiness flag. For reconcilable providers
-(Ollama, llama.cpp, oMLX) it means "the model is present on this machine".
+(Ollama, oMLX; llama.cpp was retired 2026-09-07) it means "the model is present on this machine".
 For flag-only providers (OpenRouter, native agents like `claude`) it means
 "the user has marked this model as available"; there is nothing to download
 or delete on disk.

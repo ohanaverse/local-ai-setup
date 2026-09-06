@@ -214,13 +214,6 @@ def test_reconcile_handles_modeldir_providers():
     registry = Registry(
         models=[
             ModelEntry(
-                id="llamacpp/q4",
-                family="ornith-1.5",
-                provider_id="llamacpp",
-                model_name="q4.gguf",
-                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
-            ),
-            ModelEntry(
                 id="omlx/4bit",
                 family="ornith-1.5",
                 provider_id="omlx",
@@ -234,13 +227,11 @@ def test_reconcile_handles_modeldir_providers():
         registry,
         state,
         {
-            "llamacpp/q4": ("/cache/q4.gguf", 100),
             "omlx/4bit": ("/models/MLX", 200),
         },
     )
-    assert sorted(result.downloaded) == ["llamacpp/q4", "omlx/4bit"]
+    assert sorted(result.downloaded) == ["omlx/4bit"]
     assert result.not_downloaded == []
-    assert state.get("llamacpp/q4").size_bytes == 100
     assert state.get("omlx/4bit").size_bytes == 200
 
 
@@ -404,26 +395,26 @@ def test_sync_includes_modeldir_results():
     registry = Registry(
         models=[
             ModelEntry(
-                id="llamacpp/q4",
+                id="omlx/4bit",
                 family="ornith-1.5",
-                provider_id="llamacpp",
-                model_name="q4.gguf",
-                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+                provider_id="omlx",
+                model_name="4bit",
+                fetch=Fetch(repo="foo/MLX"),
             ),
         ],
-        providers=[ProviderEntry(id="llamacpp", name="Llama.cpp")],
+        providers=[ProviderEntry(id="omlx", name="oMLX")],
     )
     state = StateStore()
 
     with patch("modelman.sync.list_modeldir") as mock_modeldir:
-        mock_modeldir.return_value = {"llamacpp/q4": ("/cache/q4.gguf", 100)}
+        mock_modeldir.return_value = {"omlx/4bit": ("/models/MLX", 200)}
         result = sync(registry, state, runner)
 
-    assert result.downloaded == ["llamacpp/q4"]
+    assert result.downloaded == ["omlx/4bit"]
     assert result.not_downloaded == []
-    assert state.get("llamacpp/q4").ready is True
-    assert state.get("llamacpp/q4").disk_path == "/cache/q4.gguf"
-    assert state.get("llamacpp/q4").size_bytes == 100
+    assert state.get("omlx/4bit").ready is True
+    assert state.get("omlx/4bit").disk_path == "/models/MLX"
+    assert state.get("omlx/4bit").size_bytes == 200
 
 
 def test_sync_combines_ollama_and_modeldir_results():
@@ -440,25 +431,25 @@ def test_sync_combines_ollama_and_modeldir_results():
                 model_name="ollama-model",
             ),
             ModelEntry(
-                id="llamacpp/q4",
+                id="omlx/4bit",
                 family="ornith-1.5",
-                provider_id="llamacpp",
-                model_name="q4.gguf",
-                fetch=Fetch(repo="foo/bar", files=["q4.gguf"]),
+                provider_id="omlx",
+                model_name="4bit",
+                fetch=Fetch(repo="foo/MLX"),
             ),
         ],
-        providers=[ProviderEntry(id="llamacpp", name="Llama.cpp")],
+        providers=[ProviderEntry(id="omlx", name="oMLX")],
     )
     state = StateStore()
 
     with patch("modelman.sync.list_modeldir") as mock_modeldir:
-        mock_modeldir.return_value = {"llamacpp/q4": ("/cache/q4.gguf", 100)}
+        mock_modeldir.return_value = {"omlx/4bit": ("/models/MLX", 200)}
         result = sync(registry, state, runner)
 
-    assert sorted(result.downloaded) == ["llamacpp/q4", "ollama/ollama-model"]
+    assert sorted(result.downloaded) == ["ollama/ollama-model", "omlx/4bit"]
     assert result.not_downloaded == []
     assert state.get("ollama/ollama-model").size_bytes == int(6.6 * 1024**3)
-    assert state.get("llamacpp/q4").disk_path == "/cache/q4.gguf"
+    assert state.get("omlx/4bit").disk_path == "/models/MLX"
 
 
 def test_ensure_provider_entries_repairs_empty_providers():

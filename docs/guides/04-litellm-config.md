@@ -85,9 +85,9 @@ Field provenance (from `~/github/ohanaverse/local-ai-setup/modelman/src/modelman
 | Field | Comes from |
 |---|---|
 | `model_name` | registry model id (`modelman.toml`/`registry.toml` id, e.g. `ollama/qwen3.8:27b-mlx`) |
-| `litellm_params.model` | provider prefix + model name — `ollama_chat/`, `openai/` (omlx), `openai/local-model` (llamacpp, fixed string for every model), `openrouter/` |
-| `api_base` | provider `auth.base_url` — `:11434` ollama, `:8000/v1` omlx, `:8080/v1` llama.cpp, `https://openrouter.ai/api/v1` |
-| `api_key` | ollama: omitted · omlx: literal `"not-needed"` · llamacpp: literal `"dummy-key"` · openrouter: `provider.auth.secret_ref` **verbatim** |
+| `litellm_params.model` | provider prefix + model name — `ollama_chat/`, `openai/` (omlx), `openrouter/` |
+| `api_base` | provider `auth.base_url` — `:11434` ollama, `:8000/v1` omlx, `https://openrouter.ai/api/v1` |
+| `api_key` | ollama: omitted · omlx: literal `"not-needed"` · openrouter: `provider.auth.secret_ref` **verbatim** |
 | `model_info` | copied from the registry model when present (e.g. `supports_function_calling`) |
 
 `general_settings` (real block above) is the Postgres/Redis wiring: `database_url` points at the `litellm` database (trust auth, no password on the local socket — the plist additionally carries `DATABASE_URL` + `LITELLM_SALT_KEY` for the proxy process). There is **no** `master_key` in config.yaml on this machine — auth comes from the plist env `LITELLM_MASTER_KEY`.
@@ -280,8 +280,8 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 - **modelman manages ONLY `model_list`.** Hand-edits to a `model_list` row are silently replaced the next time you `expose` the same id (`set_exposed` replaces by `model_name`, else appends — `src/modelman/litellm.py`). Hand-edits to `general_settings` and any other section survive every modelman write.
 - **Comments don't survive modelman writes.** The save path is a PyYAML round-trip (`save_litellm_config` docstring, `src/modelman/litellm.py:215-219`): the current `# ---- Ollama (local) ----`-style banners disappear on the first `expose`/`unexpose`. Keep structural notes in this guide, not the YAML.
 - **`config.yaml` carries literal api_key values on this machine.** The OpenRouter entries hold the real `sk-or-v1-…` key inline — **not** `os.environ/OPENROUTER_API_KEY` indirection. modelman writes `provider.auth.secret_ref` verbatim into `api_key` (`src/modelman/litellm.py:110`), so anything put in the registry surfaces in plaintext here. Treat `config.yaml` (and the plist) as secret material; redact before pasting anywhere.
-- **modelman's bookkeeping drift (historical):** `modelman.toml` flags were out of sync because non-ollama entries were seeded outside modelman. Twenty-four in-registry models (thirteen ollama + eleven openrouter) are now modelman-exposed; the omlx/llamacpp rows, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` remain hand-managed by design. First modelman write also strips the comment banners (above).
-- **4000 is the proxy; backends live elsewhere.** `api_base` targets are oMLX `:8000`, llama.cpp `:8080`, ollama `:11434` — never `:4000` (that loops back into LiteLLM). Also: an omlx row in `model_list` doesn't mean that quant variant is loaded on the oMLX server — see guide 01 Gotchas (`bin/llm-isolate-provider`).
+- **modelman's bookkeeping drift (historical):** `modelman.toml` flags were out of sync because non-ollama entries were seeded outside modelman. Twenty-four in-registry models (thirteen ollama + eleven openrouter) are now modelman-exposed; the omlx rows, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` remain hand-managed by design (the 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md)). First modelman write also strips the comment banners (above).
+- **4000 is the proxy; backends live elsewhere.** `api_base` targets are oMLX `:8000`, ollama `:11434` — never `:4000` (that loops back into LiteLLM). Also: an omlx row in `model_list` doesn't mean that quant variant is loaded on the oMLX server — see guide 01 Gotchas (`bin/llm-isolate-provider`).
 - **Syntax errors take the proxy down on restart.** Validate YAML before bouncing (§3 command); a dead start shows up as repeated respawns with errors in `~/.litellm.err.log`.
 - **Postgres/Redis down ⇒ proxy fails to boot.** KeepAlive turns a dead dependency into a crash loop — respawns with connection errors in the plist's `StandardErrorPath` log (`~/.litellm.err.log`, per `~/Library/LaunchAgents/local.litellm.proxy.plist`). Pre-flight with guide 01 §6's `pg_isready -h localhost` and `redis-cli ping`.
 

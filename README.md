@@ -6,7 +6,7 @@ components — fresh install starts at
 
 | Component | Role |
 |---|---|
-| Root (`bin/`, `benchmarks/`, `docs/`) | backends (LiteLLM proxy, Ollama, llama.cpp, oMLX) + LaunchAgents + benchmarks + user guides |
+| Root (`bin/`, `benchmarks/`, `docs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides |
 | `modelman/` | model registry TUI/CLI — canonical source of truth for providers/models, exposure, benchmarks, usage |
 | `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
 
@@ -34,16 +34,15 @@ TL;DR — all read-only, safe to run any time:
 
 ```bash
 curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"   # 401 = proxy up, demanding key
-curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
-launchctl list | grep -E 'litellm|llamacpp|omlx|postgresql|redis|ollama'
+launchctl list | grep -E 'litellm|omlx|postgresql|redis|ollama'
 pg_isready -h localhost
 redis-cli ping
 ```
 
 Expected: `401` on :4000 = proxy up (correctly demanding a key); `200` on the
-other three. `launchctl list` columns are PID / last-exit-status / label —
+other two. `launchctl list` columns are PID / last-exit-status / label —
 `0` or `-15` in the middle column is healthy.
 
 Any line that differs → [08-maintenance-and-troubleshooting.md](docs/guides/08-maintenance-and-troubleshooting.md)
@@ -56,6 +55,7 @@ Any line that differs → [08-maintenance-and-troubleshooting.md](docs/guides/08
 - [Adding MLX (Apple Silicon) as a Fourth Backend to Your LiteLLM macOS Proxy](docs/reference/Adding%20MLX%20%28Apple%20Silicon%29%20as%20a%20Fourth%20Backend%20to%20Your%20LiteLLM%20macOS%20Proxy.md)
 - [oMLX Download and Run](docs/reference/oMLX%20Download%20and%20Run.md)
 - [Downloading and Managing Hugging Face Models on macOS for Local LLM Inference (2026)](docs/reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
+- [provider-artifacts.md](docs/reference/provider-artifacts.md) — captured provider artifacts + llama.cpp re-enable procedure
 
 ## Legacy
 

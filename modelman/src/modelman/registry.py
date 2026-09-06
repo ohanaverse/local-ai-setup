@@ -236,7 +236,9 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
 # Provider ids that have a canonical default entry (the reconcilable local
 # providers). migrate.py uses this to decide whether to use the default or
 # fall back to its generic title()-cased import.
-DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "llamacpp", "omlx")
+# llamacpp retired 2026-09-07 (issue #33): provider code kept in
+# providers/llamacpp.py; re-enable steps in docs/reference/provider-artifacts.md.
+DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx")
 
 
 def _default_wt_config_path() -> Path:

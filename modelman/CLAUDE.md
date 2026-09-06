@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, llama.cpp, oMLX) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list).
 
 ## Monorepo context
 

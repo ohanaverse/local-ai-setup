@@ -24,7 +24,6 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `modelman usage` | Launch log |
 | `~/.config/agent-wt/rotation.state` + `rotation-*.state` | `wt` | `wt`, `modelman usage` | Rotation position |
 | `~/Library/LaunchAgents/local.litellm.proxy.plist` | you (setup = `01-initial-setup.md`) | launchd | LiteLLM proxy on :4000 |
-| `~/Library/LaunchAgents/local.llamacpp.server.plist` | you (setup = `01-initial-setup.md`) | launchd | `llama-server` on :8080 |
 | `~/Library/LaunchAgents/homebrew.mxcl.omlx.plist` | Homebrew (setup = `01-initial-setup.md`) | launchd | oMLX server on :8000 |
 | `~/Library/LaunchAgents/homebrew.mxcl.redis.plist` | Homebrew | launchd | Redis for LiteLLM coordination |
 | `~/Library/LaunchAgents/homebrew.mxcl.postgresql@16.plist` | Homebrew | launchd | Postgres for LiteLLM (`localhost:5432/litellm`) |
@@ -137,9 +136,9 @@ variants:
 ### `~/.config/litellm/config.yaml`
 
 - **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
-- **Hand-managed entries:** of the 35 `model_list` rows, modelman owns the 24 exposed ids (13 `ollama/*` + 11 `openrouter/*`); the remaining 11 — 3 omlx variants, 2 llama.cpp rows, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed.
+- **Hand-managed entries:** of the 35 `model_list` rows, modelman owns the 24 exposed ids (13 `ollama/*` + 11 `openrouter/*`); the remaining 9 — 3 omlx variants, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
-- **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, llama.cpp, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
+- **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
 - **Env override:** `MODELMAN_LITELLM_CONFIG`.
 - OpenRouter entries contain real `api_key: sk-or-v1-…` values — redact before sharing this file.
 
@@ -233,7 +232,7 @@ ollama/glm-5.3-flash:cloud
 
 - **Owner:** you (service setup = `01-initial-setup.md`; the `homebrew.mxcl.*` ones came from Homebrew installs).
 - **Consumers:** launchd (`RunAtLoad` + `KeepAlive` on each).
-- **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), llama-server (:8080, pinned GGUF), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter may embed the local Postgres password) — redact before sharing.
+- **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter may embed the local Postgres password) — redact before sharing.
 
 ```xml
     <key>Label</key>
@@ -266,13 +265,12 @@ ls ~/.config/local-ai/registry.toml ~/.config/local-ai/modelman.toml ~/.config/a
 LaunchAgent labels are loaded:
 
 ```bash
-launchctl list | grep -E 'litellm|llamacpp|omlx|redis|ollama|postgres'
+launchctl list | grep -E 'litellm|omlx|redis|ollama|postgres'
 ```
 
 ```text
 -	0	com.ollama.ollama
 94146	0	local.litellm.proxy
-94631	0	local.llamacpp.server
 97297	0	homebrew.mxcl.omlx
 88057	0	homebrew.mxcl.redis
 80374	0	homebrew.mxcl.postgresql@16
@@ -302,3 +300,4 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
 - Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - oMLX backend reference: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
+- Provider artifacts + llama.cpp re-enable procedure: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`

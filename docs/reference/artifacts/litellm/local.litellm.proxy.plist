@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DATABASE_URL</key>
+		<string>REDACTED-DATABASE_URL</string>
+		<key>LITELLM_MASTER_KEY</key>
+		<string>REDACTED-LITELLM_MASTER_KEY</string>
+		<key>LITELLM_SALT_KEY</key>
+		<string>REDACTED-LITELLM_SALT_KEY</string>
+		<key>OPENROUTER_API_KEY</key>
+		<string>REDACTED-OPENROUTER_API_KEY</string>
+		<key>PATH</key>
+		<string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>UI_PASSWORD</key>
+		<string>REDACTED-UI_PASSWORD</string>
+		<key>UI_USERNAME</key>
+		<string>admin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>local.litellm.proxy</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/keith/.local/bin/litellm</string>
+		<string>--config</string>
+		<string>/Users/keith/.config/litellm/config.yaml</string>
+		<string>--port</string>
+		<string>4000</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/keith/.litellm.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/keith/.litellm.log</string>
+</dict>
+</plist>

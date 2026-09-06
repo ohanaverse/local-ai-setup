@@ -1,0 +1,8 @@
+[[providers]]
+id = "llamacpp"
+name = "llama.cpp"
+location = "local"
+
+[providers.auth]
+type = "none"
+

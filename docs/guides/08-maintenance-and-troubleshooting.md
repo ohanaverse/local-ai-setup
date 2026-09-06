@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the five LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `local.llamacpp.server.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`).
+- Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the four LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
 - This repo checked out — `bin/llm-isolate-provider` / `bin/llm-restore-providers` live here (guide 05), and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
@@ -17,23 +17,20 @@ Full health check — every answer is read-only, safe to run any time. Run it af
 
 ```bash
 curl -s -m 2 http://localhost:4000/v1/models -o /dev/null -w "4000(litellm):%{http_code}\n"   # 401 = proxy up, demanding key
-curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"         # /health — plain / gives 404
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
-launchctl list | grep -E 'litellm|llamacpp|omlx|postgresql|redis|ollama'
+launchctl list | grep -E 'litellm|omlx|postgresql|redis|ollama'
 pg_isready -h localhost
 redis-cli ping
 ```
 
 ```text
 4000(litellm):401
-8080(llama.cpp):200
 8000(omlx):200
 11434(ollama):200
 -	0	com.ollama.ollama
 96295	-15	local.litellm.proxy
 80374	0	homebrew.mxcl.postgresql@16
-94631	0	local.llamacpp.server
 97297	0	homebrew.mxcl.omlx
 88057	0	homebrew.mxcl.redis
 17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
@@ -44,7 +41,7 @@ PONG
 Reading it fast:
 
 - 401 on `:4000` = healthy (proxy up, correctly refusing keyless requests); 200 elsewhere.
-- `launchctl list` columns are PID / last-exit-status / label. `local.llamacpp.server` has `RunAtLoad` and `KeepAlive` both `true` in its plist (verified) — **:8080 is expected to be up at every login**, and launchd respawns it if it dies. Same two keys are `true` in all five plists.
+- `launchctl list` columns are PID / last-exit-status / label. Same two keys are `true` in all four remaining plists.
 - `local.litellm.proxy` shows status `-15` here because it was SIGTERMed by a `kickstart -k` earlier that day (see Gotchas — `0`/`-15` are the only healthy readings for the middle column).
 - Ollama row has no PID (`-`) and no LaunchAgent plist exists for it — the `com.ollama.ollama` login item (Ollama.app) owns the daemon; the `application.com.electron.ollama.*` row appears only while the app window is open.
 - Any line that differs → §1 for restart mechanics, §3 for logs.
@@ -53,17 +50,13 @@ Reading it fast:
 
 ### 1. After a reboot: what auto-starts, what needs a kick
 
-Read the plists, not memory. All five launchd jobs carry both keys (verified live on 2026-08-29):
+Read the plists, not memory. All four launchd jobs carry both keys (verified live on 2026-08-29):
 
 ```bash
-grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.llamacpp.server.plist ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist
+grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/homebrew.mxcl.omlx.plist
 ```
 
 ```text
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <key>RunAtLoad</key>
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <true/>
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <key>KeepAlive</key>
-/Users/keith/Library/LaunchAgents/local.llamacpp.server.plist:    <true/>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>RunAtLoad</key>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
 /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>KeepAlive</key>
@@ -76,11 +69,11 @@ grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.llamacpp.server.pli
 
 (`postgresql@16` and `redis` plists also carry `RunAtLoad`/`KeepAlive` `true` — verified by reading those two files directly; same shape, skipped above for brevity.)
 
-So after login: LiteLLM (:4000), llama.cpp (:8080), oMLX (:8000), Postgres, Redis all come up on their own — llama.cpp included, because of its `RunAtLoad`/`KeepAlive`. KeepAlive also means **if any of them crash, launchd restarts them automatically**; a service that stays down means it is crash-looping against KeepAlive, not waiting for you (go to §3).
+So after login: LiteLLM (:4000), oMLX (:8000), Postgres, Redis all come up on their own. KeepAlive also means **if any of them crash, launchd restarts them automatically**; a service that stays down means it is crash-looping against KeepAlive, not waiting for you (go to §3).
 
 Ollama is the exception: **no plist exists** — the daemon is owned by the Ollama.app login item (`com.ollama.ollama`), which starts at login only if the app is enabled as a login item and launches. When :11434 is dead after a reboot, open Ollama.app and wait a few seconds.
 
-Run `brew services list` to see which of your jobs brew considers its own (this is the trio you manage via `brew services`; LiteLLM and llama.cpp are hand-rolled plists outside brew):
+Run `brew services list` to see which of your jobs brew considers its own (this is the trio you manage via `brew services`; LiteLLM is a hand-rolled plist outside brew):
 
 ```bash
 brew services list
@@ -100,7 +93,6 @@ Per-backend reference — commands and log paths verified against the live plist
 | Backend | Check (§TL;DR) | Restart | Logs |
 |---------|----------------|---------|------|
 | LiteLLM :4000 | `401` curl | `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | `/Users/keith/.litellm.err.log` (+ `/Users/keith/.litellm.log`) |
-| llama.cpp :8080 | `200` curl | `launchctl kickstart -k gui/$(id -u)/local.llamacpp.server` | `/Users/keith/.llamacpp.err.log` (+ `/Users/keith/.llamacpp.log`) |
 | oMLX :8000 | `200` on `/health` | `omlx restart` or `brew services restart omlx` | `/opt/homebrew/var/log/omlx.log` |
 | Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `/Users/keith/.ollama/logs/server.log` |
 | Postgres 5432 | `pg_isready -h localhost` | `brew services restart postgresql@16` | `/opt/homebrew/var/log/postgresql@16.log` |
@@ -126,11 +118,9 @@ openrouter/qwen/qwen3.8-27b
 openrouter/qwen/qwen3.8-flash
 openrouter/qwen/qwen3.8-2.4t-a95b
 openrouter/qwen/qwen3.8-max
-llama.cpp/local-llama
 ollama/ornith-1.5:35b
 omlx/Ornith-1.5-35B-A3B-MLX-4bit
 omlx/Ornith-1.5-35B-A3B-MLX-6bit
-llama.cpp/ornith-1.5-35b
 ```
 
 Present in this list but not routeable? Skip to step 5 (backend down). Absent? Continue.
@@ -148,11 +138,9 @@ grep -n 'model_name:' /Users/keith/.config/litellm/config.yaml
 26:  - model_name: openrouter/qwen/qwen3.8-flash
 32:  - model_name: openrouter/qwen/qwen3.8-2.4t-a95b
 38:  - model_name: openrouter/qwen/qwen3.8-max
-45:  - model_name: llama.cpp/local-llama
-52:  - model_name: ollama/ornith-1.5:35b
-60:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-4bit
-67:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-6bit
-74:  - model_name: llama.cpp/ornith-1.5-35b
+45:  - model_name: ollama/ornith-1.5:35b
+52:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-4bit
+59:  - model_name: omlx/Ornith-1.5-35B-A3B-MLX-6bit
 ```
 
 Present here but absent from `:4000`? config.yaml changed since the proxy last started → jump to step 7 (restart). Absent here too? Continue.
@@ -173,7 +161,7 @@ size_bytes = 19327352832
 litellm_exposed = true
 ```
 
-Historical note (2026-08-30, updated 2026-09-03): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models) and eleven openrouter models. The omlx/llamacpp entries remain hand-managed by design and will still show `litellm_exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
+Historical note (2026-08-30, updated 2026-09-03): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models) and eleven openrouter models. The omlx entries remain hand-managed by design and will still show `litellm_exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
 
 - **`ready = false` alongside the flag** → mid-cascade: the user pressed `x` on a not-ready model in the TUI, which queues `litellm_exposed = true` AND `ready = true` (a download). The flag is set, but the apply step hasn't run yet, so `config.yaml` has no row. **Do not re-expose** — apply the pending changes from the TUI (or `modelman apply` if exposed via CLI), and the row appears. Re-exposing now is a redundant op that bounces the proxy without fixing the gap.
 - **`ready = true` alongside the flag** (or the model is a cloud model — `provider_id` in `openrouter`, or `location = "cloud"` for an ollama model, where `ready` is permanently false) → genuine drift: modelman expects the row, and it was lost. → step 4 (re-expose replaces the row by id).
@@ -195,23 +183,21 @@ Exposed ollama/qwen3.8:27b-mlx through LiteLLM.
 
 Bad ids refuse instead — an `error: …` line on stderr, exit 1 (live-verified error paths: guide 02 §7, guide 04 §2) — meaning the id from Steps 1–3 never existed; fix the id, not the config.
 
-**Step 5 — backend port actually up?** The `api_base` in the model's row points at a backend; probe the one that owns your model (all three ran live, 2026-08-29):
+**Step 5 — backend port actually up?** The `api_base` in the model's row points at a backend; probe the one that owns your model (both ran live, 2026-08-29):
 
 ```bash
 curl -s -m 2 http://localhost:11434/api/tags -o /dev/null -w "11434(ollama):%{http_code}\n"
 curl -s -m 2 http://localhost:8000/health -o /dev/null -w "8000(omlx):%{http_code}\n"
-curl -s -m 2 http://localhost:8080/health -o /dev/null -w "8080(llama.cpp):%{http_code}\n"
 ```
 
 ```text
 11434(ollama):200
 8000(omlx):200
-8080(llama.cpp):200
 ```
 
 A dead backend is a §1/§3 problem, not a config problem — fix the backend first.
 
-**Step 6 — api_base right?** The row must point the proxy at the right port (8080 vs 8000 mixups are classic):
+**Step 6 — api_base right?** The row must point the proxy at the right port:
 
 ```bash
 grep -A3 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config.yaml
@@ -224,7 +210,7 @@ grep -A3 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/confi
       api_base: http://localhost:11434
 ```
 
-(omlx rows use `http://localhost:8000`, llama.cpp rows `http://localhost:8080`, OpenRouter rows no `api_base` — key from plist env instead.)
+(omlx rows use `http://localhost:8000`, OpenRouter rows no `api_base` — key from plist env instead.)
 
 **Step 7 — config.yaml still valid YAML?** A hand-edit typo keeps the proxy in a crash loop (it re-reads only at start):
 
@@ -233,10 +219,10 @@ python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/conf
 ```
 
 ```text
-model_list entries: 11
+model_list entries: 9
 ```
 
-Parse error → fix by hand or rebuild the row via modelman (it does atomic PyYAML writes, guide 04 §3); count `11` on this machine = current healthy state (your count is however many you exposed).
+Parse error → fix by hand or rebuild the row via modelman (it does atomic PyYAML writes, guide 04 §3); count `9` on this machine = current healthy state (your count is however many you exposed).
 
 **Step 8 — restart, then re-check Step 1.** The proxy reads config.yaml only at start:
 
@@ -248,7 +234,7 @@ launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"
 kickstart OK
 ```
 
-Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. The same `kickstart -k` works for `local.llamacpp.server` (it also reloads the pinned GGUF — slower); everything else uses the mechanics in the §1 table.
+Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. Everything else uses the mechanics in the §1 table.
 
 ### 3. Log triage
 
@@ -257,7 +243,6 @@ Log homes (all from live plists / on-disk checks, 2026-08-29):
 | Service | Log file(s) | Notes |
 |---------|-------------|-------|
 | LiteLLM | `/Users/keith/.litellm.err.log`, `/Users/keith/.litellm.log` | two files (stderr/stdout); launchd appends — the file only grows |
-| llama.cpp | `/Users/keith/.llamacpp.err.log`, `/Users/keith/.llamacpp.log` | llama-server is chatty; 65k+ lines is normal, not a loop |
 | oMLX | `/opt/homebrew/var/log/omlx.log` | single file, both streams; `omlx diagnose` for install/runtime issues |
 | Postgres | `/opt/homebrew/var/log/postgresql@16.log` | single file |
 | Redis | `/opt/homebrew/var/log/redis.log` | single file |
@@ -266,18 +251,17 @@ Log homes (all from live plists / on-disk checks, 2026-08-29):
 Crash-loop recognition — with `KeepAlive = true`, a service that dies on startup is relaunched by launchd immediately, forever. Look for the signature in `launchctl list`:
 
 ```bash
-launchctl list | grep -E 'litellm|llamacpp|omlx|postgresql|redis'
+launchctl list | grep -E 'litellm|omlx|postgresql|redis'
 ```
 
 ```text
 96295	-15	local.litellm.proxy
 80374	0	homebrew.mxcl.postgresql@16
-94631	0	local.llamacpp.server
 97297	0	homebrew.mxcl.omlx
 88057	0	homebrew.mxcl.redis
 ```
 
-- **Healthy running:** a PID + `0` (or `-15` right after a kickstart — see Gotchas). E.g. the `local.litellm.proxy` / `local.llamacpp.server` rows above (live).
+- **Healthy running:** a PID + `0` (or `-15` right after a kickstart — see Gotchas). E.g. the `local.litellm.proxy` row above (live).
 - **Died and launchd gave up / between retries:** `-` PID with a **non-zero** status. Then:
 - **Crash loop you can't see in the middle column:** a PID present but changing every time you look, with the port still dead. Tells: watch the PID (`launchctl list | grep <label>` twice a minute), or a fast-growing err log — `ls -la` the StandardErrorPath twice and compare mtime/size.
 
@@ -402,28 +386,27 @@ ollama version is 0.33.2
 200
 ```
 
-**brew-managed tools** — upgrade then restart the affected service (llama.cpp is brew-*installed* but **not** brew-*serviced* on this machine — its plist is hand-rolled, see §1's `brew services list`):
+**brew-managed tools** — upgrade then restart the affected service:
 
 <!-- UNVERIFIED — upgrade not run in this session (mutates Homebrew state). -->
 
 ```bash
-brew upgrade llama.cpp omlx postgresql@16 redis
+brew upgrade omlx postgresql@16 redis
 ```
 
 Verify after with a command run live, 2026-08-29 (current versions as of writing):
 
 ```bash
-brew list --versions llama.cpp omlx postgresql@16 redis
+brew list --versions omlx postgresql@16 redis
 ```
 
 ```text
-llama.cpp 0.3.0
 omlx 0.6.3rc3
 postgresql@16 16.15
 redis 8.10.1
 ```
 
-New numbers should appear there, and the TL;DR block must be green again (`brew services list` should still read `started` for omlx/postgresql@16/redis; for llama.cpp use the `:8080` curl).
+New numbers should appear there, and the TL;DR block must be green again (`brew services list` should still read `started` for omlx/postgresql@16/redis).
 
 ### 5. Benchmark leftovers — restore the stack, recognize residue
 
@@ -440,15 +423,15 @@ bin/llm-restore-providers
 [llm-restore-providers] providers restored
 ```
 
-It restarts all four providers in parallel, skips the ones already answering, and exits 1 if any fails to come back.
+It restarts all three providers in parallel, skips the ones already answering, and exits 1 if any fails to come back.
 
-**Isolation residue fingerprint:** after a benchmark (or a hard-killed run), ALL THREE ports answer — `4000(litellm):401` still answers, :11434 always answers 200 (the ollama daemon stays up; `ollama ps` is header-only unless an ollama isolation loaded a model), and the isolated target is whichever of :8000/:8080 is alive; only the non-isolated one of :8000/:8080 goes dark (TL;DR block shows e.g. `8000(omlx):200` with `8080(llama.cpp)` dead/curl-erroring and `11434(ollama):200`). The discriminator: `local.llamacpp.server` missing from `launchctl list` = ollama/omlx residue (llamacpp's plist was unloaded); present = llamacpp residue. For an `ollama` isolation: :11434 answers with a loaded row in `ollama ps` (that's the residue) while :8000/:8080 both refuse — the healthy stack's `ollama ps` prints the bare header only (run live, 2026-08-29). Cure: `bin/llm-restore-providers`, then re-run the TL;DR block. One asymmetry: a llama.cpp residue won't self-heal — the job was `launchctl unload`ed deliberately (it disappears from `launchctl list` entirely), so there is nothing for launchd to restart; only a restore or `launchctl load -w /Users/keith/Library/LaunchAgents/local.llamacpp.server.plist` brings :8080 back.
+**Isolation residue fingerprint:** after a benchmark (or a hard-killed run), the two local backend ports answer — `4000(litellm):401` still answers, :11434 always answers 200 (the ollama daemon stays up; `ollama ps` is header-only unless an ollama isolation loaded a model), and the isolated target is whichever of :11434/:8000 is alive; only the non-isolated one goes dark. For an `ollama` isolation: :11434 answers with a loaded row in `ollama ps` (that's the residue) while :8000 refuses — the healthy stack's `ollama ps` prints the bare header only (run live, 2026-08-29). For an `omlx` isolation: :8000 answers while `ollama ps` is header-only. Cure: `bin/llm-restore-providers`, then re-run the TL;DR block.
 
 <!-- UNVERIFIED — the residue states above were not induced in this session (inducing them means stopping live backends); the detection commands and the loaded-header `ollama ps` output are the same ones verified live in the healthy state (header only, no rows). -->
 
 ## Verification
 
-Everything this guide promises reduces to the TL;DR block being green — no destructive simulation is needed to verify it, and none was used. On the healthy 2026-08-29 stack, the block's verbatim output is pasted in TL;DR above; re-running it must reproduce: `401` on :4000, `200` on the three backend ports, six launchd rows with live PIDs (Ollama's row legitimately shows `-`), `accepting connections`, `PONG`.
+Everything this guide promises reduces to the TL;DR block being green — no destructive simulation is needed to verify it, and none was used. On the healthy 2026-08-29 stack, the block's verbatim output is pasted in TL;DR above; re-running it must reproduce: `401` on :4000, `200` on the two backend ports, five launchd rows with live PIDs (Ollama's row legitimately shows `-`), `accepting connections`, `PONG`.
 
 Two non-block checks this guide also ran live and are worth repeating after maintenance:
 
@@ -465,10 +448,10 @@ python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/conf
 ```
 
 ```text
-model_list entries: 11
+model_list entries: 9
 ```
 
-(Count matches the 11 ids the auth'd `/v1/models` list returns — Steps §2 step 1.)
+(Count matches the 9 ids the auth'd `/v1/models` list returns — Steps §2 step 1.)
 
 ## Gotchas
 

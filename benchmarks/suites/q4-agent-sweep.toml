@@ -25,10 +25,6 @@ api = "openai-completions"
 base_url = "http://localhost:11434/v1"
 api = "openai-completions"
 
-[routes.direct.llamacpp]
-base_url = "http://localhost:8080/v1"
-api = "openai-completions"
-
 [[rows]]
 models   = ["ollama/qwen3.8:27b-mlx"]
 thinking = ["off", "high"]

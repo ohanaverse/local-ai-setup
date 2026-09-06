@@ -13,7 +13,11 @@ The Ornith-1.5-35B-A3B model (a 35B MoE with 3B active parameters) is downloaded
 | **Ollama** | `ornith-1.5:35b` | Q4_K_M | 22 GB |
 | **oMLX** | `Ornith-1.5-35B-A3B-MLX-4bit` | MLX 4-bit | ~19.5 GB |
 | **oMLX** | `Ornith-1.5-35B-A3B-MLX-6bit` | MLX 6-bit | ~28 GB |
-| **llama.cpp** | `Ornith-1.5-35B-Q6_K.gguf` | Q6_K GGUF | 29.2 GB |
+
+> **llama.cpp retired 2026-09-07** (issue #33) — no longer a benchmark
+> backend; artifacts + re-enable steps in
+> [provider-artifacts.md](../docs/reference/provider-artifacts.md). Dated result
+> tables below keep their historical llama.cpp rows.
 
 These are *different quantizations and runtimes* of the same model. Benchmarking them side-by-side tells us which backend/quantization is fastest on this Apple Silicon hardware, and how much overhead the LiteLLM proxy adds.
 
@@ -21,13 +25,12 @@ These are *different quantizations and runtimes* of the same model. Benchmarking
 
 ## The Isolation Problem
 
-The three local backends share Apple Silicon's GPU and unified memory. Running all of them with models loaded simultaneously means ~80 GB of contention for four ~20-29 GB models, plus thermal throttling. **The benchmark runs each variant in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX, llama.cpp).
+The three local backends share Apple Silicon's GPU and unified memory. Running all of them with models loaded simultaneously means ~80 GB of contention for four ~20-29 GB models, plus thermal throttling. **The benchmark runs each variant in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX).
 
 | Backend | "Stop" mechanism | What's left running |
 |---|---|---|
 | **Ollama** | `ollama stop ornith-1.5:35b` | Daemon on `:11434`, model unloaded |
 | **oMLX** | `omlx stop` | Nothing — service halts entirely |
-| **llama.cpp** | `launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist` | Nothing — LaunchAgent halts, frees the ~29 GB Metal allocation |
 
 **oMLX two-model nuance**: oMLX is a multi-model server that serves *both* the 4-bit and 6-bit variants. The warmup request must name the exact variant so the correct model loads into GPU/RAM (oMLX uses LRU memory management). The 4-bit and 6-bit are benchmarked as two separate "backends", each with its own stop/start/warmup cycle.
 
@@ -46,7 +49,7 @@ ornith-1.5-benchmark-multi 3       # 3 passes with cool-down
 
 **What it does**:
 1. Ensures all services are up
-2. For each of the four variants (ollama, omlx 4-bit, omlx 6-bit, llama.cpp):
+2. For each of the three variants (ollama, omlx 4-bit, omlx 6-bit):
    - Stops all local services
    - Loads only the one being tested (warmup with a short "hi" request)
    - Runs the same prompt twice: once direct, once through LiteLLM

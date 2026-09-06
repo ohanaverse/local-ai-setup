@@ -99,14 +99,14 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 ### 3. Interpreting mismatches
 
 - **Matched rows** (launches > 0 *and* requests > 0): agent traffic flowed through the LiteLLM proxy. Normal state for models exposed via LiteLLM.
-- **WT-only launches**: wt launches with no LiteLLM spend — the agent reached the model's native API directly (ollama `:11434` or its cloud endpoints, llama.cpp `:8080`, oMLX `:8000`) and those requests never log to Postgres. On this box that is *most* rows (all the `ollama/...` ones), not a bug. Spends only reconcile for models that went through LiteLLM.
+- **WT-only launches**: wt launches with no LiteLLM spend — the agent reached the model's native API directly (ollama `:11434` or its cloud endpoints, oMLX `:8000`) and those requests never log to Postgres. On this box that is *most* rows (all the `ollama/...` ones), not a bug. Spends only reconcile for models that went through LiteLLM.
 
   After enabling `[gateway]` in `wt`, non-native launches route through LiteLLM,
   so matched rows should become the norm. Remaining `WT-only` rows are usually:
 
   - native models (unmetered subscriptions)
   - OpenCode launches (not routed through the gateway in this release)
-  - traffic that bypassed wt entirely (e.g. direct `curl` to Ollama/llama.cpp/oMLX)
+  - traffic that bypassed wt entirely (e.g. direct `curl` to Ollama/oMLX)
 
 - **LiteLLM-only spend**: something used the proxy without a wt launch in the window — ad-hoc `curl`/scripts/other clients. The live `openrouter/qwen/*` rows ($0.0003–$0.0085) are exactly this.
 - **Filters narrow but don't warn.** Live tests (both exit 0):
@@ -151,7 +151,7 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 
 ## Gotchas
 
-- **Only LiteLLM-routed traffic produces spend.** Native/direct launches (ollama cloud, llama.cpp `:8080`, oMLX `:8000`) never appear in LiteLLM spend — they surface as `WT-only launches`. Expect that section to be long on this box.
+- **Only LiteLLM-routed traffic produces spend.** Native/direct launches (ollama cloud, oMLX `:8000`) never appear in LiteLLM spend — they surface as `WT-only launches`. Expect that section to be long on this box.
 - **Run modelman from the `modelman/` directory.** `modelman usage report --days 1` from a globally installed binary would fail with `No such command 'usage'`. Always `uv run modelman` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` (same trap as guide 02 Gotchas).
 - **`--days` doesn't move every window.** It re-scopes the header range and the LiteLLM spend matching; launch columns stay fixed `1d/7d/30d` buckets and WT-only bullet *counts* stay on the fixed 7-day window — but bullet *membership* shifts: a model whose spend falls inside the 7-day default but outside the smaller `--days` window drops out of "matched" and becomes a WT-only bullet (live: `ollama/qwen3.8:27b-mlx` matched at `--days 7`, a WT-only bullet at `--days 1`).
 - **`rotation.state` is the *last* TUI launch, nothing more** — one global slot; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06).

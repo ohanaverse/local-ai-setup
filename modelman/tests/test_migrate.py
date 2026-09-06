@@ -165,7 +165,6 @@ def test_migrate_uses_canonical_provider_defaults(tmp_path):
     ollama = result.registry.provider("ollama")
     assert ollama.name == "Ollama"
     assert ollama.auth.base_url == "http://localhost:11434"
-    assert result.registry.provider("llamacpp").name == "llama.cpp"
     omlx = result.registry.provider("omlx")
     assert omlx.name == "oMLX"
     assert omlx.model_dir == "~/.omlx/models"  # still read from legacy config
