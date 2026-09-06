@@ -65,6 +65,16 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		}
 	}
 
+	// Legacy spelling: `downloaded` must still be accepted as `ready`.
+	// modelman/state.py reads `entry.get("ready", entry.get("downloaded", False))`;
+	// a pre-registry modelman.toml with `downloaded=true` and no `ready` key
+	// would otherwise decode to Ready=false in Go, diverging from modelman.
+	if st, ok := state["llamacpp/legacy-contract-fixture"]; !ok {
+		t.Errorf("expected llamacpp/legacy-contract-fixture in state")
+	} else if !st.Ready {
+		t.Errorf("expected llamacpp/legacy-contract-fixture ready=true (via downloaded fallback), got false")
+	}
+
 	// Verify local model with flag off
 	st, ok := state["ollama/contract-fixture:local"]
 	if !ok {

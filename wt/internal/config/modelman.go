@@ -9,10 +9,16 @@ import (
 
 // modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
 // wt needs read-only access to. The full file is owned by modelman.
+//
+// `downloaded` is the legacy spelling of `ready` (modelman/state.py still
+// accepts `downloaded` as a read-side fallback for pre-registry files).
+// wt materializes both keys into a single Ready bool so the exposure
+// predicate treats legacy entries consistently with modelman.
 type modelmanState struct {
 	ModelState map[string]struct {
 		LitellmExposed bool `toml:"litellm_exposed"`
 		Ready          bool `toml:"ready"`
+		Downloaded     bool `toml:"downloaded"`
 	} `toml:"model_state"`
 }
 
@@ -46,7 +52,7 @@ func loadModelmanState() (map[string]struct {
 		out[id] = struct {
 			LitellmExposed bool
 			Ready          bool
-		}{LitellmExposed: st.LitellmExposed, Ready: st.Ready}
+		}{LitellmExposed: st.LitellmExposed, Ready: st.Ready || st.Downloaded}
 	}
 	return out, nil
 }

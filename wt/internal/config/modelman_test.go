@@ -82,6 +82,38 @@ func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	}
 }
 
+// TestLoadModelmanStateReadsLegacyDownloadedAsReady asserts that a legacy
+// modelman.toml entry using `downloaded = true` without a `ready` key is
+// treated as ready, matching modelman/state.py's fallback
+// `entry.get("ready", entry.get("downloaded", False))`. Dropping this fallback
+// would hide legacy local models from wt's picker even though modelman still
+// considers them ready.
+func TestLoadModelmanStateReadsLegacyDownloadedAsReady(t *testing.T) {
+	dir := t.TempDir()
+	writeModelmanState(t, dir, `
+[model_state]
+
+[model_state."legacy-local"]
+litellm_exposed = true
+downloaded = true
+`)
+
+	exposed, err := loadModelmanState()
+	if err != nil {
+		t.Fatalf("loadModelmanState() error = %v", err)
+	}
+	st, ok := exposed["legacy-local"]
+	if !ok {
+		t.Fatalf("exposed[legacy-local] missing, want present")
+	}
+	if !st.LitellmExposed {
+		t.Errorf("exposed[legacy-local].LitellmExposed = false, want true")
+	}
+	if !st.Ready {
+		t.Errorf("exposed[legacy-local].Ready = false, want true (via downloaded fallback)")
+	}
+}
+
 // TestLoadExposesOnlyLitellmExposedModels asserts the end-to-end wiring of
 // Load(), deriveNative, and modelman exposure: native models are always
 // exposed; non-native models are exposed only when modelman.toml marks them
@@ -210,6 +242,8 @@ func TestModelmanPathExpandsTildeInXDG(t *testing.T) {
 
 // TestIsExposedPredicate implements the exposure rule:
 // native OR (litellm_exposed AND (ready OR cloud location)).
+// Cloud location may be inherited from the provider even when the model row
+// omits its own `location` key.
 func TestIsExposedPredicate(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -265,6 +299,13 @@ provider_id = "openrouter"
 model_name = "cloud-flag"
 location = "cloud"
 tags = ["code"]
+
+[[models]]
+id = "openrouter/cloud-inherited"
+family = "cloud-inherited"
+provider_id = "openrouter"
+model_name = "cloud-inherited"
+tags = ["code"]
 `)
 
 	cfgDir := Dir()
@@ -279,6 +320,7 @@ tags = ["code"]
 	// Local model with flag+ready: exposed
 	// Local model with flag+not-ready: NOT exposed
 	// Cloud model with flag (no ready key): exposed
+	// Cloud-inherited model with flag (no ready key, no model location): exposed
 	writeModelmanState(t, dir, `
 [model_state]
 
@@ -295,6 +337,9 @@ litellm_exposed = true
 ready = false
 
 [model_state."openrouter/cloud-flag"]
+litellm_exposed = true
+
+[model_state."openrouter/cloud-inherited"]
 litellm_exposed = true
 `)
 
@@ -317,6 +362,7 @@ litellm_exposed = true
 		{"ollama/local-flag-ready", true, "flag + ready = exposed"},
 		{"ollama/local-flag-not-ready", false, "flag + not-ready (local) = not exposed"},
 		{"openrouter/cloud-flag", true, "cloud location exempts from ready gate"},
+		{"openrouter/cloud-inherited", true, "cloud location inherited from provider exempts from ready gate"},
 	}
 
 	for _, tt := range tests {

@@ -360,6 +360,10 @@ func deriveNative(cfg *Config) {
 // IsExposed reports whether m should appear in wt's model catalog.
 // Native models are always exposed (they cannot route through LiteLLM).
 // Non-native models require litellm_exposed AND (ready OR cloud location).
+//
+// The cloud-location check uses ResolveLocation: a model may omit its own
+// `location` and inherit it from the provider. validate() already guarantees
+// the location is resolvable, so an error here is treated as non-cloud.
 func (c *Config) IsExposed(m Model) bool {
 	if m.Native {
 		return true
@@ -368,7 +372,7 @@ func (c *Config) IsExposed(m Model) bool {
 	if !ok || !st.LitellmExposed {
 		return false
 	}
-	if m.Location == "cloud" {
+	if loc, err := c.ResolveLocation(m); err == nil && loc == "cloud" {
 		return true
 	}
 	return st.Ready
