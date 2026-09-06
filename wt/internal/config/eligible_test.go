@@ -26,9 +26,12 @@ func TestEligibleModels(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
 		},
-		exposed: map[string]bool{
-			"ollama/gemma4:9b": true,
-			"ollama/llama3":    true,
+		exposed: map[string]struct {
+			LitellmExposed bool
+			Ready          bool
+		}{
+			"ollama/gemma4:9b": {LitellmExposed: true, Ready: true},
+			"ollama/llama3":    {LitellmExposed: true, Ready: true},
 		},
 	}
 	deriveNative(cfg)
@@ -99,9 +102,12 @@ func TestEligibleModelsInMatchesEligibleModels(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 			{Name: "pi", SupportedProviders: []string{"ollama", "claude"}},
 		},
-		exposed: map[string]bool{
-			"ollama/gemma4:9b": true,
-			"ollama/llama3":    true,
+		exposed: map[string]struct {
+			LitellmExposed bool
+			Ready          bool
+		}{
+			"ollama/gemma4:9b": {LitellmExposed: true, Ready: true},
+			"ollama/llama3":    {LitellmExposed: true, Ready: true},
 		},
 	}
 	deriveNative(cfg)

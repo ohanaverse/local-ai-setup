@@ -12,7 +12,7 @@ import (
 // tests/contracts/test_modelman_fixture.py — a schema change not
 // reflected in both tests fails both CI jobs in the same PR instead of
 // wt's picker silently losing exposure state. wt only consumes the
-// litellm_exposed flags; every other field (ready/downloaded, disk_path,
+// litellm_exposed and ready flags; every other field (disk_path,
 // size_bytes, families) is modelman-only and must stay ignorable here.
 func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	dir := t.TempDir()
@@ -36,26 +36,77 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exposed, err := loadModelmanState()
+	state, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error: %v", err)
 	}
 
-	// Only the two litellm_exposed=true ids may appear — the unexposed
-	// local model, the never-downloaded cloud model, and the legacy
-	// downloaded-key entry must not leak into the set.
-	if len(exposed) != 2 {
-		t.Fatalf("got %d exposed ids, want 2: %v", len(exposed), exposed)
+	// Check the new predicate cases:
+	// - ollama/contract-fixture:subscription (flag+ready) → should be in state
+	// - llamacpp/legacy-contract-fixture (flag+downloaded) → should be in state
+	// - ollama/contract-fixture:local (flag=false) → NOT litellm_exposed
+	// - ollama/contract-fixture:local-not-ready (flag=true, ready=false) → in state
+	// - openrouter/contract-fixture:cloud (no flag) → NOT litellm_exposed
+	// - openrouter/contract-fixture:cloud-exposed (flag=true, no ready) → in state
+
+	expectedLitellmExposed := map[string]bool{
+		"ollama/contract-fixture:subscription": true,
+		"llamacpp/legacy-contract-fixture":   true,
 	}
-	for _, id := range []string{"ollama/contract-fixture:subscription", "llamacpp/legacy-contract-fixture"} {
-		if !exposed[id] {
-			t.Errorf("expected %q in exposed set, got %v", id, exposed)
+
+	for id, shouldBeExposed := range expectedLitellmExposed {
+		st, ok := state[id]
+		if !ok {
+			t.Errorf("expected %q in modelman state, got missing", id)
+			continue
+		}
+		if shouldBeExposed && !st.LitellmExposed {
+			t.Errorf("expected %q to have litellm_exposed=true", id)
 		}
 	}
-	if exposed["ollama/contract-fixture:local"] {
-		t.Errorf("unexposed model must not be in the exposed set")
+
+	// Legacy spelling: `downloaded` must still be accepted as `ready`.
+	// modelman/state.py reads `entry.get("ready", entry.get("downloaded", False))`;
+	// a pre-registry modelman.toml with `downloaded=true` and no `ready` key
+	// would otherwise decode to Ready=false in Go, diverging from modelman.
+	if st, ok := state["llamacpp/legacy-contract-fixture"]; !ok {
+		t.Errorf("expected llamacpp/legacy-contract-fixture in state")
+	} else if !st.Ready {
+		t.Errorf("expected llamacpp/legacy-contract-fixture ready=true (via downloaded fallback), got false")
 	}
-	if exposed["openrouter/contract-fixture:cloud"] {
-		t.Errorf("entry with no litellm_exposed key must default to unexposed")
+
+	// Verify local model with flag off
+	st, ok := state["ollama/contract-fixture:local"]
+	if !ok {
+		t.Errorf("expected ollama/contract-fixture:local in state")
+	} else if st.LitellmExposed {
+		t.Errorf("expected ollama/contract-fixture:local to have litellm_exposed=false")
 	}
+
+	// Verify cloud model with no flag (defaults)
+	st, ok = state["openrouter/contract-fixture:cloud"]
+	if !ok {
+		t.Errorf("expected openrouter/contract-fixture:cloud in state")
+	} else if st.LitellmExposed {
+		t.Errorf("expected openrouter/contract-fixture:cloud to have litellm_exposed=false")
+	}
+
+	// Verify the local-not-ready case: flag on, ready off
+	st, ok = state["ollama/contract-fixture:local-not-ready"]
+	if !ok {
+		t.Errorf("expected ollama/contract-fixture:local-not-ready in state")
+	} else if !st.LitellmExposed {
+		t.Errorf("expected ollama/contract-fixture:local-not-ready to have litellm_exposed=true")
+	} else if st.Ready {
+		t.Errorf("expected ollama/contract-fixture:local-not-ready to have ready=false")
+	}
+
+	// Verify cloud-exposed case: flag on, no ready key (defaults to false)
+	st, ok = state["openrouter/contract-fixture:cloud-exposed"]
+	if !ok {
+		t.Errorf("expected openrouter/contract-fixture:cloud-exposed in state")
+	} else if !st.LitellmExposed {
+		t.Errorf("expected openrouter/contract-fixture:cloud-exposed to have litellm_exposed=true")
+	}
+	// ready defaults to false for missing key
 }

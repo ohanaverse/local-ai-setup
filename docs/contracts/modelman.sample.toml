@@ -1,6 +1,6 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (only the litellm_exposed flags, to filter the model picker).
+# read-only (litellm_exposed and ready flags, to filter the model picker).
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)
@@ -9,6 +9,10 @@
 # The point of this file is that a schema change on either side (e.g. wt
 # renaming its litellm_exposed key, modelman moving model_state) makes
 # both CI jobs fail in the same PR.
+#
+# Exposure rule (both tools): native OR (litellm_exposed AND (ready OR cloud location)).
+# - Local model with litellm_exposed=true, ready=false → NOT exposed
+# - Cloud model with litellm_exposed=true (no ready key) → exposed
 
 [model_state."ollama/contract-fixture:local"]
 ready = true
@@ -33,6 +37,19 @@ litellm_exposed = true
 # A model that exists in state but was never downloaded: all defaults.
 # modelman's reader yields ready=False; wt's exposed-set skips it.
 [model_state."openrouter/contract-fixture:cloud"]
+
+# Local model with flag on but not ready: tests the ready gate for local models.
+# Exposure: flag=true + ready=false + location=local → NOT exposed.
+[model_state."ollama/contract-fixture:local-not-ready"]
+ready = false
+disk_path = "ollama:contract-fixture:local-not-ready"
+size_bytes = 1073741824
+litellm_exposed = true
+
+# Cloud model with flag on but no ready key: tests the cloud exemption.
+# Exposure: flag=true + location=cloud → exposed (ready gate bypassed).
+[model_state."openrouter/contract-fixture:cloud-exposed"]
+litellm_exposed = true
 
 # Legacy family display names. Writers no longer create these (display
 # names live in registry.toml [[families]]); entries stay loadable so
