@@ -152,7 +152,7 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 // includes family context and usage counts. familyOf maps the FULL
 // catalog's model IDs to families so family totals are accurate even
 // when tags or families narrow the eligible slice.
-func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store) []*modelItem {
+func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store, lastID string) []*modelItem {
 	// We need per-model and per-family counts for the line format.
 	// Count over the full catalog (familyOf's keys), not just the
 	// eligible subset, so a family's 30-day total includes launches of
@@ -212,8 +212,14 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		c := modelCounts[m.ID]
 		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
 
-		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s  %-*s  %-*s",
-			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
+		// 2-rune prefix on every row: "▶ " marks the rotation's
+		// last-launched model, two spaces keep unmarked rows aligned.
+		marker := "  "
+		if lastID != "" && m.ID == lastID {
+			marker = "▶ "
+		}
+		line := fmt.Sprintf("%s%-*s  %3d  %-*s  %-5s  %-*s  %-*s  %-*s",
+			marker, famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
 			ptWidth, pricing[i].perToken, subWidth, pricing[i].subscription)
 
 		if len(m.Tags) > 0 {

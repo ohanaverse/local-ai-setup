@@ -693,7 +693,7 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	}
 
 	// Build the sorted, compact model list.
-	items := buildModelItems(models, familyOf, newUsageStore())
+	items := buildModelItems(models, familyOf, newUsageStore(), "")
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)

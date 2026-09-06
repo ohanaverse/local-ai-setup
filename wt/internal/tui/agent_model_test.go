@@ -81,7 +81,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	for _, m := range fullCatalog {
 		familyOf[m.ID] = m.Family
 	}
-	items := buildModelItems(models, familyOf, newUsageStore())
+	items := buildModelItems(models, familyOf, newUsageStore(), "")
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)

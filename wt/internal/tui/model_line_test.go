@@ -28,10 +28,10 @@ func (s *mockStore) Record(modelID string) error {
 }
 
 // TestModelItemLineFormat verifies the compact one-line model rendering:
-// family column, 30-day family count, model ID, location, per-model
-// 1d/7d/30d counts, per-token and subscription pricing, and optional tag
-// list. A regression here would make the picker either unreadable or
-// misleading about which model is selected.
+// 2-rune marker prefix, family column, 30-day family count, model ID,
+// location, per-model 1d/7d/30d counts, per-token and subscription pricing,
+// and optional tag list. A regression here would make the picker either
+// unreadable or misleading about which model is selected.
 func TestModelItemLineFormat(t *testing.T) {
 	store := &mockStore{
 		counts: map[string]usage.UsageCounts{
@@ -55,10 +55,11 @@ func TestModelItemLineFormat(t *testing.T) {
 			},
 			// Sort order should be m3 (fam30d:300), then m2, m1 (fam30d:33).
 			// Within fam-a, m2 (composite 30+20+10=60) > m1 (composite 3+2+1=6).
+			// Leading "  " is the blank 2-rune marker prefix (no last-launched ID).
 			expected: []string{
-				fmt.Sprintf("%-5s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s [%s]", "fam-b", 300, "m3", "cloud", "100/200/300", "-", "-", "t3"),
-				fmt.Sprintf("%-5s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s", "fam-a", 33, "m2", "local", "10/20/30", "-", "-"),
-				fmt.Sprintf("%-5s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s [%s]", "fam-a", 33, "m1", "local", "1/2/3", "-", "-", "t1,t2"),
+				fmt.Sprintf("  %-5s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s [%s]", "fam-b", 300, "m3", "cloud", "100/200/300", "-", "-", "t3"),
+				fmt.Sprintf("  %-5s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s", "fam-a", 33, "m2", "local", "10/20/30", "-", "-"),
+				fmt.Sprintf("  %-5s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s [%s]", "fam-a", 33, "m1", "local", "1/2/3", "-", "-", "t1,t2"),
 			},
 		},
 		{
@@ -70,7 +71,7 @@ func TestModelItemLineFormat(t *testing.T) {
 			// fam30d still reflects the empty-family aggregate (3), so a
 			// launch under the "" family is not shown as 0 next to the sort.
 			expected: []string{
-				fmt.Sprintf("%-0s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s", "-", 3, "m1", "local", "1/2/3", "-", "-"),
+				fmt.Sprintf("  %-0s  %3d  %-2s  %-5s  %-11s  %-1s  %-1s", "-", 3, "m1", "local", "1/2/3", "-", "-"),
 			},
 		},
 	}
@@ -83,7 +84,7 @@ func TestModelItemLineFormat(t *testing.T) {
 			for _, m := range tt.models {
 				familyOf[m.ID] = m.Family
 			}
-			items := buildModelItems(tt.models, familyOf, store)
+			items := buildModelItems(tt.models, familyOf, store, "")
 			if len(items) != len(tt.expected) {
 				t.Fatalf("expected %d items, got %d", len(tt.expected), len(items))
 			}
