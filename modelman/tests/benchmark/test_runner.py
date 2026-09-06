@@ -1,6 +1,20 @@
-from modelman.benchmark.runner import discover_targets
+from pathlib import Path
+
+import pytest
+
+from modelman.benchmark.runner import RunSavedButRestoreFailed, discover_targets
 from modelman.registry import ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
+
+
+def test_run_saved_but_restore_failed_carries_run_dir_and_run():
+    """The exception must carry the surviving run dir and the completed run so
+    the CLI can still record the --latest pointer after a restore failure."""
+    run = object()
+    exc = RunSavedButRestoreFailed("boom", run_dir=Path("/tmp/x"), run=run)
+    assert exc.run_dir == Path("/tmp/x")
+    assert exc.run is run
+    assert isinstance(exc, Exception)
 
 
 def test_discover_targets_defaults_to_exposed_local_models():
