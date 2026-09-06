@@ -68,13 +68,24 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             model_id = raw["model"]
             _provider_for(model_id, registry)  # validates the model exists
             provider_id = raw.get("provider") or _provider_for(model_id, registry)
-            label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{raw['thinking']}--{raw['route']}"
+            # A single-model row needs thinking and route to be addressable; a
+            # missing key is a suite typo, not a valid row. Use .get() and raise
+            # a clean BenchmarkError (like the unknown-model check above) rather
+            # than letting a raw KeyError escape with a traceback.
+            thinking = raw.get("thinking")
+            route = raw.get("route")
+            if thinking is None or route is None:
+                missing = [k for k in ("thinking", "route") if raw.get(k) is None]
+                raise BenchmarkError(
+                    f"suite row for model {model_id} is missing required key(s): {', '.join(missing)}"
+                )
+            label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
             rows.append(
                 RowConfig(
                     label=label,
                     model_id=model_id,
-                    thinking=raw["thinking"],
-                    route=raw["route"],
+                    thinking=thinking,
+                    route=route,
                     provider_id=provider_id,
                     direct_model=raw.get("direct_model"),
                 )

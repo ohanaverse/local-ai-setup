@@ -116,6 +116,34 @@ routes = ["direct"]
         load_suite(_write_suite(tmp_path, body), _registry())
 
 
+def test_single_model_row_missing_thinking_or_route_raises_clean_error(tmp_path):
+    """A single-model row that omits thinking or route is a suite typo, not a
+    valid row. It must raise a clean BenchmarkError naming the missing key —
+    like the unknown-model check — rather than a raw KeyError traceback (the
+    multi-model branch tolerates the omission via .get(), so the two branches
+    must not disagree on what a malformed row does)."""
+    for missing in ("thinking", "route"):
+        present = "route" if missing == "thinking" else "thinking"
+        body = f"""
+name = "test suite"
+task = "some/task"
+
+[judge]
+model = "x"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[[rows]]
+model = "ollama/a"
+{present} = "off"
+"""
+        with pytest.raises(BenchmarkError, match=missing):
+            load_suite(_write_suite(tmp_path, body), _registry())
+
+
 def test_provider_override_distinguishes_shared_backend_variants(tmp_path):
     """A row can override provider= so e.g. omlx 4-bit and 6-bit — served by
     one provider that must be isolated with the exact variant name — stay

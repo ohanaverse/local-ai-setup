@@ -225,12 +225,12 @@ def _run_single_row(
         # gates.json/metrics.json land in the same directory later, so a bare
         # iterdir() would read as present on a re-run of a finished row.
         session_present = any(row_dir.glob("*.jsonl"))
-        gates = evaluate_gates(
-            workspace, task, run_result, events=events, session_file_present=session_present
-        )
+        # Capture the agent's diff and the baseline contents of what it touched
+        # BEFORE evaluate_gates() runs: gate 9 seeds the hidden tests into the
+        # workspace, and the judge must never see them. A diff captured after
+        # seeding would stage the hidden files and leak the exact acceptance
+        # tests the judge is meant to be blind to.
         diff_raw = workspace.diff()
-        # what the agent touched, paired with what those files held at the
-        # baseline: the judge needs the before-state to read a diff at all
         touched = workspace.modified_or_deleted_since_baseline() + workspace.new_files_since_baseline()
         seed_contents: dict[str, str] = {}
         for path in touched:
@@ -238,6 +238,9 @@ def _run_single_row(
             content = workspace.file_at_baseline(rel)
             if content is not None:
                 seed_contents[rel] = content
+        gates = evaluate_gates(
+            workspace, task, run_result, events=events, session_file_present=session_present
+        )
         closing_message = _closing_message(events)
         return RowRunResult(
             row=row,

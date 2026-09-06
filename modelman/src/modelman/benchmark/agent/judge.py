@@ -282,5 +282,17 @@ class LiteLLMJudgeTransport:
                 f"HTTP {response.status_code} from {self.base_url}/chat/completions: "
                 f"{response.text[:200]}"
             )
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        try:
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            # A 200 with a malformed body (a proxy HTML error page, an empty
+            # choices list, a missing content key) is a transport failure, not
+            # a contract failure: the row's own data is fine, the gateway just
+            # did not return a usable reply. Raising JudgeTransportError keeps
+            # it inside complete()'s retry and judge_row's per-row JUDGE_FAIL
+            # handling instead of crashing the whole sweep.
+            raise JudgeTransportError(
+                f"malformed 200 response from {self.base_url}/chat/completions: "
+                f"{type(exc).__name__}: {response.text[:200]}"
+            ) from exc

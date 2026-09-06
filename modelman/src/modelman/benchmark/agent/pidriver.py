@@ -266,10 +266,12 @@ def run_pi_process(
     reader.daemon = True
     reader.start()
 
-    def _drain_new_lines() -> None:
+    def _drain_new_lines() -> int:
         nonlocal unparsed_lines, seen_message_end
         consumed = len(events) + unparsed_lines
+        new_lines = 0
         for arrival, raw_line in stdout_lines[consumed:]:
+            new_lines += 1
             try:
                 event = json.loads(raw_line)
             except json.JSONDecodeError:
@@ -284,6 +286,7 @@ def run_pi_process(
                 (event.get("message") or {}).get("role") == "assistant"
             ):
                 seen_message_end = True
+        return new_lines
 
     deadline = time.monotonic() + timeout_seconds
     idle_deadline: float | None = None
@@ -296,7 +299,7 @@ def run_pi_process(
 
     while True:
         time.sleep(poll_interval)
-        _drain_new_lines()
+        new_lines = _drain_new_lines()
         now = time.monotonic()
 
         if abort.is_set():
@@ -315,9 +318,13 @@ def run_pi_process(
         if now >= deadline or (idle_deadline is not None and now >= idle_deadline):
             timed_out = True
             break
-        if events:
+        if new_lines:
             # activity resets the idle clock; idle_seconds only fires on a
-            # stream that has gone completely quiet
+            # stream that has gone completely quiet. Reset on lines actually
+            # drained this poll, not on the mere presence of old events —
+            # otherwise a hung-but-chatty agent (a trickle of events, never
+            # finishing) keeps pushing the deadline forward forever and the
+            # idle timeout never fires.
             _reset_idle_deadline()
 
     kill_grace = 5.0

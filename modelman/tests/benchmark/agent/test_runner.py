@@ -131,6 +131,42 @@ def test_run_suite_isolates_once_per_provider_group(tmp_path, monkeypatch):
     assert all(r.gates is not None and r.gates.results[2].code == "NO_DIFF" for r in results)
 
 
+def test_diff_captured_before_hidden_tests_are_seeded(tmp_path, monkeypatch):
+    """Gate 9 seeds the hidden tests into the workspace; the judge's diff must
+    be captured before that seeding, or the frontier-model judge reads the exact
+    acceptance tests it is meant to be blind to. The mini-drift bundle ships a
+    hidden test, so a diff captured after seeding would stage it and leak it."""
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+
+    def _run_with_change(cmd, *args, **kwargs):
+        # write a real agent change into the workspace so the diff is non-empty
+        ws = Path(kwargs["workspace_path"])
+        (ws / "pkg" / "__init__.py").write_text(
+            "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
+        )
+        (ws / "tests" / "test_regression.py").write_text(
+            "import unittest\n", encoding="utf-8"
+        )
+        return _no_diff_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _run_with_change)
+
+    suite = load_suite(_write_suite(tmp_path, _suite_toml(MINI_DRIFT)), _registry())
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    # gate 9 seeded the hidden test, but it must not appear in the judge's diff
+    assert "test_hidden.py" not in results[0].diff_raw
+    assert "test_hidden" not in results[0].diff_raw
+    # the agent's own change is still there
+    assert "test_regression.py" in results[0].diff_raw
+
+
 def test_run_suite_contains_isolation_failure_to_its_group(tmp_path, monkeypatch):
     """An isolation failure marks that provider's rows with the error and
     the suite continues — matching the existing single-turn runner's

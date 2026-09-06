@@ -271,6 +271,28 @@ def test_run_pi_process_kills_process_group_on_hard_timeout(tmp_path):
     assert elapsed < 10
 
 
+def test_run_pi_process_idle_timeout_fires_after_events_go_quiet(tmp_path):
+    """A hung-but-chatty agent — one that emitted events, then went quiet
+    without finishing — must be killed by idle_seconds, not kept alive forever.
+    The idle clock must reset only when new lines are actually drained: resetting
+    it on the mere presence of old events (as the pre-fix code did) pushes the
+    deadline forward on every poll and the idle timeout never fires."""
+    # --hang emits the full event stream then sleeps 3600s, so `events` is
+    # non-empty while the process stays alive. With a small idle_seconds the
+    # run must time out via the idle path well before the 10s overall timeout.
+    start = time.monotonic()
+    _, result = run_pi_process(
+        _fake_agent_cmd(tmp_path / "session", ["--hang"]),
+        workspace_path=tmp_path,
+        timeout_seconds=10.0,
+        poll_interval=0.01,
+        idle_seconds=0.5,
+    )
+    elapsed = time.monotonic() - start
+    assert result.timed_out is True
+    assert elapsed < 5, f"idle timeout did not fire; waited {elapsed:.2f}s for the overall timeout"
+
+
 def test_run_pi_process_writes_a_session_file_the_gates_can_find(tmp_path):
     """Gate 1 (SESSION_CONTINUITY) looks for a *.jsonl under the run's root, so
     a driver that never produced one could never pass a run. Mirrors wt's

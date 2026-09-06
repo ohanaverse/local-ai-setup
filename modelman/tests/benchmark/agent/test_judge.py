@@ -305,6 +305,29 @@ def test_http_error_reports_the_response_body(monkeypatch):
         transport.complete("prompt", temperature=0.0)
 
 
+def test_malformed_200_response_is_a_transport_error_not_a_crash(monkeypatch):
+    """A 200 with a non-JSON body (a proxy HTML error page) or an unexpected
+    shape must surface as a JudgeTransportError — which judge_row retries and
+    turns into a per-row JUDGE_FAIL — rather than a raw JSONDecodeError/KeyError
+    that escapes complete()'s retry and aborts the entire sweep after all agent
+    rows already ran."""
+    for payload in ("<html>502 Bad Gateway</html>", {"choices": []}, {"choices": [{}]}):
+        class _Resp:
+            status_code = 200
+            text = str(payload)
+
+            def json(self):
+                import json as _json
+                return _json.loads(self.text)
+
+        monkeypatch.setattr(judge_module.requests, "post", lambda *a, _p=payload, **k: _Resp())
+        transport = judge_module.LiteLLMJudgeTransport(
+            base_url="http://x/v1", api_key="k", model="m", retry_backoff_s=0.0
+        )
+        with pytest.raises(JudgeTransportError, match="malformed 200"):
+            transport.complete("prompt", temperature=0.0)
+
+
 def test_parse_response_tolerates_a_markdown_fence():
     """Every key and range is still validated; only the wrapper is forgiven. A
     judge that fences its JSON is answering correctly, and with max_attempts
