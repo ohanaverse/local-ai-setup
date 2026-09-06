@@ -9,13 +9,27 @@ import typer
 
 from modelman.benchmark.agent.cli import agent_app
 from modelman.benchmark.errors import BenchmarkError
-from modelman.benchmark.runner import DEFAULT_RESULTS_DIR, run_benchmark
+from modelman.benchmark.results import BenchmarkRun
+from modelman.benchmark.runner import (
+    DEFAULT_RESULTS_DIR,
+    RunSavedButRestoreFailed,
+    run_benchmark,
+)
 from modelman.benchmark.workloads import get_workload, list_workloads
 from modelman.registry import load_registry
 from modelman.state import load_state, save_state
 
 benchmark_app = typer.Typer(help="Benchmark local LLM models.")
 benchmark_app.add_typer(agent_app, name="agent")
+
+
+def _record_latest(run: BenchmarkRun, run_dir: Path) -> None:
+    """Record the --latest pointer for a completed run in state."""
+    state = load_state()
+    benchmarks = state.extra.setdefault("benchmarks", {})
+    benchmarks["last_run"] = run.started_at.isoformat()
+    benchmarks["last_run_dir"] = str(run_dir)
+    save_state(state)
 
 
 @benchmark_app.command("list-workloads")
@@ -69,19 +83,18 @@ def run_cmd(
             routes=routes,
             results_dir=results_dir,
         )
+    except RunSavedButRestoreFailed as exc:
+        _record_latest(exc.run, exc.run_dir)
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
     except BenchmarkError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
-    # Record latest run pointer in state.
-    output_dir = (results_dir or DEFAULT_RESULTS_DIR) / run.run_id
-    benchmarks = state.extra.setdefault("benchmarks", {})
-    benchmarks["last_run"] = run.started_at.isoformat()
-    benchmarks["last_run_dir"] = str(output_dir)
-    save_state(state)
+    _record_latest(run, results_dir or DEFAULT_RESULTS_DIR)
 
     typer.echo(f"Benchmark complete: {run.run_id}")
-    typer.echo(f"Results: {output_dir}")
+    typer.echo(f"Results: {(results_dir or DEFAULT_RESULTS_DIR) / run.run_id}")
 
 
 @benchmark_app.command("show-results")

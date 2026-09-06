@@ -17,6 +17,22 @@ from modelman.benchmark.workloads.base import BenchmarkMetrics
 from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
 from modelman.state import StateStore
 
+
+class RunSavedButRestoreFailed(BenchmarkError):
+    """Every row completed and is on disk; only putting the backends back failed.
+
+    Carries `run_dir` and the completed `run` so the CLI can still record the
+    `--latest` pointer and report the row count. Without it, a host whose
+    provider restore fails turns a finished, fully persisted sweep into an exit
+    code with nothing to show for it, and `show-results --latest` has no idea
+    the run ever happened."""
+
+    def __init__(self, message: str, *, run_dir: Path, run: BenchmarkRun) -> None:
+        super().__init__(message)
+        self.run_dir = run_dir
+        self.run = run
+
+
 # Providers `modelman benchmark` can isolate+run locally. Derived from the
 # registry's canonical provider-id tuple so the set can't drift from it.
 LOCAL_PROVIDERS = set(DEFAULT_PROVIDER_IDS)
@@ -159,7 +175,19 @@ def run_benchmark(
                 if pass_number < passes:
                     time.sleep(cooldown_seconds)
     finally:
-        restore_providers()
+        restore_error: str | None = None
+        try:
+            restore_providers()
+        except Exception as exc:
+            restore_error = str(exc)
 
     write_results(run, results_dir)
+
+    if restore_error is not None:
+        raise RunSavedButRestoreFailed(
+            f"providers failed to restore after the run (all results were saved "
+            f"to {results_dir / run.run_id}): {restore_error}",
+            run_dir=results_dir / run.run_id,
+            run=run,
+        )
     return run

@@ -14,9 +14,9 @@
 - `bin/llm-isolate-provider <ollama|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp branch retained but disabled — see `docs/reference/provider-artifacts.md`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
-- `make lint` — umbrella target (`lint-shell` + `check-links`)
+- `make lint` — umbrella target (`lint-shell` + `check-links`); lighter than `test-all`
 - `make test-all` — one-stop local verification mirroring CI: lint + modelman `make check`/`make test` + wt `go build`/`vet`/`test`
-- `bin/check-links` (or `make check-links`) — validates repo-relative markdown links across README, CLAUDE.md, docs/guides, docs/reference, docs/archive, benchmarks
+- `bin/check-links` (or `make check-links`) — validates repo-relative markdown links across README, CLAUDE.md, docs/guides, docs/reference, docs/archive, benchmarks; run via `make check-links` or `uv run bin/check-links` so its Python deps are available
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
