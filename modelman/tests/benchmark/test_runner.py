@@ -1,7 +1,6 @@
 from pathlib import Path
 
-import pytest
-
+from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.runner import RunSavedButRestoreFailed, discover_targets
 from modelman.registry import ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
@@ -14,7 +13,7 @@ def test_run_saved_but_restore_failed_carries_run_dir_and_run():
     exc = RunSavedButRestoreFailed("boom", run_dir=Path("/tmp/x"), run=run)
     assert exc.run_dir == Path("/tmp/x")
     assert exc.run is run
-    assert isinstance(exc, Exception)
+    assert isinstance(exc, BenchmarkError)
 
 
 def test_discover_targets_defaults_to_exposed_local_models():
