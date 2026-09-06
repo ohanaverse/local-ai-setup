@@ -138,7 +138,7 @@ variants:
 - **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
 - **Hand-managed entries:** of the 35 `model_list` rows, modelman owns the 24 exposed ids (13 `ollama/*` + 11 `openrouter/*`); the remaining 9 — 3 omlx variants, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
-- **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, llama.cpp, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
+- **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
 - **Env override:** `MODELMAN_LITELLM_CONFIG`.
 - OpenRouter entries contain real `api_key: sk-or-v1-…` values — redact before sharing this file.
 
@@ -265,7 +265,7 @@ ls ~/.config/local-ai/registry.toml ~/.config/local-ai/modelman.toml ~/.config/a
 LaunchAgent labels are loaded:
 
 ```bash
-launchctl list | grep -E 'litellm|llamacpp|omlx|redis|ollama|postgres'
+launchctl list | grep -E 'litellm|omlx|redis|ollama|postgres'
 ```
 
 ```text

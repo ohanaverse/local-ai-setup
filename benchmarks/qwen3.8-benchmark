@@ -6,7 +6,6 @@
 #   - Ollama: `ollama stop <model>` unloads the model from RAM
 #             (daemon keeps running on :11434; model reloads on demand)
 #   - oMLX:   `omlx stop` halts the service entirely
-#   - llama.cpp: `launchctl unload` halts the LaunchAgent
 #   - OpenRouter: cloud, always live
 #
 # Measures:
@@ -74,12 +73,6 @@ declare -a OPENROUTER_MODELS=(
     "qwen/qwen3.8-max"
 )
 
-display_key() {
-    case "$1" in
-        *) echo "$1" ;;
-    esac
-}
-
 # --- Service management ----------------------------------------------------
 
 # Isolation lives in bin/llm-isolate-provider (also used by `modelman
@@ -129,7 +122,6 @@ ensure_all_local_started() {
         ok=true
         curl -s -m 1 http://localhost:11434/api/tags > /dev/null 2>&1 || ok=false
         curl -s -m 1 http://localhost:8000/v1/models > /dev/null 2>&1 || ok=false
-        curl -s -m 1 http://localhost:8080/v1/models > /dev/null 2>&1 || ok=false
         curl -s -m 1 http://localhost:4000/v1/models > /dev/null 2>&1 || ok=false
         [ "$ok" = "true" ] && break
         sleep 2
@@ -223,7 +215,7 @@ OUTFILE="/tmp/qwen3.8-benchmark-$(date +%Y%m%d-%H%M%S).md"
     echo
     echo "**Date**: $(date)"
     echo "**max_tokens**: $MAX_TOKENS"
-    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX, llama.cpp). Only the one being tested has its model loaded. OpenRouter is cloud and unaffected."
+    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX). Only the one being tested has its model loaded. OpenRouter is cloud and unaffected."
     echo
     echo "## Prompt"
     echo
@@ -250,7 +242,7 @@ echo ""
 
 echo "## Direct backend (ISOLATED, one model loaded at a time):"
 for backend in ollama omlx; do
-    display_name=$(display_key "$backend")
+    display_name="$backend"
     echo ""
     isolate_one "$backend"
     echo ""
@@ -269,7 +261,7 @@ done
 echo ""
 echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"
 for backend in ollama omlx; do
-    display_name=$(display_key "$backend")
+    display_name="$backend"
     echo ""
     isolate_one "$backend"
     # Ensure litellm proxy is still running
@@ -319,7 +311,6 @@ done
     echo "- **Local backends are run in isolation**: before each test, all local models are unloaded from RAM."
     echo "  - **Ollama**: \`ollama stop qwen3.8:27b-mlx\` — daemon keeps :11434 bound but no model in GPU/RAM"
     echo "  - **oMLX**: \`omlx stop\` — service halts entirely"
-    echo "  - **llama.cpp**: \`launchctl unload\` — LaunchAgent halts, frees the ~16 GB Metal allocation"
     echo "- **OpenRouter** is cloud-only; no local service management needed. Each of the four models is tested both directly against the OpenRouter API and via LiteLLM."
     echo "- All backends use the **same prompt** with \`temperature=0.0\`."
     echo "- \`throughput\` excludes TTFT (prefill) — it's generation-only."

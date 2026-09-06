@@ -5,7 +5,6 @@
 # distort each other's benchmarks. So:
 #   - Ollama: `ollama stop <model>` unloads the model from RAM
 #   - oMLX:   `omlx stop` halts the service entirely (serves 4-bit + 6-bit)
-#   - llama.cpp: `launchctl unload` halts the LaunchAgent
 #
 # Measures: TTFT, total time, tokens, throughput — direct and via LiteLLM.
 #
@@ -180,7 +179,7 @@ OUTFILE="/tmp/ornith-1.5-benchmark-$(date +%Y%m%d-%H%M%S).md"
     echo
     echo "**Date**: $(date)"
     echo "**max_tokens**: $MAX_TOKENS"
-    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX, llama.cpp). Only the one being tested has its model loaded."
+    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX). Only the one being tested has its model loaded."
     echo
     echo "## Prompt"
     echo
@@ -244,7 +243,6 @@ done
     echo "- **Local backends are run in isolation**: before each test, all local models are unloaded from RAM."
     echo "  - **Ollama**: \`ollama stop ornith-1.5:35b\` — daemon keeps :11434 bound but no model in GPU/RAM"
     echo "  - **oMLX**: \`omlx stop\` — service halts entirely (serves 4-bit and 6-bit variants)"
-    echo "  - **llama.cpp**: \`launchctl unload\` — LaunchAgent halts, frees the ~29 GB Metal allocation"
     echo "- All backends use the **same prompt** with \`temperature=0.0\`."
     echo "- \`throughput\` excludes TTFT (prefill) — it's generation-only."
     echo "- Run multiple times and average to reduce variance from cold caches."
