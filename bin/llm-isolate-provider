@@ -1,7 +1,9 @@
 #!/bin/bash
 # llm-isolate-provider — stop other local providers, start+warmup one.
 # Usage: llm-isolate-provider <provider-id>
-# Supported: ollama, llamacpp, omlx, omlx-6bit
+# Supported: ollama, omlx, omlx-6bit
+# (The llamacpp case branch below is retained but disabled — retired
+# 2026-09-07, issue #33. Re-enable steps: docs/reference/provider-artifacts.md.)
 # On success, print JSON with provider/model/direct_url.
 
 set -e

@@ -51,12 +51,12 @@ restart_launchd() {
 FAILED=0
 restart_ollama & p1=$!
 restart_omlx & p2=$!
-restart_launchd ~/Library/LaunchAgents/local.llamacpp.server.plist http://localhost:8080/v1/models llamacpp & p3=$!
-restart_launchd ~/Library/LaunchAgents/local.litellm.proxy.plist http://localhost:4000/v1/models litellm & p4=$!
+# llamacpp retired 2026-09-07 (issue #33) — not restarted; re-enable steps
+# in docs/reference/provider-artifacts.md.
+restart_launchd ~/Library/LaunchAgents/local.litellm.proxy.plist http://localhost:4000/v1/models litellm & p3=$!
 wait $p1 || FAILED=1
 wait $p2 || FAILED=1
 wait $p3 || FAILED=1
-wait $p4 || FAILED=1
 
 if [ "$FAILED" -ne 0 ]; then
     echo "$LOG_PREFIX one or more providers failed to restore" >&2
