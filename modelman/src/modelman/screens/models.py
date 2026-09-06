@@ -462,7 +462,13 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        if target and not self._projected_ready(mid) and not is_cloud_effective(entry):
+        if target and not is_effectively_exposed(
+            mid,
+            self.registry,
+            self.state,
+            exposed_override=True,
+            ready_override=self._projected_ready(mid),
+        ):
             # Exposing requires ready — the same gate _validated_entry
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite
