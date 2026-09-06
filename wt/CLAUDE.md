@@ -157,6 +157,12 @@ and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
 contract tests and modelman's `tests/contracts/` — a schema change must
 update both sides or both CI jobs fail.
 
+**Exposure predicate (shared with modelman):** wt filters models using the same rule as the TUI:
+- Native models (provider `auth.type = "native"`): always exposed
+- Non-native: `litellm_exposed = true` AND (`ready = true` OR `location = "cloud"`)
+
+This ensures wt's model picker never offers a model the TUI would show as `–` in the EXPOSED column.
+
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt
 > bug** — e.g. a `registry.toml` with models referencing `provider_id`s but
 > `providers = []`. Fix is `modelman sync`/`modelman migrate` on that machine,
