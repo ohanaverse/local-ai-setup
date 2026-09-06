@@ -175,7 +175,19 @@ def run_benchmark(
                 if pass_number < passes:
                     time.sleep(cooldown_seconds)
     finally:
-        restore_providers()
+        restore_error: str | None = None
+        try:
+            restore_providers()
+        except BenchmarkError as exc:
+            restore_error = str(exc)
 
     write_results(run, results_dir)
+
+    if restore_error is not None:
+        raise RunSavedButRestoreFailed(
+            f"providers failed to restore after the run (all results were saved "
+            f"to {results_dir / run.run_id}): {restore_error}",
+            run_dir=results_dir / run.run_id,
+            run=run,
+        )
     return run
