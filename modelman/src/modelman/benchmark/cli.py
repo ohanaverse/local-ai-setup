@@ -23,13 +23,12 @@ benchmark_app = typer.Typer(help="Benchmark local LLM models.")
 benchmark_app.add_typer(agent_app, name="agent")
 
 
-def _record_latest(run: BenchmarkRun, results_dir: Path) -> None:
+def _record_latest(run: BenchmarkRun, run_dir: Path) -> None:
     """Record the --latest pointer for a completed run in state."""
     state = load_state()
-    output_dir = results_dir / run.run_id
     benchmarks = state.extra.setdefault("benchmarks", {})
     benchmarks["last_run"] = run.started_at.isoformat()
-    benchmarks["last_run_dir"] = str(output_dir)
+    benchmarks["last_run_dir"] = str(run_dir)
     save_state(state)
 
 
@@ -85,7 +84,7 @@ def run_cmd(
             results_dir=results_dir,
         )
     except RunSavedButRestoreFailed as exc:
-        _record_latest(exc.run, exc.run_dir.parent)
+        _record_latest(exc.run, exc.run_dir)
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from None
     except BenchmarkError as exc:

@@ -1,9 +1,10 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from modelman.benchmark.errors import BenchmarkError
-from modelman.benchmark.results import BenchmarkMetrics, TargetResult
+from modelman.benchmark.results import BenchmarkMetrics, BenchmarkRun, TargetResult
 from modelman.benchmark.runner import RunSavedButRestoreFailed, discover_targets, run_benchmark
 from modelman.benchmark.workloads.base import WorkloadSpec
 from modelman.registry import ModelEntry, ProviderEntry, Registry
@@ -71,7 +72,12 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
 def test_run_saved_but_restore_failed_carries_run_dir_and_run():
     """The exception must carry the surviving run dir and the completed run so
     the CLI can still record the --latest pointer after a restore failure."""
-    run = object()
+    run = BenchmarkRun(
+        run_id="run-2026-01-01",
+        workload_name="chat",
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        results=[],
+    )
     exc = RunSavedButRestoreFailed("boom", run_dir=Path("/tmp/x"), run=run)
     assert exc.run_dir == Path("/tmp/x")
     assert exc.run is run

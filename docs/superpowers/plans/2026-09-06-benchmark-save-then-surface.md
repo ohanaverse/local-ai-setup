@@ -398,16 +398,17 @@ Expected: lint + modelman tests + wt build/vet/test all pass.
 
 - [ ] **Step 2: Manual smoke test (optional, requires live providers)**
 
+The llama.cpp provider was retired 2026-09-07; use an active local provider such as Ollama for these steps. Verify the target provider is currently running and can be started/stopped cleanly on your machine.
+
 ```bash
 # Break a provider restore, then confirm the run is still saved and exits non-zero.
-launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist
-uv run modelman benchmark run --suite <some-short-suite>
+ollama stop <model>
+PATH=$PWD/bin:$PATH uv run modelman benchmark run --model <model>
 # Expect: results file exists, exit non-zero with message naming the run directory.
 
 # Restore real state and confirm the normal path still works.
-launchctl load -w ~/Library/LaunchAgents/local.llamacpp.server.plist
 PATH=$PWD/bin:$PATH llm-restore-providers
-uv run modelman benchmark run --suite <suite>   # exit 0, latest pointer updated
+PATH=$PWD/bin:$PATH uv run modelman benchmark run --model <model>   # exit 0, latest pointer updated
 ```
 
 - [ ] **Step 3: Commit any remaining changes**

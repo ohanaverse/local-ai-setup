@@ -178,7 +178,7 @@ def run_benchmark(
         restore_error: str | None = None
         try:
             restore_providers()
-        except BenchmarkError as exc:
+        except Exception as exc:
             restore_error = str(exc)
 
     write_results(run, results_dir)
