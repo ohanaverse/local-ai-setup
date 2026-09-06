@@ -12,8 +12,12 @@ The LiteLLM proxy at `localhost:4000` routes the same `model_name` to four diffe
 |---|---|---|---|
 | **Ollama** | `ollama/qwen3.8:27b-mlx` | MLX (nvfp4, 18 GB) | `~/.ollama/models/` |
 | **oMLX** | `omlx/Qwen3.8-27B-4bit` | MLX 4-bit | `~/.omlx/models/mlx-community/Qwen3.8-27B-4bit/` |
-| **llama.cpp** | `llama.cpp/local-llama` (Qwen3.8-27B-UD-Q4_K_M.gguf) | GGUF (Q4_K_M, 16 GB) | `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/...` |
 | **OpenRouter** | `openrouter/qwen/qwen3.8-{flash,27b,2.4t-a95b,max}` | cloud API | `https://openrouter.ai/api/v1` |
+
+> **llama.cpp retired 2026-09-07** (issue #33) — no longer a benchmark
+> backend; artifacts + re-enable steps in
+> [provider-artifacts.md](../docs/reference/provider-artifacts.md). Dated result
+> tables below keep their historical llama.cpp rows.
 
 These are *different quantizations and runtimes* of the same Qwen3.8 27B model. Benchmarking them side-by-side tells us:
 - Which backend is fastest on this Apple Silicon hardware
@@ -29,13 +33,12 @@ The three local backends share Apple Silicon's GPU and unified memory. Running a
 - Thermal throttling affecting later tests
 - Unfair comparisons because the *first* test gets a cold cache and *later* tests don't
 
-**The benchmark runs each local backend in isolation**: before each test, all three local models are unloaded (Ollama) or fully stopped (oMLX, llama.cpp). Only the one being tested has its model loaded in GPU/RAM.
+**The benchmark runs each local backend in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX). Only the one being tested has its model loaded in GPU/RAM.
 
 | Backend | "Stop" mechanism | What's left running |
 |---|---|---|
 | **Ollama** | `ollama stop <model>` | Daemon on `:11434`, but model is unloaded from GPU/RAM |
 | **oMLX** | `omlx stop` | Nothing — service halts entirely |
-| **llama.cpp** | `launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist` | Nothing — LaunchAgent halts, freeing the 16 GB Metal allocation |
 | **OpenRouter** | n/a | Always live (cloud) |
 
 The Ollama daemon keeps port 11434 bound even after the model is unloaded — that's expected. The script reports "local service ports still bound: 1" after a stop cycle, and that's correct.
@@ -54,7 +57,7 @@ qwen3.8-benchmark 100           # custom max_tokens
 
 **What it does**:
 1. Ensures all four services are up
-2. For each local backend (ollama, omlx, llama.cpp):
+2. For each local backend (ollama, omlx):
    - Stops the other two local services
    - Loads only the one being tested
    - Runs the same prompt twice: once direct, once through LiteLLM

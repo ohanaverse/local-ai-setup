@@ -13,10 +13,10 @@ gates plus a blind LLM rubric — see [docs/guides/09-agent-benchmarks.md](../do
 
 ## Contents
 
-- **`qwen3.8-benchmark.md`** — Main benchmark doc covering the four qwen3.8 variants (Ollama, oMLX, llama.cpp, OpenRouter). Includes latest results, methodology, and bug-fix history.
+- **`qwen3.8-benchmark.md`** — Main benchmark doc covering the qwen3.8 variants (Ollama, oMLX, OpenRouter; llama.cpp retired 2026-09-07). Includes latest results, methodology, and bug-fix history.
 - **`qwen3.8-benchmark`** — Single-pass benchmark script (isolated local runs).
 - **`qwen3.8-benchmark-multi`** — Multi-pass wrapper for stable medians.
-- **`ornith-1.5-benchmark.md`** — Benchmark doc for the four Ornith-1.5-35B variants (Ollama Q4_K_M, oMLX 4-bit, oMLX 6-bit, llama.cpp Q6_K).
+- **`ornith-1.5-benchmark.md`** — Benchmark doc for the four Ornith-1.5-35B variants (Ollama Q4_K_M, oMLX 4-bit, oMLX 6-bit; llama.cpp Q6_K retired 2026-09-07).
 - **`ornith-1.5-benchmark`** — Single-pass benchmark script for Ornith-1.5.
 - **`ornith-1.5-benchmark-multi`** — Multi-pass wrapper for Ornith-1.5.
 - **`results/`** — Per-pass markdown output from each benchmark run.

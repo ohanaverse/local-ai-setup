@@ -21,6 +21,12 @@ Each milestone is small enough for its own PR (or a tightly-coupled pair of PRs)
 
 ## Milestone A — Repair `local.llamacpp.server` (#33)
 
+> **RESOLVED 2026-09-07 — decision: Option 2 (retire).** llama.cpp was
+> disabled with artifacts preserved instead of repaired. See
+> `docs/superpowers/specs/2026-09-07-llamacpp-retirement-design.md` and
+> `docs/reference/provider-artifacts.md`. The text below is kept as the
+> decision record.
+
 Goal: the llama.cpp LaunchAgent starts successfully and answers `http://localhost:8080/v1/models` after `llm-restore-providers`.
 
 ### Current facts
