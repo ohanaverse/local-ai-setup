@@ -1,4 +1,9 @@
-"""llama.cpp provider — uses the HF cache; no separate model dir by default."""
+"""llama.cpp provider — uses the HF cache; no separate model dir by default.
+
+UNUSED since 2026-09-07 (issue #33): the llamacpp provider is retired — no
+registry entry, no litellm rows, no benchmark wiring. This module and its
+tests are kept so re-enabling is a config change, not a rewrite. Re-enable
+steps: docs/reference/provider-artifacts.md (repo root)."""
 
 from __future__ import annotations
 

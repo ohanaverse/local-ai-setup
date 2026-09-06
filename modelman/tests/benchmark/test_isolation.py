@@ -42,12 +42,13 @@ def test_isolate_provider_failure_raises():
 
 def test_supported_provider_ids_matches_llm_isolate_providers_documented_list():
     """bin/llm-isolate-provider's own header comment ("Supported: ollama,
-    llamacpp, omlx, omlx-6bit") is the real source of truth for what this
-    helper can isolate. This constant is the one place modelman code checks
-    isolability, so a 5th backend added to the shell script's case statement
-    without updating this set is caught here rather than silently running
-    unisolated in modelman benchmark agent."""
-    assert frozenset({"ollama", "llamacpp", "omlx", "omlx-6bit"}) == isolation.SUPPORTED_PROVIDER_IDS
+    omlx, omlx-6bit") is the real source of truth for what this helper may
+    isolate on behalf of modelman benchmark agent. The llamacpp case branch
+    is retained in the shell script but retired (issue #33, 2026-09-07 —
+    see docs/reference/provider-artifacts.md), so it is not in this set; a
+    backend added to the shell script's case statement without updating
+    this constant is caught here rather than silently running unisolated."""
+    assert frozenset({"ollama", "omlx", "omlx-6bit"}) == isolation.SUPPORTED_PROVIDER_IDS
 
 
 def test_restore_providers_success():
