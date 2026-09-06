@@ -1,0 +1,11 @@
+model_list:
+- model_name: llama.cpp/local-llama
+  litellm_params:
+    model: openai/local-model
+    api_base: http://localhost:8080/v1
+    api_key: dummy-key
+- model_name: llama.cpp/ornith-1.5-35b
+  litellm_params:
+    model: openai/local-model
+    api_base: http://localhost:8080/v1
+    api_key: dummy-key
