@@ -107,6 +107,48 @@ def is_cloud_effective(model: ModelEntry) -> bool:
     return is_cloud(model.provider_id) or model.location == "cloud"
 
 
+def is_effectively_exposed(
+    model_id: str,
+    registry: Registry,
+    state: StateStore,
+    exposed_override: bool | None = None,
+    ready_override: bool | None = None,
+) -> bool:
+    """Determine if a model is effectively exposed through LiteLLM.
+
+    A model is effectively exposed when:
+    - its `litellm_exposed` flag is True (or `exposed_override` is True), AND
+    - it is ready (or `ready_override` is True), OR
+    - it is a cloud model (exempt from the ready gate).
+
+    Args:
+        model_id: Registry model ID to check.
+        registry: Registry to resolve model/provider.
+        state: StateStore for ready/exposed flags.
+        exposed_override: Override the persisted litellm_exposed flag.
+        ready_override: Override the persisted ready flag.
+
+    Returns:
+        True if the model would be exposed through LiteLLM, False otherwise.
+        Unknown model IDs return False.
+    """
+    try:
+        model = registry.model(model_id)
+    except KeyError:
+        return False
+
+    exposed = exposed_override if exposed_override is not None else state.get(model_id).litellm_exposed
+    if not exposed:
+        return False
+
+    ready = ready_override if ready_override is not None else state.get(model_id).ready
+    if ready:
+        return True
+
+    # Cloud models are exempt from the ready gate.
+    return is_cloud_effective(model)
+
+
 class LiteLLMConfigError(Exception):
     """Raised when LiteLLM's config.yaml is missing or malformed."""
 
