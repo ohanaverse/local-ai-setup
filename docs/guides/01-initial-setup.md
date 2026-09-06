@@ -352,7 +352,7 @@ Expected: 72 `LiteLLM_*` tables — `... prisma db push --schema=./schema.prisma
 
 ### 7. LaunchAgents
 
-The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 and `local.llamacpp.server` in §3 are already in place by then). Its plist template — fill in real secrets (`LITELLM_MASTER_KEY`/`LITELLM_SALT_KEY` start with `sk-` / random 40 chars; `OPENROUTER_API_KEY` from openrouter.ai; `UI_USERNAME`/`UI_PASSWORD` of your choice; `DATABASE_URL` from §6):
+The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then). Its plist template — fill in real secrets (`LITELLM_MASTER_KEY`/`LITELLM_SALT_KEY` start with `sk-` / random 40 chars; `OPENROUTER_API_KEY` from openrouter.ai; `UI_USERNAME`/`UI_PASSWORD` of your choice; `DATABASE_URL` from §6):
 
 <!-- UNVERIFIED — existing plist not overwritten; template mirrors the live plist's structure (verified: PATH, LITELLM_MASTER_KEY, UI_USERNAME, UI_PASSWORD, OPENROUTER_API_KEY, DATABASE_URL, LITELLM_SALT_KEY) merged with the archive doc's template. -->
 
@@ -402,14 +402,13 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
 EOF
 
 launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist   # (modern equivalent: launchctl bootstrap gui/$(id -u) <plist>; unload via launchctl bootout)
-launchctl list | grep -E 'litellm|llamacpp|omlx|ollama|redis|postgres'
+launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
 ```
 
 ```text
 -	0	com.ollama.ollama
 94146	0	local.litellm.proxy
 80374	0	homebrew.mxcl.postgresql@16
-94631	0	local.llamacpp.server
 97297	0	homebrew.mxcl.omlx
 88057	0	homebrew.mxcl.redis
 17810	0	application.com.electron.ollama.2312009772.2312009778.64DD861F-BA99-4B1C-A478-2478B317DA0D
@@ -429,7 +428,7 @@ kickstart OK
 
 Expect the port to refuse connections for ~15 s — the proxy was answering 401 again by the 20 s mark (verified live; new PID proves the bounce).
 
-`~/.local/bin/llm-restart` restarts the whole stack in one shot with per-service health checks (`llm-restart`, or scoped: `llm-restart litellm|omlx|llama.cpp|ollama`).
+`~/.local/bin/llm-restart` restarts the whole stack in one shot with per-service health checks (`llm-restart`, or scoped: `llm-restart litellm|omlx|ollama`).
 
 ## Verification
 
@@ -519,10 +518,10 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 ## Gotchas
 
 - **oMLX serves 4-bit and 6-bit variants — name the exact one.** LiteLLM model_list has `omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-6bit`, but the oMLX server currently serves only what it loaded at startup (`/v1/models` right now lists just `Qwen3.8-27B-4bit`). Requesting any other exposed `omlx/*` name fails until that variant is actually loaded — switch via `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-isolate-provider omlx` (4-bit) or `...omlx-6bit` (6-bit), restore with `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-restore-providers`.
-- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); llama.cpp: `launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist`; LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
+- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
-- **"Installed ≠ loaded" for LaunchAgents.** `local.llamacpp.server.plist` sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|llamacpp|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`, `~/.llamacpp.err.log`).
-- **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its llama.cpp verification curls hit `:8000` — that's oMLX; llama-server is `:8080`; (3) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (4) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`; (5) its llama.cpp plist template points `-m` at `~/models/qwen3.8-27b.Q4_K_M.gguf` — the live plist pins the actual GGUF snapshot in `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/`.
+- **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).
+- **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (3) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`. (The archive doc's llama.cpp items are moot — llama.cpp was retired 2026-09-07, see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Run modelman from the `modelman/` directory.** modelman is not installed globally anymore. Run it from `~/github/ohanaverse/local-ai-setup/modelman`:
 
   ```bash
