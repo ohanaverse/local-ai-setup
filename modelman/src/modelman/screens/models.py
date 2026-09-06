@@ -15,8 +15,8 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from ..litellm import (
     default_litellm_config_path,
-    is_cloud_effective,
     is_effectively_exposed,
+    passes_ready_gate,
     provider_policy,
 )
 from ..queue import PendingChanges
@@ -326,8 +326,7 @@ class ModelScreen(Screen[None]):
                 exposed_str = (
                     "Y"
                     if is_effectively_exposed(
-                        m.id,
-                        self.registry,
+                        m,
                         self.state,
                         exposed_override=exposed_override,
                         ready_override=ready_override,
@@ -370,18 +369,12 @@ class ModelScreen(Screen[None]):
         enforces the same rule at the gate (_validated_entry rejects the
         expose with 'model is not ready'); this keeps the queue consistent
         with it instead of leaving a doomed entry for apply() to fail on.
-        Cloud rows are exempt, matching _validated_entry. Drops the expose
-        with a notification rather than silently overwriting the user's
-        request."""
-        # Use the helper with exposed_override=True to check if the queued
-        # expose would be valid. Cloud rows are exempt per is_cloud_effective.
-        if is_cloud_effective(entry):
-            return
-        if self.queued_exposes.get(mid) is True and not is_effectively_exposed(
-            mid,
-            self.registry,
+        Cloud rows are exempt, matching _validated_entry (via
+        passes_ready_gate). Drops the expose with a notification rather
+        than silently overwriting the user's request."""
+        if self.queued_exposes.get(mid) is True and not passes_ready_gate(
+            entry,
             self.state,
-            exposed_override=True,
             ready_override=self._projected_ready(mid),
         ):
             self.queued_exposes.pop(mid, None)
@@ -462,11 +455,9 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        if target and not is_effectively_exposed(
-            mid,
-            self.registry,
+        if target and not passes_ready_gate(
+            entry,
             self.state,
-            exposed_override=True,
             ready_override=self._projected_ready(mid),
         ):
             # Exposing requires ready — the same gate _validated_entry

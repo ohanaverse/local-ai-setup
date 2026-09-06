@@ -1,5 +1,7 @@
 """Tests for LiteLLM model_list entry construction and config read/write."""
 
+from dataclasses import replace
+
 import pytest
 
 from modelman.litellm import (
@@ -9,7 +11,9 @@ from modelman.litellm import (
     _validated_entry,
     build_model_list_entry,
     ensure_litellm_settings,
+    is_effectively_exposed,
     load_litellm_config,
+    passes_ready_gate,
     remove_exposed,
     save_litellm_config,
     set_exposed,
@@ -705,109 +709,109 @@ def test_save_preserves_comments_when_other_rows_change(tmp_path):
 
 
 def test_is_effectively_exposed_exposed_and_ready():
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    # Flagged and ready is the baseline effective-exposure case; if this
+    # ever fails, the TUI's EXPOSED column and LiteLLM routing disagree
+    # with the persisted state on the simplest case.
+    model = _model("ollama/a", "ollama", "a")
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
-    from modelman.litellm import is_effectively_exposed
 
-    assert is_effectively_exposed("ollama/a", registry, state) is True
+    assert is_effectively_exposed(model, state) is True
 
 
 def test_is_effectively_exposed_exposed_not_ready_local():
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    # A flagged local model without ready must NOT count as exposed —
+    # this is the gate that keeps LiteLLM from routing to a missing
+    # artifact; dropping it would break the ready-gate invariant end to end.
+    model = _model("ollama/a", "ollama", "a")
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
 
-    from modelman.litellm import is_effectively_exposed
-
-    assert is_effectively_exposed("ollama/a", registry, state) is False
+    assert is_effectively_exposed(model, state) is False
 
 
 def test_is_effectively_exposed_exposed_not_ready_cloud():
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="openrouter",
-                name="OpenRouter",
-                auth=AuthConfig(type="api_key", secret_ref="sk-or-v1-abc"),
-            )
-        ],
-        models=[
-            ModelEntry(
-                id="openrouter/qwen",
-                family="f",
-                provider_id="openrouter",
-                model_name="qwen",
-                location="cloud",
-            )
-        ],
-    )
+    # Cloud models are exempt from the ready gate even when not ready:
+    # the same exemption _validated_entry applies at expose time. Pinning
+    # it here keeps a flagged cloud row rendering Y in the TUI column.
+    model = replace(_model("openrouter/qwen", "openrouter", "qwen"), location="cloud")
     state = StateStore()
     state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
 
-    from modelman.litellm import is_effectively_exposed
-
-    assert is_effectively_exposed("openrouter/qwen", registry, state) is True
+    assert is_effectively_exposed(model, state) is True
 
 
 def test_is_effectively_exposed_not_exposed_ready():
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    # Ready alone is insufficient — the litellm_exposed flag is the AND's
+    # other half; without this pin, a ready-model regression could route
+    # models the user never exposed into LiteLLM's config.
+    model = _model("ollama/a", "ollama", "a")
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
 
-    from modelman.litellm import is_effectively_exposed
-
-    assert is_effectively_exposed("ollama/a", registry, state) is False
-
-
-def test_is_effectively_exposed_unknown_model():
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[],
-    )
-    state = StateStore()
-
-    from modelman.litellm import is_effectively_exposed
-
-    assert is_effectively_exposed("ollama/unknown", registry, state) is False
+    assert is_effectively_exposed(model, state) is False
 
 
 def test_is_effectively_exposed_exposed_override():
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    # exposed_override projects a queued (not yet persisted) expose toggle:
+    # the TUI column must preview the post-queue state. Without the
+    # override the persisted False flag must still win.
+    model = _model("ollama/a", "ollama", "a")
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
 
-    from modelman.litellm import is_effectively_exposed
-
-    # Override exposed=False to True
-    assert is_effectively_exposed("ollama/a", registry, state, exposed_override=True) is True
-    # Without override, returns False
-    assert is_effectively_exposed("ollama/a", registry, state) is False
+    assert is_effectively_exposed(model, state, exposed_override=True) is True
+    assert is_effectively_exposed(model, state) is False
 
 
 def test_is_effectively_exposed_ready_override():
-    registry = Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
+    # ready_override projects a queued ready toggle (the expose→ready
+    # cascade): flagged-not-ready flips to exposed only under the override.
+    model = _model("ollama/a", "ollama", "a")
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
 
-    from modelman.litellm import is_effectively_exposed
+    assert is_effectively_exposed(model, state, ready_override=True) is True
+    assert is_effectively_exposed(model, state) is False
 
-    # Override ready=False to True
-    assert is_effectively_exposed("ollama/a", registry, state, ready_override=True) is True
-    # Without override, returns False (local model, not ready)
-    assert is_effectively_exposed("ollama/a", registry, state) is False
+
+def test_passes_ready_gate_local_ready():
+    # A ready local model passes the gate apply-time validation enforces
+    # (_validated_entry's "model is not ready" rejection must match this).
+    model = _model("ollama/a", "ollama", "a")
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+
+    assert passes_ready_gate(model, state) is True
+
+
+def test_passes_ready_gate_local_not_ready():
+    # Not-ready local fails the gate — the core rule that keeps exposes
+    # pointing at missing artifacts out of LiteLLM's config.
+    model = _model("ollama/a", "ollama", "a")
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+
+    assert passes_ready_gate(model, state) is False
+
+
+def test_passes_ready_gate_cloud_not_ready():
+    # Cloud exemption: a cloud model passes without ready, regardless of
+    # the exposure flag (the gate is exposure-agnostic by design — the
+    # flag check lives in is_effectively_exposed).
+    model = replace(_model("openrouter/qwen", "openrouter", "qwen"), location="cloud")
+    state = StateStore()
+    state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
+
+    assert passes_ready_gate(model, state) is True
+
+
+def test_passes_ready_gate_ready_override():
+    # The override projects a queued ready toggle so queue-time checks
+    # (_enforce_expose_ready_rule, action_toggle_expose) see the state
+    # that will exist after apply, not the stale persisted one.
+    model = _model("ollama/a", "ollama", "a")
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+
+    assert passes_ready_gate(model, state, ready_override=True) is True
