@@ -1,0 +1,6 @@
+# Never shown to the agent or the judge — for the human reading the report.
+[meta]
+intended_fix = "remove the `n % 2 == 0` special case"
+
+[tiers]
+frontier = "2/2"

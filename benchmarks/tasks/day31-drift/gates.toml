@@ -1,0 +1,6 @@
+[build]
+import_check = "kettlecomb"
+tests_dir = "tests"
+
+[hidden]
+files = ["test_day31.py"]

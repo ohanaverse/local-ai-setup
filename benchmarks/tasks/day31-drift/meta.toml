@@ -1,0 +1,9 @@
+# Never shown to the agent or the judge — for the human reading the report.
+[meta]
+intended_root_cause = "calendarlib.add_months clamps an invalid day to a hardcoded 30 instead of the target month's actual last day, and the clamp target isn't leap-aware"
+intended_fix = "day = min(d.day, month_length(year, month)); return date(year, month, day) — no try/except needed"
+
+[tiers]
+frontier_cloud = "6/6 with a real regression test"
+mid_tier_cloud_and_healthy_local_27b = "3-5/6, typically failing the leap-year or accumulation case"
+quantized_or_smaller_local = "plausible symptom patch in prorate; non-empty diff, self-consistent explanation, 0 composite after cap"

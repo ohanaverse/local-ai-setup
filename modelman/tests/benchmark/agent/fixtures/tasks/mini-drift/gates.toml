@@ -1,0 +1,6 @@
+[build]
+import_check = "pkg"
+tests_dir = "tests"
+
+[hidden]
+files = ["test_hidden.py"]
