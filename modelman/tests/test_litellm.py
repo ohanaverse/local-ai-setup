@@ -702,3 +702,112 @@ def test_save_preserves_comments_when_other_rows_change(tmp_path):
     assert "database_url: postgresql://x" in text
     loaded = load_litellm_config(path)
     assert [r["model_name"] for r in loaded["model_list"]] == ["ollama/a", "ollama/b"]
+
+
+def test_is_effectively_exposed_exposed_and_ready():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    from modelman.litellm import is_effectively_exposed
+
+    assert is_effectively_exposed("ollama/a", registry, state) is True
+
+
+def test_is_effectively_exposed_exposed_not_ready_local():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+
+    from modelman.litellm import is_effectively_exposed
+
+    assert is_effectively_exposed("ollama/a", registry, state) is False
+
+
+def test_is_effectively_exposed_exposed_not_ready_cloud():
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="openrouter",
+                name="OpenRouter",
+                auth=AuthConfig(type="api_key", secret_ref="sk-or-v1-abc"),
+            )
+        ],
+        models=[
+            ModelEntry(
+                id="openrouter/qwen",
+                family="f",
+                provider_id="openrouter",
+                model_name="qwen",
+                location="cloud",
+            )
+        ],
+    )
+    state = StateStore()
+    state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
+
+    from modelman.litellm import is_effectively_exposed
+
+    assert is_effectively_exposed("openrouter/qwen", registry, state) is True
+
+
+def test_is_effectively_exposed_not_exposed_ready():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+
+    from modelman.litellm import is_effectively_exposed
+
+    assert is_effectively_exposed("ollama/a", registry, state) is False
+
+
+def test_is_effectively_exposed_unknown_model():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[],
+    )
+    state = StateStore()
+
+    from modelman.litellm import is_effectively_exposed
+
+    assert is_effectively_exposed("ollama/unknown", registry, state) is False
+
+
+def test_is_effectively_exposed_exposed_override():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+
+    from modelman.litellm import is_effectively_exposed
+
+    # Override exposed=False to True
+    assert is_effectively_exposed("ollama/a", registry, state, exposed_override=True) is True
+    # Without override, returns False
+    assert is_effectively_exposed("ollama/a", registry, state) is False
+
+
+def test_is_effectively_exposed_ready_override():
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+
+    from modelman.litellm import is_effectively_exposed
+
+    # Override ready=False to True
+    assert is_effectively_exposed("ollama/a", registry, state, ready_override=True) is True
+    # Without override, returns False (local model, not ready)
+    assert is_effectively_exposed("ollama/a", registry, state) is False
