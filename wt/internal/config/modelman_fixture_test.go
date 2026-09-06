@@ -42,10 +42,12 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	}
 
 	// Check the new predicate cases:
-	// - ollama/contract-fixture:subscription (flag+ready) → litellm_exposed=true, ready=true
-	// - llamacpp/legacy-contract-fixture (flag+downloaded) → litellm_exposed=true, ready=true
-	// - ollama/contract-fixture:local (flag=false) → litellm_exposed=false
-	// - openrouter/contract-fixture:cloud (no flag) → litellm_exposed=false
+	// - ollama/contract-fixture:subscription (flag+ready) → should be in state
+	// - llamacpp/legacy-contract-fixture (flag+downloaded) → should be in state
+	// - ollama/contract-fixture:local (flag=false) → NOT litellm_exposed
+	// - ollama/contract-fixture:local-not-ready (flag=true, ready=false) → in state
+	// - openrouter/contract-fixture:cloud (no flag) → NOT litellm_exposed
+	// - openrouter/contract-fixture:cloud-exposed (flag=true, no ready) → in state
 
 	expectedLitellmExposed := map[string]bool{
 		"ollama/contract-fixture:subscription": true,
@@ -78,4 +80,23 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 	} else if st.LitellmExposed {
 		t.Errorf("expected openrouter/contract-fixture:cloud to have litellm_exposed=false")
 	}
+
+	// Verify the local-not-ready case: flag on, ready off
+	st, ok = state["ollama/contract-fixture:local-not-ready"]
+	if !ok {
+		t.Errorf("expected ollama/contract-fixture:local-not-ready in state")
+	} else if !st.LitellmExposed {
+		t.Errorf("expected ollama/contract-fixture:local-not-ready to have litellm_exposed=true")
+	} else if st.Ready {
+		t.Errorf("expected ollama/contract-fixture:local-not-ready to have ready=false")
+	}
+
+	// Verify cloud-exposed case: flag on, no ready key (defaults to false)
+	st, ok = state["openrouter/contract-fixture:cloud-exposed"]
+	if !ok {
+		t.Errorf("expected openrouter/contract-fixture:cloud-exposed in state")
+	} else if !st.LitellmExposed {
+		t.Errorf("expected openrouter/contract-fixture:cloud-exposed to have litellm_exposed=true")
+	}
+	// ready defaults to false for missing key
 }
