@@ -13,7 +13,12 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from ..litellm import default_litellm_config_path, is_cloud_effective, provider_policy
+from ..litellm import (
+    default_litellm_config_path,
+    is_effectively_exposed,
+    passes_ready_gate,
+    provider_policy,
+)
 from ..queue import PendingChanges
 from ..registry import (
     DEFAULT_PROVIDER_IDS,
@@ -310,16 +315,24 @@ class ModelScreen(Screen[None]):
                     status = "[green]✓[/green]"
                 else:
                     status = "[dim]○[/dim]"
-                exposed = self.state.get(m.id).litellm_exposed
-                if m.id in self.queued_exposes:
-                    exposed = self.queued_exposes[m.id]
+                # Use the queued expose value as the override for projected state.
+                exposed_override = self.queued_exposes.get(m.id)
+                # Use the projected ready value for the EXPOSED column preview.
+                ready_override = self._projected_ready(m.id)
                 # Effective exposure = the (queued or persisted) flag AND the
                 # *projected* ready value — the same gate `_validated_entry`
                 # applies at apply time, so the column shows what the model
                 # will be after apply, not what it was before the queue.
-                # Cloud rows are exempt from the ready gate.
-                ready_or_cloud = self._projected_ready(m.id) or is_cloud_effective(m)
-                exposed_str = "Y" if (exposed and ready_or_cloud) else "–"
+                exposed_str = (
+                    "Y"
+                    if is_effectively_exposed(
+                        m,
+                        self.state,
+                        exposed_override=exposed_override,
+                        ready_override=ready_override,
+                    )
+                    else "–"
+                )
                 mt.add_row(
                     m.family,
                     m.provider_id,
@@ -356,12 +369,14 @@ class ModelScreen(Screen[None]):
         enforces the same rule at the gate (_validated_entry rejects the
         expose with 'model is not ready'); this keeps the queue consistent
         with it instead of leaving a doomed entry for apply() to fail on.
-        Cloud rows are exempt, matching _validated_entry. Drops the expose
-        with a notification rather than silently overwriting the user's
-        request."""
-        if is_cloud_effective(entry):
-            return
-        if self.queued_exposes.get(mid) is True and not self._projected_ready(mid):
+        Cloud rows are exempt, matching _validated_entry (via
+        passes_ready_gate). Drops the expose with a notification rather
+        than silently overwriting the user's request."""
+        if self.queued_exposes.get(mid) is True and not passes_ready_gate(
+            entry,
+            self.state,
+            ready_override=self._projected_ready(mid),
+        ):
             self.queued_exposes.pop(mid, None)
             self.app.notify(f"Expose cancelled: {mid} will not be ready")
 
@@ -440,7 +455,11 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        if target and not self._projected_ready(mid) and not is_cloud_effective(entry):
+        if target and not passes_ready_gate(
+            entry,
+            self.state,
+            ready_override=self._projected_ready(mid),
+        ):
             # Exposing requires ready — the same gate _validated_entry
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite

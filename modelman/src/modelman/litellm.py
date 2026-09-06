@@ -107,6 +107,60 @@ def is_cloud_effective(model: ModelEntry) -> bool:
     return is_cloud(model.provider_id) or model.location == "cloud"
 
 
+def passes_ready_gate(
+    model: ModelEntry,
+    state: StateStore,
+    ready_override: bool | None = None,
+) -> bool:
+    """Whether a model passes the expose-time readiness gate.
+
+    The gate apply-time validation enforces (`_validated_entry` rejects an
+    expose with "model is not ready"): ready is required unless the model
+    is effectively cloud — cloud rows are exempt from the ready gate.
+
+    Args:
+        model: The registry model entry to check.
+        state: StateStore for the persisted ready flag.
+        ready_override: Override the persisted ready flag (used by the TUI
+            to project a queued ready toggle before apply runs).
+
+    Returns:
+        True if the model would pass the ready gate, False otherwise.
+    """
+    ready = ready_override if ready_override is not None else state.get(model.id).ready
+    return ready or is_cloud_effective(model)
+
+
+def is_effectively_exposed(
+    model: ModelEntry,
+    state: StateStore,
+    exposed_override: bool | None = None,
+    ready_override: bool | None = None,
+) -> bool:
+    """Determine if a model is effectively exposed through LiteLLM.
+
+    A model is effectively exposed when BOTH of these hold:
+    - its `litellm_exposed` flag is True (or `exposed_override` is True), AND
+    - it passes the ready gate: it is ready (or `ready_override` is True)
+      or it is a cloud model (exempt from the ready gate).
+
+    Args:
+        model: The registry model entry to check.
+        state: StateStore for ready/exposed flags.
+        exposed_override: Override the persisted litellm_exposed flag.
+        ready_override: Override the persisted ready flag.
+
+    Returns:
+        True if the model would be exposed through LiteLLM, False otherwise.
+    """
+    exposed = (
+        exposed_override if exposed_override is not None else state.get(model.id).litellm_exposed
+    )
+    if not exposed:
+        return False
+    return passes_ready_gate(model, state, ready_override=ready_override)
+
+
 class LiteLLMConfigError(Exception):
     """Raised when LiteLLM's config.yaml is missing or malformed."""
 
@@ -425,7 +479,7 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
     policy = provider_policy(model.provider_id)
     if policy is None:
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
-    if not is_cloud_effective(model) and not state.get(model_id).ready:
+    if not passes_ready_gate(model, state):
         raise ExposeError(f"model {model_id!r} is not ready")
     return build_model_list_entry(model, provider)
 
