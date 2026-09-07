@@ -17,6 +17,9 @@ User priority: **address #33 first** (root-cause the broken `local.llamacpp.serv
 
 Each milestone is small enough for its own PR (or a tightly-coupled pair of PRs). The doc also flags blockers, verification steps, and what should *not* be done together.
 
+Status (2026-09-12): all five milestones are resolved — A in #37, B in #38,
+C in #39, D in #40, E in #43. Per-milestone decision records follow.
+
 ---
 
 ## Milestone A — Repair `local.llamacpp.server` (#33)
@@ -91,6 +94,11 @@ wt list --models   # or equivalent
 
 ## Milestone B — Never discard a completed benchmark run (#32)
 
+> **RESOLVED 2026-09-12 — PR #38.** The save-then-surface pattern was ported
+> to the single-turn runner: results are written before provider restore, and
+> a restore failure raises `RunSavedButRestoreFailed` so the run file and the
+> `--latest` pointer survive. Text below is kept as the decision record.
+
 Goal: if a benchmark workload finishes but provider restore fails, the run file is still written and a clear error names the surviving directory.
 
 ### Rationale
@@ -128,6 +136,11 @@ Milestone A is not strictly required for the code fix, but it is required for *v
 ---
 
 ## Milestone C — Resolve wt-vs-TUI exposure divergence (#28)
+
+> **RESOLVED 2026-09-12 — PR #39, Option 1 (align `wt` to the TUI).** The
+> predicate is implemented in Go (`wt/internal/config`) and pinned by
+> contract fixtures; the divergence note in `docs/guides/00-config-map.md`
+> was removed in the same PR. Text below is kept as the decision record.
 
 Goal: pick one definition of “is this model exposed/available?” and apply it consistently across `modelman` TUI and `wt`.
 
@@ -169,6 +182,12 @@ wt list --models   # model should not appear in active list
 
 ## Milestone D — Extract `is_effectively_exposed()` helper (#29)
 
+> **RESOLVED 2026-09-12 — PR #40.** `is_effectively_exposed` is the single
+> canonical predicate in `modelman/src/modelman/litellm.py`, used by the TUI
+> EXPOSED column and the validation gate. See also
+> `docs/superpowers/specs/2026-09-12-is-effectively-exposed-design.md`. Text
+> below is kept as the decision record.
+
 Goal: one canonical Python implementation of the predicate, used by the TUI, apply gate, and CLI expose/unexpose paths.
 
 ### Rationale
@@ -201,6 +220,12 @@ make test
 
 ## Milestone E — Last-model-selected indicator in `wt` (#35)
 
+> **RESOLVED 2026-09-12 — PR #43.** The picker marks the last-launched row
+> with a `▶` prefix, reusing `rotation.state` instead of the sketched
+> `last-model` file. See
+> `docs/superpowers/specs/2026-09-12-wt-last-model-indicator-design.md`.
+> Text below is kept as the decision record.
+
 Goal: in the `wt` model picker, visually indicate which model was used in the previous session.
 
 ### PR E1: Persist and display the last selected model
@@ -221,13 +246,13 @@ cd wt && go test ./...
 
 ## Sequence summary
 
-| Order | Milestone | Issue | PR(s) | Why this order |
-|------|-----------|-------|-------|----------------|
-| 1 | A | #33 | A1, A2 | User-requested root cause. Blocks reliable verification of B. |
-| 2 | B | #32 | B1 | Data-loss bug; safe to implement once A removes the environmental trigger. |
-| 3 | C | #28 | C1, C2 | Semantic decision must precede helper extraction. |
-| 4 | D | #29 | D1 | Refactor that encodes the agreed semantics. |
-| 5 | E | #35 | E1 | Pure UX polish, no dependencies. |
+| Order | Milestone | Issue | PR(s) | Landed | Why this order |
+|------|-----------|-------|-------|--------|----------------|
+| 1 | A | #33 | A1, A2 | #37 | User-requested root cause. Blocks reliable verification of B. |
+| 2 | B | #32 | B1 | #38 | Data-loss bug; safe to implement once A removes the environmental trigger. |
+| 3 | C | #28 | C1, C2 | #39 | Semantic decision must precede helper extraction. |
+| 4 | D | #29 | D1 | #40 | Refactor that encodes the agreed semantics. |
+| 5 | E | #35 | E1 | #43 | Pure UX polish, no dependencies. |
 
 ## Cross-cutting concerns
 
