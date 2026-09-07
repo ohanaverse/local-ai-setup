@@ -971,10 +971,13 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
         reg_after_edit = load_registry(reg_path)
         assert reg_after_edit.model("ollama/glm-5.3:cloud").location == "local"
 
-        # Queue another action so the exit dialog offers Discard.
-        await pilot.press("r")
+        # Queue another action so the exit dialog offers Discard. ('d'
+        # queues a delete; 'r' now routes a mapped provider's ready-on
+        # through DownloadManager instead of the queue, so it wouldn't
+        # queue anything.)
+        await pilot.press("d")
         await pilot.pause()
-        assert app.screen.queued_ready
+        assert app.screen.queued_deletes
 
         # Escape opens ConfirmExitDialog; 'd' chooses Discard.
         await pilot.press("escape")
@@ -1043,9 +1046,13 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_r_on_not_ready_local_artifact_model_queues_download(tmp_path, monkeypatch):
-    """r on a not-ready llamacpp/omlx model queues a download — the
-    reconcilable-provider path through PendingChanges.apply()."""
+async def test_r_on_not_ready_local_artifact_model_routes_to_download_manager(
+    tmp_path, monkeypatch
+):
+    """r on a not-ready local-artifact model starts the download
+    immediately through DownloadManager (Task 12) instead of queueing
+    it for apply-on-exit: PendingChanges.apply() no longer downloads
+    (plan item #4), so the queue would hit its ready-on assert."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1073,13 +1080,20 @@ async def test_r_on_not_ready_local_artifact_model_queues_download(tmp_path, mon
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
         await pilot.press("r")
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert app.screen.queued_ready == {"omlx/a": True}
+        assert started == ["omlx/a"]
+        assert app.screen.queued_ready == {}
 
 
 @pytest.mark.asyncio
@@ -1129,11 +1143,11 @@ async def test_r_on_ready_local_artifact_model_queues_delete(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_r_on_not_ready_cloud_model_queues_download(tmp_path, monkeypatch):
+async def test_r_on_not_ready_cloud_model_routes_to_download_manager(tmp_path, monkeypatch):
     """r on a not-ready non-local-artifact (ollama-cloud) model still
-    queues a download — the target-False no-op rule is local-artifact-
-    only; cloud models go through the reconcilable-provider ready loop
-    (ollama pull) exactly like before."""
+    runs the real `ollama pull` (that's what registers the cloud tag)
+    — now in the background via DownloadManager instead of queued for
+    apply-on-exit, where apply()'s ready-on assert would reject it."""
     stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
     stub.is_downloaded.return_value = False
 
@@ -1141,20 +1155,28 @@ async def test_r_on_not_ready_cloud_model_queues_download(tmp_path, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
         await pilot.press("r")
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
+        assert started == ["ollama/glm-5.2:cloud"]
+        assert app.screen.queued_ready == {}
 
 
 @pytest.mark.asyncio
-async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypatch):
-    """Pressing r twice in a row on a not-ready model queues, then
-    cancels back to nothing (the second press's target, False, matches
-    the persisted state.ready, False — a no-op relative to disk)."""
+async def test_r_twice_cancels_started_download_with_notification(tmp_path, monkeypatch):
+    """Pressing r twice in a row on a not-ready mapped-provider model
+    starts the download, then the second press cancels it (three-way
+    'r': not-ready → start, downloading → cancel). The old queued-flip
+    cancel behavior only applied to flag-only providers."""
     stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
     stub.is_downloaded.return_value = False
 
@@ -1162,11 +1184,29 @@ async def test_r_twice_cancels_queued_flip_with_notification(tmp_path, monkeypat
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
+
+        from modelman.downloads import DownloadState
+
+        # Simulate DownloadManager.start() registering the download.
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+                {
+                    mid: DownloadState(
+                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
+                    )
+                }
+            ),
+        )
+        cancelled = []
+        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
         await pilot.press("r")
         await pilot.pause()
-        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
         await pilot.press("r")
         await pilot.pause()
+
+        assert cancelled == ["ollama/glm-5.2:cloud"]
         assert app.screen.queued_ready == {}
 
 
@@ -1627,9 +1667,27 @@ async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypa
         await pilot.pause()
         await _open_model_screen(pilot)
         await pilot.pause()
+
+        from modelman.downloads import DownloadState
+
+        # 'r' on a mapped-provider model starts a download instead of
+        # queueing a flip; simulate DownloadManager registering it so the
+        # following presses see a live download.
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+                {
+                    mid: DownloadState(
+                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
+                    )
+                }
+            ),
+        )
+        cancelled = []
+        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
         await pilot.press("r")
         await pilot.pause()
-        assert app.screen.queued_ready == {"ollama/a": True}
         await pilot.press("x")
         await pilot.pause()
         assert app.screen.queued_exposes == {"ollama/a": True}
@@ -1802,3 +1860,162 @@ async def test_poll_refreshes_state_after_download_completes(tmp_path, monkeypat
 
         await pilot.pause(1.1)  # next tick: reload now that a download is active
         assert app.screen._is_ready("ollama/x") is True
+
+
+@pytest.mark.asyncio
+async def test_r_on_downloading_model_cancels(tmp_path, monkeypatch):
+    # Three-way 'r' branch 1: pressing r on a model that's actively
+    # downloading cancels that download (not a toggle of the ready flag).
+    from modelman.downloads import DownloadState
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        cancelled = []
+        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
+        await pilot.press("r")
+        await pilot.pause()
+
+        assert cancelled == ["ollama/x"]
+
+
+@pytest.mark.asyncio
+async def test_r_on_real_provider_ready_on_starts_download_not_queue(tmp_path, monkeypatch):
+    # Three-way 'r' branch 2: a ready-on against a mapped provider
+    # (which runs a real download/pull) must start immediately in the
+    # background, never queue for apply-on-exit.
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
+        await pilot.press("r")
+        await pilot.pause()
+
+        assert started == ["ollama/x"]
+        assert app.screen.queued_ready == {}  # not queued — routed to DownloadManager
+
+
+@pytest.mark.asyncio
+async def test_r_ready_off_still_queues_as_before(tmp_path, monkeypatch):
+    # Three-way 'r' branch 3 (ready side): 'r' on a ready model still
+    # queues a ready-off clear for apply-on-exit, unchanged. The provider
+    # is stubbed so reconcile's background refresh keeps the seeded
+    # ready=True (a real ollama show would report the model absent and
+    # flip it back to not-ready mid-test).
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.state import ModelState, StateStore, save_state
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    st = StateStore()
+    st.set("ollama/x", ModelState(ready=True, disk_path="ollama:x:7b"))
+    save_state(st, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle (is_downloaded True keeps ready)
+        await pilot.press("r")
+        await pilot.pause()
+
+        assert app.screen.queued_ready == {"ollama/x": False}
+
+
+@pytest.mark.asyncio
+async def test_r_flag_only_provider_still_queues_not_downloads(tmp_path, monkeypatch):
+    # Three-way 'r' branch 2 exception: a provider with no real download
+    # mechanism (native/unmapped — no Provider class) must keep the
+    # pre-existing queued flag-flip behavior, not route through
+    # DownloadManager.
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    save_registry(
+        Registry(
+            providers=[
+                ProviderEntry(
+                    id="claude-agent", name="Claude", auth=AuthConfig(type="native")
+                ),
+            ],
+            families=[FamilyEntry(name="ornith")],
+            models=[
+                ModelEntry(
+                    id="claude-agent/x",
+                    family="ornith",
+                    provider_id="claude-agent",
+                    model_name="x",
+                )
+            ],
+        ),
+        reg_path,
+    )
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
+        await pilot.press("r")
+        await pilot.pause()
+
+        assert started == []
+        assert app.screen.queued_ready == {"claude-agent/x": True}
+
+
+@pytest.mark.asyncio
+async def test_r_on_cloud_model_of_mapped_provider_starts_download(tmp_path, monkeypatch):
+    # An ollama-cloud model's ready-on IS a real pull (that's what
+    # registers the cloud tag with ollama), so it must route through
+    # DownloadManager too — keeping it queued would hit apply()'s
+    # ready-on assert and silently break the pull.
+    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
+    stub.is_downloaded.return_value = False
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
+        await pilot.press("r")
+        await pilot.pause()
+
+        assert started == ["ollama/glm-5.2:cloud"]
+        assert app.screen.queued_ready == {}

@@ -389,9 +389,16 @@ class ModelScreen(Screen[None]):
         return self.state.get(model_id).ready
 
     def _projected_ready(self, model_id: str) -> bool:
-        """The ready value this model will have after apply(): the queued
-        target if one exists, otherwise the persisted flag."""
-        return self.queued_ready.get(model_id, self.state.get(model_id).ready)
+        """The ready value this model will have after apply() (or, for a
+        model routed through DownloadManager instead of the queue, after
+        its download finishes): the queued target if one exists,
+        otherwise True while actively downloading, otherwise the
+        persisted flag."""
+        if model_id in self.queued_ready:
+            return self.queued_ready[model_id]
+        if self.app.downloads.is_downloading(model_id):  # type: ignore[attr-defined]
+            return True
+        return self.state.get(model_id).ready
 
     def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
         """Single invariant: expose depends on ready. A queued expose=True
@@ -426,6 +433,20 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
+
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            # Three-way 'r': downloading -> cancel. The model's readiness
+            # was transient (it only becomes ready when the download
+            # finishes), so a queued expose — whether cascade-marked or
+            # queued while the model merely looked ready-by-projection —
+            # would be doomed once the download stops. Drop both halves.
+            self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
+            self.queued_exposes.pop(mid, None)
+            self._ready_cascade_for_expose.discard(mid)
+            self.app.notify(f"Cancelling download: {mid}")
+            self.reload()
+            return
+
         persisted_ready = self.state.get(mid).ready
         displayed_ready = self.queued_ready.get(mid, persisted_ready)
         target = not displayed_ready
@@ -446,12 +467,22 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        # Queue the ready target only. apply() owns the consequences — it
-        # removes the artifact (provider delete, or the recorded disk_path
-        # for flag-only providers) on ready-off and re-derives the unexpose
-        # cascade from the persisted exposure flag — and the invariant below
-        # drops any queued expose the new ready value makes impossible, so
-        # the screen queue can never strand a doomed expose.
+
+        if target and self._provider_can_download(entry.provider_id):
+            # A real download (ollama/omlx/llamacpp, local or cloud):
+            # start it immediately in the background instead of queuing
+            # it — it is never applied by PendingChanges.apply() (Task 4).
+            self._start_download(entry)
+            return
+
+        # Flag-only provider (native/unmapped) ready-on, or any ready-off:
+        # unchanged apply-on-exit queue behavior. apply() owns the
+        # consequences — it removes the artifact (provider delete, or the
+        # recorded disk_path for flag-only providers) on ready-off and
+        # re-derives the unexpose cascade from the persisted exposure flag
+        # — and the invariant below drops any queued expose the new ready
+        # value makes impossible, so the screen queue can never strand a
+        # doomed expose.
         self.queued_ready[mid] = target
         self._enforce_expose_ready_rule(mid, entry)
         self._last_provider_used = entry.provider_id
@@ -511,6 +542,22 @@ class ModelScreen(Screen[None]):
             return self.registry.provider(provider_id)
         except KeyError:
             return None
+
+    def _provider_can_download(self, provider_id: str) -> bool:
+        """True when a ready-on against this provider is a real
+        download/pull and must go through DownloadManager: the provider
+        has a registered Provider class (ollama/omlx/llamacpp). This is
+        deliberately NOT model_has_local_artifact — an ollama *cloud*
+        model has no local artifact but its ready-on still runs a real
+        `ollama pull` (that's what registers the tag), so it must route
+        through DownloadManager too; native/unmapped providers have no
+        Provider class and keep the queued flag flip. Mirrors _run_apply's
+        try/except-KeyError flag-only rule."""
+        if self._provider_entry_or_none(provider_id) is None:
+            return False
+        from ..providers.registry import ProviderRegistry
+
+        return provider_id in ProviderRegistry.available()
 
     def _start_download(self, entry: ModelEntry) -> None:
         """Route a real ready-on through DownloadManager instead of the
