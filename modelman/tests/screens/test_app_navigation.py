@@ -1316,6 +1316,79 @@ async def test_model_screen_add_appends_model_entry_to_registry(
 
 
 @pytest.mark.asyncio
+async def test_discard_cancels_download_for_a_model_added_this_session(
+    tmp_path, monkeypatch, stub_ollama_caps
+):
+    """Regression for a review finding: Discard only cancelled downloads
+    cascaded in by an expose toggle (_ready_cascade_for_expose), not one
+    started directly by adding a model. If the user adds a model (whose
+    real download starts immediately, bypassing the queue), then queues
+    an unrelated change that opens the exit-confirm dialog and discards
+    it, the added model's registry entry is rolled back but its download
+    used to keep running — later persisting a dangling modelman.toml row
+    (ready=True) for a model_id no longer in the registry."""
+    from textual.widgets import Button, Input, Select
+
+    from modelman.downloads import DownloadState
+    from modelman.registry import ModelEntry
+
+    b = ModelEntry(id="ollama/b", family="ornith", provider_id="ollama", model_name="b:tag")
+    ms, _reg_path, _state_path = _make_screen(tmp_path, monkeypatch, entries=[b])
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        pilot.app.push_screen(ms)
+        await pilot.pause()
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
+                {
+                    mid: DownloadState(
+                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
+                    )
+                }
+            ),
+        )
+        cancelled = []
+        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
+
+        await pilot.press("a")  # add model A; its real download starts immediately
+        await pilot.pause()
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        provider_sel.value = "ollama"
+        await pilot.pause()
+        app.screen.query_one("#model", Input).focus()
+        for ch in "ornith:8b":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "ollama/ornith:8b" in ms._added_ids
+
+        # Queue an unrelated delete so Escape opens the exit-confirm dialog
+        # (adding A alone queues nothing — its download bypasses the queue).
+        mt = ms.query_one("#model-table", DataTable)
+        row_keys = [k.value for k in mt.rows]
+        mt.cursor_coordinate = (row_keys.index("ollama/b"), 0)
+        await pilot.press("d")
+        await pilot.pause()
+        assert "ollama/b" in ms.queued_deletes
+
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "discard":
+                btn.press()
+                break
+        await pilot.pause()
+
+    assert cancelled == ["ollama/ornith:8b"]
+    assert "ollama/ornith:8b" not in [m.id for m in ms.registry.models]
+
+
+@pytest.mark.asyncio
 async def test_model_screen_toggle_ready_queues_variant(
     tmp_path,
     monkeypatch,

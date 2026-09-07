@@ -844,6 +844,14 @@ class ModelScreen(Screen[None]):
             # download running for a change the user walked away from.
             for mid in list(self._ready_cascade_for_expose):
                 self._cancel_ready_cascade(mid)
+            # Also cancel any download still running for a model added
+            # this session: _restore_snapshot() below removes its registry
+            # entry, and a download that finishes afterward would persist
+            # a dangling modelman.toml row (ready=True) for a model_id no
+            # longer in the registry.
+            for mid in list(self._added_ids):
+                if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+                    self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
             self._restore_snapshot()
             # Same-family edits save registry immediately on _on_edit_model.
             # Restoring the in-memory snapshot is not enough: FamilyScreen
