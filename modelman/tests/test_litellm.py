@@ -775,6 +775,17 @@ def test_is_effectively_exposed_ready_override():
     assert is_effectively_exposed(model, state) is False
 
 
+def test_is_effectively_exposed_native_not_exposed_not_ready():
+    # Native models bypass LiteLLM entirely, so they are always catalog-exposed
+    # even when unflagged and not ready. This must match wt's IsExposed.
+    model = _model("agy/contract-fixture:native", "agy", "contract-fixture:native")
+    model.native = True
+    state = StateStore()
+    state.set("agy/contract-fixture:native", ModelState(ready=False, litellm_exposed=False))
+
+    assert is_effectively_exposed(model, state) is True
+
+
 def test_passes_ready_gate_local_ready():
     # A ready local model passes the gate apply-time validation enforces
     # (_validated_entry's "model is not ready" rejection must match this).
