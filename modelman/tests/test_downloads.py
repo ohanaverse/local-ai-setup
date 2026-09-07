@@ -524,3 +524,129 @@ def test_clear_finished_removes_only_non_downloading_states(monkeypatch):
     assert states[0].status == "downloading"
 
     release.set()
+
+
+def test_clear_state_mid_download_keeps_registry_for_shared_artifact_guard(monkeypatch):
+    # Regression for a review finding: clear_state() on an in-flight
+    # download used to pop the registry snapshot too, so when the download
+    # thread later unwound through _finish's cleanup, the
+    # find_shared_artifact_owner conflict check was skipped (registry
+    # popped → None) and cleanup_partial_download ran unconditionally —
+    # for omlx that's an rmtree of the shared basename-keyed dir holding
+    # ANOTHER registry entry's completed weights (the exact case
+    # test_cancel_cleanup_skips_rmtree_when_artifact_is_shared guards).
+    # The discard path cancels and immediately clear_state's while the
+    # thread is still inside provider.download(), so the snapshot must
+    # survive until the unwind itself reaps it.
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+
+    release = threading.Event()
+
+    def _download(*a, **k):
+        release.wait(2)
+        raise DownloadCancelled("x")
+
+    provider = MagicMock()
+    provider.download.side_effect = _download
+    provider.cancel_current.side_effect = lambda: release.set()
+    provider.path_of.return_value = "/models/shared-basename"
+    _register_stub_provider(monkeypatch, provider)
+
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx"))],
+        models=[
+            ModelEntry(id="omlx/a", family="f", provider_id="omlx", model_name="orgA/model"),
+            ModelEntry(id="omlx/b", family="f", provider_id="omlx", model_name="orgB/model"),
+        ],
+    )
+
+    mgr = DownloadManager(_FakeApp())
+    mgr.start(
+        "omlx/a",
+        {"id": "omlx/a", "provider": "omlx", "repo": "orgA/model"},
+        {},
+        registry=registry,
+    )
+    while not mgr.is_downloading("omlx/a"):
+        time.sleep(0.01)
+    mgr.cancel("omlx/a")
+    # Simulate the discard path: clear while the thread is still unwinding.
+    mgr.clear_state("omlx/a")
+    assert mgr.states() == []  # user-visible row is gone immediately
+
+    deadline = time.time() + 2
+    while provider.cleanup_partial_download.call_count == 0 and time.time() < deadline:
+        time.sleep(0.01)
+
+    # The registry snapshot survived the mid-flight clear, the conflict
+    # check saw the other owner, and the rmtree was skipped.
+    assert provider.cleanup_partial_download.call_count == 0
+    with mgr._lock:
+        assert "omlx/a" not in mgr._registries  # unwind reaped the retained snapshot
+
+
+def test_clear_state_mid_download_keeps_cancel_flag_for_cancelled_classification(
+    monkeypatch,
+):
+    # Regression for a review finding: clear_state() on an in-flight
+    # download discarded model_id from _cancel_requested while the download
+    # thread was still unwinding. Ollama's killed pull exits non-zero and
+    # download() raises a plain RuntimeError (not DownloadCancelled), so
+    # with the flag gone the raise was misclassified as "failed" and the
+    # user got a spurious "Download failed" notification for a download
+    # they deliberately cancelled. The flag must survive until the unwind
+    # reads it (same discard-cancel-then-clear ordering as the shared-
+    # artifact case above).
+    release = threading.Event()
+
+    def _download(*a, **k):
+        release.wait(2)
+        raise RuntimeError("`ollama pull x` failed (exit -15)")
+
+    provider = MagicMock()
+    provider.download.side_effect = _download
+    provider.cancel_current.side_effect = lambda: release.set()
+    _register_stub_provider(monkeypatch, provider)
+
+    app = _FakeApp()
+    mgr = DownloadManager(app)
+    mgr.start("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x:7b"}, {})
+    while not mgr.is_downloading("ollama/x"):
+        time.sleep(0.01)
+    mgr.cancel("ollama/x")
+    mgr.clear_state("ollama/x")
+    assert mgr.states() == []  # row dropped while the thread unwinds
+
+    deadline = time.time() + 2
+    while not app.notifications and time.time() < deadline:
+        time.sleep(0.01)
+
+    # No "Download failed" notification fired, and the unwind classified
+    # the raise as a user-requested cancel (silently reaping the state).
+    assert app.notifications == []
+    with mgr._lock:
+        assert "ollama/x" not in mgr._cancel_requested  # unwind reaped the retained flag
+
+
+def test_clear_finished_keeps_active_download_tracking(monkeypatch):
+    # clear_finished() routes through the same _drop_locked teardown as
+    # clear_state() (V5 dedupe) but must never drop an in-flight
+    # download's execution context — only non-downloading rows.
+    release = threading.Event()
+    provider = MagicMock()
+    provider.download.side_effect = lambda *a, **k: (release.wait(2), "/models/x")[1]
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    mgr.start("ollama/active", {"id": "ollama/active", "provider": "ollama", "name": "active"}, {})
+    while not mgr.is_downloading("ollama/active"):
+        time.sleep(0.01)
+    mgr._cancel_requested.add("ollama/active")
+
+    mgr.clear_finished()
+
+    with mgr._lock:
+        assert "ollama/active" in mgr._cancel_requested
+        assert mgr._registries.get("ollama/active") is None
+
+    release.set()
