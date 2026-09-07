@@ -1,7 +1,7 @@
 """Tests for ModelScreen helpers and per-key actions."""
 
 import pytest
-from textual.widgets import DataTable, Input, Select, Static
+from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static
 
 from modelman.app import ModelmanApp
 from modelman.registry import (
@@ -963,18 +963,22 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
 
         assert isinstance(app.screen, ModelScreen)
 
-        # Edit the model: open ModelForm, change location, submit.
+        # Edit the model: open ModelForm, add subscription pricing, submit.
         await pilot.press("e")
         await pilot.pause()
-        app.screen.query_one("#location-select", Select).value = "local"
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
-        app.screen.query_one("#model", Input).focus()
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        # Submit via the Save button: the model Input is disabled in edit mode.
+        app.screen.query_one("#save", Button).focus()
         await pilot.press("enter")
         await pilot.pause()
 
-        # The edit saved to disk immediately; confirm the file has the new location.
+        # The edit saved to disk immediately; confirm the file has the new cost.
         reg_after_edit = load_registry(reg_path)
-        assert reg_after_edit.model("ollama/glm-5.3:cloud").location == "local"
+        assert reg_after_edit.model("ollama/glm-5.3:cloud").cost == Cost(
+            subscription_price=20.0, subscription_period="month"
+        )
 
         # Queue another action so the exit dialog offers Discard. ('d'
         # queues a delete; 'r' now routes a mapped provider's ready-on
@@ -990,9 +994,10 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
         await pilot.press("d")
         await pilot.pause()
 
-    # After discarding, the registry file must be reverted to the original location.
+    # After discarding, the registry file must be reverted to the original
+    # (no-cost) state.
     reg_after_discard = load_registry(reg_path)
-    assert reg_after_discard.model("ollama/glm-5.3:cloud").location == "cloud"
+    assert reg_after_discard.model("ollama/glm-5.3:cloud").cost is None
 
 
 @pytest.mark.asyncio
