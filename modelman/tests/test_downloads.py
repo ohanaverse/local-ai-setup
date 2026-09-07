@@ -329,3 +329,75 @@ def test_progress_visible_while_downloading(monkeypatch):
     states = {s.model_id: s for s in mgr.states()}
     assert "50%" in states["ollama/x"].progress
     release.set()
+
+
+def test_post_download_action_runs_on_success(monkeypatch):
+    # A deferred action (e.g. a queued expose) registered against a
+    # downloading model must run exactly once, after the download's
+    # state persistence, when that download succeeds.
+    provider = MagicMock()
+    provider.download.return_value = "/models/x"
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    ran = threading.Event()
+    mgr.register_post_download("ollama/x", ran.set)
+    done = threading.Event()
+    mgr.start(
+        "ollama/x",
+        {"id": "ollama/x", "provider": "ollama", "name": "x"},
+        {},
+        on_complete=lambda p: done.set(),
+    )
+
+    assert done.wait(timeout=2)
+    assert ran.wait(timeout=2)
+
+
+def test_post_download_action_dropped_on_cancel(monkeypatch):
+    # Actions registered for a download that gets cancelled are
+    # discarded, never run — the model never became ready, so an action
+    # that assumed it did (e.g. writing a LiteLLM route) would be wrong.
+    release = threading.Event()
+
+    def _download(*a, **k):
+        release.wait(2)
+        raise DownloadCancelled("x")
+
+    provider = MagicMock()
+    provider.download.side_effect = _download
+    provider.cancel_current.side_effect = lambda: release.set()
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    ran = threading.Event()
+    mgr.register_post_download("ollama/x", ran.set)
+    mgr.start("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x"}, {})
+    while not mgr.is_downloading("ollama/x"):
+        time.sleep(0.01)
+    mgr.cancel("ollama/x")
+
+    deadline = time.time() + 2
+    while mgr.is_downloading("ollama/x") and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)  # let a wrongly-firing action run, if any
+    assert not ran.is_set()
+
+
+def test_post_download_action_dropped_on_failure(monkeypatch):
+    # Same discard rule for a download that fails on its own (network
+    # error, disk full, ...) with no cancel() call.
+    provider = MagicMock()
+    provider.download.side_effect = RuntimeError("network error")
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    ran = threading.Event()
+    mgr.register_post_download("ollama/x", ran.set)
+    mgr.start("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x"}, {})
+
+    deadline = time.time() + 2
+    while mgr.is_downloading("ollama/x") and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    assert not ran.is_set()

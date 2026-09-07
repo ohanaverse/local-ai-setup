@@ -99,6 +99,14 @@ class DownloadManager:
         with self._lock:
             return list(self._states.values())
 
+    def register_post_download(self, model_id: str, action: Callable[[], None]) -> None:
+        """Run `action` once, only if this model_id's current (or next)
+        download finishes successfully. Used to defer a queued expose
+        against a model that's still downloading until it's actually
+        ready — see ModelScreen._run_apply."""
+        with self._lock:
+            self._post_download.setdefault(model_id, []).append(action)
+
     def _run(
         self,
         model_id: str,
@@ -174,6 +182,15 @@ class DownloadManager:
                 state.error = error
             self._cancel_requested.discard(model_id)
             self._providers.pop(model_id, None)
+            actions = self._post_download.pop(model_id, [])
+        if status == "done":
+            for action in actions:
+                # A failed deferred action must not crash the download thread.
+                with contextlib.suppress(Exception):
+                    action()
+        # status in ("failed", "cancelled"): actions are discarded,
+        # never run — the model never became ready, so an action that
+        # assumed it did (e.g. writing a LiteLLM route) would be wrong.
         if status == "failed":
             # Surfaced via notification, not just the DownloadScreen
             # table — the user may be on a completely different screen
