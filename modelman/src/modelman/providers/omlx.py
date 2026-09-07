@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from huggingface_hub import snapshot_download
 
-from ._progress import ProgressTqdm
+from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
 from .base import LocalModel, Provider, VariantSpec
 from .registry import ProviderRegistry
 
@@ -63,20 +63,18 @@ class OMLXProvider(Provider):
         repo = variant.get("repo")
         if not repo:
             raise ValueError(f"omlx variant {variant['id']} missing repo")
-        # Reset cancellation flag at the start of each download so a
-        # previous Cancel on this provider doesn't immediately abort the
-        # next attempt.
         self._cancel_requested = False
         target = _model_dir(self.config) / _basename(repo)
         kwargs: dict[str, Any] = {"repo_id": repo, "local_dir": str(target)}
-        ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
-        try:
-            if on_progress is not None:
-                kwargs["tqdm_class"] = ProgressTqdm
-            snapshot_download(**kwargs)
-            return str(target)
-        finally:
-            ProgressTqdm.clear_active_context()
+        with HF_DOWNLOAD_LOCK:
+            ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
+            try:
+                if on_progress is not None:
+                    kwargs["tqdm_class"] = ProgressTqdm
+                snapshot_download(**kwargs)
+                return str(target)
+            finally:
+                ProgressTqdm.clear_active_context()
 
     def list_local(self, runner: _Runner | None = None) -> list[LocalModel]:
         models: list[LocalModel] = []

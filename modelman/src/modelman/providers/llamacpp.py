@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from huggingface_hub import snapshot_download
 
-from ._progress import ProgressTqdm
+from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
 from .base import LocalModel, Provider, VariantSpec
 from .registry import ProviderRegistry
 
@@ -110,9 +110,6 @@ class LlamaCppProvider(Provider):
         if not repo or not files:
             raise ValueError(f"llamacpp variant {variant['id']} missing repo/files")
 
-        # Reset cancellation flag at the start of each download so a
-        # previous Cancel on this provider doesn't immediately abort the
-        # next attempt.
         self._cancel_requested = False
 
         primary = files[0]
@@ -121,19 +118,21 @@ class LlamaCppProvider(Provider):
             "allow_patterns": files,
             "cache_dir": _hf_cache_dir(),
         }
-        # huggingface_hub doesn't accept per-call kwargs for the user's
-        # tqdm_class, so we route the callbacks through a class-level
-        # active context on ProgressTqdm. Set BEFORE snapshot_download and
-        # cleared in finally so a stray bar from a previous call can
-        # never pick up the wrong callbacks.
-        ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
-        try:
-            if on_progress is not None:
-                kwargs["tqdm_class"] = ProgressTqdm
-            path = snapshot_download(**kwargs)
-            return str(Path(path) / primary)
-        finally:
-            ProgressTqdm.clear_active_context()
+        with HF_DOWNLOAD_LOCK:
+            # huggingface_hub doesn't accept per-call kwargs for the user's
+            # tqdm_class, so we route the callbacks through a class-level
+            # active context on ProgressTqdm. Set BEFORE snapshot_download
+            # and cleared in finally so a stray bar from a previous call
+            # can never pick up the wrong callbacks. The lock keeps two
+            # different top-level downloads from sharing that slot.
+            ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
+            try:
+                if on_progress is not None:
+                    kwargs["tqdm_class"] = ProgressTqdm
+                path = snapshot_download(**kwargs)
+                return str(Path(path) / primary)
+            finally:
+                ProgressTqdm.clear_active_context()
 
     def size_of(self, variant: VariantSpec) -> int | None:
         repo = variant.get("repo")

@@ -372,3 +372,37 @@ def test_progress_tqdm_uses_unit_field_not_hardcoded_bytes():
         assert "1 / 3 B" not in line
         assert "1.0 B" not in line
         assert "2.0 B" not in line
+
+
+def test_hf_download_lock_serializes_two_active_contexts():
+    # Two "downloads" that both try to hold the active context at once
+    # must not interleave: the second must block until the first releases
+    # the lock. This is what prevents two parallel oMLX/llamacpp downloads
+    # from clobbering each other's on_progress/should_cancel callbacks —
+    # the bug the class-level slot has without this lock.
+    import threading
+    import time
+
+    from modelman.providers._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
+
+    order: list[str] = []
+
+    def _hold(label: str, hold_seconds: float) -> None:
+        with HF_DOWNLOAD_LOCK:
+            ProgressTqdm.set_active_context(lambda line: None, lambda: False)
+            order.append(f"{label}-start")
+            time.sleep(hold_seconds)
+            order.append(f"{label}-end")
+            ProgressTqdm.clear_active_context()
+
+    t1 = threading.Thread(target=_hold, args=("a", 0.1))
+    t2 = threading.Thread(target=_hold, args=("b", 0.0))
+    t1.start()
+    time.sleep(0.02)  # let t1 acquire the lock first
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # b must not start until a has fully finished (start...end...start...end),
+    # never interleaved (start...start...end...end).
+    assert order == ["a-start", "a-end", "b-start", "b-end"]
