@@ -240,6 +240,92 @@ async def test_modelform_edit_prefills_ollama_name():
         assert inp.value == "ornith-1.5:35b"
 
 
+@pytest.mark.asyncio
+async def test_modelform_field_order_family_provider_model_location():
+    """The composed DOM orders Family before Provider before Model before
+    Location (identity fields grouped, family promoted to top)."""
+    form = ModelForm(providers=["ollama"], families=["ornith"], family="ornith")
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        identity_ids = {
+            "family-select",
+            "provider-select",
+            "model",
+            "location-select",
+        }
+        ids = [w.id for w in app.screen.query("Select, Input") if w.id in identity_ids]
+        assert ids == ["family-select", "provider-select", "model", "location-select"]
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_mode_disables_identity_fields():
+    """Edit mode disables provider, model, and location; family and the
+    pricing checkboxes remain enabled."""
+    variant: VariantSpec = {
+        "id": "ollama/glm-5.3:cloud",
+        "provider": "ollama",
+        "name": "glm-5.3:cloud",
+        "location": "cloud",
+    }
+    form = ModelForm(
+        providers=["ollama"],
+        variant=variant,
+        families=["glm"],
+        family="glm",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#provider-select", Select).disabled
+        assert app.screen.query_one("#model", Input).disabled
+        assert app.screen.query_one("#location-select", Select).disabled
+        assert not app.screen.query_one("#family-select", Select).disabled
+        assert not app.screen.query_one("#per-token-checkbox", Checkbox).disabled
+        assert not app.screen.query_one("#subscription-checkbox", Checkbox).disabled
+
+
+@pytest.mark.asyncio
+async def test_modelform_add_mode_identity_fields_enabled_and_provider_focused():
+    """Add mode leaves provider, model, and location enabled (location
+    subject to provider-kind locking) and focuses the provider Select on
+    mount."""
+    form = ModelForm(providers=["ollama"], default_provider="ollama")
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert not app.screen.query_one("#provider-select", Select).disabled
+        assert not app.screen.query_one("#model", Input).disabled
+        assert not app.screen.query_one("#location-select", Select).disabled
+        assert _focused_id(app) == "provider-select"
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_mode_focuses_family_select():
+    """Edit mode focuses the family Select (the first enabled field) on
+    mount; provider/model/location are disabled."""
+    variant: VariantSpec = {
+        "id": "ollama/glm-5.3:cloud",
+        "provider": "ollama",
+        "name": "glm-5.3:cloud",
+        "location": "cloud",
+    }
+    form = ModelForm(providers=["ollama"], variant=variant, families=["glm"], family="glm")
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert _focused_id(app) == "family-select"
+
+
 # ---------------------------------------------------------------------------
 # Submit behavior: spec shape per provider
 # ---------------------------------------------------------------------------
