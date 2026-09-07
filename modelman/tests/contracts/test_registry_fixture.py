@@ -13,18 +13,21 @@ def test_load_registry_matches_shared_fixture():
     """
     registry = load_registry(path=FIXTURE)
 
-    assert len(registry.providers) == 2
+    assert len(registry.providers) == 3
     ollama = registry.provider("ollama")
     assert ollama.auth.type == "none"
     assert ollama.auth.base_url == "http://localhost:11434"
     openrouter = registry.provider("openrouter")
     assert openrouter.auth.type == "api_key"
     assert openrouter.auth.secret_ref == "OPENROUTER_API_KEY"
+    agy = registry.provider("agy")
+    assert agy.auth.type == "native"
 
-    assert len(registry.models) == 2
+    assert len(registry.models) == 3
 
     free_model = registry.model("ollama/contract-fixture:local")
     assert free_model.cost is None
+    assert free_model.native is False
 
     cloud_model = registry.model("openrouter/contract-fixture:cloud")
     assert cloud_model.location == "cloud"
@@ -35,6 +38,11 @@ def test_load_registry_matches_shared_fixture():
     assert cloud_model.cost.output_price_per_million == 1.00
     assert cloud_model.cost.subscription_price == 19.99
     assert cloud_model.cost.subscription_period == "month"
+    assert cloud_model.native is False
+
+    native_model = registry.model("agy/contract-fixture:native")
+    assert native_model.provider_id == "agy"
+    assert native_model.native is True
 
     family = registry.family("contract-fixture")
     assert family is not None
