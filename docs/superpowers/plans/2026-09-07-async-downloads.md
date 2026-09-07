@@ -2323,7 +2323,7 @@ EOF
 - Consumes: `model_has_local_artifact` (`registry.py`), `DownloadManager`
   (Tasks 5-7).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/screens/test_models.py — add near the other action tests. Use
@@ -2413,12 +2413,12 @@ async def test_poll_refreshes_state_after_download_completes(tmp_path, monkeypat
         assert app.screen._is_ready("ollama/x") is True
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/screens/test_models.py -k "downloading_glyph or blocked_while_downloading or poll_refreshes" -v`
 Expected: FAIL (no glyph handling, no locking, no poll)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, add imports:
 `from ..registry import ... model_has_local_artifact` (add to the
@@ -2541,14 +2541,14 @@ In `action_edit_model`, right after resolving `entry` (after
             return
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (all tests in the file, including pre-existing ones —
 this task only adds guards/glyphs, it doesn't change existing routing
 yet, so no pre-existing test should break)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 
@@ -3225,13 +3225,13 @@ async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_
         assert pending_holder[0].exposes == []  # deferred, not passed to PendingChanges
 ```
 
-- [x] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/screens/test_models.py -k expose_against_downloading -v`
 Expected: FAIL — `register_post_download` is never called;
 `pending.exposes` still contains `("ollama/x", True)`.
 
-- [x] **Step 3: Implement**
+- [ ] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, modify `_run_apply`. Replace:
 
@@ -3307,12 +3307,12 @@ Add `from pathlib import Path` if not already imported at the top of the
 file (it already is, per the existing `from pathlib import Path` import
 line — confirm before adding a duplicate).
 
-- [x] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (full file)
 
-- [x] **Step 5: Lint/typecheck and commit**
+- [ ] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 
