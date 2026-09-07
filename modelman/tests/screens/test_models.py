@@ -1107,6 +1107,61 @@ async def test_r_on_not_ready_local_artifact_model_routes_to_download_manager(
 
 
 @pytest.mark.asyncio
+async def test_download_finishing_after_screen_popped_does_not_crash(tmp_path, monkeypatch):
+    """Regression for a review finding: a download started directly via
+    'r' (bypassing the apply-on-exit queue) leaves queued_ready empty, so
+    a subsequent Escape pops the screen immediately with no confirm
+    dialog while the download is still in flight. The later on_complete
+    callback (or the 1s _poll_downloads timer) then calls self.reload()
+    / self._refresh_pending_bar() against the now-unmounted screen —
+    query_one() must not raise NoMatches uncaught in that case."""
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        families=[FamilyEntry(name="ornith")],
+        models=[model],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = False
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
+        await pilot.press("r")  # starts a real download; queues nothing
+        await pilot.pause()
+        popped_screen = app.screen
+        assert popped_screen.queued_ready == {}
+
+        await pilot.press("escape")  # empty queue -> pops immediately
+        await pilot.pause()
+        from modelman.screens.families import FamilyScreen
+
+        assert isinstance(app.screen, FamilyScreen)
+
+        # Simulate the download's on_complete callback (and the 1s poll)
+        # firing against the now-detached screen instance.
+        popped_screen._on_download_finished("omlx/a")
+        popped_screen.reload()
+        popped_screen._refresh_pending_bar()
+
+
+@pytest.mark.asyncio
 async def test_r_on_ready_local_artifact_model_queues_delete(tmp_path, monkeypatch):
     """r on an already-ready local-artifact model now queues ready=False
     (file deletion), per the ready-toggle-delete design: 'r' is a true

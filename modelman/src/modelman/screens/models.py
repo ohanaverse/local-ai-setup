@@ -328,8 +328,16 @@ class ModelScreen(Screen[None]):
         self._load_models()
 
     def _load_models(self) -> None:
-        def _repopulate() -> None:
+        try:
             mt = self.query_one("#model-table", DataTable)
+        except NoMatches:
+            # Screen already popped — e.g. a background download's
+            # on_complete callback (_on_download_finished) or the 1s
+            # _poll_downloads timer fired after Escape closed this screen
+            # while an untracked download was still in flight.
+            return
+
+        def _repopulate() -> None:
             mt.clear()
             models = sorted(
                 self.registry.models_by_family(self.family),
@@ -386,8 +394,8 @@ class ModelScreen(Screen[None]):
                     key=m.id,
                 )
 
-        reload_preserving_cursor(self.query_one("#model-table", DataTable), _repopulate)
-        self._refresh_details_panel(self.query_one("#model-table", DataTable).cursor_row)
+        reload_preserving_cursor(mt, _repopulate)
+        self._refresh_details_panel(mt.cursor_row)
 
     def _is_ready(self, model_id: str) -> bool:
         """Truth about whether a model is ready to use — a pure read of
@@ -439,7 +447,10 @@ class ModelScreen(Screen[None]):
         self._ready_cascade_for_expose.discard(mid)
 
     def _refresh_pending_bar(self) -> None:
-        bar = self.query_one("#pending-bar", Static)
+        try:
+            bar = self.query_one("#pending-bar", Static)
+        except NoMatches:
+            return  # screen already popped (see _load_models)
         bar.update(
             f"Pending: ready {len(self.queued_ready)} · delete {len(self.queued_deletes)}"
             f" · move {len(self.queued_moves)} · expose {len(self.queued_exposes)}"
