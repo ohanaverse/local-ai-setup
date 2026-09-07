@@ -56,7 +56,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
     provider_id = variant["provider"]
     # Sanity: provider must exist in the registry. Defends against a
     # malformed dialog result that snuck past form validation.
-    registry.provider(provider_id)  # raises KeyError if unknown
+    provider = registry.provider(provider_id)  # raises KeyError if unknown
 
     name = variant.get("name") or variant["id"]
     repo = variant.get("repo")
@@ -81,6 +81,10 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         cost=cost,
         model_info=model_info,
         fetch=fetch,
+        # native is derived (never serialized) — re-derive it here so an
+        # in-session add/edit doesn't reset the flag and flip the EXPOSED
+        # column until the next disk reload. Mirrors _derive_native.
+        native=provider.auth.type == "native",
     )
 
 

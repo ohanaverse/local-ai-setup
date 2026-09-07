@@ -68,6 +68,27 @@ def test_variant_to_model_entry_sets_source_curated():
     assert entry.source == "curated"
 
 
+def test_variant_to_model_entry_derives_native_from_provider_auth():
+    """In-session add/edit must not reset the derived native flag: the adapter
+    sets native from the provider's auth.type, so a native-provider model
+    keeps rendering EXPOSED=Y right after a TUI add or edit instead of
+    flipping to – until the next disk reload."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native")),
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
+        ]
+    )
+    native_entry = _variant_to_model_entry(
+        {"id": "agy/x", "provider": "agy", "name": "x"}, family="x", registry=registry
+    )
+    local_entry = _variant_to_model_entry(
+        {"id": "ollama/x", "provider": "ollama", "name": "x"}, family="x", registry=registry
+    )
+    assert native_entry.native is True
+    assert local_entry.native is False
+
+
 def test_variant_to_model_entry_passes_through_cost():
     """The adapter must carry cost from the dialog result into the registry
     ModelEntry, accepting either a Cost object or a plain dict."""
