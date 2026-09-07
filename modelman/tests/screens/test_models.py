@@ -1094,7 +1094,7 @@ async def test_r_on_not_ready_local_artifact_model_routes_to_download_manager(
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("r")
         await pilot.pause()
@@ -1169,7 +1169,7 @@ async def test_r_on_not_ready_cloud_model_routes_to_download_manager(tmp_path, m
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("r")
         await pilot.pause()
@@ -1201,7 +1201,7 @@ async def test_r_twice_cancels_started_download_with_notification(tmp_path, monk
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
                 {
                     mid: DownloadState(
                         model_id=mid, variant_id=mid, provider="ollama", status="downloading"
@@ -1239,7 +1239,7 @@ async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypa
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         started = []
         await pilot.press("x")
@@ -1279,7 +1279,7 @@ async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatc
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
                 {
                     mid: DownloadState(
                         model_id=mid, variant_id=mid, provider="ollama", status="downloading"
@@ -1327,7 +1327,7 @@ async def test_x_cancel_after_x_cascade_also_cancels_ready(tmp_path, monkeypatch
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
                 {
                     mid: DownloadState(
                         model_id=mid, variant_id=mid, provider="ollama", status="downloading"
@@ -1748,7 +1748,7 @@ async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypa
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
                 {
                     mid: DownloadState(
                         model_id=mid, variant_id=mid, provider="ollama", status="downloading"
@@ -1973,7 +1973,7 @@ async def test_r_on_real_provider_ready_on_starts_download_not_queue(tmp_path, m
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("r")
         await pilot.pause()
@@ -2055,7 +2055,7 @@ async def test_r_flag_only_provider_still_queues_not_downloads(tmp_path, monkeyp
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("r")
         await pilot.pause()
@@ -2081,7 +2081,7 @@ async def test_r_on_cloud_model_of_mapped_provider_starts_download(tmp_path, mon
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("r")
         await pilot.pause()
@@ -2106,7 +2106,7 @@ async def test_x_cascade_on_real_provider_starts_download(tmp_path, monkeypatch)
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("x")
         await pilot.pause()
@@ -2224,7 +2224,7 @@ async def test_add_model_saves_registry_immediately_and_starts_download(
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("a")
         await pilot.pause()

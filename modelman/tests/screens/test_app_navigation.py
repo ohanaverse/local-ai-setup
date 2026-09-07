@@ -415,7 +415,7 @@ async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("x")
         await pilot.pause()
@@ -476,7 +476,7 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("x")
         await pilot.pause()
@@ -939,7 +939,7 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
                 {
                     mid: DownloadState(
                         model_id=mid, variant_id=mid, provider="ollama", status="downloading"
@@ -1355,7 +1355,7 @@ async def test_model_screen_toggle_ready_queues_variant(
         monkeypatch.setattr(
             app.downloads,
             "start",
-            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
         )
         await pilot.press("x")
         await pilot.pause()
@@ -2266,6 +2266,43 @@ async def test_ctrl_q_exits_immediately_with_no_active_downloads(tmp_path, monke
         await pilot.press("ctrl+q")
         await pilot.pause()
     assert app.return_code == 0 or not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_on_model_screen_confirms_pending_queue_instead_of_dropping_it(
+    tmp_path, monkeypatch
+):
+    # Regression for a review finding: request_quit() only checked
+    # DownloadManager.has_active(), so ctrl+q on ModelScreen with a
+    # queued-but-unapplied change (e.g. a queued delete) and no active
+    # download exited the app immediately, silently discarding the
+    # queue instead of giving the same apply/discard/cancel confirm
+    # Escape would. It must now route through ModelScreen.action_back().
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    reg_path, _state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[o35], downloaded={"ollama/o35": str(tmp_path / "d")}
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")  # open ModelScreen
+        await pilot.pause()
+        await pilot.press("d")  # queue a delete; no download involved
+        await pilot.pause()
+        assert app.screen.queued_deletes
+
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+
+        # The app must still be running, showing the exit-confirm dialog
+        # rather than having exited with the queued delete dropped.
+        assert app.is_running
+        from modelman.screens.forms import ConfirmExitDialog
+
+        assert isinstance(app.screen, ConfirmExitDialog)
 
 
 @pytest.mark.asyncio

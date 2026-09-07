@@ -803,13 +803,17 @@ class ModelScreen(Screen[None]):
         self.reload()
         self._refresh_pending_bar()
 
+    def has_pending_changes(self) -> bool:
+        """True when this screen holds any unapplied queued mutation
+        (ready/delete/move/expose). Used by action_back's exit-confirm
+        gate and ModelmanApp.request_quit()'s ctrl+q guard, so a queue
+        pending here blocks both Escape and quit the same way."""
+        return bool(
+            self.queued_ready or self.queued_deletes or self.queued_moves or self.queued_exposes
+        )
+
     def action_back(self) -> None:
-        if (
-            not self.queued_ready
-            and not self.queued_deletes
-            and not self.queued_moves
-            and not self.queued_exposes
-        ):
+        if not self.has_pending_changes():
             self.app.pop_screen()
             return
         from .forms import ConfirmExitDialog

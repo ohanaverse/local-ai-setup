@@ -79,18 +79,28 @@ class ModelmanApp(App[None]):
         """The single quit entry point every binding routes through
         (ctrl+q's default action_quit, and FamilyScreen's 'q' — Task 9).
         Blocks quitting while a download is active instead of exiting
-        out from under it."""
-        if not self.downloads.has_active():
-            self.exit()
+        out from under it, and — if the top screen is a ModelScreen with
+        an unapplied queue (delete/ready/move/expose) — routes through
+        its own action_back() so ctrl+q gets the same apply/discard/
+        cancel confirmation Escape would give, instead of silently
+        dropping the queue."""
+        if self.downloads.has_active():
+
+            def _on_choice(review: bool | None) -> None:
+                if review:
+                    from .screens.downloads import DownloadScreen
+
+                    self.push_screen(DownloadScreen())
+
+            self.push_screen(QuitBlockedModal(), _on_choice)
             return
 
-        def _on_choice(review: bool | None) -> None:
-            if review:
-                from .screens.downloads import DownloadScreen
+        top = self.screen
+        if isinstance(top, ModelScreen) and top.has_pending_changes():
+            top.action_back()
+            return
 
-                self.push_screen(DownloadScreen())
-
-        self.push_screen(QuitBlockedModal(), _on_choice)
+        self.exit()
 
     async def action_quit(self) -> None:
         """Override Textual's default (self.exit()) to route through the
