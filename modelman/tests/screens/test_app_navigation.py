@@ -396,6 +396,9 @@ async def test_enter_opens_model_screen(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
+    """Pressing `x` on a not-ready row queues the expose and cascades a
+    background download (mapped provider, Task 13) — the ready-on part
+    no longer sits in queued_ready for apply-on-exit."""
     o35 = ModelEntry(
         id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
     )
@@ -408,10 +411,17 @@ async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
         await pilot.press("x")
         await pilot.pause()
-        pending = app.screen.queued_ready
-        assert pending.get("ollama/o35") is True
+        assert started == ["ollama/o35"]
+        assert app.screen.queued_exposes.get("ollama/o35") is True
+        assert "ollama/o35" in app.screen._ready_cascade_for_expose
 
 
 @pytest.mark.asyncio
@@ -458,14 +468,31 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
         assert "✓" in rows["dl"][4]
         assert "○" in rows["missing"][4]
 
-        # Toggle download on missing → ↓
-        # Cursor is on the first row (dl). Move down then x.
+        # Toggle download on missing → ⏳ ('x' cascades a background
+        # download for a mapped provider now; the glyph reflects the
+        # in-flight download).
         mt.cursor_coordinate = (1, 0)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
         await pilot.press("x")
+        await pilot.pause()
+        from modelman.downloads import DownloadState
+
+        app.downloads._states["ollama/missing"] = DownloadState(
+            model_id="ollama/missing",
+            variant_id="ollama/missing",
+            provider="ollama",
+            status="downloading",
+        )
+        app.screen.reload()
         await pilot.pause()
         mt = app.screen.query_one("#model-table", DataTable)
         rows = {r[2]: r for r in [mt.get_row_at(i) for i in range(mt.row_count)]}
-        assert "↓" in rows["missing"][4]
+        assert "⏳" in rows["missing"][4]
 
         # Toggle delete on dl → ✗
         mt.cursor_coordinate = (0, 0)
@@ -886,10 +913,27 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        # Queue a download on the existing variant.
+        # 'x' on a mapped-provider model cascades a background download
+        # (Task 13) — simulate DownloadManager registering it so discard
+        # has something to cancel.
+        from modelman.downloads import DownloadState
+
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: app.downloads._states.update(
+                {
+                    mid: DownloadState(
+                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
+                    )
+                }
+            ),
+        )
+        cancelled = []
+        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
         await pilot.press("x")
         await pilot.pause()
-        assert app.screen.queued_ready.get("ollama/o35") is True
+        assert "ollama/o35" in app.screen._ready_cascade_for_expose
         # Open the exit dialog.
         await pilot.press("escape")
         await pilot.pause()
@@ -908,6 +952,8 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
 
     # State on disk should be unchanged: no downloaded entry for o35.
     assert not load_state(state_path).get("ollama/o35").ready
+    # Discard-cancels-cascade: the cascaded download was cancelled.
+    assert cancelled == ["ollama/o35"]
 
 
 @pytest.mark.asyncio
@@ -1251,7 +1297,9 @@ async def test_model_screen_toggle_ready_queues_variant(
     tmp_path,
     monkeypatch,
 ):
-    """Pressing `x` on a not-ready row queues the variant for ready-on."""
+    """Pressing `x` on a not-ready row queues the expose and cascades a
+    background download (mapped provider, Task 13) instead of queueing a
+    ready-on for apply-on-exit."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1280,9 +1328,17 @@ async def test_model_screen_toggle_ready_queues_variant(
     async with app.run_test() as pilot:
         pilot.app.push_screen(ms)
         await pilot.pause()
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
         await pilot.press("x")
         await pilot.pause()
-        assert ms.queued_ready.get("ollama/o35") is True
+        assert started == ["ollama/o35"]
+        assert ms.queued_exposes.get("ollama/o35") is True
+        assert "ollama/o35" in ms._ready_cascade_for_expose
 
 
 @pytest.mark.asyncio
@@ -1327,9 +1383,13 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
         await pilot.pause()
         mt = ms.query_one("#model-table", DataTable)
         mt.cursor_coordinate = (0, 0)  # only one model in this family
+        # 'x' on a mapped-provider (llamacpp) model cascades a background
+        # download now (Task 13) instead of queueing ready=True.
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         await pilot.press("x")
         await pilot.pause()
-        assert ms.queued_ready == {"llamacpp/ornith-q4": True}
+        assert ms.queued_exposes == {"llamacpp/ornith-q4": True}
+        assert "llamacpp/ornith-q4" in ms._ready_cascade_for_expose
         # Open the exit dialog and discard.
         await pilot.press("escape")
         await pilot.pause()

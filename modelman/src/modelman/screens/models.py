@@ -417,6 +417,17 @@ class ModelScreen(Screen[None]):
             self.queued_exposes.pop(mid, None)
             self.app.notify(f"Expose cancelled: {mid} will not be ready")
 
+    def _cancel_ready_cascade(self, mid: str) -> None:
+        """Undo an expose-triggered ready cascade: cancel a running
+        download if that's what the cascade used (mapped provider), or
+        drop the queued flag-only ready-on otherwise. Shared by the
+        repeated-'x'-keypress cancel path and discard (Discard-cancels-
+        cascade)."""
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
+        self.queued_ready.pop(mid, None)
+        self._ready_cascade_for_expose.discard(mid)
+
     def _refresh_pending_bar(self) -> None:
         bar = self.query_one("#pending-bar", Static)
         bar.update(
@@ -510,8 +521,7 @@ class ModelScreen(Screen[None]):
             if mid in self._ready_cascade_for_expose:
                 # The download was only queued to serve this expose; the
                 # user never asked for it independently.
-                self.queued_ready.pop(mid, None)
-                self._ready_cascade_for_expose.discard(mid)
+                self._cancel_ready_cascade(mid)
             self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
             self._refresh_pending_bar()
             self.reload()
@@ -524,15 +534,21 @@ class ModelScreen(Screen[None]):
             # Exposing requires ready — the same gate _validated_entry
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite
-            # their request; otherwise cascade the download in (apply runs
-            # the ready loop before the expose loop, so the order works).
+            # their request; otherwise cascade the download in: a mapped
+            # provider's ready-on starts the real download immediately
+            # (DownloadManager), a flag-only provider's is queued (apply
+            # runs the ready loop before the expose loop, so the order
+            # works).
             if mid in self.queued_ready:
                 self.app.notify(
                     "Model is queued to be made not ready — cancel that before exposing"
                 )
                 return
+            if self._provider_can_download(entry.provider_id):
+                self._start_download(entry)
+            else:
+                self.queued_ready[mid] = True
             self._ready_cascade_for_expose.add(mid)
-            self.queued_ready[mid] = True
         self.queued_exposes[mid] = target
         self._refresh_pending_bar()
         self.reload()
@@ -806,6 +822,12 @@ class ModelScreen(Screen[None]):
             self._push_status_screen()
             return
         if choice == "discard":
+            # Cancel any download that was only running because an expose
+            # cascaded it in (Discard-cancels-cascade) BEFORE restoring the
+            # snapshot, so a discarded session leaves no background
+            # download running for a change the user walked away from.
+            for mid in list(self._ready_cascade_for_expose):
+                self._cancel_ready_cascade(mid)
             self._restore_snapshot()
             # Same-family edits save registry immediately on _on_edit_model.
             # Restoring the in-memory snapshot is not enough: FamilyScreen
