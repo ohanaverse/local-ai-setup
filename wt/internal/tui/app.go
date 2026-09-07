@@ -692,10 +692,12 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 		familyOf[mdl.ID] = mdl.Family
 	}
 
-	// Last-launched model ID for the ▶ row marker. Same construction site
-	// as the Next() cursor call below; a missing/unreadable rotation.state
-	// yields "" and leaves every row unmarked.
-	lastID, _ := rotation.New().Last()
+	// One Rotation for both the ▶ marker and the cursor: each New() runs
+	// migrate() (os.Stat + os.ReadDir over the config dir), so constructing
+	// twice per picker entry doubles that scan. A missing/unreadable
+	// rotation.state yields "" and leaves every row unmarked.
+	rot := rotation.New()
+	lastID, _ := rot.Last()
 	// Build the sorted, compact model list.
 	items := buildModelItems(models, familyOf, newUsageStore(), lastID)
 	delegate := ThemedListDelegate(m.theme)
@@ -727,8 +729,10 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	}
 
 	// Unpinned: prefer the rotation's next-to-use model; otherwise start at 0.
+	// NextFromEligible (not Next) — models is already the eligible slice, so
+	// Next's internal EligibleModels recomputation would be redundant.
 	posSet := false
-	if next, ok := rotation.New().Next(m.cfg, agent, m.activeTags, m.activeFamily); ok {
+	if next, ok := rot.NextFromEligible(models, m.cfg); ok {
 		if idx, ok := idIndex[next.ID]; ok {
 			m.models.Select(idx)
 			posSet = true

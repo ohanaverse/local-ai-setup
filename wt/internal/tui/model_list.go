@@ -23,20 +23,39 @@ var newUsageStore = realNewUsageStore
 func realNewUsageStore() usage.Store { return usage.NewStore() }
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
-// The entire compact representation is baked onto .line; the list delegate
-// renders it via Title()/FilterValue(), so there is no separate state to keep
-// in sync with the render.
+// The compact representation is baked onto .line; marked records the
+// rotation's last-launched row and is composed into the rendered prefix by
+// Title() rather than baked into .line, so FilterValue (fuzzy matching) and
+// every .line consumer see the unprefixed format.
 type modelItem struct {
-	model config.Model
-	line  string
+	model  config.Model
+	line   string
+	marked bool
 }
 
+// markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
+// every other row aligned. Plain ASCII is deliberate: Unicode geometric
+// shapes (e.g. U+25B6 ▶) are East Asian Ambiguous width and render 2 cells
+// wide on CJK-configured terminals, which would shift the marked row's
+// columns relative to every other row.
+const (
+	markerMarked = "> "
+	markerBlank  = "  "
+)
+
 // FilterValue returns the full line so the list's built-in fuzzy filter
-// narrows by both family and ID.
+// narrows by both family and ID. Deliberately excludes the marker prefix:
+// the user never typed it, so it would only pollute match ranking.
 func (m modelItem) FilterValue() string { return m.line }
 
-// Title renders the compact one-line model representation.
-func (m modelItem) Title() string { return m.line }
+// Title renders the compact one-line model representation with the
+// last-launched marker prefix.
+func (m modelItem) Title() string {
+	if m.marked {
+		return markerMarked + m.line
+	}
+	return markerBlank + m.line
+}
 
 // Description returns empty because the compact view is one line per item.
 // list.DefaultDelegate.Render still calls this method; we keep it to satisfy
@@ -170,6 +189,8 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 	// Compute max widths for alignment, including the new pricing columns.
 	// Widths are measured in runes so single-byte characters such as the
 	// hyphen used for absent prices do not throw off fmt.Sprintf padding.
+	// The marker prefix is composed in Title() outside this measurement —
+	// see markerMarked for why it must stay plain ASCII.
 	famWidth := 0
 	idWidth := 0
 	ptWidth := 0
@@ -212,14 +233,8 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		c := modelCounts[m.ID]
 		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
 
-		// 2-rune prefix on every row: "▶ " marks the rotation's
-		// last-launched model, two spaces keep unmarked rows aligned.
-		marker := "  "
-		if lastID != "" && m.ID == lastID {
-			marker = "▶ "
-		}
-		line := fmt.Sprintf("%s%-*s  %3d  %-*s  %-5s  %-*s  %-*s  %-*s",
-			marker, famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
+		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s  %-*s  %-*s",
+			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
 			ptWidth, pricing[i].perToken, subWidth, pricing[i].subscription)
 
 		if len(m.Tags) > 0 {
@@ -227,8 +242,9 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		}
 
 		items = append(items, &modelItem{
-			model: m,
-			line:  line,
+			model:  m,
+			line:   line,
+			marked: lastID != "" && m.ID == lastID,
 		})
 	}
 	return items

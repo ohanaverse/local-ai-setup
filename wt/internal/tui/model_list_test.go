@@ -174,10 +174,12 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 }
 
 // TestBuildModelItemsMarksLastLaunchedRow verifies that exactly one row —
-// the model matching the rotation's last-launched ID — carries the ▶ prefix
-// and every other row carries a blank 2-rune prefix, so the marker pins the
-// "where I left off" row without shifting any columns (all lines stay
-// rune-equal in length).
+// the model matching the rotation's last-launched ID — carries the "> "
+// marker prefix in Title() and every other row a blank 2-rune prefix, so
+// the marker pins the "where I left off" row without shifting any columns
+// (all titles stay rune-equal in length). It also pins the inverse
+// contract: .line and FilterValue() stay unprefixed, so fuzzy matching and
+// any .line consumer never see marker state.
 func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	models := []config.Model{
@@ -194,9 +196,16 @@ func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 	}
 	// Equal scores + stable sort = registry order: 9b first, 14b second.
 	for i, want := range []bool{false, true} {
-		line := items[i].Title()
-		if got := strings.HasPrefix(line, "▶"); got != want {
-			t.Errorf("row %d (%q): ▶ prefix = %v, want %v", i, line, got, want)
+		title := items[i].Title()
+		if got := strings.HasPrefix(title, markerMarked); got != want {
+			t.Errorf("row %d (%q): marker prefix = %v, want %v", i, title, got, want)
+		}
+		if got := strings.HasPrefix(title, markerBlank); got != !want {
+			t.Errorf("row %d (%q): blank prefix = %v, want %v", i, title, got, !want)
+		}
+		// The marker must not leak into the line the filter scores.
+		if got := items[i].line; got != items[i].FilterValue() || strings.HasPrefix(got, markerMarked) || strings.HasPrefix(got, markerBlank) {
+			t.Errorf("row %d: line/FilterValue %q must be identical and unprefixed", i, got)
 		}
 	}
 	wantLen := utf8.RuneCountInString(items[0].Title())
@@ -218,7 +227,7 @@ func TestBuildModelItemsNoMarkerWithoutLastLaunched(t *testing.T) {
 	for _, lastID := range []string{"", "ollama/gone"} {
 		items := buildModelItems(models, familyOf, store, lastID)
 		for i, it := range items {
-			if strings.HasPrefix(it.Title(), "▶") {
+			if strings.HasPrefix(it.Title(), markerMarked) {
 				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())
 			}
 		}

@@ -18,9 +18,10 @@ import (
 )
 
 // tempStateDir creates an isolated agent-wt state directory under a temp
-// XDG_CONFIG_HOME. rotation.ForTag reads its per-tag state from disk, so
-// every test that presses 'r' must isolate state or it becomes dependent on
-// the host's real rotation-*.state files.
+// XDG_CONFIG_HOME. rotation.New/Last and the picker's ▶ marker read the
+// global rotation.state from config.Dir(), so tests touching the picker or
+// rotation must isolate state or they become dependent on the host's real
+// ~/.config/agent-wt files.
 func tempStateDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "agent-wt")
@@ -62,10 +63,15 @@ func singleModelList(m config.Model) list.Model {
 // item layout the picker actually renders. The usage counts come through
 // the newUsageStore seam so callers that stub the seam (or isolate
 // XDG_CONFIG_HOME via tempStateDir) never read the host's real usage.jsonl.
-// Callers MUST call tempStateDir(t) first: the helper reads rotation state
-// (cursor positioning and the ▶ marker) from the isolated XDG_CONFIG_HOME.
+// Requires tempStateDir(t) isolation: the helper reads rotation state
+// (cursor positioning and the ▶ marker) from config.Dir(), and asserts
+// that isolation is actually in place — calling it without tempStateDir
+// fails fast instead of silently reading the host's real rotation.state.
 func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
 	t.Helper()
+	if os.Getenv("XDG_CONFIG_HOME") == "" {
+		t.Fatal("phaseModelWithList: XDG_CONFIG_HOME is not isolated; call tempStateDir(t) first or the cursor/marker read the host's real rotation.state")
+	}
 	models, err := cfg.EligibleModels(agent, tag, "")
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)
@@ -666,9 +672,9 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 
 // TestModelPickerMarksLastLaunchedRow drives the production
 // phaseAgent → enterModelPhase path with a seeded rotation.state and
-// asserts the ▶ marker lands on the last-launched row while the cursor
-// lands on the rotation's next-to-use row — the two are different rows,
-// and confusing them would mean the picker highlighted what to reuse
+// asserts the last-launched marker lands on the last-launched row while the
+// cursor lands on the rotation's next-to-use row — the two are different
+// rows, and confusing them would mean the picker highlighted what to reuse
 // instead of what was just used.
 func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 	dir := tempStateDir(t)
@@ -680,9 +686,9 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 
 	markerIdx := -1
 	for i, it := range gotModel.models.Items() {
-		if strings.HasPrefix(it.(*modelItem).Title(), "▶") {
+		if strings.HasPrefix(it.(*modelItem).Title(), markerMarked) {
 			if markerIdx != -1 {
-				t.Fatalf("▶ marker on more than one row")
+				t.Fatalf("marker on more than one row")
 			}
 			markerIdx = i
 		}
@@ -697,9 +703,10 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 
 // TestModelPickerNoMarkerWithoutRotationState drives the production
 // phaseAgent → enterModelPhase path with NO rotation.state present and
-// asserts no row carries the ▶ marker — a regression that substituted a
-// non-empty fallback when rotation.Last() fails would otherwise pass the
-// seeded-state test while fabricating a "last used" signal.
+// asserts no row carries the last-launched marker — a regression that
+// substituted a non-empty fallback when rotation.Last() fails would
+// otherwise pass the seeded-state test while fabricating a "last used"
+// signal.
 func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
 	tempStateDir(t) // isolate: no seedState — rotation.state must be absent
 	stubUsageStore(t)
@@ -708,7 +715,7 @@ func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
 
 	for i, it := range gotModel.models.Items() {
-		if strings.HasPrefix(it.(*modelItem).Title(), "▶") {
+		if strings.HasPrefix(it.(*modelItem).Title(), markerMarked) {
 			t.Errorf("row %d unexpectedly marked with no rotation state: %q", i, it.(*modelItem).Title())
 		}
 	}
