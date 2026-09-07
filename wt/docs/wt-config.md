@@ -74,7 +74,7 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 ~/.config/agent-wt/
 ├── config.toml          # main agent registry (existing)
 ├── themes.toml          # active theme (this feature)
-├── rotation-*.state     # per-slot last-launched model
+├── rotation.state       # single global last-launched model
 └── ...                  # future subcommands land here
 ```
 
