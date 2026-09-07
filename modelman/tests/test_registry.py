@@ -510,6 +510,24 @@ def test_sync_agent_providers_is_idempotent(tmp_path):
     assert len([p for p in registry.providers if p.id == "claude"]) == 1
 
 
+def test_sync_agent_providers_derives_native_for_existing_models(tmp_path):
+    """sync_agent_providers appends native providers after load_registry has
+    already run _derive_native, so it must re-derive: a model referencing a
+    newly-added agent provider should be native=True in the same in-memory
+    registry, not stale-False until the next disk reload."""
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text('[[agents]]\nname = "claude"\n')
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="claude/opus", family="opus", provider_id="claude",
+                           model_name="opus", native=False)],
+    )
+
+    sync_agent_providers(registry, wt_config_path=wt_config)
+
+    assert registry.model("claude/opus").native is True
+
+
 def test_sync_agent_providers_tolerates_non_list_agents(tmp_path):
     """A hand-edited config where `agents` is a string or dict rather than
     a list of tables must not crash; it should be treated as empty."""

@@ -287,6 +287,11 @@ def sync_agent_providers(registry: Registry, wt_config_path: Path | None = None)
         )
         existing.add(name)
         added.append(name)
+    if added:
+        # load_registry ran _derive_native before these native providers
+        # existed; re-derive so models referencing the new agents are
+        # marked native in the same in-memory registry.
+        _derive_native(registry)
     return added
 
 
