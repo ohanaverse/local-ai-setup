@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -50,7 +51,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store, "")
+	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store, "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -106,7 +107,7 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	items := buildModelItems(models, map[string]string{
 		"priced":   "test",
 		"unpriced": "test",
-	}, store, "")
+	}, store, "", nil)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -163,7 +164,7 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 			},
 		},
 	}
-	items := buildModelItems(models, map[string]string{"partial": "test"}, store, "")
+	items := buildModelItems(models, map[string]string{"partial": "test"}, store, "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -190,7 +191,7 @@ func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 		"ollama/gemma4:9b":  "gemma4",
 		"ollama/gemma4:14b": "gemma4",
 	}
-	items := buildModelItems(models, familyOf, store, "ollama/gemma4:14b")
+	items := buildModelItems(models, familyOf, store, "ollama/gemma4:14b", nil)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -214,6 +215,52 @@ func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 	}
 }
 
+// TestBuildModelItemsAppendsSurveySegment verifies the survey stats
+// segment is appended last on the line — after the usage counts, pricing,
+// and [tags] — so it never shifts any existing column.
+func TestBuildModelItemsAppendsSurveySegment(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal, Tags: []string{"code"}},
+	}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	stats := map[string]survey.Stats{
+		"ollama/gemma4:9b": {Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39},
+	}
+	items := buildModelItems(models, familyOf, store, "", stats)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	line := items[0].line
+	wantSeg := "✓92% q4.2 s3.9 n12"
+	if !strings.HasSuffix(line, wantSeg) {
+		t.Fatalf("line = %q, want it to end with %q", line, wantSeg)
+	}
+	if idx := strings.Index(line, "[code]"); idx == -1 || idx > strings.Index(line, wantSeg) {
+		t.Fatalf("line = %q, want the survey segment after [tags]", line)
+	}
+}
+
+// TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered verifies a model
+// with zero answered surveys renders no segment at all — existing lines
+// (models never surveyed) stay byte-identical whether stats is nil or an
+// explicit zero-value entry.
+func TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
+	}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	withoutStats := buildModelItems(models, familyOf, store, "", nil)
+	withZeroStats := buildModelItems(models, familyOf, store, "", map[string]survey.Stats{"ollama/gemma4:9b": {}})
+	if withoutStats[0].line != withZeroStats[0].line {
+		t.Fatalf("nil stats map produced %q, zero-value stats entry produced %q, want identical", withoutStats[0].line, withZeroStats[0].line)
+	}
+	if strings.Contains(withoutStats[0].line, "✓") || strings.Contains(withoutStats[0].line, "⚠") {
+		t.Errorf("line = %q, want no survey segment when Answered == 0", withoutStats[0].line)
+	}
+}
+
 // TestBuildModelItemsNoMarkerWithoutLastLaunched verifies that an empty
 // last-launched ID (no rotation.state) or an ID outside the eligible slice
 // (different agent, -T/-F filter, deleted model) leaves every row unmarked —
@@ -225,7 +272,7 @@ func TestBuildModelItemsNoMarkerWithoutLastLaunched(t *testing.T) {
 	}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
 	for _, lastID := range []string{"", "ollama/gone"} {
-		items := buildModelItems(models, familyOf, store, lastID)
+		items := buildModelItems(models, familyOf, store, lastID, nil)
 		for i, it := range items {
 			if strings.HasPrefix(it.Title(), markerMarked) {
 				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())

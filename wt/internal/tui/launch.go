@@ -30,6 +30,19 @@ var currentProgram *tea.Program
 // capture-then-emit pattern is required. Reset by Run() before launch.
 var pendingSummary string
 
+// pendingSurvey holds the agent/model to survey once the alt-screen tears
+// down, mirroring pendingSummary's capture-then-emit pattern (printing
+// here would land inside the discarded alt-screen buffer).
+type pendingSurvey struct {
+	agent string
+	m     config.Model
+}
+
+// pendingSurveyState is populated by runAndWaitCmd next to pendingSummary.
+// Run() invokes the survey through it after printing the summary. Reset by
+// Run() before launch.
+var pendingSurveyState pendingSurvey
+
 // launchAgent builds the command for agent/model in worktreePath, optionally
 // appending passthrough args and a resume flag for claude or opencode. It
 // delegates to agents.BuildLaunchCmd so the launch construction logic lives
@@ -66,6 +79,7 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		// returns and prints it to the parent terminal — the only point
 		// in the TUI lifecycle where stdout reaches the user's terminal.
 		pendingSummary = agents.Summary(agent, m, time.Since(start))
+		pendingSurveyState = pendingSurvey{agent: agent, m: m}
 		return launchDoneMsg{err: err}
 	}
 }

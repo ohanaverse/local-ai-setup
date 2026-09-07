@@ -55,7 +55,7 @@ because model pinning has no meaning for command agents.
 Legacy short flag `-w` for `--worktree` has been removed — use `-W` or
 `--worktree`. Legacy bash flags `--code`, `--design`, and `--native` are
 not supported by `wt` — passing them now exits with `unknown flag`, since
-model rotation is slot-based and shell has no model concept.
+model rotation is a single global sequence and shell has no model concept.
 
 ## Verified on this machine
 

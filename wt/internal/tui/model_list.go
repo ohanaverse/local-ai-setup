@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -171,7 +172,7 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 // includes family context and usage counts. familyOf maps the FULL
 // catalog's model IDs to families so family totals are accurate even
 // when tags or families narrow the eligible slice.
-func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store, lastID string) []*modelItem {
+func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store, lastID string, stats map[string]survey.Stats) []*modelItem {
 	// We need per-model and per-family counts for the line format.
 	// Count over the full catalog (familyOf's keys), not just the
 	// eligible subset, so a family's 30-day total includes launches of
@@ -239,6 +240,14 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 
 		if len(m.Tags) > 0 {
 			line += fmt.Sprintf(" [%s]", strings.Join(m.Tags, ","))
+		}
+		// Survey segment always appended last so it never shifts any
+		// existing column; omitted entirely when there's nothing answered
+		// (FormatPickerSegment returns "" in that case).
+		if st, ok := stats[m.ID]; ok {
+			if seg := survey.FormatPickerSegment(st); seg != "" {
+				line += " " + seg
+			}
 		}
 
 		items = append(items, &modelItem{

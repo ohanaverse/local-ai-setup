@@ -84,7 +84,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 
 With no flags, `wt` presents the worktree picker, then the agent+command
 picker, then the model picker (for agents). Multiple eligible models
-rotate on successive launches via the slot state file. Each picker is
+rotate on successive launches via a single global rotation state file. Each picker is
 skipped only when its selection is already resolved: `-W`/`--cwd` skip the
 worktree picker, `-A` skips the agent+command picker, and `-M` skips the
 model picker. So `-W foo -A pi` (no `-M`) still shows the model picker, and
@@ -128,6 +128,12 @@ On the TUI path the summary prints **after** the alt-screen is restored,
 so the line lands on a clean line in the parent terminal rather than inside
 the Bubble Tea frame.
 
+Immediately after the summary line, a post-session survey prompts up to
+three questions on the parent terminal (did it work? speed 1-5? quality
+1-5?), each answerable with Enter to skip. It silently does nothing when
+stdin is not a TTY or when the launch had no model (command agents like
+`shell`). See `docs/wt-stats.md` for how the collected data is reported.
+
 ### Legacy bash flags
 
 The original bash launchers supported `-w`/`--worktree`, `--code`,
@@ -135,8 +141,9 @@ The original bash launchers supported `-w`/`--worktree`, `--code`,
 of `-W`; the others are not supported by `wt`. The `--no-guard` and
 `--check-guard` flags ARE supported by `wt` (see
 [shell-wt.md](./shell-wt.md#key-flags)) — they were bash-only originally
-and now work via the Go binary. Model rotation is now slot-based
-(`(agent, tag, family)` — implicit on launch in the TUI, or
-`wt rotate <tag>` for debugging); the main guard is managed by
-`internal/guard`. The bash model-rotation and pi `models.json` auto-sync
-behavior described in earlier versions of this doc has been ported to Go.
+and now work via the Go binary. Model rotation is now a single global
+sequence (implicit on launch in the TUI, or `wt rotate <tag>` for
+debugging) — the earlier per-slot `(agent, tag, family)` scheme was
+retired; the main guard is managed by `internal/guard`. The bash
+model-rotation and pi `models.json` auto-sync behavior described in
+earlier versions of this doc has been ported to Go.

@@ -123,18 +123,16 @@ In this mode:
 
 ### 6. `wt config`
 
-Live `wt config --help` lists three subcommands (plus an interactive editor when run bare):
+`wt config --help` lists two subcommands (plus an interactive agent editor when run bare — see [wt-config.md](../../wt/docs/wt-config.md)):
 
 ```text
 Available Commands:
-  ollama      Sync ollama models between config.toml and `ollama list`
   path        Print the config directory
   theme       Manage the active color theme
 ```
 
 - `wt config theme` → `list` / `show [name]` / `set <name>` / `unset`; stored in `~/.config/agent-wt/themes.toml`, effective on next launch.
 - `wt config path` → prints `/Users/keith/.config/agent-wt`.
-- `wt config ollama` → interactive TUI syncing models with the local Ollama instance.
 
 `~/.config/agent-wt/config.toml` shape (wt-owned): a `default_tag = "code"` line plus `[[agents]]` entries (launch names, per-agent provider availability). **wt NEVER writes providers/models** — `wt config`'s editor only touches agents and the default tag; registry data is overwritten in-memory on every load and never persisted back (the `Load()` comment in `internal/config/config.go`: "registry.toml is the source of truth"). The `[[providers]]`/`[[models]]` blocks still present on disk are inert migration exchange output (see [00-config-map](00-config-map.md)).
 
@@ -172,7 +170,7 @@ Live-ran (2026-08-29, all read-only):
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
 - `wt rotate code` → `ollama/kimi-k2.7-code:cloud`, exit 0, no files touched
 - `wt -w foo` → `wt: -w is removed; use -W or --worktree`, exit 1, and `git worktree list` confirmed nothing was created
-- `wt config --help` / `wt config theme --help` / `wt config ollama --help` → subcommands as listed in §6
+- `wt config --help` / `wt config theme --help` → subcommands as listed in §6
 - Registry models present: 22 `[[models]]` entries, all `tags = []`
 
 Model pin dry explanation (no agent launch required): `-M ollama/qwen3.8:27b-mlx` matches that exact `[[models]]` id in `registry.toml`; the join in `internal/config/config.go` makes it eligible for claude/codex/copilot/pi/opencode (it's an ollama provider model), so `claude-wt -W my-feature -M ollama/qwen3.8:27b-mlx` resolves deterministically and skips the model screen.

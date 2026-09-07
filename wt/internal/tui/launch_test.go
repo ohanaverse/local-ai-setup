@@ -179,6 +179,29 @@ func TestRunAndWaitCmdCapturesSummaryOnFailure(t *testing.T) {
 	}
 }
 
+// TestRunAndWaitCmdCapturesPendingSurvey verifies runAndWaitCmd stashes the
+// agent/model into pendingSurveyState next to pendingSummary, so Run() can
+// invoke the post-session survey after the alt-screen tears down — the
+// same capture-then-emit pattern the summary line uses.
+func TestRunAndWaitCmdCapturesPendingSurvey(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	prev := pendingSurveyState
+	pendingSurveyState = pendingSurvey{}
+	t.Cleanup(func() { pendingSurveyState = prev })
+
+	cmd := exec.Command(truePath)
+	msg := runAndWaitCmd(cmd, "claude", config.Model{ID: "claude/sonnet"})()
+	if _, ok := msg.(launchDoneMsg); !ok {
+		t.Fatalf("msg = %T, want launchDoneMsg", msg)
+	}
+	if pendingSurveyState.agent != "claude" || pendingSurveyState.m.ID != "claude/sonnet" {
+		t.Fatalf("pendingSurveyState = %+v, want agent=claude model=claude/sonnet", pendingSurveyState)
+	}
+}
+
 // launchAgent must invoke the pi driver's SyncModels before building the
 // command, mirroring the non-TUI path. Without it, the TUI launch would fall
 // back to pi's default model for a rotation-selected model. The sync runs

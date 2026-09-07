@@ -12,6 +12,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -21,6 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -698,8 +700,12 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	// rotation.state yields "" and leaves every row unmarked.
 	rot := rotation.New()
 	lastID, _ := rot.Last()
+	// Agent-scoped 30-day survey stats, so a bad agent×model combo is
+	// visible before launching (design requirement 5). One Events() read
+	// feeds the whole picker, mirroring the single usage Counts() pass.
+	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	// Build the sorted, compact model list.
-	items := buildModelItems(models, familyOf, newUsageStore(), lastID)
+	items := buildModelItems(models, familyOf, newUsageStore(), lastID, surveyStats)
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -928,14 +934,24 @@ func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, them
 		}(),
 	}, tea.WithAltScreen())
 	currentProgram = p
-	// Reset any summary captured by a previous run (e.g. from a test
-	// invocation sharing the process).
+	// Reset any summary/survey state captured by a previous run (e.g.
+	// from a test invocation sharing the process).
 	pendingSummary = ""
+	pendingSurveyState = pendingSurvey{}
 	_, err := p.Run()
-	// Print the post-run summary line on the parent terminal. The
-	// alt-screen is now torn down (p.Run() has returned and bubbletea
+	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
+	printPendingSummaryAndSurvey()
+	return err
+}
+
+// printPendingSummaryAndSurvey prints the captured post-run summary (if
+// any) and then runs the post-session survey (if a launch happened),
+// matching the summary → survey ordering used by the non-TUI path. It is
+// extracted from Run() so this ordering is unit-testable without a real
+// tea.Program/TTY.
+func printPendingSummaryAndSurvey() {
 	if pendingSummary != "" {
 		// Leading "\n" guards against the agent's last byte being
 		// non-newline so the summary always lands on a fresh line.
@@ -943,5 +959,8 @@ func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, them
 		fmt.Println("\n" + pendingSummary)
 		pendingSummary = ""
 	}
-	return err
+	if pendingSurveyState.agent != "" {
+		runSurvey(pendingSurveyState.agent, pendingSurveyState.m)
+		pendingSurveyState = pendingSurvey{}
+	}
 }

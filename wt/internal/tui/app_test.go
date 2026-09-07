@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -1569,5 +1571,74 @@ func TestPrePathInitPinnedCommandLaunches(t *testing.T) {
 	// part of the launchCommand contract and must be populated.
 	if nm.selectedPath != "/repo/.worktrees/feat" {
 		t.Errorf("selectedPath = %q, want prePath (%q)", nm.selectedPath, "/repo/.worktrees/feat")
+	}
+}
+
+// TestPrintPendingSummaryAndSurveyOrder verifies Run()'s post-p.Run() logic
+// prints the summary before invoking the survey (matching the non-TUI
+// path's summary → survey ordering) and clears both package vars so a
+// later launch in the same process doesn't replay stale state.
+func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
+	prevSummary, prevSurvey, prevRunSurvey := pendingSummary, pendingSurveyState, runSurvey
+	t.Cleanup(func() {
+		pendingSummary = prevSummary
+		pendingSurveyState = prevSurvey
+		runSurvey = prevRunSurvey
+	})
+
+	pendingSummary = "wt: claude · claude/sonnet · 1s"
+	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "claude/sonnet"}}
+
+	var calledWith pendingSurvey
+	called := false
+	runSurvey = func(agent string, m config.Model) {
+		called = true
+		calledWith = pendingSurvey{agent: agent, m: m}
+	}
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	printPendingSummaryAndSurvey()
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if !strings.Contains(string(out), "wt: claude · claude/sonnet · 1s") {
+		t.Errorf("stdout = %q, want the summary line", string(out))
+	}
+	if !called {
+		t.Fatal("runSurvey was not invoked")
+	}
+	if calledWith.agent != "claude" || calledWith.m.ID != "claude/sonnet" {
+		t.Fatalf("runSurvey called with %+v, want agent=claude model=claude/sonnet", calledWith)
+	}
+	if pendingSummary != "" {
+		t.Errorf("pendingSummary = %q, want cleared", pendingSummary)
+	}
+	if pendingSurveyState.agent != "" {
+		t.Errorf("pendingSurveyState = %+v, want cleared", pendingSurveyState)
+	}
+}
+
+// TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch verifies runSurvey is
+// never invoked when no launch happened (pendingSurveyState.agent == ""),
+// e.g. the user quit from the worktree picker without launching anything.
+func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
+	prevSurvey, prevRunSurvey := pendingSurveyState, runSurvey
+	t.Cleanup(func() {
+		pendingSurveyState = prevSurvey
+		runSurvey = prevRunSurvey
+	})
+	pendingSurveyState = pendingSurvey{}
+	called := false
+	runSurvey = func(agent string, m config.Model) { called = true }
+
+	printPendingSummaryAndSurvey()
+	if called {
+		t.Fatal("runSurvey was invoked with no pending launch")
 	}
 }
