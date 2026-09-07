@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -259,6 +260,15 @@ class ModelScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        # Captured once while mounted: `self.app` (Screen.app) resolves via
+        # a contextvar that isn't set on a background thread, falling back
+        # to walking self._parent up to the App — a walk that raises
+        # NoActiveAppError once this screen is popped. _run_apply and the
+        # deferred-expose closure it registers both run later, on
+        # StatusScreen's worker thread, after ModelScreen has already been
+        # popped (_push_status_screen pops before pushing StatusScreen) —
+        # they must use this reference instead of `self.app`.
+        self._app_ref = self.app
         mt = self.query_one("#model-table", DataTable)
         mt.add_columns(
             "FAMILY",
@@ -890,7 +900,7 @@ class ModelScreen(Screen[None]):
         gone."""
         registry_path = self.registry_path
         state_path = self.state_path
-        app = self.app
+        app = self._app_ref
 
         def _apply_deferred_expose() -> None:
             from ..litellm import apply_expose_queue
@@ -913,7 +923,7 @@ class ModelScreen(Screen[None]):
             for warning in warnings:
                 app.call_from_thread(app.notify, warning)  # type: ignore[attr-defined]
 
-        self.app.downloads.register_post_download(model_id, _apply_deferred_expose)  # type: ignore[attr-defined]
+        app.downloads.register_post_download(model_id, _apply_deferred_expose)
 
     def _run_apply(
         self,
@@ -951,12 +961,32 @@ class ModelScreen(Screen[None]):
             # Other exceptions (bad config, import failure, etc.) are
             # real errors and must not be silently treated as flag-only.
         litellm_path = default_litellm_config_path()
+        # DownloadManager status per model, snapshotted once. Uses
+        # self._app_ref (captured on_mount), not self.app: this method runs
+        # on StatusScreen's worker thread after ModelScreen has already
+        # been popped (_push_status_screen pops before pushing
+        # StatusScreen), and Screen.app raises NoActiveAppError once
+        # popped and off the main thread.
+        # is_downloading() alone would also race: it flips to False the
+        # instant a download finishes, before this screen's on_complete
+        # callback reloads self.state from disk.
+        download_status = {s.model_id: s.status for s in self._app_ref.downloads.states()}
         immediate_exposes: list[tuple[str, bool]] = []
         for mid, target in self.queued_exposes.items():
-            if target and self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            if target and download_status.get(mid) == "downloading":
                 self._register_deferred_expose(mid, litellm_path)
-            else:
-                immediate_exposes.append((mid, target))
+                continue
+            if target and download_status.get(mid) == "done":
+                # The download that made this model ready finished: disk
+                # is already authoritative (DownloadManager persists to
+                # modelman.toml before flipping is_downloading() to False),
+                # but self.state may not have caught up yet. Refresh just
+                # this model's row rather than the whole StateStore, so an
+                # in-memory-only reconcile result for an unrelated model
+                # isn't discarded by reloading state wholesale.
+                with contextlib.suppress(Exception):
+                    self.state.set(mid, load_state(self.state_path).get(mid))
+            immediate_exposes.append((mid, target))
 
         pending = PendingChanges(
             registry=self.registry,

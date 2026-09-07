@@ -2282,6 +2282,121 @@ async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_
 
 
 @pytest.mark.asyncio
+async def test_run_apply_refreshes_stale_state_for_a_just_finished_download(tmp_path, monkeypatch):
+    """Regression for a review finding: is_downloading() flips False the
+    instant DownloadManager marks a download 'done', before this screen's
+    on_complete callback reloads self.state from disk. If Apply runs in
+    that window, self.state can still show ready=False even though disk
+    (modelman.toml) already has ready=True — the old code routed the
+    queued expose straight to `immediate_exposes` and let the ready gate
+    reject it as 'not ready', even though the download had just
+    succeeded. _run_apply must refresh this model's row from disk before
+    deciding immediate vs. deferred."""
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+    litellm_path = tmp_path / "litellm" / "config.yaml"
+    from modelman.litellm import save_litellm_config
+
+    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
+
+    # Disk already reflects the finished download...
+    disk_state = StateStore()
+    disk_state.set("ollama/x", ModelState(ready=True, disk_path="/models/x"))
+    save_state(disk_state, state_path)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        # ...but this screen's in-memory self.state was loaded before that
+        # write landed, so it's still stale.
+        app.screen.state = StateStore()
+        app.screen.state.set("ollama/x", ModelState(ready=False))
+
+        from modelman.downloads import DownloadState
+
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="done"
+        )
+        app.screen.queued_exposes["ollama/x"] = True
+
+        registered = []
+        monkeypatch.setattr(
+            app.downloads, "register_post_download", lambda mid, action: registered.append(mid)
+        )
+
+        events = []
+        pending_holder = []
+        app.screen._run_apply(events.append, lambda line: None, pending_holder.append)
+
+    assert registered == []  # not deferred — status is "done", not "downloading"
+    assert pending_holder[0].exposes == [("ollama/x", True)]
+    assert load_state(state_path).get("ollama/x").litellm_exposed is True
+
+
+@pytest.mark.asyncio
+async def test_full_apply_flow_with_a_queued_expose_does_not_crash(tmp_path, monkeypatch):
+    """Regression for a bug found while verifying the review's race-window
+    finding: _run_apply's exposes-loop check used self.app, but by the
+    time StatusScreen's worker thread calls _run_apply, ModelScreen has
+    already been popped (_push_status_screen pops before pushing
+    StatusScreen) — Screen.app raises NoActiveAppError once popped and
+    off the main thread. StatusScreen's except-clause caught this and
+    logged 'Unexpected error during apply', silently dropping every
+    queued expose in the real Escape -> Apply flow (masked by the one
+    existing test whose assertions happened to match the crash's
+    side effects). _run_apply must use a reference captured before the
+    pop (self._app_ref), not self.app."""
+    from textual.widgets import Button, RichLog
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+    store = StateStore()
+    store.set("ollama/x", ModelState(ready=True, disk_path="/models/x"))
+    save_state(store, state_path)
+    litellm_path = tmp_path / "litellm" / "config.yaml"
+    from modelman.litellm import save_litellm_config
+
+    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
+
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 22 * 1024**3
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let the on-mount reconcile settle
+        await _open_model_screen(pilot)
+        app.screen.queued_exposes["ollama/x"] = True
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        from modelman.screens.status import StatusScreen
+
+        for _ in range(50):
+            await pilot.pause()
+            cur = app.screen
+            if isinstance(cur, StatusScreen) and cur.done:
+                break
+        log_text = "\n".join(str(line) for line in app.screen.query_one(RichLog).lines)
+
+    assert "Unexpected error" not in log_text, log_text
+    assert load_state(state_path).get("ollama/x").litellm_exposed is True
+
+
+@pytest.mark.asyncio
 async def test_deferred_expose_failure_notifies_the_user(tmp_path, monkeypatch):
     """Regression for a review finding: _apply_deferred_expose discarded
     apply_expose_queue's (outcomes, warnings) return value, so a deferred
