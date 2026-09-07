@@ -7,6 +7,8 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header
 
+from . import reload_preserving_cursor
+
 
 class DownloadScreen(Screen[None]):
     BINDINGS = [
@@ -27,26 +29,24 @@ class DownloadScreen(Screen[None]):
 
     def _reload(self) -> None:
         table = self.query_one("#downloads-table", DataTable)
-        cursor_key = None
-        if table.row_count and table.cursor_row is not None and table.cursor_row < table.row_count:
-            cursor_key = list(table.rows.keys())[table.cursor_row].value
-        table.clear()
         n_active = 0
-        for state in self.app.downloads.states():  # type: ignore[attr-defined]
-            if state.status == "downloading":
-                n_active += 1
-            table.add_row(
-                state.model_id,
-                state.provider,
-                state.status,
-                state.progress or state.error or "",
-                key=state.model_id,
-            )
+
+        def _repopulate() -> None:
+            nonlocal n_active
+            table.clear()
+            for state in self.app.downloads.states():  # type: ignore[attr-defined]
+                if state.status == "downloading":
+                    n_active += 1
+                table.add_row(
+                    state.model_id,
+                    state.provider,
+                    state.status,
+                    state.progress or state.error or "",
+                    key=state.model_id,
+                )
+
+        reload_preserving_cursor(table, _repopulate)
         self.title = f"⏳ {n_active} downloading" if n_active else "Downloads"
-        if cursor_key is not None:
-            keys = [k.value for k in table.rows]
-            if cursor_key in keys:
-                table.move_cursor(row=keys.index(cursor_key))
 
     def action_back(self) -> None:
         self.app.pop_screen()
