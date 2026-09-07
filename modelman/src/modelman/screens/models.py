@@ -934,7 +934,7 @@ class ModelScreen(Screen[None]):
             for warning in warnings:
                 app.call_from_thread(app.notify, warning)  # type: ignore[attr-defined]
 
-        app.downloads.register_post_download(model_id, _apply_deferred_expose)
+        app.downloads.register_post_download(model_id, _apply_deferred_expose)  # type: ignore[attr-defined]
 
     def _run_apply(
         self,
@@ -981,7 +981,10 @@ class ModelScreen(Screen[None]):
         # is_downloading() alone would also race: it flips to False the
         # instant a download finishes, before this screen's on_complete
         # callback reloads self.state from disk.
-        download_status = {s.model_id: s.status for s in self._app_ref.downloads.states()}
+        download_status = {
+            s.model_id: s.status
+            for s in self._app_ref.downloads.states()  # type: ignore[attr-defined]
+        }
         immediate_exposes: list[tuple[str, bool]] = []
         for mid, target in self.queued_exposes.items():
             if target and download_status.get(mid) == "downloading":
