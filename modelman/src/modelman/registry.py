@@ -305,6 +305,15 @@ def is_local_location(location: str | None) -> bool:
     return location is None or location == "" or location == LOCATION_LOCAL
 
 
+def is_native_provider(provider: ProviderEntry) -> bool:
+    """True when the provider authenticates natively (agent-managed, no
+    LiteLLM route). The single shared predicate for native-ness — mirrors
+    wt's deriveNative — so _derive_native, the form-kind map, and any
+    future consumer can never disagree about which providers are native.
+    """
+    return provider.auth.type == "native"
+
+
 def model_has_local_artifact(model: ModelEntry, provider: ProviderEntry | None) -> bool:
     """True when reconcile can sync `state.ready` from the filesystem.
 
@@ -343,7 +352,7 @@ def _derive_native(registry: Registry) -> None:
     Runs after providers and models are parsed so the registry is the
     single source of truth for native-ness.
     """
-    native_ids = {p.id for p in registry.providers if p.auth.type == "native"}
+    native_ids = {p.id for p in registry.providers if is_native_provider(p)}
     for m in registry.models:
         m.native = m.provider_id in native_ids
 

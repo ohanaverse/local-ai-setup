@@ -22,6 +22,7 @@ from modelman.registry import (
     family_display_name,
     known_families,
     load_registry,
+    is_native_provider,
     model_has_local_artifact,
     provider_config,
     save_registry,
@@ -415,6 +416,19 @@ def test_model_has_local_artifact_false_for_cloud_provider():
     model = ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="x")
     provider = ProviderEntry(id="openrouter", name="OpenRouter", location="cloud")
     assert model_has_local_artifact(model, provider) is False
+
+
+def test_is_native_provider_true_for_native_auth_only():
+    """The shared native predicate must key on auth.type exactly — not
+    location, not provider id — so _derive_native and the form-kind map can
+    never disagree about which providers are native. None/None auth
+    (providers predating the auth field) are not native."""
+    native = ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native"))
+    none_auth = ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+    api_key = ProviderEntry(id="or", name="OR", auth=AuthConfig(type="api_key"))
+    assert is_native_provider(native) is True
+    assert is_native_provider(none_auth) is False
+    assert is_native_provider(api_key) is False
 
 
 def test_model_has_local_artifact_false_when_provider_missing():
