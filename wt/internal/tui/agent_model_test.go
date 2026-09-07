@@ -81,7 +81,10 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	for _, m := range fullCatalog {
 		familyOf[m.ID] = m.Family
 	}
-	items := buildModelItems(models, familyOf, newUsageStore(), "")
+	// Mirror production enterModelPhase: read the last-launched ID from
+	// rotation state so tests exercise the same marker wiring.
+	lastID, _ := rotation.New().Last()
+	items := buildModelItems(models, familyOf, newUsageStore(), lastID)
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -656,6 +659,37 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	}
 	if m.models.Index() != 1 {
 		t.Errorf("cursor index = %d, want 1 (gemma4:14b)", m.models.Index())
+	}
+}
+
+// TestModelPickerMarksLastLaunchedRow drives the production
+// phaseAgent → enterModelPhase path with a seeded rotation.state and
+// asserts the ▶ marker lands on the last-launched row while the cursor
+// lands on the rotation's next-to-use row — the two are different rows,
+// and confusing them would mean the picker highlighted what to reuse
+// instead of what was just used.
+func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
+	dir := tempStateDir(t)
+	stubUsageStore(t) // hermetic usage counts: stable sort = registry order
+	seedState(t, dir, "ollama/gemma4:9b")
+	cfg := testConfig()
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
+
+	markerIdx := -1
+	for i, it := range gotModel.models.Items() {
+		if strings.HasPrefix(it.(*modelItem).Title(), "▶") {
+			if markerIdx != -1 {
+				t.Fatalf("▶ marker on more than one row")
+			}
+			markerIdx = i
+		}
+	}
+	if markerIdx != 0 {
+		t.Errorf("marker row = %d, want 0 (ollama/gemma4:9b)", markerIdx)
+	}
+	if gotModel.models.Index() != 1 {
+		t.Errorf("cursor index = %d, want 1 (rotation-next row ollama/gemma4:14b)", gotModel.models.Index())
 	}
 }
 

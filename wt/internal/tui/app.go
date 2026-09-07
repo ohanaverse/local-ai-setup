@@ -692,8 +692,12 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 		familyOf[mdl.ID] = mdl.Family
 	}
 
+	// Last-launched model ID for the ▶ row marker. Same construction site
+	// as the Next() cursor call below; a missing/unreadable rotation.state
+	// yields "" and leaves every row unmarked.
+	lastID, _ := rotation.New().Last()
 	// Build the sorted, compact model list.
-	items := buildModelItems(models, familyOf, newUsageStore(), "")
+	items := buildModelItems(models, familyOf, newUsageStore(), lastID)
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
