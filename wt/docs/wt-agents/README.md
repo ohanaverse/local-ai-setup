@@ -128,6 +128,12 @@ On the TUI path the summary prints **after** the alt-screen is restored,
 so the line lands on a clean line in the parent terminal rather than inside
 the Bubble Tea frame.
 
+Immediately after the summary line, a post-session survey prompts up to
+three questions on the parent terminal (did it work? speed 1-5? quality
+1-5?), each answerable with Enter to skip. It silently does nothing when
+stdin is not a TTY or when the launch had no model (command agents like
+`shell`). See `docs/wt-stats.md` for how the collected data is reported.
+
 ### Legacy bash flags
 
 The original bash launchers supported `-w`/`--worktree`, `--code`,
