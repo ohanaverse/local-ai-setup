@@ -2279,3 +2279,47 @@ async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_
 
         assert registered == ["ollama/x"]
         assert pending_holder[0].exposes == []  # deferred, not passed to PendingChanges
+
+
+@pytest.mark.asyncio
+async def test_deferred_expose_failure_notifies_the_user(tmp_path, monkeypatch):
+    """Regression for a review finding: _apply_deferred_expose discarded
+    apply_expose_queue's (outcomes, warnings) return value, so a deferred
+    expose that fails once the download completes (e.g. the model was
+    removed from the registry in the meantime) was silently dropped with
+    no failure surfaced to the user."""
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+    litellm_path = tmp_path / "litellm" / "config.yaml"
+    from modelman.litellm import save_litellm_config
+
+    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        # call_from_thread here just calls inline — the real app marshals
+        # this to the UI thread from DownloadManager's background thread.
+        monkeypatch.setattr(app, "call_from_thread", lambda func, *a: func(*a))
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda msg, **k: notified.append(msg))
+
+        captured_actions = []
+        monkeypatch.setattr(
+            app.downloads,
+            "register_post_download",
+            lambda mid, action: captured_actions.append(action),
+        )
+        app.screen._register_deferred_expose("ollama/x", litellm_path)
+
+        # The model was removed from the registry before the deferred
+        # action ran (e.g. a Discard after the download started), so
+        # apply_expose_queue reports a per-item failure instead of raising.
+        reg = load_registry(reg_path)
+        reg.models = []
+        save_registry(reg, reg_path)
+
+        captured_actions[0]()
+
+    assert any("ollama/x" in n for n in notified), notified

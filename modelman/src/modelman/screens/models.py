@@ -890,6 +890,7 @@ class ModelScreen(Screen[None]):
         gone."""
         registry_path = self.registry_path
         state_path = self.state_path
+        app = self.app
 
         def _apply_deferred_expose() -> None:
             from ..litellm import apply_expose_queue
@@ -898,7 +899,19 @@ class ModelScreen(Screen[None]):
 
             registry = load_registry(registry_path)
             with locked_state(state_path) as state:
-                apply_expose_queue(registry, state, [(model_id, True)], litellm_path)
+                outcomes, warnings = apply_expose_queue(
+                    registry, state, [(model_id, True)], litellm_path
+                )
+            # This runs on DownloadManager's background thread (via its
+            # post-download action, itself inside a contextlib.suppress
+            # that would otherwise swallow this silently) — a per-model
+            # failure here is returned in outcomes, not raised, so it
+            # would never surface to the user without this notify.
+            for mid, _target, error in outcomes:
+                if error is not None:
+                    app.call_from_thread(app.notify, f"Expose failed for {mid}: {error}")  # type: ignore[attr-defined]
+            for warning in warnings:
+                app.call_from_thread(app.notify, warning)  # type: ignore[attr-defined]
 
         self.app.downloads.register_post_download(model_id, _apply_deferred_expose)  # type: ignore[attr-defined]
 
