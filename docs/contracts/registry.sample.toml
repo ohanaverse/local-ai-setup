@@ -27,6 +27,13 @@ type = "api_key"
 base_url = "https://openrouter.ai/api/v1"
 secret_ref = "OPENROUTER_API_KEY"
 
+[[providers]]
+id = "agy"
+name = "Agy"
+location = "local"
+[providers.auth]
+type = "native"
+
 [[families]]
 name = "contract-fixture"
 display_name = "Contract Fixture"
@@ -53,3 +60,10 @@ cache_price_per_million  = 0.25
 output_price_per_million = 1.00
 subscription_price       = 19.99
 subscription_period      = "month"
+
+[[models]]
+id = "agy/contract-fixture:native"
+family = "contract-fixture"
+provider_id = "agy"
+model_name = "contract-fixture:native"
+tags = ["native"]
