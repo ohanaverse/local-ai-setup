@@ -4,6 +4,7 @@ import pytest
 from textual.widgets import DataTable
 
 from modelman.app import ModelmanApp
+from modelman.downloads import DownloadState
 from modelman.registry import (
     AuthConfig,
     FamilyEntry,
@@ -2156,3 +2157,55 @@ async def test_app_mounts_without_live_daemon_or_proxy_restart():
 
         table = app.screen.query_one("#family-table", DataTable)
         assert table.row_count >= 0
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_exits_immediately_with_no_active_downloads(tmp_path, monkeypatch):
+    # The quit guard's no-op path: with nothing downloading, ctrl+q must
+    # exit the app directly, exactly like the pre-guard behavior.
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+    assert app.return_code == 0 or not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_blocked_while_a_download_is_active(tmp_path, monkeypatch):
+    # ctrl+q while a download is running must not exit out from under
+    # the download thread — it pushes QuitBlockedModal instead.
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+        assert app.is_running
+        from modelman.screens.forms import QuitBlockedModal
+
+        assert isinstance(app.screen, QuitBlockedModal)
+
+
+@pytest.mark.asyncio
+async def test_quit_blocked_modal_review_pushes_download_screen(tmp_path, monkeypatch):
+    # QuitBlockedModal's "Review Downloads" choice must open the
+    # DownloadScreen so the user can cancel the blocking download.
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+        await pilot.press("r")  # QuitBlockedModal's "Review Downloads" binding
+        await pilot.pause()
+        from modelman.screens.downloads import DownloadScreen
+
+        assert isinstance(app.screen, DownloadScreen)

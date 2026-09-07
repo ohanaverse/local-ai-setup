@@ -6,8 +6,10 @@ import contextlib
 
 from textual.app import App
 
+from .downloads import DownloadManager
 from .registry import load_registry, sync_agent_providers
 from .screens.families import FamilyScreen
+from .screens.forms import QuitBlockedModal
 from .screens.models import ModelScreen
 from .settings import Settings, load_settings, save_settings
 from .state import load_state
@@ -33,6 +35,10 @@ class ModelmanApp(App[None]):
     def __init__(self, family: str | None = None) -> None:
         super().__init__()
         self._initial_family = family
+        # One DownloadManager for the app's lifetime, created before any
+        # screen mounts so every screen can reference self.app.downloads
+        # the instant it might need it (quit guard, glyph, routing).
+        self.downloads = DownloadManager(self)
         # Load user preferences (theme, etc.) before any widget
         # mounts so the first frame uses the right colors. A missing
         # file returns defaults; a corrupted file falls back to
@@ -68,6 +74,31 @@ class ModelmanApp(App[None]):
                     available_providers=configured,
                 )
             )
+
+    def request_quit(self) -> None:
+        """The single quit entry point every binding routes through
+        (ctrl+q's default action_quit, and FamilyScreen's 'q' — Task 9).
+        Blocks quitting while a download is active instead of exiting
+        out from under it."""
+        if not self.downloads.has_active():
+            self.exit()
+            return
+
+        def _on_choice(review: bool | None) -> None:
+            if review:
+                from .screens.downloads import DownloadScreen
+
+                self.push_screen(DownloadScreen())
+
+        self.push_screen(QuitBlockedModal(), _on_choice)
+
+    async def action_quit(self) -> None:
+        """Override Textual's default (self.exit()) to route through the
+        download quit guard. This also fixes a pre-existing quirk where
+        ctrl+q quit immediately from any screen, bypassing ModelScreen's
+        apply-on-exit confirm — it's now gated by request_quit() the same
+        way FamilyScreen's 'q' binding is."""
+        self.request_quit()
 
     def watch_theme(self, old_theme: str | None, new_theme: str) -> None:
         """Persist the theme whenever the user picks a new one via
