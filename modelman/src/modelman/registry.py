@@ -140,6 +140,7 @@ class ModelEntry:
     cost: Cost | None = None
     model_info: dict[str, Any] = field(default_factory=dict)
     fetch: Fetch | None = None
+    native: bool = False
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -331,6 +332,17 @@ def default_provider_entry(provider_id: str) -> ProviderEntry:
     return replace(template, auth=replace(template.auth))
 
 
+def _derive_native(registry: Registry) -> None:
+    """Mark each model whose provider authenticates natively
+    (auth.type == "native") as native. Mirrors wt's deriveNative.
+    Runs after providers and models are parsed so the registry is the
+    single source of truth for native-ness.
+    """
+    native_ids = {p.id for p in registry.providers if p.auth.type == "native"}
+    for m in registry.models:
+        m.native = m.provider_id in native_ids
+
+
 def load_registry(path: Path | None = None) -> Registry:
     registry_path = Path(path) if path else _default_registry_path()
     if not registry_path.exists():
@@ -344,11 +356,13 @@ def load_registry(path: Path | None = None) -> Registry:
             raise RegistryError(f"Registry file not found: {registry_path}")
     with open(registry_path, "rb") as f:
         raw = tomllib.load(f)
-    return Registry(
+    registry = Registry(
         providers=[_parse_provider(p) for p in raw.get("providers", [])],
         families=[_parse_family(f) for f in raw.get("families", [])],
         models=[_parse_model(m) for m in raw.get("models", [])],
     )
+    _derive_native(registry)
+    return registry
 
 
 def _auth_to_dict(a: AuthConfig) -> dict[str, Any]:
