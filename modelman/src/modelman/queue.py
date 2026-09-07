@@ -18,8 +18,7 @@ from typing import TYPE_CHECKING
 from .litellm import apply_expose_queue
 from .registry import (
     FamilyEntry,
-    ModelEntry,
-    model_entry_to_variant,
+    find_shared_artifact_owner,
     save_registry,
 )
 from .state import locked_state
@@ -134,41 +133,6 @@ def _remove_local_artifact(state: StateStore, variant: VariantSpec) -> None:
         p.unlink()
     elif p.is_dir() and not os.listdir(p):
         shutil.rmtree(p)
-
-
-def _shared_artifact_owner(
-    registry: Registry, provider: object, variant: VariantSpec
-) -> ModelEntry | None:
-    """Another registry entry whose provider artifact resolves to the same
-    on-disk target as `variant`'s, or None.
-
-    Dir-based providers key their storage on a coarse segment of the repo
-    id (omlx uses the repo *basename*), so two registry entries can share
-    one artifact directory; removing it for one silently destroys the
-    other's weights. path_of() is the provider-neutral way to ask "where
-    does this variant live on disk". Returns None when the provider has
-    no path_of or the target can't be resolved — callers treat that as
-    "no conflict" and proceed with the normal delete.
-    """
-    path_of = getattr(provider, "path_of", None)
-    if not callable(path_of):
-        return None
-    try:
-        mine = path_of(variant)
-    except Exception:  # noqa: BLE001
-        return None
-    if mine is None:
-        return None
-    for m in registry.models:
-        if m.id == variant["id"] or m.provider_id != variant["provider"]:
-            continue
-        try:
-            theirs = path_of(model_entry_to_variant(m))
-        except Exception:  # noqa: BLE001
-            continue
-        if theirs == mine:
-            return m
-    return None
 
 
 @dataclass
@@ -288,7 +252,7 @@ class PendingChanges:
                     artifact_present = True
             emit(f"delete:start|{model_id}|{label}")
             if provider is not None and artifact_present:
-                conflict = _shared_artifact_owner(self.registry, provider, variant)
+                conflict = find_shared_artifact_owner(self.registry, provider, variant)
                 if conflict is not None:
                     # Another registry entry resolves to the same on-disk
                     # artifact; removing it would destroy that entry's
@@ -450,7 +414,7 @@ class PendingChanges:
                     # Cannot confirm absence; fall back to "try the call".
                     artifact_present = True
                 if artifact_present:
-                    conflict = _shared_artifact_owner(self.registry, provider, variant)
+                    conflict = find_shared_artifact_owner(self.registry, provider, variant)
                     if conflict is not None:
                         reason = f"artifact shared with {conflict.id} — not removed"
                         self.failures.append(f"clear {model_id}: {reason}")

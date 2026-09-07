@@ -587,7 +587,7 @@ class ModelScreen(Screen[None]):
             self.app.call_from_thread(self._on_download_finished, mid)
 
         self.app.downloads.start(  # type: ignore[attr-defined]
-            entry.id, variant, config, on_complete=_on_complete
+            entry.id, variant, config, on_complete=_on_complete, registry=self.registry
         )
         self._last_provider_used = entry.provider_id
         self._refresh_pending_bar()

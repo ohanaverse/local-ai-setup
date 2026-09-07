@@ -19,10 +19,12 @@ from typing import TYPE_CHECKING, Literal
 
 from .providers._progress import DownloadCancelled
 from .providers.registry import ProviderRegistry
+from .registry import find_shared_artifact_owner
 from .state import ModelState, locked_state
 
 if TYPE_CHECKING:
     from .providers.base import Provider, VariantSpec
+    from .registry import Registry
 
 Status = Literal["downloading", "done", "failed", "cancelled"]
 
@@ -50,6 +52,11 @@ class DownloadManager:
         self._variants: dict[str, VariantSpec] = {}
         self._cancel_requested: set[str] = set()
         self._post_download: dict[str, list[Callable[[], None]]] = {}
+        # Registry snapshot for a download in flight, used only by the
+        # cancel/fail cleanup path (_finish) to check whether another
+        # registry entry shares this variant's on-disk target before
+        # deleting it. None when the caller didn't pass one (e.g. tests).
+        self._registries: dict[str, Registry | None] = {}
 
     def start(
         self,
@@ -57,6 +64,7 @@ class DownloadManager:
         variant: VariantSpec,
         provider_config: dict,
         on_complete: Callable[[str], None] | None = None,
+        registry: Registry | None = None,
     ) -> None:
         with self._lock:
             if model_id in self._states and self._states[model_id].status == "downloading":
@@ -64,6 +72,7 @@ class DownloadManager:
             provider = ProviderRegistry.get(variant["provider"], provider_config)
             self._providers[model_id] = provider
             self._variants[model_id] = variant
+            self._registries[model_id] = registry
             self._cancel_requested.discard(model_id)
             self._states[model_id] = DownloadState(
                 model_id=model_id,
@@ -172,9 +181,20 @@ class DownloadManager:
     ) -> None:
         if cleanup is not None:
             provider, variant = cleanup
-            # Best-effort: a failed cleanup must not mask the cancel.
-            with contextlib.suppress(Exception):
-                provider.cleanup_partial_download(variant)
+            with self._lock:
+                registry = self._registries.pop(model_id, None)
+            conflict = None
+            if registry is not None:
+                # e.g. two registry entries whose repos share the same
+                # omlx basename resolve to one on-disk directory; if the
+                # other entry's download already completed there, this
+                # cancelled/failed download's cleanup must not rmtree it.
+                with contextlib.suppress(Exception):
+                    conflict = find_shared_artifact_owner(registry, provider, variant)
+            if conflict is None:
+                # Best-effort: a failed cleanup must not mask the cancel.
+                with contextlib.suppress(Exception):
+                    provider.cleanup_partial_download(variant)
         with self._lock:
             state = self._states.get(model_id)
             if state is not None:
@@ -182,6 +202,7 @@ class DownloadManager:
                 state.error = error
             self._cancel_requested.discard(model_id)
             self._providers.pop(model_id, None)
+            self._registries.pop(model_id, None)
             actions = self._post_download.pop(model_id, [])
         if status == "done":
             for action in actions:

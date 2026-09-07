@@ -102,6 +102,55 @@ def test_cancel_calls_provider_cancel_current(monkeypatch):
     provider.cleanup_partial_download.assert_called_once()
 
 
+def test_cancel_cleanup_skips_rmtree_when_artifact_is_shared(monkeypatch):
+    # Regression for a review finding on the omlx provider: two registry
+    # entries can share one on-disk target directory (omlx keys storage on
+    # the repo basename), so cancelling a download for one entry must not
+    # blow away the other entry's already-completed weights. start() must
+    # be given the registry so _finish's cleanup step can detect the
+    # conflict via find_shared_artifact_owner and skip cleanup_partial_download.
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+
+    release = threading.Event()
+
+    def _download(*a, **k):
+        release.wait(2)
+        raise DownloadCancelled("x")
+
+    provider = MagicMock()
+    provider.download.side_effect = _download
+    provider.cancel_current.side_effect = lambda: release.set()
+    # Both variants resolve to the same on-disk path — the collision
+    # find_shared_artifact_owner is meant to detect.
+    provider.path_of.return_value = "/models/shared-basename"
+    _register_stub_provider(monkeypatch, provider)
+
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="X", auth=AuthConfig(type="omlx"))],
+        models=[
+            ModelEntry(id="omlx/a", family="f", provider_id="omlx", model_name="orgA/model"),
+            ModelEntry(id="omlx/b", family="f", provider_id="omlx", model_name="orgB/model"),
+        ],
+    )
+
+    mgr = DownloadManager(_FakeApp())
+    mgr.start(
+        "omlx/a",
+        {"id": "omlx/a", "provider": "omlx", "repo": "orgA/model"},
+        {},
+        registry=registry,
+    )
+    while not mgr.is_downloading("omlx/a"):
+        time.sleep(0.01)
+    mgr.cancel("omlx/a")
+
+    deadline = time.time() + 2
+    while mgr.is_downloading("omlx/a") and time.time() < deadline:
+        time.sleep(0.01)
+
+    provider.cleanup_partial_download.assert_not_called()
+
+
 def test_a_generic_exception_after_cancel_is_still_classified_cancelled(monkeypatch):
     # Ollama's cancel_current() kills the pull subprocess via SIGTERM,
     # which makes download() raise a plain RuntimeError (non-zero exit),
