@@ -3,6 +3,7 @@ package survey
 import (
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // ratingCell renders one rating average with its one-letter prefix ("q" or
@@ -86,9 +87,9 @@ func formatStatsRow(label string, labelWidth int, segs []string, colWidth []int)
 func FormatAfterSurvey(events []Event, agent, modelID string, asOf time.Time) string {
 	modelLabel := "model"
 	comboLabel := fmt.Sprintf("%s × model", agent)
-	labelWidth := len(modelLabel)
-	if len(comboLabel) > labelWidth {
-		labelWidth = len(comboLabel)
+	labelWidth := utf8.RuneCountInString(modelLabel)
+	if w := utf8.RuneCountInString(comboLabel); w > labelWidth {
+		labelWidth = w
 	}
 
 	modelSegs := make([]string, len(afterSurveyWindows))
@@ -100,11 +101,11 @@ func FormatAfterSurvey(events []Event, agent, modelID string, asOf time.Time) st
 
 	colWidth := make([]int, len(afterSurveyWindows))
 	for i := range afterSurveyWindows {
-		if len(modelSegs[i]) > colWidth[i] {
-			colWidth[i] = len(modelSegs[i])
+		if w := utf8.RuneCountInString(modelSegs[i]); w > colWidth[i] {
+			colWidth[i] = w
 		}
-		if len(comboSegs[i]) > colWidth[i] {
-			colWidth[i] = len(comboSegs[i])
+		if w := utf8.RuneCountInString(comboSegs[i]); w > colWidth[i] {
+			colWidth[i] = w
 		}
 	}
 

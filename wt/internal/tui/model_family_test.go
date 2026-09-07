@@ -423,6 +423,7 @@ func TestWrapAroundNoOpWhenZeroOrOneVisibleItem(t *testing.T) {
 // anymore; this pins that the cursor starts on a launchable *modelItem.)
 func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
 	stubUsageStore(t)
+	tempStateDir(t)
 
 	cfg := testConfig()
 	m := model{

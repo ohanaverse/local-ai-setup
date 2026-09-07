@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// TestStatsWorkedPctZeroWhenNoAnswered verifies WorkedPct reports ok=false
+// on a zero-value Stats, so callers (the picker segment, wt stats) know to
+// omit a percentage rather than divide by zero or show a misleading 0%.
 func TestStatsWorkedPctZeroWhenNoAnswered(t *testing.T) {
 	var s Stats
 	if _, ok := s.WorkedPct(); ok {
@@ -12,6 +15,9 @@ func TestStatsWorkedPctZeroWhenNoAnswered(t *testing.T) {
 	}
 }
 
+// TestStatsWorkedPct verifies the core worked-percentage formula
+// (worked / (worked + failed) * 100), the number every survey-derived
+// display ultimately renders.
 func TestStatsWorkedPct(t *testing.T) {
 	s := Stats{Answered: 4, Worked: 3, Failed: 1}
 	pct, ok := s.WorkedPct()
@@ -23,6 +29,9 @@ func TestStatsWorkedPct(t *testing.T) {
 	}
 }
 
+// TestStatsSpeedQualityAvg verifies SpeedAvg/QualityAvg divide their sums
+// by their own rated counts independently, since a user can rate speed
+// without rating quality (or vice versa) on any given survey.
 func TestStatsSpeedQualityAvg(t *testing.T) {
 	s := Stats{RatedSpeed: 2, SpeedSum: 7, RatedQuality: 3, QualitySum: 12}
 	speed, ok := s.SpeedAvg()
@@ -35,6 +44,9 @@ func TestStatsSpeedQualityAvg(t *testing.T) {
 	}
 }
 
+// TestStatsSpeedQualityAvgUnrated verifies SpeedAvg/QualityAvg report
+// ok=false when no rated events exist, so a worked-but-unrated combo
+// renders a dash instead of a fabricated 0.0 rating.
 func TestStatsSpeedQualityAvgUnrated(t *testing.T) {
 	var s Stats
 	if _, ok := s.SpeedAvg(); ok {

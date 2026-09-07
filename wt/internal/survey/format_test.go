@@ -6,12 +6,18 @@ import (
 	"time"
 )
 
+// TestFormatPickerSegmentOmittedWhenNoAnswered verifies FormatPickerSegment
+// returns "" for a model with zero answered surveys, so the picker row
+// omits the segment entirely rather than showing a meaningless "✓- q- s- n0".
 func TestFormatPickerSegmentOmittedWhenNoAnswered(t *testing.T) {
 	if got := FormatPickerSegment(Stats{}); got != "" {
 		t.Fatalf("FormatPickerSegment(zero) = %q, want empty", got)
 	}
 }
 
+// TestFormatPickerSegmentChecksWorked pins the exact rendered format
+// ("✓92% q4.2 s3.9 n12") end-to-end, so a change to rounding, field order,
+// or the prefix scheme in FormatPickerSegment is caught immediately.
 func TestFormatPickerSegmentChecksWorked(t *testing.T) {
 	s := Stats{Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39}
 	got := FormatPickerSegment(s)
