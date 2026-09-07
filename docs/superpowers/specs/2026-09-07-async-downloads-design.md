@@ -77,13 +77,18 @@ Responsibilities and API:
 Each download runs in its own daemon `threading.Thread`; UI updates marshal
 through `app.call_from_thread`.
 
-**On success:** set `state.ready=True`, `disk_path`, `size_bytes`; save state;
-run post-download actions (deferred exposes).
+**On success:** set `state.ready=True`, `disk_path`, `size_bytes`; save state
+(via the locked merge-on-save path below); run post-download actions
+(deferred exposes).
 
 **On cancel:** clean up partial files (see "Partial-download cleanup"), mark
-`cancelled`.
+`cancelled`. Any post-download action registered for this `model_id` is
+discarded, not run.
 
 **On failure:** record the error, mark `failed`; the model stays not-ready.
+Any post-download action registered for this `model_id` is discarded, not
+run — the failure is already surfaced via the download's own `failed`
+status, so no separate notification is needed for the dropped action.
 
 ### Queue changes
 
@@ -144,6 +149,41 @@ registered as a post-download action on the `DownloadManager` and skipped in
 this apply. On download completion, the manager runs the action (write the
 LiteLLM entry + set `litellm_exposed=True` + save).
 
+### State synchronization
+
+`StateStore`'s save (`save_state()`) is a whole-file overwrite from whatever
+in-memory `StateStore` it's given — there is no merge, and today that's safe
+because only one thing ever mutates `modelman.toml` at a time (a synchronous
+apply). This design breaks that assumption: `DownloadManager` writes
+`modelman.toml` from background threads on completion, while the user can
+independently run a `PendingChanges.apply()` for an unrelated delete/move/
+expose at the same time (the locking rules above require this to be
+possible — `x` and unrelated-model applies are allowed during a download).
+Two concrete races follow directly from "multiple models download
+simultaneously" plus "apply-on-exit stays available for other ops":
+
+- Two parallel downloads finishing close together each do a naive
+  load-mutate-save; the second can stomp the first's `ready=True` write.
+- A download completes *during* an `apply()` run, which holds an in-memory
+  `StateStore` snapshot taken before the run started; `apply()`'s final
+  `save_state()` overwrites the whole file, silently reverting the
+  download's just-written `ready=True`.
+
+Fix, scoped to `state.py` and `queue.py` (does not touch `registry.toml` —
+downloads never mutate the `Registry` object, only `StateStore`):
+
+1. Add a `state.py` helper that does load-merge-save for one or more
+   `model_id` deltas, under a module-level lock. `DownloadManager` uses it
+   for every completion/failure/cancel write instead of holding and saving
+   a whole `StateStore` snapshot.
+2. `PendingChanges.apply()`'s final save reloads state fresh from disk and
+   merges in only the `model_id`s it actually touched this run (deletes,
+   ready-loop entries, exposes — apply() already knows exactly which ids
+   these are) onto that fresh copy, instead of saving its own
+   possibly-stale snapshot wholesale.
+3. The same lock serializes both write paths so they can't interleave at
+   the byte level either.
+
 ## Partial-download cleanup
 
 - **oMLX** (`local_dir`): on cancel, `shutil.rmtree` the partial target
@@ -173,7 +213,12 @@ child threads) so each download's callbacks are isolated.
 ## Testing
 
 - Unit tests for `DownloadManager` (start/cancel/complete/fail, parallel
-  isolation, post-download actions).
+  isolation, post-download actions, post-download actions dropped on
+  cancel/fail).
 - Screen tests for `DownloadScreen`, locking, and the quit guard.
 - Provider cleanup tests (partial dir removal, `.incomplete` removal).
+- State-sync test: a queued `apply()` (unrelated model) run concurrently
+  with a `DownloadManager` completion write must not lose either write —
+  both `model_id`s reflect their correct final state in `modelman.toml`
+  after both finish.
 - Contract: no change to `registry.toml` / `modelman.toml` schema.
