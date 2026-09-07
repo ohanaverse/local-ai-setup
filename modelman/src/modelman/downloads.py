@@ -14,10 +14,12 @@ import contextlib
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .providers._progress import DownloadCancelled
 from .providers.registry import ProviderRegistry
+from .state import ModelState, locked_state
 
 if TYPE_CHECKING:
     from .providers.base import Provider, VariantSpec
@@ -129,9 +131,27 @@ class DownloadManager:
                 self._finish(model_id, "failed", error=str(exc) or exc.__class__.__name__)
             return
 
+        size_bytes = self._size_of(local_path)
+        # Persist via locked_state (merge onto fresh disk state). A failed
+        # write must not wedge the thread (and this model) in "downloading"
+        # forever — that would block the quit guard — and it self-heals:
+        # reconcile re-derives ready/disk_path from the artifact on disk on
+        # the next mount.
+        with contextlib.suppress(Exception), locked_state() as state:
+            state.set(model_id, ModelState(ready=True, disk_path=local_path, size_bytes=size_bytes))
         self._finish(model_id, "done", local_path=local_path)
         if on_complete is not None:
             self._app.call_from_thread(on_complete, local_path)  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _size_of(local_path: str) -> int | None:
+        # TypeError/ValueError alongside OSError: a non-path object (e.g. a
+        # test stub's return value) must not kill the download thread.
+        try:
+            p = Path(local_path)
+            return p.stat().st_size if p.is_file() else None
+        except (OSError, TypeError, ValueError):
+            return None
 
     def _finish(
         self,

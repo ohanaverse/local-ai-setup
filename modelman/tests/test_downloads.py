@@ -233,3 +233,99 @@ def test_start_is_a_noop_if_already_downloading(monkeypatch):
     release.set()
     time.sleep(0.1)
     assert call_count["n"] == 1
+
+
+def test_success_persists_ready_and_disk_path_to_state(tmp_path, monkeypatch):
+    # DownloadManager must own persisting completion, since its caller
+    # (whichever ModelScreen instance started the download) may no
+    # longer exist by the time a download finishes.
+    from modelman.state import _default_state_path, load_state
+
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    assert _default_state_path() == state_path
+
+    (tmp_path / "weights.gguf").write_bytes(b"x" * 1024)
+    provider = MagicMock()
+    provider.download.return_value = str(tmp_path / "weights.gguf")
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    done = threading.Event()
+    mgr.start(
+        "ollama/x",
+        {"id": "ollama/x", "provider": "ollama", "name": "x:7b"},
+        {},
+        on_complete=lambda path: done.set(),
+    )
+    assert done.wait(timeout=2)
+
+    loaded = load_state(state_path)
+    entry = loaded.get("ollama/x")
+    assert entry.ready is True
+    assert entry.disk_path == str(tmp_path / "weights.gguf")
+    assert entry.size_bytes == 1024
+
+
+def test_success_persistence_is_a_merge_not_an_overwrite(tmp_path, monkeypatch):
+    # Regression for the exact race Task 1/4 exist to close: an unrelated
+    # model's state already on disk must survive a download completion
+    # for a *different* model.
+    from modelman.state import (
+        ModelState,
+        StateStore,
+        _default_state_path,
+        load_state,
+        save_state,
+    )
+
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    assert _default_state_path() == state_path
+    existing = StateStore()
+    existing.set("ollama/other", ModelState(ready=True, disk_path="ollama:other"))
+    save_state(existing, state_path)
+
+    (tmp_path / "weights.gguf").write_bytes(b"x")
+    provider = MagicMock()
+    provider.download.return_value = str(tmp_path / "weights.gguf")
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    done = threading.Event()
+    mgr.start(
+        "ollama/x",
+        {"id": "ollama/x", "provider": "ollama", "name": "x"},
+        {},
+        on_complete=lambda p: done.set(),
+    )
+    assert done.wait(timeout=2)
+
+    loaded = load_state(state_path)
+    assert loaded.get("ollama/other").ready is True  # untouched
+    assert loaded.get("ollama/x").ready is True  # this download's own write
+
+
+def test_progress_visible_while_downloading(monkeypatch):
+    # Progress lines forwarded from the provider must be recorded on the
+    # DownloadState while the download is still running — the
+    # DownloadScreen's live progress column reads exactly this.
+    release = threading.Event()
+    seen_progress = threading.Event()
+
+    def _download(variant, on_progress=None, **kwargs):
+        on_progress("50 MB / 100 MB (50%)")
+        seen_progress.set()
+        release.wait(2)
+        return "/models/x"
+
+    provider = MagicMock()
+    provider.download.side_effect = _download
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    mgr.start("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x"}, {})
+    assert seen_progress.wait(timeout=2)
+    states = {s.model_id: s for s in mgr.states()}
+    assert "50%" in states["ollama/x"].progress
+    release.set()
