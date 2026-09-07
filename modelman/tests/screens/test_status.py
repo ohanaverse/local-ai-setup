@@ -127,7 +127,10 @@ async def test_pending_changes_fires_lifecycle_events(app_with_apply, tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": p},
-        ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
+        # Flag-only ready-on (provider id absent from `providers`): real
+        # downloads no longer run inside apply() — it asserts instead —
+        # so the ready-loop coverage here uses a flag-only entry.
+        ready=[("q8", _variant(id="q8", provider="unmapped", name="ornith:8b"), True)],
         deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
     )
     seen: list[str] = []
@@ -135,8 +138,8 @@ async def test_pending_changes_fires_lifecycle_events(app_with_apply, tmp_path):
 
     assert "delete:start|o35|ornith:35b" in seen
     assert "delete:done|o35|ornith:35b" in seen
-    assert "download:start|q8|ornith:8b" in seen
-    assert "download:done|q8|ornith:8b" in seen
+    assert "ready:start|q8|ornith:8b" in seen
+    assert "ready:done|q8|ornith:8b" in seen
     assert "save:start" in seen
     assert "save:done" in seen
     assert seen[-1] == "apply:done"
@@ -167,11 +170,11 @@ async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
         p.name = "ollama"
         p.cancel_current = MagicMock()
 
-        def slow_download(v):
+        def slow_delete(v):
             gate.wait(timeout=2.0)
-            return str(tmp_path / f"new-{v['id']}")
 
-        p.download.side_effect = slow_download
+        p.is_downloaded.return_value = True
+        p.delete.side_effect = slow_delete
         return p
 
     provider = make_provider()
@@ -184,9 +187,9 @@ async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            ready=[
-                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b"), True),
-                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True),
+            deletes=[
+                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b")),
+                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b")),
             ],
         )
         captured_pending.append(pending)
@@ -245,12 +248,12 @@ async def test_status_screen_cancel_writes_immediate_feedback(tmp_path, monkeypa
     provider = MagicMock()
     provider.name = "ollama"
     provider.cancel_current = MagicMock()
+    provider.is_downloaded.return_value = True
 
-    def slow_download(v):
+    def slow_delete(v):
         gate.wait(timeout=5.0)
-        return str(tmp_path / f"new-{v['id']}")
 
-    provider.download.side_effect = slow_download
+    provider.delete.side_effect = slow_delete
 
     def run_apply(log_event, on_progress, register):
         pending = PendingChanges(
@@ -260,7 +263,10 @@ async def test_status_screen_cancel_writes_immediate_feedback(tmp_path, monkeypa
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            ready=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"), True)],
+            deletes=[
+                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b")),
+                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b")),
+            ],
         )
         captured_pending.append(pending)
         register(pending)
@@ -353,7 +359,8 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": p},
-            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
+            # Flag-only ready-on: downloads no longer run inside apply().
+            ready=[("q8", _variant(id="q8", provider="unmapped", name="ornith:8b"), True)],
             deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
         )
         pending.apply(on_event=log_event)
@@ -383,7 +390,7 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
-    """When a download fails, the exception reason should appear in the log."""
+    """When a delete fails, the exception reason should appear in the log."""
     from textual.widgets import RichLog
 
     from modelman.app import ModelmanApp
@@ -393,12 +400,12 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
 
     provider = MagicMock()
     provider.name = "ollama"
-    provider.delete.return_value = None
+    provider.is_downloaded.return_value = True
     # No resolvable on-disk path: the shared-artifact guard reads path_of(),
     # and a MagicMock's cached return_value would make the registry's other
     # ollama entry look like it shares o35's artifact (false conflict).
     provider.path_of.return_value = None
-    provider.download.side_effect = ConnectionError("dial tcp: i/o timeout")
+    provider.delete.side_effect = ConnectionError("dial tcp: i/o timeout")
 
     def run_apply(log_event, _progress, _register):
         pending = PendingChanges(
@@ -408,8 +415,10 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
-            deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
+            deletes=[
+                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b")),
+                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b")),
+            ],
         )
         pending.apply(on_event=log_event)
 
@@ -424,55 +433,8 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
                 break
         log = screen.query_one(RichLog)
         text = "\n".join(line.text for line in log.lines)
-        assert "Failed to download" in text
+        assert "Failed to delete ornith:8b" in text
         assert "i/o timeout" in text
-
-
-@pytest.mark.asyncio
-async def test_status_screen_shows_size_on_download_done(app_with_apply, tmp_path):
-    """The 'Downloaded X' success marker should include the actual file size."""
-    from textual.widgets import RichLog
-
-    from modelman.app import ModelmanApp
-    from modelman.screens.status import StatusScreen
-
-    reg, state, reg_path, state_path = app_with_apply
-
-    provider = MagicMock()
-    provider.name = "ollama"
-    provider.delete.return_value = None
-    provider.path_of.return_value = None  # avoid a false shared-artifact conflict
-
-    real_path = tmp_path / "downloaded-q8.bin"
-    real_path.write_bytes(b"x" * (2 * 1024 * 1024 * 1024))
-    provider.download.return_value = str(real_path)
-
-    def run_apply(log_event, _progress, _register):
-        pending = PendingChanges(
-            registry=reg,
-            state=state,
-            family="ornith",
-            registry_path=reg_path,
-            state_path=state_path,
-            providers={"ollama": provider},
-            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
-            deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
-        )
-        pending.apply(on_event=log_event)
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
-        app.push_screen(screen)
-        for _ in range(20):
-            await pilot.pause()
-            if screen.done:
-                break
-        log = screen.query_one(RichLog)
-        text = "\n".join(line.text for line in log.lines)
-        assert "Downloaded ornith:8b" in text
-        assert "2.0 GB" in text, text
 
 
 @pytest.mark.asyncio
@@ -516,9 +478,9 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
 
     provider = MagicMock()
     provider.name = "ollama"
-    provider.delete.return_value = None
+    provider.is_downloaded.return_value = True
     provider.path_of.return_value = None  # avoid a false shared-artifact conflict
-    provider.download.side_effect = OSError(
+    provider.delete.side_effect = OSError(
         "No space left on device (ENOSPC) - failed to write file"
     )
 
@@ -530,8 +492,10 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
-            ready=[("q8", _variant(id="q8", provider="ollama", name="ornith:8b"), True)],
-            deletes=[("o35", _variant(id="o35", provider="ollama", name="ornith:35b"))],
+            deletes=[
+                ("q8", _variant(id="q8", provider="ollama", name="ornith:8b")),
+                ("o35", _variant(id="o35", provider="ollama", name="ornith:35b")),
+            ],
         )
         pending.apply(on_event=log_event)
 
@@ -549,7 +513,7 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
         # Check failure summary header
         assert "operation(s) failed:" in text
         # Check specific failure details
-        assert "Download failed for ornith:8b" in text
+        assert "Delete failed for ornith:8b" in text
         assert "No space left on device" in text
         assert "Done with errors" in text
 

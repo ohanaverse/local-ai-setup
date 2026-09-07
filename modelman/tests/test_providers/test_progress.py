@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-from unittest.mock import MagicMock
 
 from modelman.providers._progress import ProgressTqdm, human_bytes
 from modelman.providers.base import VariantSpec
@@ -144,57 +143,6 @@ def test_snapshot_download_real_call_no_typeerror(tmp_path, monkeypatch):
     # If tqdm_kwargs is still being passed, this raises TypeError.
     path = p.download(variant, on_progress=progress_lines.append)
     assert path.endswith("config.json")
-
-
-def test_pending_changes_forwards_on_progress(tmp_path):
-    """apply() must pass on_progress to provider.download()."""
-    from modelman.queue import PendingChanges
-    from modelman.registry import (
-        AuthConfig,
-        ModelEntry,
-        ProviderEntry,
-        Registry,
-        save_registry,
-    )
-    from modelman.state import StateStore
-
-    reg_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    entry = ModelEntry(
-        id="x",
-        family="ornith",
-        provider_id="ollama",
-        model_name="x:7b",
-    )
-    reg = Registry(
-        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
-        models=[entry],
-    )
-    save_registry(reg, reg_path)
-
-    provider = MagicMock()
-    provider.name = "ollama"
-    provider.download.return_value = "/tmp/new"
-    provider.delete.return_value = None
-
-    progress_lines: list[str] = []
-
-    pending = PendingChanges(
-        registry=reg,
-        state=StateStore(),
-        family="ornith",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers={"ollama": provider},
-        ready=[(entry.id, {"id": entry.id, "provider": "ollama", "name": "x:7b"}, True)],
-    )
-    pending.apply(on_progress=progress_lines.append)
-
-    provider.download.assert_called_once()
-    args, kwargs = provider.download.call_args
-    assert "on_progress" in kwargs
-    assert kwargs["on_progress"] is not None
-    assert callable(kwargs["on_progress"])
 
 
 def test_progress_tqdm_init_does_not_fork_when_stderr_invalid(monkeypatch):

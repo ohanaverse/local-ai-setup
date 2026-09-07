@@ -705,10 +705,14 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch):
-    """When the user Applies, reconciled entries that aren't yet in
-    modelman.toml get written to disk. The existing apply path also
-    runs queued downloads."""
+async def test_apply_preserves_other_models_state_rows(tmp_path, monkeypatch):
+    """Applying a queued change for one model must preserve other models'
+    on-disk state rows — apply()'s final save merges only the touched ids
+    onto a fresh on-disk store (merge-on-save), so unrelated rows are
+    neither lost nor reverted to a stale snapshot. (The pre-async-downloads
+    version of this test asserted the old wholesale-save behavior where
+    reconciled-but-untouched entries were rewritten; those entries are now
+    re-derived by reconcile on the next mount instead.)"""
     from unittest.mock import MagicMock
 
     from textual.widgets import Button, DataTable
@@ -719,19 +723,19 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
         id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
     )
     q8 = ModelEntry(id="ollama/q8", family="ornith", provider_id="ollama", model_name="ornith:8b")
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35, q8])
+    _reg_path, state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[o35, q8],
+        downloaded={"ollama/o35": "/fake/o35", "ollama/q8": "/fake/q8"},
+    )
 
     from modelman.providers import registry
 
     stub = MagicMock()
     stub.name = "ollama"
-
-    def fake_size_of(v):
-        return 22 * 1024**3 if v["id"] == "ollama/o35" else None
-
-    stub.size_of.side_effect = fake_size_of
-    stub.is_downloaded.side_effect = lambda v: v["id"] == "ollama/o35"
-    stub.download.return_value = "ollama:ornith:8b"
+    stub.is_downloaded.return_value = True
+    stub.path_of.side_effect = lambda v: f"/fake/{v['id']}"
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
@@ -740,12 +744,10 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause()  # let reconcile settle
-        # Queue a download for q8 (which is not ready), so escape triggers
-        # the apply dialog. `r` toggles ready (download); `x` is now expose.
+        # Queue a delete for q8 so escape triggers the apply dialog.
         mt = app.screen.query_one("#model-table", DataTable)
-        # Click on the q8 row.
         mt.cursor_coordinate = (1, 0)
-        await pilot.press("r")
+        await pilot.press("d")
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -762,32 +764,42 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
 
     from modelman.state import load_state
 
-    assert load_state(state_path).get("ollama/o35").ready
+    loaded = load_state(state_path)
+    assert loaded.get("ollama/o35").ready is True  # untouched row preserved
+    assert "ollama/q8" not in loaded.models  # the delete landed
 
 
 @pytest.mark.asyncio
 async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
-    from unittest.mock import MagicMock
+    """Escape with a queued change shows the confirm dialog; Apply runs
+    PendingChanges and persists the flip. Uses a cloud-provider model
+    (no download mechanism) for the ready-on: real downloads no longer
+    run inside apply() — a mapped provider's ready-on goes through
+    DownloadManager instead — so this pins the flag-only flip path."""
 
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    or35 = ModelEntry(
+        id="openrouter/o35",
+        family="ornith",
+        provider_id="openrouter",
+        model_name="anthropic/claude-opus",
     )
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
+    _reg_path, state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[or35],
+        providers=("openrouter",),
+    )
+    # The seed helper writes ProviderEntry(auth=none) without a location;
+    # give openrouter a cloud location so model_has_local_artifact is False
+    # and the ready-on stays a queued flag flip (today and after the
+    # DownloadManager routing lands).
+    from modelman.registry import ProviderEntry, load_registry, save_registry
 
-    from modelman.providers import registry
-
-    original_get = registry.ProviderRegistry.get
-    stub = MagicMock()
-    stub.download.return_value = "/tmp/fake"
-    stub.is_downloaded.return_value = False
-    stub.name = "ollama"
-
-    def fake_get(name, cfg):
-        if name == "ollama":
-            return stub
-        return original_get(name, cfg)
-
-    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(fake_get))
+    reg = load_registry(_reg_path)
+    reg.providers[0] = ProviderEntry(
+        id="openrouter", name="OpenRouter", auth=AuthConfig(type="none"), location="cloud"
+    )
+    save_registry(reg, _reg_path)
 
     from modelman.app import ModelmanApp
 
@@ -796,7 +808,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("r")  # queue a download (ready) — `x` is now expose
+        await pilot.press("r")  # queue a ready flip (flag-only provider)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -814,11 +826,10 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
             cur = app.screen
             if isinstance(cur, StatusScreen) and cur.done:
                 break
-        stub.download.assert_called()
 
     from modelman.state import load_state
 
-    assert load_state(state_path).get("ollama/o35").ready
+    assert load_state(state_path).get("openrouter/o35").ready is True
 
 
 @pytest.mark.asyncio
