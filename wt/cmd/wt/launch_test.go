@@ -343,6 +343,38 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	}
 }
 
+// TestRunAgentCmdSurveyNoopWithoutTTY verifies runAgentCmd still returns
+// normally and prints only the summary line when stdin is not a TTY (the
+// state of the test process's stdin) — the post-run survey prompt must
+// never hang or error a non-interactive run, and must not print any
+// prompt text in that case.
+func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	cmd := exec.Command(truePath)
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}); err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if strings.Contains(string(out), "survey ·") {
+		t.Errorf("stdout = %q, should not contain survey prompts when stdin is not a TTY", string(out))
+	}
+	if !strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
+		t.Errorf("stdout = %q, want the summary line", string(out))
+	}
+}
+
 // TestOllamaUnavailableErrorIncludesPullHint verifies the user-facing error
 // text for unavailable local ollama models.
 func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
 // buildLaunch constructs the agent command for the given model and worktree,
@@ -161,7 +162,10 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 }
 
 // runAgentCmd wires stdio through to the agent, runs it, prints the post-run
-// summary line, and propagates the agent's exit code to the caller.
+// summary line, runs the post-session survey, and propagates the agent's
+// exit code to the caller. The survey call sits between the summary Println
+// and the os.Exit(ExitCode) branch so a non-zero agent exit is still
+// surveyed — a crashed session is exactly a "did it work? no" data point.
 func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -173,6 +177,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
 	// summary would glue to that partial output. Println adds the trailing
 	// newline itself, so the line is always self-terminated.
 	fmt.Println("\n" + agents.Summary(agent, m, time.Since(start)))
+	survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
