@@ -174,6 +174,7 @@ class ModelScreen(Screen[None]):
         ("d", "delete_model", "Delete"),
         ("e", "edit_model", "Edit"),
         Binding("enter", "select_row", "Edit", priority=True),
+        ("g", "open_downloads", "Downloads"),
         ("r", "toggle_ready", "Toggle ready"),
         ("x", "toggle_expose", "Toggle exposed"),
     ]
@@ -679,6 +680,11 @@ class ModelScreen(Screen[None]):
             ),
             self._on_exit_confirm,
         )
+
+    def action_open_downloads(self) -> None:
+        from .downloads import DownloadScreen
+
+        self.app.push_screen(DownloadScreen())
 
     def _on_exit_confirm(self, choice: str | None) -> None:
         if choice == "apply":
