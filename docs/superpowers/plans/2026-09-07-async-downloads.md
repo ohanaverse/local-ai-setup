@@ -3344,7 +3344,7 @@ EOF
   per-task focused runs missed (cross-task interaction effects), then
   documents the new architecture.
 
-- [ ] **Step 1: Run the full test suite**
+- [x] **Step 1: Run the full test suite**
 
 Run: `uv run pytest -q`
 Expected: PASS. If anything fails, it's almost certainly a cross-task
@@ -3354,12 +3354,12 @@ pre-existing test elsewhere in `tests/screens/` that asserted
 assertion to match the new behavior (don't weaken the new behavior to
 fit an assertion that predates this feature).
 
-- [ ] **Step 2: Run lint, typecheck, and format check**
+- [x] **Step 2: Run lint, typecheck, and format check**
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run mypy src/modelman`
 Expected: PASS. Fix any findings.
 
-- [ ] **Step 3: Update `modelman/CLAUDE.md`**
+- [x] **Step 3: Update `modelman/CLAUDE.md`**
 
 Add a new subsection under "### Pending changes queue" (after its
 existing paragraph), documenting the split:
@@ -3406,12 +3406,12 @@ existing paragraph), documenting the split:
   progress and cancellation, not just fixed the parallel-download case.
 ```
 
-- [ ] **Step 4: Verify the doc renders sensibly and links are intact**
+- [x] **Step 4: Verify the doc renders sensibly and links are intact**
 
 Run: `make check-links` (from the repo root, not `modelman/`)
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/keith/github/ohanaverse/local-ai-setup
