@@ -803,3 +803,63 @@ def test_load_registry_usage_tier_not_preserved_in_extra(tmp_path):
     )
     loaded = load_registry(path)
     assert loaded.model("ollama/x").extra.get("usage_tier") is None
+
+
+def test_load_registry_derives_native_from_provider_auth(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\n'
+        'id = "ollama"\n'
+        'name = "Ollama"\n'
+        '[providers.auth]\n'
+        'type = "none"\n\n'
+        '[[providers]]\n'
+        'id = "agy"\n'
+        'name = "Agy"\n'
+        '[providers.auth]\n'
+        'type = "native"\n\n'
+        '[[models]]\n'
+        'id = "ollama/x"\n'
+        'family = "x"\n'
+        'provider_id = "ollama"\n'
+        'model_name = "x"\n\n'
+        '[[models]]\n'
+        'id = "agy/x"\n'
+        'family = "x"\n'
+        'provider_id = "agy"\n'
+        'model_name = "x"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").native is False
+    assert loaded.model("agy/x").native is True
+
+
+def test_save_registry_does_not_persist_native_field(tmp_path):
+    # native is derived from provider auth, not stored in registry.toml.
+    # If it leaked out, a load→derive→save cycle would create a diff on disk.
+    # The provider auth.type "native" string legitimately appears, so check
+    # the model row specifically rather than grepping the whole file.
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native")),
+        ],
+        models=[
+            ModelEntry(
+                id="agy/x",
+                family="x",
+                provider_id="agy",
+                model_name="x",
+                native=True,
+            )
+        ],
+    )
+    save_registry(registry, path)
+    import tomllib
+
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+    model_row = raw["models"][0]
+    assert "native" not in model_row
+    loaded = load_registry(path)
+    assert loaded.model("agy/x").native is True
