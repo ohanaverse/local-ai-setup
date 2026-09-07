@@ -196,8 +196,35 @@ downloads never mutate the `Registry` object, only `StateStore`):
 
 `ProgressTqdm` uses **class-level** slots for `on_progress`/`should_cancel`,
 which break under parallel HF downloads (two downloads clobber each other's
-context). Fix: switch to `contextvars.ContextVar` (thread-local, propagates to
-child threads) so each download's callbacks are isolated.
+context).
+
+The obvious-looking fix — `contextvars.ContextVar` — is wrong and was
+verified (against `huggingface_hub` 1.28.0, the version pinned here) to make
+things worse, not better: `contextvars.ContextVar` values do not propagate to
+new threads (confirmed empirically: a value set in a parent thread reads back
+as the default in any `threading.Thread` or `ThreadPoolExecutor` worker
+spawned from it). `snapshot_download()` internally runs an 8-worker
+`ThreadPoolExecutor` (`hf_thread_map`) for per-file downloads — even for a
+*single* model — and the per-file bar's `.update()`/`.display()` calls
+execute inside those worker threads, not the thread that called
+`snapshot_download()`. The current class-level slot works today specifically
+*because* a plain class attribute is visible identically from any thread —
+it survives that thread-boundary crossing. A `ContextVar` would not: `display()`
+running on an HF worker thread would always see the default (`None`),
+silently breaking progress lines **and cancellation** (`should_cancel` goes
+through the same mechanism) for every oMLX/llamacpp download, not just
+concurrent ones.
+
+**Fix:** keep the class-level shared slot (it has to stay — it's what makes
+the thread-crossing work), and add a `threading.Lock` held for the full
+`set_active_context()` → `snapshot_download()` → `clear_active_context()`
+critical section, so only one HF-backed `snapshot_download()` call ever owns
+the slot at a time. Two oMLX downloads starting together still both show
+`downloading` immediately in the UI (DownloadManager threads are both alive
+and their state is independent), but their actual byte transfers serialize
+against each other while the lock is held. Ollama is unaffected — it uses
+its own dedicated Popen + reader-thread plumbing with an explicitly-passed
+callback, no shared state, so it runs fully in parallel with anything.
 
 ## Error handling and edge cases
 
