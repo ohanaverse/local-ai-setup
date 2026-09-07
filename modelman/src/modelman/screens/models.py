@@ -670,7 +670,19 @@ class ModelScreen(Screen[None]):
         entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
         self.registry.models.append(entry)
         self._added_ids.add(variant["id"])
-        self.queued_ready[variant["id"]] = True
+        # Persist immediately (mirrors _on_edit_model): a real-download
+        # ready-on bypasses the apply-on-exit queue entirely via
+        # _start_download, so there's no later save point that would
+        # otherwise persist this entry.
+        save_registry(self.registry, self.registry_path)
+        if self._provider_can_download(entry.provider_id):
+            # Mapped provider: the ready-on is a real download/pull —
+            # start it in the background now instead of queueing it.
+            self._start_download(entry)
+        else:
+            # Flag-only provider or cloud model with no download
+            # mechanism: unchanged apply-on-exit queue behavior.
+            self.queued_ready[variant["id"]] = True
         self._last_provider_used = variant["provider"]
         self.reload()
         self._refresh_pending_bar()

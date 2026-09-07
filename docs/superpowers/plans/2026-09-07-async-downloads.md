@@ -100,7 +100,7 @@ covers "downloads may have completed while I was elsewhere." Only
   then releases the lock. Used by `DownloadManager` (Task 5/6) and
   `PendingChanges.apply()`'s final save (Task 4).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_state.py — add near the bottom, alongside the existing
@@ -170,12 +170,12 @@ def test_locked_state_serializes_real_concurrent_writers(tmp_path):
         assert loaded.get(f"ollama/m{i}").ready is True
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_state.py -k locked_state -v`
 Expected: FAIL with `ImportError: cannot import name 'locked_state'`
 
-- [ ] **Step 3: Implement `locked_state()`**
+- [x] **Step 3: Implement `locked_state()`**
 
 Add to `src/modelman/state.py` (after the module docstring's imports —
 add `import contextlib` and `import threading` to the existing imports,
@@ -207,12 +207,12 @@ def locked_state(path: Path | None = None):
         save_state(store, path)
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_state.py -v`
 Expected: PASS (all tests, including the pre-existing ones)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/state.py tests/test_state.py && uv run mypy src/modelman/state.py`
 
@@ -262,7 +262,7 @@ boundary. A lock around the critical section keeps that working while
 preventing two *different* top-level downloads from both owning the slot
 at once.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_providers/test_progress.py — add near the other
@@ -302,12 +302,12 @@ def test_hf_download_lock_serializes_two_active_contexts():
     assert order == ["a-start", "a-end", "b-start", "b-end"]
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_providers/test_progress.py -k hf_download_lock -v`
 Expected: FAIL with `ImportError: cannot import name 'HF_DOWNLOAD_LOCK'`
 
-- [ ] **Step 3: Add the lock and use it in both HF providers**
+- [x] **Step 3: Add the lock and use it in both HF providers**
 
 In `src/modelman/providers/_progress.py`, add near the top (after the
 `DownloadCancelled` class, before `ProgressTqdm`):
@@ -383,12 +383,12 @@ In `src/modelman/providers/llamacpp.py`, modify `download()` the same way
                 ProgressTqdm.clear_active_context()
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_providers/test_progress.py tests/test_providers/test_omlx.py tests/test_providers/test_llamacpp.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/providers/ tests/test_providers/ && uv run mypy src/modelman/providers/`
 
@@ -429,7 +429,7 @@ EOF
 - Consumes (Task 6): called by `DownloadManager` after a cancelled/failed
   download, passed the same `VariantSpec` given to `start()`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_providers/test_base.py — add near the other Provider tests.
@@ -515,12 +515,12 @@ def test_cleanup_partial_download_missing_repo_dir_is_noop(tmp_path, monkeypatch
     )
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_providers/test_base.py tests/test_providers/test_omlx.py tests/test_providers/test_llamacpp.py -k cleanup_partial -v`
 Expected: FAIL with `AttributeError: ... has no attribute 'cleanup_partial_download'`
 
-- [ ] **Step 3: Implement the hook**
+- [x] **Step 3: Implement the hook**
 
 In `src/modelman/providers/base.py`, add to `Provider` (after `path_of`):
 
@@ -582,12 +582,12 @@ In `src/modelman/providers/llamacpp.py`, add to `LlamaCppProvider` (after
             incomplete.unlink()
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_providers/test_base.py tests/test_providers/test_omlx.py tests/test_providers/test_llamacpp.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/providers/ tests/test_providers/ && uv run mypy src/modelman/providers/`
 
@@ -625,7 +625,7 @@ EOF
   putting real-download ready-on entries into `PendingChanges.ready` —
   those route through `DownloadManager.start()` instead (Task 12).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_queue.py — add near the other apply() tests.
@@ -734,13 +734,13 @@ def test_apply_final_save_merges_onto_fresh_disk_state_not_a_stale_snapshot(tmp_
     assert loaded.get("ollama/other").ready is True  # the concurrent write survived
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_queue.py -k "ready_on_entries or ready_off_still or merges_onto_fresh" -v`
 Expected: FAIL — the first because `apply()` still downloads today, the
 third because `apply()`'s save currently overwrites the concurrent write.
 
-- [ ] **Step 3: Rewrite `apply()`'s ready loop and final save**
+- [x] **Step 3: Rewrite `apply()`'s ready loop and final save**
 
 In `src/modelman/queue.py`:
 
@@ -901,7 +901,7 @@ with:
             emit(f"save:fail|{reason}")
 ```
 
-- [ ] **Step 4: Run the full queue test suite to verify everything passes**
+- [x] **Step 4: Run the full queue test suite to verify everything passes**
 
 Run: `uv run pytest tests/test_queue.py tests/test_providers/test_progress.py -v`
 Expected: PASS. Note `test_pending_changes_forwards_on_progress` in
@@ -910,7 +910,7 @@ must be deleted or rewritten as part of this step since the behavior it
 tests no longer exists in `apply()`. Delete it; download progress
 forwarding is now `DownloadManager`'s responsibility, covered in Task 6.
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/queue.py tests/test_queue.py && uv run mypy src/modelman/queue.py`
 
@@ -959,7 +959,7 @@ EOF
   `Provider.cancel_current()` / `.cleanup_partial_download()` (Task 3),
   `DownloadCancelled` (`providers/_progress.py`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_downloads.py
@@ -1191,12 +1191,12 @@ def test_start_is_a_noop_if_already_downloading(monkeypatch):
     assert call_count["n"] == 1
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_downloads.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'modelman.downloads'`
 
-- [ ] **Step 3: Implement `DownloadManager` core**
+- [x] **Step 3: Implement `DownloadManager` core**
 
 ```python
 # src/modelman/downloads.py
@@ -1370,12 +1370,12 @@ Note: this step deliberately stops short of the state-persistence
 success handling — those are Task 6 and Task 7. The tests above only
 exercise start/cancel/fail/parallel-isolation, which this step covers.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_downloads.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/downloads.py tests/test_downloads.py && uv run mypy src/modelman/downloads.py`
 
@@ -1412,7 +1412,7 @@ EOF
   transitions marshal through `self._app.call_from_thread` so UI-facing
   reads of `states()` never race a half-written `DownloadState`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_downloads.py — add below the Task 5 tests.
@@ -1518,12 +1518,12 @@ def test_progress_visible_while_downloading(monkeypatch):
     release.set()
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_downloads.py -k "persist or progress" -v`
 Expected: FAIL (state.py isn't written to yet on success)
 
-- [ ] **Step 3: Wire success persistence into `_run`/`_finish`**
+- [x] **Step 3: Wire success persistence into `_run`/`_finish`**
 
 In `src/modelman/downloads.py`:
 
@@ -1565,12 +1565,12 @@ with:
             return None
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_downloads.py -v`
 Expected: PASS (all tests from Task 5 and this task)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/downloads.py tests/test_downloads.py && uv run mypy src/modelman/downloads.py`
 
@@ -1605,7 +1605,7 @@ EOF
 - Consumes (Task 15): `ModelScreen._run_apply` registers a closure that
   applies a deferred expose via `apply_expose_queue`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_downloads.py — add below the Task 6 tests.
@@ -1669,12 +1669,12 @@ def test_post_download_action_dropped_on_failure(monkeypatch):
     assert not ran.is_set()
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_downloads.py -k post_download -v`
 Expected: FAIL with `AttributeError: 'DownloadManager' object has no attribute 'register_post_download'`
 
-- [ ] **Step 3: Implement post-download actions**
+- [x] **Step 3: Implement post-download actions**
 
 In `src/modelman/downloads.py`:
 
@@ -1734,12 +1734,12 @@ In `src/modelman/downloads.py`:
                 self._app.call_from_thread(notify, f"Download failed: {model_id}: {error}")  # type: ignore[attr-defined]
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_downloads.py -v`
 Expected: PASS (all tests, Tasks 5-7)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/downloads.py tests/test_downloads.py && uv run mypy src/modelman/downloads.py`
 
@@ -1781,7 +1781,7 @@ EOF
   from Textual's `App`) to call `request_quit()` instead of `self.exit()`
   directly.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/screens/test_app_navigation.py — add near the other app-level tests.
@@ -1840,12 +1840,12 @@ stay red until then; write it now (Step 1) but don't expect it green
 until Task 10's Step 4 confirms it. Steps 2/4 below check only the first
 two tests, which this task's own code must make pass.
 
-- [ ] **Step 2: Run the first two tests to verify they fail**
+- [x] **Step 2: Run the first two tests to verify they fail**
 
 Run: `uv run pytest tests/screens/test_app_navigation.py -k "ctrl_q" -v`
 Expected: FAIL — `app.downloads` doesn't exist yet (`AttributeError`).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/forms.py`, add near `CancelApplyDialog`:
 
@@ -1924,12 +1924,12 @@ In `src/modelman/app.py`:
         self.request_quit()
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_app_navigation.py -k "ctrl_q" -v`
 Expected: PASS
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/app.py src/modelman/screens/forms.py tests/screens/test_app_navigation.py && uv run mypy src/modelman/app.py src/modelman/screens/forms.py`
 
@@ -1966,7 +1966,7 @@ EOF
   task can write the binding/action now; the test for it stays red until
   Task 10 lands, same as Task 8's third test).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/screens/test_families.py — add near the other action tests.
@@ -2006,13 +2006,13 @@ async def test_q_exits_immediately_with_no_active_downloads(tmp_path, monkeypatc
 of its registry/state seeding helper and match it — do not invent a new
 one if an equivalent already exists in that file.)
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/screens/test_families.py -k "q_blocked or q_exits" -v`
 Expected: FAIL — `action_quit` still calls `self.app.exit()` unconditionally,
 so the first test fails (app exits despite the active download).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/families.py`, replace:
 
@@ -2043,7 +2043,7 @@ and add to `BINDINGS`:
 matter — keep alphabetical-ish grouping consistent with the existing
 list's style: `a`, `e`, `d`, `enter`, `g`, `q`.)
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_families.py -k "q_blocked or q_exits" -v`
 Expected: PASS for `q_exits_immediately`; `q_blocked_while_active` PASS too
@@ -2051,7 +2051,7 @@ Expected: PASS for `q_exits_immediately`; `q_blocked_while_active` PASS too
 NOT need `DownloadScreen`, which only `action_open_downloads` needs, not
 this test path).
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/families.py tests/screens/test_families.py && uv run mypy src/modelman/screens/families.py`
 
@@ -2088,7 +2088,7 @@ EOF
   only if its status is `"downloading"`).
 - Consumes: `DownloadManager.states()` / `.cancel()` (Tasks 5-7).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/screens/test_downloads_screen.py
@@ -2180,12 +2180,12 @@ async def test_cancel_key_is_a_noop_on_a_finished_row(tmp_path, monkeypatch):
         assert cancelled == []
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/screens/test_downloads_screen.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'modelman.screens.downloads'`
 
-- [ ] **Step 3: Implement `DownloadScreen`**
+- [x] **Step 3: Implement `DownloadScreen`**
 
 ```python
 # src/modelman/screens/downloads.py
@@ -2271,13 +2271,13 @@ and add the action method (near `action_back`):
         self.app.push_screen(DownloadScreen())
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_downloads_screen.py tests/screens/test_app_navigation.py tests/screens/test_families.py -v`
 Expected: PASS — including Task 8's and Task 9's previously-red
 `DownloadScreen`-dependent tests.
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/downloads.py src/modelman/screens/models.py tests/screens/test_downloads_screen.py && uv run mypy src/modelman/screens/downloads.py`
 
@@ -2587,7 +2587,7 @@ EOF
   through `_start_download`, so without this the expose-ready gate would
   wrongly reject a queued expose against it — see Task 13).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/screens/test_models.py — add near the other toggle-ready tests.
@@ -2694,12 +2694,12 @@ async def test_r_flag_only_provider_still_queues_not_downloads(tmp_path, monkeyp
         assert app.screen.queued_ready == {"claude-agent/x": True}
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/screens/test_models.py -k "test_r_" -v`
 Expected: FAIL — `action_toggle_ready` still always queues.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, replace `action_toggle_ready` in
 full:
@@ -2774,14 +2774,14 @@ Modify `_projected_ready`:
         return self.state.get(model_id).ready
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (full file — this replaces `action_toggle_ready` and
 `_projected_ready` in ways that must not break the pre-existing
 ready/expose tests already in this file)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 
@@ -2821,7 +2821,7 @@ EOF
   any download still running because of an expose cascade
   (`_ready_cascade_for_expose`), per the spec's "Discard-cancels-cascade".
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/screens/test_models.py — add near the other toggle-expose tests.
@@ -2927,12 +2927,12 @@ async def test_x_on_already_downloading_unrelated_model_just_queues(tmp_path, mo
         assert "ollama/x" not in app.screen._ready_cascade_for_expose
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/screens/test_models.py -k "cascade or discard_cancels" -v`
 Expected: FAIL — cascade still queues `queued_ready`, discard doesn't cancel anything.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, add a shared helper near
 `_enforce_expose_ready_rule`:
@@ -3030,12 +3030,12 @@ loop right after `self._restore_snapshot()` and before
 id, so the subsequent `.clear()` is a no-op for those ids but still
 needed for any other queued state.)
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (full file)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 
@@ -3071,7 +3071,7 @@ EOF
   `queued_ready[variant["id"]] = True`. Flag-only/cloud providers keep
   queuing as before (consistent with Task 12's ready-on split).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/screens/test_models.py — add near the other add-model tests.
@@ -3112,13 +3112,13 @@ match whatever pattern that file already uses for driving `ModelForm`;
 the id/keys above mirror `ModelForm`'s `#model`/`#save` from
 `forms.py`.)
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/screens/test_models.py -k add_model_saves_registry_immediately -v`
 Expected: FAIL — registry isn't saved immediately today, and `download`
 isn't called (it's queued instead).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, replace `_on_add_model`:
 
@@ -3147,14 +3147,14 @@ In `src/modelman/screens/models.py`, replace `_on_add_model`:
         self._refresh_pending_bar()
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (full file, including the pre-existing add-model tests —
 verify none of them assumed `queued_ready` gets populated for an ollama
 model add, since that assumption is what this task deliberately changes)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 
@@ -3225,13 +3225,13 @@ async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_
         assert pending_holder[0].exposes == []  # deferred, not passed to PendingChanges
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/screens/test_models.py -k expose_against_downloading -v`
 Expected: FAIL — `register_post_download` is never called;
 `pending.exposes` still contains `("ollama/x", True)`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, modify `_run_apply`. Replace:
 
@@ -3307,12 +3307,12 @@ Add `from pathlib import Path` if not already imported at the top of the
 file (it already is, per the existing `from pathlib import Path` import
 line — confirm before adding a duplicate).
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (full file)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 

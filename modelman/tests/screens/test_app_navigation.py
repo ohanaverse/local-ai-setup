@@ -566,6 +566,9 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch, stub_
         await pilot.press("d")
         await pilot.pause()
         assert "ollama/o35" in app.screen.queued_deletes
+        # The add flow starts its real-provider ready-on as a background
+        # download now (Task 14) — don't run a real pull in tests.
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         await pilot.press("a")
         await pilot.pause()
         # Single-input dialog: focus the model field and type the
@@ -1253,8 +1256,9 @@ async def test_model_screen_add_appends_model_entry_to_registry(
     stub_ollama_caps,
 ):
     """Submitting ModelForm in add mode appends a ModelEntry to
-    registry.models with the adapter's translation. The registry is
-    not persisted until apply/exit, so we assert in-memory state."""
+    registry.models with the adapter's translation, persisted to disk
+    immediately (the add's real-provider ready-on routes through
+    DownloadManager, so there's no later apply-time save for it)."""
     from textual.widgets import Input
 
     ms, reg_path, _state = _make_screen(tmp_path, monkeypatch)
@@ -1265,6 +1269,8 @@ async def test_model_screen_add_appends_model_entry_to_registry(
     async with app.run_test() as pilot:
         pilot.app.push_screen(ms)
         await pilot.pause()
+        # Don't run the real download the add now triggers (Task 14).
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         await pilot.press("a")
         await pilot.pause()
         # Force the provider select to ollama (alphabetical sort means
@@ -1287,9 +1293,11 @@ async def test_model_screen_add_appends_model_entry_to_registry(
     assert added.provider_id == "ollama"
     assert added.model_name == "ornith:8b"
     assert added.fetch is None
-    # Disk should remain unchanged until the user applies.
+    # The add persists immediately now (mirrors edits): the real-provider
+    # ready-on bypasses the apply-on-exit queue entirely, so there's no
+    # later save point that would otherwise persist the entry.
     reloaded = load_registry(reg_path)
-    assert "ollama/ornith:8b" not in [m.id for m in reloaded.models]
+    assert "ollama/ornith:8b" in [m.id for m in reloaded.models]
 
 
 @pytest.mark.asyncio
@@ -2136,6 +2144,9 @@ async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         pilot.app.push_screen(ms)
         await pilot.pause()
+        # _on_add_model now persists the entry and starts its ready-on as
+        # a background download (Task 14) — don't run a real pull in tests.
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         # Move the existing model out of this family.
         ms.queued_moves["ollama/mover"] = "mamba"
         # Out-of-family add (exact _on_add_model path).
@@ -2180,6 +2191,9 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         pilot.app.push_screen(ms)
         await pilot.pause()
+        # _on_add_model now persists the entry and starts its ready-on as
+        # a background download (Task 14) — don't run a real pull in tests.
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         # Out-of-family add, applied exactly as _on_add_model does.
         ms._on_add_model(
             ModelFormResult(
@@ -2188,6 +2202,10 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
             )
         )
         assert "ollama/moved" in [m.id for m in ms.registry.models]
+        # The add routes its ready-on through DownloadManager now (mapped
+        # provider), so the queue is empty and escape would pop straight
+        # back — queue a pending change to force the exit dialog.
+        ms.queued_ready["ollama/moved"] = True
         await pilot.press("escape")
         await pilot.pause()
         await pilot.press("d")  # discard
@@ -2195,6 +2213,9 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
 
     ids = [m.id for m in ms.registry.models]
     assert ids == ["ollama/keep"]
+    # The add was persisted to disk on entry (Task 14); the discard's
+    # restore-and-resave must undo that too.
+    assert "ollama/moved" not in [m.id for m in load_registry(_reg_path).models]
 
 
 @pytest.mark.asyncio
