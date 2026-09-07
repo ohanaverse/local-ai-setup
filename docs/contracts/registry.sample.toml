@@ -1,7 +1,7 @@
 # Shared fixture for cross-language contract tests. Exercises every schema
-# variant modelman writes and wt reads: both provider auth types, full
-# per-token + subscription pricing, model_info, a per-model location
-# override, and a free model.
+# variant modelman writes and wt reads: all three provider auth types
+# (none, api_key, native), full per-token + subscription pricing, model_info,
+# a per-model location override, and a free model.
 #
 # Read by:
 #   - wt/internal/config/registry_fixture_test.go (Go)
@@ -30,7 +30,7 @@ secret_ref = "OPENROUTER_API_KEY"
 [[providers]]
 id = "agy"
 name = "Agy"
-location = "local"
+location = "cloud"
 [providers.auth]
 type = "native"
 

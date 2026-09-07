@@ -24,12 +24,19 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	if len(providers) != 3 {
 		t.Fatalf("got %d providers, want 3", len(providers))
 	}
-	ollama, openrouter := providers[0], providers[1]
+	ollama, openrouter, agy := providers[0], providers[1], providers[2]
 	if ollama.ID != "ollama" || ollama.Auth.Type != "none" || ollama.Auth.BaseURL != "http://localhost:11434" {
 		t.Errorf("ollama provider decoded wrong: %+v", ollama)
 	}
 	if openrouter.ID != "openrouter" || openrouter.Auth.Type != "api_key" || openrouter.Auth.SecretRef != "OPENROUTER_API_KEY" {
 		t.Errorf("openrouter provider decoded wrong: %+v", openrouter)
+	}
+	// The native provider's location must match what production writers
+	// emit (modelman's sync_agent_providers, wt's migrate.go) — a fixture
+	// pinned to a shape modelman never writes lets location-keyed logic
+	// pass CI while breaking on real registries.
+	if agy.ID != "agy" || agy.Auth.Type != "native" || agy.Location != LocationCloud {
+		t.Errorf("agy provider decoded wrong: %+v", agy)
 	}
 
 	if len(models) != 3 {

@@ -22,6 +22,11 @@ def test_load_registry_matches_shared_fixture():
     assert openrouter.auth.secret_ref == "OPENROUTER_API_KEY"
     agy = registry.provider("agy")
     assert agy.auth.type == "native"
+    # The native provider's location must match what production writers
+    # emit (modelman's sync_agent_providers, wt's migrate.go) — a fixture
+    # pinned to a shape modelman never writes lets location-keyed logic
+    # pass CI while breaking on real registries.
+    assert agy.location == "cloud"
 
     assert len(registry.models) == 3
 
