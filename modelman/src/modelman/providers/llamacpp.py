@@ -254,6 +254,25 @@ class LlamaCppProvider(Provider):
                     if blob_path.exists():
                         blob_path.unlink()
 
+    def cleanup_partial_download(self, variant: VariantSpec) -> None:
+        """Remove partially-downloaded blobs left by a cancelled download.
+
+        huggingface_hub writes an in-progress blob as
+        blobs/<hash>.incomplete and renames it to blobs/<hash> only once
+        the download completes. A cancel mid-download leaves the
+        .incomplete file behind; complete blobs (no .incomplete suffix)
+        are untouched even if this repo has other, finished downloads.
+        """
+        repo = variant.get("repo")
+        if not repo:
+            return
+        hf_org, hf_name = repo.split("/", 1)
+        blobs_dir = _hf_cache_dir() / f"models--{hf_org}--{hf_name}" / "blobs"
+        if not blobs_dir.exists():
+            return
+        for incomplete in blobs_dir.glob("*.incomplete"):
+            incomplete.unlink()
+
     def list_local(self, runner: _Runner | None = None) -> list[LocalModel]:
         models: list[LocalModel] = []
         hub = _hf_cache_dir()

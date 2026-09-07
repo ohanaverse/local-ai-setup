@@ -130,5 +130,22 @@ class OMLXProvider(Provider):
         if target.exists():
             shutil.rmtree(target)
 
+    def cleanup_partial_download(self, variant: VariantSpec) -> None:
+        """Remove the partially-populated target directory.
+
+        snapshot_download writes files directly into local_dir as they
+        complete, so a cancel mid-download leaves a partial directory
+        behind. Same removal delete() does — a cancelled download has no
+        artifact worth keeping.
+        """
+        import shutil
+
+        repo = variant.get("repo")
+        if not repo:
+            return
+        target = _model_dir(self.config) / _basename(repo)
+        if target.exists():
+            shutil.rmtree(target)
+
 
 ProviderRegistry.register(OMLXProvider)

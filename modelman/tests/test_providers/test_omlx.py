@@ -260,3 +260,29 @@ def test_delete_noop_if_dir_absent(tmp_path):
     }
 
     provider.delete(variant)  # must not raise
+
+
+def test_cleanup_partial_download_removes_partial_target_dir(tmp_path):
+    # A cancelled oMLX download leaves a partially-populated target
+    # directory (snapshot_download writes files incrementally into
+    # local_dir). Cleanup must remove it so a retry starts clean and the
+    # model doesn't show as "has some files" in list_local().
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    target = tmp_path / "some-model"
+    target.mkdir()
+    (target / "partial.bin").write_bytes(b"not finished")
+
+    provider.cleanup_partial_download(
+        {"id": "x", "provider": "omlx", "repo": "org/some-model"}
+    )
+
+    assert not target.exists()
+
+
+def test_cleanup_partial_download_missing_dir_is_noop(tmp_path):
+    # Cleanup runs unconditionally after any cancel/fail; a download that
+    # never got far enough to create the target directory must not raise.
+    provider = OMLXProvider({"model_dir": str(tmp_path)})
+    provider.cleanup_partial_download(
+        {"id": "x", "provider": "omlx", "repo": "org/never-started"}
+    )

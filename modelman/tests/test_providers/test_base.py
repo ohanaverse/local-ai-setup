@@ -60,3 +60,24 @@ def test_provider_path_of_default_is_none():
     p = FakeProvider({})
     assert p.path_of({"id": "x", "provider": "fake", "name": "x"}) is None
     assert hasattr(OllamaProvider({}), "path_of")
+
+
+def test_cleanup_partial_download_default_is_noop():
+    # Providers with no partial-download artifacts to clean up (Ollama:
+    # `ollama pull` is resumable and reconciles its own state) must not
+    # need to implement this — the base class default is a no-op so
+    # DownloadManager can call it unconditionally on every provider.
+    class _NoopProvider(Provider):
+        name = "noop"
+
+        def is_downloaded(self, variant):
+            return False
+
+        def download(self, variant):
+            return ""
+
+        def list_local(self):
+            return []
+
+    p = _NoopProvider({})
+    p.cleanup_partial_download({"id": "x", "provider": "noop"})  # must not raise

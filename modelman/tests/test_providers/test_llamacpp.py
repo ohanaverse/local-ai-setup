@@ -419,3 +419,35 @@ def test_delete_uses_symlink_target_not_file_contents(tmp_path):
 
     assert not gguf_file.exists()
     assert not blob_file.exists()
+
+
+def test_cleanup_partial_download_removes_incomplete_blobs(tmp_path, monkeypatch):
+    # huggingface_hub writes partially-downloaded blobs as
+    # blobs/<hash>.incomplete during a snapshot_download; a cancelled
+    # download leaves these behind. Cleanup must remove them without
+    # touching complete files, so a retry doesn't see stale partial data
+    # and disk isn't leaked by repeated cancels.
+    hf_home = tmp_path / "hf-cache"
+    monkeypatch.setenv("HF_HOME", str(hf_home))
+    repo_dir = hf_home / "hub" / "models--org--repo"
+    blobs_dir = repo_dir / "blobs"
+    blobs_dir.mkdir(parents=True)
+    (blobs_dir / "abc123.incomplete").write_bytes(b"partial")
+    (blobs_dir / "def456").write_bytes(b"complete, unrelated file")  # must survive
+
+    provider = LlamaCppProvider({})
+    provider.cleanup_partial_download(
+        {"id": "x", "provider": "llamacpp", "repo": "org/repo", "files": ["model.gguf"]}
+    )
+
+    assert not (blobs_dir / "abc123.incomplete").exists()
+    assert (blobs_dir / "def456").exists()
+
+
+def test_cleanup_partial_download_missing_repo_dir_is_noop(tmp_path, monkeypatch):
+    # A cancel before any HF cache directory was even created must not raise.
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-cache"))
+    provider = LlamaCppProvider({})
+    provider.cleanup_partial_download(
+        {"id": "x", "provider": "llamacpp", "repo": "org/never-started", "files": ["f.gguf"]}
+    )
