@@ -1,12 +1,13 @@
 import asyncio
 
 import pytest
-from textual.widgets import DataTable
+from textual.widgets import Button, Checkbox, DataTable, Input
 
 from modelman.app import ModelmanApp
 from modelman.downloads import DownloadState
 from modelman.registry import (
     AuthConfig,
+    Cost,
     FamilyEntry,
     ModelEntry,
     ProviderEntry,
@@ -1820,6 +1821,8 @@ async def test_edit_model_changing_family_queues_move(tmp_path, monkeypatch):
         sel = app.screen.query_one("#family-select", Select)
         assert str(sel.value) == "gemma4:26b-mlx"  # re-edit preselect = current family
         sel.value = "gemma4"
+        # Submit via the Save button: the model Input is disabled in edit mode.
+        app.screen.query_one("#save", Button).focus()
         await pilot.press("enter")  # submit the (prefilled) edit form
         await pilot.pause()
 
@@ -1865,6 +1868,8 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
         sel = app.screen.query_one("#family-select", Select)
         assert str(sel.value) == "gemma4"
         sel.value = "gemma4:26b-mlx"  # ...moved back to the screen family
+        # Submit via the Save button: the model Input is disabled in edit mode.
+        app.screen.query_one("#save", Button).focus()
         await pilot.press("enter")
         await pilot.pause()
 
@@ -1872,13 +1877,13 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_edit_model_location_change_persists_to_registry_on_back(tmp_path, monkeypatch):
-    """Editing a model's location (same family — empty queue) and returning
+async def test_edit_model_cost_change_persists_to_registry_on_back(tmp_path, monkeypatch):
+    """Editing a model's cost (same family — empty queue) and returning
     to the family screen must persist the change to registry.toml.
 
     Regression: _on_edit_model mutated only the in-memory registry and
     queued nothing; FamilyScreen's on-screen-resume then reloaded the
-    registry from disk, silently dropping the location edit.
+    registry from disk, silently dropping the cost edit.
     """
     entry = ModelEntry(
         id="ollama/gemma4:26b-mlx",
@@ -1905,31 +1910,34 @@ async def test_edit_model_location_change_persists_to_registry_on_back(tmp_path,
         await pilot.pause()
         assert isinstance(app.screen, ModelForm)
 
-        from textual.widgets import Select
-
-        # Ollama is the editable-location provider; flip local -> cloud.
-        loc = app.screen.query_one("#location-select", Select)
-        assert not loc.disabled
-        assert str(loc.value) == "local"
-        loc.value = "cloud"
+        # Location is immutable in edit mode; edit the cost instead.
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        # Submit via the Save button: the model Input is disabled in edit mode.
+        app.screen.query_one("#save", Button).focus()
         await pilot.press("enter")  # submit the (prefilled) edit form
         await pilot.pause()
 
-        assert ms.registry.models[0].location == "cloud"
+        assert ms.registry.models[0].cost == Cost(
+            subscription_price=20.0, subscription_period="month"
+        )
         # Nothing else queued: escape pops straight back to the previous
         # screen (this is the path that used to drop the edit).
         await pilot.press("escape")
         await pilot.pause()
 
     reloaded = load_registry(reg_path)
-    assert reloaded.model("ollama/gemma4:26b-mlx").location == "cloud"
+    assert reloaded.model("ollama/gemma4:26b-mlx").cost == Cost(
+        subscription_price=20.0, subscription_period="month"
+    )
 
 
 @pytest.mark.asyncio
-async def test_location_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
+async def test_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
     """End-to-end user journey: family screen -> open family -> edit a
-    model's location -> escape back -> reopen the family. The LOCATION
-    column must show the new value, not the pre-edit one."""
+    model's cost -> escape back -> reopen the family. The SUB column must
+    show the new value, not the pre-edit one."""
     reg_path, _state_path = _seed_registry_and_state(
         tmp_path,
         monkeypatch,
@@ -1980,10 +1988,11 @@ async def test_location_edit_survives_family_screen_round_trip(tmp_path, monkeyp
         await pilot.pause()
         assert isinstance(app.screen, ModelForm)
 
-        from textual.widgets import Select
-
-        loc = app.screen.query_one("#location-select", Select)
-        loc.value = "cloud"
+        # Location is immutable in edit mode; edit the cost instead.
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        app.screen.query_one("#save", Button).focus()
         await pilot.press("enter")
         await pilot.pause()
 
@@ -1997,8 +2006,8 @@ async def test_location_edit_survives_family_screen_round_trip(tmp_path, monkeyp
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
         assert rows, "family should still list its model"
-        # LOC column renders the cloud icon for cloud-located models.
-        assert rows[0][3] == "↗"
+        # SUB column renders the subscription price the edit added.
+        assert rows[0][7] == "$20.00/mo"
 
 
 async def _wait_reconcile_done(screen) -> None:
