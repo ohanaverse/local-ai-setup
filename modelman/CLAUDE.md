@@ -60,6 +60,49 @@ The screen tests (`tests/screens/*.py`, ~210+ tests) use Textual's `App.run_test
 
 - `src/modelman/queue.py` — `PendingChanges(registry, state, family, registry_path, state_path, providers, downloads, deletes, moves, exposes, litellm_path, failures, cancelled)`. `apply()` runs deletes first (so downloads free up disk), then moves (pure registry metadata: `ModelEntry.family = new_family`; a move for a model deleted in the same apply is dropped), then downloads (each calls `provider.download(variant)` → `state.set(id, replace(state.get(id), ready=True, disk_path=local_path))`), then exposes (each writes a LiteLLM `model_list` entry), then a single `save_registry()` + `save_state()`. The delete step checks `provider.is_downloaded(variant)` before artifact removal: if the artifact is absent, the provider's `delete()` is skipped but the lifecycle events, registry/state cleanup, and cascade-unexpose still run; if `is_downloaded()` raises, the artifact delete is attempted conservatively and real failures surface. The deletes loop and the ready-off loop both check `_shared_artifact_owner` before artifact removal: when another registry entry's `path_of()` resolves to the same on-disk target (omlx dirs are keyed on the repo basename, so colliding repos share one), the file is kept and the reason surfaced, while registry/state cleanup still runs. The ready-off loop also guards removal with `provider.is_downloaded()` like the deletes loop, skips any id queued for deletion (succeeded or failed), and flag-only providers remove the artifact recorded in `state.disk_path` on ready-off via `_remove_local_artifact`. Failures are captured per-step, processing continues.
 
+### Downloads (async, background)
+
+- `src/modelman/downloads.py` — `DownloadManager` (owned by
+  `ModelmanApp`, `self.app.downloads`). A ready-on/down- request for a
+  model whose provider has a real `Provider` class (per
+  `ProviderRegistry.available()` — the `_provider_can_download`
+  helper; this includes ollama *cloud* models, whose ready-on is a real
+  `ollama pull` even though there is no local artifact) never goes
+  through `PendingChanges`/apply-on-exit: `ModelScreen` ('r'/'x'/add)
+  routes it directly to `DownloadManager.start()`, which runs it on its
+  own daemon thread against a fresh provider instance (isolating
+  per-download cancellation state), persists success to `modelman.toml`
+  via `state.locked_state()` (a locked read-modify-write — see below),
+  and marks the model locked (`d`/`e` refuse, STATUS shows ⏳) until it
+  finishes. Deletes, moves, and (mostly) exposes stay in the existing
+  apply-on-exit queue; a flag-only provider's (native/unmapped, no
+  `Provider` class) ready-on also stays queued, since there's no real
+  download to background. `DownloadScreen` (`screens/downloads.py`,
+  opened with `g`) shows live progress; the app-level quit guard
+  (`ModelmanApp.request_quit()`, wired to `ctrl+q` and `FamilyScreen`'s
+  `q`) blocks exiting while any download is active.
+- `state.locked_state()` (`state.py`) — the only safe way to write
+  `modelman.toml` once more than one thing can write it concurrently
+  (a `DownloadManager` completion on a background thread, alongside
+  `PendingChanges.apply()`'s own save for an unrelated model): acquires
+  a process lock, loads fresh, yields the `StateStore` to mutate, saves
+  on exit. `PendingChanges.apply()`'s final save uses it too, merging
+  only the model ids/families this run actually touched onto a
+  freshly-loaded copy rather than overwriting the whole file from its
+  own (possibly stale) in-memory snapshot.
+- A queued expose (`x`) against a model that's still downloading is
+  allowed and queues normally; at apply time, if the model is still
+  downloading, `ModelScreen._run_apply` pulls it out of
+  `PendingChanges.exposes` and registers it as a
+  `DownloadManager.register_post_download()` action instead — it runs
+  automatically on that download's success (never on cancel/fail).
+- `providers/_progress.py`'s `HF_DOWNLOAD_LOCK` serializes oMLX/llamacpp
+  downloads' use of `ProgressTqdm`'s class-level active-context slot:
+  `contextvars` was considered and rejected — `snapshot_download()` runs
+  its own internal `ThreadPoolExecutor`, whose workers never see a
+  `ContextVar` set by the caller, which would have silently broken
+  progress and cancellation, not just fixed the parallel-download case.
+
 ### Registry and state
 
 - `src/modelman/registry.py` — `Registry` dataclass: providers + models + families. `ModelEntry` now carries `cost` (`Cost` dataclass with flat fields: `input_price_per_million`, `cache_price_per_million`, `output_price_per_million`, `subscription_price`, `subscription_period`; the legacy `kind`/`price_per_million_tokens`/`price_per_period` schema is migrated on load), and an optional per-model `location` that overrides the provider's location for the LOC icon. `usage_tier` has been removed. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching wt's `config.RegistryPath`). See `README.md` for the exact TOML schema.
