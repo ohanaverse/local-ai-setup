@@ -868,6 +868,28 @@ class ModelScreen(Screen[None]):
         self.app.pop_screen()
         self.app.push_screen(StatusScreen(family=self.family, run_apply=self._run_apply))
 
+    def _register_deferred_expose(self, model_id: str, litellm_path: Path) -> None:
+        """Defer a queued expose against a still-downloading model: it
+        can't be applied now (the ready gate would reject it — the model
+        isn't ready yet), so register it to run once DownloadManager
+        reports success instead. Loads a fresh Registry/StateStore at
+        run time rather than closing over self.registry/self.state,
+        since this may fire long after this ModelScreen instance is
+        gone."""
+        registry_path = self.registry_path
+        state_path = self.state_path
+
+        def _apply_deferred_expose() -> None:
+            from ..litellm import apply_expose_queue
+            from ..registry import load_registry
+            from ..state import locked_state
+
+            registry = load_registry(registry_path)
+            with locked_state(state_path) as state:
+                apply_expose_queue(registry, state, [(model_id, True)], litellm_path)
+
+        self.app.downloads.register_post_download(model_id, _apply_deferred_expose)  # type: ignore[attr-defined]
+
     def _run_apply(
         self,
         on_event: Callable[[str], None],
@@ -903,6 +925,14 @@ class ModelScreen(Screen[None]):
                 continue
             # Other exceptions (bad config, import failure, etc.) are
             # real errors and must not be silently treated as flag-only.
+        litellm_path = default_litellm_config_path()
+        immediate_exposes: list[tuple[str, bool]] = []
+        for mid, target in self.queued_exposes.items():
+            if target and self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+                self._register_deferred_expose(mid, litellm_path)
+            else:
+                immediate_exposes.append((mid, target))
+
         pending = PendingChanges(
             registry=self.registry,
             state=self.state,
@@ -913,8 +943,8 @@ class ModelScreen(Screen[None]):
             ready=[(mid, specs_by_id[mid], target) for mid, target in self.queued_ready.items()],
             deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()],
             moves=list(self.queued_moves.items()),
-            exposes=list(self.queued_exposes.items()),
-            litellm_path=default_litellm_config_path(),
+            exposes=immediate_exposes,
+            litellm_path=litellm_path,
         )
         register(pending)
         pending.apply(on_event=on_event, on_progress=on_progress)

@@ -3190,7 +3190,7 @@ EOF
   instead of being passed into `PendingChanges.exposes`; everything else
   goes through unchanged.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/screens/test_models.py — add near the other apply tests.
@@ -3225,13 +3225,13 @@ async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_
         assert pending_holder[0].exposes == []  # deferred, not passed to PendingChanges
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/screens/test_models.py -k expose_against_downloading -v`
 Expected: FAIL — `register_post_download` is never called;
 `pending.exposes` still contains `("ollama/x", True)`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/modelman/screens/models.py`, modify `_run_apply`. Replace:
 
@@ -3307,12 +3307,12 @@ Add `from pathlib import Path` if not already imported at the top of the
 file (it already is, per the existing `from pathlib import Path` import
 line — confirm before adding a duplicate).
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/screens/test_models.py -v`
 Expected: PASS (full file)
 
-- [ ] **Step 5: Lint/typecheck and commit**
+- [x] **Step 5: Lint/typecheck and commit**
 
 Run: `uv run ruff check src/modelman/screens/models.py tests/screens/test_models.py && uv run mypy src/modelman/screens/models.py`
 

@@ -2205,3 +2205,77 @@ async def test_x_on_already_downloading_unrelated_model_just_queues(tmp_path, mo
 
         assert app.screen.queued_exposes == {"ollama/x": True}
         assert "ollama/x" not in app.screen._ready_cascade_for_expose
+
+
+@pytest.mark.asyncio
+async def test_add_model_saves_registry_immediately_and_starts_download(
+    tmp_path, monkeypatch, stub_ollama_caps
+):
+    # A model added through the dialog is persisted immediately (like an
+    # edit already was) and its real-provider ready-on starts the
+    # download right away — there is no later apply() that would save the
+    # entry or run the download.
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        started = []
+        monkeypatch.setattr(
+            app.downloads,
+            "start",
+            lambda mid, variant, cfg, on_complete=None: started.append(mid),
+        )
+        await pilot.press("a")
+        await pilot.pause()
+        from textual.widgets import Input, Select
+
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        provider_sel.value = "ollama"
+        await pilot.pause()
+        app.screen.query_one("#model", Input).focus()
+        for ch in "newmodel:7b":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert started == ["ollama/newmodel:7b"]
+        assert app.screen.queued_ready == {}
+        # Immediately persisted — a fresh load must see it without apply.
+        reloaded = load_registry(reg_path)
+        assert any(m.id == "ollama/newmodel:7b" for m in reloaded.models)
+
+
+@pytest.mark.asyncio
+async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_path, monkeypatch):
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        from modelman.downloads import DownloadState
+
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        app.screen.queued_exposes["ollama/x"] = True
+
+        registered = []
+        monkeypatch.setattr(
+            app.downloads, "register_post_download", lambda mid, action: registered.append(mid)
+        )
+
+        # Queue an unrelated delete so apply() has something to do and
+        # exercise _run_apply directly (bypassing the full exit-confirm UI
+        # flow, which this test doesn't need).
+        from modelman.registry import model_entry_to_variant
+
+        app.screen.queued_deletes["ollama/x"] = model_entry_to_variant(entry)
+        events = []
+        pending_holder = []
+        app.screen._run_apply(events.append, lambda line: None, pending_holder.append)
+
+        assert registered == ["ollama/x"]
+        assert pending_holder[0].exposes == []  # deferred, not passed to PendingChanges

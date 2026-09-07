@@ -661,11 +661,11 @@ async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch):
-    """Model on disk but modelman.toml says ready=False (stale): the
-    expose gate accepts via the reconcile overlay, and the apply-time
-    check (which reads state.ready) must not then fail with a
-    spurious 'not ready'. The apply-time merge of reconciled
-    entries into state is what bridges the two gates."""
+    """An expose against a model whose state is stale (on disk but
+    modelman.toml not yet updated) no longer applies immediately: `x`
+    routes the ready-on through DownloadManager (Task 13) and the apply
+    defers the expose until the download completes (Task 15), so the
+    ready gate never sees a spurious 'not ready' rejection."""
     from unittest.mock import MagicMock
 
     from textual.widgets import Button, DataTable
@@ -705,11 +705,24 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
         await pilot.pause()  # let reconcile settle
         mt = app.screen.query_one("#model-table", DataTable)
         mt.cursor_coordinate = (0, 0)
-        # Reconcile writes state.ready directly, so the expose gate sees
-        # a ready model; toggle expose with `x`.
+        # Reconcile knows the model is on disk, but state.ready is still
+        # False (stale). The reconcile overlay satisfies the expose gate,
+        # so `x` queues the expose without a download (Task 13). Simulate
+        # a download still being in flight at apply time and drive the
+        # apply through the real UI: Task 15 must defer the expose rather
+        # than let the ready gate reject it.
+        from modelman.downloads import DownloadState
+
         await pilot.press("x")  # toggle expose
         await pilot.pause()
-        assert "expose 1" in str(app.screen.query_one("#pending-bar").render())
+        assert app.screen.queued_exposes.get("ollama/o35") is True
+        assert app.screen.queued_ready == {}
+        app.downloads._states["ollama/o35"] = DownloadState(
+            model_id="ollama/o35",
+            variant_id="ollama/o35",
+            provider="ollama",
+            status="downloading",
+        )
         await pilot.press("escape")
         await pilot.pause()
         for btn in app.screen.query(Button):
@@ -725,14 +738,16 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
     from modelman.state import load_state
 
     final = load_state(state_path).get("ollama/o35")
-    # The merge promoted the reconciled download into state, so the
-    # expose succeeded instead of failing with 'not ready'.
-    assert final.ready is True
-    assert final.litellm_exposed is True
+    # The expose is still in flight against the downloading model: the
+    # apply deferred it (register_post_download) rather than letting the
+    # ready gate reject it, so nothing is exposed yet — it lands when the
+    # download succeeds.
+    assert final.ready is False
+    assert final.litellm_exposed is False
     from modelman.litellm import load_litellm_config
 
     config = load_litellm_config(litellm_path)
-    assert [r["model_name"] for r in config["model_list"]] == ["ollama/o35"]
+    assert config["model_list"] == []
 
 
 @pytest.mark.asyncio
