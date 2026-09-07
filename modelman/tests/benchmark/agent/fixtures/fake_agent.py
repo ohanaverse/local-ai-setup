@@ -72,38 +72,54 @@ def main() -> None:
             encoding="utf-8",
         )
 
-    _emit({
-        "type": "session",
-        "version": 3,
-        "id": "fake-session",
-        "timestamp": "2026-01-01T00:00:00.000Z",
-        "cwd": "/tmp/does-not-matter",
-    })
+    _emit(
+        {
+            "type": "session",
+            "version": 3,
+            "id": "fake-session",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/tmp/does-not-matter",
+        }
+    )
     _emit({"type": "agent_start"})
     _emit({"type": "turn_start"})
 
     # pi echoes the user message as its own start/end pair. Nothing here may
     # count it as a request or treat its message_end as "the agent replied".
-    user_message = {"role": "user", "content": [{"type": "text", "text": "fake prompt"}], "timestamp": 0}
+    user_message = {
+        "role": "user",
+        "content": [{"type": "text", "text": "fake prompt"}],
+        "timestamp": 0,
+    }
     _emit({"type": "message_start", "message": user_message})
     _emit({"type": "message_end", "message": user_message})
     if args.no_assistant_reply:
         _write_session_file()
         return
 
-    _emit({
-        "type": "message_start",
-        "message": {
-            "role": "assistant", "content": [], "api": "openai-completions", "provider": "litellm",
-            "model": "litellm/fake", "usage": _usage(), "stopReason": "pending", "timestamp": 0,
-        },
-    })
+    _emit(
+        {
+            "type": "message_start",
+            "message": {
+                "role": "assistant",
+                "content": [],
+                "api": "openai-completions",
+                "provider": "litellm",
+                "model": "litellm/fake",
+                "usage": _usage(),
+                "stopReason": "pending",
+                "timestamp": 0,
+            },
+        }
+    )
     time.sleep(args.delay)
 
     def _update(assistant_event: dict) -> None:
         # message_update carries cumulative usage (zero until the provider
         # reports it) and the delta itself; there is no `message` key.
-        _emit({"type": "message_update", "usage": _usage(), "assistantMessageEvent": assistant_event})
+        _emit(
+            {"type": "message_update", "usage": _usage(), "assistantMessageEvent": assistant_event}
+        )
 
     _update({"type": "thinking_start", "contentIndex": 0})
     _update({"type": "thinking_delta", "contentIndex": 0, "delta": "..."})
@@ -114,9 +130,24 @@ def main() -> None:
     if args.malformed_line:
         print("{not json", flush=True)
 
-    _emit({"type": "tool_execution_start", "toolCallId": "tc-1", "toolName": "read", "args": {"path": "pkg/__init__.py"}})
+    _emit(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "tc-1",
+            "toolName": "read",
+            "args": {"path": "pkg/__init__.py"},
+        }
+    )
     time.sleep(0.05)
-    _emit({"type": "tool_execution_end", "toolCallId": "tc-1", "toolName": "read", "result": {"content": []}, "isError": False})
+    _emit(
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "tc-1",
+            "toolName": "read",
+            "result": {"content": []},
+            "isError": False,
+        }
+    )
 
     final_message = {
         "role": "assistant",

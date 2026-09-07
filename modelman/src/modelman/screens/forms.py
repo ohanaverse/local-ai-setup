@@ -541,23 +541,17 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 value=initial_per_token,
                 id="per-token-checkbox",
             )
-            yield Label(
-                "Input ($/M tokens):", classes="pricing-label", id="input-price-label"
-            )
+            yield Label("Input ($/M tokens):", classes="pricing-label", id="input-price-label")
             yield Input(
                 value=initial_input_price,
                 id="input-price",
             )
-            yield Label(
-                "Cache ($/M tokens):", classes="pricing-label", id="cache-price-label"
-            )
+            yield Label("Cache ($/M tokens):", classes="pricing-label", id="cache-price-label")
             yield Input(
                 value=initial_cache_price,
                 id="cache-price",
             )
-            yield Label(
-                "Output ($/M tokens):", classes="pricing-label", id="output-price-label"
-            )
+            yield Label("Output ($/M tokens):", classes="pricing-label", id="output-price-label")
             yield Input(
                 value=initial_output_price,
                 id="output-price",
@@ -857,6 +851,40 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
     def action_answer(self, value: str) -> None:
         if value in ("apply", "cancel", "discard"):
             self.dismiss(value)  # type: ignore[arg-type]
+
+
+class QuitBlockedModal(ModelmanModal[bool]):
+    """Shown when the user tries to quit while downloads are active.
+
+    Returns True if the user chose to review downloads (caller pushes
+    DownloadScreen), False/None otherwise (stay put, downloads keep
+    running).
+    """
+
+    BINDINGS = [
+        Binding("escape", "answer(False)", show=False),
+        ("r", "answer(True)"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Downloads are in progress.")
+            yield Label("Cancel them from the download screen before quitting.")
+            yield self._button_row(
+                [
+                    Button("Stay", id="stay", variant="default"),
+                    Button("Review Downloads", id="review", variant="primary"),
+                ]
+            )
+
+    def _modal_on_mount(self) -> None:
+        self._focus_button("stay")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "review")
+
+    def action_answer(self, value: bool) -> None:
+        self.dismiss(value)
 
 
 class CancelApplyDialog(ModelmanModal[Literal["cancel", "wait"]]):

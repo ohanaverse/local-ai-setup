@@ -159,17 +159,19 @@ from typing import TypedDict
 class VariantSpec(TypedDict, total=False):
     """A single model variant within a family manifest. All fields optional
     in the TypedDict sense, but providers require specific ones at runtime."""
-    id: str                           # stable id within the family
-    provider: str                     # "ollama" | "llamacpp" | "omlx"
-    name: str                         # provider-specific (e.g. "ornith-1.5:35b" for ollama)
-    repo: str | None                  # HF repo id (for llamacpp/omlx)
-    files: list[str] | None           # files in repo (for llamacpp)
-    quantizations: list[str] | None   # quant tags (for omlx)
-    model_info: dict | None           # freeform LiteLLM model_info keys
+
+    id: str  # stable id within the family
+    provider: str  # "ollama" | "llamacpp" | "omlx"
+    name: str  # provider-specific (e.g. "ornith-1.5:35b" for ollama)
+    repo: str | None  # HF repo id (for llamacpp/omlx)
+    files: list[str] | None  # files in repo (for llamacpp)
+    quantizations: list[str] | None  # quant tags (for omlx)
+    model_info: dict | None  # freeform LiteLLM model_info keys
 
 
 class LocalModel(TypedDict):
     """A model that exists on the local machine."""
+
     variant_id: str
     path: str
     size_bytes: int | None
@@ -241,9 +243,15 @@ def test_provider_size_of_default_is_none():
     # Default base impl returns None
     class _Stub(Provider):
         name = "stub"
-        def is_downloaded(self, variant): return False
-        def download(self, variant): return ""
-        def list_local(self): return []
+
+        def is_downloaded(self, variant):
+            return False
+
+        def download(self, variant):
+            return ""
+
+        def list_local(self):
+            return []
 
     assert _Stub({}).size_of({"id": "x", "provider": "stub", "name": "x"}) is None
     # OllamaProvider overrides; ensure method exists
@@ -315,10 +323,15 @@ def test_size_of_stats_primary_file(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HF_HOME", str(hf))
     p = LlamaCppProvider({})
-    size = p.size_of({
-        "id": "x", "provider": "llamacpp", "name": "x",
-        "repo": "ornith/test", "files": ["model.gguf"],
-    })
+    size = p.size_of(
+        {
+            "id": "x",
+            "provider": "llamacpp",
+            "name": "x",
+            "repo": "ornith/test",
+            "files": ["model.gguf"],
+        }
+    )
     assert size == 100
 
 
@@ -327,10 +340,18 @@ def test_size_of_returns_none_when_not_in_cache(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HF_HOME", str(tmp_path / "empty"))
     p = LlamaCppProvider({})
-    assert p.size_of({
-        "id": "x", "provider": "llamacpp", "name": "x",
-        "repo": "ornith/missing", "files": ["model.gguf"],
-    }) is None
+    assert (
+        p.size_of(
+            {
+                "id": "x",
+                "provider": "llamacpp",
+                "name": "x",
+                "repo": "ornith/missing",
+                "files": ["model.gguf"],
+            }
+        )
+        is None
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -404,10 +425,15 @@ def test_size_of_sums_model_dir(tmp_path):
     (target / "b.safetensors").write_bytes(b"b" * 30)
 
     p = OMLXProvider({"model_dir": str(md)})
-    size = p.size_of({
-        "id": "x", "provider": "omlx", "name": "x",
-        "repo": "ornith/Ornith-1.5", "files": None,
-    })
+    size = p.size_of(
+        {
+            "id": "x",
+            "provider": "omlx",
+            "name": "x",
+            "repo": "ornith/Ornith-1.5",
+            "files": None,
+        }
+    )
     assert size == 80
 
 
@@ -415,10 +441,18 @@ def test_size_of_returns_none_when_missing(tmp_path):
     from modelman.providers.omlx import OMLXProvider
 
     p = OMLXProvider({"model_dir": str(tmp_path / "models")})
-    assert p.size_of({
-        "id": "x", "provider": "omlx", "name": "x",
-        "repo": "ornith/missing", "files": None,
-    }) is None
+    assert (
+        p.size_of(
+            {
+                "id": "x",
+                "provider": "omlx",
+                "name": "x",
+                "repo": "ornith/missing",
+                "files": None,
+            }
+        )
+        is None
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -490,14 +524,17 @@ def test_size_of_parses_ollama_list(mock_runner):
     runner = mock_runner(returncode=0, stdout=stdout)
     p = OllamaProvider({})
 
-    assert p.size_of(
-        {"id": "x", "provider": "ollama", "name": "ornith-1.5:35b"},
-        runner=runner,
-    ) == 21 * 1024 ** 3
+    assert (
+        p.size_of(
+            {"id": "x", "provider": "ollama", "name": "ornith-1.5:35b"},
+            runner=runner,
+        )
+        == 21 * 1024**3
+    )
     assert p.size_of(
         {"id": "x", "provider": "ollama", "name": "ornith-1.5:8b"},
         runner=runner,
-    ) == int(5.2 * 1024 ** 3)
+    ) == int(5.2 * 1024**3)
 
 
 def test_size_of_returns_none_when_not_in_list(mock_runner):
@@ -505,10 +542,13 @@ def test_size_of_returns_none_when_not_in_list(mock_runner):
 
     runner = mock_runner(returncode=0, stdout="NAME ID SIZE MODIFIED\n")
     p = OllamaProvider({})
-    assert p.size_of(
-        {"id": "x", "provider": "ollama", "name": "missing:tag"},
-        runner=runner,
-    ) is None
+    assert (
+        p.size_of(
+            {"id": "x", "provider": "ollama", "name": "missing:tag"},
+            runner=runner,
+        )
+        is None
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -612,8 +652,13 @@ def _manifest_with_downloads(tmp_path):
         display_name="F",
         variants=[
             {"id": "a", "provider": "ollama", "name": "f:a"},
-            {"id": "b", "provider": "llamacpp", "name": "f:b",
-             "repo": "org/repo", "files": ["x.gguf"]},
+            {
+                "id": "b",
+                "provider": "llamacpp",
+                "name": "f:b",
+                "repo": "org/repo",
+                "files": ["x.gguf"],
+            },
         ],
     )
     m.mark_downloaded("a", str(tmp_path / "downloaded-a"))
@@ -641,9 +686,11 @@ def test_apply_deletes_before_downloads(tmp_path):
     # Provider.delete should be called on 'a' before Provider.download is called on 'a'.
     def track_delete(variant):
         order.append(f"delete:{variant['id']}")
+
     def track_download(variant):
         order.append(f"download:{variant['id']}")
         return f"/tmp/new-{variant['id']}"
+
     provider_ollama.delete.side_effect = track_delete
     provider_ollama.download.side_effect = track_download
     provider_llama.delete.side_effect = track_delete
@@ -653,8 +700,8 @@ def test_apply_deletes_before_downloads(tmp_path):
         manifest=m,
         manifest_path=fam_path,
         providers={"ollama": provider_ollama, "llamacpp": provider_llama},
-        deletes=[m.variants[0]],       # delete variant 'a'
-        downloads=[m.variants[1]],     # re-download variant 'b'
+        deletes=[m.variants[0]],  # delete variant 'a'
+        downloads=[m.variants[1]],  # re-download variant 'b'
     )
     pending.apply()
 
@@ -710,6 +757,7 @@ Create `src/modelman/queue.py`:
 
 ```python
 """In-memory change queue applied on exit of the TUI model screen."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -747,9 +795,7 @@ class PendingChanges:
             except Exception as exc:  # noqa: BLE001
                 self.failures.append(f"delete {variant['id']}: {exc}")
                 continue
-            self.manifest.variants = [
-                v for v in self.manifest.variants if v["id"] != variant["id"]
-            ]
+            self.manifest.variants = [v for v in self.manifest.variants if v["id"] != variant["id"]]
             self.manifest.downloaded.pop(variant["id"], None)
 
         for variant in self.downloads:
@@ -775,11 +821,13 @@ class PendingChanges:
         local_path = self.manifest.downloaded.get(variant["id"], {}).get("local_path")
         if local_path:
             from pathlib import Path as _P
+
             p = _P(local_path)
             if p.is_file():
                 p.unlink()
             elif p.is_dir():
                 import shutil
+
                 shutil.rmtree(p)
 ```
 
@@ -866,6 +914,7 @@ Create `src/modelman/ollama_caps.py`:
 
 ```python
 """Parse `ollama show` output for LiteLLM-compatible model_info fields."""
+
 from __future__ import annotations
 
 import subprocess
@@ -912,9 +961,7 @@ def _default_runner(args: list[str], **kwargs: Any):
 
 def auto_detect_model_info(name: str, runner: _Runner | None = None) -> dict[str, Any]:
     """Run `ollama show <name>` and return its parsed model_info. {} on failure."""
-    r = (runner or _default_runner)(
-        ["ollama", "show", name], capture_output=True, text=True
-    )
+    r = (runner or _default_runner)(["ollama", "show", name], capture_output=True, text=True)
     if r.returncode != 0:
         return {}
     return parse_ollama_show(r.stdout)
@@ -955,6 +1002,7 @@ Create `src/modelman/screens/families.py`:
 
 ```python
 """FamilyScreen — default view listing all configured families."""
+
 from __future__ import annotations
 
 from textual.screen import Screen
@@ -979,6 +1027,7 @@ async def test_app_launches_into_family_screen():
     async with app.run_test() as pilot:
         # App started; we are on FamilyScreen.
         from modelman.screens.families import FamilyScreen
+
         assert isinstance(app.screen, FamilyScreen)
 ```
 
@@ -997,6 +1046,7 @@ Create `src/modelman/app.py`:
 
 ```python
 """Textual application root for modelman."""
+
 from __future__ import annotations
 
 from textual.app import App
@@ -1045,10 +1095,12 @@ Append to `tests/screens/test_app_navigation.py`:
 @pytest.mark.asyncio
 async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
-        family="ornith", display_name="Ornith",
+        family="ornith",
+        display_name="Ornith",
         variants=[{"id": "a", "provider": "ollama", "name": "o:35b"}],
     )
     m.mark_downloaded("a", str(tmp_path / "downloaded-a"))
@@ -1056,11 +1108,10 @@ async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
 
     monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n  ollama:\n    type: ollama\n"
-    )
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         # Wait for the screen to mount and load.
@@ -1089,6 +1140,7 @@ Replace `src/modelman/screens/families.py` with:
 
 ```python
 """FamilyScreen — default view listing all configured families."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -1155,6 +1207,7 @@ class FamilyScreen(Screen[None]):
                     if v["id"] in m.downloaded:
                         try:
                             from ..providers.registry import ProviderRegistry
+
                             provider = ProviderRegistry.get(
                                 v["provider"], config.provider(v["provider"])
                             )
@@ -1165,7 +1218,11 @@ class FamilyScreen(Screen[None]):
                             unknown = True
                             continue
                         total_size = (total_size or 0) + sz
-            size_str = "—" if unknown and not total_size else _human_size(total_size if not unknown else None)
+            size_str = (
+                "—"
+                if unknown and not total_size
+                else _human_size(total_size if not unknown else None)
+            )
             table.add_row(m.family, m.display_name or "", str(variants), str(downloaded), size_str)
 ```
 
@@ -1177,10 +1234,12 @@ Replace `tests/screens/test_app_navigation.py` test app-launching with the rows-
 @pytest.mark.asyncio
 async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
-        family="ornith", display_name="Ornith",
+        family="ornith",
+        display_name="Ornith",
         variants=[{"id": "a", "provider": "ollama", "name": "o:35b"}],
     )
     m.mark_downloaded("a", str(tmp_path / "downloaded-a"))
@@ -1188,11 +1247,10 @@ async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
 
     monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n  ollama:\n    type: ollama\n"
-    )
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1242,6 +1300,7 @@ async def test_add_family_creates_manifest(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1271,6 +1330,7 @@ Add to `src/modelman/screens/forms.py`:
 
 ```python
 """Modal forms for the TUI."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -1303,6 +1363,7 @@ class AddFamilyModal(ModalScreen[Optional[FamilyManifest]]):
             yield Label("Display name (optional):")
             yield Input(id="display-name", placeholder="e.g. Ornith 1.5")
             from textual.containers import Horizontal
+
             with Horizontal():
                 yield Button("Cancel", id="cancel", variant="default")
                 yield Button("Create", id="create", variant="primary")
@@ -1332,11 +1393,12 @@ from .forms import AddFamilyModal
 And add an action method on `FamilyScreen`:
 
 ```python
-    def action_add_family(self) -> None:
-        def _on_close(result: FamilyManifest | None) -> None:
-            if result is not None:
-                self.reload()
-        self.app.push_screen(AddFamilyModal(), _on_close)
+def action_add_family(self) -> None:
+    def _on_close(result: FamilyManifest | None) -> None:
+        if result is not None:
+            self.reload()
+
+    self.app.push_screen(AddFamilyModal(), _on_close)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1372,6 +1434,7 @@ Append to `tests/screens/test_app_navigation.py`:
 @pytest.mark.asyncio
 async def test_delete_family_when_empty(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     save_manifest(FamilyManifest(family="mamba"), fam_dir / "mamba.yaml")
@@ -1380,6 +1443,7 @@ async def test_delete_family_when_empty(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1391,6 +1455,7 @@ async def test_delete_family_when_empty(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_delete_family_blocked_when_downloaded(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
@@ -1404,6 +1469,7 @@ async def test_delete_family_blocked_when_downloaded(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1429,6 +1495,7 @@ Add to `src/modelman/screens/forms.py`:
 ```python
 class ConfirmModal(ModalScreen[bool]):
     """Generic yes/no confirmation. Default is No."""
+
     DEFAULT_CSS = """
     ConfirmModal { align: center middle; }
     ConfirmModal > Vertical { width: 60; height: auto; padding: 1 2; border: round $primary; }
@@ -1445,6 +1512,7 @@ class ConfirmModal(ModalScreen[bool]):
         with Vertical():
             yield Label(self._message)
             from textual.containers import Horizontal
+
             with Horizontal():
                 yield Button("No", id="no", variant="default")
                 yield Button("Yes", id="yes", variant="warning")
@@ -1463,45 +1531,51 @@ from .forms import AddFamilyModal, ConfirmModal
 And add the action:
 
 ```python
-    def action_delete_family(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-        # Selected row key 0 corresponds to first family row.
-        # We rely on row ordering matching sorted glob in reload().
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        try:
-            m = load_manifest(family_name)
-        except Exception:
-            return
-        if m.downloaded:
-            self.app.push_screen(
-                ConfirmModal(f"'{family_name}' has {len(m.downloaded)} downloaded model(s). Delete anyway? (will be blocked)")
+def action_delete_family(self) -> None:
+    table = self.query_one(DataTable)
+    if table.row_count == 0:
+        return
+    # Selected row key 0 corresponds to first family row.
+    # We rely on row ordering matching sorted glob in reload().
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    try:
+        m = load_manifest(family_name)
+    except Exception:
+        return
+    if m.downloaded:
+        self.app.push_screen(
+            ConfirmModal(
+                f"'{family_name}' has {len(m.downloaded)} downloaded model(s). Delete anyway? (will be blocked)"
             )
-            # Block delete: re-push a no-op screen that dismisses false.
-            self._notify_blocked(family_name)
-            return
-        self.app.push_screen(
-            ConfirmModal(f"Delete empty family '{family_name}'?"),
-            self._on_delete_confirm,
         )
+        # Block delete: re-push a no-op screen that dismisses false.
+        self._notify_blocked(family_name)
+        return
+    self.app.push_screen(
+        ConfirmModal(f"Delete empty family '{family_name}'?"),
+        self._on_delete_confirm,
+    )
 
-    def _on_delete_confirm(self, confirmed: bool) -> None:
-        if not confirmed:
-            return
-        table = self.query_one(DataTable)
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        path = get_family_dir() / f"{family_name}.yaml"
-        if path.exists():
-            path.unlink()
-        self.reload()
 
-    def _notify_blocked(self, family_name: str) -> None:
-        self.app.push_screen(
-            ConfirmModal(f"Cannot delete '{family_name}': it has downloaded models. Remove them first."),
-        )
+def _on_delete_confirm(self, confirmed: bool) -> None:
+    if not confirmed:
+        return
+    table = self.query_one(DataTable)
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    path = get_family_dir() / f"{family_name}.yaml"
+    if path.exists():
+        path.unlink()
+    self.reload()
+
+
+def _notify_blocked(self, family_name: str) -> None:
+    self.app.push_screen(
+        ConfirmModal(
+            f"Cannot delete '{family_name}': it has downloaded models. Remove them first."
+        ),
+    )
 ```
 
 (`_notify_blocked` is shown but dismissed with default No; for a minimal implementation this is acceptable. If you want a non-blocking toast, swap it for `self.app.notify(...)`.)
@@ -1540,6 +1614,7 @@ Append to `tests/screens/test_app_navigation.py`:
 @pytest.mark.asyncio
 async def test_enter_opens_model_screen(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
@@ -1549,6 +1624,7 @@ async def test_enter_opens_model_screen(tmp_path, monkeypatch):
 
     from modelman.app import ModelmanApp
     from modelman.screens.models import ModelScreen
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1572,6 +1648,7 @@ Create `src/modelman/screens/models.py`:
 
 ```python
 """ModelScreen — drill into a family's models grouped by provider."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -1656,14 +1733,14 @@ Append to `tests/screens/test_app_navigation.py`:
 @pytest.mark.asyncio
 async def test_model_screen_two_pane_lists_providers_and_models(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
         family="ornith",
         variants=[
             {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
-            {"id": "q4", "provider": "llamacpp", "name": "q4",
-             "repo": "o/r", "files": ["x.gguf"]},
+            {"id": "q4", "provider": "llamacpp", "name": "q4", "repo": "o/r", "files": ["x.gguf"]},
         ],
     )
     save_manifest(m, fam_dir / "ornith.yaml")
@@ -1674,6 +1751,7 @@ async def test_model_screen_two_pane_lists_providers_and_models(tmp_path, monkey
     )
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1699,6 +1777,7 @@ Replace `src/modelman/screens/models.py` with:
 
 ```python
 """ModelScreen — drill into a family's models grouped by provider."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -1834,6 +1913,7 @@ Append to `tests/screens/test_app_navigation.py`:
 @pytest.mark.asyncio
 async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
@@ -1846,6 +1926,7 @@ async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1966,6 +2047,7 @@ Append to `tests/screens/test_app_navigation.py`:
 @pytest.mark.asyncio
 async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
@@ -1979,6 +2061,7 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("providers:\n  ollama:\n    type: ollama\n")
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2072,17 +2155,22 @@ class ModelForm(ModalScreen[Optional[VariantSpec]]):
             )
             yield Label("Files (llamacpp, comma-separated):")
             yield Input(
-                value=",".join(self._variant.get("files") or []) if editing and self._variant.get("files") else "",
+                value=",".join(self._variant.get("files") or [])
+                if editing and self._variant.get("files")
+                else "",
                 placeholder="model.gguf",
                 id="files",
             )
             yield Label("Quantizations (omlx, comma-separated):")
             yield Input(
-                value=",".join(self._variant.get("quantizations") or []) if editing and self._variant.get("quantizations") else "",
+                value=",".join(self._variant.get("quantizations") or [])
+                if editing and self._variant.get("quantizations")
+                else "",
                 placeholder="4bit,8bit",
                 id="quantizations",
             )
             from textual.containers import Horizontal
+
             with Horizontal():
                 yield Button("Cancel", id="cancel", variant="default")
                 yield Button("Save", id="save", variant="primary")
@@ -2130,65 +2218,72 @@ In `src/modelman/screens/models.py`, add bindings and actions:
 ```
 
 ```python
-    def _provider_list(self) -> list[str]:
-        return sorted({v["provider"] for v in self.manifest.variants})
+def _provider_list(self) -> list[str]:
+    return sorted({v["provider"] for v in self.manifest.variants})
 
-    def action_add_model(self) -> None:
-        from .forms import ModelForm
-        providers = self._provider_list() or ["ollama", "llamacpp", "omlx"]
-        self.app.push_screen(
-            ModelForm(providers=providers),
-            self._on_add_model,
-        )
 
-    def _on_add_model(self, variant) -> None:
-        if variant is None:
-            return
-        self.manifest.variants.append(variant)
-        self.queued_downloads[variant["id"]] = variant
-        self.reload()
-        self._refresh_pending_bar()
+def action_add_model(self) -> None:
+    from .forms import ModelForm
 
-    def action_delete_model(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0:
-            return
-        row_key = list(mt.rows.keys())[mt.cursor_row]
-        vid = str(row_key.value)
-        variant = self.manifest.variant_by_id(vid)
-        if variant is None:
-            return
-        if vid in self.queued_deletes:
-            self.queued_deletes.pop(vid)
-        else:
-            self.queued_deletes[vid] = variant
-        # If it was queued for download, drop that.
-        self.queued_downloads.pop(vid, None)
-        self._refresh_pending_bar()
+    providers = self._provider_list() or ["ollama", "llamacpp", "omlx"]
+    self.app.push_screen(
+        ModelForm(providers=providers),
+        self._on_add_model,
+    )
 
-    def action_edit_model(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0:
-            return
-        row_key = list(mt.rows.keys())[mt.cursor_row]
-        vid = str(row_key.value)
-        variant = self.manifest.variant_by_id(vid)
-        if variant is None:
-            return
-        from .forms import ModelForm
-        self.app.push_screen(
-            ModelForm(providers=self._provider_list(), variant=variant),
-            self._on_edit_model,
-        )
 
-    def _on_edit_model(self, updated) -> None:
-        if updated is None:
-            return
-        for i, v in enumerate(self.manifest.variants):
-            if v["id"] == updated["id"]:
-                self.manifest.variants[i] = updated
-                break
-        self.reload()
+def _on_add_model(self, variant) -> None:
+    if variant is None:
+        return
+    self.manifest.variants.append(variant)
+    self.queued_downloads[variant["id"]] = variant
+    self.reload()
+    self._refresh_pending_bar()
+
+
+def action_delete_model(self) -> None:
+    mt = self.query_one("#model-table", DataTable)
+    if mt.row_count == 0:
+        return
+    row_key = list(mt.rows.keys())[mt.cursor_row]
+    vid = str(row_key.value)
+    variant = self.manifest.variant_by_id(vid)
+    if variant is None:
+        return
+    if vid in self.queued_deletes:
+        self.queued_deletes.pop(vid)
+    else:
+        self.queued_deletes[vid] = variant
+    # If it was queued for download, drop that.
+    self.queued_downloads.pop(vid, None)
+    self._refresh_pending_bar()
+
+
+def action_edit_model(self) -> None:
+    mt = self.query_one("#model-table", DataTable)
+    if mt.row_count == 0:
+        return
+    row_key = list(mt.rows.keys())[mt.cursor_row]
+    vid = str(row_key.value)
+    variant = self.manifest.variant_by_id(vid)
+    if variant is None:
+        return
+    from .forms import ModelForm
+
+    self.app.push_screen(
+        ModelForm(providers=self._provider_list(), variant=variant),
+        self._on_edit_model,
+    )
+
+
+def _on_edit_model(self, updated) -> None:
+    if updated is None:
+        return
+    for i, v in enumerate(self.manifest.variants):
+        if v["id"] == updated["id"]:
+            self.manifest.variants[i] = updated
+            break
+    self.reload()
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -2226,6 +2321,7 @@ Append to `tests/screens/test_app_navigation.py`:
 async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
     from unittest.mock import MagicMock
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     m = FamilyManifest(
@@ -2239,27 +2335,32 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
 
     # Patch ProviderRegistry.get to return a stub that records calls.
     from modelman.providers import registry
+
     original_get = registry.ProviderRegistry.get
     stub = MagicMock()
     stub.download.return_value = "/tmp/fake"
     stub.name = "ollama"
+
     def fake_get(name, cfg):
         if name == "ollama":
             return stub
         return original_get(name, cfg)
+
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(fake_get))
 
     from modelman.app import ModelmanApp
+
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("x")         # queue download
-        await pilot.press("escape")    # opens confirm dialog
+        await pilot.press("x")  # queue download
+        await pilot.press("escape")  # opens confirm dialog
         await pilot.pause()
         # Confirm "Yes" button — last button in the dialog is Yes.
         from textual.widgets import Button
+
         for btn in app.screen.query(Button):
             if btn.id == "yes":
                 btn.press()
@@ -2288,6 +2389,7 @@ from ..queue import PendingChanges
 
 class ConfirmExitDialog(ModalScreen[bool]):
     """Show pending downloads/deletes and confirm apply."""
+
     DEFAULT_CSS = """
     ConfirmExitDialog { align: center middle; }
     ConfirmExitDialog > Vertical { width: 70; height: auto; padding: 1 2; border: round $primary; }
@@ -2303,15 +2405,14 @@ class ConfirmExitDialog(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(
-                f"Pending: download {len(self._downloads)} · delete {len(self._deletes)}"
-            )
+            yield Label(f"Pending: download {len(self._downloads)} · delete {len(self._deletes)}")
             for v in self._downloads:
                 yield Label(f"  ↓ {v['id']} ({v['provider']})")
             for v in self._deletes:
                 yield Label(f"  × {v['id']} ({v['provider']})")
             yield Label("Apply these changes?")
             from textual.containers import Horizontal
+
             with Horizontal():
                 yield Button("Cancel", id="no", variant="default")
                 yield Button("Apply", id="yes", variant="primary")
@@ -2323,45 +2424,49 @@ class ConfirmExitDialog(ModalScreen[bool]):
 In `src/modelman/screens/models.py`, replace `action_back`:
 
 ```python
-    def action_back(self) -> None:
-        if not self.queued_downloads and not self.queued_deletes:
-            self.app.pop_screen()
-            return
-        from .forms import ConfirmExitDialog
-        self.app.push_screen(
-            ConfirmExitDialog(
-                downloads=list(self.queued_downloads.values()),
-                deletes=list(self.queued_deletes.values()),
-            ),
-            self._on_exit_confirm,
-        )
+def action_back(self) -> None:
+    if not self.queued_downloads and not self.queued_deletes:
+        self.app.pop_screen()
+        return
+    from .forms import ConfirmExitDialog
 
-    def _on_exit_confirm(self, confirmed: bool) -> None:
-        if not confirmed:
-            return
-        from ..config import load_config
-        try:
-            config = load_config()
-        except Exception:
-            return
-        providers: dict[str, object] = {}
-        for v in list(self.queued_downloads.values()) + list(self.queued_deletes.values()):
-            try:
-                from ..providers.registry import ProviderRegistry
-                providers[v["provider"]] = ProviderRegistry.get(
-                    v["provider"], config.provider(v["provider"])
-                )
-            except Exception:
-                continue
-        pending = PendingChanges(
-            manifest=self.manifest,
-            manifest_path=self.manifest_path,
-            providers=providers,
+    self.app.push_screen(
+        ConfirmExitDialog(
             downloads=list(self.queued_downloads.values()),
             deletes=list(self.queued_deletes.values()),
-        )
-        pending.apply()
-        self.app.pop_screen()
+        ),
+        self._on_exit_confirm,
+    )
+
+
+def _on_exit_confirm(self, confirmed: bool) -> None:
+    if not confirmed:
+        return
+    from ..config import load_config
+
+    try:
+        config = load_config()
+    except Exception:
+        return
+    providers: dict[str, object] = {}
+    for v in list(self.queued_downloads.values()) + list(self.queued_deletes.values()):
+        try:
+            from ..providers.registry import ProviderRegistry
+
+            providers[v["provider"]] = ProviderRegistry.get(
+                v["provider"], config.provider(v["provider"])
+            )
+        except Exception:
+            continue
+    pending = PendingChanges(
+        manifest=self.manifest,
+        manifest_path=self.manifest_path,
+        providers=providers,
+        downloads=list(self.queued_downloads.values()),
+        deletes=list(self.queued_deletes.values()),
+    )
+    pending.apply()
+    self.app.pop_screen()
 ```
 
 Add the import at the top of `models.py`:
@@ -2402,11 +2507,13 @@ Rewrite `tests/commands/test_download.py`:
 
 ```python
 """The `download` command is now a TUI shortcut; verify it launches ModelScreen."""
+
 from unittest.mock import patch
 
 
 def test_download_launches_tui_at_family(tmp_path, monkeypatch):
     from modelman.manifest import FamilyManifest, save_manifest
+
     fam_dir = tmp_path / "families"
     fam_dir.mkdir()
     save_manifest(FamilyManifest(family="ornith"), fam_dir / "ornith.yaml")
@@ -2433,6 +2540,7 @@ def test_no_args_launches_tui_at_family_list(tmp_path, monkeypatch):
     with patch("modelman.main.run_tui") as run_tui:
         from typer.testing import CliRunner
         from modelman.main import app
+
         runner = CliRunner()
         result = runner.invoke(app, [])
         assert result.exit_code == 0
@@ -2454,6 +2562,7 @@ Replace `src/modelman/main.py`:
 
 ```python
 """modelman CLI entry point."""
+
 from __future__ import annotations
 
 import typer

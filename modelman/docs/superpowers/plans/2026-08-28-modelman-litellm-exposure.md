@@ -122,7 +122,9 @@ def test_build_entry_openrouter_uses_secret_ref():
 def test_build_entry_copies_model_info():
     entry = build_model_list_entry(
         _model(
-            "ollama/x", "ollama", "x",
+            "ollama/x",
+            "ollama",
+            "x",
             model_info={"supports_function_calling": True},
         ),
         _provider("ollama", base_url="http://localhost:11434"),
@@ -134,9 +136,7 @@ def test_build_entry_unknown_provider_raises():
     from modelman.litellm import ExposeError
 
     with pytest.raises(ExposeError):
-        build_model_list_entry(
-            _model("foo/x", "foo", "x"), _provider("foo")
-        )
+        build_model_list_entry(_model("foo/x", "foo", "x"), _provider("foo"))
 
 
 def test_set_exposed_adds_new_row():
@@ -373,23 +373,32 @@ from modelman.state import ModelState, StateStore
 def _registry(*, cloud=False):
     providers = [
         ProviderEntry(
-            id="ollama", name="Ollama",
+            id="ollama",
+            name="Ollama",
             auth=AuthConfig(type="none", base_url="http://localhost:11434"),
         ),
         ProviderEntry(
-            id="openrouter", name="OpenRouter",
+            id="openrouter",
+            name="OpenRouter",
             auth=AuthConfig(
-                type="api_key", base_url="https://openrouter.ai/api/v1",
+                type="api_key",
+                base_url="https://openrouter.ai/api/v1",
                 secret_ref="sk-or-v1-abc",
             ),
         ),
     ]
     models = [
         ModelEntry(
-            id="ollama/a", family="f", provider_id="ollama", model_name="a",
+            id="ollama/a",
+            family="f",
+            provider_id="ollama",
+            model_name="a",
         ),
         ModelEntry(
-            id="openrouter/x", family="f", provider_id="openrouter", model_name="x",
+            id="openrouter/x",
+            family="f",
+            provider_id="openrouter",
+            model_name="x",
         ),
     ]
     return Registry(providers=providers, models=models)
@@ -599,13 +608,17 @@ def _seed(tmp_path, monkeypatch, *, downloaded=True):
         Registry(
             providers=[
                 ProviderEntry(
-                    id="ollama", name="Ollama",
+                    id="ollama",
+                    name="Ollama",
                     auth=AuthConfig(type="none", base_url="http://localhost:11434"),
                 )
             ],
             models=[
                 ModelEntry(
-                    id="ollama/a", family="f", provider_id="ollama", model_name="a",
+                    id="ollama/a",
+                    family="f",
+                    provider_id="ollama",
+                    model_name="a",
                 )
             ],
         ),
@@ -745,13 +758,12 @@ def test_apply_runs_expose_changes(tmp_path):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(registry, registry_path)
     state = StateStore()
@@ -908,7 +920,10 @@ async def test_l_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
         monkeypatch,
         models=(
             ModelEntry(
-                id="ollama/a", family="f", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="f",
+                provider_id="ollama",
+                model_name="a",
             ),
         ),
         downloaded={"ollama/a": "ollama:a"},
@@ -959,8 +974,8 @@ from ..queue import PendingChanges
 Add the `l` binding to `BINDINGS`:
 
 ```python
-        ("r", "reconcile", "Reconcile"),
-        ("l", "toggle_expose", "Toggle LiteLLM"),
+(("r", "reconcile", "Reconcile"),)
+(("l", "toggle_expose", "Toggle LiteLLM"),)
 ```
 
 In `__init__`, add the `queued_exposes` dict after `queued_deletes`:

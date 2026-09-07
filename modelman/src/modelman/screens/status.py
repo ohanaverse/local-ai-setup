@@ -92,6 +92,7 @@ class StatusScreen(Screen[None]):
             # "Done with errors" summary never render and let Escape pop the
             # screen before traceback lines were processed.)
             import traceback
+
             self._emit("[red]Unexpected error during apply:[/red]")
             self._emit(f"[red]  {exc.__class__.__name__}: {exc}[/red]")
             # Include traceback for debugging
@@ -164,7 +165,9 @@ class StatusScreen(Screen[None]):
             # 4th field: target family.
             label = parts[2]
             detail = parts[3]
-        elif ((verb == "move:fail") or verb in ("expose:fail", "unexpose:fail")) and len(parts) == 4:
+        elif ((verb == "move:fail") or verb in ("expose:fail", "unexpose:fail")) and len(
+            parts
+        ) == 4:
             # 4th field: failure reason.
             label = parts[2]
             detail = parts[3]
@@ -256,9 +259,7 @@ class StatusScreen(Screen[None]):
                 if len(detail) > 200:
                     detail = detail[:197] + "…"
                 log.write(f"    [red]{detail}[/red]")
-            self._displayed_failures.append(
-                f"Save failed: {detail or '(no reason provided)'}"
-            )
+            self._displayed_failures.append(f"Save failed: {detail or '(no reason provided)'}")
             self._failure_count += 1
         elif verb == "apply:cancelled":
             self.cancelled = True
@@ -277,7 +278,9 @@ class StatusScreen(Screen[None]):
                 log.write("\n[dim]Review the errors above. Fix the issue and retry.[/dim]")
                 log.write("\n[bold]Done with errors.[/bold] Press Escape to return.")
             else:
-                log.write("\n[bold green]All operations completed successfully.[/bold green] Press Escape to return.")
+                log.write(
+                    "\n[bold green]All operations completed successfully.[/bold green] Press Escape to return."
+                )
 
     def _emit(self, line: str) -> None:
         """Helper for the worker to log a plain line (used before the loop)."""

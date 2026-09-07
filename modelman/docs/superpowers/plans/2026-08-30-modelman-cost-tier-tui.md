@@ -277,9 +277,7 @@ def test_format_tier_none():
 
 
 def test_format_tier_high():
-    m = ModelEntry(
-        id="x", family="x", provider_id="ollama", model_name="x", usage_tier="high"
-    )
+    m = ModelEntry(id="x", family="x", provider_id="ollama", model_name="x", usage_tier="high")
     assert _format_tier(m) == "high"
 ```
 
@@ -383,6 +381,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
         await pilot.pause()
         # Navigate to the model screen for the family
         from textual.widgets import DataTable as _DT
+
         ft = app.screen.query_one(_DT)
         ft.move_cursor(row=0)
         await pilot.press("enter")
@@ -392,8 +391,15 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
         mt = app.screen.query_one("#model-table", DataTable)
         labels_cols = [mt.columns[col].label.plain for col in mt.columns]
         assert labels_cols == [
-            "FAMILY", "PROVIDER", "MODEL", "LOC", "STATUS",
-            "EXPOSED", "COST", "TIER", "SIZE",
+            "FAMILY",
+            "PROVIDER",
+            "MODEL",
+            "LOC",
+            "STATUS",
+            "EXPOSED",
+            "COST",
+            "TIER",
+            "SIZE",
         ]
         # The PATH column must be gone.
         assert "PATH" not in labels_cols
@@ -417,11 +423,17 @@ async def test_details_panel_updates_on_cursor_move(tmp_path, monkeypatch):
 
     models = [
         ModelEntry(
-            id="ollama/a", family="x", provider_id="ollama", model_name="a",
+            id="ollama/a",
+            family="x",
+            provider_id="ollama",
+            model_name="a",
             location="local",
         ),
         ModelEntry(
-            id="ollama/b", family="x", provider_id="ollama", model_name="b",
+            id="ollama/b",
+            family="x",
+            provider_id="ollama",
+            model_name="b",
             location="local",
         ),
     ]
@@ -475,16 +487,23 @@ In `src/modelman/screens/models.py`, replace the existing `compose()` method (li
 In `on_mount` (line ~203), replace the `add_columns(...)` call:
 
 ```python
-    def on_mount(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        mt.add_columns(
-            "FAMILY", "PROVIDER", "MODEL", "LOC", "STATUS",
-            "EXPOSED", "COST", "TIER", "SIZE",
-        )
-        self.reload()
-        self._refresh_pending_bar()
-        mt.focus()
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+def on_mount(self) -> None:
+    mt = self.query_one("#model-table", DataTable)
+    mt.add_columns(
+        "FAMILY",
+        "PROVIDER",
+        "MODEL",
+        "LOC",
+        "STATUS",
+        "EXPOSED",
+        "COST",
+        "TIER",
+        "SIZE",
+    )
+    self.reload()
+    self._refresh_pending_bar()
+    mt.focus()
+    self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 ```
 
 - [ ] **Step 5: Update `_load_models` to render the new columns**
@@ -514,33 +533,34 @@ The previous `mt.add_row(...)` call lives inside `_load_models` (around line 320
 In `src/modelman/screens/models.py`, add this method (place it next to `on_data_table_row_selected`, around line 507):
 
 ```python
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        """Update the always-visible details panel below the table."""
-        self._refresh_details_panel(event.cursor_row)
+def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    """Update the always-visible details panel below the table."""
+    self._refresh_details_panel(event.cursor_row)
 
-    def _refresh_details_panel(self, cursor_row: int) -> None:
-        from textual.widgets import Static
 
-        try:
-            details = self.query_one("#details-panel", Static)
-        except Exception:
-            return
-        mt = self.query_one("#model-table", DataTable)
-        if cursor_row < 0 or cursor_row >= mt.row_count:
-            details.update("path: ")
-            return
-        row_key = list(mt.rows.keys())[cursor_row]
-        mid = str(row_key.value)
-        # Prefer the reconcile overlay's local_path, then state.disk_path,
-        # else empty. Not-ready rows fall through to "—".
-        rec = self.reconciled.get(mid)
-        path: str | None = None
-        if rec is not None and rec.get("ready"):
-            path = rec.get("local_path")
-        if path is None:
-            st_path = self.state.get(mid).disk_path
-            path = st_path if (rec and rec.get("ready")) or self._is_ready(mid) else None
-        details.update(f"path: {path or '—'}")
+def _refresh_details_panel(self, cursor_row: int) -> None:
+    from textual.widgets import Static
+
+    try:
+        details = self.query_one("#details-panel", Static)
+    except Exception:
+        return
+    mt = self.query_one("#model-table", DataTable)
+    if cursor_row < 0 or cursor_row >= mt.row_count:
+        details.update("path: ")
+        return
+    row_key = list(mt.rows.keys())[cursor_row]
+    mid = str(row_key.value)
+    # Prefer the reconcile overlay's local_path, then state.disk_path,
+    # else empty. Not-ready rows fall through to "—".
+    rec = self.reconciled.get(mid)
+    path: str | None = None
+    if rec is not None and rec.get("ready"):
+        path = rec.get("local_path")
+    if path is None:
+        st_path = self.state.get(mid).disk_path
+        path = st_path if (rec and rec.get("ready")) or self._is_ready(mid) else None
+    details.update(f"path: {path or '—'}")
 ```
 
 - [ ] **Step 7: Call `_refresh_details_panel` from `reload()` and after `reload_preserving_cursor`**
@@ -745,9 +765,7 @@ from ..registry import Cost
 Then add the helper just below `parse_model` (around line 60):
 
 ```python
-def parse_cost_fields(
-    kind: str, price_mtok: str, price_period: str, period: str
-) -> Cost:
+def parse_cost_fields(kind: str, price_mtok: str, price_period: str, period: str) -> Cost:
     """Build a Cost from the dialog fields. Raises ValueError on bad input."""
     if kind == "free":
         return Cost(kind="free")
@@ -799,15 +817,21 @@ async def test_model_form_cost_section_free_default():
     """When no cost is set, the kind Select defaults to 'free' and
     the price/period inputs are not visible."""
     from textual.widgets import Select
-    form = ModelForm(providers=["ollama"], default_provider="ollama",
-                     families=["ornith"], family="ornith",
-                     provider_kinds={"ollama": "ollama"})
+
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
         kind = app.screen.query_one("#cost-kind-select", Select)
         assert str(kind.value) == "free"
         # price / period inputs must not be present (or hidden) when free
         from textual.widgets import Input
+
         assert app.screen.query("#price-per-mtok") is None
         assert app.screen.query("#price-per-period") is None
     finally:
@@ -817,9 +841,14 @@ async def test_model_form_cost_section_free_default():
 @pytest.mark.asyncio
 async def test_model_form_cost_section_per_token_shows_price_input():
     from textual.widgets import Select, Input
-    form = ModelForm(providers=["ollama"], default_provider="ollama",
-                     families=["ornith"], family="ornith",
-                     provider_kinds={"ollama": "ollama"})
+
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
         kind = app.screen.query_one("#cost-kind-select", Select)
@@ -834,9 +863,14 @@ async def test_model_form_cost_section_per_token_shows_price_input():
 @pytest.mark.asyncio
 async def test_model_form_cost_section_subscription_shows_period():
     from textual.widgets import Select, Input
-    form = ModelForm(providers=["ollama"], default_provider="ollama",
-                     families=["ornith"], family="ornith",
-                     provider_kinds={"ollama": "ollama"})
+
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
         kind = app.screen.query_one("#cost-kind-select", Select)
@@ -855,18 +889,27 @@ async def test_model_form_cost_section_subscription_shows_period():
 async def test_model_form_tier_section_only_for_ollama():
     """Tier Select appears for ollama providers and not for llamacpp."""
     from textual.widgets import Select
-    form_ollama = ModelForm(providers=["ollama"], default_provider="ollama",
-                            families=["ornith"], family="ornith",
-                            provider_kinds={"ollama": "ollama"})
+
+    form_ollama = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
     app, pilot, _pilot_cm = await _mount_and_run(form_ollama)
     try:
         assert app.screen.query("#usage-tier-select") is not None
     finally:
         await _pilot_cm.__aexit__(None, None, None)
 
-    form_llamacpp = ModelForm(providers=["llamacpp"], default_provider="llamacpp",
-                              families=["ornith"], family="ornith",
-                              provider_kinds={"llamacpp": "local-only"})
+    form_llamacpp = ModelForm(
+        providers=["llamacpp"],
+        default_provider="llamacpp",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"llamacpp": "local-only"},
+    )
     app2, pilot2, pilot_cm2 = await _mount_and_run(form_llamacpp)
     try:
         assert app2.screen.query("#usage-tier-select") is None
@@ -878,9 +921,14 @@ async def test_model_form_tier_section_only_for_ollama():
 async def test_model_form_submits_cost_and_tier():
     """Save dismisses with cost and usage_tier in the VariantSpec."""
     from textual.widgets import Select, Input
-    form = ModelForm(providers=["ollama"], default_provider="ollama",
-                     families=["ornith"], family="ornith",
-                     provider_kinds={"ollama": "ollama"})
+
+    form = ModelForm(
+        providers=["ollama"],
+        default_provider="ollama",
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
     app, pilot, _pilot_cm = await _mount_and_run(form)
     try:
         kind = app.screen.query_one("#cost-kind-select", Select)
@@ -899,6 +947,7 @@ async def test_model_form_submits_cost_and_tier():
     # For this test, just verify the form would produce the right spec by
     # running parse_cost_fields directly with the values used:
     from modelman.screens.forms import parse_cost_fields
+
     cost = parse_cost_fields("subscription", "", "20", "month")
     assert cost == __import__("modelman.registry", fromlist=["Cost"]).Cost(
         kind="subscription", price_per_period=20.0, period="month"
@@ -917,20 +966,146 @@ Expected: FAIL — `#cost-kind-select`, `#price-per-mtok`, `#price-per-period`, 
 In `src/modelman/screens/forms.py`, replace the existing `compose()` method (line ~358) with this extended version. The diff: after the Location row, add a Cost section and (for ollama providers only) a Tier row. The non-ollama path skips the Tier yield.
 
 ```python
-    def compose(self) -> ComposeResult:
-        editing = self._variant is not None
-        v: VariantSpec = self._variant if self._variant is not None else cast("VariantSpec", {})
-        if editing:
-            initial_provider = v.get("provider") or self._providers[0]
-        elif self._default_provider and self._default_provider in self._providers:
-            initial_provider = self._default_provider
-        else:
-            initial_provider = self._providers[0]
-        self._initial_provider: str = initial_provider
+def compose(self) -> ComposeResult:
+    editing = self._variant is not None
+    v: VariantSpec = self._variant if self._variant is not None else cast("VariantSpec", {})
+    if editing:
+        initial_provider = v.get("provider") or self._providers[0]
+    elif self._default_provider and self._default_provider in self._providers:
+        initial_provider = self._default_provider
+    else:
+        initial_provider = self._providers[0]
+    self._initial_provider: str = initial_provider
 
-        model_val = self._reconstruct_model(v) if editing else ""
-        kind = self._provider_kinds.get(initial_provider, self._default_kind(initial_provider))
-        placeholder = (
+    model_val = self._reconstruct_model(v) if editing else ""
+    kind = self._provider_kinds.get(initial_provider, self._default_kind(initial_provider))
+    placeholder = (
+        "e.g. ornith-1.5:35b"
+        if kind == "ollama"
+        else "leave blank for 'native', or a model name"
+        if kind == "native"
+        else "provider/model-name"
+        if kind == "cloud-only"
+        else "org/repo[/path/to/file]"
+    )
+    location_value = (
+        "cloud"
+        if kind in ("native", "cloud-only")
+        else "local"
+        if kind == "local-only"
+        else v.get("location") or "local"
+    )
+    location_locked = kind in ("native", "cloud-only", "local-only")
+
+    # Pre-fill cost & tier from the variant (edit mode only).
+    initial_cost_kind = "free"
+    initial_price_mtok = ""
+    initial_price_period = ""
+    initial_period = "month"
+    initial_tier = ""
+    if editing and v.get("cost") is not None:
+        c = v["cost"]
+        initial_cost_kind = c.kind
+        if c.kind == "per_token":
+            initial_price_mtok = (
+                f"{c.price_per_million_tokens}" if c.price_per_million_tokens is not None else ""
+            )
+        elif c.kind == "subscription":
+            initial_price_period = f"{c.price_per_period}" if c.price_per_period is not None else ""
+            if c.period in ("month", "year"):
+                initial_period = c.period
+    if editing and v.get("usage_tier") is not None:
+        initial_tier = v["usage_tier"]
+    show_tier = kind == "ollama"
+
+    with Vertical():
+        yield Label("Provider:")
+        yield Select(
+            options=[(p, p) for p in self._providers],
+            value=initial_provider,
+            allow_blank=False,
+            disabled=editing,
+            id="provider-select",
+        )
+        yield Label("Family:")
+        yield Select(
+            options=[(f, f) for f in self._families],
+            value=(self._family if self._family in self._families else self._families[0]),
+            allow_blank=False,
+            id="family-select",
+        )
+        yield Label("Model:")
+        yield Input(
+            value=model_val,
+            placeholder=placeholder,
+            id="model",
+        )
+        yield Label("", id="model-error")
+        yield Label("Location:")
+        yield Select(
+            options=[("cloud", "cloud"), ("local", "local")],
+            value=location_value,
+            allow_blank=False,
+            disabled=location_locked,
+            id="location-select",
+        )
+        yield Label("Cost kind:")
+        yield Select(
+            options=[
+                ("free", "free"),
+                ("per_token", "per_token"),
+                ("subscription", "subscription"),
+            ],
+            value=initial_cost_kind,
+            allow_blank=False,
+            id="cost-kind-select",
+        )
+        yield Input(
+            value=initial_price_mtok,
+            placeholder="e.g. 2.50",
+            id="price-per-mtok",
+        )
+        yield Input(
+            value=initial_price_period,
+            placeholder="e.g. 20",
+            id="price-per-period",
+        )
+        yield Select(
+            options=[("month", "month"), ("year", "year")],
+            value=initial_period,
+            allow_blank=False,
+            id="period-select",
+        )
+        if show_tier:
+            yield Label("Usage tier (ollama cloud):")
+            yield Select(
+                options=[("—", ""), ("low", "low"), ("medium", "medium"), ("high", "high")],
+                value=initial_tier if initial_tier in ("low", "medium", "high") else "—",
+                allow_blank=False,
+                id="usage-tier-select",
+            )
+        yield self._button_row(
+            [
+                Button("Cancel", id="cancel", variant="default"),
+                Button("Save", id="save", variant="primary"),
+            ]
+        )
+```
+
+- [ ] **Step 4: Update `on_select_changed` to toggle cost/tier visibility**
+
+Replace the existing `on_select_changed` (line ~435) with:
+
+```python
+def on_select_changed(self, event: Select.Changed) -> None:
+    """Drive placeholder, location, cost, and tier visibility from
+    provider/cost-kind changes."""
+    if event.select.id == "provider-select":
+        if self._variant is not None:
+            return  # Edit mode locks provider.
+        provider = str(event.value)
+        kind = self._provider_kinds.get(provider, self._default_kind(provider))
+        new_placeholder = (
             "e.g. ornith-1.5:35b"
             if kind == "ollama"
             else "leave blank for 'native', or a model name"
@@ -939,192 +1114,62 @@ In `src/modelman/screens/forms.py`, replace the existing `compose()` method (lin
             if kind == "cloud-only"
             else "org/repo[/path/to/file]"
         )
-        location_value = (
-            "cloud"
-            if kind in ("native", "cloud-only")
-            else "local"
-            if kind == "local-only"
-            else v.get("location") or "local"
-        )
-        location_locked = kind in ("native", "cloud-only", "local-only")
+        self.query_one("#model", Input).placeholder = new_placeholder
 
-        # Pre-fill cost & tier from the variant (edit mode only).
-        initial_cost_kind = "free"
-        initial_price_mtok = ""
-        initial_price_period = ""
-        initial_period = "month"
-        initial_tier = ""
-        if editing and v.get("cost") is not None:
-            c = v["cost"]
-            initial_cost_kind = c.kind
-            if c.kind == "per_token":
-                initial_price_mtok = (
-                    f"{c.price_per_million_tokens}"
-                    if c.price_per_million_tokens is not None else ""
-                )
-            elif c.kind == "subscription":
-                initial_price_period = (
-                    f"{c.price_per_period}"
-                    if c.price_per_period is not None else ""
-                )
-                if c.period in ("month", "year"):
-                    initial_period = c.period
-        if editing and v.get("usage_tier") is not None:
-            initial_tier = v["usage_tier"]
-        show_tier = kind == "ollama"
+        location_select = self.query_one("#location-select", Select)
+        new_location = "cloud" if kind in ("native", "cloud-only") else "local"
+        location_select.value = new_location
+        location_select.disabled = kind in ("native", "cloud-only", "local-only")
 
-        with Vertical():
-            yield Label("Provider:")
-            yield Select(
-                options=[(p, p) for p in self._providers],
-                value=initial_provider,
-                allow_blank=False,
-                disabled=editing,
-                id="provider-select",
-            )
-            yield Label("Family:")
-            yield Select(
-                options=[(f, f) for f in self._families],
-                value=(self._family if self._family in self._families else self._families[0]),
-                allow_blank=False,
-                id="family-select",
-            )
-            yield Label("Model:")
-            yield Input(
-                value=model_val,
-                placeholder=placeholder,
-                id="model",
-            )
-            yield Label("", id="model-error")
-            yield Label("Location:")
-            yield Select(
-                options=[("cloud", "cloud"), ("local", "local")],
-                value=location_value,
-                allow_blank=False,
-                disabled=location_locked,
-                id="location-select",
-            )
-            yield Label("Cost kind:")
-            yield Select(
-                options=[
-                    ("free", "free"),
-                    ("per_token", "per_token"),
-                    ("subscription", "subscription"),
-                ],
-                value=initial_cost_kind,
-                allow_blank=False,
-                id="cost-kind-select",
-            )
-            yield Input(
-                value=initial_price_mtok,
-                placeholder="e.g. 2.50",
-                id="price-per-mtok",
-            )
-            yield Input(
-                value=initial_price_period,
-                placeholder="e.g. 20",
-                id="price-per-period",
-            )
-            yield Select(
-                options=[("month", "month"), ("year", "year")],
-                value=initial_period,
-                allow_blank=False,
-                id="period-select",
-            )
-            if show_tier:
-                yield Label("Usage tier (ollama cloud):")
-                yield Select(
-                    options=[("—", ""), ("low", "low"), ("medium", "medium"), ("high", "high")],
-                    value=initial_tier if initial_tier in ("low", "medium", "high") else "—",
-                    allow_blank=False,
-                    id="usage-tier-select",
-                )
-            yield self._button_row([
-                Button("Cancel", id="cancel", variant="default"),
-                Button("Save", id="save", variant="primary"),
-            ])
-```
+        # Tier section visibility — ollama only.
+        self._set_tier_visibility(kind == "ollama")
 
-- [ ] **Step 4: Update `on_select_changed` to toggle cost/tier visibility**
+    elif event.select.id == "cost-kind-select":
+        kind = str(event.value)
+        self._set_cost_field_visibility(kind)
 
-Replace the existing `on_select_changed` (line ~435) with:
 
-```python
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """Drive placeholder, location, cost, and tier visibility from
-        provider/cost-kind changes."""
-        if event.select.id == "provider-select":
-            if self._variant is not None:
-                return  # Edit mode locks provider.
-            provider = str(event.value)
-            kind = self._provider_kinds.get(provider, self._default_kind(provider))
-            new_placeholder = (
-                "e.g. ornith-1.5:35b"
-                if kind == "ollama"
-                else "leave blank for 'native', or a model name"
-                if kind == "native"
-                else "provider/model-name"
-                if kind == "cloud-only"
-                else "org/repo[/path/to/file]"
-            )
-            self.query_one("#model", Input).placeholder = new_placeholder
+def _set_cost_field_visibility(self, kind: str) -> None:
+    from textual.widgets import Input
 
-            location_select = self.query_one("#location-select", Select)
-            new_location = (
-                "cloud"
-                if kind in ("native", "cloud-only")
-                else "local"
-            )
-            location_select.value = new_location
-            location_select.disabled = kind in ("native", "cloud-only", "local-only")
+    mt = self.query_one("#price-per-mtok", Input)
+    pp = self.query_one("#price-per-period", Input)
+    ps = self.query_one("#period-select", Select)
+    if kind == "free":
+        mt.display = False
+        pp.display = False
+        ps.display = False
+    elif kind == "per_token":
+        mt.display = True
+        pp.display = False
+        ps.display = False
+    elif kind == "subscription":
+        mt.display = False
+        pp.display = True
+        ps.display = True
 
-            # Tier section visibility — ollama only.
-            self._set_tier_visibility(kind == "ollama")
 
-        elif event.select.id == "cost-kind-select":
-            kind = str(event.value)
-            self._set_cost_field_visibility(kind)
+def _set_tier_visibility(self, show: bool) -> None:
+    from textual.widgets import Static
 
-    def _set_cost_field_visibility(self, kind: str) -> None:
-        from textual.widgets import Input
-
-        mt = self.query_one("#price-per-mtok", Input)
-        pp = self.query_one("#price-per-period", Input)
-        ps = self.query_one("#period-select", Select)
-        if kind == "free":
-            mt.display = False
-            pp.display = False
-            ps.display = False
-        elif kind == "per_token":
-            mt.display = True
-            pp.display = False
-            ps.display = False
-        elif kind == "subscription":
-            mt.display = False
-            pp.display = True
-            ps.display = True
-
-    def _set_tier_visibility(self, show: bool) -> None:
-        from textual.widgets import Static
-
-        tier = self.query("#usage-tier-select")
-        if tier is None and show:
-            # The Tier Select wasn't yielded for non-ollama initial
-            # renders; nothing to do (tier isn't supported for that
-            # provider anyway).
-            return
-        if tier is not None:
-            tier.display = show
-            # Also hide the Label that precedes the tier select if it
-            # exists. Static has no `display` search by content; fall
-            # back to walking the Vertical's children.
-            parent = tier.parent
-            if parent is not None:
-                for sibling in parent.children:
-                    if sibling is tier:
-                        break
-                    if hasattr(sibling, "display"):
-                        sibling.display = show
+    tier = self.query("#usage-tier-select")
+    if tier is None and show:
+        # The Tier Select wasn't yielded for non-ollama initial
+        # renders; nothing to do (tier isn't supported for that
+        # provider anyway).
+        return
+    if tier is not None:
+        tier.display = show
+        # Also hide the Label that precedes the tier select if it
+        # exists. Static has no `display` search by content; fall
+        # back to walking the Vertical's children.
+        parent = tier.parent
+        if parent is not None:
+            for sibling in parent.children:
+                if sibling is tier:
+                    break
+                if hasattr(sibling, "display"):
+                    sibling.display = show
 ```
 
 - [ ] **Step 5: Initialize cost/tier field visibility in `_modal_on_mount`**
@@ -1132,15 +1177,16 @@ Replace the existing `on_select_changed` (line ~435) with:
 Replace `_modal_on_mount` (line ~432):
 
 ```python
-    def _modal_on_mount(self) -> None:
-        self.query_one("#model", Input).focus()
-        # Hide cost fields whose `kind` doesn't need them.
-        kind = self._provider_kinds.get(self._initial_provider,
-                                        self._default_kind(self._initial_provider))
-        cost_kind = str(self.query_one("#cost-kind-select", Select).value)
-        self._set_cost_field_visibility(cost_kind)
-        # Tier visibility matches the initial provider's kind.
-        self._set_tier_visibility(kind == "ollama")
+def _modal_on_mount(self) -> None:
+    self.query_one("#model", Input).focus()
+    # Hide cost fields whose `kind` doesn't need them.
+    kind = self._provider_kinds.get(
+        self._initial_provider, self._default_kind(self._initial_provider)
+    )
+    cost_kind = str(self.query_one("#cost-kind-select", Select).value)
+    self._set_cost_field_visibility(cost_kind)
+    # Tier visibility matches the initial provider's kind.
+    self._set_tier_visibility(kind == "ollama")
 ```
 
 - [ ] **Step 6: Update `_submit` to call `parse_cost_fields` and read the tier**

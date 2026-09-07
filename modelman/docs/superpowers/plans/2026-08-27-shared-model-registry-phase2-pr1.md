@@ -91,11 +91,12 @@ Expected: FAIL with `AttributeError: 'Registry' object has no attribute 'familie
 In `src/modelman/registry.py`, add these two methods to the `Registry` dataclass, right after `model()` (line 90, before the blank line at 91):
 
 ```python
-    def families(self) -> list[str]:
-        return sorted({m.family for m in self.models})
+def families(self) -> list[str]:
+    return sorted({m.family for m in self.models})
 
-    def models_by_family(self, family: str) -> list[ModelEntry]:
-        return [m for m in self.models if m.family == family]
+
+def models_by_family(self, family: str) -> list[ModelEntry]:
+    return [m for m in self.models if m.family == family]
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**

@@ -49,9 +49,7 @@ def test_diff_reports_new_and_modified_files():
         (ws.root / "pkg" / "__init__.py").write_text(
             "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
         )
-        (ws.root / "tests" / "test_regression.py").write_text(
-            "import unittest\n", encoding="utf-8"
-        )
+        (ws.root / "tests" / "test_regression.py").write_text("import unittest\n", encoding="utf-8")
         diff_text = ws.diff()
         assert "add_one" in diff_text
         assert [p.name for p in ws.new_files_since_baseline()] == ["test_regression.py"]
@@ -113,7 +111,9 @@ def test_bytecode_written_after_baseline_is_not_reported_as_a_change(tmp_path):
     ws = create_workspace(_task(), base_dir=tmp_path)
     try:
         (ws.root / "tests" / "__pycache__").mkdir(parents=True, exist_ok=True)
-        (ws.root / "tests" / "__pycache__" / "test_pkg.cpython-313.pyc").write_bytes(b"\xf3\r\n\x00junk")
+        (ws.root / "tests" / "__pycache__" / "test_pkg.cpython-313.pyc").write_bytes(
+            b"\xf3\r\n\x00junk"
+        )
         (ws.root / "tests" / "stale.pyc").write_bytes(b"\xf3\r\n\x00junk")
         assert ws.new_files_since_baseline() == []
         assert ws.modified_or_deleted_since_baseline() == []
@@ -125,7 +125,9 @@ def test_real_new_test_file_is_still_reported(tmp_path):
     """The exclusion must not blind gate 7 to the thing it looks for."""
     ws = create_workspace(_task(), base_dir=tmp_path)
     try:
-        (ws.root / "tests" / "test_genuine.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+        (ws.root / "tests" / "test_genuine.py").write_text(
+            "def test_x():\n    assert True\n", encoding="utf-8"
+        )
         names = [p.name for p in ws.new_files_since_baseline()]
         assert names == ["test_genuine.py"]
     finally:

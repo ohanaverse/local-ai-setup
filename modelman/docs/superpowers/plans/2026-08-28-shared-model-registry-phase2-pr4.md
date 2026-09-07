@@ -65,12 +65,8 @@ async def test_app_loads_saved_theme_on_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMAN_SETTINGS", str(settings_path))
 
     # Mock load_manifest so we don't need a real family.
-    monkeypatch.setattr(
-        "modelman.app.load_manifest", lambda *a, **kw: MagicMock()
-    )
-    monkeypatch.setattr(
-        "modelman.app.get_family_dir", lambda: tmp_path / "families"
-    )
+    monkeypatch.setattr("modelman.app.load_manifest", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("modelman.app.get_family_dir", lambda: tmp_path / "families")
 
     app = ModelmanApp()
     assert app.theme == "nord"
@@ -156,19 +152,21 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
         family="ornith",
         variants=[
             {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
-            {"id": "q8", "provider": "llamacpp", "name": "x.gguf",
-             "repo": "foo/bar", "files": ["x.gguf"]},
-            {"id": "m8", "provider": "omlx", "name": "x-mlx",
-             "repo": "foo/bar"},
+            {
+                "id": "q8",
+                "provider": "llamacpp",
+                "name": "x.gguf",
+                "repo": "foo/bar",
+                "files": ["x.gguf"],
+            },
+            {"id": "m8", "provider": "omlx", "name": "x-mlx", "repo": "foo/bar"},
         ],
     )
     save_manifest(m, fam_dir / "ornith.yaml")
     monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
     (tmp_path / "config.yaml").write_text(
-        "providers:\n  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
+        "providers:\n  ollama: {type: ollama}\n  llamacpp: {type: llamacpp}\n  omlx: {type: omlx}\n"
     )
 
     from modelman.providers import registry
@@ -189,6 +187,7 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
+
         assert isinstance(app.screen, ModelScreen)
 
         from textual.widgets import DataTable
@@ -229,13 +228,21 @@ with:
 ```python
 @pytest.mark.asyncio
 async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch):
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     q8 = ModelEntry(
-        id="llamacpp/q8", family="ornith", provider_id="llamacpp", model_name="x.gguf",
+        id="llamacpp/q8",
+        family="ornith",
+        provider_id="llamacpp",
+        model_name="x.gguf",
         fetch=Fetch(repo="foo/bar", files=["x.gguf"]),
     )
     m8 = ModelEntry(
-        id="omlx/m8", family="ornith", provider_id="omlx", model_name="x-mlx",
+        id="omlx/m8",
+        family="ornith",
+        provider_id="omlx",
+        model_name="x-mlx",
         fetch=Fetch(repo="foo/bar"),
     )
     reg_path = tmp_path / "registry.toml"
@@ -271,6 +278,7 @@ async def test_add_model_dialog_inherits_selected_provider(tmp_path, monkeypatch
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
+
         assert isinstance(app.screen, ModelScreen)
 
         from textual.widgets import DataTable
@@ -517,15 +525,12 @@ with:
 `_make_screen` still writes a scratch `config.yaml` and points `MODELMAN_CONFIG` at it, but the helper constructs `ModelScreen` directly with `registry=reg` and `state=StateStore()` — nothing on that path reads `config.py`. Remove the env var and config write from the helper:
 
 ```python
-    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
-    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-    monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
-    )
+monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
+(tmp_path / "config.yaml").write_text(
+    "providers:\n  ollama: {type: ollama}\n  llamacpp: {type: llamacpp}\n  omlx: {type: omlx}\n"
+)
 ```
 
 →

@@ -35,10 +35,23 @@ def _gates() -> GatesReport:
 
 def _metrics() -> AgentMetrics:
     return AgentMetrics(
-        requests=2, turns=1, gen_seconds=1.0, input_tok=100, output_tok=50, cache_read_tok=0,
-        cache_write_tok=0, reasoning_tok=0, tool_call_count=3, ttfts_ms=[100.0],
-        ttft_first_ms=100.0, ttft_subseq_median_ms=100.0, wall_seconds=1.0,
-        final_text="done", anomaly="", cold_first_token=False, thinking_off_reasoning=False,
+        requests=2,
+        turns=1,
+        gen_seconds=1.0,
+        input_tok=100,
+        output_tok=50,
+        cache_read_tok=0,
+        cache_write_tok=0,
+        reasoning_tok=0,
+        tool_call_count=3,
+        ttfts_ms=[100.0],
+        ttft_first_ms=100.0,
+        ttft_subseq_median_ms=100.0,
+        wall_seconds=1.0,
+        final_text="done",
+        anomaly="",
+        cold_first_token=False,
+        thinking_off_reasoning=False,
     )
 
 
@@ -55,7 +68,9 @@ def test_write_row_artifacts_writes_expected_files(tmp_path):
     assert (row_dir / "agent.jsonl.gz").exists()
     with gzip.open(row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
         assert json.loads(f.readline())["type"] == "session"
-    assert (row_dir / "diff.raw.patch").read_text(encoding="utf-8").startswith("diff --git a/tmp/xyz")
+    assert (
+        (row_dir / "diff.raw.patch").read_text(encoding="utf-8").startswith("diff --git a/tmp/xyz")
+    )
     assert "xyz" not in (row_dir / "diff.patch").read_text(encoding="utf-8")
     assert json.loads((row_dir / "gates.json").read_text(encoding="utf-8"))["cap"] == 1.0
     assert json.loads((row_dir / "metrics.json").read_text(encoding="utf-8"))["wall_seconds"] == 1.0
@@ -84,7 +99,11 @@ def test_write_row_artifacts_preserves_unicode_in_jsonl(tmp_path):
 def test_write_run_toml_masks_api_keys(tmp_path):
     suite_dict = {
         "judge": {"model": "x"},
-        "routes": {"direct": {"omlx": {"base_url": "http://localhost:8000/v1", "api": "openai-completions"}}},
+        "routes": {
+            "direct": {
+                "omlx": {"base_url": "http://localhost:8000/v1", "api": "openai-completions"}
+            }
+        },
         "resolved_api_key": "sk-super-secret-value",
     }
     path = tmp_path / "run.toml"
@@ -116,11 +135,14 @@ def test_write_run_toml_leaves_an_existing_file_untouched_on_failure(tmp_path, m
     assert path.read_text(encoding="utf-8") == "previous contents\n"
 
 
-
 def _judge_outcome(total: int, verdict: str = "principled_fix") -> JudgeOutcome:
     score = JudgeScore(
         scores={"root_cause": total, "approach": 0, "test_quality": 0, "scope": 0, "coherence": 0},
-        total=total, verdict=verdict, flags=[], rationale="", raw_text="{}",
+        total=total,
+        verdict=verdict,
+        flags=[],
+        rationale="",
+        raw_text="{}",
     )
     return JudgeOutcome(status="scored", samples=[score], combined=score, attempts_used=1)
 
@@ -128,14 +150,31 @@ def _judge_outcome(total: int, verdict: str = "principled_fix") -> JudgeOutcome:
 def _row(label, *, wall_ms, composite, gates=None, judge=None) -> RowReport:
     # wall_ms keeps the call sites readable; AgentMetrics stores seconds
     metrics = AgentMetrics(
-        requests=1, turns=1, gen_seconds=wall_ms / 1000.0, input_tok=10, output_tok=5,
-        cache_read_tok=0, cache_write_tok=0, reasoning_tok=0, tool_call_count=0,
-        ttfts_ms=[10.0], ttft_first_ms=10.0, ttft_subseq_median_ms=10.0,
-        wall_seconds=wall_ms / 1000.0, final_text="", anomaly="",
+        requests=1,
+        turns=1,
+        gen_seconds=wall_ms / 1000.0,
+        input_tok=10,
+        output_tok=5,
+        cache_read_tok=0,
+        cache_write_tok=0,
+        reasoning_tok=0,
+        tool_call_count=0,
+        ttfts_ms=[10.0],
+        ttft_first_ms=10.0,
+        ttft_subseq_median_ms=10.0,
+        wall_seconds=wall_ms / 1000.0,
+        final_text="",
+        anomaly="",
     )
     return RowReport(
-        label=label, model_id="ollama/a", thinking="off", route="direct",
-        gates=gates or _gates(), metrics=metrics, judge=judge, composite=composite,
+        label=label,
+        model_id="ollama/a",
+        thinking="off",
+        route="direct",
+        gates=gates or _gates(),
+        metrics=metrics,
+        judge=judge,
+        composite=composite,
     )
 
 
@@ -199,7 +238,10 @@ def test_render_summary_lists_every_derived_anomaly():
 
 
 def test_write_metrics_jsonl_one_line_per_row(tmp_path):
-    rows = [_row("r1", wall_ms=1000, composite=80, judge=_judge_outcome(80)), _row("r2", wall_ms=2000, composite=50)]
+    rows = [
+        _row("r1", wall_ms=1000, composite=80, judge=_judge_outcome(80)),
+        _row("r2", wall_ms=2000, composite=50),
+    ]
     path = tmp_path / "metrics.jsonl"
     write_metrics_jsonl(path, rows)
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -245,16 +287,27 @@ def test_write_judge_json_leaves_other_artifacts_alone(tmp_path):
     write_judge_json(row_dir, _judge_outcome(80))
     with gzip.open(row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
         assert json.loads(f.readline())["type"] == "agent_settled"
-    assert json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))["combined"]["total"] == 80
+    assert (
+        json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))["combined"]["total"] == 80
+    )
 
 
 def test_summary_lists_error_reasons():
     """A row with no data must say why: an outcome code alone leaves the
     operator guessing between a missing model file and a refused task."""
     reports = [
-        RowReport(label="bad", model_id="ollama/y", thinking="off", route="litellm",
-                  gates=None, metrics=None, judge=None, composite=None, closing_message="",
-                  error="failed to isolate ollama: llamacpp did not come back up"),
+        RowReport(
+            label="bad",
+            model_id="ollama/y",
+            thinking="off",
+            route="litellm",
+            gates=None,
+            metrics=None,
+            judge=None,
+            composite=None,
+            closing_message="",
+            error="failed to isolate ollama: llamacpp did not come back up",
+        ),
     ]
     md = render_summary("run1", reports)
     assert "## Errors" in md
@@ -272,8 +325,13 @@ def test_judge_json_includes_the_failure_reason(tmp_path):
     row_dir = tmp_path / "rowj"
     write_judge_json(
         row_dir,
-        JudgeOutcome(status="judge_fail", samples=[], combined=None, attempts_used=2,
-                     error='HTTP 404: no deployment for model "opus-4"'),
+        JudgeOutcome(
+            status="judge_fail",
+            samples=[],
+            combined=None,
+            attempts_used=2,
+            error='HTTP 404: no deployment for model "opus-4"',
+        ),
     )
     data = json.loads((row_dir / "judge.json").read_text(encoding="utf-8"))
     assert "no deployment" in data["error"]

@@ -519,20 +519,16 @@ class ModelFormResult(NamedTuple):
 (d) In `compose()`, add the selector between the provider label and the model label, and extend the CSS: inside `ModelForm.DEFAULT_CSS` (the block with `ModelForm Label { margin-top: 1; }`) add a rule for Select. Edit `compose()`:
 
 ```python
-        with Vertical():
-            yield Label(f"Provider: {initial_provider}", id="provider-label")
-            yield Label("Family:")
-            yield Select(
-                options=[(f, f) for f in self._families],
-                value=(
-                    self._family
-                    if self._family in self._families
-                    else self._families[0]
-                ),
-                allow_blank=False,
-                id="family-select",
-            )
-            yield Label("Model:")
+with Vertical():
+    yield Label(f"Provider: {initial_provider}", id="provider-label")
+    yield Label("Family:")
+    yield Select(
+        options=[(f, f) for f in self._families],
+        value=(self._family if self._family in self._families else self._families[0]),
+        allow_blank=False,
+        id="family-select",
+    )
+    yield Label("Model:")
 ```
 
 (add to `ModelForm.DEFAULT_CSS`, after the `ModelForm Input` line):
@@ -544,11 +540,9 @@ class ModelFormResult(NamedTuple):
 Note on the defensive prepend: the `self._family in self._families` check only covers selection; when the spec says "prepend the current family if missing", implement it here — extend the `self._families` assignment in `__init__` instead so the option list is also correct (the compose value fallback stays harmless):
 
 ```python
-        self._families: list[str] = (
-            list(families) if families else ([family] if family else ["unknown"])
-        )
-        if self._family is not None and self._family not in self._families:
-            self._families.insert(0, self._family)
+self._families: list[str] = list(families) if families else ([family] if family else ["unknown"])
+if self._family is not None and self._family not in self._families:
+    self._families.insert(0, self._family)
 ```
 
 (e) In `_submit()`, read the family from the Select and dismiss the result object. Replace the final line `self.dismiss(spec)` with:
@@ -731,9 +725,7 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
         provider_id="ollama",
         model_name="gemma4:26b-mlx",
     )
-    ms, _reg, _state = _make_screen(
-        tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry]
-    )
+    ms, _reg, _state = _make_screen(tmp_path, monkeypatch, family="gemma4:26b-mlx", entries=[entry])
     ms.queued_moves["ollama/gemma4:26b-mlx"] = "gemma4"
 
     from modelman.app import ModelmanApp
@@ -1018,9 +1010,7 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
         provider_id="ollama",
         model_name="keep",
     )
-    ms, _reg_path, _state = _make_screen(
-        tmp_path, monkeypatch, family="ornith", entries=[entry]
-    )
+    ms, _reg_path, _state = _make_screen(tmp_path, monkeypatch, family="ornith", entries=[entry])
 
     from modelman.app import ModelmanApp
     from modelman.screens.forms import ModelFormResult
@@ -1148,34 +1138,30 @@ and in `compose()`:
 (d) Rewrite `_restore_snapshot` (id-keyed restore — the discard-safety fix from the spec):
 
 ```python
-    def _restore_snapshot(self) -> None:
-        """Restore the in-memory registry/state to the snapshot taken on
-        mount, dropping any queued mutations.
+def _restore_snapshot(self) -> None:
+    """Restore the in-memory registry/state to the snapshot taken on
+    mount, dropping any queued mutations.
 
-        Restore is keyed by model id, not family: models with queued
-        (unapplied) moves still belong to this family in the registry, and
-        keying by family would duplicate them (snapshot entry + live
-        entry). _added_ids kills the second gap: a model added into a
-        *different* family this session isn't caught by the family-scoped
-        filter and would otherwise survive discard.
-        """
-        restore_ids = {m.id for m in self._snapshot_models} | self._added_ids
-        keep = [
-            m
-            for m in self.registry.models
-            if m.id not in restore_ids and m.family != self.family
-        ]
-        self.registry.models = keep + self._snapshot_models
-        # Replace state entries that were in the snapshot.
-        for mid in self._snapshot_state_entries:
-            self.state.set(mid, self._snapshot_state_entries[mid])
-        # Drop state entries that were added during this session but
-        # weren't in the snapshot, scoped to this family.
-        for mid in list(self.state.models):
-            if mid not in self._snapshot_state_entries and any(
-                m.id == mid and m.family == self.family for m in self.registry.models
-            ):
-                self.state.models.pop(mid, None)
+    Restore is keyed by model id, not family: models with queued
+    (unapplied) moves still belong to this family in the registry, and
+    keying by family would duplicate them (snapshot entry + live
+    entry). _added_ids kills the second gap: a model added into a
+    *different* family this session isn't caught by the family-scoped
+    filter and would otherwise survive discard.
+    """
+    restore_ids = {m.id for m in self._snapshot_models} | self._added_ids
+    keep = [m for m in self.registry.models if m.id not in restore_ids and m.family != self.family]
+    self.registry.models = keep + self._snapshot_models
+    # Replace state entries that were in the snapshot.
+    for mid in self._snapshot_state_entries:
+        self.state.set(mid, self._snapshot_state_entries[mid])
+    # Drop state entries that were added during this session but
+    # weren't in the snapshot, scoped to this family.
+    for mid in list(self.state.models):
+        if mid not in self._snapshot_state_entries and any(
+            m.id == mid and m.family == self.family for m in self.registry.models
+        ):
+            self.state.models.pop(mid, None)
 ```
 
 - [ ] **Step 5: Run the full test suite**

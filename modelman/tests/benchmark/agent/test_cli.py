@@ -70,14 +70,29 @@ routes = ["direct"]
 
 
 def test_run_records_agent_last_run_pointer(tmp_path, monkeypatch):
-    row = RowConfig(label="r1", model_id="ollama/a", thinking="off", route="direct", provider_id="ollama")
+    row = RowConfig(
+        label="r1", model_id="ollama/a", thinking="off", route="direct", provider_id="ollama"
+    )
     fake_run_dir = tmp_path / "results" / "20260101-000000"
 
     monkeypatch.setattr(cli_module, "load_registry", lambda: _registry())
     monkeypatch.setattr(
         cli_module,
         "run_suite",
-        lambda *a, **k: (fake_run_dir, [RowRunResult(row=row, pass_number=1, row_dir=fake_run_dir / "01", gates=None, metrics=None, diff_raw="", error=None)]),
+        lambda *a, **k: (
+            fake_run_dir,
+            [
+                RowRunResult(
+                    row=row,
+                    pass_number=1,
+                    row_dir=fake_run_dir / "01",
+                    gates=None,
+                    metrics=None,
+                    diff_raw="",
+                    error=None,
+                )
+            ],
+        ),
     )
     monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
 
@@ -115,7 +130,9 @@ def test_run_prints_each_row_error_once(tmp_path, monkeypatch, capsys):
     """When a row has an isolation error, the harness must not print it both
     inside _record_run_and_report and again in run_cmd; duplicate lines clutter
     stderr and make log-based alerting unreliable."""
-    row = RowConfig(label="r1", model_id="ollama/a", thinking="off", route="direct", provider_id="ollama")
+    row = RowConfig(
+        label="r1", model_id="ollama/a", thinking="off", route="direct", provider_id="ollama"
+    )
     fake_run_dir = tmp_path / "results" / "20260101-000000"
 
     monkeypatch.setattr(cli_module, "load_registry", lambda: _registry())
@@ -124,7 +141,17 @@ def test_run_prints_each_row_error_once(tmp_path, monkeypatch, capsys):
         "run_suite",
         lambda *a, **k: (
             fake_run_dir,
-            [RowRunResult(row=row, pass_number=1, row_dir=fake_run_dir / "01", gates=None, metrics=None, diff_raw="", error="provider failed")],
+            [
+                RowRunResult(
+                    row=row,
+                    pass_number=1,
+                    row_dir=fake_run_dir / "01",
+                    gates=None,
+                    metrics=None,
+                    diff_raw="",
+                    error="provider failed",
+                )
+            ],
         ),
     )
     monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
@@ -232,7 +259,7 @@ def test_run_records_the_pointer_even_when_restore_failed(tmp_path, monkeypatch)
 
     monkeypatch.setattr(cli_module, "run_suite", _raise)
     suite_path = tmp_path / "suite.toml"
-    suite_path.write_text("name = \"x\"\n", encoding="utf-8")
+    suite_path.write_text('name = "x"\n', encoding="utf-8")
     monkeypatch.setattr(cli_module, "load_suite", lambda *a, **k: type("S", (), {"rows": []})())
 
     result = runner.invoke(agent_app, ["run", "--suite", str(suite_path)])

@@ -410,8 +410,11 @@ async def test_family_screen_reconcile_leaves_ready_alone_for_ollama_cloud(tmp_p
         families=[FamilyEntry(name="glm")],
         models=[
             ModelEntry(
-                id="ollama/glm:cloud", family="glm", provider_id="ollama",
-                model_name="glm:cloud", location="cloud",
+                id="ollama/glm:cloud",
+                family="glm",
+                provider_id="ollama",
+                model_name="glm:cloud",
+                location="cloud",
             ),
         ],
     )
@@ -444,3 +447,37 @@ def test_family_screen_bindings_has_no_reconcile_key():
     keys = [b[0] if isinstance(b, tuple) else b.key for b in FamilyScreen.BINDINGS]
     assert "r" not in keys
     assert not hasattr(FamilyScreen, "action_reconcile")
+
+
+@pytest.mark.asyncio
+async def test_q_blocked_while_a_download_is_active(tmp_path, monkeypatch):
+    # 'q' on FamilyScreen must go through the same quit guard as ctrl+q:
+    # with a download active, the app must not exit out from under the
+    # download thread — QuitBlockedModal is pushed instead.
+    _seed(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from modelman.downloads import DownloadState
+
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.is_running
+        from modelman.screens.forms import QuitBlockedModal
+
+        assert isinstance(app.screen, QuitBlockedModal)
+
+
+@pytest.mark.asyncio
+async def test_q_exits_immediately_with_no_active_downloads(tmp_path, monkeypatch):
+    # With nothing downloading, 'q' keeps its pre-guard behavior: exit.
+    _seed(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+    assert not app.is_running

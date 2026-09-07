@@ -66,3 +66,14 @@ class Provider(ABC):
         is None so unknown providers don't crash path columns.
         """
         return None
+
+    def cleanup_partial_download(self, variant: VariantSpec) -> None:
+        """Remove any on-disk remnants of a cancelled or failed download.
+
+        Called by DownloadManager after a download is cancelled or fails.
+        Default is a no-op: providers whose download mechanism has no
+        partial-artifact cleanup to do (Ollama's `pull` is resumable and
+        reconciles its own state on the next attempt) don't need to
+        override this.
+        """
+        return

@@ -271,15 +271,23 @@ def test_merge_skips_curated():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama",
-                model_name="a", source="curated", tags=["code"],
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
+                source="curated",
+                tags=["code"],
             ),
         ]
     )
     discovered = [
         ModelEntry(
-            id="ollama/a", family="a", provider_id="ollama",
-            model_name="a", source="discovered", location="cloud",
+            id="ollama/a",
+            family="a",
+            provider_id="ollama",
+            model_name="a",
+            source="discovered",
+            location="cloud",
         ),
     ]
     result = merge(registry, discovered)
@@ -295,8 +303,12 @@ def test_merge_adds_new():
     registry = Registry(models=[])
     discovered = [
         ModelEntry(
-            id="ollama/a", family="a", provider_id="ollama",
-            model_name="a", source="discovered", location="local",
+            id="ollama/a",
+            family="a",
+            provider_id="ollama",
+            model_name="a",
+            source="discovered",
+            location="local",
         ),
     ]
     result = merge(registry, discovered)
@@ -308,15 +320,23 @@ def test_merge_refreshes_discovered_location():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama",
-                model_name="a", source="discovered", location="local",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
+                source="discovered",
+                location="local",
             ),
         ]
     )
     discovered = [
         ModelEntry(
-            id="ollama/a", family="a", provider_id="ollama",
-            model_name="a", source="discovered", location="cloud",
+            id="ollama/a",
+            family="a",
+            provider_id="ollama",
+            model_name="a",
+            source="discovered",
+            location="cloud",
         ),
     ]
     result = merge(registry, discovered)
@@ -404,8 +424,11 @@ def test_update_state_local_model():
     state = StateStore()
     models = [
         ModelEntry(
-            id="ollama/a", family="a", provider_id="ollama",
-            model_name="a", location="local",
+            id="ollama/a",
+            family="a",
+            provider_id="ollama",
+            model_name="a",
+            location="local",
         ),
     ]
     update_state(state, models, {"a": 1024})
@@ -419,8 +442,11 @@ def test_update_state_cloud_model():
     state = StateStore()
     models = [
         ModelEntry(
-            id="ollama/a", family="a", provider_id="ollama",
-            model_name="a", location="cloud",
+            id="ollama/a",
+            family="a",
+            provider_id="ollama",
+            model_name="a",
+            location="cloud",
         ),
     ]
     update_state(state, models, {})
@@ -435,8 +461,11 @@ def test_update_state_preserves_litellm_exposed():
     state.set("ollama/a", ModelState(downloaded=False, litellm_exposed=True))
     models = [
         ModelEntry(
-            id="ollama/a", family="a", provider_id="ollama",
-            model_name="a", location="local",
+            id="ollama/a",
+            family="a",
+            provider_id="ollama",
+            model_name="a",
+            location="local",
         ),
     ]
     update_state(state, models, {"a": 1024})
@@ -456,9 +485,7 @@ Add to `src/modelman/sync.py` (update imports and append):
 from .state import ModelState, StateStore
 
 
-def update_state(
-    state: StateStore, models: list[ModelEntry], sizes: dict[str, int]
-) -> None:
+def update_state(state: StateStore, models: list[ModelEntry], sizes: dict[str, int]) -> None:
     """Update downloaded/disk_path/size_bytes for discovered models.
 
     local -> downloaded=True + disk_path + size_bytes; cloud ->
@@ -551,9 +578,12 @@ def test_sync_does_not_rerun_ollama_show_for_existing_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/ornith-1.5:9b", family="ornith-1.5:9b",
-                provider_id="ollama", model_name="ornith-1.5:9b",
-                source="discovered", location="local",
+                id="ollama/ornith-1.5:9b",
+                family="ornith-1.5:9b",
+                provider_id="ollama",
+                model_name="ornith-1.5:9b",
+                source="discovered",
+                location="local",
                 model_info={"supports_vision": True},
             ),
         ]
@@ -640,9 +670,7 @@ def _seed_registry(tmp_path, monkeypatch):
     state_path = tmp_path / "modelman.toml"
     save_registry(
         Registry(
-            providers=[
-                ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-            ]
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
         ),
         registry_path,
     )
@@ -654,9 +682,7 @@ def _seed_registry(tmp_path, monkeypatch):
 def test_sync_command_saves_and_reports(tmp_path, monkeypatch):
     registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
     with patch("modelman.main.run_sync") as run_sync:
-        run_sync.return_value = SyncResult(
-            added=["ollama/x"], refreshed=[], skipped=[]
-        )
+        run_sync.return_value = SyncResult(added=["ollama/x"], refreshed=[], skipped=[])
         runner = CliRunner()
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0
@@ -743,9 +769,7 @@ from modelman.screens.models import _variant_to_model_entry
 
 def test_variant_to_model_entry_sets_source_curated():
     registry = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ]
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
     )
     variant = {"id": "ollama/x", "provider": "ollama", "name": "x"}
     entry = _variant_to_model_entry(variant, family="x", registry=registry)

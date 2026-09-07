@@ -42,6 +42,7 @@ class FamilyScreen(Screen[None]):
         ("e", "edit_family", "Edit"),
         ("d", "delete_family", "Delete"),
         ("enter", "open_family", "Open"),
+        ("g", "open_downloads", "Downloads"),
         ("q", "quit", "Quit"),
     ]
 
@@ -409,4 +410,9 @@ class FamilyScreen(Screen[None]):
         )
 
     def action_quit(self) -> None:
-        self.app.exit()
+        self.app.request_quit()  # type: ignore[attr-defined]
+
+    def action_open_downloads(self) -> None:
+        from .downloads import DownloadScreen
+
+        self.app.push_screen(DownloadScreen())

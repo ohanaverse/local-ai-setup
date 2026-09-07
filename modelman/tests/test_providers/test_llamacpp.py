@@ -231,15 +231,19 @@ def test_delete_preserves_blob_referenced_by_nested_file(tmp_path):
     (snap2 / "model.gguf").symlink_to(blob)
 
     provider = LlamaCppProvider({})
-    variant = {"id": "org--repo", "provider": "llamacpp",
-               "repo": "org/repo", "files": ["model.gguf"]}
+    variant = {
+        "id": "org--repo",
+        "provider": "llamacpp",
+        "repo": "org/repo",
+        "files": ["model.gguf"],
+    }
 
     with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
         provider.delete(variant)
 
-    assert not (snap1 / "model.gguf").exists()      # deleted variant's link gone
-    assert (snap2 / "model.gguf").exists()          # nested reference survives
-    assert blob.exists()                            # shared blob NOT orphan-deleted
+    assert not (snap1 / "model.gguf").exists()  # deleted variant's link gone
+    assert (snap2 / "model.gguf").exists()  # nested reference survives
+    assert blob.exists()  # shared blob NOT orphan-deleted
 
 
 def test_delete_unlinks_dangling_snapshot_symlink(tmp_path):
@@ -258,8 +262,12 @@ def test_delete_unlinks_dangling_snapshot_symlink(tmp_path):
     assert not gguf.exists()  # precondition: the link dangles
 
     provider = LlamaCppProvider({})
-    variant = {"id": "org--repo", "provider": "llamacpp",
-               "repo": "org/repo", "files": ["model.gguf"]}
+    variant = {
+        "id": "org--repo",
+        "provider": "llamacpp",
+        "repo": "org/repo",
+        "files": ["model.gguf"],
+    }
 
     with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
         provider.delete(variant)
@@ -274,6 +282,7 @@ def test_delete_never_reads_file_via_read_bytes(tmp_path, monkeypatch):
     — the exact OOM the symlink fast path exists to prevent. Patching
     read_bytes to raise makes any regression fail loudly instead of OOMing
     the CI runner."""
+
     def _no_read_bytes(self):
         raise AssertionError("read_bytes() called — multi-GB OOM regression")
 
@@ -289,8 +298,12 @@ def test_delete_never_reads_file_via_read_bytes(tmp_path, monkeypatch):
     (repo_dir / "blobs" / hashlib.sha256(b"weights").hexdigest()).write_bytes(b"weights")
 
     provider = LlamaCppProvider({})
-    variant = {"id": "org--repo", "provider": "llamacpp",
-               "repo": "org/repo", "files": ["model.gguf"]}
+    variant = {
+        "id": "org--repo",
+        "provider": "llamacpp",
+        "repo": "org/repo",
+        "files": ["model.gguf"],
+    }
 
     with patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir):
         provider.delete(variant)  # must not raise
@@ -412,10 +425,44 @@ def test_delete_uses_symlink_target_not_file_contents(tmp_path):
     with (
         patch("modelman.providers.llamacpp._hf_cache_dir", return_value=hub_dir),
         patch.object(
-            type(gguf_file), "read_bytes", side_effect=AssertionError("read_bytes called — OOM regression")
+            type(gguf_file),
+            "read_bytes",
+            side_effect=AssertionError("read_bytes called — OOM regression"),
         ),
     ):
         provider.delete(variant)
 
     assert not gguf_file.exists()
     assert not blob_file.exists()
+
+
+def test_cleanup_partial_download_removes_incomplete_blobs(tmp_path, monkeypatch):
+    # huggingface_hub writes partially-downloaded blobs as
+    # blobs/<hash>.incomplete during a snapshot_download; a cancelled
+    # download leaves these behind. Cleanup must remove them without
+    # touching complete files, so a retry doesn't see stale partial data
+    # and disk isn't leaked by repeated cancels.
+    hf_home = tmp_path / "hf-cache"
+    monkeypatch.setenv("HF_HOME", str(hf_home))
+    repo_dir = hf_home / "hub" / "models--org--repo"
+    blobs_dir = repo_dir / "blobs"
+    blobs_dir.mkdir(parents=True)
+    (blobs_dir / "abc123.incomplete").write_bytes(b"partial")
+    (blobs_dir / "def456").write_bytes(b"complete, unrelated file")  # must survive
+
+    provider = LlamaCppProvider({})
+    provider.cleanup_partial_download(
+        {"id": "x", "provider": "llamacpp", "repo": "org/repo", "files": ["model.gguf"]}
+    )
+
+    assert not (blobs_dir / "abc123.incomplete").exists()
+    assert (blobs_dir / "def456").exists()
+
+
+def test_cleanup_partial_download_missing_repo_dir_is_noop(tmp_path, monkeypatch):
+    # A cancel before any HF cache directory was even created must not raise.
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-cache"))
+    provider = LlamaCppProvider({})
+    provider.cleanup_partial_download(
+        {"id": "x", "provider": "llamacpp", "repo": "org/never-started", "files": ["f.gguf"]}
+    )

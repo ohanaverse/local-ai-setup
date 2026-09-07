@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-from unittest.mock import MagicMock
 
 from modelman.providers._progress import ProgressTqdm, human_bytes
 from modelman.providers.base import VariantSpec
@@ -144,57 +143,6 @@ def test_snapshot_download_real_call_no_typeerror(tmp_path, monkeypatch):
     # If tqdm_kwargs is still being passed, this raises TypeError.
     path = p.download(variant, on_progress=progress_lines.append)
     assert path.endswith("config.json")
-
-
-def test_pending_changes_forwards_on_progress(tmp_path):
-    """apply() must pass on_progress to provider.download()."""
-    from modelman.queue import PendingChanges
-    from modelman.registry import (
-        AuthConfig,
-        ModelEntry,
-        ProviderEntry,
-        Registry,
-        save_registry,
-    )
-    from modelman.state import StateStore
-
-    reg_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    entry = ModelEntry(
-        id="x",
-        family="ornith",
-        provider_id="ollama",
-        model_name="x:7b",
-    )
-    reg = Registry(
-        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
-        models=[entry],
-    )
-    save_registry(reg, reg_path)
-
-    provider = MagicMock()
-    provider.name = "ollama"
-    provider.download.return_value = "/tmp/new"
-    provider.delete.return_value = None
-
-    progress_lines: list[str] = []
-
-    pending = PendingChanges(
-        registry=reg,
-        state=StateStore(),
-        family="ornith",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers={"ollama": provider},
-        ready=[(entry.id, {"id": entry.id, "provider": "ollama", "name": "x:7b"}, True)],
-    )
-    pending.apply(on_progress=progress_lines.append)
-
-    provider.download.assert_called_once()
-    args, kwargs = provider.download.call_args
-    assert "on_progress" in kwargs
-    assert kwargs["on_progress"] is not None
-    assert callable(kwargs["on_progress"])
 
 
 def test_progress_tqdm_init_does_not_fork_when_stderr_invalid(monkeypatch):
@@ -372,3 +320,37 @@ def test_progress_tqdm_uses_unit_field_not_hardcoded_bytes():
         assert "1 / 3 B" not in line
         assert "1.0 B" not in line
         assert "2.0 B" not in line
+
+
+def test_hf_download_lock_serializes_two_active_contexts():
+    # Two "downloads" that both try to hold the active context at once
+    # must not interleave: the second must block until the first releases
+    # the lock. This is what prevents two parallel oMLX/llamacpp downloads
+    # from clobbering each other's on_progress/should_cancel callbacks —
+    # the bug the class-level slot has without this lock.
+    import threading
+    import time
+
+    from modelman.providers._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
+
+    order: list[str] = []
+
+    def _hold(label: str, hold_seconds: float) -> None:
+        with HF_DOWNLOAD_LOCK:
+            ProgressTqdm.set_active_context(lambda line: None, lambda: False)
+            order.append(f"{label}-start")
+            time.sleep(hold_seconds)
+            order.append(f"{label}-end")
+            ProgressTqdm.clear_active_context()
+
+    t1 = threading.Thread(target=_hold, args=("a", 0.1))
+    t2 = threading.Thread(target=_hold, args=("b", 0.0))
+    t1.start()
+    time.sleep(0.02)  # let t1 acquire the lock first
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # b must not start until a has fully finished (start...end...start...end),
+    # never interleaved (start...start...end...end).
+    assert order == ["a-start", "a-end", "b-start", "b-end"]

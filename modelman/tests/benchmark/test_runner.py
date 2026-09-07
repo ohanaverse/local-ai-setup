@@ -13,8 +13,12 @@ from modelman.state import ModelState, StateStore
 
 class _FakeWorkload:
     spec = WorkloadSpec(
-        name="chat", display_name="Chat", prompt="hi",
-        max_tokens=1, temperature=0.0, stream=True,
+        name="chat",
+        display_name="Chat",
+        prompt="hi",
+        max_tokens=1,
+        temperature=0.0,
+        stream=True,
     )
 
     def build_payload(self, model_id):

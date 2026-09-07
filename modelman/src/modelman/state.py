@@ -17,8 +17,11 @@ Entries stay loadable so pre-existing modelman.toml files keep working.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import threading
 import tomllib
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -127,3 +130,28 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
         },
     }
     atomic_write_toml({**store.extra, **payload}, state_path)
+
+
+_STATE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def locked_state(path: Path | None = None) -> Generator[StateStore]:
+    """Atomically read-modify-write modelman.toml.
+
+    save_state() alone is a whole-file overwrite of whatever StateStore
+    it's given, with no merge — safe only when a single writer holds the
+    only in-memory copy. Once DownloadManager can write modelman.toml
+    from a background thread on download completion while
+    PendingChanges.apply() can independently save its own (possibly
+    already-stale) snapshot for an unrelated model, two such writers can
+    silently stomp each other's changes. This acquires a process-wide
+    lock, loads the current on-disk StateStore, yields it for the caller
+    to mutate in place, and saves it back before releasing the lock —
+    every writer's mutation is always applied on top of the latest
+    on-disk state.
+    """
+    with _STATE_LOCK:
+        store = load_state(path)
+        yield store
+        save_state(store, path)

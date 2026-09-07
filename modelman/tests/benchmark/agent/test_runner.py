@@ -145,9 +145,7 @@ def test_diff_captured_before_hidden_tests_are_seeded(tmp_path, monkeypatch):
         (ws / "pkg" / "__init__.py").write_text(
             "def add_one(n: int) -> int:\n    return n + 1\n", encoding="utf-8"
         )
-        (ws / "tests" / "test_regression.py").write_text(
-            "import unittest\n", encoding="utf-8"
-        )
+        (ws / "tests" / "test_regression.py").write_text("import unittest\n", encoding="utf-8")
         return _no_diff_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(pidriver_module, "run_pi_process", _run_with_change)
@@ -238,11 +236,14 @@ def test_run_suite_row_filter_selects_by_label(tmp_path, monkeypatch):
     assert len(results) == 1
     assert results[0].row.label == wanted_label
 
+
 def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkeypatch):
     """Judging happens after restore_providers, on every row with gates
     evaluated, and the composite is rubric_total x cap (spec Scoring)."""
     order = []
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: order.append(("isolate", pid)))
+    monkeypatch.setattr(
+        isolation_module, "isolate_provider", lambda pid: order.append(("isolate", pid))
+    )
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: order.append(("restore",)))
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -251,7 +252,13 @@ def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkey
             order.append(("judge",))
             return json.dumps(
                 {
-                    "scores": {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
+                    "scores": {
+                        "root_cause": 30,
+                        "approach": 25,
+                        "test_quality": 20,
+                        "scope": 15,
+                        "coherence": 10,
+                    },
                     "total": 100,
                     "verdict": "principled_fix",
                     "flags": [],
@@ -302,8 +309,17 @@ def test_persist_judge_artifact_does_not_rewrite_the_full_row(tmp_path, monkeypa
         def complete(self, prompt, *, temperature):
             return json.dumps(
                 {
-                    "scores": {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
-                    "total": 100, "verdict": "principled_fix", "flags": [], "rationale": "ok",
+                    "scores": {
+                        "root_cause": 30,
+                        "approach": 25,
+                        "test_quality": 20,
+                        "scope": 15,
+                        "coherence": 10,
+                    },
+                    "total": 100,
+                    "verdict": "principled_fix",
+                    "flags": [],
+                    "rationale": "ok",
                 }
             )
 
@@ -316,7 +332,9 @@ def test_persist_judge_artifact_does_not_rewrite_the_full_row(tmp_path, monkeypa
         judge_transport_factory=lambda cfg, path: _FakeJudgeTransport(),
     )
 
-    assert calls["write_row_artifacts"] == 1, "write_row_artifacts ran a second time just to add judge.json"
+    assert calls["write_row_artifacts"] == 1, (
+        "write_row_artifacts ran a second time just to add judge.json"
+    )
     judge_json = json.loads((results[0].row_dir / "judge.json").read_text(encoding="utf-8"))
     assert judge_json["combined"]["total"] == 100
 
@@ -384,8 +402,17 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
         def complete(self, prompt, *, temperature):
             return json.dumps(
                 {
-                    "scores": {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
-                    "total": 100, "verdict": "principled_fix", "flags": [], "rationale": "ok",
+                    "scores": {
+                        "root_cause": 30,
+                        "approach": 25,
+                        "test_quality": 20,
+                        "scope": 15,
+                        "coherence": 10,
+                    },
+                    "total": 100,
+                    "verdict": "principled_fix",
+                    "flags": [],
+                    "rationale": "ok",
                 }
             )
 
@@ -399,7 +426,9 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
     judge_json = results[0].row_dir / "judge.json"
     assert json.loads(judge_json.read_text(encoding="utf-8"))["combined"]["total"] == 100
     with gzip.open(results[0].row_dir / "agent.jsonl.gz", "rt", encoding="utf-8") as f:
-        assert json.loads(f.readline())["type"] == "agent_settled", "re-judging truncated the raw stream"
+        assert json.loads(f.readline())["type"] == "agent_settled", (
+            "re-judging truncated the raw stream"
+        )
 
 
 def test_failed_restore_still_persists_the_sweep(tmp_path, monkeypatch):
@@ -452,7 +481,9 @@ def _cloud_registry() -> Registry:
 def _cloud_suite(tmp_path: Path) -> Path:
     return _write_suite(
         tmp_path,
-        _suite_toml(MINI_DRIFT, models='["openrouter/z"]').replace('routes = ["direct"]', 'routes = ["litellm"]'),
+        _suite_toml(MINI_DRIFT, models='["openrouter/z"]').replace(
+            'routes = ["direct"]', 'routes = ["litellm"]'
+        ),
     )
 
 
@@ -517,8 +548,7 @@ def test_omlx_6bit_override_still_isolates(tmp_path, monkeypatch, litellm_models
 
     old = '[[rows]]\nmodels = ["ollama/a"]\nthinking = ["off"]\nroutes = ["direct"]'
     new = (
-        '[[rows]]\nmodel = "ollama/a"\nthinking = "off"\n'
-        'route = "litellm"\nprovider = "omlx-6bit"'
+        '[[rows]]\nmodel = "ollama/a"\nthinking = "off"\nroute = "litellm"\nprovider = "omlx-6bit"'
     )
     toml = _suite_toml(MINI_DRIFT).replace(old, new)
     assert new in toml, "the fixture suite's row block changed shape"
@@ -542,16 +572,27 @@ def test_judge_transport_follows_the_suites_route(tmp_path, monkeypatch, litellm
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     cfg = JudgeConfig(
-        model="openrouter/anthropic/claude-opus-5", thinking="low", temperature=0.0,
-        samples=1, max_attempts=2, route="openrouter",
+        model="openrouter/anthropic/claude-opus-5",
+        thinking="low",
+        temperature=0.0,
+        samples=1,
+        max_attempts=2,
+        route="openrouter",
     )
     transport = _build_judge_transport(cfg, litellm_models_json)
     assert transport.base_url == "https://openrouter.ai/api/v1"
-    assert transport.model == "anthropic/claude-opus-5", "the openrouter/ prefix is LiteLLM's, not OpenRouter's"
+    assert transport.model == "anthropic/claude-opus-5", (
+        "the openrouter/ prefix is LiteLLM's, not OpenRouter's"
+    )
     assert transport.api_key == "sk-or-test"
 
     cfg2 = JudgeConfig(
-        model="some/model", thinking="low", temperature=0.0, samples=1, max_attempts=2, route="litellm",
+        model="some/model",
+        thinking="low",
+        temperature=0.0,
+        samples=1,
+        max_attempts=2,
+        route="litellm",
     )
     gateway = _build_judge_transport(cfg2, litellm_models_json)
     assert gateway.base_url == "http://localhost:4000/v1"
@@ -563,11 +604,17 @@ def test_judge_transport_without_openrouter_key_names_the_missing_key(monkeypatc
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     cfg = JudgeConfig(
-        model="openrouter/x", thinking="low", temperature=0.0, samples=1, max_attempts=2,
+        model="openrouter/x",
+        thinking="low",
+        temperature=0.0,
+        samples=1,
+        max_attempts=2,
         route="openrouter",
     )
     with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
-        _build_judge_transport(cfg, Path("/nonexistent/models.json"), plist_path=Path("/nonexistent.plist"))
+        _build_judge_transport(
+            cfg, Path("/nonexistent/models.json"), plist_path=Path("/nonexistent.plist")
+        )
 
 
 def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_models_json):

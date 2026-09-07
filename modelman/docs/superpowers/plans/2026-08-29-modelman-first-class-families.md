@@ -703,32 +703,31 @@ Rewrite `action_add_family` (line 205):
 Rewrite `action_edit_family` (line 216):
 
 ```python
-    def action_edit_family(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
+def action_edit_family(self) -> None:
+    table = self.query_one(DataTable)
+    if table.row_count == 0:
+        return
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+
+    def _on_close(display_name: str | None) -> None:
+        if display_name is None:
             return
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
+        self._upsert_family_entry(family_name, display_name)
+        save_registry(self.registry, self.registry_path)
+        save_state(self.state, self.state_path)
+        # _refresh_from_disk also clears the reconcile overlay; model
+        # ids didn't change so the keys stay valid, but matching
+        # add/delete (which already do this) keeps behavior uniform.
+        self._refresh_from_disk()
 
-        def _on_close(display_name: str | None) -> None:
-            if display_name is None:
-                return
-            self._upsert_family_entry(family_name, display_name)
-            save_registry(self.registry, self.registry_path)
-            save_state(self.state, self.state_path)
-            # _refresh_from_disk also clears the reconcile overlay; model
-            # ids didn't change so the keys stay valid, but matching
-            # add/delete (which already do this) keeps behavior uniform.
-            self._refresh_from_disk()
-
-        self.app.push_screen(
-            EditFamilyModal(
-                family=family_name,
-                display_name=family_display_name(self.registry, self.state, family_name)
-                or family_name,
-            ),
-            _on_close,
-        )
+    self.app.push_screen(
+        EditFamilyModal(
+            family=family_name,
+            display_name=family_display_name(self.registry, self.state, family_name) or family_name,
+        ),
+        _on_close,
+    )
 ```
 
 In `_delete_family` (line 294), add the registry-entry removal after the models removal:

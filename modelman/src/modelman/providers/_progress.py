@@ -45,6 +45,17 @@ class DownloadCancelled(Exception):
     """
 
 
+# Held by OMLXProvider.download() / LlamaCppProvider.download() for the
+# full set_active_context -> snapshot_download -> clear_active_context
+# critical section, so two different top-level HF downloads never share
+# ProgressTqdm's class-level active-context slot at the same time. See
+# the ProgressTqdm docstring above the class-level slots for why a
+# per-thread mechanism (contextvars) can't be used here instead:
+# snapshot_download's own internal worker threads must see whichever
+# context this lock is currently protecting.
+HF_DOWNLOAD_LOCK = threading.Lock()
+
+
 class ProgressTqdm(_tqdm):
     """tqdm subclass that fires a callback on each display update.
 

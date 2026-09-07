@@ -16,14 +16,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .litellm import apply_expose_queue
-from .providers._progress import DownloadCancelled
 from .registry import (
     FamilyEntry,
-    ModelEntry,
-    model_entry_to_variant,
+    find_shared_artifact_owner,
     save_registry,
 )
-from .state import save_state
+from .state import locked_state
 
 if TYPE_CHECKING:
     from .providers.base import VariantSpec
@@ -79,12 +77,19 @@ def _reason(exc: BaseException) -> str:
     # collide with errno codes and other unrelated numbers; the descriptive
     # phrases ("unauthorized", "not found") are what real errors include.
     actionable_keywords = [
-        "disk space", "no space left", "ENOSPC",
-        "permission denied", "EACCES",
-        "connection", "timeout", "network",
-        "authentication", "unauthorized",
+        "disk space",
+        "no space left",
+        "ENOSPC",
+        "permission denied",
+        "EACCES",
+        "connection",
+        "timeout",
+        "network",
+        "authentication",
+        "unauthorized",
         "not found",
-        "certificate", "SSL",
+        "certificate",
+        "SSL",
     ]
     is_actionable = any(kw.lower() in first.lower() for kw in actionable_keywords)
 
@@ -130,41 +135,6 @@ def _remove_local_artifact(state: StateStore, variant: VariantSpec) -> None:
         shutil.rmtree(p)
 
 
-def _shared_artifact_owner(
-    registry: Registry, provider: object, variant: VariantSpec
-) -> ModelEntry | None:
-    """Another registry entry whose provider artifact resolves to the same
-    on-disk target as `variant`'s, or None.
-
-    Dir-based providers key their storage on a coarse segment of the repo
-    id (omlx uses the repo *basename*), so two registry entries can share
-    one artifact directory; removing it for one silently destroys the
-    other's weights. path_of() is the provider-neutral way to ask "where
-    does this variant live on disk". Returns None when the provider has
-    no path_of or the target can't be resolved — callers treat that as
-    "no conflict" and proceed with the normal delete.
-    """
-    path_of = getattr(provider, "path_of", None)
-    if not callable(path_of):
-        return None
-    try:
-        mine = path_of(variant)
-    except Exception:  # noqa: BLE001
-        return None
-    if mine is None:
-        return None
-    for m in registry.models:
-        if m.id == variant["id"] or m.provider_id != variant["provider"]:
-            continue
-        try:
-            theirs = path_of(model_entry_to_variant(m))
-        except Exception:  # noqa: BLE001
-            continue
-        if theirs == mine:
-            return m
-    return None
-
-
 @dataclass
 class PendingChanges:
     registry: Registry
@@ -191,6 +161,12 @@ class PendingChanges:
     litellm_path: Path = field(default_factory=Path)
     failures: list[str] = field(default_factory=list)
     cancelled: bool = False
+    # Populated during apply(); used only by the final save to merge this
+    # run's changes onto a freshly-loaded on-disk StateStore instead of
+    # overwriting the whole file from this object's (possibly stale
+    # relative to a concurrent DownloadManager write) in-memory snapshot.
+    _touched_model_ids: set[str] = field(default_factory=set)
+    _forgotten_families: set[str] = field(default_factory=set)
 
     def cancel(self) -> None:
         """Request cancellation of an in-progress apply().
@@ -276,7 +252,7 @@ class PendingChanges:
                     artifact_present = True
             emit(f"delete:start|{model_id}|{label}")
             if provider is not None and artifact_present:
-                conflict = _shared_artifact_owner(self.registry, provider, variant)
+                conflict = find_shared_artifact_owner(self.registry, provider, variant)
                 if conflict is not None:
                     # Another registry entry resolves to the same on-disk
                     # artifact; removing it would destroy that entry's
@@ -317,6 +293,7 @@ class PendingChanges:
             # Clear any state entry so modelman.toml doesn't carry a
             # stale downloaded=True after the user removed the file.
             self.state.models.pop(model_id, None)
+            self._touched_model_ids.add(model_id)
             emit(f"delete:done|{model_id}|{label}")
             deleted_ids.add(model_id)
 
@@ -357,6 +334,7 @@ class PendingChanges:
             elif family_entry.display_name is None and legacy is not None and legacy.display_name:
                 family_entry.display_name = legacy.display_name
             self.state.forget_family(f)
+            self._forgotten_families.add(f)
 
         # Ids queued for deletion in this apply, whether or not the delete
         # succeeded. The ready loop must not touch any of them: a successful
@@ -376,6 +354,15 @@ class PendingChanges:
             label = _label(variant)
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
+            # Real downloads no longer run inside apply() — the caller
+            # (ModelScreen) must route a ready-on against a real provider
+            # through DownloadManager.start() instead of queuing it here.
+            # A target=True entry reaching this point with a provider
+            # present is a caller bug, not a runtime condition to handle.
+            assert not (provider is not None and target), (
+                f"ready-on for {model_id!r} must go through DownloadManager, "
+                "not PendingChanges.apply()"
+            )
             if provider is None:
                 # Flag-only provider (native or unmapped): no provider call
                 # exists — but ready-off still means "remove the artifact",
@@ -412,52 +399,22 @@ class PendingChanges:
                     )
                 else:
                     self.state.set(model_id, replace(self.state.get(model_id), ready=target))
+                self._touched_model_ids.add(model_id)
                 emit(f"ready:done|{model_id}|{label}")
-            elif target:
-                emit(f"download:start|{model_id}|{label}")
-                try:
-                    local_path = self._download(variant, on_progress)
-                except DownloadCancelled:
-                    emit(f"download:cancelled|{model_id}|{label}")
-                    emit("apply:cancelled")
-                    return
-                except Exception as exc:  # noqa: BLE001
-                    reason = _reason(exc)
-                    self.failures.append(f"download {model_id}: {exc}")
-                    emit(f"download:fail|{model_id}|{label}|{reason}")
-                    continue
-                self.state.set(
-                    model_id,
-                    replace(self.state.get(model_id), ready=True, disk_path=local_path),
-                )
-                try:
-                    size = Path(local_path).stat().st_size
-                except OSError:
-                    size = 0
-                if size > 0:
-                    from .providers._progress import human_bytes
-
-                    emit(f"download:done|{model_id}|{label}|{human_bytes(size)}")
-                else:
-                    emit(f"download:done|{model_id}|{label}")
             else:
+                # provider present, target must be False (asserted above): clear.
                 emit(f"delete:start|{model_id}|{label}")
                 # Mirror the deletes loop's guard: a stale-ready model whose
                 # artifact is already gone must clear cleanly, not fail and
                 # strand state.ready=True with the unexpose cascade skipped.
                 artifact_present = True
-                if provider is not None:
-                    try:
-                        artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
-                    except Exception:  # noqa: BLE001
-                        # Cannot confirm absence; fall back to "try the call".
-                        artifact_present = True
+                try:
+                    artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    # Cannot confirm absence; fall back to "try the call".
+                    artifact_present = True
                 if artifact_present:
-                    conflict = (
-                        _shared_artifact_owner(self.registry, provider, variant)
-                        if provider is not None
-                        else None
-                    )
+                    conflict = find_shared_artifact_owner(self.registry, provider, variant)
                     if conflict is not None:
                         reason = f"artifact shared with {conflict.id} — not removed"
                         self.failures.append(f"clear {model_id}: {reason}")
@@ -485,6 +442,7 @@ class PendingChanges:
                         size_bytes=None,
                     ),
                 )
+                self._touched_model_ids.add(model_id)
                 emit(f"delete:done|{model_id}|{label}")
             # Cascade: turning ready off (either branch) drops the model's
             # exposure — mirrors the full-delete step's was_exposed rule.
@@ -492,12 +450,12 @@ class PendingChanges:
             # the state flag directly instead of routing through the
             # config writer.
             if not target and self.state.get(model_id).litellm_exposed:
-                provider = self.providers.get(provider_id)
                 self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
                 if provider is None:
                     self.state.set(
                         model_id, replace(self.state.get(model_id), litellm_exposed=False)
                     )
+                    self._touched_model_ids.add(model_id)
                 else:
                     self.exposes.append((model_id, False))
 
@@ -538,11 +496,24 @@ class PendingChanges:
                 # thread writing to stderr.
                 for warning in warnings:
                     emit(f"expose:warning|{_sanitize(warning)}")
+                self._touched_model_ids.update(mid for mid, _ in self.exposes)
 
         emit("save:start")
         try:
             save_registry(self.registry, self.registry_path)
-            save_state(self.state, self.state_path)
+            with locked_state(self.state_path) as fresh_state:
+                for mid in self._touched_model_ids:
+                    if mid in self.state.models:
+                        fresh_state.set(mid, self.state.get(mid))
+                    else:
+                        # The deletes loop removed this id from self.state —
+                        # "touching" it means removal, so mirror that on the
+                        # fresh store. Writing self.state.get(mid) here would
+                        # insert a default (ready=False) entry and resurrect
+                        # the row this apply just deleted.
+                        fresh_state.models.pop(mid, None)
+                for family in self._forgotten_families:
+                    fresh_state.forget_family(family)
             emit("save:done")
         except Exception as exc:  # noqa: BLE001
             reason = _reason(exc)
@@ -550,13 +521,6 @@ class PendingChanges:
             emit(f"save:fail|{reason}")
 
         emit("apply:done")
-
-    def _download(self, variant: VariantSpec, on_progress: EventFn | None = None) -> str:
-        provider = self.providers[variant["provider"]]
-        try:
-            return provider.download(variant, on_progress=on_progress)  # type: ignore[attr-defined]
-        except TypeError:
-            return provider.download(variant)  # type: ignore[attr-defined]
 
     def _delete(self, variant: VariantSpec) -> None:
         provider = self.providers[variant["provider"]]

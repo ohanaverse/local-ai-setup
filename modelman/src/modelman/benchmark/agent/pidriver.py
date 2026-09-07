@@ -22,8 +22,12 @@ DEFAULT_CONTEXT_WINDOW = 262144
 LIVE_PI_MODELS_PATH = Path.home() / ".pi" / "agent" / "models.json"
 
 PI_BASE_ARGS = [
-    "--mode", "json",
-    "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files",
+    "--mode",
+    "json",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
     "--no-approve",
 ]
 
@@ -178,10 +182,14 @@ def build_pi_command(target: PiTarget, thinking: str, session_dir: Path, prompt:
     return [
         "pi",
         *PI_BASE_ARGS,
-        "--session-dir", str(session_dir),
-        "--model", target.model_arg,
-        "--thinking", thinking,
-        "-p", prompt,
+        "--session-dir",
+        str(session_dir),
+        "--model",
+        target.model_arg,
+        "--thinking",
+        thinking,
+        "-p",
+        prompt,
     ]
 
 
@@ -538,7 +546,10 @@ def compute_metrics(
     m.final_text = "".join(deltas)
     if not m.final_text:
         for event in reversed(list(events)):
-            if event.get("type") == "message_end" and (event.get("message") or {}).get("role") == "assistant":
+            if (
+                event.get("type") == "message_end"
+                and (event.get("message") or {}).get("role") == "assistant"
+            ):
                 m.final_text = _extract_text(event)
                 break
 
@@ -573,7 +584,11 @@ def compute_metrics(
         calls_per_name.update(tool_starts.values())
         for name, count in calls_per_name.items():
             if count >= 4:
-                m.anomaly = f"{m.anomaly}+REPEATED_FAILURE({name})" if m.anomaly else f"REPEATED_FAILURE({name})"
+                m.anomaly = (
+                    f"{m.anomaly}+REPEATED_FAILURE({name})"
+                    if m.anomaly
+                    else f"REPEATED_FAILURE({name})"
+                )
                 break
 
     # thinking=off but the backend still emitted reasoning tokens: a flag and a

@@ -684,13 +684,12 @@ def test_apply_expose_queue_ensures_settings_when_all_items_fail(tmp_path, monke
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False))
@@ -722,13 +721,12 @@ def test_apply_expose_queue_identical_reexpose_does_not_restart(tmp_path, monkey
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))

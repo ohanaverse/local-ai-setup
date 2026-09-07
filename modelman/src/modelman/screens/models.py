@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,7 +34,7 @@ from ..registry import (
     provider_config,
     save_registry,
 )
-from ..state import ModelState, StateStore
+from ..state import ModelState, StateStore, load_state
 from . import reconcile_model_state, reload_preserving_cursor
 from .forms import default_form_kind
 
@@ -174,6 +175,7 @@ class ModelScreen(Screen[None]):
         ("d", "delete_model", "Delete"),
         ("e", "edit_model", "Edit"),
         Binding("enter", "select_row", "Edit", priority=True),
+        ("g", "open_downloads", "Downloads"),
         ("r", "toggle_ready", "Toggle ready"),
         ("x", "toggle_expose", "Toggle exposed"),
     ]
@@ -258,6 +260,15 @@ class ModelScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        # Captured once while mounted: `self.app` (Screen.app) resolves via
+        # a contextvar that isn't set on a background thread, falling back
+        # to walking self._parent up to the App — a walk that raises
+        # NoActiveAppError once this screen is popped. _run_apply and the
+        # deferred-expose closure it registers both run later, on
+        # StatusScreen's worker thread, after ModelScreen has already been
+        # popped (_push_status_screen pops before pushing StatusScreen) —
+        # they must use this reference instead of `self.app`.
+        self._app_ref = self.app
         mt = self.query_one("#model-table", DataTable)
         mt.add_columns(
             "FAMILY",
@@ -274,6 +285,8 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
         mt.focus()
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+        self._last_poll_had_active = False
+        self.set_interval(1.0, self._poll_downloads)
 
     def _run_reconcile(self) -> None:
         """Ask each provider whether its models are on disk; write the
@@ -294,12 +307,37 @@ class ModelScreen(Screen[None]):
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
+    def _poll_downloads(self) -> None:
+        """Reload state from disk while any download is active (or just
+        finished, to catch the final transition), so DownloadManager's
+        writes — which land on disk, not on this screen's in-memory
+        StateStore — become visible without the user navigating away and
+        back. Cheap: modelman.toml is small and this only runs while
+        downloads exist."""
+        active = self.app.downloads.has_active()  # type: ignore[attr-defined]
+        if not active and not self._last_poll_had_active:
+            return
+        self._last_poll_had_active = active
+        try:
+            self.state = load_state(self.state_path)
+        except Exception:  # noqa: BLE001
+            return
+        self.reload()
+
     def reload(self) -> None:
         self._load_models()
 
     def _load_models(self) -> None:
-        def _repopulate() -> None:
+        try:
             mt = self.query_one("#model-table", DataTable)
+        except NoMatches:
+            # Screen already popped — e.g. a background download's
+            # on_complete callback (_on_download_finished) or the 1s
+            # _poll_downloads timer fired after Escape closed this screen
+            # while an untracked download was still in flight.
+            return
+
+        def _repopulate() -> None:
             mt.clear()
             models = sorted(
                 self.registry.models_by_family(self.family),
@@ -310,6 +348,8 @@ class ModelScreen(Screen[None]):
                 size_str = _human_size(self.state.get(m.id).size_bytes) if ready else "—"
                 if m.id in self.queued_deletes:
                     status = "[red]✗[/red]"
+                elif self.app.downloads.is_downloading(m.id):  # type: ignore[attr-defined]
+                    status = "[cyan]⏳[/cyan]"
                 elif m.id in self.queued_ready:
                     status = (
                         "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
@@ -354,8 +394,8 @@ class ModelScreen(Screen[None]):
                     key=m.id,
                 )
 
-        reload_preserving_cursor(self.query_one("#model-table", DataTable), _repopulate)
-        self._refresh_details_panel(self.query_one("#model-table", DataTable).cursor_row)
+        reload_preserving_cursor(mt, _repopulate)
+        self._refresh_details_panel(mt.cursor_row)
 
     def _is_ready(self, model_id: str) -> bool:
         """Truth about whether a model is ready to use — a pure read of
@@ -367,9 +407,16 @@ class ModelScreen(Screen[None]):
         return self.state.get(model_id).ready
 
     def _projected_ready(self, model_id: str) -> bool:
-        """The ready value this model will have after apply(): the queued
-        target if one exists, otherwise the persisted flag."""
-        return self.queued_ready.get(model_id, self.state.get(model_id).ready)
+        """The ready value this model will have after apply() (or, for a
+        model routed through DownloadManager instead of the queue, after
+        its download finishes): the queued target if one exists,
+        otherwise True while actively downloading, otherwise the
+        persisted flag."""
+        if model_id in self.queued_ready:
+            return self.queued_ready[model_id]
+        if self.app.downloads.is_downloading(model_id):  # type: ignore[attr-defined]
+            return True
+        return self.state.get(model_id).ready
 
     def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
         """Single invariant: expose depends on ready. A queued expose=True
@@ -388,8 +435,22 @@ class ModelScreen(Screen[None]):
             self.queued_exposes.pop(mid, None)
             self.app.notify(f"Expose cancelled: {mid} will not be ready")
 
+    def _cancel_ready_cascade(self, mid: str) -> None:
+        """Undo an expose-triggered ready cascade: cancel a running
+        download if that's what the cascade used (mapped provider), or
+        drop the queued flag-only ready-on otherwise. Shared by the
+        repeated-'x'-keypress cancel path and discard (Discard-cancels-
+        cascade)."""
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
+        self.queued_ready.pop(mid, None)
+        self._ready_cascade_for_expose.discard(mid)
+
     def _refresh_pending_bar(self) -> None:
-        bar = self.query_one("#pending-bar", Static)
+        try:
+            bar = self.query_one("#pending-bar", Static)
+        except NoMatches:
+            return  # screen already popped (see _load_models)
         bar.update(
             f"Pending: ready {len(self.queued_ready)} · delete {len(self.queued_deletes)}"
             f" · move {len(self.queued_moves)} · expose {len(self.queued_exposes)}"
@@ -404,6 +465,20 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
+
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            # Three-way 'r': downloading -> cancel. The model's readiness
+            # was transient (it only becomes ready when the download
+            # finishes), so a queued expose — whether cascade-marked or
+            # queued while the model merely looked ready-by-projection —
+            # would be doomed once the download stops. Drop both halves.
+            self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
+            self.queued_exposes.pop(mid, None)
+            self._ready_cascade_for_expose.discard(mid)
+            self.app.notify(f"Cancelling download: {mid}")
+            self.reload()
+            return
+
         persisted_ready = self.state.get(mid).ready
         displayed_ready = self.queued_ready.get(mid, persisted_ready)
         target = not displayed_ready
@@ -424,12 +499,22 @@ class ModelScreen(Screen[None]):
             self._refresh_pending_bar()
             self.reload()
             return
-        # Queue the ready target only. apply() owns the consequences — it
-        # removes the artifact (provider delete, or the recorded disk_path
-        # for flag-only providers) on ready-off and re-derives the unexpose
-        # cascade from the persisted exposure flag — and the invariant below
-        # drops any queued expose the new ready value makes impossible, so
-        # the screen queue can never strand a doomed expose.
+
+        if target and self._provider_can_download(entry.provider_id):
+            # A real download (ollama/omlx/llamacpp, local or cloud):
+            # start it immediately in the background instead of queuing
+            # it — it is never applied by PendingChanges.apply() (Task 4).
+            self._start_download(entry)
+            return
+
+        # Flag-only provider (native/unmapped) ready-on, or any ready-off:
+        # unchanged apply-on-exit queue behavior. apply() owns the
+        # consequences — it removes the artifact (provider delete, or the
+        # recorded disk_path for flag-only providers) on ready-off and
+        # re-derives the unexpose cascade from the persisted exposure flag
+        # — and the invariant below drops any queued expose the new ready
+        # value makes impossible, so the screen queue can never strand a
+        # doomed expose.
         self.queued_ready[mid] = target
         self._enforce_expose_ready_rule(mid, entry)
         self._last_provider_used = entry.provider_id
@@ -457,8 +542,7 @@ class ModelScreen(Screen[None]):
             if mid in self._ready_cascade_for_expose:
                 # The download was only queued to serve this expose; the
                 # user never asked for it independently.
-                self.queued_ready.pop(mid, None)
-                self._ready_cascade_for_expose.discard(mid)
+                self._cancel_ready_cascade(mid)
             self.app.notify(f"Model already {'exposed' if target else 'not exposed'}")
             self._refresh_pending_bar()
             self.reload()
@@ -471,18 +555,77 @@ class ModelScreen(Screen[None]):
             # Exposing requires ready — the same gate _validated_entry
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite
-            # their request; otherwise cascade the download in (apply runs
-            # the ready loop before the expose loop, so the order works).
+            # their request; otherwise cascade the download in: a mapped
+            # provider's ready-on starts the real download immediately
+            # (DownloadManager), a flag-only provider's is queued (apply
+            # runs the ready loop before the expose loop, so the order
+            # works).
             if mid in self.queued_ready:
                 self.app.notify(
                     "Model is queued to be made not ready — cancel that before exposing"
                 )
                 return
+            if self._provider_can_download(entry.provider_id):
+                self._start_download(entry)
+            else:
+                self.queued_ready[mid] = True
             self._ready_cascade_for_expose.add(mid)
-            self.queued_ready[mid] = True
         self.queued_exposes[mid] = target
         self._refresh_pending_bar()
         self.reload()
+
+    def _provider_entry_or_none(self, provider_id: str):
+        try:
+            return self.registry.provider(provider_id)
+        except KeyError:
+            return None
+
+    def _provider_can_download(self, provider_id: str) -> bool:
+        """True when a ready-on against this provider is a real
+        download/pull and must go through DownloadManager: the provider
+        has a registered Provider class (ollama/omlx/llamacpp). This is
+        deliberately NOT model_has_local_artifact — an ollama *cloud*
+        model has no local artifact but its ready-on still runs a real
+        `ollama pull` (that's what registers the tag), so it must route
+        through DownloadManager too; native/unmapped providers have no
+        Provider class and keep the queued flag flip. Mirrors _run_apply's
+        try/except-KeyError flag-only rule."""
+        if self._provider_entry_or_none(provider_id) is None:
+            return False
+        from ..providers.registry import ProviderRegistry
+
+        return provider_id in ProviderRegistry.available()
+
+    def _start_download(self, entry: ModelEntry) -> None:
+        """Route a real ready-on through DownloadManager instead of the
+        apply-on-exit queue — the download starts immediately in the
+        background and PendingChanges.apply() never touches it (Task 4's
+        assertion enforces this)."""
+        variant = model_entry_to_variant(entry)
+        config = provider_config(self.registry.provider(entry.provider_id))
+
+        def _on_complete(local_path: str, mid: str = entry.id) -> None:
+            self.app.call_from_thread(self._on_download_finished, mid)
+
+        self.app.downloads.start(  # type: ignore[attr-defined]
+            entry.id, variant, config, on_complete=_on_complete, registry=self.registry
+        )
+        self._last_provider_used = entry.provider_id
+        self._refresh_pending_bar()
+        self.reload()
+
+    def _on_download_finished(self, model_id: str) -> None:
+        """Best-effort immediate refresh when this screen started the
+        download that just finished. The 1s poll (below) is the
+        authoritative fallback for every other case — a download that
+        finishes after the initiating ModelScreen was replaced by
+        another instance still gets picked up there."""
+        try:
+            self.state = load_state(self.state_path)
+        except Exception:  # noqa: BLE001
+            return
+        self.reload()
+        self._refresh_pending_bar()
 
     def _provider_list(self) -> list[str]:
         # Use the full configured-provider list, not just the providers
@@ -548,7 +691,19 @@ class ModelScreen(Screen[None]):
         entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
         self.registry.models.append(entry)
         self._added_ids.add(variant["id"])
-        self.queued_ready[variant["id"]] = True
+        # Persist immediately (mirrors _on_edit_model): a real-download
+        # ready-on bypasses the apply-on-exit queue entirely via
+        # _start_download, so there's no later save point that would
+        # otherwise persist this entry.
+        save_registry(self.registry, self.registry_path)
+        if self._provider_can_download(entry.provider_id):
+            # Mapped provider: the ready-on is a real download/pull —
+            # start it in the background now instead of queueing it.
+            self._start_download(entry)
+        else:
+            # Flag-only provider or cloud model with no download
+            # mechanism: unchanged apply-on-exit queue behavior.
+            self.queued_ready[variant["id"]] = True
         self._last_provider_used = variant["provider"]
         self.reload()
         self._refresh_pending_bar()
@@ -561,6 +716,11 @@ class ModelScreen(Screen[None]):
         mid = str(row_key.value)
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
+            return
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            # The weights are being written right now; deleting mid-flight
+            # would race the download thread. Cancel first instead.
+            self.app.notify(f"{mid} is downloading — cancel first")
             return
         # "d" queues only the registry removal. apply()'s deletes loop already
         # removes the on-disk file, drops the registry/state rows, and cascades
@@ -587,6 +747,11 @@ class ModelScreen(Screen[None]):
         mid = str(row_key.value)
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
+            return
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            # An edit that changes the variant mid-download would race the
+            # in-flight write; move/edit must wait for the download.
+            self.app.notify(f"{mid} is downloading — cancel first")
             return
         from .forms import ModelForm
 
@@ -659,13 +824,17 @@ class ModelScreen(Screen[None]):
         self.reload()
         self._refresh_pending_bar()
 
+    def has_pending_changes(self) -> bool:
+        """True when this screen holds any unapplied queued mutation
+        (ready/delete/move/expose). Used by action_back's exit-confirm
+        gate and ModelmanApp.request_quit()'s ctrl+q guard, so a queue
+        pending here blocks both Escape and quit the same way."""
+        return bool(
+            self.queued_ready or self.queued_deletes or self.queued_moves or self.queued_exposes
+        )
+
     def action_back(self) -> None:
-        if (
-            not self.queued_ready
-            and not self.queued_deletes
-            and not self.queued_moves
-            and not self.queued_exposes
-        ):
+        if not self.has_pending_changes():
             self.app.pop_screen()
             return
         from .forms import ConfirmExitDialog
@@ -680,11 +849,30 @@ class ModelScreen(Screen[None]):
             self._on_exit_confirm,
         )
 
+    def action_open_downloads(self) -> None:
+        from .downloads import DownloadScreen
+
+        self.app.push_screen(DownloadScreen())
+
     def _on_exit_confirm(self, choice: str | None) -> None:
         if choice == "apply":
             self._push_status_screen()
             return
         if choice == "discard":
+            # Cancel any download that was only running because an expose
+            # cascaded it in (Discard-cancels-cascade) BEFORE restoring the
+            # snapshot, so a discarded session leaves no background
+            # download running for a change the user walked away from.
+            for mid in list(self._ready_cascade_for_expose):
+                self._cancel_ready_cascade(mid)
+            # Also cancel any download still running for a model added
+            # this session: _restore_snapshot() below removes its registry
+            # entry, and a download that finishes afterward would persist
+            # a dangling modelman.toml row (ready=True) for a model_id no
+            # longer in the registry.
+            for mid in list(self._added_ids):
+                if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+                    self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
             self._restore_snapshot()
             # Same-family edits save registry immediately on _on_edit_model.
             # Restoring the in-memory snapshot is not enough: FamilyScreen
@@ -712,6 +900,41 @@ class ModelScreen(Screen[None]):
 
         self.app.pop_screen()
         self.app.push_screen(StatusScreen(family=self.family, run_apply=self._run_apply))
+
+    def _register_deferred_expose(self, model_id: str, litellm_path: Path) -> None:
+        """Defer a queued expose against a still-downloading model: it
+        can't be applied now (the ready gate would reject it — the model
+        isn't ready yet), so register it to run once DownloadManager
+        reports success instead. Loads a fresh Registry/StateStore at
+        run time rather than closing over self.registry/self.state,
+        since this may fire long after this ModelScreen instance is
+        gone."""
+        registry_path = self.registry_path
+        state_path = self.state_path
+        app = self._app_ref
+
+        def _apply_deferred_expose() -> None:
+            from ..litellm import apply_expose_queue
+            from ..registry import load_registry
+            from ..state import locked_state
+
+            registry = load_registry(registry_path)
+            with locked_state(state_path) as state:
+                outcomes, warnings = apply_expose_queue(
+                    registry, state, [(model_id, True)], litellm_path
+                )
+            # This runs on DownloadManager's background thread (via its
+            # post-download action, itself inside a contextlib.suppress
+            # that would otherwise swallow this silently) — a per-model
+            # failure here is returned in outcomes, not raised, so it
+            # would never surface to the user without this notify.
+            for mid, _target, error in outcomes:
+                if error is not None:
+                    app.call_from_thread(app.notify, f"Expose failed for {mid}: {error}")  # type: ignore[attr-defined]
+            for warning in warnings:
+                app.call_from_thread(app.notify, warning)  # type: ignore[attr-defined]
+
+        app.downloads.register_post_download(model_id, _apply_deferred_expose)  # type: ignore[attr-defined]
 
     def _run_apply(
         self,
@@ -748,6 +971,37 @@ class ModelScreen(Screen[None]):
                 continue
             # Other exceptions (bad config, import failure, etc.) are
             # real errors and must not be silently treated as flag-only.
+        litellm_path = default_litellm_config_path()
+        # DownloadManager status per model, snapshotted once. Uses
+        # self._app_ref (captured on_mount), not self.app: this method runs
+        # on StatusScreen's worker thread after ModelScreen has already
+        # been popped (_push_status_screen pops before pushing
+        # StatusScreen), and Screen.app raises NoActiveAppError once
+        # popped and off the main thread.
+        # is_downloading() alone would also race: it flips to False the
+        # instant a download finishes, before this screen's on_complete
+        # callback reloads self.state from disk.
+        download_status = {
+            s.model_id: s.status
+            for s in self._app_ref.downloads.states()  # type: ignore[attr-defined]
+        }
+        immediate_exposes: list[tuple[str, bool]] = []
+        for mid, target in self.queued_exposes.items():
+            if target and download_status.get(mid) == "downloading":
+                self._register_deferred_expose(mid, litellm_path)
+                continue
+            if target and download_status.get(mid) == "done":
+                # The download that made this model ready finished: disk
+                # is already authoritative (DownloadManager persists to
+                # modelman.toml before flipping is_downloading() to False),
+                # but self.state may not have caught up yet. Refresh just
+                # this model's row rather than the whole StateStore, so an
+                # in-memory-only reconcile result for an unrelated model
+                # isn't discarded by reloading state wholesale.
+                with contextlib.suppress(Exception):
+                    self.state.set(mid, load_state(self.state_path).get(mid))
+            immediate_exposes.append((mid, target))
+
         pending = PendingChanges(
             registry=self.registry,
             state=self.state,
@@ -758,8 +1012,8 @@ class ModelScreen(Screen[None]):
             ready=[(mid, specs_by_id[mid], target) for mid, target in self.queued_ready.items()],
             deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()],
             moves=list(self.queued_moves.items()),
-            exposes=list(self.queued_exposes.items()),
-            litellm_path=default_litellm_config_path(),
+            exposes=immediate_exposes,
+            litellm_path=litellm_path,
         )
         register(pending)
         pending.apply(on_event=on_event, on_progress=on_progress)

@@ -19,7 +19,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from modelman.providers._progress import DownloadCancelled
 from modelman.queue import PendingChanges
 from modelman.registry import (
     AuthConfig,
@@ -154,25 +153,19 @@ def _setup_apply_test(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_apply_deletes_before_downloads(tmp_path):
-    """On apply, delete steps must run before download steps (free disk first)."""
+def test_apply_deletes_before_ready_loop(tmp_path):
+    """On apply, delete steps must run before the ready loop (free disk
+    first). Downloads no longer run inside apply() — a real ready-on goes
+    through DownloadManager instead (see queue.py's ready-loop assert) —
+    so the ordering guarantee that survives is deletes-before-ready-loop,
+    pinned here with a flag-only ready-on."""
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
     order: list[str] = []
-
-    providers["ollama"].download.return_value = str(tmp_path / "new-a")
-    providers["llamacpp"].download.return_value = str(tmp_path / "new-b")
 
     def track_delete(variant):
         order.append(f"delete:{variant['id']}")
 
-    def track_download(variant):
-        order.append(f"download:{variant['id']}")
-        return f"/tmp/new-{variant['id']}"
-
     providers["ollama"].delete.side_effect = track_delete
-    providers["ollama"].download.side_effect = track_download
-    providers["llamacpp"].delete.side_effect = track_delete
-    providers["llamacpp"].download.side_effect = track_download
 
     pending = PendingChanges(
         registry=reg,
@@ -182,39 +175,35 @@ def test_apply_deletes_before_downloads(tmp_path):
         state_path=state_path,
         providers=providers,
         deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
+        # Flag-only: no provider entry for this id, so the ready loop
+        # flips the state flag without a provider call (and without the
+        # ready-on-must-go-through-DownloadManager assertion).
         ready=[
             (
-                "llamacpp/b",
-                _variant(
-                    id="llamacpp/b",
-                    provider="llamacpp",
-                    name="f:b",
-                    repo="org/repo",
-                    files=["x.gguf"],
-                ),
+                "unmapped/c",
+                _variant(id="unmapped/c", provider="unmapped", name="f:c"),
                 True,
             )
         ],
     )
-    pending.apply()
+    events: list[str] = []
+    pending.apply(on_event=events.append)
 
-    assert order.index("delete:ollama/a") < order.index("download:llamacpp/b")
+    assert order.index("delete:ollama/a") < events.index("ready:done|unmapped/c|f:c")
     # Registry on disk no longer contains the deleted entry.
     reloaded = load_registry(reg_path)
-    assert reloaded.model("llamacpp/b") is not None  # still present (was a download target)
-    # Wait: the delete target was ollama/a, the download target was llamacpp/b.
-    # After delete, ollama/a should be gone; after download, llamacpp/b stays.
     assert all(m.id != "ollama/a" for m in reloaded.models)
-    # State recorded the download.
-    assert state.models["llamacpp/b"].ready is True
-    # Both files were written.
     assert reg_path.exists()
     assert state_path.exists()
 
 
 def test_apply_collects_failures(tmp_path):
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.side_effect = RuntimeError("network down")
+    # Ready-off clear failure (the surviving in-apply failure path now
+    # that downloads no longer run inside apply()).
+    state.set("ollama/a", ModelState(ready=True, disk_path="ollama:f:a"))
+    providers["ollama"].is_downloaded.return_value = True
+    providers["ollama"].delete.side_effect = RuntimeError("network down")
 
     pending = PendingChanges(
         registry=reg,
@@ -223,7 +212,7 @@ def test_apply_collects_failures(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
+        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
     )
     pending.apply()
 
@@ -258,96 +247,9 @@ def test_apply_empty_is_noop(tmp_path):
     assert not state_path.exists()
 
 
-def test_apply_download_cancelled_is_not_a_failure(tmp_path):
-    """When a provider raises DownloadCancelled mid-download, apply()
-    must emit apply:cancelled, NOT record a failure and NOT save."""
-    reg_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    b = _entry(
-        id="llamacpp/b",
-        family="f",
-        provider="llamacpp",
-        name="f:b",
-        repo="org/repo",
-        files=["x.gguf"],
-    )
-    reg = Registry(
-        providers=[ProviderEntry(id="llamacpp", name="llama.cpp", auth=AuthConfig(type="none"))],
-        models=[b],
-    )
-    # No pre-save: the test asserts neither file is created on cancel.
-    state = StateStore()
-
-    provider = MagicMock()
-    provider.name = "llamacpp"
-    provider.download.side_effect = DownloadCancelled("weights.bin")
-
-    progress_lines: list[str] = []
-    events: list[str] = []
-
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        family="f",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers={"llamacpp": provider},
-        ready=[
-            (
-                "llamacpp/b",
-                _variant(
-                    id="llamacpp/b",
-                    provider="llamacpp",
-                    name="f:b",
-                    repo="org/repo",
-                    files=["x.gguf"],
-                ),
-                True,
-            )
-        ],
-    )
-    pending.apply(on_event=events.append, on_progress=progress_lines.append)
-
-    # Cancelled cleanly; not recorded as a failure.
-    assert pending.failures == []
-    assert any(tag.startswith("download:cancelled") for tag in events)
-    assert "apply:cancelled" in events
-    assert "apply:done" not in events
-    # Neither file is saved on cancel.
-    assert not reg_path.exists()
-    assert not state_path.exists()
-
-
-def test_apply_download_fail_includes_reason_in_event(tmp_path):
-    """When a download raises, the fail event must include the exception
-    so the StatusScreen can show WHY it failed."""
-    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.side_effect = ConnectionError("dial tcp: i/o timeout")
-
-    events: list[str] = []
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        family="f",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers=providers,
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
-    )
-    pending.apply(on_event=events.append)
-
-    fail_events = [t for t in events if t.startswith("download:fail")]
-    assert fail_events, f"expected a download:fail event; got {events}"
-    fail = fail_events[0]
-    parts = fail.split("|", 3)
-    assert len(parts) == 4, f"expected 4 pipe-delimited fields; got {fail!r}"
-    assert "i/o timeout" in parts[3]
-
-
 def test_apply_save_fail_includes_reason_in_event(tmp_path):
     """On save failure, the event should carry the underlying error."""
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.return_value = str(tmp_path / "downloaded-a-new")
 
     # Make the registry save raise.
     from modelman import registry as reg_mod
@@ -367,7 +269,7 @@ def test_apply_save_fail_includes_reason_in_event(tmp_path):
             registry_path=reg_path,
             state_path=state_path,
             providers=providers,
-            ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
+            deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
         )
         pending.apply(on_event=events.append)
     finally:
@@ -403,95 +305,6 @@ def test_apply_delete_fail_includes_reason_in_event(tmp_path):
     parts = fails[0].split("|", 3)
     assert len(parts) == 4
     assert "read-only fs" in parts[3]
-
-
-def test_apply_download_done_includes_size_of_file(tmp_path):
-    """The download:done event should carry the on-disk size of the
-    downloaded file (e.g. "21.7 GB") so the StatusScreen can show
-    concrete proof the download landed at the expected size."""
-    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    real_path = tmp_path / "downloaded.bin"
-    real_path.write_bytes(b"x" * (1536 * 1024 * 1024))  # ~ 1.5 GB
-    providers["ollama"].download.return_value = str(real_path)
-
-    events: list[str] = []
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        family="f",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers=providers,
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
-    )
-    pending.apply(on_event=events.append)
-
-    done_events = [t for t in events if t.startswith("download:done")]
-    assert done_events
-    parts = done_events[0].split("|", 3)
-    assert len(parts) == 4
-    assert "1.5 GB" in parts[3], parts[3]
-
-
-def test_apply_download_done_omits_size_when_zero_or_unreadable(tmp_path):
-    """If stat-ing the path fails or returns 0, the 4th field is dropped."""
-    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.return_value = str(tmp_path / "nope-does-not-exist.bin")
-
-    events: list[str] = []
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        family="f",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers=providers,
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
-    )
-    pending.apply(on_event=events.append)
-
-    done_events = [t for t in events if t.startswith("download:done")]
-    assert done_events
-    assert len(done_events[0].split("|", 3)) == 3, done_events[0]
-
-
-def test_apply_writes_state_for_each_downloaded_model(tmp_path):
-    """Each completed download records a ModelState with downloaded=True
-    and disk_path set in the state store AND on disk after save."""
-    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.return_value = str(tmp_path / "new-a")
-    providers["llamacpp"].download.return_value = str(tmp_path / "new-b")
-
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        family="f",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers=providers,
-        ready=[
-            ("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True),
-            (
-                "llamacpp/b",
-                _variant(
-                    id="llamacpp/b",
-                    provider="llamacpp",
-                    name="f:b",
-                    repo="org/repo",
-                    files=["x.gguf"],
-                ),
-                True,
-            ),
-        ],
-    )
-    pending.apply()
-
-    # State on disk has both downloads recorded.
-    reloaded_state = load_state(state_path)
-    assert reloaded_state.get("ollama/a").ready is True
-    assert reloaded_state.get("ollama/a").disk_path == str(tmp_path / "new-a")
-    assert reloaded_state.get("llamacpp/b").ready is True
-    assert reloaded_state.get("llamacpp/b").disk_path == str(tmp_path / "new-b")
 
 
 def test_apply_removes_deleted_models_from_registry_on_disk(tmp_path):
@@ -607,8 +420,11 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
     providers["ollama"].delete.side_effect = RuntimeError("daemon down")
 
     pending = PendingChanges(
-        registry=reg, state=state, family="f",
-        registry_path=reg_path, state_path=state_path,
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
         providers=providers,
         deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
         ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
@@ -617,7 +433,7 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
 
     assert providers["ollama"].delete.call_count == 1  # deletes loop only
     delete_failures = [f for f in pending.failures if "daemon down" in f]
-    assert len(delete_failures) == 1                   # one failure, not two
+    assert len(delete_failures) == 1  # one failure, not two
 
 
 def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
@@ -752,6 +568,11 @@ def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
     save_registry(reg, reg_path)
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))
+    # Seed the on-disk state: apply()'s final save merges only the model
+    # ids this run touched onto a fresh on-disk store, so an untouched row
+    # survives on disk only if it was already written there — the in-memory
+    # store is no longer saved wholesale.
+    save_state(state, state_path)
 
     provider = MagicMock()
     provider.name = "ollama"
@@ -1011,14 +832,15 @@ def test_apply_runs_expose_changes(tmp_path):
     assert config["model_list"][0]["model_name"] == "ollama/a"
 
 
-def test_apply_cascade_downloads_before_exposing(tmp_path):
-    """The toggle-expose cascade (ModelScreen.action_toggle_expose) relies
-    on apply() running the ready loop before the expose loop so a
-    not-ready model is downloaded/pulled before its LiteLLM model_list
-    entry is written. Pin that ordering here at the PendingChanges level
-    so a future reorder in apply() cannot silently break the cascade."""
+def test_apply_cascade_ready_before_exposing(tmp_path):
+    """The toggle-expose cascade relies on apply() running the ready loop
+    before the expose loop so a model's ready flip lands before its
+    LiteLLM model_list entry is written. Real downloads no longer run
+    inside apply() (they go through DownloadManager — see queue.py's
+    ready-loop assert), so this pins the surviving ordering with a
+    flag-only ready-on: a future reorder in apply() cannot silently
+    break the cascade."""
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.return_value = str(tmp_path / "new-a")
     litellm_path = tmp_path / "litellm.yaml"
     litellm_path.write_text("model_list: []\n")
 
@@ -1029,17 +851,20 @@ def test_apply_cascade_downloads_before_exposing(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
-        exposes=[("ollama/a", True)],
+        # Flag-only: no provider entry for this id, so the ready loop
+        # flips the state flag without a provider call (and without the
+        # ready-on-must-go-through-DownloadManager assertion).
+        ready=[("unmapped/a", _variant(id="unmapped/a", provider="unmapped", name="f:a"), True)],
+        exposes=[("unmapped/a", True)],
         litellm_path=litellm_path,
     )
     events: list[str] = []
     pending.apply(on_event=events.append)
 
-    download_done = next(i for i, e in enumerate(events) if e.startswith("download:done"))
+    ready_done = next(i for i, e in enumerate(events) if e.startswith("ready:done"))
     expose_start = next(i for i, e in enumerate(events) if e.startswith("expose:start"))
-    assert download_done < expose_start
-    assert state.models["ollama/a"].ready is True
+    assert ready_done < expose_start
+    assert state.models["unmapped/a"].ready is True
 
 
 def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
@@ -1405,28 +1230,6 @@ def test_apply_cancelled_persists_no_family_entry(tmp_path):
     assert reloaded.model("m1").family == "a"
 
 
-def test_apply_ready_true_reconcilable_downloads(tmp_path):
-    """target=True for a provider present in self.providers behaves
-    exactly like today's download step."""
-    reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    providers["ollama"].download.return_value = str(tmp_path / "new-a")
-
-    pending = PendingChanges(
-        registry=reg,
-        state=state,
-        family="f",
-        registry_path=reg_path,
-        state_path=state_path,
-        providers=providers,
-        ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), True)],
-    )
-    pending.apply()
-
-    assert state.models["ollama/a"].ready is True
-    assert state.models["ollama/a"].disk_path == str(tmp_path / "new-a")
-    providers["ollama"].download.assert_called_once()
-
-
 def test_apply_ready_false_reconcilable_clears_without_removing_registry_entry(tmp_path):
     """target=False for a reconcilable, currently-ready model calls
     provider.delete() but must NOT remove the ModelEntry — only the
@@ -1575,12 +1378,11 @@ def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
     providers) ever correcting the contradiction."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
-    model = ModelEntry(
-        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
-    )
+    model = ModelEntry(id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local")
     reg = Registry(
-        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
-                                  auth=AuthConfig(type="none"))],
+        providers=[
+            ProviderEntry(id="mlx", name="MLX", location="local", auth=AuthConfig(type="none"))
+        ],
         models=[model],
     )
     save_registry(reg, reg_path)
@@ -1590,14 +1392,17 @@ def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
     state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
 
     pending = PendingChanges(
-        registry=reg, state=state, family="f",
-        registry_path=reg_path, state_path=state_path,
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
         providers={},  # no Provider class registered for 'mlx' → flag-only
         ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
     )
     pending.apply()
 
-    assert not artifact.exists()                    # recorded artifact removed
+    assert not artifact.exists()  # recorded artifact removed
     assert state.get("mlx/a").ready is False
     assert state.get("mlx/a").disk_path is None
     assert pending.failures == []
@@ -1619,12 +1424,11 @@ def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
     staying on disk is acceptable; a half-applied registry is not."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
-    model = ModelEntry(
-        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
-    )
+    model = ModelEntry(id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local")
     reg = Registry(
-        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
-                                  auth=AuthConfig(type="none"))],
+        providers=[
+            ProviderEntry(id="mlx", name="MLX", location="local", auth=AuthConfig(type="none"))
+        ],
         models=[model],
     )
     save_registry(reg, reg_path)
@@ -1638,8 +1442,11 @@ def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
     state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
 
     pending = PendingChanges(
-        registry=reg, state=state, family="f",
-        registry_path=reg_path, state_path=state_path,
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
         providers={},  # no Provider class registered for 'mlx' → flag-only
         ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
     )
@@ -1978,7 +1785,116 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
     )
     pending.apply()
 
-    assert providers["ollama"].delete.call_count == 0     # no rm on a gone model
-    assert state.get("ollama/a").ready is False           # stale flag cleared
-    assert state.get("ollama/a").litellm_exposed is False # cascade ran
+    assert providers["ollama"].delete.call_count == 0  # no rm on a gone model
+    assert state.get("ollama/a").ready is False  # stale flag cleared
+    assert state.get("ollama/a").litellm_exposed is False  # cascade ran
     assert pending.failures == []
+
+
+def test_apply_no_longer_downloads_ready_on_entries(tmp_path):
+    # The download step is being removed from apply() entirely — a
+    # target=True entry against a provider must now be a programming
+    # error (the caller is responsible for routing real downloads
+    # through DownloadManager instead), not a silent no-op or a call to
+    # provider.download().
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="ollama/x", family="f", provider="ollama", name="x:7b"),
+    )
+    state_path = tmp_path / "modelman.toml"
+    provider = MagicMock()
+    provider.download.side_effect = AssertionError("download() must not be called")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=_make_state(),
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        ready=[("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x:7b"}, True)],
+    )
+    with pytest.raises(AssertionError, match="ready-on"):
+        pending.apply()
+    provider.download.assert_not_called()
+
+
+def test_apply_ready_off_still_clears_artifact(tmp_path):
+    # Ready-off (the queued "clear" case) is unchanged by this task: it
+    # must still call provider.delete() and clear state.
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="ollama/x", family="f", provider="ollama", name="x:7b"),
+    )
+    state_path = tmp_path / "modelman.toml"
+    state = _make_state()
+    state.set("ollama/x", ModelState(ready=True, disk_path="ollama:x:7b"))
+    provider = MagicMock()
+    provider.is_downloaded.return_value = True
+    provider.delete.return_value = None
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        ready=[("ollama/x", {"id": "ollama/x", "provider": "ollama", "name": "x:7b"}, False)],
+    )
+    pending.apply()
+
+    provider.delete.assert_called_once()
+    loaded = load_state(state_path)
+    assert loaded.get("ollama/x").ready is False
+
+
+def test_apply_final_save_merges_onto_fresh_disk_state_not_a_stale_snapshot(tmp_path):
+    # The exact race this task closes: if modelman.toml changes on disk
+    # between when this PendingChanges' StateStore was loaded and when
+    # apply() saves, the final save must preserve that concurrent change
+    # for models this apply() didn't touch, while still applying its own
+    # change for the model it did touch. This simulates a DownloadManager
+    # completion for a *different* model landing mid-apply.
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="ollama/deleteme", family="f", provider="ollama", name="deleteme:7b"),
+    )
+    state_path = tmp_path / "modelman.toml"
+    # apply()'s in-memory snapshot: only knows about ollama/deleteme.
+    stale_state = _make_state()
+    stale_state.set("ollama/deleteme", ModelState(ready=True, disk_path="ollama:deleteme:7b"))
+    save_state(stale_state, state_path)
+
+    provider = MagicMock()
+    provider.is_downloaded.return_value = True
+    provider.delete.return_value = None
+
+    pending = PendingChanges(
+        registry=reg,
+        state=stale_state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        deletes=[
+            (
+                "ollama/deleteme",
+                {"id": "ollama/deleteme", "provider": "ollama", "name": "deleteme:7b"},
+            )
+        ],
+    )
+
+    # Simulate a concurrent DownloadManager completion for an unrelated
+    # model, landing on disk after `stale_state` was captured but before
+    # apply()'s final save.
+    from modelman.state import locked_state
+
+    with locked_state(state_path) as concurrent:
+        concurrent.set("ollama/other", ModelState(ready=True, disk_path="ollama:other:7b"))
+
+    pending.apply()
+
+    loaded = load_state(state_path)
+    assert "ollama/deleteme" not in loaded.models  # this apply()'s own change landed
+    assert loaded.get("ollama/other").ready is True  # the concurrent write survived
