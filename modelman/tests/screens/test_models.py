@@ -1699,3 +1699,106 @@ async def test_exposed_column_gates_on_projected_ready(tmp_path, monkeypatch):
         await pilot.pause()
         assert _exposed_cell() == "–"    # projected not-ready gates it to –
 
+
+
+@pytest.mark.asyncio
+async def test_status_shows_downloading_glyph(tmp_path, monkeypatch):
+    # A model with an active DownloadManager entry must show the ⏳
+    # glyph in the STATUS column — the user's cue that the row is
+    # locked and work is in flight, not queued for apply-on-exit.
+    from modelman.downloads import DownloadState
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        app.screen.reload()
+        await pilot.pause()
+
+        table = app.screen.query_one(DataTable)
+        row = table.get_row_at(0)
+        assert "⏳" in str(row[4])  # STATUS column
+
+
+@pytest.mark.asyncio
+async def test_delete_blocked_while_downloading(tmp_path, monkeypatch):
+    # 'd' on a downloading model must be refused (the weights are being
+    # written right now) — nothing may be queued for it.
+    from modelman.downloads import DownloadState
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        await pilot.press("d")
+        await pilot.pause()
+
+        assert app.screen.queued_deletes == {}
+
+
+@pytest.mark.asyncio
+async def test_edit_blocked_while_downloading(tmp_path, monkeypatch):
+    # 'e' on a downloading model must refuse — an edit that changes the
+    # variant mid-download would race the in-flight write.
+    from modelman.downloads import DownloadState
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        await pilot.press("e")
+        await pilot.pause()
+
+        from modelman.screens.forms import ModelForm
+
+        assert not isinstance(app.screen, ModelForm)
+
+
+@pytest.mark.asyncio
+async def test_poll_refreshes_state_after_download_completes(tmp_path, monkeypatch):
+    # Simulates DownloadManager writing modelman.toml directly (as it
+    # does on completion) while ModelScreen is open and watching — the
+    # screen's own in-memory StateStore must pick this up without the
+    # user navigating away and back. Seeded as downloading first (the
+    # poll only reloads while a download is active or just finished),
+    # then the completion write lands, then the next tick picks it up.
+    from modelman.downloads import DownloadState
+    from modelman.state import ModelState, locked_state
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        assert app.screen._is_ready("ollama/x") is False
+
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        await pilot.pause(1.1)  # first tick: marks "download was active"
+
+        with locked_state(state_path) as state:
+            state.set("ollama/x", ModelState(ready=True, disk_path="/models/x"))
+
+        await pilot.pause(1.1)  # next tick: reload now that a download is active
+        assert app.screen._is_ready("ollama/x") is True

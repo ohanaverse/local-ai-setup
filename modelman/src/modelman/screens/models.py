@@ -33,7 +33,7 @@ from ..registry import (
     provider_config,
     save_registry,
 )
-from ..state import ModelState, StateStore
+from ..state import ModelState, StateStore, load_state
 from . import reconcile_model_state, reload_preserving_cursor
 from .forms import default_form_kind
 
@@ -275,6 +275,8 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
         mt.focus()
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+        self._last_poll_had_active = False
+        self.set_interval(1.0, self._poll_downloads)
 
     def _run_reconcile(self) -> None:
         """Ask each provider whether its models are on disk; write the
@@ -295,6 +297,23 @@ class ModelScreen(Screen[None]):
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
+    def _poll_downloads(self) -> None:
+        """Reload state from disk while any download is active (or just
+        finished, to catch the final transition), so DownloadManager's
+        writes — which land on disk, not on this screen's in-memory
+        StateStore — become visible without the user navigating away and
+        back. Cheap: modelman.toml is small and this only runs while
+        downloads exist."""
+        active = self.app.downloads.has_active()  # type: ignore[attr-defined]
+        if not active and not self._last_poll_had_active:
+            return
+        self._last_poll_had_active = active
+        try:
+            self.state = load_state(self.state_path)
+        except Exception:  # noqa: BLE001
+            return
+        self.reload()
+
     def reload(self) -> None:
         self._load_models()
 
@@ -311,6 +330,8 @@ class ModelScreen(Screen[None]):
                 size_str = _human_size(self.state.get(m.id).size_bytes) if ready else "—"
                 if m.id in self.queued_deletes:
                     status = "[red]✗[/red]"
+                elif self.app.downloads.is_downloading(m.id):  # type: ignore[attr-defined]
+                    status = "[cyan]⏳[/cyan]"
                 elif m.id in self.queued_ready:
                     status = (
                         "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
@@ -485,6 +506,43 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
         self.reload()
 
+    def _provider_entry_or_none(self, provider_id: str):
+        try:
+            return self.registry.provider(provider_id)
+        except KeyError:
+            return None
+
+    def _start_download(self, entry: ModelEntry) -> None:
+        """Route a real ready-on through DownloadManager instead of the
+        apply-on-exit queue — the download starts immediately in the
+        background and PendingChanges.apply() never touches it (Task 4's
+        assertion enforces this)."""
+        variant = model_entry_to_variant(entry)
+        config = provider_config(self.registry.provider(entry.provider_id))
+
+        def _on_complete(local_path: str, mid: str = entry.id) -> None:
+            self.app.call_from_thread(self._on_download_finished, mid)
+
+        self.app.downloads.start(  # type: ignore[attr-defined]
+            entry.id, variant, config, on_complete=_on_complete
+        )
+        self._last_provider_used = entry.provider_id
+        self._refresh_pending_bar()
+        self.reload()
+
+    def _on_download_finished(self, model_id: str) -> None:
+        """Best-effort immediate refresh when this screen started the
+        download that just finished. The 1s poll (below) is the
+        authoritative fallback for every other case — a download that
+        finishes after the initiating ModelScreen was replaced by
+        another instance still gets picked up there."""
+        try:
+            self.state = load_state(self.state_path)
+        except Exception:  # noqa: BLE001
+            return
+        self.reload()
+        self._refresh_pending_bar()
+
     def _provider_list(self) -> list[str]:
         # Use the full configured-provider list, not just the providers
         # currently used by models in the family, so the user can add
@@ -563,6 +621,11 @@ class ModelScreen(Screen[None]):
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
             return
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            # The weights are being written right now; deleting mid-flight
+            # would race the download thread. Cancel first instead.
+            self.app.notify(f"{mid} is downloading — cancel first")
+            return
         # "d" queues only the registry removal. apply()'s deletes loop already
         # removes the on-disk file, drops the registry/state rows, and cascades
         # the unexpose — queueing ready=False/expose=False here would double-
@@ -588,6 +651,11 @@ class ModelScreen(Screen[None]):
         mid = str(row_key.value)
         entry = next((m for m in self.registry.models if m.id == mid), None)
         if entry is None:
+            return
+        if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
+            # An edit that changes the variant mid-download would race the
+            # in-flight write; move/edit must wait for the download.
+            self.app.notify(f"{mid} is downloading — cancel first")
             return
         from .forms import ModelForm
 
