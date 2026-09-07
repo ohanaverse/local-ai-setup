@@ -14,6 +14,7 @@ class DownloadScreen(Screen[None]):
     BINDINGS = [
         ("escape", "back", "Back"),
         ("c", "cancel_selected", "Cancel"),
+        ("C", "clear_finished", "Clear finished"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -64,3 +65,9 @@ class DownloadScreen(Screen[None]):
         if state is None or state.status != "downloading":
             return
         self.app.downloads.cancel(model_id)  # type: ignore[attr-defined]
+
+    def action_clear_finished(self) -> None:
+        """Clear all non-downloading states from the DownloadManager.
+        This removes finished/failed/cancelled downloads from the list."""
+        self.app.downloads.clear_finished()  # type: ignore[attr-defined]
+        self._reload()

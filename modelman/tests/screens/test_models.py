@@ -2236,6 +2236,97 @@ async def test_discard_cancels_cascaded_download(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discard_persists_state_cleanup_for_session_added_model(
+    tmp_path, monkeypatch, stub_ollama_caps
+):
+    # Regression for a review finding: a download that finished mid-session
+    # persists ready=True to modelman.toml (DownloadManager._run's
+    # locked_state write) — but the discard branch only restored the
+    # in-memory state and saved the registry, never the state file. The
+    # dangling ready=True row for a model_id the discard just removed from
+    # the registry survived on disk until a manual sync. Discard must
+    # persist the state cleanup too.
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
+        await pilot.press("a")
+        await pilot.pause()
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        provider_sel.value = "ollama"
+        await pilot.pause()
+        app.screen.query_one("#model", Input).focus()
+        for ch in "dangling:7b":
+            await pilot.press(ch)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        added_id = "ollama/dangling:7b"
+        assert added_id in app.screen._added_ids
+
+        # Simulate the download having completed mid-session: its persist
+        # wrote the ready row to disk while the ModelScreen held the queue.
+        from modelman.state import locked_state as _locked_state
+
+        with _locked_state(state_path) as st:
+            st.set(added_id, ModelState(ready=True, disk_path="/models/dangling:7b"))
+        assert load_state(state_path).get(added_id).ready is True
+
+        # Discard needs a pending queue op to reach ConfirmExitDialog.
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("d")  # ConfirmExitDialog's "discard" binding
+        await pilot.pause()
+
+        # The dangling ready row must be gone from DISK, not just memory.
+        after = load_state(state_path)
+        assert after.get(added_id).ready is False
+        assert added_id not in after.models
+
+
+@pytest.mark.asyncio
+async def test_discard_clears_state_of_cascaded_download_for_preexisting_model(
+    tmp_path, monkeypatch
+):
+    # Regression for a review finding: the discard branch's clear_state loop
+    # built its id set AFTER the cancel loop, which drains
+    # _ready_cascade_for_expose — so a cascaded download for a PRE-EXISTING
+    # model (not in _added_ids) was cancelled but never clear_state'd, and
+    # its cancelled row stayed in the DownloadScreen after discard. The set
+    # must be snapshotted before the cancels.
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
+        await pilot.press("x")  # cascades a ready-on for the pre-existing model
+        await pilot.pause()
+        from modelman.downloads import DownloadState
+
+        app.downloads._states["ollama/x"] = DownloadState(
+            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
+        )
+        cleared = []
+        monkeypatch.setattr(app.downloads, "cancel", lambda mid: None)
+        monkeypatch.setattr(app.downloads, "clear_state", lambda mid: cleared.append(mid))
+
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("d")  # ConfirmExitDialog's "discard" binding
+        await pilot.pause()
+
+        assert "ollama/x" in cleared
+
+
+@pytest.mark.asyncio
 async def test_x_on_already_downloading_unrelated_model_just_queues(tmp_path, monkeypatch):
     # 'x' on a model that's already downloading for reasons other than
     # this expose (e.g. the user pressed 'r' first) must NOT be treated

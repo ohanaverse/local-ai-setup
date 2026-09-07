@@ -34,7 +34,7 @@ from ..registry import (
     provider_config,
     save_registry,
 )
-from ..state import ModelState, StateStore, load_state
+from ..state import ModelState, StateStore, load_state, locked_state
 from . import reconcile_model_state, reload_preserving_cursor
 from .forms import default_form_kind
 
@@ -859,6 +859,12 @@ class ModelScreen(Screen[None]):
             self._push_status_screen()
             return
         if choice == "discard":
+            # Snapshot the clear-set BEFORE the cancel loops: they discard
+            # ids from _ready_cascade_for_expose as they cancel them, so a
+            # union taken afterwards would only see the leftovers — and
+            # skip clear_state for every cascade-cancelled download,
+            # leaving its stale row in the DownloadScreen.
+            to_clear = set(self._ready_cascade_for_expose) | set(self._added_ids)
             # Cancel any download that was only running because an expose
             # cascaded it in (Discard-cancels-cascade) BEFORE restoring the
             # snapshot, so a discarded session leaves no background
@@ -873,12 +879,29 @@ class ModelScreen(Screen[None]):
             for mid in list(self._added_ids):
                 if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
                     self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
+            # Clear the download states for all cascade-cancelled/added
+            # models so they don't persist in the DownloadScreen after
+            # discard. clear_state() is safe to call even if the state
+            # doesn't exist.
+            for mid in to_clear:
+                self.app.downloads.clear_state(mid)  # type: ignore[attr-defined]
             self._restore_snapshot()
             # Same-family edits save registry immediately on _on_edit_model.
             # Restoring the in-memory snapshot is not enough: FamilyScreen
             # reloads from disk on resume, so we must also write the restored
             # registry back to disk to undo any edits the user discarded.
             save_registry(self.registry, self.registry_path)
+            # A download that finished mid-session persisted ready=True to
+            # disk (DownloadManager._run's locked_state write) for a model
+            # this discard just removed from the registry; the in-memory
+            # restore alone leaves that dangling row in modelman.toml.
+            # Locked read-modify-write merges only this session's added
+            # ids onto fresh disk state, so a concurrent DownloadManager
+            # completion for an unrelated model survives.
+            with contextlib.suppress(Exception), locked_state(self.state_path) as disk_state:
+                for mid in self._added_ids:
+                    if mid not in self._snapshot_state_entries:
+                        disk_state.models.pop(mid, None)
             self.queued_ready.clear()
             self.queued_deletes.clear()
             self.queued_moves.clear()

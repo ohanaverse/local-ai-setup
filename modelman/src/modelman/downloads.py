@@ -95,6 +95,42 @@ class DownloadManager:
         if callable(cancel_fn):
             cancel_fn()
 
+    def clear_state(self, model_id: str) -> None:
+        """Remove a download's state from tracking. Used when discarding
+        changes to prevent cancelled/finished downloads from persisting in
+        the DownloadScreen.
+
+        For a download still in flight this drops the user-visible row but
+        keeps the execution context the unwinding download thread still
+        needs (see _drop_locked) — _finish() reaps it when the thread
+        reaches it."""
+        with self._lock:
+            self._drop_locked(model_id)
+
+    def _drop_locked(self, model_id: str) -> None:
+        """Drop a model's tracking rows; caller holds self._lock.
+
+        When the download is STILL IN FLIGHT, the registry snapshot and
+        the cancel-request flag are kept: the download thread is inside
+        (or unwinding out of) provider.download() and its _finish() needs
+        both — the snapshot for the find_shared_artifact_owner conflict
+        check guarding cleanup (popping it here would let the cleanup
+        rmtree an on-disk artifact another registry entry still owns),
+        and the flag so a cancelled provider that raises a generic
+        exception (ollama's killed pull exits non-zero → RuntimeError)
+        still classifies as "cancelled" instead of "failed". _finish
+        pops both when the thread unwinds, so retention is bounded by
+        the unwind itself."""
+        state = self._states.get(model_id)
+        in_flight = state is not None and state.status == "downloading"
+        self._states.pop(model_id, None)
+        self._providers.pop(model_id, None)
+        self._variants.pop(model_id, None)
+        self._post_download.pop(model_id, None)
+        if not in_flight:
+            self._registries.pop(model_id, None)
+            self._cancel_requested.discard(model_id)
+
     def is_downloading(self, model_id: str) -> bool:
         with self._lock:
             state = self._states.get(model_id)
@@ -107,6 +143,17 @@ class DownloadManager:
     def states(self) -> list[DownloadState]:
         with self._lock:
             return list(self._states.values())
+
+    def clear_finished(self) -> None:
+        """Remove all non-downloading states (done/failed/cancelled) from
+        tracking. Useful for cleaning up the DownloadScreen without losing
+        visibility into active downloads."""
+        with self._lock:
+            to_remove = [
+                mid for mid, state in self._states.items() if state.status != "downloading"
+            ]
+            for model_id in to_remove:
+                self._drop_locked(model_id)
 
     def register_post_download(self, model_id: str, action: Callable[[], None]) -> None:
         """Run `action` once, only if this model_id's current (or next)
@@ -148,14 +195,34 @@ class DownloadManager:
                 self._finish(model_id, "failed", error=str(exc) or exc.__class__.__name__)
             return
 
-        size_bytes = self._size_of(local_path)
-        # Persist via locked_state (merge onto fresh disk state). A failed
-        # write must not wedge the thread (and this model) in "downloading"
+        # A discard mid-download drops this model's state row while the
+        # thread is still inside provider.download(); if the download then
+        # completes before the async cancel takes effect, persisting below
+        # would write a dangling ready=True row to disk for a model_id the
+        # discard just removed from the registry. The row's absence is the
+        # discard signal — skip the persist, the state update, and
+        # on_complete (its deferred actions were already dropped by
+        # clear_state). The check and persist share the manager lock so a
+        # clear_state can't interleave between them (lock order
+        # downloads._lock → state._STATE_LOCK is unique to this path, so
+        # no inversion); the discard's own state write then pops the row
+        # afterwards if it was still present here. A failed write must
+        # still not wedge the thread (and this model) in "downloading"
         # forever — that would block the quit guard — and it self-heals:
-        # reconcile re-derives ready/disk_path from the artifact on disk on
-        # the next mount.
-        with contextlib.suppress(Exception), locked_state() as state:
-            state.set(model_id, ModelState(ready=True, disk_path=local_path, size_bytes=size_bytes))
+        # reconcile re-derives ready/disk_path from the artifact on disk
+        # on the next mount.
+        skip_persist = False
+        with self._lock, contextlib.suppress(Exception), locked_state() as state:
+            if self._states.get(model_id) is None:
+                skip_persist = True
+            else:
+                size_bytes = self._size_of(local_path)
+                state.set(
+                    model_id,
+                    ModelState(ready=True, disk_path=local_path, size_bytes=size_bytes),
+                )
+        if skip_persist:
+            return
         self._finish(model_id, "done", local_path=local_path)
         if on_complete is not None:
             self._app.call_from_thread(on_complete, local_path)  # type: ignore[attr-defined]
