@@ -21,8 +21,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Fatalf("loadRegistry() error: %v", err)
 	}
 
-	if len(providers) != 2 {
-		t.Fatalf("got %d providers, want 2", len(providers))
+	if len(providers) != 3 {
+		t.Fatalf("got %d providers, want 3", len(providers))
 	}
 	ollama, openrouter := providers[0], providers[1]
 	if ollama.ID != "ollama" || ollama.Auth.Type != "none" || ollama.Auth.BaseURL != "http://localhost:11434" {
@@ -32,8 +32,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("openrouter provider decoded wrong: %+v", openrouter)
 	}
 
-	if len(models) != 2 {
-		t.Fatalf("got %d models, want 2", len(models))
+	if len(models) != 3 {
+		t.Fatalf("got %d models, want 3", len(models))
 	}
 	cloud := models[1]
 	if cloud.ID != "openrouter/contract-fixture:cloud" || cloud.Location != "cloud" || cloud.ProviderID != "openrouter" {
@@ -97,5 +97,35 @@ func TestRegistryFixtureCost(t *testing.T) {
 	}
 	if cloud.Cost.SubscriptionPeriod != "month" {
 		t.Errorf("subscription period = %q, want \"month\"", cloud.Cost.SubscriptionPeriod)
+	}
+}
+
+// TestRegistryFixtureNativeExposure pins the cross-language rule that a
+// native model is always exposed even without a model_state row. The same
+// fixture file is read by modelman's contract test.
+func TestRegistryFixtureNativeExposure(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+
+	providers, models, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry() error: %v", err)
+	}
+
+	cfg := &Config{Providers: providers, Models: models}
+	deriveNative(cfg)
+	cfg.SetExposedForTest(map[string]struct {
+		LitellmExposed bool
+		Ready          bool
+	}{})
+
+	native := cfg.Models[2]
+	if native.ID != "agy/contract-fixture:native" {
+		t.Fatalf("expected third model to be the native fixture, got %q", native.ID)
+	}
+	if !native.Native {
+		t.Errorf("native model %q has Native=%v, want true", native.ID, native.Native)
+	}
+	if !cfg.IsExposed(native) {
+		t.Errorf("IsExposed(native model %q) = false, want true", native.ID)
 	}
 }
