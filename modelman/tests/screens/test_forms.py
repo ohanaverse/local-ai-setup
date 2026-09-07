@@ -53,6 +53,20 @@ def _fill_model(app: ModelmanApp, text: str) -> None:
     inp.value = text
 
 
+async def _submit(app: ModelmanApp, pilot) -> None:
+    """Submit the form by focusing an enabled widget that triggers
+    _submit() on Enter. Add mode: the model Input (enabled). Edit mode:
+    the model Input is disabled, so focus the Save button instead."""
+    model = app.screen.query_one("#model", Input)
+    if model.disabled:
+        app.screen.query_one("#save", Button).focus()
+    else:
+        model.focus()
+    await pilot.pause()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
 async def _mount_and_run(form: ModelForm):
     """Mount the form in a fresh app and return (app, pilot). Caller
     is responsible for pressing keys inside the `async with` block."""
@@ -350,7 +364,7 @@ async def test_submit_ollama_tag_produces_correct_spec(stub_ollama_caps):
         await pilot.pause()
         _fill_model(app, "ornith-1.5:35b")
         await pilot.pause()
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert dismissed, "form did not dismiss"
@@ -385,7 +399,7 @@ async def test_submit_hf_repo_only_produces_correct_spec():
         await pilot.pause()
         _fill_model(app, "unsloth/Ornith-1.5-35B-GGUF")
         await pilot.pause()
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     result = dismissed[0]
@@ -418,7 +432,7 @@ async def test_submit_hf_repo_and_file_produces_correct_spec():
             "unsloth/Ornith-1.5-35B-GGUF/Ornith-1.5-35B-Q8_0.gguf",
         )
         await pilot.pause()
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     result = dismissed[0]
@@ -454,7 +468,7 @@ async def test_submit_ollama_rejects_slash_with_inline_error():
         await pilot.pause()
         _fill_model(app, "someuser/some-model:tag")
         await pilot.pause()
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
         # Inside the async with: the form is still mounted.
@@ -481,7 +495,7 @@ async def test_submit_hf_rejects_single_segment_with_inline_error():
         await pilot.pause()
         _fill_model(app, "single-segment")
         await pilot.pause()
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
         assert dismissed == []
@@ -506,7 +520,7 @@ async def test_submit_empty_model_does_not_dismiss():
         app.push_screen(form, _capture)
         await pilot.pause()
         # Don't fill anything; just press enter.
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
         assert dismissed == []
@@ -533,13 +547,13 @@ async def test_submit_after_fix_clears_error_and_dismisses(stub_ollama_caps):
         await pilot.pause()
         # First attempt: invalid (slash).
         _fill_model(app, "bad/name")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
         assert dismissed == []
         assert _rendered_error(app)
         # Fix it.
         _fill_model(app, "goodname:tag")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert len(dismissed) == 1
@@ -575,7 +589,7 @@ async def test_submit_in_edit_mode_preserves_id():
         await pilot.pause()
         # Replace with a new repo+file.
         _fill_model(app, "baz/quux/new.gguf")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     spec = dismissed[0].spec
@@ -614,7 +628,7 @@ async def test_submit_in_edit_mode_preserves_quantizations():
             app,
             "ornith-ai/Ornith-1.5-35B-A3B-GGUF/Ornith-1.5-35B-Q4_K_M.gguf",
         )
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     spec = dismissed[0].spec
@@ -791,7 +805,7 @@ async def test_submit_returns_modelformresult_with_selected_family(stub_ollama_c
         app.push_screen(form, _capture)
         await pilot.pause()
         _fill_model(app, "gemma4:26b")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     result = dismissed[0]
@@ -823,7 +837,7 @@ async def test_submit_returns_family_switched_in_the_select(stub_ollama_caps):
         sel = app.screen.query_one("#family-select", Select)
         sel.value = "gemma4"
         _fill_model(app, "gemma4:26b")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     result = dismissed[0]
@@ -921,7 +935,7 @@ async def test_submit_native_blank_model_defaults_to_native_sentinel():
         await pilot.pause()
         app.push_screen(form, dismissed.append)
         await pilot.pause()
-        await pilot.press("enter")  # blank #model input
+        await _submit(app, pilot)
         await pilot.pause()
 
     spec = dismissed[0].spec
@@ -941,7 +955,7 @@ async def test_submit_native_named_model():
         app.push_screen(form, dismissed.append)
         await pilot.pause()
         _fill_model(app, "opus")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     spec = dismissed[0].spec
@@ -1080,7 +1094,7 @@ async def test_modelform_buttons_and_focus():
         pilot.app.push_screen(form)
         await pilot.pause()
         assert _button_ids(pilot.app) == ["cancel", "save"]
-        assert _focused_id(pilot.app) == "model"
+        assert _focused_id(pilot.app) == "provider-select"
 
 
 @pytest.mark.asyncio
@@ -1139,6 +1153,10 @@ async def test_modelform_escape_from_input_dismisses():
     async with ModelmanApp().run_test() as pilot:
         await pilot.pause()
         pilot.app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        # Add mode focuses the provider Select on mount; move focus to the
+        # model Input to exercise the escape-from-input path.
+        pilot.app.screen.query_one("#model", Input).focus()
         await pilot.pause()
         assert _focused_id(pilot.app) == "model"
         await pilot.press("escape")
@@ -1421,7 +1439,7 @@ async def test_model_form_submit_carries_cost(stub_ollama_caps):
         price = app.screen.query_one("#subscription-price", Input)
         price.value = "20"
         _fill_model(app, "glm-5.3:cloud")
-        await pilot.press("enter")  # Input.Submitted on #model triggers _submit
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert len(dismissed) == 1
@@ -1463,7 +1481,7 @@ async def test_model_form_untouched_edit_preserves_cost_and_model_info():
         await pilot.pause()
         model_input = app.screen.query_one("#model", Input)
         assert model_input.value == "glm-5.3:cloud"
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert dismissed, "form did not dismiss"
@@ -1507,7 +1525,7 @@ async def test_model_form_llamacpp_edit_preserves_no_cost():
         app.push_screen(form, dismissed.append)
         await pilot.pause()
         # No touches: the pre-filled repo/file string is already valid.
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert dismissed, "form did not dismiss"
@@ -1543,7 +1561,7 @@ async def test_model_form_edit_preserves_unset_cost():
         await pilot.pause()
         app.push_screen(form, dismissed.append)
         await pilot.pause()
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert dismissed, "form did not dismiss"
@@ -1570,7 +1588,7 @@ async def test_model_form_empty_per_token_section_shows_error():
         app.screen.query_one("#per-token-checkbox", Checkbox).value = True
         await pilot.pause()
         _fill_model(app, "test:1b")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
         assert dismissed == [], "form must not dismiss on empty per-token section"
@@ -1596,7 +1614,7 @@ async def test_model_form_missing_subscription_price_shows_error():
         app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
         _fill_model(app, "test:1b")
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
         assert dismissed == []
@@ -1625,7 +1643,7 @@ async def test_model_form_both_sections_combined(stub_ollama_caps):
         _fill_model(app, "test:1b")
         app.screen.query_one("#input-price", Input).value = "0.50"
         app.screen.query_one("#subscription-price", Input).value = "20"
-        await pilot.press("enter")
+        await _submit(app, pilot)
         await pilot.pause()
 
     assert len(dismissed) == 1
@@ -1658,9 +1676,10 @@ async def test_model_form_bad_price_shows_error_and_stays_open():
         await pilot.pause()
         _fill_model(app, "test:1b")  # valid tag so the ONLY failure is the price
         app.screen.query_one("#input-price", Input).value = "abc"
-        # Focus stays on #model, whose value is valid: Enter submits, and the
-        # submit must fail on the cost field rather than the model name.
-        await pilot.press("enter")
+        # _submit focuses the model Input (add mode), whose value is valid:
+        # Enter submits, and the submit must fail on the cost field rather
+        # than the model name.
+        await _submit(app, pilot)
         await pilot.pause()
 
         assert dismissed == [], "form must not dismiss on invalid price"
