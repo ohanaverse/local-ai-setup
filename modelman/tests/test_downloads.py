@@ -450,3 +450,77 @@ def test_post_download_action_dropped_on_failure(monkeypatch):
         time.sleep(0.01)
     time.sleep(0.05)
     assert not ran.is_set()
+
+
+def test_clear_state_removes_all_tracking_for_model(monkeypatch):
+    # clear_state() should remove all tracking data for a model_id,
+    # including states, providers, variants, registries, cancel requests,
+    # and post-download actions.
+    provider = MagicMock()
+    provider.download.return_value = "/models/x"
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    ran = threading.Event()
+    mgr.register_post_download("ollama/x", ran.set)
+    done = threading.Event()
+    mgr.start(
+        "ollama/x",
+        {"id": "ollama/x", "provider": "ollama", "name": "x"},
+        {},
+        on_complete=lambda p: done.set(),
+    )
+    assert done.wait(timeout=2)
+
+    # Verify state exists before clearing
+    states = mgr.states()
+    assert any(s.model_id == "ollama/x" for s in states)
+
+    # Clear the state
+    mgr.clear_state("ollama/x")
+
+    # Verify all tracking is removed
+    states = mgr.states()
+    assert not any(s.model_id == "ollama/x" for s in states)
+    assert mgr.is_downloading("ollama/x") is False
+    # Post-download action already ran on success (that's expected)
+    assert ran.is_set()
+
+
+def test_clear_finished_removes_only_non_downloading_states(monkeypatch):
+    # clear_finished() should only remove done/failed/cancelled states,
+    # leaving active downloads untouched.
+    release = threading.Event()
+    provider = MagicMock()
+    provider.download.side_effect = lambda *a, **k: (release.wait(2), "/models/x")[1]
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    # Start an active download
+    mgr.start("ollama/active", {"id": "ollama/active", "provider": "ollama", "name": "active"}, {})
+    # Add finished states manually
+    from modelman.downloads import DownloadState
+    mgr._states["ollama/done"] = DownloadState(
+        model_id="ollama/done", variant_id="ollama/done", provider="ollama", status="done"
+    )
+    mgr._states["ollama/failed"] = DownloadState(
+        model_id="ollama/failed", variant_id="ollama/failed", provider="ollama", status="failed"
+    )
+    mgr._states["ollama/cancelled"] = DownloadState(
+        model_id="ollama/cancelled", variant_id="ollama/cancelled", provider="ollama", status="cancelled"
+    )
+
+    # Verify all states exist
+    assert len(mgr.states()) == 4
+    assert mgr.is_downloading("ollama/active") is True
+
+    # Clear finished states
+    mgr.clear_finished()
+
+    # Only the active download should remain
+    states = mgr.states()
+    assert len(states) == 1
+    assert states[0].model_id == "ollama/active"
+    assert states[0].status == "downloading"
+
+    release.set()

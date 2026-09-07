@@ -873,6 +873,11 @@ class ModelScreen(Screen[None]):
             for mid in list(self._added_ids):
                 if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
                     self.app.downloads.cancel(mid)  # type: ignore[attr-defined]
+            # Clear the download states for all cancelled/added models so
+            # they don't persist in the DownloadScreen after discard.
+            # clear_state() is safe to call even if the state doesn't exist.
+            for mid in set(self._ready_cascade_for_expose) | set(self._added_ids):
+                self.app.downloads.clear_state(mid)  # type: ignore[attr-defined]
             self._restore_snapshot()
             # Same-family edits save registry immediately on _on_edit_model.
             # Restoring the in-memory snapshot is not enough: FamilyScreen

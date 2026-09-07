@@ -121,3 +121,66 @@ async def test_cancel_key_is_a_noop_on_a_finished_row(tmp_path, monkeypatch):
         await pilot.press("c")
         await pilot.pause()
         assert cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_clear_finished_removes_non_downloading_states(tmp_path, monkeypatch):
+    # 'C' should remove all finished/failed/cancelled downloads but keep
+    # active ones visible.
+    _seed(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.downloads._states["ollama/active"] = DownloadState(
+            model_id="ollama/active", variant_id="ollama/active", provider="ollama", status="downloading"
+        )
+        app.downloads._states["ollama/done"] = DownloadState(
+            model_id="ollama/done", variant_id="ollama/done", provider="ollama", status="done"
+        )
+        app.downloads._states["ollama/failed"] = DownloadState(
+            model_id="ollama/failed", variant_id="ollama/failed", provider="ollama", status="failed"
+        )
+        app.downloads._states["ollama/cancelled"] = DownloadState(
+            model_id="ollama/cancelled", variant_id="ollama/cancelled", provider="ollama", status="cancelled"
+        )
+        app.push_screen(DownloadScreen())
+        await pilot.pause()
+
+        table = app.screen.query_one(DataTable)
+        assert table.row_count == 4
+
+        await pilot.press("C")
+        await pilot.pause()
+
+        table = app.screen.query_one(DataTable)
+        assert table.row_count == 1
+        row = list(table.rows.keys())[0]
+        assert str(row.value) == "ollama/active"
+
+
+@pytest.mark.asyncio
+async def test_discard_clears_download_states(tmp_path, monkeypatch):
+    # When discarding changes, downloads added this session should be
+    # cleared from DownloadManager so they don't persist in DownloadScreen.
+    _seed(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Simulate a download that was added this session
+        app.downloads._states["ollama/new"] = DownloadState(
+            model_id="ollama/new", variant_id="ollama/new", provider="ollama", status="downloading"
+        )
+        app.push_screen(DownloadScreen())
+        await pilot.pause()
+
+        table = app.screen.query_one(DataTable)
+        assert table.row_count == 1
+
+        # Simulate the download being cancelled (as would happen on discard)
+        app.downloads._states["ollama/new"].status = "cancelled"
+        app.downloads.clear_state("ollama/new")
+        app.screen._reload()
+        await pilot.pause()
+
+        table = app.screen.query_one(DataTable)
+        assert table.row_count == 0

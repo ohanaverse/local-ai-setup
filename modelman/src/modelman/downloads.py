@@ -95,6 +95,18 @@ class DownloadManager:
         if callable(cancel_fn):
             cancel_fn()
 
+    def clear_state(self, model_id: str) -> None:
+        """Remove a download's state from tracking. Used when discarding
+        changes to prevent cancelled/finished downloads from persisting in
+        the DownloadScreen."""
+        with self._lock:
+            self._states.pop(model_id, None)
+            self._providers.pop(model_id, None)
+            self._variants.pop(model_id, None)
+            self._registries.pop(model_id, None)
+            self._cancel_requested.discard(model_id)
+            self._post_download.pop(model_id, None)
+
     def is_downloading(self, model_id: str) -> bool:
         with self._lock:
             state = self._states.get(model_id)
@@ -107,6 +119,22 @@ class DownloadManager:
     def states(self) -> list[DownloadState]:
         with self._lock:
             return list(self._states.values())
+
+    def clear_finished(self) -> None:
+        """Remove all non-downloading states (done/failed/cancelled) from
+        tracking. Useful for cleaning up the DownloadScreen without losing
+        visibility into active downloads."""
+        with self._lock:
+            to_remove = [
+                mid for mid, state in self._states.items() if state.status != "downloading"
+            ]
+            for model_id in to_remove:
+                self._states.pop(model_id, None)
+                self._providers.pop(model_id, None)
+                self._variants.pop(model_id, None)
+                self._registries.pop(model_id, None)
+                self._cancel_requested.discard(model_id)
+                self._post_download.pop(model_id, None)
 
     def register_post_download(self, model_id: str, action: Callable[[], None]) -> None:
         """Run `action` once, only if this model_id's current (or next)
