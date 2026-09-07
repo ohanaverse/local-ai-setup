@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -49,7 +50,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store)
+	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store, "")
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -105,7 +106,7 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	items := buildModelItems(models, map[string]string{
 		"priced":   "test",
 		"unpriced": "test",
-	}, store)
+	}, store, "")
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -162,12 +163,73 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 			},
 		},
 	}
-	items := buildModelItems(models, map[string]string{"partial": "test"}, store)
+	items := buildModelItems(models, map[string]string{"partial": "test"}, store, "")
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
 	line := items[0].Title()
 	if !strings.Contains(line, "$0.50/-/1.00") {
 		t.Errorf("partial pricing line %q missing expected $0.50/-/1.00", line)
+	}
+}
+
+// TestBuildModelItemsMarksLastLaunchedRow verifies that exactly one row —
+// the model matching the rotation's last-launched ID — carries the "> "
+// marker prefix in Title() and every other row a blank 2-rune prefix, so
+// the marker pins the "where I left off" row without shifting any columns
+// (all titles stay rune-equal in length). It also pins the inverse
+// contract: .line and FilterValue() stay unprefixed, so fuzzy matching and
+// any .line consumer never see marker state.
+func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
+		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
+	}
+	familyOf := map[string]string{
+		"ollama/gemma4:9b":  "gemma4",
+		"ollama/gemma4:14b": "gemma4",
+	}
+	items := buildModelItems(models, familyOf, store, "ollama/gemma4:14b")
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	// Equal scores + stable sort = registry order: 9b first, 14b second.
+	for i, want := range []bool{false, true} {
+		title := items[i].Title()
+		if got := strings.HasPrefix(title, markerMarked); got != want {
+			t.Errorf("row %d (%q): marker prefix = %v, want %v", i, title, got, want)
+		}
+		if got := strings.HasPrefix(title, markerBlank); got != !want {
+			t.Errorf("row %d (%q): blank prefix = %v, want %v", i, title, got, !want)
+		}
+		// The marker must not leak into the line the filter scores.
+		if got := items[i].line; got != items[i].FilterValue() || strings.HasPrefix(got, markerMarked) || strings.HasPrefix(got, markerBlank) {
+			t.Errorf("row %d: line/FilterValue %q must be identical and unprefixed", i, got)
+		}
+	}
+	wantLen := utf8.RuneCountInString(items[0].Title())
+	if gotLen := utf8.RuneCountInString(items[1].Title()); gotLen != wantLen {
+		t.Errorf("marked row length %d != unmarked row length %d (columns would misalign)", gotLen, wantLen)
+	}
+}
+
+// TestBuildModelItemsNoMarkerWithoutLastLaunched verifies that an empty
+// last-launched ID (no rotation.state) or an ID outside the eligible slice
+// (different agent, -T/-F filter, deleted model) leaves every row unmarked —
+// the picker must not fabricate a "last used" signal.
+func TestBuildModelItemsNoMarkerWithoutLastLaunched(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	models := []config.Model{
+		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
+	}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	for _, lastID := range []string{"", "ollama/gone"} {
+		items := buildModelItems(models, familyOf, store, lastID)
+		for i, it := range items {
+			if strings.HasPrefix(it.Title(), markerMarked) {
+				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())
+			}
+		}
 	}
 }
