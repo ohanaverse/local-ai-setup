@@ -62,6 +62,8 @@ func singleModelList(m config.Model) list.Model {
 // item layout the picker actually renders. The usage counts come through
 // the newUsageStore seam so callers that stub the seam (or isolate
 // XDG_CONFIG_HOME via tempStateDir) never read the host's real usage.jsonl.
+// Callers MUST call tempStateDir(t) first: the helper reads rotation state
+// (cursor positioning and the ▶ marker) from the isolated XDG_CONFIG_HOME.
 func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
 	t.Helper()
 	models, err := cfg.EligibleModels(agent, tag, "")
@@ -690,6 +692,25 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 	}
 	if gotModel.models.Index() != 1 {
 		t.Errorf("cursor index = %d, want 1 (rotation-next row ollama/gemma4:14b)", gotModel.models.Index())
+	}
+}
+
+// TestModelPickerNoMarkerWithoutRotationState drives the production
+// phaseAgent → enterModelPhase path with NO rotation.state present and
+// asserts no row carries the ▶ marker — a regression that substituted a
+// non-empty fallback when rotation.Last() fails would otherwise pass the
+// seeded-state test while fabricating a "last used" signal.
+func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
+	tempStateDir(t) // isolate: no seedState — rotation.state must be absent
+	stubUsageStore(t)
+	cfg := testConfig()
+	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
+
+	for i, it := range gotModel.models.Items() {
+		if strings.HasPrefix(it.(*modelItem).Title(), "▶") {
+			t.Errorf("row %d unexpectedly marked with no rotation state: %q", i, it.(*modelItem).Title())
+		}
 	}
 }
 
