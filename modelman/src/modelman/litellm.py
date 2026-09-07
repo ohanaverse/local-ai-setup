@@ -118,6 +118,11 @@ def passes_ready_gate(
     expose with "model is not ready"): ready is required unless the model
     is effectively cloud — cloud rows are exempt from the ready gate.
 
+    This is a routing gate, distinct from the catalog/display predicate
+    `is_effectively_exposed`. In particular it does NOT include the native
+    exemption: native providers have no LiteLLM mapping and are rejected by
+    `_validated_entry` before this gate is reached.
+
     Args:
         model: The registry model entry to check.
         state: StateStore for the persisted ready flag.
@@ -137,12 +142,20 @@ def is_effectively_exposed(
     exposed_override: bool | None = None,
     ready_override: bool | None = None,
 ) -> bool:
-    """Determine if a model is effectively exposed through LiteLLM.
+    """Determine if a model is effectively exposed (catalog/display predicate).
 
-    A model is effectively exposed when BOTH of these hold:
-    - its `litellm_exposed` flag is True (or `exposed_override` is True), AND
-    - it passes the ready gate: it is ready (or `ready_override` is True)
-      or it is a cloud model (exempt from the ready gate).
+    A model is effectively exposed when ANY of these hold:
+    - it is a native model (provider auth.type == "native"); native providers
+      cannot route through LiteLLM, so they are always considered exposed, OR
+    - its `litellm_exposed` flag is True (or `exposed_override` is True) AND
+      it passes the ready gate: it is ready (or `ready_override` is True) or
+      it is a cloud model (exempt from the ready gate).
+
+    This predicate is intentionally distinct from the apply/routing gate
+    (`passes_ready_gate` / `_validated_entry`): the apply gate governs whether
+    a model can be written into LiteLLM's config and may flip the flag it is
+    checking. Native models have no LiteLLM mapping, so they are catalog-only
+    and are rejected earlier by `_validated_entry` via the `policy is None` check.
 
     Args:
         model: The registry model entry to check.
@@ -151,8 +164,10 @@ def is_effectively_exposed(
         ready_override: Override the persisted ready flag.
 
     Returns:
-        True if the model would be exposed through LiteLLM, False otherwise.
+        True if the model should show as exposed in the catalog, False otherwise.
     """
+    if model.native:
+        return True
     exposed = (
         exposed_override if exposed_override is not None else state.get(model.id).litellm_exposed
     )
@@ -478,6 +493,7 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
         ) from None
     policy = provider_policy(model.provider_id)
     if policy is None:
+        # Native providers hit this check: auth.type == "native" means no LiteLLM mapping.
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
     if not passes_ready_gate(model, state):
         raise ExposeError(f"model {model_id!r} is not ready")
