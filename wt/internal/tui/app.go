@@ -12,6 +12,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -21,6 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -698,8 +700,12 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	// rotation.state yields "" and leaves every row unmarked.
 	rot := rotation.New()
 	lastID, _ := rot.Last()
+	// Agent-scoped 30-day survey stats, so a bad agent×model combo is
+	// visible before launching (design requirement 5). One Events() read
+	// feeds the whole picker, mirroring the single usage Counts() pass.
+	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	// Build the sorted, compact model list.
-	items := buildModelItems(models, familyOf, newUsageStore(), lastID)
+	items := buildModelItems(models, familyOf, newUsageStore(), lastID, surveyStats)
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
