@@ -388,9 +388,7 @@ class ChatStreamingWorkload:
                 prompt_tokens=None,
             )
         ttft_ms = (
-            int((raw.first_token_time - raw.start_time) * 1000)
-            if raw.first_token_time
-            else None
+            int((raw.first_token_time - raw.start_time) * 1000) if raw.first_token_time else None
         )
         total_ms = int((raw.end_time - raw.start_time) * 1000)
         return BenchmarkMetrics(
@@ -455,9 +453,7 @@ class ShortStreamingWorkload:
                 prompt_tokens=None,
             )
         ttft_ms = (
-            int((raw.first_token_time - raw.start_time) * 1000)
-            if raw.first_token_time
-            else None
+            int((raw.first_token_time - raw.start_time) * 1000) if raw.first_token_time else None
         )
         total_ms = int((raw.end_time - raw.start_time) * 1000)
         return BenchmarkMetrics(
@@ -559,9 +555,7 @@ class CodeStreamingWorkload:
                 prompt_tokens=None,
             )
         ttft_ms = (
-            int((raw.first_token_time - raw.start_time) * 1000)
-            if raw.first_token_time
-            else None
+            int((raw.first_token_time - raw.start_time) * 1000) if raw.first_token_time else None
         )
         total_ms = int((raw.end_time - raw.start_time) * 1000)
         return BenchmarkMetrics(
@@ -616,7 +610,9 @@ def test_chat_workload_run_counts_tokens():
     ]
     session.post.return_value = _fake_response(lines)
 
-    raw = workload.run(session, "http://localhost:4000/v1/chat/completions", workload.build_payload("x"))
+    raw = workload.run(
+        session, "http://localhost:4000/v1/chat/completions", workload.build_payload("x")
+    )
 
     assert raw.error is None
     assert raw.completion_tokens == 50
@@ -830,8 +826,7 @@ def _helper_path(name: str) -> str:
     path = shutil.which(name)
     if path is None:
         raise BenchmarkError(
-            f"isolation helper '{name}' not found on PATH. "
-            "Ensure local-ai-setup/bin is on PATH."
+            f"isolation helper '{name}' not found on PATH. Ensure local-ai-setup/bin is on PATH."
         )
     return path
 
@@ -914,7 +909,9 @@ def test_write_results_creates_json_and_markdown(tmp_path):
                 provider_id="ollama",
                 route="direct",
                 pass_number=1,
-                metrics=BenchmarkMetrics(ttft_ms=100, total_ms=500, completion_tokens=100, prompt_tokens=10),
+                metrics=BenchmarkMetrics(
+                    ttft_ms=100, total_ms=500, completion_tokens=100, prompt_tokens=10
+                ),
             )
         ],
     )
@@ -1021,7 +1018,11 @@ def _aggregate(results: list[TargetResult]) -> dict[str, dict[str, Any]]:
             "ttft_ms": _median([r.metrics.ttft_ms for r in valid if r.metrics.ttft_ms is not None]),
             "total_ms": _median([r.metrics.total_ms for r in valid]),
             "throughput_tok_s": _median(
-                [r.metrics.throughput_tok_s for r in valid if r.metrics.throughput_tok_s is not None]
+                [
+                    r.metrics.throughput_tok_s
+                    for r in valid
+                    if r.metrics.throughput_tok_s is not None
+                ]
             ),
         }
     return summary
@@ -1247,9 +1248,7 @@ def _run_route(
     workload: Workload,
     pass_number: int,
 ) -> TargetResult:
-    payload = workload.build_payload(
-        target.model_name if route == "direct" else target.model_id
-    )
+    payload = workload.build_payload(target.model_name if route == "direct" else target.model_id)
     raw = workload.run(session, url, payload)
     metrics = workload.metrics(raw)
     return TargetResult(
@@ -1430,7 +1429,9 @@ def run_cmd(
     litellm: bool = typer.Option(False, "--litellm", help="Only benchmark via LiteLLM"),
     passes: int = typer.Option(1, "--passes", min=1, help="Number of passes per target"),
     cooldown: float = typer.Option(15.0, "--cooldown", help="Seconds between passes"),
-    results_dir: Path | None = typer.Option(None, "--results-dir", help="Directory for result artifacts"),
+    results_dir: Path | None = typer.Option(
+        None, "--results-dir", help="Directory for result artifacts"
+    ),
 ) -> None:
     """Run a benchmark workload against local models."""
     routes = ["direct", "litellm"]
@@ -1469,6 +1470,7 @@ def run_cmd(
 
     # Record latest run pointer in state.
     from modelman.benchmark.results import BenchmarkRun
+
     state.extra["benchmarks"] = {
         "last_run": run.started_at.isoformat(),
         "last_run_dir": str(results_dir / run.run_id) if results_dir else None,
@@ -1476,7 +1478,11 @@ def run_cmd(
     save_state(state)
 
     typer.echo(f"Benchmark complete: {run.run_id}")
-    typer.echo(f"Results: {results_dir / run.run_id}" if results_dir else f"Results: ~/.config/local-ai/benchmarks/{run.run_id}")
+    typer.echo(
+        f"Results: {results_dir / run.run_id}"
+        if results_dir
+        else f"Results: ~/.config/local-ai/benchmarks/{run.run_id}"
+    )
 
 
 @benchmark_app.command("show-results")
@@ -1558,6 +1564,7 @@ Now modify `src/modelman/main.py`:
 
 ```python
 from .benchmark.cli import benchmark_app
+
 ...
 app = typer.Typer(help="Manage local LLM model families across providers.")
 ...
@@ -1597,12 +1604,15 @@ from modelman.main import app
 
 
 def test_run_saves_latest_state_pointer(tmp_path):
-    with patch("modelman.benchmark.cli.load_registry") as mock_registry, \
-         patch("modelman.benchmark.cli.load_state") as mock_state, \
-         patch("modelman.benchmark.cli.save_state") as mock_save, \
-         patch("modelman.benchmark.cli.run_benchmark") as mock_run:
+    with (
+        patch("modelman.benchmark.cli.load_registry") as mock_registry,
+        patch("modelman.benchmark.cli.load_state") as mock_state,
+        patch("modelman.benchmark.cli.save_state") as mock_save,
+        patch("modelman.benchmark.cli.run_benchmark") as mock_run,
+    ):
         from modelman.benchmark.results import BenchmarkRun
         from datetime import datetime, timezone
+
         mock_run.return_value = BenchmarkRun(
             run_id="20260905-143200",
             workload_name="chat",

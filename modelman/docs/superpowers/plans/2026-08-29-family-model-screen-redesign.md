@@ -760,11 +760,12 @@ Add to `tests/screens/test_app_navigation.py`:
 ```python
 @pytest.mark.asyncio
 async def test_model_screen_is_single_table_sorted_by_provider_then_name(tmp_path, monkeypatch):
-    b_model = ModelEntry(
-        id="ollama/b", family="ornith", provider_id="ollama", model_name="b:tag"
-    )
+    b_model = ModelEntry(id="ollama/b", family="ornith", provider_id="ollama", model_name="b:tag")
     a_model = ModelEntry(
-        id="llamacpp/a", family="ornith", provider_id="llamacpp", model_name="a.gguf",
+        id="llamacpp/a",
+        family="ornith",
+        provider_id="llamacpp",
+        model_name="a.gguf",
     )
     _seed_registry_and_state(
         tmp_path, monkeypatch, models=[b_model, a_model], providers=["ollama", "llamacpp"]
@@ -809,77 +810,76 @@ In `src/modelman/screens/models.py`, replace `compose` (lines 188-196):
 Replace `on_mount` (lines 198-219), dropping every provider-table reference:
 
 ```python
-    def on_mount(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        mt.add_columns(
-            "FAMILY", "PROVIDER", "MODEL", "LOCATION", "STATUS", "EXPOSED", "SIZE", "PATH"
-        )
-        self.reload()
-        self._refresh_pending_bar()
-        mt.focus()
-        if mt.row_count > 0:
-            mt.cursor_coordinate = Coordinate(0, 0)
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+def on_mount(self) -> None:
+    mt = self.query_one("#model-table", DataTable)
+    mt.add_columns("FAMILY", "PROVIDER", "MODEL", "LOCATION", "STATUS", "EXPOSED", "SIZE", "PATH")
+    self.reload()
+    self._refresh_pending_bar()
+    mt.focus()
+    if mt.row_count > 0:
+        mt.cursor_coordinate = Coordinate(0, 0)
+    self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 ```
 
 Replace `reload` (lines 270-290) and delete `on_data_table_row_highlighted` (lines 292-297) entirely — the single table needs no provider switch:
 
 ```python
-    def reload(self) -> None:
-        self._load_models()
+def reload(self) -> None:
+    self._load_models()
 
-    def _load_models(self) -> None:
-        from ..providers.registry import ProviderRegistry
 
-        mt = self.query_one("#model-table", DataTable)
-        mt.clear()
-        models = sorted(
-            self.registry.models_by_family(self.family),
-            key=lambda m: (m.provider_id, m.model_name),
+def _load_models(self) -> None:
+    from ..providers.registry import ProviderRegistry
+
+    mt = self.query_one("#model-table", DataTable)
+    mt.clear()
+    models = sorted(
+        self.registry.models_by_family(self.family),
+        key=lambda m: (m.provider_id, m.model_name),
+    )
+    for m in models:
+        rec = self.reconciled.get(m.id)
+        if rec is not None:
+            ready = bool(rec.get("ready"))
+            size_str = _human_size(rec.get("size")) if ready else "—"
+            path = rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
+        else:
+            state_entry = self.state.get(m.id)
+            ready = state_entry.ready
+            size_str = "—"
+            path = state_entry.disk_path or "—"
+            if ready:
+                try:
+                    entry = self.registry.provider(m.provider_id)
+                    prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
+                    size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
+                except Exception:
+                    pass
+        if m.id in self.queued_deletes:
+            status = "[red]✗[/red]"
+        elif m.id in self.queued_ready:
+            status = "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
+        elif m.id in self.queued_moves:
+            status = "[magenta]→[/magenta]"
+        elif ready:
+            status = "[green]✓[/green]"
+        else:
+            status = "[dim]○[/dim]"
+        exposed = self.state.get(m.id).litellm_exposed
+        if m.id in self.queued_exposes:
+            exposed = self.queued_exposes[m.id]
+        exposed_str = "L" if exposed else "–"
+        mt.add_row(
+            m.family,
+            m.provider_id,
+            m.model_name,
+            m.location or "—",
+            status,
+            exposed_str,
+            size_str,
+            path,
+            key=m.id,
         )
-        for m in models:
-            rec = self.reconciled.get(m.id)
-            if rec is not None:
-                ready = bool(rec.get("ready"))
-                size_str = _human_size(rec.get("size")) if ready else "—"
-                path = rec.get("local_path") or (self.state.get(m.id).disk_path or "—")
-            else:
-                state_entry = self.state.get(m.id)
-                ready = state_entry.ready
-                size_str = "—"
-                path = state_entry.disk_path or "—"
-                if ready:
-                    try:
-                        entry = self.registry.provider(m.provider_id)
-                        prov = ProviderRegistry.get(m.provider_id, provider_config(entry))
-                        size_str = _human_size(prov.size_of(_model_entry_to_variant(m)))
-                    except Exception:
-                        pass
-            if m.id in self.queued_deletes:
-                status = "[red]✗[/red]"
-            elif m.id in self.queued_ready:
-                status = "[yellow]↓[/yellow]" if self.queued_ready[m.id] else "[yellow]↑[/yellow]"
-            elif m.id in self.queued_moves:
-                status = "[magenta]→[/magenta]"
-            elif ready:
-                status = "[green]✓[/green]"
-            else:
-                status = "[dim]○[/dim]"
-            exposed = self.state.get(m.id).litellm_exposed
-            if m.id in self.queued_exposes:
-                exposed = self.queued_exposes[m.id]
-            exposed_str = "L" if exposed else "–"
-            mt.add_row(
-                m.family,
-                m.provider_id,
-                m.model_name,
-                m.location or "—",
-                status,
-                exposed_str,
-                size_str,
-                path,
-                key=m.id,
-            )
 ```
 
 (`self.queued_ready` replaces `self.queued_downloads` — introduced fully in Task 6; this task only needs the attribute to exist as an empty dict so `reload()` doesn't crash. In `__init__`, rename `self.queued_downloads: dict[str, VariantSpec] = {}` to `self.queued_ready: dict[str, bool] = {}` now — Task 6 fills in the toggle logic that populates it.)
@@ -898,9 +898,7 @@ In `__init__` (near line 156-160), remove `self.selected_provider` entirely and 
 In `action_add_model` (around line 413-429), change the default-provider line:
 
 ```python
-        default_provider = (
-            self._last_provider_used if self._last_provider_used in providers else None
-        )
+default_provider = self._last_provider_used if self._last_provider_used in providers else None
 ```
 
 **`_on_add_model` and `_on_edit_model` both reference `self.queued_downloads`, which no longer exists after this step's `__init__` rename — leaving them untouched crashes with `AttributeError` on every add/edit/move, not just ready-toggle tests.** Replace both in full:
@@ -948,13 +946,14 @@ In `action_add_model` (around line 413-429), change the default-provider line:
 Replace both (lines 500-550) with:
 
 ```python
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        self.action_edit_model()
+def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    self.action_edit_model()
 
-    def action_select_row(self) -> None:
-        """Screen-level Enter handler: always edits the row under the
-        cursor now that there's only one table."""
-        self.action_edit_model()
+
+def action_select_row(self) -> None:
+    """Screen-level Enter handler: always edits the row under the
+    cursor now that there's only one table."""
+    self.action_edit_model()
 ```
 
 (Drop the `Binding("enter", ..., priority=True)` special-casing rationale in the docstring since there's no longer a second table whose focus it needs to out-prioritize — the binding itself can stay as a plain non-priority binding: change `Binding("enter", "select_row", "Edit", priority=True)` to `("enter", "select_row", "Edit")` in `BINDINGS`.)
@@ -999,9 +998,7 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
     stub.name = "llamacpp"
     stub.size_of.return_value = None
     stub.is_downloaded.return_value = False
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
 
@@ -1189,7 +1186,9 @@ async def test_ready_toggle_on_flag_only_provider_sets_no_provider_call(tmp_path
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
         providers=[
-            ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")),
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            ),
         ],
         models=[native_model],
     )
@@ -1319,43 +1318,44 @@ Replace `self.queued_downloads.clear()` with `self.queued_ready.clear()` in both
 In `src/modelman/screens/forms.py`, change the constructor and `compose` (lines 413-445):
 
 ```python
-    def __init__(
-        self,
-        ready: list[tuple[str, bool]],
-        deletes: list,
-        exposes: list[tuple[str, bool]] | None = None,
-        moves: list[tuple[str, str]] | None = None,
-    ) -> None:
-        super().__init__()
-        self._ready = ready
-        self._deletes = deletes
-        self._exposes = exposes or []
-        self._moves = moves or []
+def __init__(
+    self,
+    ready: list[tuple[str, bool]],
+    deletes: list,
+    exposes: list[tuple[str, bool]] | None = None,
+    moves: list[tuple[str, str]] | None = None,
+) -> None:
+    super().__init__()
+    self._ready = ready
+    self._deletes = deletes
+    self._exposes = exposes or []
+    self._moves = moves or []
 
-    def compose(self) -> ComposeResult:
-        ready_on = [mid for mid, target in self._ready if target]
-        ready_off = [mid for mid, target in self._ready if not target]
-        with Vertical():
-            yield Label(
-                f"Pending: ready {len(self._ready)} · delete {len(self._deletes)}"
-                f" · move {len(self._moves)} · expose {len(self._exposes)}"
-            )
-            for mid in ready_on:
-                yield Label(f"  ↓ {mid}")
-            for mid in ready_off:
-                yield Label(f"  ↑ {mid}")
-            for v in self._deletes:
-                yield Label(f"  × {v['id']} ({v['provider']})")
-            for model_id, target in self._moves:
-                yield Label(f"  → {model_id} → {target}")
-            for model_id, exposed in self._exposes:
-                mark = "L" if exposed else "–"
-                yield Label(f"  {mark} {model_id}")
-            yield Label("Apply, cancel, or discard these changes?")
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="default")
-                yield Button("Discard", id="discard", variant="warning")
-                yield Button("Apply", id="apply", variant="primary")
+
+def compose(self) -> ComposeResult:
+    ready_on = [mid for mid, target in self._ready if target]
+    ready_off = [mid for mid, target in self._ready if not target]
+    with Vertical():
+        yield Label(
+            f"Pending: ready {len(self._ready)} · delete {len(self._deletes)}"
+            f" · move {len(self._moves)} · expose {len(self._exposes)}"
+        )
+        for mid in ready_on:
+            yield Label(f"  ↓ {mid}")
+        for mid in ready_off:
+            yield Label(f"  ↑ {mid}")
+        for v in self._deletes:
+            yield Label(f"  × {v['id']} ({v['provider']})")
+        for model_id, target in self._moves:
+            yield Label(f"  → {model_id} → {target}")
+        for model_id, exposed in self._exposes:
+            mark = "L" if exposed else "–"
+            yield Label(f"  {mark} {model_id}")
+        yield Label("Apply, cancel, or discard these changes?")
+        with Horizontal():
+            yield Button("Cancel", id="cancel", variant="default")
+            yield Button("Discard", id="discard", variant="warning")
+            yield Button("Apply", id="apply", variant="primary")
 ```
 
 - [x] **Step 9: Mechanically rename remaining `queued_downloads` references in `tests/screens/test_app_navigation.py`**
@@ -1472,7 +1472,9 @@ def test_apply_ready_true_flag_only_sets_flag_no_provider_call(tmp_path):
     )
     reg = Registry(
         providers=[
-            ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native"))
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            )
         ],
         models=[native_model],
     )
@@ -1486,7 +1488,9 @@ def test_apply_ready_true_flag_only_sets_flag_no_provider_call(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={},  # no Provider instance for "claude" — flag-only
-        ready=[("claude/native", _variant(id="claude/native", provider="claude", name="native"), True)],
+        ready=[
+            ("claude/native", _variant(id="claude/native", provider="claude", name="native"), True)
+        ],
     )
     pending.apply()
 
@@ -1502,7 +1506,9 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     )
     reg = Registry(
         providers=[
-            ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native"))
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            )
         ],
         models=[native_model],
     )
@@ -1517,7 +1523,9 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
         registry_path=reg_path,
         state_path=state_path,
         providers={},
-        ready=[("claude/native", _variant(id="claude/native", provider="claude", name="native"), False)],
+        ready=[
+            ("claude/native", _variant(id="claude/native", provider="claude", name="native"), False)
+        ],
     )
     pending.apply()
 
@@ -1641,24 +1649,22 @@ For each, also update any assertion reading `.downloaded` on the resulting `Mode
 In `src/modelman/screens/models.py`, `_run_apply` (lines 617-680), change the `providers` dict comprehension's source (was `self.queued_downloads.values()` for specs — now specs live in `self.registry.models`, keyed by the ids in `self.queued_ready`):
 
 ```python
-        providers: dict[str, object] = {}
-        specs_by_id = {
-            m.id: _model_entry_to_variant(m) for m in self.registry.models if m.id in self.queued_ready
-        }
-        for spec in list(specs_by_id.values()) + list(self.queued_deletes.values()):
-            try:
-                entry = self.registry.provider(spec["provider"])
-                providers[spec["provider"]] = ProviderRegistry.get(
-                    spec["provider"], provider_config(entry)
-                )
-            except Exception:
-                continue
+providers: dict[str, object] = {}
+specs_by_id = {
+    m.id: _model_entry_to_variant(m) for m in self.registry.models if m.id in self.queued_ready
+}
+for spec in list(specs_by_id.values()) + list(self.queued_deletes.values()):
+    try:
+        entry = self.registry.provider(spec["provider"])
+        providers[spec["provider"]] = ProviderRegistry.get(spec["provider"], provider_config(entry))
+    except Exception:
+        continue
 ```
 
 And change the `PendingChanges(...)` construction's `downloads=` kwarg to:
 
 ```python
-            ready=[(mid, specs_by_id[mid], target) for mid, target in self.queued_ready.items()],
+ready = ([(mid, specs_by_id[mid], target) for mid, target in self.queued_ready.items()],)
 ```
 
 (leave `deletes=[(mid, spec) for mid, spec in self.queued_deletes.items()]` unchanged. `_run_apply`'s end-of-method `self.queued_ready.clear()` was already fixed in Task 6 Step 7 — nothing left to rename here.)
@@ -1825,7 +1831,13 @@ async def test_modelform_add_mode_provider_is_a_select():
 
 @pytest.mark.asyncio
 async def test_modelform_edit_mode_provider_select_is_disabled():
-    variant: VariantSpec = {"id": "q4", "provider": "llamacpp", "name": "q4.gguf", "repo": "foo/bar", "files": ["q4.gguf"]}
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+    }
     form = ModelForm(providers=["llamacpp", "ollama"], variant=variant)
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -1953,63 +1965,69 @@ In `src/modelman/screens/forms.py`, change `__init__` (add `provider_kinds`):
 Replace `compose` (lines 271-313):
 
 ```python
-    def compose(self) -> ComposeResult:
-        editing = self._variant is not None
-        v: VariantSpec = self._variant if self._variant is not None else cast("VariantSpec", {})
-        if editing:
-            initial_provider = v.get("provider") or self._providers[0]
-        elif self._default_provider and self._default_provider in self._providers:
-            initial_provider = self._default_provider
-        else:
-            initial_provider = self._providers[0]
-        self._initial_provider: str = initial_provider
+def compose(self) -> ComposeResult:
+    editing = self._variant is not None
+    v: VariantSpec = self._variant if self._variant is not None else cast("VariantSpec", {})
+    if editing:
+        initial_provider = v.get("provider") or self._providers[0]
+    elif self._default_provider and self._default_provider in self._providers:
+        initial_provider = self._default_provider
+    else:
+        initial_provider = self._providers[0]
+    self._initial_provider: str = initial_provider
 
-        model_val = self._reconstruct_model(v) if editing else ""
-        kind = self._provider_kinds.get(initial_provider, "ollama")
-        placeholder = (
-            "e.g. ornith-1.5:35b"
-            if kind == "ollama"
-            else "leave blank for 'native', or a model name"
-            if kind == "native"
-            else "org/repo[/path/to/file]"
+    model_val = self._reconstruct_model(v) if editing else ""
+    kind = self._provider_kinds.get(initial_provider, "ollama")
+    placeholder = (
+        "e.g. ornith-1.5:35b"
+        if kind == "ollama"
+        else "leave blank for 'native', or a model name"
+        if kind == "native"
+        else "org/repo[/path/to/file]"
+    )
+    location_value = (
+        "cloud"
+        if kind in ("native", "cloud-only")
+        else "local"
+        if kind == "local-only"
+        else v.get("location") or "local"
+    )
+    location_locked = kind in ("native", "cloud-only", "local-only")
+
+    with Vertical():
+        yield Label("Provider:")
+        yield Select(
+            options=[(p, p) for p in self._providers],
+            value=initial_provider,
+            allow_blank=False,
+            disabled=editing,
+            id="provider-select",
         )
-        location_value = "cloud" if kind in ("native", "cloud-only") else "local" if kind == "local-only" else v.get("location") or "local"
-        location_locked = kind in ("native", "cloud-only", "local-only")
-
-        with Vertical():
-            yield Label("Provider:")
-            yield Select(
-                options=[(p, p) for p in self._providers],
-                value=initial_provider,
-                allow_blank=False,
-                disabled=editing,
-                id="provider-select",
-            )
-            yield Label("Family:")
-            yield Select(
-                options=[(f, f) for f in self._families],
-                value=(self._family if self._family in self._families else self._families[0]),
-                allow_blank=False,
-                id="family-select",
-            )
-            yield Label("Model:")
-            yield Input(
-                value=model_val,
-                placeholder=placeholder,
-                id="model",
-            )
-            yield Label("", id="model-error")
-            yield Label("Location:")
-            yield Select(
-                options=[("cloud", "cloud"), ("local", "local")],
-                value=location_value,
-                allow_blank=False,
-                disabled=location_locked,
-                id="location-select",
-            )
-            with Horizontal():
-                yield Button("Cancel", id="cancel", variant="default")
-                yield Button("Save", id="save", variant="primary")
+        yield Label("Family:")
+        yield Select(
+            options=[(f, f) for f in self._families],
+            value=(self._family if self._family in self._families else self._families[0]),
+            allow_blank=False,
+            id="family-select",
+        )
+        yield Label("Model:")
+        yield Input(
+            value=model_val,
+            placeholder=placeholder,
+            id="model",
+        )
+        yield Label("", id="model-error")
+        yield Label("Location:")
+        yield Select(
+            options=[("cloud", "cloud"), ("local", "local")],
+            value=location_value,
+            allow_blank=False,
+            disabled=location_locked,
+            id="location-select",
+        )
+        with Horizontal():
+            yield Button("Cancel", id="cancel", variant="default")
+            yield Button("Save", id="save", variant="primary")
 ```
 
 (Drops the old `#provider-label` static `Label(f"Provider: {initial_provider}")` entirely — every test referencing `_rendered_provider`/`#provider-label` must be updated per Step 9 below.)

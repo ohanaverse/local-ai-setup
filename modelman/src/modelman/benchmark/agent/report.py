@@ -79,11 +79,17 @@ def write_row_artifacts(
     (row_dir / "diff.raw.patch").write_text(diff_raw, encoding="utf-8")
     (row_dir / "diff.patch").write_text(anonymize_diff(diff_raw), encoding="utf-8")
     if gates is not None:
-        (row_dir / "gates.json").write_text(json.dumps(_gates_to_dict(gates), indent=2), encoding="utf-8")
+        (row_dir / "gates.json").write_text(
+            json.dumps(_gates_to_dict(gates), indent=2), encoding="utf-8"
+        )
     if metrics is not None:
-        (row_dir / "metrics.json").write_text(json.dumps(asdict(metrics), indent=2), encoding="utf-8")
+        (row_dir / "metrics.json").write_text(
+            json.dumps(asdict(metrics), indent=2), encoding="utf-8"
+        )
     if judge_outcome is not None:
-        (row_dir / "judge.json").write_text(json.dumps(_judge_to_dict(judge_outcome), indent=2), encoding="utf-8")
+        (row_dir / "judge.json").write_text(
+            json.dumps(_judge_to_dict(judge_outcome), indent=2), encoding="utf-8"
+        )
     if seed_contents is not None:
         # row.json is what makes `agent judge` possible without re-running
         # anything: the diff alone is unreadable to the judge without the
@@ -126,12 +132,15 @@ def _mask_keys(value: Any) -> Any:
     return value
 
 
-def write_run_toml(path: Path, suite_dict: dict[str, Any], *, git_sha: str, pi_version: str) -> None:
+def write_run_toml(
+    path: Path, suite_dict: dict[str, Any], *, git_sha: str, pi_version: str
+) -> None:
     payload = {
         "run": {"git_sha": git_sha, "pi_version": pi_version},
         "suite": _mask_keys(suite_dict),
     }
     atomic_write_toml(payload, path)
+
 
 def _outcome_code(report: RowReport) -> str:
     if report.error:
@@ -232,14 +241,20 @@ def compute_pareto_stars(reports: list[RowReport]) -> set[str]:
         points.append((r, r.metrics.wall_seconds, r.composite))
     starred: set[str] = set()
     for row, wall, comp in points:
-        dominated = any(other_wall < wall and other_comp > comp for other, other_wall, other_comp in points if other is not row)
+        dominated = any(
+            other_wall < wall and other_comp > comp
+            for other, other_wall, other_comp in points
+            if other is not row
+        )
         if not dominated:
             starred.add(row.label)
     return starred
 
 
 def _two_axis_table(reports: list[RowReport]) -> str:
-    scored = sorted((r for r in reports if r.composite is not None), key=lambda r: -(r.composite or 0))
+    scored = sorted(
+        (r for r in reports if r.composite is not None), key=lambda r: -(r.composite or 0)
+    )
     unscored = [r for r in reports if r.composite is None]
     stars = compute_pareto_stars(reports)
     lines = ["| label | composite | wall_s | pareto |", "|---|---|---|---|"]
@@ -260,9 +275,19 @@ def _anomalies_table(reports: list[RowReport]) -> str:
                 lines.append(f"| {r.label} | VACUOUS_TEST |")
             combined = _combined(r)
             rubric_total = combined.total if combined is not None else None
-            if rubric_total is not None and rubric_total >= 70 and r.gates.hidden_evaluated and r.gates.hidden_pass == 0 and r.gates.hidden_total > 0:
-                lines.append(f"| {r.label} | rubric {rubric_total} despite all hidden tests failing |")
-            if r.gates.hidden_evaluated and detect_overclaim(r.closing_message, r.gates.hidden_pass, r.gates.hidden_total):
+            if (
+                rubric_total is not None
+                and rubric_total >= 70
+                and r.gates.hidden_evaluated
+                and r.gates.hidden_pass == 0
+                and r.gates.hidden_total > 0
+            ):
+                lines.append(
+                    f"| {r.label} | rubric {rubric_total} despite all hidden tests failing |"
+                )
+            if r.gates.hidden_evaluated and detect_overclaim(
+                r.closing_message, r.gates.hidden_pass, r.gates.hidden_total
+            ):
                 lines.append(f"| {r.label} | overclaim: closing message claims tests pass |")
         if r.metrics is not None:
             # thinking no-op is not a derived flag: whether --thinking does

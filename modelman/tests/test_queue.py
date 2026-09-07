@@ -420,8 +420,11 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
     providers["ollama"].delete.side_effect = RuntimeError("daemon down")
 
     pending = PendingChanges(
-        registry=reg, state=state, family="f",
-        registry_path=reg_path, state_path=state_path,
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
         providers=providers,
         deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
         ready=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"), False)],
@@ -430,7 +433,7 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
 
     assert providers["ollama"].delete.call_count == 1  # deletes loop only
     delete_failures = [f for f in pending.failures if "daemon down" in f]
-    assert len(delete_failures) == 1                   # one failure, not two
+    assert len(delete_failures) == 1  # one failure, not two
 
 
 def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
@@ -1375,12 +1378,11 @@ def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
     providers) ever correcting the contradiction."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
-    model = ModelEntry(
-        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
-    )
+    model = ModelEntry(id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local")
     reg = Registry(
-        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
-                                  auth=AuthConfig(type="none"))],
+        providers=[
+            ProviderEntry(id="mlx", name="MLX", location="local", auth=AuthConfig(type="none"))
+        ],
         models=[model],
     )
     save_registry(reg, reg_path)
@@ -1390,14 +1392,17 @@ def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
     state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
 
     pending = PendingChanges(
-        registry=reg, state=state, family="f",
-        registry_path=reg_path, state_path=state_path,
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
         providers={},  # no Provider class registered for 'mlx' → flag-only
         ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
     )
     pending.apply()
 
-    assert not artifact.exists()                    # recorded artifact removed
+    assert not artifact.exists()  # recorded artifact removed
     assert state.get("mlx/a").ready is False
     assert state.get("mlx/a").disk_path is None
     assert pending.failures == []
@@ -1419,12 +1424,11 @@ def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
     staying on disk is acceptable; a half-applied registry is not."""
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
-    model = ModelEntry(
-        id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local"
-    )
+    model = ModelEntry(id="mlx/a", family="f", provider_id="mlx", model_name="a", location="local")
     reg = Registry(
-        providers=[ProviderEntry(id="mlx", name="MLX", location="local",
-                                  auth=AuthConfig(type="none"))],
+        providers=[
+            ProviderEntry(id="mlx", name="MLX", location="local", auth=AuthConfig(type="none"))
+        ],
         models=[model],
     )
     save_registry(reg, reg_path)
@@ -1438,8 +1442,11 @@ def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
     state.set("mlx/a", ModelState(ready=True, disk_path=str(artifact)))
 
     pending = PendingChanges(
-        registry=reg, state=state, family="f",
-        registry_path=reg_path, state_path=state_path,
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
         providers={},  # no Provider class registered for 'mlx' → flag-only
         ready=[("mlx/a", _variant(id="mlx/a", provider="mlx", name="a"), False)],
     )
@@ -1778,9 +1785,9 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
     )
     pending.apply()
 
-    assert providers["ollama"].delete.call_count == 0     # no rm on a gone model
-    assert state.get("ollama/a").ready is False           # stale flag cleared
-    assert state.get("ollama/a").litellm_exposed is False # cascade ran
+    assert providers["ollama"].delete.call_count == 0  # no rm on a gone model
+    assert state.get("ollama/a").ready is False  # stale flag cleared
+    assert state.get("ollama/a").litellm_exposed is False  # cascade ran
     assert pending.failures == []
 
 
@@ -1871,7 +1878,10 @@ def test_apply_final_save_merges_onto_fresh_disk_state_not_a_stale_snapshot(tmp_
         state_path=state_path,
         providers={"ollama": provider},
         deletes=[
-            ("ollama/deleteme", {"id": "ollama/deleteme", "provider": "ollama", "name": "deleteme:7b"})
+            (
+                "ollama/deleteme",
+                {"id": "ollama/deleteme", "provider": "ollama", "name": "deleteme:7b"},
+            )
         ],
     )
 

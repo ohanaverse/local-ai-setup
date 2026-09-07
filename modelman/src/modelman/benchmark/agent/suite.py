@@ -79,7 +79,9 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
                 raise BenchmarkError(
                     f"suite row for model {model_id} is missing required key(s): {', '.join(missing)}"
                 )
-            label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
+            label = (
+                raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
+            )
             rows.append(
                 RowConfig(
                     label=label,
@@ -175,6 +177,7 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         repair_rounds=repair_rounds,
     )
 
+
 def openrouter_key(plist_path: Path = LITELLM_PLIST) -> str | None:
     """The OpenRouter key, from the environment or the LiteLLM LaunchAgent.
 
@@ -198,11 +201,15 @@ def _openrouter_key_available(plist_path: Path) -> bool:
     return openrouter_key(plist_path) is not None
 
 
-def preflight(suite: Suite, registry: Registry, task: TaskBundle, *, plist_path: Path = LITELLM_PLIST) -> None:
+def preflight(
+    suite: Suite, registry: Registry, task: TaskBundle, *, plist_path: Path = LITELLM_PLIST
+) -> None:
     """Fail fast on everything that would otherwise die mid-run, after
     already paying for the agent rows."""
     missing_helpers = [
-        name for name in ("llm-isolate-provider", "llm-restore-providers") if shutil.which(name) is None
+        name
+        for name in ("llm-isolate-provider", "llm-restore-providers")
+        if shutil.which(name) is None
     ]
     if missing_helpers:
         raise BenchmarkError(
@@ -222,7 +229,9 @@ def preflight(suite: Suite, registry: Registry, task: TaskBundle, *, plist_path:
         visible_names = {p.name for p in task.visible_dir.rglob("*") if p.is_file()}
         leaked = hidden_names & visible_names
         if leaked:
-            raise BenchmarkError(f"hidden/ file name(s) also present under visible/: {', '.join(sorted(leaked))}")
+            raise BenchmarkError(
+                f"hidden/ file name(s) also present under visible/: {', '.join(sorted(leaked))}"
+            )
 
     needs_openrouter = (
         suite.judge.route == "openrouter" or suite.judge.model.split("/")[0] == "openrouter"

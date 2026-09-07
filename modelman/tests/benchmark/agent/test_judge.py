@@ -29,7 +29,13 @@ from modelman.benchmark.agent.judge import (
 
 VALID_RESPONSE = json.dumps(
     {
-        "scores": {"root_cause": 25, "approach": 20, "test_quality": 15, "scope": 12, "coherence": 8},
+        "scores": {
+            "root_cause": 25,
+            "approach": 20,
+            "test_quality": 15,
+            "scope": 12,
+            "coherence": 8,
+        },
         "total": 80,
         "verdict": "principled_fix",
         "flags": [],
@@ -72,7 +78,7 @@ def test_build_prompt_never_includes_gate_or_hidden_test_data():
         # the sentence keeping the judge from inferring test results it cannot
         # see; the prompt must carry the rubric through verbatim
         rubric_md="score this\nYou do not know whether this code passes tests; "
-                  "do not speculate about test results.",
+        "do not speculate about test results.",
     )
     assert "HIDDEN_TESTS_FAILED" not in prompt
     assert "gate" not in prompt.lower()
@@ -127,10 +133,7 @@ def test_parse_response_skips_a_decoy_dict_before_the_real_answer():
     instead of the real object, either raising a spurious JudgeContractError
     or, worse, silently scoring the row against the wrong data. The scanner
     must prefer the first candidate that actually has the answer's keys."""
-    raw = (
-        'For reference, the schema looks like {"example": true}.\n'
-        f"{VALID_RESPONSE}"
-    )
+    raw = f'For reference, the schema looks like {{"example": true}}.\n{VALID_RESPONSE}'
     score = parse_response(raw)
     assert score.total == 80
     assert score.verdict == "principled_fix"
@@ -162,7 +165,9 @@ class _FakeTransport:
 
 
 def test_judge_row_succeeds_on_first_valid_response():
-    outcome = judge_row(_FakeTransport([VALID_RESPONSE]), "prompt", temperature=0.0, samples=1, max_attempts=2)
+    outcome = judge_row(
+        _FakeTransport([VALID_RESPONSE]), "prompt", temperature=0.0, samples=1, max_attempts=2
+    )
     assert outcome.status == "scored"
     assert outcome.combined.total == 80
     assert outcome.attempts_used == 1
@@ -190,9 +195,21 @@ def test_judge_row_treats_transport_error_like_a_failed_attempt():
 
 def test_judge_row_samples_greater_than_one_takes_median_per_dimension():
     low = json.loads(VALID_RESPONSE)
-    low["scores"] = {"root_cause": 10, "approach": 10, "test_quality": 10, "scope": 10, "coherence": 4}
+    low["scores"] = {
+        "root_cause": 10,
+        "approach": 10,
+        "test_quality": 10,
+        "scope": 10,
+        "coherence": 4,
+    }
     high = json.loads(VALID_RESPONSE)
-    high["scores"] = {"root_cause": 30, "approach": 20, "test_quality": 18, "scope": 14, "coherence": 8}
+    high["scores"] = {
+        "root_cause": 30,
+        "approach": 20,
+        "test_quality": 18,
+        "scope": 14,
+        "coherence": 8,
+    }
     transport = _FakeTransport([json.dumps(low), VALID_RESPONSE, json.dumps(high)])
     outcome = judge_row(transport, "prompt", temperature=0.0, samples=3, max_attempts=1)
     assert outcome.status == "scored"
@@ -201,7 +218,9 @@ def test_judge_row_samples_greater_than_one_takes_median_per_dimension():
 
 def test_apply_cap_rounds_to_nearest_int():
     assert apply_cap(80, 0.70) == 56
-    assert apply_cap(62, 0.25) == 16  # round(15.5) -> 16 (banker's rounding lands here for .5 cases in general; exact value pinned by this test)
+    assert (
+        apply_cap(62, 0.25) == 16
+    )  # round(15.5) -> 16 (banker's rounding lands here for .5 cases in general; exact value pinned by this test)
 
 
 def test_detect_overclaim_when_agent_claims_pass_but_hidden_tests_failed():
@@ -213,9 +232,9 @@ def test_detect_overclaim_false_when_claim_matches_reality():
 
 
 def test_detect_overclaim_false_when_no_claim_made():
-    assert detect_overclaim("I fixed the calendar arithmetic.", hidden_pass=0, hidden_total=6) is False
-
-
+    assert (
+        detect_overclaim("I fixed the calendar arithmetic.", hidden_pass=0, hidden_total=6) is False
+    )
 
 
 class _FakeResponse:
@@ -242,7 +261,9 @@ def test_litellm_transport_posts_expected_payload(monkeypatch):
 
     monkeypatch.setattr(judge_module.requests, "post", fake_post)
     transport = LiteLLMJudgeTransport(
-        base_url="http://localhost:4000/v1", api_key="sk-test", model="openrouter/anthropic/claude-opus-4"
+        base_url="http://localhost:4000/v1",
+        api_key="sk-test",
+        model="openrouter/anthropic/claude-opus-4",
     )
     result = transport.complete("prompt text", temperature=0.0)
 
@@ -263,7 +284,9 @@ def test_litellm_transport_retries_once_then_succeeds(monkeypatch):
         return _FakeResponse(payload={"choices": [{"message": {"content": "ok"}}]})
 
     monkeypatch.setattr(judge_module.requests, "post", flaky_post)
-    transport = LiteLLMJudgeTransport(base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0)
+    transport = LiteLLMJudgeTransport(
+        base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0
+    )
     assert transport.complete("p", temperature=0.0) == "ok"
     assert calls["n"] == 2
 
@@ -273,7 +296,9 @@ def test_litellm_transport_raises_judge_transport_error_after_retry_exhausted(mo
         raise requests.ConnectionError("still down")
 
     monkeypatch.setattr(judge_module.requests, "post", always_fails)
-    transport = LiteLLMJudgeTransport(base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0)
+    transport = LiteLLMJudgeTransport(
+        base_url="http://localhost:4000/v1", api_key="k", model="m", retry_backoff_s=0.0
+    )
     with pytest.raises(JudgeTransportError):
         transport.complete("p", temperature=0.0)
 
@@ -283,9 +308,7 @@ def test_judge_fail_carries_the_reason():
     gateway does not serve), a 401 (no key) and a malformed reply are three
     different fixes, and the row's own gates and speed data are fine in all
     three cases — so the reason has to survive to judge.json."""
-    transport = _FakeTransport(
-        [JudgeTransportError("HTTP 404: no deployment for model x")] * 2
-    )
+    transport = _FakeTransport([JudgeTransportError("HTTP 404: no deployment for model x")] * 2)
     outcome = judge_row(transport, "prompt", temperature=0.0, samples=1, max_attempts=2)
     assert outcome.status == "judge_fail"
     assert outcome.error and "404" in outcome.error
@@ -312,12 +335,14 @@ def test_malformed_200_response_is_a_transport_error_not_a_crash(monkeypatch):
     that escapes complete()'s retry and aborts the entire sweep after all agent
     rows already ran."""
     for payload in ("<html>502 Bad Gateway</html>", {"choices": []}, {"choices": [{}]}):
+
         class _Resp:
             status_code = 200
             text = str(payload)
 
             def json(self):
                 import json as _json
+
                 return _json.loads(self.text)
 
         monkeypatch.setattr(judge_module.requests, "post", lambda *a, _p=payload, **k: _Resp())
@@ -343,12 +368,23 @@ def test_parse_response_tolerates_a_preamble_sentence():
 
 
 def test_parse_response_still_rejects_a_valid_wrapper_with_bad_scores():
-    wrapped = "note: ```json\n" + json.dumps(
-        {
-            "scores": {"root_cause": 99, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10},
-            "total": 169, "verdict": "principled_fix",
-        }
-    ) + "\n```"
+    wrapped = (
+        "note: ```json\n"
+        + json.dumps(
+            {
+                "scores": {
+                    "root_cause": 99,
+                    "approach": 25,
+                    "test_quality": 20,
+                    "scope": 15,
+                    "coherence": 10,
+                },
+                "total": 169,
+                "verdict": "principled_fix",
+            }
+        )
+        + "\n```"
+    )
     with pytest.raises(JudgeContractError, match="root_cause"):
         parse_response(wrapped)
 

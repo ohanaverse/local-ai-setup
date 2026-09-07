@@ -75,9 +75,7 @@ def test_litellm_route_keys_by_full_registry_id(tmp_path):
                     "litellm": {
                         "baseUrl": "http://localhost:4000/v1",
                         "apiKey": "sk-live-key",
-                        "models": [
-                            {"id": LITELLM_ID, "contextWindow": 131072, "reasoning": False}
-                        ],
+                        "models": [{"id": LITELLM_ID, "contextWindow": 131072, "reasoning": False}],
                     }
                 }
             }
@@ -85,7 +83,9 @@ def test_litellm_route_keys_by_full_registry_id(tmp_path):
         encoding="utf-8",
     )
 
-    target = resolve_pi_target(_litellm_row(), "qwen3.8:27b-mlx", routes_direct={}, live_models_path=live)
+    target = resolve_pi_target(
+        _litellm_row(), "qwen3.8:27b-mlx", routes_direct={}, live_models_path=live
+    )
 
     assert target.pi_provider == "litellm"
     assert target.launch_id == LITELLM_ID
@@ -110,7 +110,10 @@ def test_direct_route_keys_by_bare_model_name(tmp_path):
     }
 
     target = resolve_pi_target(
-        row, "Ornith-1.5-35B-A3B-MLX-6bit", routes_direct, live_models_path=tmp_path / "missing.json"
+        row,
+        "Ornith-1.5-35B-A3B-MLX-6bit",
+        routes_direct,
+        live_models_path=tmp_path / "missing.json",
     )
 
     assert target.pi_provider == "omlx"
@@ -138,7 +141,10 @@ def test_direct_route_can_override_the_launch_id(tmp_path):
     }
 
     target = resolve_pi_target(
-        row, "mlx-community/Qwen3.8-27B-4bit", routes_direct, live_models_path=tmp_path / "missing.json"
+        row,
+        "mlx-community/Qwen3.8-27B-4bit",
+        routes_direct,
+        live_models_path=tmp_path / "missing.json",
     )
 
     assert target.launch_id == "Qwen3.8-27B-4bit"
@@ -148,7 +154,9 @@ def test_direct_route_can_override_the_launch_id(tmp_path):
 def test_direct_route_missing_config_block_raises(tmp_path):
     """A direct row with no matching [routes.direct.<provider>] block fails
     at resolution with the provider name, not a KeyError deep in dict access."""
-    row = RowConfig(label="r1", model_id="omlx/x", thinking="off", route="direct", provider_id="omlx")
+    row = RowConfig(
+        label="r1", model_id="omlx/x", thinking="off", route="direct", provider_id="omlx"
+    )
     with pytest.raises(BenchmarkError, match="omlx"):
         resolve_pi_target(row, "x", routes_direct={}, live_models_path=tmp_path / "missing.json")
 
@@ -156,7 +164,9 @@ def test_direct_route_missing_config_block_raises(tmp_path):
 def test_litellm_route_missing_key_raises(tmp_path):
     """No working LiteLLM apiKey anywhere means the row can't be judged or
     run through the gateway — fail clearly instead of sending an empty key."""
-    row = RowConfig(label="r1", model_id="ollama/x", thinking="off", route="litellm", provider_id="ollama")
+    row = RowConfig(
+        label="r1", model_id="ollama/x", thinking="off", route="litellm", provider_id="ollama"
+    )
     with pytest.raises(BenchmarkError, match="apiKey"):
         resolve_pi_target(row, "x", routes_direct={}, live_models_path=tmp_path / "missing.json")
 
@@ -166,7 +176,10 @@ def test_build_models_json_matches_wt_pi_models_shape(tmp_path):
     (id/contextWindow/input/reasoning/_launch) so an agent row behaves like
     a wt-launched pi session."""
     target = resolve_pi_target(
-        _litellm_row(), "qwen3.8:27b-mlx", routes_direct={}, live_models_path=_live_litellm_path(tmp_path)
+        _litellm_row(),
+        "qwen3.8:27b-mlx",
+        routes_direct={},
+        live_models_path=_live_litellm_path(tmp_path),
     )
     doc = build_models_json(target)
     provider = doc["providers"]["litellm"]
@@ -181,12 +194,18 @@ def test_build_models_json_matches_wt_pi_models_shape(tmp_path):
 
 def test_write_pi_config_writes_models_json(tmp_path):
     target = resolve_pi_target(
-        _litellm_row(), "qwen3.8:27b-mlx", routes_direct={}, live_models_path=_live_litellm_path(tmp_path)
+        _litellm_row(),
+        "qwen3.8:27b-mlx",
+        routes_direct={},
+        live_models_path=_live_litellm_path(tmp_path),
     )
     config_dir = tmp_path / "run-config"
     path = write_pi_config(target, config_dir)
     assert path == config_dir / "models.json"
-    assert json.loads(path.read_text(encoding="utf-8"))["providers"]["litellm"]["models"][0]["id"] == LITELLM_ID
+    assert (
+        json.loads(path.read_text(encoding="utf-8"))["providers"]["litellm"]["models"][0]["id"]
+        == LITELLM_ID
+    )
 
 
 def test_build_pi_command_shape(tmp_path):
@@ -240,9 +259,9 @@ def test_run_pi_process_ignores_the_user_message_end_when_checking_for_a_reply(t
         timeout_seconds=10,
         poll_interval=0.01,
     )
-    assert any(
-        e["type"] == "message_end" and e["message"]["role"] == "user" for e in events
-    ), "the fixture must actually emit the user message_end this test is about"
+    assert any(e["type"] == "message_end" and e["message"]["role"] == "user" for e in events), (
+        "the fixture must actually emit the user message_end this test is about"
+    )
     assert result.timed_out is False
     assert result.seen_message_end is False
     assert result.exit_code == 0
@@ -251,7 +270,9 @@ def test_run_pi_process_ignores_the_user_message_end_when_checking_for_a_reply(t
 def test_run_pi_process_counts_unparsed_lines(tmp_path):
     _, result = run_pi_process(
         _fake_agent_cmd(tmp_path / "session", ["--malformed-line"]),
-        workspace_path=tmp_path, timeout_seconds=10, poll_interval=0.01,
+        workspace_path=tmp_path,
+        timeout_seconds=10,
+        poll_interval=0.01,
     )
     assert result.unparsed_lines == 1
 
@@ -264,7 +285,9 @@ def test_run_pi_process_kills_process_group_on_hard_timeout(tmp_path):
     start = time.monotonic()
     _, result = run_pi_process(
         _fake_agent_cmd(tmp_path / "session", ["--hang"]),
-        workspace_path=tmp_path, timeout_seconds=1.0, poll_interval=0.01,
+        workspace_path=tmp_path,
+        timeout_seconds=1.0,
+        poll_interval=0.01,
     )
     elapsed = time.monotonic() - start
     assert result.timed_out is True
@@ -305,15 +328,23 @@ def test_run_pi_process_writes_a_session_file_the_gates_can_find(tmp_path):
     session_dir = ws.root / "pi-session"
     try:
         target = PiTarget(
-            pi_provider="litellm", launch_id="x", base_url="http://x",
-            api="openai-completions", api_key="k", context_window=1000, reasoning=False,
+            pi_provider="litellm",
+            launch_id="x",
+            base_url="http://x",
+            api="openai-completions",
+            api_key="k",
+            context_window=1000,
+            reasoning=False,
         )
         cmd = build_pi_command(target, "off", session_dir, "do the task")
         assert cmd[cmd.index("--session-dir") + 1] == str(session_dir)
         # --session-dir takes exactly one argument and must not swallow the next flag
         assert cmd[cmd.index("--session-dir") + 2] == "--model"
         run_pi_process(
-            _fake_agent_cmd(session_dir), workspace_path=ws.root, timeout_seconds=10, poll_interval=0.01
+            _fake_agent_cmd(session_dir),
+            workspace_path=ws.root,
+            timeout_seconds=10,
+            poll_interval=0.01,
         )
         assert any(p.name.endswith(".jsonl") for p in session_dir.glob("*.jsonl"))
     finally:
@@ -331,9 +362,13 @@ def test_run_pi_process_writes_a_session_file_the_gates_can_find(tmp_path):
 # with the tests setting it explicitly to stand in for that.
 # ---------------------------------------------------------------------------
 
+
 def _assistant_message_start(seq: int, ts_s: float | None = None) -> dict:
-    event = {"type": "message_start", "seq": seq,
-             "message": {"role": "assistant", "model": "fake", "usage": {}, "timestamp": 0}}
+    event = {
+        "type": "message_start",
+        "seq": seq,
+        "message": {"role": "assistant", "model": "fake", "usage": {}, "timestamp": 0},
+    }
     if ts_s is not None:
         event["_ts"] = ts_s
     return event
@@ -342,31 +377,60 @@ def _assistant_message_start(seq: int, ts_s: float | None = None) -> dict:
 def _user_message_echo(seq: int, ts_s: float | None = None) -> dict:
     # real pi echoes the prompt as its own message_start/message_end pair;
     # counting those would inflate requests and corrupt gen_seconds
-    event = {"type": "message_start", "seq": seq,
-             "message": {"role": "user", "content": [{"type": "text", "text": "prompt"}], "timestamp": 0}}
+    event = {
+        "type": "message_start",
+        "seq": seq,
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "prompt"}],
+            "timestamp": 0,
+        },
+    }
     if ts_s is not None:
         event["_ts"] = ts_s
     return event
 
 
 def _user_message_end(seq: int, ts_s: float | None = None) -> dict:
-    event = {"type": "message_end", "seq": seq,
-             "message": {"role": "user", "content": [], "timestamp": 0}}
+    event = {
+        "type": "message_end",
+        "seq": seq,
+        "message": {"role": "user", "content": [], "timestamp": 0},
+    }
     if ts_s is not None:
         event["_ts"] = ts_s
     return event
 
 
-def _assistant_message_end(seq: int, input_tok=100, output_tok=20, cache_read=5,
-                           cache_write=2, reasoning=None, text="looks good",
-                           ts_s: float | None = None) -> dict:
-    usage = {"input": input_tok, "output": output_tok, "cacheRead": cache_read,
-             "cacheWrite": cache_write}
+def _assistant_message_end(
+    seq: int,
+    input_tok=100,
+    output_tok=20,
+    cache_read=5,
+    cache_write=2,
+    reasoning=None,
+    text="looks good",
+    ts_s: float | None = None,
+) -> dict:
+    usage = {
+        "input": input_tok,
+        "output": output_tok,
+        "cacheRead": cache_read,
+        "cacheWrite": cache_write,
+    }
     if reasoning is not None:
         usage["reasoning"] = reasoning
-    event = {"type": "message_end", "seq": seq,
-             "message": {"role": "assistant", "stopReason": "stop", "usage": usage,
-                         "content": [{"type": "text", "text": text}], "timestamp": 0}}
+    event = {
+        "type": "message_end",
+        "seq": seq,
+        "message": {
+            "role": "assistant",
+            "stopReason": "stop",
+            "usage": usage,
+            "content": [{"type": "text", "text": text}],
+            "timestamp": 0,
+        },
+    }
     if ts_s is not None:
         event["_ts"] = ts_s
     return event
@@ -375,8 +439,11 @@ def _assistant_message_end(seq: int, input_tok=100, output_tok=20, cache_read=5,
 def _text_message_update(seq: int, delta: str, ts_s: float | None = None) -> dict:
     # real pi nests the delta under assistantMessageEvent; there is no
     # message.content[].text on a message_update event at all
-    event = {"type": "message_update", "seq": seq,
-             "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": delta}}
+    event = {
+        "type": "message_update",
+        "seq": seq,
+        "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": delta},
+    }
     if ts_s is not None:
         event["_ts"] = ts_s
     return event
@@ -409,18 +476,26 @@ def _turn(seq: int, at_s: float, ttft_ms: float, gen_ms: float, text: str = "x",
 
 
 def _event_stream(**kw) -> list:
-    return [_session_event(), {"type": "agent_start", "seq": 1}, *_turn(2, 0.0, 100.0, 400.0, **kw),
-            {"type": "agent_end", "seq": 8, "willRetry": False}]
+    return [
+        _session_event(),
+        {"type": "agent_start", "seq": 1},
+        *_turn(2, 0.0, 100.0, 400.0, **kw),
+        {"type": "agent_end", "seq": 8, "willRetry": False},
+    ]
 
 
 def test_compute_metrics_basic_counts():
     events = [
         _session_event(),
         {"type": "agent_start", "seq": 1},
-        *_turn(2, 0.0, 1000.0, 1000.0, input_tok=382, output_tok=38, cache_read=100, cache_write=10),
+        *_turn(
+            2, 0.0, 1000.0, 1000.0, input_tok=382, output_tok=38, cache_read=100, cache_write=10
+        ),
         _user_message_echo(8, 2.0),
         _user_message_end(9, 2.5),
-        *_turn(10, 2.0, 1000.0, 1000.0, input_tok=400, output_tok=20, cache_read=200, cache_write=5),
+        *_turn(
+            10, 2.0, 1000.0, 1000.0, input_tok=400, output_tok=20, cache_read=200, cache_write=5
+        ),
         {"type": "agent_end", "seq": 16, "willRetry": False},
     ]
     m = compute_metrics(events, start_wall=0.0, end_wall=4.0)
@@ -483,7 +558,11 @@ def test_compute_metrics_falls_back_to_message_end_text_without_deltas():
 
 
 def test_compute_metrics_reasoning_tokens_when_present():
-    events = [_session_event(), _assistant_message_start(1), _assistant_message_end(2, reasoning=33)]
+    events = [
+        _session_event(),
+        _assistant_message_start(1),
+        _assistant_message_end(2, reasoning=33),
+    ]
     m = compute_metrics(events, start_wall=0.0, end_wall=1.0)
     assert m.reasoning_tok == 33
 
@@ -498,14 +577,22 @@ def test_compute_metrics_flags_thinking_off_reasoning_leak():
     """Live probe: healthy backend, --thinking off, and still a thinking block
     plus usage.reasoning = 11. Whether thinking is actually off is a per-backend
     config fact, so it is a flag and a log line, never a gate."""
-    events = [_session_event(), _assistant_message_start(1), _assistant_message_end(2, reasoning=11)]
+    events = [
+        _session_event(),
+        _assistant_message_start(1),
+        _assistant_message_end(2, reasoning=11),
+    ]
     m = compute_metrics(events, start_wall=0.0, end_wall=1.0, thinking="off")
     assert m.thinking_off_reasoning is True
     assert m.anomaly == "THINKING_OFF_REASONING"
 
 
 def test_compute_metrics_no_reasoning_leak_flag_when_thinking_on():
-    events = [_session_event(), _assistant_message_start(1), _assistant_message_end(2, reasoning=500)]
+    events = [
+        _session_event(),
+        _assistant_message_start(1),
+        _assistant_message_end(2, reasoning=500),
+    ]
     m = compute_metrics(events, start_wall=0.0, end_wall=1.0, thinking="high")
     assert m.thinking_off_reasoning is False
 
@@ -524,9 +611,13 @@ def test_compute_metrics_flags_cache_anomaly():
 
 def test_compute_metrics_flags_cold_first_token():
     # 10s to the first token, 1s to each one after it
-    events = [_session_event(), {"type": "agent_start", "seq": 1},
-              *_turn(2, 0.0, 10_000.0, 1_000.0), *_turn(8, 12.0, 1_000.0, 1_000.0),
-              *_turn(14, 15.0, 1_000.0, 1_000.0)]
+    events = [
+        _session_event(),
+        {"type": "agent_start", "seq": 1},
+        *_turn(2, 0.0, 10_000.0, 1_000.0),
+        *_turn(8, 12.0, 1_000.0, 1_000.0),
+        *_turn(14, 15.0, 1_000.0, 1_000.0),
+    ]
     m = compute_metrics(events, start_wall=0.0, end_wall=17.0)
     assert m.ttfts_ms == [10_000.0, 1_000.0, 1_000.0]
     assert m.ttft_first_ms == 10_000.0
@@ -548,11 +639,16 @@ def test_compute_metrics_does_not_flag_cold_first_token_for_a_single_request():
 
 def test_compute_metrics_flags_repeated_failure():
     events = [
-        _session_event(), {"type": "agent_start", "seq": 1},
-        _tool_execution_start(2, "tc-1", "read"), _tool_execution_end(3, "tc-1", "read"),
-        _tool_execution_start(4, "tc-2", "read"), _tool_execution_end(5, "tc-2", "read"),
-        _tool_execution_start(6, "tc-3", "read"), _tool_execution_end(7, "tc-3", "read"),
-        _tool_execution_start(8, "tc-4", "read"), _tool_execution_end(9, "tc-4", "read"),
+        _session_event(),
+        {"type": "agent_start", "seq": 1},
+        _tool_execution_start(2, "tc-1", "read"),
+        _tool_execution_end(3, "tc-1", "read"),
+        _tool_execution_start(4, "tc-2", "read"),
+        _tool_execution_end(5, "tc-2", "read"),
+        _tool_execution_start(6, "tc-3", "read"),
+        _tool_execution_end(7, "tc-3", "read"),
+        _tool_execution_start(8, "tc-4", "read"),
+        _tool_execution_end(9, "tc-4", "read"),
         {"type": "agent_end", "seq": 10, "willRetry": False},
     ]
     m = compute_metrics(events, start_wall=0.0, end_wall=1.0)
@@ -565,15 +661,21 @@ def test_compute_metrics_flags_repeated_failure_when_end_event_omits_tool_name()
     end event may omit it, but the name must still be counted for the
     repeated-failure heuristic; otherwise genuinely repeated calls are
     silently grouped under an empty name and the anomaly is lost."""
+
     def _end_no_name(seq, call_id):
         return {"type": "tool_execution_end", "seq": seq, "toolCallId": call_id}
 
     events = [
-        _session_event(), {"type": "agent_start", "seq": 1},
-        _tool_execution_start(2, "tc-1", "read"), _end_no_name(3, "tc-1"),
-        _tool_execution_start(4, "tc-2", "read"), _end_no_name(5, "tc-2"),
-        _tool_execution_start(6, "tc-3", "read"), _end_no_name(7, "tc-3"),
-        _tool_execution_start(8, "tc-4", "read"), _end_no_name(9, "tc-4"),
+        _session_event(),
+        {"type": "agent_start", "seq": 1},
+        _tool_execution_start(2, "tc-1", "read"),
+        _end_no_name(3, "tc-1"),
+        _tool_execution_start(4, "tc-2", "read"),
+        _end_no_name(5, "tc-2"),
+        _tool_execution_start(6, "tc-3", "read"),
+        _end_no_name(7, "tc-3"),
+        _tool_execution_start(8, "tc-4", "read"),
+        _end_no_name(9, "tc-4"),
         {"type": "agent_end", "seq": 10, "willRetry": False},
     ]
     m = compute_metrics(events, start_wall=0.0, end_wall=1.0)
@@ -614,7 +716,8 @@ def test_metrics_log_written_per_run(tmp_path):
     try:
         compute_metrics(
             [_session_event(), _assistant_message_start(1), _assistant_message_end(2)],
-            start_wall=0.0, end_wall=1.0,
+            start_wall=0.0,
+            end_wall=1.0,
             log_fn=lambda msg: _log(msg, log_path),
         )
         assert log_path.exists()

@@ -565,34 +565,35 @@ Replace:
 with:
 
 ```python
-    def on_mount(self) -> None:
-        table = self.query_one(DataTable)
-        table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE")
-        self._load_from_disk()
-        self.reload()
-        # Reconcile against provider state so the size and downloaded columns
-        # reflect reality even when modelman.toml is stale. In-memory only.
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+def on_mount(self) -> None:
+    table = self.query_one(DataTable)
+    table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE")
+    self._load_from_disk()
+    self.reload()
+    # Reconcile against provider state so the size and downloaded columns
+    # reflect reality even when modelman.toml is stale. In-memory only.
+    self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 
-    def _load_from_disk(self) -> None:
-        """(Re)load registry.toml + modelman.toml and the derived
-        available-providers list. A missing/invalid registry.toml is
-        not fatal here (an empty Registry just means an empty family
-        table) — ModelScreen's own on_mount has the same tolerance."""
-        from ..registry import _default_registry_path
-        from ..state import _default_state_path
 
-        self.registry_path = _default_registry_path()
-        self.state_path = _default_state_path()
-        try:
-            self.registry = load_registry(self.registry_path)
-        except RegistryError:
-            self.registry = Registry()
-        self.state = load_state(self.state_path)
-        # Preserve registry.toml's provider insertion order so the left
-        # pane's column order matches what the user wrote there (mirrors
-        # app.py's _configured_providers()).
-        self._available_providers = [p.id for p in self.registry.providers]
+def _load_from_disk(self) -> None:
+    """(Re)load registry.toml + modelman.toml and the derived
+    available-providers list. A missing/invalid registry.toml is
+    not fatal here (an empty Registry just means an empty family
+    table) — ModelScreen's own on_mount has the same tolerance."""
+    from ..registry import _default_registry_path
+    from ..state import _default_state_path
+
+    self.registry_path = _default_registry_path()
+    self.state_path = _default_state_path()
+    try:
+        self.registry = load_registry(self.registry_path)
+    except RegistryError:
+        self.registry = Registry()
+    self.state = load_state(self.state_path)
+    # Preserve registry.toml's provider insertion order so the left
+    # pane's column order matches what the user wrote there (mirrors
+    # app.py's _configured_providers()).
+    self._available_providers = [p.id for p in self.registry.providers]
 ```
 
 - [ ] **Step 4: Replace `_refresh_from_disk` and `on_screen_resume`**
@@ -885,175 +886,177 @@ with:
 Replace:
 
 ```python
-    def action_delete_family(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        try:
-            m = load_manifest(family_name)
-        except Exception:
-            return
+def action_delete_family(self) -> None:
+    table = self.query_one(DataTable)
+    if table.row_count == 0:
+        return
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    try:
+        m = load_manifest(family_name)
+    except Exception:
+        return
 
-        variants_count = len(m.variants)
-        downloaded_count = len(m.downloaded)
+    variants_count = len(m.variants)
+    downloaded_count = len(m.downloaded)
 
-        # Deletion is only safe when the family has nothing to lose.
-        # The previous check only protected against downloaded entries,
-        # which silently dropped families with queued-but-not-yet-
-        # downloaded variants when they got bulk-queued for delete and
-        # then the user pressed d on the family row. Now we protect
-        # against any variants, queued or downloaded. The dialog
-        # messages spell out the current state so the user knows which
-        # path they're on.
-        if downloaded_count > 0:
-            self.app.push_screen(
-                ConfirmModal(
-                    f"Cannot delete '{family_name}': {downloaded_count} "
-                    f"downloaded model{'s' if downloaded_count != 1 else ''} "
-                    f"of {variants_count} variant{'s' if variants_count != 1 else ''}. "
-                    f"Remove downloads first."
-                ),
-                self._on_blocked_confirm,
-            )
-            return
-        if variants_count > 0:
-            # Family has variant definitions but none have been
-            # downloaded yet. Deleting would lose the variant
-            # definitions entirely; require explicit confirmation.
-            self.app.push_screen(
-                ConfirmModal(
-                    f"Family '{family_name}' has {variants_count} variant"
-                    f"{'s' if variants_count != 1 else ''} (none downloaded). "
-                    f"Delete anyway? This loses the variant definitions."
-                ),
-                self._on_delete_family_with_variants,
-            )
-            return
+    # Deletion is only safe when the family has nothing to lose.
+    # The previous check only protected against downloaded entries,
+    # which silently dropped families with queued-but-not-yet-
+    # downloaded variants when they got bulk-queued for delete and
+    # then the user pressed d on the family row. Now we protect
+    # against any variants, queued or downloaded. The dialog
+    # messages spell out the current state so the user knows which
+    # path they're on.
+    if downloaded_count > 0:
         self.app.push_screen(
             ConfirmModal(
-                f"Family '{family_name}' is empty. Delete?"
+                f"Cannot delete '{family_name}': {downloaded_count} "
+                f"downloaded model{'s' if downloaded_count != 1 else ''} "
+                f"of {variants_count} variant{'s' if variants_count != 1 else ''}. "
+                f"Remove downloads first."
             ),
-            self._on_delete_confirm,
+            self._on_blocked_confirm,
         )
+        return
+    if variants_count > 0:
+        # Family has variant definitions but none have been
+        # downloaded yet. Deleting would lose the variant
+        # definitions entirely; require explicit confirmation.
+        self.app.push_screen(
+            ConfirmModal(
+                f"Family '{family_name}' has {variants_count} variant"
+                f"{'s' if variants_count != 1 else ''} (none downloaded). "
+                f"Delete anyway? This loses the variant definitions."
+            ),
+            self._on_delete_family_with_variants,
+        )
+        return
+    self.app.push_screen(
+        ConfirmModal(f"Family '{family_name}' is empty. Delete?"),
+        self._on_delete_confirm,
+    )
 
-    def _on_delete_confirm(self, confirmed: bool | None) -> None:
-        if not confirmed:
-            return
-        self._delete_family_file()
 
-    def _on_delete_family_with_variants(self, confirmed: bool | None) -> None:
-        if not confirmed:
-            return
-        self._delete_family_file()
+def _on_delete_confirm(self, confirmed: bool | None) -> None:
+    if not confirmed:
+        return
+    self._delete_family_file()
 
-    def _delete_family_file(self) -> None:
-        """Unlink the manifest file for the family currently under
-        the cursor, then reload. Shared between the empty-family
-        confirmation and the variants-no-download confirmation so
-        both paths go through the same destructive code.
 
-        The cursor_row is re-read here rather than cached at modal
-        open: while the modal was up the table did not change, so
-        the cursor points at the same row the user selected when
-        they pressed 'd'. Reading again here keeps each action
-        callback self-contained and avoids stale-key bugs if the
-        modal was triggered from a context that mutated the table.
-        """
-        table = self.query_one(DataTable)
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        path = get_family_dir() / f"{family_name}.yaml"
-        if path.exists():
-            path.unlink()
-        self.reload()
+def _on_delete_family_with_variants(self, confirmed: bool | None) -> None:
+    if not confirmed:
+        return
+    self._delete_family_file()
+
+
+def _delete_family_file(self) -> None:
+    """Unlink the manifest file for the family currently under
+    the cursor, then reload. Shared between the empty-family
+    confirmation and the variants-no-download confirmation so
+    both paths go through the same destructive code.
+
+    The cursor_row is re-read here rather than cached at modal
+    open: while the modal was up the table did not change, so
+    the cursor points at the same row the user selected when
+    they pressed 'd'. Reading again here keeps each action
+    callback self-contained and avoids stale-key bugs if the
+    modal was triggered from a context that mutated the table.
+    """
+    table = self.query_one(DataTable)
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    path = get_family_dir() / f"{family_name}.yaml"
+    if path.exists():
+        path.unlink()
+    self.reload()
 ```
 
 with:
 
 ```python
-    def action_delete_family(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        models = self.registry.models_by_family(family_name)
-        variants_count = len(models)
-        downloaded_count = sum(1 for m in models if self.state.get(m.id).downloaded)
+def action_delete_family(self) -> None:
+    table = self.query_one(DataTable)
+    if table.row_count == 0:
+        return
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    models = self.registry.models_by_family(family_name)
+    variants_count = len(models)
+    downloaded_count = sum(1 for m in models if self.state.get(m.id).downloaded)
 
-        # Deletion is only safe when the family has nothing to lose.
-        # Protect against any models, queued-download or downloaded.
-        # The dialog messages spell out the current state so the user
-        # knows which path they're on.
-        if downloaded_count > 0:
-            self.app.push_screen(
-                ConfirmModal(
-                    f"Cannot delete '{family_name}': {downloaded_count} "
-                    f"downloaded model{'s' if downloaded_count != 1 else ''} "
-                    f"of {variants_count} variant{'s' if variants_count != 1 else ''}. "
-                    f"Remove downloads first."
-                ),
-                self._on_blocked_confirm,
-            )
-            return
-        if variants_count > 0:
-            # Family has model definitions but none have been
-            # downloaded yet. Deleting would lose the model
-            # definitions entirely; require explicit confirmation.
-            self.app.push_screen(
-                ConfirmModal(
-                    f"Family '{family_name}' has {variants_count} variant"
-                    f"{'s' if variants_count != 1 else ''} (none downloaded). "
-                    f"Delete anyway? This loses the model definitions."
-                ),
-                self._on_delete_family_with_variants,
-            )
-            return
+    # Deletion is only safe when the family has nothing to lose.
+    # Protect against any models, queued-download or downloaded.
+    # The dialog messages spell out the current state so the user
+    # knows which path they're on.
+    if downloaded_count > 0:
         self.app.push_screen(
             ConfirmModal(
-                f"Family '{family_name}' is empty. Delete?"
+                f"Cannot delete '{family_name}': {downloaded_count} "
+                f"downloaded model{'s' if downloaded_count != 1 else ''} "
+                f"of {variants_count} variant{'s' if variants_count != 1 else ''}. "
+                f"Remove downloads first."
             ),
-            self._on_delete_confirm,
+            self._on_blocked_confirm,
         )
+        return
+    if variants_count > 0:
+        # Family has model definitions but none have been
+        # downloaded yet. Deleting would lose the model
+        # definitions entirely; require explicit confirmation.
+        self.app.push_screen(
+            ConfirmModal(
+                f"Family '{family_name}' has {variants_count} variant"
+                f"{'s' if variants_count != 1 else ''} (none downloaded). "
+                f"Delete anyway? This loses the model definitions."
+            ),
+            self._on_delete_family_with_variants,
+        )
+        return
+    self.app.push_screen(
+        ConfirmModal(f"Family '{family_name}' is empty. Delete?"),
+        self._on_delete_confirm,
+    )
 
-    def _on_delete_confirm(self, confirmed: bool | None) -> None:
-        if not confirmed:
-            return
-        self._delete_family()
 
-    def _on_delete_family_with_variants(self, confirmed: bool | None) -> None:
-        if not confirmed:
-            return
-        self._delete_family()
+def _on_delete_confirm(self, confirmed: bool | None) -> None:
+    if not confirmed:
+        return
+    self._delete_family()
 
-    def _delete_family(self) -> None:
-        """Remove every model in the currently-selected family from
-        the registry, drop its state entries and its `families` state
-        entry, save both files, then reload. Shared between the
-        empty-family confirmation and the variants-no-download
-        confirmation so both paths go through the same destructive
-        code.
 
-        The cursor_row is re-read here rather than cached at modal
-        open: while the modal was up the table did not change, so
-        the cursor points at the same row the user selected when
-        they pressed 'd'. Reading again here keeps each action
-        callback self-contained and avoids stale-key bugs if the
-        modal was triggered from a context that mutated the table.
-        """
-        table = self.query_one(DataTable)
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        removed_ids = {m.id for m in self.registry.models if m.family == family_name}
-        self.registry.models = [m for m in self.registry.models if m.family != family_name]
-        for mid in removed_ids:
-            self.state.models.pop(mid, None)
-        self.state.forget_family(family_name)
-        save_registry(self.registry, self.registry_path)
-        save_state(self.state, self.state_path)
-        self.reload()
+def _on_delete_family_with_variants(self, confirmed: bool | None) -> None:
+    if not confirmed:
+        return
+    self._delete_family()
+
+
+def _delete_family(self) -> None:
+    """Remove every model in the currently-selected family from
+    the registry, drop its state entries and its `families` state
+    entry, save both files, then reload. Shared between the
+    empty-family confirmation and the variants-no-download
+    confirmation so both paths go through the same destructive
+    code.
+
+    The cursor_row is re-read here rather than cached at modal
+    open: while the modal was up the table did not change, so
+    the cursor points at the same row the user selected when
+    they pressed 'd'. Reading again here keeps each action
+    callback self-contained and avoids stale-key bugs if the
+    modal was triggered from a context that mutated the table.
+    """
+    table = self.query_one(DataTable)
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    removed_ids = {m.id for m in self.registry.models if m.family == family_name}
+    self.registry.models = [m for m in self.registry.models if m.family != family_name]
+    for mid in removed_ids:
+        self.state.models.pop(mid, None)
+    self.state.forget_family(family_name)
+    save_registry(self.registry, self.registry_path)
+    save_state(self.state, self.state_path)
+    self.reload()
 ```
 
 - [ ] **Step 4: Replace `on_data_table_row_selected` and `action_open_family`**
@@ -1061,54 +1064,57 @@ with:
 Replace:
 
 ```python
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        family_name = str(event.row_key.value) if event.row_key else ""
-        if not family_name:
-            return
-        m = load_manifest(family_name)
-        path = get_family_dir() / f"{family_name}.yaml"
-        # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
-        self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
+def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    family_name = str(event.row_key.value) if event.row_key else ""
+    if not family_name:
+        return
+    m = load_manifest(family_name)
+    path = get_family_dir() / f"{family_name}.yaml"
+    # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
+    self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
 
-    def action_open_family(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-        row_key = list(table.rows.keys())[table.cursor_row]
-        family_name = str(row_key.value)
-        m = load_manifest(family_name)
-        path = get_family_dir() / f"{family_name}.yaml"
-        # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
-        self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
+
+def action_open_family(self) -> None:
+    table = self.query_one(DataTable)
+    if table.row_count == 0:
+        return
+    row_key = list(table.rows.keys())[table.cursor_row]
+    family_name = str(row_key.value)
+    m = load_manifest(family_name)
+    path = get_family_dir() / f"{family_name}.yaml"
+    # FamilyScreen still uses the legacy manifest signature; PR 3 migrates it.
+    self.app.push_screen(ModelScreen(m, path, self._available_providers))  # type: ignore[arg-type,call-arg]
 ```
 
 with:
 
 ```python
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        family_name = str(event.row_key.value) if event.row_key else ""
-        if not family_name:
-            return
-        self._open_family(family_name)
+def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    family_name = str(event.row_key.value) if event.row_key else ""
+    if not family_name:
+        return
+    self._open_family(family_name)
 
-    def action_open_family(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-        row_key = list(table.rows.keys())[table.cursor_row]
-        self._open_family(str(row_key.value))
 
-    def _open_family(self, family_name: str) -> None:
-        self.app.push_screen(
-            ModelScreen(
-                registry=self.registry,
-                state=self.state,
-                family=family_name,
-                registry_path=self.registry_path,
-                state_path=self.state_path,
-                available_providers=self._available_providers,
-            )
+def action_open_family(self) -> None:
+    table = self.query_one(DataTable)
+    if table.row_count == 0:
+        return
+    row_key = list(table.rows.keys())[table.cursor_row]
+    self._open_family(str(row_key.value))
+
+
+def _open_family(self, family_name: str) -> None:
+    self.app.push_screen(
+        ModelScreen(
+            registry=self.registry,
+            state=self.state,
+            family=family_name,
+            registry_path=self.registry_path,
+            state_path=self.state_path,
+            available_providers=self._available_providers,
         )
+    )
 ```
 
 - [ ] **Step 5: Run the whole test suite and verify**
@@ -1160,9 +1166,7 @@ def _seed_registry_and_state(
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id=p, name=p, auth=AuthConfig(type="none")) for p in providers
-        ],
+        providers=[ProviderEntry(id=p, name=p, auth=AuthConfig(type="none")) for p in providers],
         models=list(models),
     )
     save_registry(reg, reg_path)
@@ -1396,7 +1400,8 @@ Replace:
 ```python
 @pytest.mark.asyncio
 async def test_delete_family_blocked_when_variants_present_even_without_downloads(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """A family with variant definitions but no completed downloads
     still has work-in-progress that the user might care about: at
@@ -1444,7 +1449,8 @@ with:
 ```python
 @pytest.mark.asyncio
 async def test_delete_family_blocked_when_variants_present_even_without_downloads(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """A family with model definitions but no completed downloads
     still has work-in-progress that the user might care about: at
@@ -1477,7 +1483,8 @@ Replace:
 ```python
 @pytest.mark.asyncio
 async def test_delete_family_prompts_for_explicit_confirmation_with_variants(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """The variants-but-no-downloads state must require the user to
     type Yes (not just any key) before the file is removed."""
@@ -1512,7 +1519,8 @@ with:
 ```python
 @pytest.mark.asyncio
 async def test_delete_family_prompts_for_explicit_confirmation_with_variants(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """The variants-but-no-downloads state must require the user to
     type Yes (not just any key) before the models are removed."""
@@ -1542,7 +1550,8 @@ Replace:
 ```python
 @pytest.mark.asyncio
 async def test_delete_family_cancel_keeps_empty_family(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """A truly empty family can be deleted, but only after explicit
     Yes. No must always be a no-op regardless of state.
@@ -1579,7 +1588,8 @@ async def test_delete_family_cancel_keeps_empty_family(
 
 @pytest.mark.asyncio
 async def test_delete_family_cancel_keyword_preserves_file(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Same as above but using the 'n' keyword binding instead of
     the focused No button; both paths must preserve the file."""
@@ -1613,7 +1623,8 @@ with:
 ```python
 @pytest.mark.asyncio
 async def test_delete_family_cancel_keeps_empty_family(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """A truly empty family can be deleted, but only after explicit
     Yes. No must always be a no-op regardless of state.
@@ -1647,7 +1658,8 @@ async def test_delete_family_cancel_keeps_empty_family(
 
 @pytest.mark.asyncio
 async def test_delete_family_cancel_keyword_preserves_file(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Same as above but using Escape (dismiss with False) instead of
     the focused No button; both paths must preserve the family."""
@@ -1668,8 +1680,7 @@ async def test_delete_family_cancel_keyword_preserves_file(
         await pilot.pause()
 
     assert "ornith" in load_state(state_path).families, (
-        "Escape on the delete-family confirm modal must dismiss "
-        "with False and preserve the family."
+        "Escape on the delete-family confirm modal must dismiss with False and preserve the family."
     )
 ```
 
@@ -1731,7 +1742,9 @@ async def test_family_screen_reconciles_size_from_provider(tmp_path, monkeypatch
     the model is on disk."""
     from unittest.mock import MagicMock
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     # No downloaded entry in state, but the model is actually on disk
     # per the (stubbed) provider.
     _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
@@ -1877,9 +1890,14 @@ with:
 async def test_model_screen_two_pane_lists_providers_and_models(tmp_path, monkeypatch):
     from modelman.registry import Fetch
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     q4 = ModelEntry(
-        id="llamacpp/q4", family="ornith", provider_id="llamacpp", model_name="q4",
+        id="llamacpp/q4",
+        family="ornith",
+        provider_id="llamacpp",
+        model_name="q4",
         fetch=Fetch(repo="o/r", files=["x.gguf"]),
     )
     _seed_registry_and_state(
@@ -1936,7 +1954,9 @@ with:
 ```python
 @pytest.mark.asyncio
 async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
     from modelman.app import ModelmanApp
@@ -2038,7 +2058,9 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
 
     dl = ModelEntry(id="ollama/dl", family="ornith", provider_id="ollama", model_name="dl")
-    missing = ModelEntry(id="ollama/missing", family="ornith", provider_id="ollama", model_name="missing")
+    missing = ModelEntry(
+        id="ollama/missing", family="ornith", provider_id="ollama", model_name="missing"
+    )
     _seed_registry_and_state(
         tmp_path, monkeypatch, models=[dl, missing], downloaded={"ollama/dl": "/fake/path"}
     )
@@ -2142,7 +2164,9 @@ async def test_delete_action_noop_on_not_downloaded(tmp_path, monkeypatch):
     """Pressing 'd' on a not-downloaded variant must not queue a delete."""
     from unittest.mock import MagicMock
 
-    missing = ModelEntry(id="ollama/missing", family="ornith", provider_id="ollama", model_name="missing")
+    missing = ModelEntry(
+        id="ollama/missing", family="ornith", provider_id="ollama", model_name="missing"
+    )
     _seed_registry_and_state(tmp_path, monkeypatch, models=[missing])
 
     from modelman.providers import registry
@@ -2230,7 +2254,9 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
 
     from textual.widgets import Input
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     _seed_registry_and_state(
         tmp_path, monkeypatch, models=[o35], downloaded={"ollama/o35": str(tmp_path / "downloaded")}
     )
@@ -2322,7 +2348,9 @@ async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monke
     and show its real size."""
     from unittest.mock import MagicMock
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     # Note: state has NO downloaded entry, but the model is on disk.
     _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
@@ -2401,7 +2429,9 @@ async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatc
     (or having no queue at all) must not write modelman.toml."""
     from unittest.mock import MagicMock
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
     from modelman.providers import registry
@@ -2514,7 +2544,9 @@ async def test_apply_merges_reconciled_state_into_manifest(tmp_path, monkeypatch
 
     from modelman.screens.status import StatusScreen
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     q8 = ModelEntry(id="ollama/q8", family="ornith", provider_id="ollama", model_name="ornith:8b")
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35, q8])
 
@@ -2616,6 +2648,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
                 break
         # Wait for the StatusScreen worker to finish.
         from modelman.screens.status import StatusScreen
+
         for _ in range(50):
             await pilot.pause()
             cur = app.screen
@@ -2635,7 +2668,9 @@ with:
 async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
     from modelman.providers import registry
@@ -2670,6 +2705,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
                 break
         # Wait for the StatusScreen worker to finish.
         from modelman.screens.status import StatusScreen
+
         for _ in range(50):
             await pilot.pause()
             cur = app.screen
@@ -2739,7 +2775,9 @@ with:
 ```python
 @pytest.mark.asyncio
 async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
     from textual.widgets import Button
@@ -2894,10 +2932,16 @@ async def test_family_screen_reconciles_on_resume_after_apply(tmp_path, monkeypa
     from unittest.mock import MagicMock
 
     # Pre-condition: both models on disk per state.
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
-    o70 = ModelEntry(id="ollama/o70", family="ornith", provider_id="ollama", model_name="ornith:70b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    o70 = ModelEntry(
+        id="ollama/o70", family="ornith", provider_id="ollama", model_name="ornith:70b"
+    )
     reg_path, state_path = _seed_registry_and_state(
-        tmp_path, monkeypatch, models=[o35, o70],
+        tmp_path,
+        monkeypatch,
+        models=[o35, o70],
         downloaded={"ollama/o35": "/tmp/ollama/ornith:35b", "ollama/o70": "/tmp/ollama/ornith:70b"},
     )
 
@@ -2998,9 +3042,7 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
     save_manifest(m, fam_dir / "ornith.yaml")
     monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
-    (tmp_path / "config.yaml").write_text(
-        "providers:\n  ollama: {type: ollama}\n"
-    )
+    (tmp_path / "config.yaml").write_text("providers:\n  ollama: {type: ollama}\n")
 
     from unittest.mock import MagicMock
 
@@ -3009,9 +3051,7 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
-    monkeypatch.setattr(
-        registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     captured: list[ModelForm] = []
@@ -3041,6 +3081,7 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
         form = captured[0]
         # Edit-mode pre-fill: model_input field has the ollama tag.
         from textual.widgets import Input
+
         model_input = form.query_one("#model", Input)
         assert model_input.value == "ornith:35b"
 ```
@@ -3055,7 +3096,9 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
     name without first pressing 'e'."""
     from modelman.screens.forms import ModelForm
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
     from unittest.mock import MagicMock
@@ -3065,9 +3108,7 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
-    monkeypatch.setattr(
-        registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
 
@@ -3099,6 +3140,7 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
         form = captured[0]
         # Edit-mode pre-fill: model_input field has the ollama tag.
         from textual.widgets import Input
+
         model_input = form.query_one("#model", Input)
         assert model_input.value == "ornith:35b"
 ```
@@ -3124,16 +3166,20 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
         family="ornith",
         variants=[
             {"id": "o35", "provider": "ollama", "name": "ornith:35b"},
-            {"id": "q8", "provider": "llamacpp", "name": "x.gguf",
-             "repo": "foo/bar", "files": ["x.gguf"]},
+            {
+                "id": "q8",
+                "provider": "llamacpp",
+                "name": "x.gguf",
+                "repo": "foo/bar",
+                "files": ["x.gguf"],
+            },
         ],
     )
     save_manifest(m, fam_dir / "ornith.yaml")
     monkeypatch.setenv("MODELMAN_FAMILY_DIR", str(fam_dir))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
     (tmp_path / "config.yaml").write_text(
-        "providers:\n  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
+        "providers:\n  ollama: {type: ollama}\n  llamacpp: {type: llamacpp}\n"
     )
     from unittest.mock import MagicMock
 
@@ -3142,9 +3188,7 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
-    monkeypatch.setattr(
-        registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     captured: list[ModelForm] = []
@@ -3169,9 +3213,7 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        assert captured == [], (
-            "Enter on provider-table row should not open the edit dialog"
-        )
+        assert captured == [], "Enter on provider-table row should not open the edit dialog"
 ```
 
 with:
@@ -3186,9 +3228,14 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
     from modelman.registry import Fetch
     from modelman.screens.forms import ModelForm
 
-    o35 = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b")
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
     q8 = ModelEntry(
-        id="llamacpp/q8", family="ornith", provider_id="llamacpp", model_name="x.gguf",
+        id="llamacpp/q8",
+        family="ornith",
+        provider_id="llamacpp",
+        model_name="x.gguf",
         fetch=Fetch(repo="foo/bar", files=["x.gguf"]),
     )
     _seed_registry_and_state(
@@ -3202,9 +3249,7 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
-    monkeypatch.setattr(
-        registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
 
@@ -3231,9 +3276,7 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        assert captured == [], (
-            "Enter on provider-table row should not open the edit dialog"
-        )
+        assert captured == [], "Enter on provider-table row should not open the edit dialog"
 ```
 
 - [ ] **Step 15: Run the whole suite**

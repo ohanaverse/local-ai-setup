@@ -181,7 +181,7 @@ def test_load_registry_negative_price_raises(tmp_path, field):
         '[providers.auth]\ntype = "none"\n\n'
         '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\n'
         'model_name = "x"\n'
-        f'[models.cost]\n{field} = -1.0\n'
+        f"[models.cost]\n{field} = -1.0\n"
     )
     with pytest.raises(RegistryError, match=f"cost `{field}` must be non-negative"):
         load_registry(path)
@@ -403,7 +403,10 @@ def test_model_has_local_artifact_false_for_ollama_cloud_model():
     tagged location='cloud' (e.g. glm-5.3:cloud) — no local file to
     reconcile against."""
     model = ModelEntry(
-        id="ollama/glm:cloud", family="f", provider_id="ollama", model_name="glm:cloud",
+        id="ollama/glm:cloud",
+        family="f",
+        provider_id="ollama",
+        model_name="glm:cloud",
         location="cloud",
     )
     provider = ProviderEntry(id="ollama", name="Ollama", location="local")
@@ -533,8 +536,15 @@ def test_sync_agent_providers_derives_native_for_existing_models(tmp_path):
     wt_config.write_text('[[agents]]\nname = "claude"\n')
     registry = Registry(
         providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
-        models=[ModelEntry(id="claude/opus", family="opus", provider_id="claude",
-                           model_name="opus", native=False)],
+        models=[
+            ModelEntry(
+                id="claude/opus",
+                family="opus",
+                provider_id="claude",
+                model_name="opus",
+                native=False,
+            )
+        ],
     )
 
     sync_agent_providers(registry, wt_config_path=wt_config)
@@ -840,22 +850,22 @@ def test_load_registry_usage_tier_not_preserved_in_extra(tmp_path):
 def test_load_registry_derives_native_from_provider_auth(tmp_path):
     path = tmp_path / "registry.toml"
     path.write_text(
-        '[[providers]]\n'
+        "[[providers]]\n"
         'id = "ollama"\n'
         'name = "Ollama"\n'
-        '[providers.auth]\n'
+        "[providers.auth]\n"
         'type = "none"\n\n'
-        '[[providers]]\n'
+        "[[providers]]\n"
         'id = "agy"\n'
         'name = "Agy"\n'
-        '[providers.auth]\n'
+        "[providers.auth]\n"
         'type = "native"\n\n'
-        '[[models]]\n'
+        "[[models]]\n"
         'id = "ollama/x"\n'
         'family = "x"\n'
         'provider_id = "ollama"\n'
         'model_name = "x"\n\n'
-        '[[models]]\n'
+        "[[models]]\n"
         'id = "agy/x"\n'
         'family = "x"\n'
         'provider_id = "agy"\n'

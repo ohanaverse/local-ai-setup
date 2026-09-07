@@ -48,8 +48,12 @@ def test_correct_fix_with_real_test_passes_every_gate():
     task = load_task(TASK_ROOT)
     ws = create_workspace(task)
     try:
-        (ws.root / "kettlecomb" / "calendarlib.py").write_text(CORRECT_CALENDARLIB, encoding="utf-8")
-        (ws.root / "tests" / "test_regression.py").write_text(REAL_REGRESSION_TEST, encoding="utf-8")
+        (ws.root / "kettlecomb" / "calendarlib.py").write_text(
+            CORRECT_CALENDARLIB, encoding="utf-8"
+        )
+        (ws.root / "tests" / "test_regression.py").write_text(
+            REAL_REGRESSION_TEST, encoding="utf-8"
+        )
         report = _evaluate(ws, task)
         codes = [r.code for r in report.results]
         assert codes == [None] * 9, f"a passing gate must carry no failure code: {report.results}"
@@ -113,7 +117,9 @@ def test_agent_error_and_timeout_and_no_diff_reachable_on_real_bundle():
             unparsed_lines=0,
             stderr_tail="",
         )
-        report = evaluate(ws, task, timed_out_run, events=_reply_events(), session_file_present=True)
+        report = evaluate(
+            ws, task, timed_out_run, events=_reply_events(), session_file_present=True
+        )
         assert report.results[1].code == "TIMEOUT"
     finally:
         destroy_workspace(ws)
@@ -148,7 +154,9 @@ def test_tampered_and_vacuous_reachable_on_real_bundle():
 
     ws = create_workspace(task)
     try:
-        (ws.root / "kettlecomb" / "calendarlib.py").write_text(CORRECT_CALENDARLIB, encoding="utf-8")
+        (ws.root / "kettlecomb" / "calendarlib.py").write_text(
+            CORRECT_CALENDARLIB, encoding="utf-8"
+        )
         (ws.root / "tests" / "test_ledger.py").write_text(
             "import unittest\n\nclass T(unittest.TestCase):\n    def test_noop(self):\n        pass\n",
             encoding="utf-8",
@@ -161,7 +169,9 @@ def test_tampered_and_vacuous_reachable_on_real_bundle():
 
     ws = create_workspace(task)
     try:
-        (ws.root / "kettlecomb" / "calendarlib.py").write_text(CORRECT_CALENDARLIB, encoding="utf-8")
+        (ws.root / "kettlecomb" / "calendarlib.py").write_text(
+            CORRECT_CALENDARLIB, encoding="utf-8"
+        )
         (ws.root / "tests" / "test_vacuous.py").write_text(
             REAL_REGRESSION_TEST.replace(
                 "self.assertEqual(add_months(date(2025, 1, 31), 1), date(2025, 2, 28))",

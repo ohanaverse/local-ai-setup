@@ -240,9 +240,7 @@ async def test_family_screen_table_disabled_while_reconciling(tmp_path, monkeypa
 
     stub.is_downloaded.side_effect = slow_is_downloaded
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -274,9 +272,7 @@ async def test_family_screen_actions_noop_while_reconciling(tmp_path, monkeypatc
     gate = __import__("threading").Event()
     stub.is_downloaded.side_effect = lambda v: gate.wait(timeout=2.0) or True
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     captured = []
@@ -315,9 +311,7 @@ async def test_family_screen_cursor_restored_after_reconcile(tmp_path, monkeypat
     stub.name = "ollama"
     stub.is_downloaded.return_value = True
     stub.size_of.return_value = 1
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -405,42 +399,43 @@ def compose(self) -> ComposeResult:
 6. Update `_run_reconcile()`:
 
 ```python
-    def _run_reconcile(self) -> None:
-        try:
-            providers: dict[str, object] = {}
-            for m in self.registry.models:
-                pname = m.provider_id
-                if pname not in providers:
-                    try:
-                        entry = self.registry.provider(pname)
-                        providers[pname] = ProviderRegistry.get(pname, provider_config(entry))
-                    except Exception:
-                        continue
-                provider = providers[pname]
-                spec = _model_entry_to_variant(m)
-                size: int | None = None
+def _run_reconcile(self) -> None:
+    try:
+        providers: dict[str, object] = {}
+        for m in self.registry.models:
+            pname = m.provider_id
+            if pname not in providers:
+                try:
+                    entry = self.registry.provider(pname)
+                    providers[pname] = ProviderRegistry.get(pname, provider_config(entry))
+                except Exception:
+                    continue
+            provider = providers[pname]
+            spec = _model_entry_to_variant(m)
+            size: int | None = None
+            ready = False
+            try:
+                ready = bool(provider.is_downloaded(spec))
+            except Exception:
                 ready = False
-                try:
-                    ready = bool(provider.is_downloaded(spec))
-                except Exception:
-                    ready = False
-                try:
-                    raw = provider.size_of(spec)
-                    if isinstance(raw, int):
-                        size = raw
-                except Exception:
-                    size = None
-                self._reconciled[m.id] = {
-                    "ready": ready,
-                    "size": size,
-                }
-        finally:
-            self.app.call_from_thread(self._reconcile_done)
+            try:
+                raw = provider.size_of(spec)
+                if isinstance(raw, int):
+                    size = raw
+            except Exception:
+                size = None
+            self._reconciled[m.id] = {
+                "ready": ready,
+                "size": size,
+            }
+    finally:
+        self.app.call_from_thread(self._reconcile_done)
 
-    def _reconcile_done(self) -> None:
-        self._reconciling = False
-        self._set_refresh_ui(False)
-        self.reload()
+
+def _reconcile_done(self) -> None:
+    self._reconciling = False
+    self._set_refresh_ui(False)
+    self.reload()
 ```
 
 7. Add `_set_refresh_ui()`:
@@ -475,36 +470,40 @@ def compose(self) -> ComposeResult:
 10. Guard actions:
 
 ```python
-    def action_add_family(self) -> None:
-        if self._reconciling:
-            return
-        ...
+def action_add_family(self) -> None:
+    if self._reconciling:
+        return
+    ...
 
-    def action_edit_family(self) -> None:
-        if self._reconciling:
-            return
-        table = self.query_one(DataTable)
-        ...
 
-    def action_delete_family(self) -> None:
-        if self._reconciling:
-            return
-        table = self.query_one(DataTable)
-        ...
+def action_edit_family(self) -> None:
+    if self._reconciling:
+        return
+    table = self.query_one(DataTable)
+    ...
 
-    def action_open_family(self) -> None:
-        if self._reconciling:
-            return
-        table = self.query_one(DataTable)
-        ...
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if self._reconciling:
-            return
-        family_name = str(event.row_key.value) if event.row_key else ""
-        if not family_name:
-            return
-        self._open_family(family_name)
+def action_delete_family(self) -> None:
+    if self._reconciling:
+        return
+    table = self.query_one(DataTable)
+    ...
+
+
+def action_open_family(self) -> None:
+    if self._reconciling:
+        return
+    table = self.query_one(DataTable)
+    ...
+
+
+def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    if self._reconciling:
+        return
+    family_name = str(event.row_key.value) if event.row_key else ""
+    if not family_name:
+        return
+    self._open_family(family_name)
 ```
 
 11. Update `reload()` to use the helper:
@@ -638,9 +637,7 @@ async def test_delete_any_model_even_not_ready(tmp_path, monkeypatch):
     stub.name = "ollama"
     stub.size_of.return_value = None
     stub.is_downloaded.return_value = False
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -660,21 +657,15 @@ async def test_model_screen_cursor_restored_after_reload(tmp_path, monkeypatch):
     from modelman.providers import registry as prov_registry
     from textual.widgets import DataTable
 
-    a = ModelEntry(
-        id="ollama/a", family="ornith", provider_id="ollama", model_name="a"
-    )
-    b = ModelEntry(
-        id="ollama/b", family="ornith", provider_id="ollama", model_name="b"
-    )
+    a = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a")
+    b = ModelEntry(id="ollama/b", family="ornith", provider_id="ollama", model_name="b")
     _seed_registry_and_state(tmp_path, monkeypatch, models=[a, b])
 
     stub = MagicMock()
     stub.name = "ollama"
     stub.size_of.return_value = None
     stub.is_downloaded.return_value = False
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     app = ModelmanApp(family="ornith")
     async with app.run_test() as pilot:
@@ -706,15 +697,13 @@ from . import reload_preserving_cursor
 2. Remove the redundant cursor reset in `on_mount()`:
 
 ```python
-    def on_mount(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        mt.add_columns(
-            "FAMILY", "PROVIDER", "MODEL", "LOCATION", "STATUS", "EXPOSED", "SIZE", "PATH"
-        )
-        self.reload()
-        self._refresh_pending_bar()
-        mt.focus()
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+def on_mount(self) -> None:
+    mt = self.query_one("#model-table", DataTable)
+    mt.add_columns("FAMILY", "PROVIDER", "MODEL", "LOCATION", "STATUS", "EXPOSED", "SIZE", "PATH")
+    self.reload()
+    self._refresh_pending_bar()
+    mt.focus()
+    self.run_worker(self._run_reconcile, exclusive=True, thread=True)
 ```
 
 3. Update `_load_models()` to use the helper:
@@ -834,9 +823,7 @@ async def test_delete_action_noop_when_no_row_selected(tmp_path, monkeypatch):
     stub.name = "ollama"
     stub.size_of.return_value = None
     stub.is_downloaded.return_value = False
-    monkeypatch.setattr(
-        prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub)
-    )
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
 
@@ -908,9 +895,7 @@ In `src/modelman/screens/forms.py`, in `ModelForm.__init__`, remove:
 Also ensure the family list passed to the Select is sorted. Since callers already pass sorted lists, no extra sort is needed here; add a defensive copy only:
 
 ```python
-        self._families: list[str] = (
-            list(families) if families else ([family] if family else ["unknown"])
-        )
+self._families: list[str] = list(families) if families else ([family] if family else ["unknown"])
 ```
 
 - [ ] **Step 4: Run the family-select tests**
@@ -944,9 +929,7 @@ def test_apply_delete_not_downloaded_skips_provider_call(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ],
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(reg, reg_path)
@@ -983,9 +966,7 @@ def test_apply_delete_is_downloaded_exception_attempts_delete(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ],
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(reg, reg_path)
@@ -1019,9 +1000,7 @@ def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-        ],
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     save_registry(reg, reg_path)
@@ -1315,10 +1294,12 @@ class AddFamilyModal(ModelmanModal[tuple[str, str] | None]):
             yield Input(id="family-name", placeholder="e.g. ornith-1.5")
             yield Label("Display name (optional):")
             yield Input(id="display-name", placeholder="e.g. Ornith 1.5")
-            yield self._button_row([
-                Button("Cancel", id="cancel", variant="default"),
-                Button("Create", id="create", variant="primary"),
-            ])
+            yield self._button_row(
+                [
+                    Button("Cancel", id="cancel", variant="default"),
+                    Button("Create", id="create", variant="primary"),
+                ]
+            )
 
     def on_mount(self) -> None:
         self.query_one("#family-name", Input).focus()
@@ -1329,16 +1310,21 @@ class AddFamilyModal(ModelmanModal[tuple[str, str] | None]):
 ```python
 class EditFamilyModal(ModelmanModal[str | None]):
     ...
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("Family (cannot be changed):")
-            yield Input(value=self._family, id="family-name", disabled=True, placeholder="e.g. ornith-1.5")
+            yield Input(
+                value=self._family, id="family-name", disabled=True, placeholder="e.g. ornith-1.5"
+            )
             yield Label("Display name (optional):")
             yield Input(value=self._display_name, id="display-name", placeholder="e.g. Ornith 1.5")
-            yield self._button_row([
-                Button("Cancel", id="cancel", variant="default"),
-                Button("Save", id="save", variant="primary"),
-            ])
+            yield self._button_row(
+                [
+                    Button("Cancel", id="cancel", variant="default"),
+                    Button("Save", id="save", variant="primary"),
+                ]
+            )
 
     def on_mount(self) -> None:
         self.query_one("#display-name", Input).focus()
@@ -1365,10 +1351,12 @@ class ConfirmModal(ModelmanModal[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label(self._message)
-            yield self._button_row([
-                Button("Yes", id="yes", variant="warning"),
-                Button("No", id="no", variant="default"),
-            ])
+            yield self._button_row(
+                [
+                    Button("Yes", id="yes", variant="warning"),
+                    Button("No", id="no", variant="default"),
+                ]
+            )
 
     def on_mount(self) -> None:
         self._focus_button("no")
@@ -1394,10 +1382,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         ...
         with Vertical():
             ...
-            yield self._button_row([
-                Button("Cancel", id="cancel", variant="default"),
-                Button("Save", id="save", variant="primary"),
-            ])
+            yield self._button_row(
+                [
+                    Button("Cancel", id="cancel", variant="default"),
+                    Button("Save", id="save", variant="primary"),
+                ]
+            )
 
     def on_mount(self) -> None:
         self.query_one("#model", Input).focus()
@@ -1423,11 +1413,13 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
 
     def compose(self) -> ComposeResult:
         ...
-        yield self._button_row([
-            Button("Cancel", id="cancel", variant="default"),
-            Button("Discard", id="discard", variant="warning"),
-            Button("Apply", id="apply", variant="primary"),
-        ])
+        yield self._button_row(
+            [
+                Button("Cancel", id="cancel", variant="default"),
+                Button("Discard", id="discard", variant="warning"),
+                Button("Apply", id="apply", variant="primary"),
+            ]
+        )
 
     def on_mount(self) -> None:
         self._focus_button("cancel")
@@ -1455,10 +1447,12 @@ class CancelApplyDialog(ModelmanModal[Literal["cancel", "wait"]]):
         with Vertical():
             yield Label("Actions are still running.")
             yield Label("Cancel and stop here, or wait for them to finish?")
-            yield self._button_row([
-                Button("Cancel", id="cancel", variant="warning"),
-                Button("Wait", id="wait", variant="primary"),
-            ])
+            yield self._button_row(
+                [
+                    Button("Cancel", id="cancel", variant="warning"),
+                    Button("Wait", id="wait", variant="primary"),
+                ]
+            )
 
     def on_mount(self) -> None:
         self._focus_button("wait")

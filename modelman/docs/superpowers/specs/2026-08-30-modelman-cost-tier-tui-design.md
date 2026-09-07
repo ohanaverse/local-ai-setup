@@ -179,9 +179,7 @@ show/hide the tier section based on the new provider's kind.
 New helper in `forms.py`:
 
 ```python
-def parse_cost_fields(
-    kind: str, price_mtok: str, price_period: str, period: str
-) -> Cost:
+def parse_cost_fields(kind: str, price_mtok: str, price_period: str, period: str) -> Cost:
     """Build a Cost from the dialog fields. Raises ValueError on bad input."""
     if kind == "free":
         return Cost(kind="free")

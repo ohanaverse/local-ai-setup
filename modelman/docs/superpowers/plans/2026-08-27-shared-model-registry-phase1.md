@@ -686,7 +686,7 @@ def _write_modelman_config(path: Path) -> None:
 
 def _write_wt_config(path: Path) -> None:
     path.write_text(
-        '[[providers]]\n'
+        "[[providers]]\n"
         '  id = "ollama"\n'
         '  name = "Ollama"\n'
         '  location = "local"\n'
@@ -859,8 +859,7 @@ def migrate(
         _import_wt_config(wt_config_path, registry)
     else:
         warnings.append(
-            f"wt config not found at {wt_config_path}; skipped "
-            "(fine for a modelman-only install)"
+            f"wt config not found at {wt_config_path}; skipped (fine for a modelman-only install)"
         )
 
     _import_modelman_providers(legacy_config_path, registry)

@@ -185,7 +185,9 @@ def _run_single_row(
 ) -> RowRunResult:
     row_dir.mkdir(parents=True, exist_ok=True)
     model = registry.model(row.model_id)
-    target = pidriver.resolve_pi_target(row, model.model_name, suite.routes_direct, live_models_path=live_models_path)
+    target = pidriver.resolve_pi_target(
+        row, model.model_name, suite.routes_direct, live_models_path=live_models_path
+    )
 
     workspace = create_workspace(task)
     config_dir = Path(tempfile.mkdtemp(prefix="agent-bench-config-"))
@@ -231,7 +233,9 @@ def _run_single_row(
         # seeding would stage the hidden files and leak the exact acceptance
         # tests the judge is meant to be blind to.
         diff_raw = workspace.diff()
-        touched = workspace.modified_or_deleted_since_baseline() + workspace.new_files_since_baseline()
+        touched = (
+            workspace.modified_or_deleted_since_baseline() + workspace.new_files_since_baseline()
+        )
         seed_contents: dict[str, str] = {}
         for path in touched:
             rel = str(path.relative_to(workspace.root))
@@ -356,7 +360,12 @@ def _persist_judge_artifact(result: RowRunResult) -> None:
     same cheap path rejudge_run uses — write_row_artifacts would otherwise
     re-gzip the whole event stream and rewrite diff/gates/metrics files that
     did not change, just to add this one field."""
-    if result.error is not None or result.gates is None or result.metrics is None or result.judge is None:
+    if (
+        result.error is not None
+        or result.gates is None
+        or result.metrics is None
+        or result.judge is None
+    ):
         return
     report.write_judge_json(result.row_dir, result.judge)
 
@@ -407,7 +416,11 @@ def rejudge_run(
             max_attempts=judge_cfg.max_attempts,
         )
         gates_path = row_dir / "gates.json"
-        gates_data = json.loads(gates_path.read_text(encoding="utf-8")) if gates_path.exists() else {"cap": 0.0}
+        gates_data = (
+            json.loads(gates_path.read_text(encoding="utf-8"))
+            if gates_path.exists()
+            else {"cap": 0.0}
+        )
         combined = outcome.combined
         composite = (
             judge.apply_cap(combined.total, gates_data.get("cap", 0.0))
@@ -421,11 +434,12 @@ def rejudge_run(
                 "label": row_info["label"],
                 "rubric_total": combined.total if outcome.status == "scored" and combined else None,
                 "composite": composite,
-                "verdict": combined.verdict if outcome.status == "scored" and combined else "JUDGE_FAIL",
+                "verdict": combined.verdict
+                if outcome.status == "scored" and combined
+                else "JUDGE_FAIL",
             }
         )
     return outcomes
-
 
 
 # What bin/llm-isolate-provider can actually isolate — see
@@ -495,7 +509,9 @@ def run_suite(
             for pass_number in range(1, suite.passes + 1):
                 row_dir = _row_dir(run_dir, index, row, pass_number)
                 results.append(
-                    _run_single_row(row, pass_number, task, suite, registry, row_dir, live_models_path)
+                    _run_single_row(
+                        row, pass_number, task, suite, registry, row_dir, live_models_path
+                    )
                 )
                 if pass_number < suite.passes:
                     time.sleep(suite.cooldown_s)
@@ -517,13 +533,19 @@ def run_suite(
 
     if not skip_judge:
         _judge_all(
-            suite, task, results, live_models_path, judge_transport_factory or _build_judge_transport
+            suite,
+            task,
+            results,
+            live_models_path,
+            judge_transport_factory or _build_judge_transport,
         )
         for result in results:
             _persist_judge_artifact(result)
 
     row_reports = [_to_row_report(r) for r in results]
-    (run_dir / "summary.md").write_text(report.render_summary(run_id, row_reports), encoding="utf-8")
+    (run_dir / "summary.md").write_text(
+        report.render_summary(run_id, row_reports), encoding="utf-8"
+    )
     report.write_metrics_jsonl(run_dir / "metrics.jsonl", row_reports)
     report.write_run_toml(
         run_dir / "run.toml",
@@ -540,4 +562,3 @@ def run_suite(
             results=results,
         )
     return run_dir, results
-

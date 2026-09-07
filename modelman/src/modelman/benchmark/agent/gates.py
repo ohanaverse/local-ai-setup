@@ -177,7 +177,9 @@ def run_test_file(root: Path, module_name: str) -> list[TestOutcome]:
             TestOutcome(
                 name=f"{module_name}:crash",
                 passed=False,
-                message=(result.stderr or result.stdout or "test runner produced no summary")[-500:],
+                message=(result.stderr or result.stdout or "test runner produced no summary")[
+                    -500:
+                ],
             )
         ]
     return [
@@ -266,7 +268,9 @@ def evaluate(
         # a code is a failure label: recording AGENT_ERROR on a gate that passed
         # would make the report's Pass/Fail column contradict itself
         report.results.append(
-            GateResult(gate_number, GATE_NAMES[gate_number], outcome, code if not passed else None, detail)
+            GateResult(
+                gate_number, GATE_NAMES[gate_number], outcome, code if not passed else None, detail
+            )
         )
         return passed
 
@@ -283,7 +287,9 @@ def evaluate(
         without short-circuiting, so a code-only cap would miss them."""
         if short_circuit_code:
             skipped_from(last_gate_number + 1)
-        unmapped = [c for c in report.triggered_codes if c not in CAP_TABLE and c not in NO_CAP_CODES]
+        unmapped = [
+            c for c in report.triggered_codes if c not in CAP_TABLE and c not in NO_CAP_CODES
+        ]
         if unmapped:
             raise BenchmarkError(f"gate failure code(s) have no CAP_TABLE entry: {unmapped}")
         report.cap = min([1.0, *[CAP_TABLE[c] for c in report.triggered_codes if c in CAP_TABLE]])
@@ -343,7 +349,8 @@ def evaluate(
     # is required, changing an old one is not allowed.
     tests_dir_parts = Path(tests_dir).parts
     tampered = [
-        p for p in workspace.modified_or_deleted_since_baseline()
+        p
+        for p in workspace.modified_or_deleted_since_baseline()
         if p.relative_to(workspace.root).parts[: len(tests_dir_parts)] == tests_dir_parts
     ]
     if not tampered:
@@ -379,7 +386,9 @@ def evaluate(
             add(8, False, "VACUOUS_TEST")
         else:
             add(8, True)
-        report.results[-1].detail = f"{len(new_tests)} new test file(s) checked against the baseline"
+        report.results[
+            -1
+        ].detail = f"{len(new_tests)} new test file(s) checked against the baseline"
     else:
         report.results.append(GateResult(8, GATE_NAMES[8], "skipped"))
 

@@ -120,7 +120,10 @@ def restart_litellm_proxy() -> None:
     try:
         subprocess.run(cmd, shell=True, check=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"warning: failed to restart LiteLLM proxy ({exc}); restart it manually.", file=sys.stderr)
+        print(
+            f"warning: failed to restart LiteLLM proxy ({exc}); restart it manually.",
+            file=sys.stderr,
+        )
 ```
 
 Add `import subprocess` and `import sys` to the module's imports.
@@ -155,9 +158,7 @@ def test_expose_model_restarts_proxy(tmp_path, monkeypatch):
     state = _state()
     path = _seed_config(tmp_path)
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
-    )
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
     expose_model(registry, state, "ollama/a", path)
     assert calls == ["restart"]
 
@@ -168,9 +169,7 @@ def test_unexpose_model_restarts_proxy(tmp_path, monkeypatch):
     path = _seed_config(tmp_path)
     expose_model(registry, state, "ollama/a", path)
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
-    )
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
     unexpose_model(state, "ollama/a", path)
     assert calls == ["restart"]
 
@@ -231,13 +230,12 @@ def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))
@@ -245,9 +243,7 @@ def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
     save_litellm_config({"model_list": [], "general_settings": {}}, path)
 
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
-    )
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
     apply_expose_queue(registry, state, [("ollama/a", True)], path)
     assert calls == ["restart"]
 
@@ -260,22 +256,19 @@ def test_apply_expose_queue_no_restart_when_empty(tmp_path, monkeypatch):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="ollama", name="Ollama",
+                id="ollama",
+                name="Ollama",
                 auth=AuthConfig(type="none", base_url="http://localhost:11434"),
             )
         ],
-        models=[
-            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")
-        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
     path = tmp_path / "config.yaml"
     save_litellm_config({"model_list": [], "general_settings": {}}, path)
 
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
-    )
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
     apply_expose_queue(registry, state, [], path)
     assert calls == []
 ```
@@ -326,9 +319,7 @@ Append to `tests/commands/test_expose.py`:
 def test_expose_command_restarts_proxy(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart")
-    )
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
     runner = CliRunner()
     result = runner.invoke(app, ["expose", "ollama/a"])
     assert result.exit_code == 0

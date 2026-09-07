@@ -79,7 +79,9 @@ def test_timeout_short_circuits(workspace):
         unparsed_lines=0,
         stderr_tail="",
     )
-    report = evaluate(workspace, _task(), timed_out_run, events=_reply_events(), session_file_present=True)
+    report = evaluate(
+        workspace, _task(), timed_out_run, events=_reply_events(), session_file_present=True
+    )
     assert report.results[1].code == "TIMEOUT"
     assert all(r.outcome == "skipped" for r in report.results[2:])
     assert report.cap == 0.0
@@ -99,7 +101,9 @@ def test_no_diff_short_circuits(workspace):
 def test_broken_build_short_circuits(workspace):
     """Breaking the import (not just failing a test) is caught by gate 4 before
     gate 5 even tries to run the visible suite."""
-    (workspace.root / "pkg" / "__init__.py").write_text("this is not valid python(((", encoding="utf-8")
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "this is not valid python(((", encoding="utf-8"
+    )
     report = evaluate(
         workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True
     )
@@ -148,7 +152,9 @@ def test_finish_raises_on_a_triggered_code_missing_from_cap_table(workspace, mon
     import modelman.benchmark.agent.gates as gates_module
 
     monkeypatch.delitem(gates_module.CAP_TABLE, "BROKEN_BUILD")
-    (workspace.root / "pkg" / "__init__.py").write_text("this is not valid python(((", encoding="utf-8")
+    (workspace.root / "pkg" / "__init__.py").write_text(
+        "this is not valid python(((", encoding="utf-8"
+    )
     with pytest.raises(BenchmarkError, match="BROKEN_BUILD"):
         evaluate(workspace, _task(), _ok_run(), events=_reply_events(), session_file_present=True)
 
@@ -225,7 +231,9 @@ def test_vacuous_test_detected_when_new_test_passes_on_unfixed_baseline(workspac
     )
     report = _evaluate(workspace)
     assert report.results[7].code == "VACUOUS_TEST"
-    assert "VACUOUS_TEST" in report.triggered_codes, "the cap must not fire on a code report.py never sees"
+    assert "VACUOUS_TEST" in report.triggered_codes, (
+        "the cap must not fire on a code report.py never sees"
+    )
     assert (report.hidden_pass, report.hidden_total) == (2, 2)  # real fix, hollow test
     assert report.cap == 0.70
 
@@ -308,7 +316,9 @@ def test_nested_tests_dir_detects_tampering_regression_and_hidden(tmp_path):
         )
         report = evaluate(ws, task, _ok_run(), events=_reply_events(), session_file_present=True)
         assert report.results[5].outcome == "pass", "gate 6 should not flag a new test file"
-        assert report.results[6].outcome == "pass", "gate 7 must find new tests/sub/test_regression.py"
+        assert report.results[6].outcome == "pass", (
+            "gate 7 must find new tests/sub/test_regression.py"
+        )
         assert report.results[8].outcome == "pass", (
             f"gate 9 must run hidden tests via dotted module; got {report.results[8].code} "
             f"({report.results[8].detail})"

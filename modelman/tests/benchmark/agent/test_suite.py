@@ -22,7 +22,10 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 
 def _registry() -> Registry:
     return Registry(
-        providers=[ProviderEntry(id="ollama", name="Ollama", location="local"), ProviderEntry(id="omlx", name="oMLX", location="local")],
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", location="local"),
+            ProviderEntry(id="omlx", name="oMLX", location="local"),
+        ],
         models=[
             ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
             ModelEntry(id="omlx/b", family="f", provider_id="omlx", model_name="b-real-name"),
@@ -60,7 +63,10 @@ routes = ["direct", "litellm"]
     suite = load_suite(_write_suite(tmp_path, body), _registry())
     assert len(suite.rows) == 8
     assert {(r.model_id, r.thinking, r.route) for r in suite.rows} == {
-        (m, t, rt) for m in ("ollama/a", "omlx/b") for t in ("off", "high") for rt in ("direct", "litellm")
+        (m, t, rt)
+        for m in ("ollama/a", "omlx/b")
+        for t in ("off", "high")
+        for rt in ("direct", "litellm")
     }
     assert all(r.provider_id in ("ollama", "omlx") for r in suite.rows)
     assert len({r.label for r in suite.rows}) == 8  # every label unique
@@ -246,7 +252,10 @@ thinking = ["off"]
 routes = ["direct"]
 """
     suite = load_suite(_write_suite(tmp_path, body), _registry())
-    assert suite.routes_direct["omlx"] == DirectRouteConfig(base_url="http://localhost:8000/v1", api="openai-completions")
+    assert suite.routes_direct["omlx"] == DirectRouteConfig(
+        base_url="http://localhost:8000/v1", api="openai-completions"
+    )
+
 
 MINI_DRIFT = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
 
@@ -309,7 +318,10 @@ def test_preflight_hidden_leaked_into_visible_raises(tmp_path, monkeypatch):
     import shutil as _shutil
 
     _shutil.copytree(MINI_DRIFT, leaky_task_dir)
-    _shutil.copy(leaky_task_dir / "hidden" / "test_hidden.py", leaky_task_dir / "visible" / "tests" / "test_hidden.py")
+    _shutil.copy(
+        leaky_task_dir / "hidden" / "test_hidden.py",
+        leaky_task_dir / "visible" / "tests" / "test_hidden.py",
+    )
     suite = load_suite(_write_suite(tmp_path, _passing_suite_toml()), _registry())
     task = load_task(leaky_task_dir)
     with pytest.raises(BenchmarkError, match="test_hidden.py"):
@@ -339,7 +351,7 @@ def test_task_path_resolves_from_the_suite_file_ancestors(tmp_path, monkeypatch)
     suite_dir.mkdir()
     suite_path = suite_dir / "suite.toml"
     suite_path.write_text(
-        _passing_suite_toml().replace("task = \"some/task\"", "task = \"benchmarks/tasks/mini-drift\""),
+        _passing_suite_toml().replace('task = "some/task"', 'task = "benchmarks/tasks/mini-drift"'),
         encoding="utf-8",
     )
 
@@ -353,7 +365,7 @@ def test_task_path_left_alone_when_unresolvable(tmp_path):
     stays as written so load_task raises its own named error."""
     suite_path = tmp_path / "suite.toml"
     suite_path.write_text(
-        _passing_suite_toml().replace("task = \"some/task\"", "task = \"nope/missing\""),
+        _passing_suite_toml().replace('task = "some/task"', 'task = "nope/missing"'),
         encoding="utf-8",
     )
     suite = load_suite(suite_path, _registry())

@@ -74,8 +74,8 @@ model id:
 ```python
 RECONCILABLE_PROVIDERS = ("ollama", "llamacpp", "omlx")
 
-def reconcile(registry, state, downloaded: dict[str, tuple[str, int]]) -> SyncResult:
-    ...
+
+def reconcile(registry, state, downloaded: dict[str, tuple[str, int]]) -> SyncResult: ...
 ```
 
 `downloaded` maps `model_id -> (disk_path, size_bytes)`. For each

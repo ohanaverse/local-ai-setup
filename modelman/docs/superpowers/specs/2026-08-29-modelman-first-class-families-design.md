@@ -85,6 +85,7 @@ Two module-level helpers (with a `TYPE_CHECKING`-only import of
 def known_families(registry, state) -> list[str]:
     """Sorted union: derived families | entry names | legacy state keys."""
 
+
 def family_display_name(registry, state, family) -> str | None:
     """Registry entry display_name, else legacy state display_name, else
     None. Callers decide the fallback (table column: ""; edit prefill:
@@ -132,10 +133,11 @@ returns the same. A family is visible iff it has ≥1 model, or a
   legacy = state.families.get(f)
   if entry is None:
       registry.families.append(
-          FamilyEntry(name=f, display_name=legacy.display_name if legacy else None))
+          FamilyEntry(name=f, display_name=legacy.display_name if legacy else None)
+      )
   elif entry.display_name is None and legacy is not None and legacy.display_name:
-      entry.display_name = legacy.display_name   # promote into the entry
-  state.forget_family(f)                          # promotion either way
+      entry.display_name = legacy.display_name  # promote into the entry
+  state.forget_family(f)  # promotion either way
   ```
 
   Persisted by the existing `save_registry` + `save_state` at the end of

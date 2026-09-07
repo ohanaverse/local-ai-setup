@@ -97,7 +97,10 @@ def test_reconcile_downloaded_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -115,7 +118,10 @@ def test_reconcile_not_downloaded_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -133,7 +139,10 @@ def test_reconcile_skips_non_ollama_models():
     registry = Registry(
         models=[
             ModelEntry(
-                id="openrouter/x", family="x", provider_id="openrouter", model_name="x",
+                id="openrouter/x",
+                family="x",
+                provider_id="openrouter",
+                model_name="x",
             ),
         ]
     )
@@ -148,7 +157,10 @@ def test_reconcile_preserves_litellm_exposed():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -174,12 +186,16 @@ def test_sync_reconciles_configured_models():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/ornith-1.5:9b", family="ornith-1.5:9b",
-                provider_id="ollama", model_name="ornith-1.5:9b",
+                id="ollama/ornith-1.5:9b",
+                family="ornith-1.5:9b",
+                provider_id="ollama",
+                model_name="ornith-1.5:9b",
             ),
             ModelEntry(
-                id="ollama/other", family="other",
-                provider_id="ollama", model_name="other",
+                id="ollama/other",
+                family="other",
+                provider_id="ollama",
+                model_name="other",
             ),
         ]
     )
@@ -299,9 +315,7 @@ class SyncResult:
     not_downloaded: list[str] = field(default_factory=list)
 
 
-def reconcile(
-    registry: Registry, state: StateStore, downloaded: dict[str, int]
-) -> SyncResult:
+def reconcile(registry: Registry, state: StateStore, downloaded: dict[str, int]) -> SyncResult:
     """Update downloaded/disk_path/size_bytes for configured ollama models.
 
     litellm_exposed is preserved (owned by the LiteLLM feature, not sync).
@@ -389,9 +403,7 @@ def _seed_registry(tmp_path, monkeypatch):
     state_path = tmp_path / "modelman.toml"
     save_registry(
         Registry(
-            providers=[
-                ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
-            ]
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
         ),
         registry_path,
     )
@@ -403,9 +415,7 @@ def _seed_registry(tmp_path, monkeypatch):
 def test_sync_command_saves_state_and_reports(tmp_path, monkeypatch):
     registry_path, state_path = _seed_registry(tmp_path, monkeypatch)
     with patch("modelman.main.run_sync") as run_sync:
-        run_sync.return_value = SyncResult(
-            downloaded=["ollama/x"], not_downloaded=["ollama/y"]
-        )
+        run_sync.return_value = SyncResult(downloaded=["ollama/x"], not_downloaded=["ollama/y"])
         runner = CliRunner()
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0

@@ -86,13 +86,19 @@ def anonymize_message(message: str) -> str:
 
 
 def build_prompt(
-    task_md: str, seed_contents: dict[str, str], diff_text: str, closing_message: str, rubric_md: str
+    task_md: str,
+    seed_contents: dict[str, str],
+    diff_text: str,
+    closing_message: str,
+    rubric_md: str,
 ) -> str:
     """Everything the judge sees. No gate results, no hidden tests, no
     meta.toml, no config label, no timing/token stats — the rubric itself
     states the judge must not speculate about test results."""
     seed_section = (
-        "\n\n".join(f"--- {path} (baseline) ---\n{content}" for path, content in seed_contents.items())
+        "\n\n".join(
+            f"--- {path} (baseline) ---\n{content}" for path, content in seed_contents.items()
+        )
         or "(no baseline files touched)"
     )
     return (
@@ -167,7 +173,11 @@ def parse_response(raw_text: str) -> JudgeScore:
         raise JudgeContractError(f"scores missing dimensions: {missing_dims}")
     for dim in DIMENSIONS:
         value = scores[dim]
-        if isinstance(value, bool) or not isinstance(value, int) or not (0 <= value <= MAX_POINTS[dim]):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not (0 <= value <= MAX_POINTS[dim])
+        ):
             raise JudgeContractError(f"invalid score for {dim}: {value!r}")
 
     if data["verdict"] not in VERDICTS:
@@ -214,7 +224,9 @@ def judge_row(
     if len(collected) == 1:
         combined = collected[0]
     else:
-        combined_scores = {dim: round(median(s.scores[dim] for s in collected)) for dim in DIMENSIONS}
+        combined_scores = {
+            dim: round(median(s.scores[dim] for s in collected)) for dim in DIMENSIONS
+        }
         combined = JudgeScore(
             scores=combined_scores,
             total=sum(combined_scores.values()),
@@ -223,14 +235,18 @@ def judge_row(
             rationale=collected[-1].rationale,
             raw_text="\n---\n".join(s.raw_text for s in collected),
         )
-    return JudgeOutcome(status="scored", samples=collected, combined=combined, attempts_used=attempts_used)
+    return JudgeOutcome(
+        status="scored", samples=collected, combined=combined, attempts_used=attempts_used
+    )
 
 
 def apply_cap(rubric_total: int, cap: float) -> int:
     return round(rubric_total * cap)
 
 
-_TEST_PASS_CLAIM_RE = re.compile(r"\b(all tests? pass|tests? (?:are )?passing|tests? succeeded)\b", re.IGNORECASE)
+_TEST_PASS_CLAIM_RE = re.compile(
+    r"\b(all tests? pass|tests? (?:are )?passing|tests? succeeded)\b", re.IGNORECASE
+)
 
 
 def detect_overclaim(closing_message: str, hidden_pass: int, hidden_total: int) -> bool:
@@ -238,6 +254,7 @@ def detect_overclaim(closing_message: str, hidden_pass: int, hidden_total: int) 
     compare against the actual hidden-test ratio — a computed column, not
     a judge dimension."""
     return bool(_TEST_PASS_CLAIM_RE.search(closing_message)) and hidden_pass < hidden_total
+
 
 class LiteLLMJudgeTransport:
     """A plain OpenAI-compatible chat-completions call at a fixed temperature.

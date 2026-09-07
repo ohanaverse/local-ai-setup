@@ -78,12 +78,19 @@ def _reason(exc: BaseException) -> str:
     # collide with errno codes and other unrelated numbers; the descriptive
     # phrases ("unauthorized", "not found") are what real errors include.
     actionable_keywords = [
-        "disk space", "no space left", "ENOSPC",
-        "permission denied", "EACCES",
-        "connection", "timeout", "network",
-        "authentication", "unauthorized",
+        "disk space",
+        "no space left",
+        "ENOSPC",
+        "permission denied",
+        "EACCES",
+        "connection",
+        "timeout",
+        "network",
+        "authentication",
+        "unauthorized",
         "not found",
-        "certificate", "SSL",
+        "certificate",
+        "SSL",
     ]
     is_actionable = any(kw.lower() in first.lower() for kw in actionable_keywords)
 

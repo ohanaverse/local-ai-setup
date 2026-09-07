@@ -123,8 +123,8 @@ Allow override via `MODELMAN_LITELLM_DATABASE_URL`.
 @dataclass
 class SpendLogRow:
     request_id: str | None
-    model_name: str | None      # LiteLLM model_list key, ideally registry id
-    litellm_model: str | None   # e.g. "ollama_chat/qwen3.8:27b-mlx"
+    model_name: str | None  # LiteLLM model_list key, ideally registry id
+    litellm_model: str | None  # e.g. "ollama_chat/qwen3.8:27b-mlx"
     provider: str | None
     spend: float
     prompt_tokens: int

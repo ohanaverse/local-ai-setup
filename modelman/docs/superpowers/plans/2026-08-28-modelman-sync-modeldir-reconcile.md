@@ -256,9 +256,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     }
 
 
-def _ollama_downloaded(
-    registry: Registry, sizes: dict[str, int]
-) -> dict[str, tuple[str, int]]:
+def _ollama_downloaded(registry: Registry, sizes: dict[str, int]) -> dict[str, tuple[str, int]]:
     """Map `ollama list`'s {name: size} to {model_id: (disk_path, size)}."""
     result: dict[str, tuple[str, int]] = {}
     for m in registry.models:
@@ -314,11 +312,17 @@ def test_list_modeldir_downloaded():
     registry = Registry(
         models=[
             ModelEntry(
-                id="llamacpp/a", family="a", provider_id="llamacpp", model_name="a",
+                id="llamacpp/a",
+                family="a",
+                provider_id="llamacpp",
+                model_name="a",
                 fetch=Fetch(repo="o/r", files=["a.gguf"]),
             ),
             ModelEntry(
-                id="omlx/b", family="b", provider_id="omlx", model_name="b",
+                id="omlx/b",
+                family="b",
+                provider_id="omlx",
+                model_name="b",
                 fetch=Fetch(repo="o/b"),
             ),
         ]
@@ -384,15 +388,11 @@ def _modeldir_providers(registry: Registry) -> dict[str, Any]:
     for m in registry.models:
         if m.provider_id in ("llamacpp", "omlx") and m.provider_id not in providers:
             entry = registry.provider(m.provider_id)
-            providers[m.provider_id] = ProviderRegistry.get(
-                m.provider_id, provider_config(entry)
-            )
+            providers[m.provider_id] = ProviderRegistry.get(m.provider_id, provider_config(entry))
     return providers
 
 
-def list_modeldir(
-    registry: Registry, providers: dict[str, Any]
-) -> dict[str, tuple[str, int]]:
+def list_modeldir(registry: Registry, providers: dict[str, Any]) -> dict[str, tuple[str, int]]:
     """Return {model_id: (disk_path, size_bytes)} for downloaded llamacpp/omlx models."""
     result: dict[str, tuple[str, int]] = {}
     for m in registry.models:
@@ -442,7 +442,10 @@ def test_reconcile_downloaded_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -460,7 +463,10 @@ def test_reconcile_not_downloaded_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -478,7 +484,10 @@ def test_reconcile_modeldir_model():
     registry = Registry(
         models=[
             ModelEntry(
-                id="llamacpp/a", family="a", provider_id="llamacpp", model_name="a",
+                id="llamacpp/a",
+                family="a",
+                provider_id="llamacpp",
+                model_name="a",
             ),
         ]
     )
@@ -495,7 +504,10 @@ def test_reconcile_skips_non_reconcilable_models():
     registry = Registry(
         models=[
             ModelEntry(
-                id="openrouter/x", family="x", provider_id="openrouter", model_name="x",
+                id="openrouter/x",
+                family="x",
+                provider_id="openrouter",
+                model_name="x",
             ),
         ]
     )
@@ -510,7 +522,10 @@ def test_reconcile_preserves_litellm_exposed():
     registry = Registry(
         models=[
             ModelEntry(
-                id="ollama/a", family="a", provider_id="ollama", model_name="a",
+                id="ollama/a",
+                family="a",
+                provider_id="ollama",
+                model_name="a",
             ),
         ]
     )
@@ -529,7 +544,10 @@ def test_sync_reconciles_modeldir_models():
     registry = Registry(
         models=[
             ModelEntry(
-                id="llamacpp/a", family="a", provider_id="llamacpp", model_name="a",
+                id="llamacpp/a",
+                family="a",
+                provider_id="llamacpp",
+                model_name="a",
                 fetch=Fetch(repo="o/r", files=["a.gguf"]),
             ),
         ]
@@ -683,8 +701,7 @@ def sync() -> None:
         raise typer.Exit(1) from exc
     save_state(state)
     typer.echo(
-        f"Synced: {len(result.downloaded)} downloaded, "
-        f"{len(result.not_downloaded)} not downloaded."
+        f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."
     )
 ```
 

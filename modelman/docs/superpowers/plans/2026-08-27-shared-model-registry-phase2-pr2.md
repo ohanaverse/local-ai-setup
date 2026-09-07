@@ -72,8 +72,8 @@ Provider APIs (`download(VariantSpec)`, `size_of(VariantSpec)`, `delete(VariantS
       registry_path: Path
       state_path: Path
       providers: dict[str, object]
-      downloads: list[tuple[str, VariantSpec]]   # (model_id, variant)
-      deletes: list[tuple[str, VariantSpec]]     # (model_id, variant)
+      downloads: list[tuple[str, VariantSpec]]  # (model_id, variant)
+      deletes: list[tuple[str, VariantSpec]]  # (model_id, variant)
       failures: list[str] = field(default_factory=list)
       cancelled: bool = False
   ```
@@ -149,25 +149,41 @@ def _make_state() -> StateStore:
     return StateStore()
 
 
-def _entry(*, id: str, family: str, provider: str, name: str, repo: str | None = None,
-           files: list[str] | None = None) -> ModelEntry:
+def _entry(
+    *,
+    id: str,
+    family: str,
+    provider: str,
+    name: str,
+    repo: str | None = None,
+    files: list[str] | None = None,
+) -> ModelEntry:
     """Build a ModelEntry from a legacy VariantSpec-shaped dict."""
     from modelman.registry import Fetch
+
     fetch = None
     if repo or files:
         fetch = Fetch(repo=repo, files=files, quantizations=None)
     return ModelEntry(
-        id=id, family=family, provider_id=provider, model_name=name,
+        id=id,
+        family=family,
+        provider_id=provider,
+        model_name=name,
         fetch=fetch,
     )
 
 
-def _variant(*, id: str, provider: str, name: str, repo: str | None = None,
-             files: list[str] | None = None) -> dict:
+def _variant(
+    *, id: str, provider: str, name: str, repo: str | None = None, files: list[str] | None = None
+) -> dict:
     """The VariantSpec TypedDict the providers still consume."""
     return {
-        "id": id, "provider": provider, "name": name,
-        "repo": repo, "files": files, "quantizations": None,
+        "id": id,
+        "provider": provider,
+        "name": name,
+        "repo": repo,
+        "files": files,
+        "quantizations": None,
     }
 
 
@@ -179,8 +195,12 @@ def _setup_apply_test(tmp_path: Path):
     state_path = tmp_path / "modelman.toml"
     a = _entry(id="ollama/a", family="f", provider="ollama", name="f:a")
     b = _entry(
-        id="llamacpp/b", family="f", provider="llamacpp", name="f:b",
-        repo="org/repo", files=["x.gguf"],
+        id="llamacpp/b",
+        family="f",
+        provider="llamacpp",
+        name="f:b",
+        repo="org/repo",
+        files=["x.gguf"],
     )
     reg = Registry(
         providers=[
@@ -199,10 +219,18 @@ def _setup_apply_test(tmp_path: Path):
     provider_llama.name = "llamacpp"
     provider_llama.delete.return_value = None
 
-    return reg, state, reg_path, state_path, {
-        "ollama": provider_ollama,
-        "llamacpp": provider_llama,
-    }, a, b
+    return (
+        reg,
+        state,
+        reg_path,
+        state_path,
+        {
+            "ollama": provider_ollama,
+            "llamacpp": provider_llama,
+        },
+        a,
+        b,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +266,18 @@ def test_apply_deletes_before_downloads(tmp_path):
         state_path=state_path,
         providers=providers,
         deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a"))],
-        downloads=[("llamacpp/b", _variant(
-            id="llamacpp/b", provider="llamacpp", name="f:b",
-            repo="org/repo", files=["x.gguf"]))],
+        downloads=[
+            (
+                "llamacpp/b",
+                _variant(
+                    id="llamacpp/b",
+                    provider="llamacpp",
+                    name="f:b",
+                    repo="org/repo",
+                    files=["x.gguf"],
+                ),
+            )
+        ],
     )
     pending.apply()
 
@@ -302,8 +339,12 @@ def test_apply_download_cancelled_is_not_a_failure(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     b = _entry(
-        id="llamacpp/b", family="f", provider="llamacpp", name="f:b",
-        repo="org/repo", files=["x.gguf"],
+        id="llamacpp/b",
+        family="f",
+        provider="llamacpp",
+        name="f:b",
+        repo="org/repo",
+        files=["x.gguf"],
     )
     reg = Registry(
         providers=[ProviderEntry(id="llamacpp", name="llama.cpp", auth=AuthConfig(type="none"))],
@@ -326,9 +367,18 @@ def test_apply_download_cancelled_is_not_a_failure(tmp_path):
         registry_path=reg_path,
         state_path=state_path,
         providers={"llamacpp": provider},
-        downloads=[("llamacpp/b", _variant(
-            id="llamacpp/b", provider="llamacpp", name="f:b",
-            repo="org/repo", files=["x.gguf"]))],
+        downloads=[
+            (
+                "llamacpp/b",
+                _variant(
+                    id="llamacpp/b",
+                    provider="llamacpp",
+                    name="f:b",
+                    repo="org/repo",
+                    files=["x.gguf"],
+                ),
+            )
+        ],
     )
     pending.apply(on_event=events.append, on_progress=progress_lines.append)
 
@@ -495,9 +545,16 @@ def test_apply_writes_state_for_each_downloaded_model(tmp_path):
         providers=providers,
         downloads=[
             ("ollama/a", _variant(id="ollama/a", provider="ollama", name="f:a")),
-            ("llamacpp/b", _variant(
-                id="llamacpp/b", provider="llamacpp", name="f:b",
-                repo="org/repo", files=["x.gguf"])),
+            (
+                "llamacpp/b",
+                _variant(
+                    id="llamacpp/b",
+                    provider="llamacpp",
+                    name="f:b",
+                    repo="org/repo",
+                    files=["x.gguf"],
+                ),
+            ),
         ],
     )
     pending.apply()
@@ -740,6 +797,7 @@ class PendingChanges:
                 size = 0
             if size > 0:
                 from .providers._progress import human_bytes
+
                 emit(f"download:done|{model_id}|{label}|{human_bytes(size)}")
             else:
                 emit(f"download:done|{model_id}|{label}")
@@ -886,9 +944,11 @@ def test_variant_to_model_entry_raises_for_unknown_provider():
     from modelman.screens.models import _variant_to_model_entry
 
     variant = {"id": "bogus/x", "provider": "bogus", "name": "x"}
-    reg = Registry(providers=[
-        ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
-    ])
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none")),
+        ]
+    )
     with pytest.raises(KeyError):
         _variant_to_model_entry(variant, family="f", registry=reg)
 ```
@@ -993,6 +1053,7 @@ git commit -m "feat: add VariantSpec-to-ModelEntry adapter - completes plan item
           state_path: Path,
           available_providers: list[str] | None = None,
       ) -> None: ...
+
       self.registry: Registry
       self.state: StateStore
       self.family: str
@@ -1054,10 +1115,7 @@ def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=()):
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
     (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
+        "providers:\n  ollama: {type: ollama}\n  llamacpp: {type: llamacpp}\n  omlx: {type: omlx}\n"
     )
 
     from modelman.screens.models import ModelScreen
@@ -1074,7 +1132,8 @@ def _make_screen(tmp_path, monkeypatch, *, family: str = "ornith", entries=()):
 
 
 def test_model_screen_shows_all_providers_for_empty_family(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """The provider-table on the left of the model screen must show
     every configured provider, even when the family has zero entries."""
@@ -1097,7 +1156,8 @@ def test_model_screen_shows_all_providers_for_empty_family(
 
 
 def test_model_screen_provider_table_count_zero_for_empty(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """When the family has 0 entries, each provider row should show
     count '0' (not blank)."""
@@ -1121,10 +1181,7 @@ def test_model_screen_provider_table_count_zero_for_empty(
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
     (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
+        "providers:\n  ollama: {type: ollama}\n  llamacpp: {type: llamacpp}\n  omlx: {type: omlx}\n"
     )
 
     ms = ModelScreen(
@@ -1152,7 +1209,8 @@ def test_model_screen_provider_table_count_zero_for_empty(
 
 
 def test_model_screen_add_form_offers_all_providers_for_empty_family(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """The AddModel form's provider Label must reflect the full
     configured-provider list when the user presses 'a' from an empty
@@ -1175,10 +1233,7 @@ def test_model_screen_add_form_offers_all_providers_for_empty_family(
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     monkeypatch.setenv("MODELMAN_CONFIG", str(tmp_path / "config.yaml"))
     (tmp_path / "config.yaml").write_text(
-        "providers:\n"
-        "  ollama: {type: ollama}\n"
-        "  llamacpp: {type: llamacpp}\n"
-        "  omlx: {type: omlx}\n"
+        "providers:\n  ollama: {type: ollama}\n  llamacpp: {type: llamacpp}\n  omlx: {type: omlx}\n"
     )
 
     from modelman.screens.models import ModelScreen
@@ -1212,7 +1267,8 @@ def test_model_screen_add_form_offers_all_providers_for_empty_family(
 
 
 def test_model_screen_starts_with_cursor_on_first_provider(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """When the model screen mounts, the cursor must be on row 0 of
     the provider-table (the first configured provider)."""
@@ -1233,7 +1289,8 @@ def test_model_screen_starts_with_cursor_on_first_provider(
 
 @pytest.mark.asyncio
 async def test_model_screen_add_appends_model_entry_to_registry(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Submitting ModelForm in add mode appends a ModelEntry to
     registry.models with the adapter's translation."""
@@ -1257,6 +1314,7 @@ async def test_model_screen_add_appends_model_entry_to_registry(
 
     reloaded = Registry()
     from modelman.registry import load_registry
+
     reloaded = load_registry(reg_path)
     ids = [m.id for m in reloaded.models]
     assert "ollama/ornith:8b" in ids
@@ -1269,7 +1327,8 @@ async def test_model_screen_add_appends_model_entry_to_registry(
 
 @pytest.mark.asyncio
 async def test_model_screen_toggle_download_queues_variant(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """Pressing `x` on a not-downloaded row queues the variant for download."""
     from unittest.mock import MagicMock
@@ -1277,7 +1336,10 @@ async def test_model_screen_toggle_download_queues_variant(
     from modelman.providers import registry as prov_registry
 
     a = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b",
+        id="ollama/o35",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith:35b",
     )
     ms, _reg, _state = _make_screen(tmp_path, monkeypatch, entries=[a])
 
@@ -1310,7 +1372,10 @@ async def test_model_screen_delete_only_for_downloaded(tmp_path, monkeypatch):
     from modelman.providers import registry as prov_registry
 
     a = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b",
+        id="ollama/o35",
+        family="ornith",
+        provider_id="ollama",
+        model_name="ornith:35b",
     )
     ms, _reg, _state = _make_screen(tmp_path, monkeypatch, entries=[a])
 
@@ -1884,7 +1949,9 @@ async def test_app_with_initial_family_launches_into_model_screen(tmp_path, monk
         providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
         models=[
             ModelEntry(
-                id="ollama/ornith:35b", family="ornith", provider_id="ollama",
+                id="ollama/ornith:35b",
+                family="ornith",
+                provider_id="ollama",
                 model_name="ornith:35b",
             ),
         ],
@@ -2166,7 +2233,8 @@ async def test_pending_changes_fires_lifecycle_events(app_with_apply, tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """While the apply is still running, Escape must open the cancel-or-wait
     dialog; choosing Cancel must set the cancellation flag on the
@@ -2521,7 +2589,10 @@ def test_pending_changes_forwards_on_progress(tmp_path):
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     entry = ModelEntry(
-        id="x", family="ornith", provider_id="ollama", model_name="x:7b",
+        id="x",
+        family="ornith",
+        provider_id="ollama",
+        model_name="x:7b",
     )
     reg = Registry(
         providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],

@@ -26,7 +26,9 @@ DEFAULT_SUITES_DIR = Path("benchmarks/suites")
 
 @agent_app.command("list-tasks")
 def list_tasks_cmd(
-    root: Path = typer.Option(DEFAULT_TASKS_DIR, "--root", help="Directory containing task bundles"),  # noqa: B008
+    root: Path = typer.Option(  # noqa: B008
+        DEFAULT_TASKS_DIR, "--root", help="Directory containing task bundles"
+    ),
 ) -> None:
     """List task bundles under root."""
     for task in list_task_bundles(root):
@@ -36,7 +38,9 @@ def list_tasks_cmd(
 
 @agent_app.command("list-suites")
 def list_suites_cmd(
-    root: Path = typer.Option(DEFAULT_SUITES_DIR, "--root", help="Directory containing suite TOML files"),  # noqa: B008
+    root: Path = typer.Option(  # noqa: B008
+        DEFAULT_SUITES_DIR, "--root", help="Directory containing suite TOML files"
+    ),
 ) -> None:
     """List suite files under root, with their expanded row count."""
     if not root.is_dir():
@@ -58,7 +62,9 @@ def run_cmd(
     results_dir: Path | None = typer.Option(  # noqa: B008
         None, "--results-dir", help="Directory for run artifacts"
     ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Resolve and print the row matrix; run nothing"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Resolve and print the row matrix; run nothing"
+    ),
     skip_judge: bool = typer.Option(False, "--skip-judge", help="Skip the judge phase"),
 ) -> None:
     """Run a suite against a real coding task."""
@@ -85,7 +91,11 @@ def run_cmd(
 
     try:
         run_dir, results = run_suite(
-            loaded_suite, registry, row_filter=row or None, results_dir=results_dir, skip_judge=skip_judge
+            loaded_suite,
+            registry,
+            row_filter=row or None,
+            results_dir=results_dir,
+            skip_judge=skip_judge,
         )
     except RunSavedButRestoreFailed as exc:
         # The sweep is finished and persisted; only a backend failed to come
@@ -110,7 +120,9 @@ def _record_run_and_report(run_dir: Path, results: list) -> None:
     save_state(state)
 
     ok = sum(1 for r in results if r.error is None)
-    typer.echo(f"Agent benchmark complete: {len(results)} row(s), {ok} ran without an isolation error")
+    typer.echo(
+        f"Agent benchmark complete: {len(results)} row(s), {ok} ran without an isolation error"
+    )
     typer.echo(f"Results: {run_dir}")
     for result in results:
         if result.error:

@@ -272,9 +272,7 @@ def test_cleanup_partial_download_removes_partial_target_dir(tmp_path):
     target.mkdir()
     (target / "partial.bin").write_bytes(b"not finished")
 
-    provider.cleanup_partial_download(
-        {"id": "x", "provider": "omlx", "repo": "org/some-model"}
-    )
+    provider.cleanup_partial_download({"id": "x", "provider": "omlx", "repo": "org/some-model"})
 
     assert not target.exists()
 
@@ -283,6 +281,4 @@ def test_cleanup_partial_download_missing_dir_is_noop(tmp_path):
     # Cleanup runs unconditionally after any cancel/fail; a download that
     # never got far enough to create the target directory must not raise.
     provider = OMLXProvider({"model_dir": str(tmp_path)})
-    provider.cleanup_partial_download(
-        {"id": "x", "provider": "omlx", "repo": "org/never-started"}
-    )
+    provider.cleanup_partial_download({"id": "x", "provider": "omlx", "repo": "org/never-started"})

@@ -88,7 +88,9 @@ def test_correct_fix_clears_all_hidden_tests():
     task = load_task(TASK_ROOT)
     ws = create_workspace(task)
     try:
-        (ws.root / "kettlecomb" / "calendarlib.py").write_text(CORRECT_CALENDARLIB, encoding="utf-8")
+        (ws.root / "kettlecomb" / "calendarlib.py").write_text(
+            CORRECT_CALENDARLIB, encoding="utf-8"
+        )
         ws.seed_hidden(task)
         assert _run_test_module(ws.root, "tests.test_day31") == (6, 0, 0)
     finally:

@@ -410,8 +410,11 @@ async def test_family_screen_reconcile_leaves_ready_alone_for_ollama_cloud(tmp_p
         families=[FamilyEntry(name="glm")],
         models=[
             ModelEntry(
-                id="ollama/glm:cloud", family="glm", provider_id="ollama",
-                model_name="glm:cloud", location="cloud",
+                id="ollama/glm:cloud",
+                family="glm",
+                provider_id="ollama",
+                model_name="glm:cloud",
+                location="cloud",
             ),
         ],
     )

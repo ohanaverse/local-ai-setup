@@ -480,9 +480,7 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
     provider.name = "ollama"
     provider.is_downloaded.return_value = True
     provider.path_of.return_value = None  # avoid a false shared-artifact conflict
-    provider.delete.side_effect = OSError(
-        "No space left on device (ENOSPC) - failed to write file"
-    )
+    provider.delete.side_effect = OSError("No space left on device (ENOSPC) - failed to write file")
 
     def run_apply(log_event, _progress, _register):
         pending = PendingChanges(

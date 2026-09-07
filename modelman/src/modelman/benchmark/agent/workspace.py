@@ -15,9 +15,7 @@ BASELINE_COMMIT_MESSAGE = "baseline"
 
 
 def _git(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     if check and result.returncode != 0:
         raise BenchmarkError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
     return result
@@ -47,9 +45,7 @@ class Workspace:
 
     def _status_since_baseline(self) -> list[tuple[str, str]]:
         _git(["add", "-A"], cwd=self.root)
-        result = _git(
-            ["diff", self.baseline_sha, "--cached", "--name-status", "--"], cwd=self.root
-        )
+        result = _git(["diff", self.baseline_sha, "--cached", "--name-status", "--"], cwd=self.root)
         entries = []
         for line in result.stdout.splitlines():
             parts = line.split("\t")
@@ -74,9 +70,7 @@ class Workspace:
         return entries
 
     def new_files_since_baseline(self) -> list[Path]:
-        return [
-            self.root / name for status, name in self._status_since_baseline() if status == "A"
-        ]
+        return [self.root / name for status, name in self._status_since_baseline() if status == "A"]
 
     def modified_or_deleted_since_baseline(self) -> list[Path]:
         return [
@@ -95,7 +89,9 @@ class Workspace:
         """Add a detached worktree at the baseline commit for the
         vacuous-test check (gate 8) — a clean copy the harness can drop the
         agent's new test file into without touching the row's own tree."""
-        _git(["worktree", "add", "--detach", "--force", str(dest), self.baseline_sha], cwd=self.root)
+        _git(
+            ["worktree", "add", "--detach", "--force", str(dest), self.baseline_sha], cwd=self.root
+        )
 
     def remove_worktree(self, dest: Path) -> None:
         _git(["worktree", "remove", "--force", str(dest)], cwd=self.root, check=False)

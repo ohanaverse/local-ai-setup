@@ -425,8 +425,28 @@ def test_fake_spend_store_query() -> None:
 def test_fake_spend_store_query_filters_by_model_name() -> None:
     now = datetime.now(timezone.utc)
     rows = [
-        SpendLogRow(request_id="r1", model_name="ollama/a", litellm_model="a", provider="p", spend=0.0, prompt_tokens=0, completion_tokens=0, total_tokens=0, start_time=now),
-        SpendLogRow(request_id="r2", model_name="ollama/b", litellm_model="b", provider="p", spend=0.0, prompt_tokens=0, completion_tokens=0, total_tokens=0, start_time=now),
+        SpendLogRow(
+            request_id="r1",
+            model_name="ollama/a",
+            litellm_model="a",
+            provider="p",
+            spend=0.0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            start_time=now,
+        ),
+        SpendLogRow(
+            request_id="r2",
+            model_name="ollama/b",
+            litellm_model="b",
+            provider="p",
+            spend=0.0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            start_time=now,
+        ),
     ]
     store = InMemorySpendStore(rows)
     result = store.query(start=now, end=now, model_names=["ollama/a"])
@@ -1155,8 +1175,7 @@ def format_report(
                 lines.append("### LiteLLM-only spend")
                 for row in result.litellm_only:
                     lines.append(
-                        f"- {row.registry_model_id} — ${row.spend:.4f} spend, "
-                        f"0 wt launches"
+                        f"- {row.registry_model_id} — ${row.spend:.4f} spend, 0 wt launches"
                     )
                 lines.append("")
     else:
@@ -1228,9 +1247,7 @@ def test_usage_report_command_exists() -> None:
 
 def test_usage_report_runs_with_mocked_dependencies(monkeypatch, tmp_path: Path) -> None:
     usage_jsonl = tmp_path / "usage.jsonl"
-    usage_jsonl.write_text(
-        '{"model_id":"ollama/a","timestamp":"2026-08-28T12:00:00+00:00"}\n'
-    )
+    usage_jsonl.write_text('{"model_id":"ollama/a","timestamp":"2026-08-28T12:00:00+00:00"}\n')
     rotation_state = tmp_path / "rotation.state"
     rotation_state.write_text("ollama/a\n")
 
@@ -1240,7 +1257,9 @@ def test_usage_report_runs_with_mocked_dependencies(monkeypatch, tmp_path: Path)
     )
 
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump({"model_list": [], "general_settings": {"database_url": "fake"}}))
+    config_path.write_text(
+        yaml.safe_dump({"model_list": [], "general_settings": {"database_url": "fake"}})
+    )
 
     monkeypatch.setenv("MODELMAN_WT_DIR", str(tmp_path))
     monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(config_path))
