@@ -159,3 +159,67 @@ def test_save_then_load_preserves_unknown_keys(tmp_path):
     assert loaded.get("ollama/x").extra == {"custom_field": "keep-me"}
     assert loaded.families["f"].extra == {"family_extra": 1}
     assert loaded.extra == {"settings": {"top_level": "keep"}}
+
+
+def test_locked_state_round_trips_a_single_write(tmp_path):
+    # Baseline: locked_state must behave like load-mutate-save for the
+    # simple case before the concurrency tests below rely on it.
+    from modelman.state import locked_state
+
+    path = tmp_path / "modelman.toml"
+    save_state(StateStore(), path)
+
+    with locked_state(path) as state:
+        state.set("ollama/a", ModelState(ready=True, disk_path="/a"))
+
+    loaded = load_state(path)
+    assert loaded.get("ollama/a") == ModelState(ready=True, disk_path="/a")
+
+
+def test_locked_state_does_not_lose_a_sequential_concurrent_write(tmp_path):
+    # This is the exact regression this helper exists to prevent: once
+    # DownloadManager completions and PendingChanges.apply()'s final save
+    # can both write modelman.toml, a naive load-mutate-save (what
+    # save_state() alone does) loses whichever write finishes first if the
+    # other writer already loaded before that write landed. Two
+    # *sequential* locked_state() blocks, each touching a different
+    # model_id, must both survive.
+    from modelman.state import locked_state
+
+    path = tmp_path / "modelman.toml"
+    save_state(StateStore(), path)
+
+    with locked_state(path) as state:
+        state.set("ollama/a", ModelState(ready=True, disk_path="/a"))
+    with locked_state(path) as state:
+        state.set("ollama/b", ModelState(ready=True, disk_path="/b"))
+
+    loaded = load_state(path)
+    assert loaded.get("ollama/a") == ModelState(ready=True, disk_path="/a")
+    assert loaded.get("ollama/b") == ModelState(ready=True, disk_path="/b")
+
+
+def test_locked_state_serializes_real_concurrent_writers(tmp_path):
+    # Proves the lock actually serializes writers under real thread
+    # concurrency (not just "happens to work" in a single-threaded test) —
+    # this is the scenario two parallel download completions hit directly.
+    import threading
+
+    from modelman.state import locked_state
+
+    path = tmp_path / "modelman.toml"
+    save_state(StateStore(), path)
+
+    def _write(i: int) -> None:
+        with locked_state(path) as state:
+            state.set(f"ollama/m{i}", ModelState(ready=True))
+
+    threads = [threading.Thread(target=_write, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    loaded = load_state(path)
+    for i in range(10):
+        assert loaded.get(f"ollama/m{i}").ready is True
