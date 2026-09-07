@@ -27,6 +27,7 @@ from ..registry import (
     ModelEntry,
     Registry,
     _cost_from_dict,
+    is_native_provider,
     known_families,
     model_entry_to_variant,
     provider_config,
@@ -56,7 +57,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
     provider_id = variant["provider"]
     # Sanity: provider must exist in the registry. Defends against a
     # malformed dialog result that snuck past form validation.
-    registry.provider(provider_id)  # raises KeyError if unknown
+    provider = registry.provider(provider_id)  # raises KeyError if unknown
 
     name = variant.get("name") or variant["id"]
     repo = variant.get("repo")
@@ -81,6 +82,10 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         cost=cost,
         model_info=model_info,
         fetch=fetch,
+        # native is derived (never serialized) — re-derive it here so an
+        # in-session add/edit doesn't reset the flag and flip the EXPOSED
+        # column until the next disk reload. Mirrors _derive_native.
+        native=is_native_provider(provider),
     )
 
 
@@ -323,6 +328,9 @@ class ModelScreen(Screen[None]):
                 # *projected* ready value — the same gate `_validated_entry`
                 # applies at apply time, so the column shows what the model
                 # will be after apply, not what it was before the queue.
+                # Native rows are the one exception: the column shows Y
+                # unconditionally while the apply gate still rejects them
+                # ("no LiteLLM mapping") — that split is deliberate.
                 exposed_str = (
                     "Y"
                     if is_effectively_exposed(
@@ -497,7 +505,7 @@ class ModelScreen(Screen[None]):
         the fallback policy stays in one place."""
         kinds: dict[str, str] = {}
         for p in self.registry.providers:
-            if p.auth.type == "native":
+            if is_native_provider(p):
                 kinds[p.id] = "native"
             else:
                 kinds[p.id] = default_form_kind(p.id)

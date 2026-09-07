@@ -20,6 +20,7 @@ from modelman.registry import (
     _default_registry_path,
     _default_wt_config_path,
     family_display_name,
+    is_native_provider,
     known_families,
     load_registry,
     model_has_local_artifact,
@@ -417,6 +418,19 @@ def test_model_has_local_artifact_false_for_cloud_provider():
     assert model_has_local_artifact(model, provider) is False
 
 
+def test_is_native_provider_true_for_native_auth_only():
+    """The shared native predicate must key on auth.type exactly — not
+    location, not provider id — so _derive_native and the form-kind map can
+    never disagree about which providers are native. None/None auth
+    (providers predating the auth field) are not native."""
+    native = ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native"))
+    none_auth = ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))
+    api_key = ProviderEntry(id="or", name="OR", auth=AuthConfig(type="api_key"))
+    assert is_native_provider(native) is True
+    assert is_native_provider(none_auth) is False
+    assert is_native_provider(api_key) is False
+
+
 def test_model_has_local_artifact_false_when_provider_missing():
     """A model referencing a provider id no longer in the registry has no
     reconciled source either way; treat as not having a local artifact
@@ -508,6 +522,24 @@ def test_sync_agent_providers_is_idempotent(tmp_path):
     assert first == ["claude"]
     assert second == []
     assert len([p for p in registry.providers if p.id == "claude"]) == 1
+
+
+def test_sync_agent_providers_derives_native_for_existing_models(tmp_path):
+    """sync_agent_providers appends native providers after load_registry has
+    already run _derive_native, so it must re-derive: a model referencing a
+    newly-added agent provider should be native=True in the same in-memory
+    registry, not stale-False until the next disk reload."""
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text('[[agents]]\nname = "claude"\n')
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[ModelEntry(id="claude/opus", family="opus", provider_id="claude",
+                           model_name="opus", native=False)],
+    )
+
+    sync_agent_providers(registry, wt_config_path=wt_config)
+
+    assert registry.model("claude/opus").native is True
 
 
 def test_sync_agent_providers_tolerates_non_list_agents(tmp_path):
@@ -803,3 +835,63 @@ def test_load_registry_usage_tier_not_preserved_in_extra(tmp_path):
     )
     loaded = load_registry(path)
     assert loaded.model("ollama/x").extra.get("usage_tier") is None
+
+
+def test_load_registry_derives_native_from_provider_auth(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\n'
+        'id = "ollama"\n'
+        'name = "Ollama"\n'
+        '[providers.auth]\n'
+        'type = "none"\n\n'
+        '[[providers]]\n'
+        'id = "agy"\n'
+        'name = "Agy"\n'
+        '[providers.auth]\n'
+        'type = "native"\n\n'
+        '[[models]]\n'
+        'id = "ollama/x"\n'
+        'family = "x"\n'
+        'provider_id = "ollama"\n'
+        'model_name = "x"\n\n'
+        '[[models]]\n'
+        'id = "agy/x"\n'
+        'family = "x"\n'
+        'provider_id = "agy"\n'
+        'model_name = "x"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").native is False
+    assert loaded.model("agy/x").native is True
+
+
+def test_save_registry_does_not_persist_native_field(tmp_path):
+    # native is derived from provider auth, not stored in registry.toml.
+    # If it leaked out, a load→derive→save cycle would create a diff on disk.
+    # The provider auth.type "native" string legitimately appears, so check
+    # the model row specifically rather than grepping the whole file.
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native")),
+        ],
+        models=[
+            ModelEntry(
+                id="agy/x",
+                family="x",
+                provider_id="agy",
+                model_name="x",
+                native=True,
+            )
+        ],
+    )
+    save_registry(registry, path)
+    import tomllib
+
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+    model_row = raw["models"][0]
+    assert "native" not in model_row
+    loaded = load_registry(path)
+    assert loaded.model("agy/x").native is True
