@@ -896,6 +896,59 @@ def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
     assert warnings == []
 
 
+def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypatch):
+    """Native ⇒ no LiteLLM policy invariant (#47), queue path: a native
+    model whose provider has a stale PROVIDER_POLICIES entry (hand-edited
+    registry) is rejected per item — the flag never flips, nothing is
+    written, and the proxy is not restarted. Shares _validated_entry with
+    expose_model, which is pinned in test_litellm.py."""
+    from modelman.litellm import (
+        PROVIDER_POLICIES,
+        ProviderPolicy,
+        apply_expose_queue,
+        save_litellm_config,
+    )
+    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+    from modelman.state import ModelState, StateStore
+
+    model = ModelEntry(
+        id="agy/contract-fixture:native",
+        family="f",
+        provider_id="agy",
+        model_name="contract-fixture:native",
+        native=True,
+    )
+    registry = Registry(
+        providers=[ProviderEntry(id="agy", name="Agy", auth=AuthConfig(type="native"))],
+        models=[model],
+    )
+    state = StateStore()
+    state.set(model.id, ModelState(ready=True, litellm_exposed=False))
+    # provider_policy() stays a pure lookup — simulate the stale entry
+    # (a native provider must never actually have one) directly in the table.
+    monkeypatch.setitem(PROVIDER_POLICIES, "agy", ProviderPolicy(prefix="agy/"))
+    path = tmp_path / "config.yaml"
+    # Seed drop_params so ensure_litellm_settings is a no-op: a fully
+    # rejected queue must save nothing and restart nothing.
+    save_litellm_config(
+        {"model_list": [], "litellm_settings": {"drop_params": True}}, path
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    outcomes, warnings = apply_expose_queue(registry, state, [(model.id, True)], path)
+    assert warnings == []
+    assert calls == []
+    [(mid, target, error)] = outcomes
+    assert (mid, target) == (model.id, True)
+    assert error is not None and "native" in error
+    # The rejected expose must not flip the flag.
+    assert state.get(model.id).litellm_exposed is False
+
+
+
 def test_apply_expose_queue_no_restart_when_empty(tmp_path, monkeypatch):
     from modelman.litellm import apply_expose_queue, save_litellm_config
     from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry

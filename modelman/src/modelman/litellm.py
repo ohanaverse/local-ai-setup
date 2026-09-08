@@ -38,10 +38,14 @@ from .state import StateStore
 class ProviderPolicy:
     """How a provider maps onto LiteLLM's model_list.
 
-    The single source of truth for provider-specific exposure rules: the
+    The source of truth for non-native provider exposure rules: the
     config writer (build_model_list_entry) and the TUI's expose gate
     (screens/models.py) both consult this table, so a new provider needs
-    exactly one edit here and both stay in agreement.
+    exactly one edit here and both stay in agreement. Native providers
+    (auth.type == "native") are exempt by rule: they have no LiteLLM
+    mapping, are always shown exposed by is_effectively_exposed, and are
+    rejected at the apply gate (_validated_entry) even if a stale entry
+    exists here.
 
     - prefix       — LiteLLM `model` field prefix. llamacpp's points at
                      the fixed `openai/local-model` (its api_base is the
@@ -155,13 +159,18 @@ def is_effectively_exposed(
     (`passes_ready_gate` / `_validated_entry`): the apply gate governs whether
     a model can be written into LiteLLM's config and may flip the flag it is
     checking. Native models have no LiteLLM mapping, so they are catalog-only
-    and are rejected earlier by `_validated_entry` via the `policy is None` check.
+    and are rejected earlier by `_validated_entry`'s native guard — even if a
+    stale PROVIDER_POLICIES entry exists for their provider.
 
     Args:
         model: The registry model entry to check.
         state: StateStore for ready/exposed flags.
         exposed_override: Override the persisted litellm_exposed flag.
-        ready_override: Override the persisted ready flag.
+            Applies to non-native models only — native models are
+            unconditionally exposed and ignore this override (and the
+            persisted flag) entirely.
+        ready_override: Override the persisted ready flag. Likewise
+            ignored for native models.
 
     Returns:
         True if the model should show as exposed in the catalog, False otherwise.
@@ -491,9 +500,18 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
         raise ExposeError(
             f"model {model_id!r} references unknown provider {model.provider_id!r}"
         ) from None
+    if model.native:
+        # Native ⇒ no LiteLLM policy invariant (#47): a native provider
+        # must never produce a LiteLLM row, even if a stale
+        # PROVIDER_POLICIES entry exists for it (hand-edited registry).
+        raise ExposeError(
+            f"provider {model.provider_id!r} is native and cannot be exposed through LiteLLM"
+        )
     policy = provider_policy(model.provider_id)
     if policy is None:
-        # Native providers hit this check: auth.type == "native" means no LiteLLM mapping.
+        # Provider is not in PROVIDER_POLICIES (a new provider not yet
+        # mapped, or a hand-edited registry). Native providers never reach
+        # this check — the native guard above rejects them first.
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
     if not passes_ready_gate(model, state):
         raise ExposeError(f"model {model_id!r} is not ready")
