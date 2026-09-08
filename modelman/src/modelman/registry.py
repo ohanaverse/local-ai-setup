@@ -125,6 +125,20 @@ class Fetch:
     repo: str | None = None
     files: list[str] | None = None
     quantizations: list[str] | None = None
+    local_path: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass
+class DraftSpec:
+    """The speculative-decoding draft model paired with a target ModelEntry's
+    `fetch` (mlx_lm_server target+draft pairs). Either `repo` (HF repo id) or
+    `local_path` (locally-produced mlx-lm directory) identifies the draft
+    model; both may be set only in unusual hand-edited configs — callers
+    don't enforce mutual exclusivity here, matching Fetch's own laxness."""
+
+    repo: str | None = None
+    local_path: str | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -140,6 +154,7 @@ class ModelEntry:
     cost: Cost | None = None
     model_info: dict[str, Any] = field(default_factory=dict)
     fetch: Fetch | None = None
+    draft: DraftSpec | None = None
     native: bool = False
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -232,6 +247,12 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
     ),
     "llamacpp": ProviderEntry(id="llamacpp", name="llama.cpp", location="local"),
     "omlx": ProviderEntry(id="omlx", name="oMLX", location="local"),
+    "mlx_lm_server": ProviderEntry(
+        id="mlx_lm_server",
+        name="mlx-lm server (target+draft)",
+        location="local",
+        auth=AuthConfig(type="none", base_url="http://localhost:8001/v1"),
+    ),
 }
 
 # Provider ids that have a canonical default entry (the reconcilable local
@@ -239,7 +260,7 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
 # fall back to its generic title()-cased import.
 # llamacpp retired 2026-09-07 (issue #33): provider code kept in
 # providers/llamacpp.py; re-enable steps in docs/reference/provider-artifacts.md.
-DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx")
+DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx", "mlx_lm_server")
 
 
 def _default_wt_config_path() -> Path:
@@ -436,6 +457,9 @@ def model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     repo = entry.fetch.repo if entry.fetch else None
     files = entry.fetch.files if entry.fetch else None
     quantizations = entry.fetch.quantizations if entry.fetch else None
+    local_path = entry.fetch.local_path if entry.fetch else None
+    draft_repo = entry.draft.repo if entry.draft else None
+    draft_local_path = entry.draft.local_path if entry.draft else None
     return {
         "id": entry.id,
         "provider": entry.provider_id,
@@ -443,6 +467,9 @@ def model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "repo": repo,
         "files": files,
         "quantizations": quantizations,
+        "local_path": local_path,
+        "draft_repo": draft_repo,
+        "draft_local_path": draft_local_path,
         "location": entry.location,
         "model_info": dict(entry.model_info),
         "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
@@ -489,8 +516,20 @@ def find_shared_artifact_owner(
 
 
 def _fetch_to_dict(f: Fetch) -> dict[str, Any]:
-    d = {"repo": f.repo, "files": f.files, "quantizations": f.quantizations}
+    d = {
+        "repo": f.repo,
+        "files": f.files,
+        "quantizations": f.quantizations,
+        "local_path": f.local_path,
+    }
     return drop_none({**f.extra, **d})
+
+
+def _draft_to_dict(d: DraftSpec) -> dict[str, Any]:
+    """Modeled line-for-line on _fetch_to_dict — same drop_none() +
+    typed-fields-win merge order for the `.extra` round-trip."""
+    fields = {"repo": d.repo, "local_path": d.local_path}
+    return drop_none({**d.extra, **fields})
 
 
 def _model_to_dict(m: ModelEntry) -> dict[str, Any]:
@@ -505,6 +544,11 @@ def _model_to_dict(m: ModelEntry) -> dict[str, Any]:
         "cost": _cost_to_dict(m.cost) if m.cost is not None else None,
         "model_info": m.model_info,
         "fetch": _fetch_to_dict(m.fetch) if m.fetch is not None else None,
+        # A DraftSpec with no fields and no extra set serializes to {}; drop
+        # it (rather than writing an empty [models.draft] table) since
+        # `draft is None` and "draft carries nothing" should look identical
+        # on disk — most mlx_lm_server target-only entries have no draft.
+        "draft": (_draft_to_dict(m.draft) or None) if m.draft is not None else None,
     }
     return drop_none({**m.extra, **d})
 
@@ -650,6 +694,26 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
     )
 
 
+def _parse_fetch(fetch_raw: dict[str, Any]) -> Fetch:
+    return Fetch(
+        repo=fetch_raw.get("repo"),
+        files=fetch_raw.get("files"),
+        quantizations=fetch_raw.get("quantizations"),
+        local_path=fetch_raw.get("local_path"),
+        extra=unknown_keys(fetch_raw, {"repo", "files", "quantizations", "local_path"}),
+    )
+
+
+def _parse_draft(draft_raw: dict[str, Any]) -> DraftSpec:
+    """Modeled line-for-line on _parse_fetch — same unknown_keys() usage
+    and typed-fields-win extra merge order for the round-trip."""
+    return DraftSpec(
+        repo=draft_raw.get("repo"),
+        local_path=draft_raw.get("local_path"),
+        extra=unknown_keys(draft_raw, {"repo", "local_path"}),
+    )
+
+
 def _parse_model(raw: dict[str, Any]) -> ModelEntry:
     required = {"id", "family", "provider_id", "model_name"}
     missing = required - set(raw.keys())
@@ -658,16 +722,9 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
     cost_raw = raw.get("cost")
     cost = _parse_cost(raw["id"], cost_raw) if cost_raw is not None else None
     fetch_raw = raw.get("fetch")
-    fetch = (
-        Fetch(
-            repo=fetch_raw.get("repo"),
-            files=fetch_raw.get("files"),
-            quantizations=fetch_raw.get("quantizations"),
-            extra=unknown_keys(fetch_raw, {"repo", "files", "quantizations"}),
-        )
-        if fetch_raw is not None
-        else None
-    )
+    fetch = _parse_fetch(fetch_raw) if fetch_raw is not None else None
+    draft_raw = raw.get("draft")
+    draft = _parse_draft(draft_raw) if draft_raw is not None else None
     return ModelEntry(
         id=raw["id"],
         family=raw["family"],
@@ -679,6 +736,7 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
         cost=cost,
         model_info=dict(raw.get("model_info", {})),
         fetch=fetch,
+        draft=draft,
         extra=unknown_keys(
             raw,
             {
@@ -692,6 +750,7 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
                 "cost",
                 "model_info",
                 "fetch",
+                "draft",
                 "usage_tier",
             },
         ),

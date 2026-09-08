@@ -64,6 +64,9 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     repo = entry.fetch.repo if entry.fetch else None
     files = entry.fetch.files if entry.fetch else None
     quantizations = entry.fetch.quantizations if entry.fetch else None
+    local_path = entry.fetch.local_path if entry.fetch else None
+    draft_repo = entry.draft.repo if entry.draft else None
+    draft_local_path = entry.draft.local_path if entry.draft else None
     return {
         "id": entry.id,
         "provider": entry.provider_id,
@@ -71,6 +74,9 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "repo": repo,
         "files": files,
         "quantizations": quantizations,
+        "local_path": local_path,
+        "draft_repo": draft_repo,
+        "draft_local_path": draft_local_path,
         "location": entry.location,
         "model_info": dict(entry.model_info),
     }

@@ -21,11 +21,15 @@ class VariantSpec(TypedDict, total=False):
     in the TypedDict sense, but providers require specific ones at runtime."""
 
     id: str  # stable id within the family
-    provider: str  # "ollama" | "llamacpp" | "omlx"
+    provider: str  # "ollama" | "llamacpp" | "omlx" | "mlx_lm_server"
     name: str  # provider-specific (e.g. "ornith-1.5:35b" for ollama)
-    repo: str | None  # HF repo id (for llamacpp/omlx)
+    repo: str | None  # HF repo id (for llamacpp/omlx); the mlx_lm_server
+    # target's repo when locally-produced isn't in play
     files: list[str] | None  # files in repo (for llamacpp)
     quantizations: list[str] | None  # quant tags (for omlx)
+    local_path: str | None  # locally-produced mlx-lm model directory (no HF repo)
+    draft_repo: str | None  # mlx_lm_server speculative-decoding draft: HF repo id
+    draft_local_path: str | None  # mlx_lm_server draft: locally-produced model directory
     model_info: dict | None  # freeform LiteLLM model_info keys
     location: str | None  # "local" | "cloud"
     # Cost as a plain dict so providers can JSON-serialize VariantSpec if

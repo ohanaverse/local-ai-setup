@@ -11,6 +11,7 @@ import pytest
 from modelman.registry import (
     AuthConfig,
     Cost,
+    DraftSpec,
     FamilyEntry,
     Fetch,
     ModelEntry,
@@ -23,6 +24,7 @@ from modelman.registry import (
     is_native_provider,
     known_families,
     load_registry,
+    model_entry_to_variant,
     model_has_local_artifact,
     provider_config,
     save_registry,
@@ -905,3 +907,143 @@ def test_save_registry_does_not_persist_native_field(tmp_path):
     assert "native" not in model_row
     loaded = load_registry(path)
     assert loaded.model("agy/x").native is True
+
+
+# ---------------------------------------------------------------------------
+# local_path (Fetch) / DraftSpec — mlx-lm local-directory + speculative-
+# decoding draft support (plan yes-drifting-dragon, task 1).
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_round_trips_local_path(tmp_path):
+    # A locally-produced mlx-lm model has no HF repo — local_path is the only
+    # locator. It must round-trip as a typed field (not fall into `.extra`,
+    # which would silently drop type safety and any future validation).
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="omlx/local-quant",
+                family="local-quant",
+                provider_id="omlx",
+                model_name="local-quant",
+                fetch=Fetch(local_path="/models/mlx-lm/local-quant"),
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    m = loaded.model("omlx/local-quant")
+    assert m.fetch == Fetch(local_path="/models/mlx-lm/local-quant")
+    assert m.fetch.extra == {}
+
+
+def test_draft_spec_round_trips(tmp_path):
+    # The mlx_lm_server target+draft pairing stores the draft under
+    # [models.draft]; both repo- and local_path-identified drafts must
+    # survive a save/load cycle unchanged.
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="mlx_lm_server", name="mlx-lm server", auth=AuthConfig(type="none"))
+        ],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/target",
+                family="target",
+                provider_id="mlx_lm_server",
+                model_name="target",
+                fetch=Fetch(repo="org/target-repo"),
+                draft=DraftSpec(repo="org/draft-repo"),
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    m = loaded.model("mlx_lm_server/target")
+    assert m.draft == DraftSpec(repo="org/draft-repo")
+
+
+def test_draft_omits_table_when_none(tmp_path):
+    # A model with no draft (the common case — most mlx_lm_server entries
+    # are target-only) must not write an empty [models.draft] table; "no
+    # draft" and "draft omitted" must look identical on disk.
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(id="omlx/x", family="x", provider_id="omlx", model_name="x"),
+        ],
+    )
+    save_registry(registry, path)
+    assert "draft" not in path.read_text()
+    loaded = load_registry(path)
+    assert loaded.model("omlx/x").draft is None
+
+
+def test_draft_omits_table_when_all_fields_none(tmp_path):
+    # A DraftSpec() constructed with no fields set (as opposed to draft=None)
+    # must also serialize to no table at all, not an empty [models.draft] —
+    # otherwise "explicitly empty" and "unset" would diverge on disk.
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="omlx/x", family="x", provider_id="omlx", model_name="x", draft=DraftSpec()
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    assert "draft" not in path.read_text()
+
+
+def test_draft_preserves_unknown_keys(tmp_path):
+    # A hand-edited [models.draft] field outside the typed schema must
+    # survive a load/save round-trip in `.extra`, matching Fetch's/every
+    # other section's unknown-key preservation contract.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "mlx_lm_server"\nname = "mlx-lm server"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "mlx_lm_server/x"\nfamily = "x"\n'
+        'provider_id = "mlx_lm_server"\nmodel_name = "x"\n'
+        '[models.draft]\nrepo = "org/draft-repo"\ncustom_field = "keep-me"\n'
+    )
+    registry = load_registry(path)
+    assert registry.model("mlx_lm_server/x").draft.extra == {"custom_field": "keep-me"}
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    assert loaded.model("mlx_lm_server/x").draft.extra == {"custom_field": "keep-me"}
+    assert loaded.model("mlx_lm_server/x").draft.repo == "org/draft-repo"
+
+
+def test_model_entry_to_variant_includes_local_path_and_draft_keys():
+    # model_entry_to_variant is the registry-side ModelEntry->VariantSpec
+    # adapter consumed by the TUI/queue path; it must surface local_path and
+    # both draft keys so mlx_lm_server providers (and downstream callers)
+    # can see a locally-produced target/draft pairing.
+    entry = ModelEntry(
+        id="mlx_lm_server/target",
+        family="target",
+        provider_id="mlx_lm_server",
+        model_name="target",
+        fetch=Fetch(repo="org/target-repo", local_path="/models/target"),
+        draft=DraftSpec(repo="org/draft-repo", local_path="/models/draft"),
+    )
+    spec = model_entry_to_variant(entry)
+    assert spec["local_path"] == "/models/target"
+    assert spec["draft_repo"] == "org/draft-repo"
+    assert spec["draft_local_path"] == "/models/draft"
+
+
+def test_model_entry_to_variant_local_path_and_draft_none_when_unset():
+    # The common case (no fetch, no draft) must yield None for all three new
+    # keys rather than raising on `entry.fetch.local_path`/`entry.draft.repo`
+    # when fetch/draft themselves are None.
+    entry = ModelEntry(id="ollama/a", family="a", provider_id="ollama", model_name="a")
+    spec = model_entry_to_variant(entry)
+    assert spec["local_path"] is None
+    assert spec["draft_repo"] is None
+    assert spec["draft_local_path"] is None
