@@ -154,20 +154,20 @@ The TUI has three screens:
   tokens, or `—` when unset; SUB shows the subscription price (`$x/mo` or
   `$x/yr`) or `—`. The row's on-disk path appears in a details panel below the table
   (`path: —` when unknown). Rows are sorted by provider then model name.
-  Keys: `a` add model, `e` edit (id/provider fixed; changing family queues
-  a move), `d` queue delete (works on any model — apply skips the on-disk
-  removal if the artifact is already gone, but still cleans
-  registry/state), `r` toggle ready (queues download/pull for
-  reconcilable providers, or a flag flip for cloud/native providers; a
-  no-op with a notification if the model is a local artifact that's
-  already on disk — reconcile is the only writer of ready=False for
-  those, so delete the file instead), `x` toggle exposed (cascades a
-  ready=True queue first if the model isn't ready yet), `enter` edit,
-  `escape` back / apply queue. Reconcile runs automatically on mount and
-  resume — there is no manual reconcile key. The cursor survives every
-  reload — reconciling or toggling a row leaves you on that row. Provider
-  and family dropdowns list options alphabetically; the
-  family Select keeps the caller's order when the current family is
+  Keys: `a` add model, `e` edit (id/provider fixed; location editable to
+  correct mistakes; changing family queues a move), `d` queue delete
+  (works on any model — apply skips the on-disk removal if the artifact
+  is already gone, but still cleans registry/state), `r` toggle ready
+  (queues download/pull for reconcilable providers, or a flag flip for
+  cloud/native providers; a no-op with a notification if the model is a
+  local artifact that's already on disk — reconcile is the only writer of
+  ready=False for those, so delete the file instead), `x` toggle exposed
+  (cascades a ready=True queue first if the model isn't ready yet),
+  `enter` edit, `escape` back / apply queue. Reconcile runs automatically
+  on mount and resume — there is no manual reconcile key. The cursor
+  survives every reload — reconciling or toggling a row leaves you on
+  that row. Provider and family dropdowns list options alphabetically;
+  the family Select keeps the caller's order when the current family is
   already in the list.
 
   Add/Edit dialogs include a cost section with two independent
