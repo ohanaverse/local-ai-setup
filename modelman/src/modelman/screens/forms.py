@@ -505,6 +505,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                     initial_subscription_period = cost.subscription_period
 
         with Vertical():
+            yield Label("Family:")
+            yield Select(
+                options=[(f, f) for f in self._families],
+                value=(self._family if self._family in self._families else self._families[0]),
+                allow_blank=False,
+                id="family-select",
+            )
             yield Label("Provider:")
             yield Select(
                 options=[(p, p) for p in self._providers],
@@ -513,17 +520,11 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 disabled=editing,
                 id="provider-select",
             )
-            yield Label("Family:")
-            yield Select(
-                options=[(f, f) for f in self._families],
-                value=(self._family if self._family in self._families else self._families[0]),
-                allow_blank=False,
-                id="family-select",
-            )
             yield Label("Model:")
             yield Input(
                 value=model_val,
                 placeholder=placeholder,
+                disabled=editing,
                 id="model",
             )
             yield Label("", id="model-error")
@@ -600,8 +601,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         return repo
 
     def _modal_on_mount(self) -> None:
-        # Focus the model input so the user can paste / type immediately.
-        self.query_one("#model", Input).focus()
+        # Focus the first enabled field: the provider Select in add mode
+        # (so the user can pick a provider immediately), the family Select
+        # in edit mode (provider/model/location are all disabled there).
+        if self._variant is None:
+            self.query_one("#provider-select", Select).focus()
+        else:
+            self.query_one("#family-select", Select).focus()
         # Apply initial visibility for the conditional pricing sections.
         per_token_cb = self.query_one("#per-token-checkbox", Checkbox)
         sub_cb = self.query_one("#subscription-checkbox", Checkbox)
@@ -645,8 +651,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         expected format (native vs HF vs ollama vs cloud-only)."""
         if event.select.id != "provider-select":
             return
+        # Edit mode: provider is locked (disabled Select), but Textual may
+        # still fire Changed on mount. Skip location updates in edit mode
+        # to preserve the variant's location value.
         if self._variant is not None:
-            # Edit mode locks the provider; changes shouldn't happen.
             return
         provider = str(event.value)
         kind = self._provider_kinds.get(provider, self._default_kind(provider))
