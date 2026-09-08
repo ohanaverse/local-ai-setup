@@ -5,17 +5,13 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from huggingface_hub import snapshot_download
 
 from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
-from .base import LocalModel, Provider, VariantSpec
+from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
-
-
-class _Runner(Protocol):
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 def _model_dir(config: dict) -> Path:

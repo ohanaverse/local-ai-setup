@@ -85,6 +85,7 @@ def resolve_pi_target(
     model_name: str,
     routes_direct: dict[str, DirectRouteConfig],
     live_models_path: Path = LIVE_PI_MODELS_PATH,
+    live_models: dict | None = None,
 ) -> PiTarget:
     """Map (model, route) to a pi provider/launch id.
 
@@ -94,8 +95,16 @@ def resolve_pi_target(
     splits --model on the first slash and a registry id under the wrong
     provider "could never be addressed" (spec, Verified against the live
     setup).
+
+    `live_models`, when given, is the already-parsed contents of
+    `live_models_path` (see `_load_live_models`) — the per-row loop in
+    runner.py loads that static file once for the whole suite run and
+    passes it here instead of re-reading/re-parsing it on every row.
+    Standalone callers (tests, or any future one-off caller) keep working
+    unchanged by omitting it: this falls back to loading `live_models_path`
+    itself, exactly as before.
     """
-    live = _load_live_models(live_models_path)
+    live = live_models if live_models is not None else _load_live_models(live_models_path)
 
     if row.route == "litellm":
         pi_provider = "litellm"

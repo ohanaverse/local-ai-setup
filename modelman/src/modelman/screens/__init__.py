@@ -66,6 +66,14 @@ def reconcile_model_state(
     it inside the per-model loop turns every ready model into its own
     subprocess/filesystem scan (e.g. `ollama list`), which multiplies with
     the size of the ready set.
+
+    For the ollama provider specifically, `size_of()` is also skipped in
+    the per-model loop: it independently reruns `ollama list` and reparses
+    it for every model, which reintroduces the exact per-model subprocess
+    problem `list_local()`-batching above was written to avoid, just via a
+    different method. Ollama's `list_local()` now returns `size_bytes`
+    parsed from the same single `ollama list` call this function already
+    makes, so sizes for ready ollama models come from there instead.
     """
     # Deferred import: this module is imported by screens/models.py at
     # module load time, and models.py imports ProviderRegistry back —
@@ -92,6 +100,12 @@ def reconcile_model_state(
         if provider is None:
             continue
 
+        # ollama's size_of() reruns and reparses `ollama list` from scratch
+        # per call — for this provider, size comes from list_local() below
+        # instead (parsed once, from the same `ollama list` output as the
+        # paths), so the per-model loop skips calling size_of() at all.
+        skip_size_of = provider_name == "ollama"
+
         # First pass: is_downloaded/size_of per model, no list_local yet —
         # list_local is only worth calling (see below) when something in
         # this provider's batch actually needs a path looked up.
@@ -104,12 +118,13 @@ def reconcile_model_state(
             except Exception:
                 ready = False
             size: int | None = None
-            try:
-                raw = provider.size_of(spec)
-                if isinstance(raw, int):
-                    size = raw
-            except Exception:
-                size = None
+            if not skip_size_of:
+                try:
+                    raw = provider.size_of(spec)
+                    if isinstance(raw, int):
+                        size = raw
+                except Exception:
+                    size = None
             checked.append((m, ready, size))
             any_ready = any_ready or ready
 
@@ -119,6 +134,7 @@ def reconcile_model_state(
         # reconcile into an extra subprocess/filesystem scan (e.g. `ollama
         # list`) even when nothing in the batch is downloaded.
         local_by_name: dict[str, str] = {}
+        size_by_name: dict[str, int] = {}
         if any_ready:
             try:
                 for lm in provider.list_local():
@@ -126,6 +142,10 @@ def reconcile_model_state(
                     lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
                     if isinstance(lm_name, str) and isinstance(lp, str):
                         local_by_name[lm_name] = lp
+                    if skip_size_of and isinstance(lm_name, str):
+                        sb = lm.get("size_bytes")  # type: ignore[attr-defined]
+                        if isinstance(sb, int):
+                            size_by_name[lm_name] = sb
             except Exception:
                 pass
 
@@ -133,6 +153,23 @@ def reconcile_model_state(
             local_path = (
                 local_by_name.get(m.model_name) or local_by_name.get(m.id) if ready else None
             )
+            if skip_size_of and ready and size is None:
+                size = size_by_name.get(m.model_name) or size_by_name.get(m.id)
+                if size is None:
+                    # The real OllamaProvider's list_local() always carries
+                    # size_bytes (parsed from the very `ollama list` call
+                    # that already produced the paths above), so this is
+                    # unreachable in production. It exists only as a safety
+                    # net for a provider whose list_local() doesn't report
+                    # sizes — falling back here (instead of leaving size
+                    # unknown) costs one subprocess call only for a model
+                    # that reconcile couldn't otherwise size at all.
+                    try:
+                        raw = provider.size_of(model_entry_to_variant(m))
+                        if isinstance(raw, int):
+                            size = raw
+                    except Exception:
+                        size = None
 
             if model_has_local_artifact(m, provider_entry):
                 existing = state.get(m.id)

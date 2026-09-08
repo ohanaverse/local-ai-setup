@@ -11,17 +11,13 @@ import hashlib
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from huggingface_hub import snapshot_download
 
 from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
-from .base import LocalModel, Provider, VariantSpec
+from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
-
-
-class _Runner(Protocol):
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 def _hf_cache_dir() -> Path:
@@ -59,6 +55,23 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(_HASH_CHUNK), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _resolve_blob_hash(path: Path) -> str | None:
+    """Resolve the blob hash for a snapshot file: the cheap symlink-target
+    read (`_blob_hash_of`) when possible, else a content hash
+    (`_hash_file`). Returns None when neither works (a vanished/unreadable
+    file) so callers can skip it rather than abort the whole delete or
+    orphan-detection pass. Shared by delete()'s deletion loop and its
+    orphaned-blob detection loop, which both need this exact fallback.
+    """
+    blob_hash = _blob_hash_of(path)
+    if blob_hash is not None:
+        return blob_hash
+    try:
+        return _hash_file(path)
+    except OSError:
+        return None
 
 
 def _files_in_hf_cache(repo: str, files: list[str]) -> bool:
@@ -212,12 +225,7 @@ class LlamaCppProvider(Provider):
                     # Blobs are named by their SHA256; the snapshot file is a
                     # symlink to blobs/<hash>, so read the link target instead
                     # of re-hashing the (multi-GB) file body.
-                    blob_hash = _blob_hash_of(file_path)
-                    if blob_hash is None:
-                        try:
-                            blob_hash = _hash_file(file_path)
-                        except OSError:
-                            blob_hash = None
+                    blob_hash = _resolve_blob_hash(file_path)
                     if blob_hash is not None:
                         blobs_to_check.add(blob_hash)
                     file_path.unlink()
@@ -237,12 +245,7 @@ class LlamaCppProvider(Provider):
             for entry in snap.rglob("*"):
                 if not (entry.is_symlink() or entry.is_file()):
                     continue
-                blob_hash = _blob_hash_of(entry)
-                if blob_hash is None:
-                    try:
-                        blob_hash = _hash_file(entry)
-                    except OSError:
-                        blob_hash = None
+                blob_hash = _resolve_blob_hash(entry)
                 if blob_hash is not None:
                     referenced_blobs.add(blob_hash)
 

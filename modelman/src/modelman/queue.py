@@ -18,14 +18,14 @@ from typing import TYPE_CHECKING
 from .litellm import apply_expose_queue
 from .registry import (
     FamilyEntry,
-    find_shared_artifact_owner,
+    model_entry_to_variant,
     save_registry,
 )
 from .state import locked_state
 
 if TYPE_CHECKING:
     from .providers.base import VariantSpec
-    from .registry import Registry
+    from .registry import ModelEntry, Registry
     from .state import StateStore
 
 
@@ -167,6 +167,149 @@ class PendingChanges:
     # relative to a concurrent DownloadManager write) in-memory snapshot.
     _touched_model_ids: set[str] = field(default_factory=set)
     _forgotten_families: set[str] = field(default_factory=set)
+    # Lazily built per apply(): provider_id -> {on-disk path -> [model ids
+    # in registry.models order]}. `_remove_artifact_if_present` is called
+    # once per queued delete/ready-off item, and previously each call
+    # rescanned the whole registry and re-called provider.path_of() for
+    # every other model on that provider — O(n) work per item. This index
+    # makes that a single O(n) build per provider (amortized across every
+    # item queued against it) plus an O(1) dict lookup per item.
+    #
+    # Mutated, not just cached-once: the deletes loop actually removes
+    # entries from self.registry.models mid-apply, and a later item in the
+    # same apply (a delete or ready-off sharing that artifact) must see the
+    # updated ownership — otherwise two items queued together that share one
+    # artifact would each perceive the other as still owning it and neither
+    # would ever actually remove the shared file (a leaked on-disk artifact
+    # that used to get cleaned up by whichever item's turn came last). See
+    # _retire_shared_artifact_owner, called right where the registry entry
+    # is actually dropped.
+    _shared_artifact_index: dict[str, dict[str, list[str]]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    def _shared_artifact_owners(self, provider_id: str, provider: object) -> dict[str, list[str]]:
+        """Build (once per provider per apply()) {path_of(): [model ids]}
+        for every registry model on `provider_id`, in registry.models order
+        — the same order find_shared_artifact_owner used to rescan, so the
+        first conflicting id found here matches what it would have returned.
+        """
+        owners = self._shared_artifact_index.get(provider_id)
+        if owners is not None:
+            return owners
+        owners = {}
+        path_of = getattr(provider, "path_of", None)
+        if callable(path_of):
+            for m in self.registry.models:
+                if m.provider_id != provider_id:
+                    continue
+                try:
+                    p = path_of(model_entry_to_variant(m))
+                except Exception:  # noqa: BLE001
+                    continue
+                if p is None:
+                    continue
+                owners.setdefault(p, []).append(m.id)
+        self._shared_artifact_index[provider_id] = owners
+        return owners
+
+    def _find_shared_artifact_owner(
+        self, provider_id: str, provider: object, model_id: str, variant: VariantSpec
+    ) -> ModelEntry | None:
+        """Cached equivalent of registry.find_shared_artifact_owner(...) —
+        same matching semantics (path_of() collision, excluding self and
+        other providers, first match in registry order), backed by the
+        per-provider index above instead of a fresh rescan."""
+        path_of = getattr(provider, "path_of", None)
+        if not callable(path_of):
+            return None
+        try:
+            mine = path_of(variant)
+        except Exception:  # noqa: BLE001
+            return None
+        if mine is None:
+            return None
+        for other_id in self._shared_artifact_owners(provider_id, provider).get(mine, []):
+            if other_id == model_id:
+                continue
+            try:
+                return self.registry.model(other_id)
+            except KeyError:
+                continue
+        return None
+
+    def _retire_shared_artifact_owner(self, provider_id: str, model_id: str) -> None:
+        """Drop `model_id` from the shared-artifact index once it's actually
+        removed from self.registry.models, so a later item in the same
+        apply() that shares its artifact sees the current ownership rather
+        than a stale one (see _shared_artifact_index's docstring)."""
+        owners = self._shared_artifact_index.get(provider_id)
+        if not owners:
+            return
+        for ids in owners.values():
+            if model_id in ids:
+                ids.remove(model_id)
+
+    def _remove_artifact_if_present(
+        self,
+        model_id: str,
+        variant: VariantSpec,
+        label: str,
+        provider: object,
+        fail_prefix: str,
+        emit: EventFn,
+    ) -> bool:
+        """Remove `variant`'s on-disk artifact via `provider.delete()`,
+        handling the shared-artifact-owner conflict check and the
+        delete-exception failure path shared by the deletes loop and the
+        ready-off loop's mapped-provider branch.
+
+        First confirms the artifact is actually present (`is_downloaded`,
+        defaulting to "assume present" if the check itself raises, so a
+        real failure surfaces from the delete attempt rather than being
+        swallowed as "already gone"). If another registry entry's
+        `path_of()` resolves to the same on-disk target, the file is kept
+        and a failure is recorded (but this is not a "hard" failure — the
+        caller still proceeds to clear the registry/state row). If
+        `provider.delete()` raises, that failure is recorded and reported
+        as a hard failure.
+
+        `fail_prefix` distinguishes the two callers' failure-message
+        wording ("delete" for a full delete, "clear" for a ready-off
+        clear) — the only difference between the two call sites.
+
+        Returns True iff a hard failure (delete exception) occurred and
+        the caller should `continue` past the rest of its per-model
+        processing, matching both callers' original control flow.
+        """
+        try:
+            artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
+        except Exception:
+            # Cannot confirm absence; fall back to "try the call" and
+            # surface any failure normally.
+            artifact_present = True
+        if not artifact_present:
+            return False
+        conflict = self._find_shared_artifact_owner(
+            variant["provider"], provider, model_id, variant
+        )
+        if conflict is not None:
+            # Another registry entry resolves to the same on-disk
+            # artifact; removing it would destroy that entry's weights.
+            # Keep the file, still drop this entry's registry/state rows,
+            # and surface why.
+            reason = f"artifact shared with {conflict.id} — not removed"
+            self.failures.append(f"{fail_prefix} {model_id}: {reason}")
+            emit(f"delete:fail|{model_id}|{label}|{reason}")
+            return False
+        try:
+            self._delete(variant)
+        except Exception as exc:  # noqa: BLE001
+            reason = _reason(exc)
+            self.failures.append(f"{fail_prefix} {model_id}: {exc}")
+            emit(f"delete:fail|{model_id}|{label}|{reason}")
+            return True
+        return False
 
     def cancel(self) -> None:
         """Request cancellation of an in-progress apply().
@@ -242,35 +385,11 @@ class PendingChanges:
             label = _label(variant)
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
-            artifact_present = True  # default to "try the call"
-            if provider is not None:
-                try:
-                    artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
-                except Exception:
-                    # Cannot confirm absence; fall back to "try the call"
-                    # and surface any failure normally.
-                    artifact_present = True
             emit(f"delete:start|{model_id}|{label}")
-            if provider is not None and artifact_present:
-                conflict = find_shared_artifact_owner(self.registry, provider, variant)
-                if conflict is not None:
-                    # Another registry entry resolves to the same on-disk
-                    # artifact; removing it would destroy that entry's
-                    # weights. Keep the file, still drop this entry's
-                    # registry/state rows, and surface why.
-                    reason = f"artifact shared with {conflict.id} — not removed"
-                    self.failures.append(f"delete {model_id}: {reason}")
-                    emit(f"delete:fail|{model_id}|{label}|{reason}")
-                else:
-                    # Reconcilable provider with an actual artifact to remove:
-                    # ask it to delete the file.
-                    try:
-                        self._delete(variant)
-                    except Exception as exc:  # noqa: BLE001
-                        reason = _reason(exc)
-                        self.failures.append(f"delete {model_id}: {exc}")
-                        emit(f"delete:fail|{model_id}|{label}|{reason}")
-                        continue
+            if provider is not None and self._remove_artifact_if_present(
+                model_id, variant, label, provider, "delete", emit
+            ):
+                continue
             # Either:
             # - flag-only provider (native/unmapped): no on-disk artifact,
             # - or reconcilable provider with no artifact: nothing to delete.
@@ -282,6 +401,7 @@ class PendingChanges:
                 recorded_families.add(self.registry.model(model_id).family)
             # Remove from in-memory registry.
             self.registry.models = [m for m in self.registry.models if m.id != model_id]
+            self._retire_shared_artifact_owner(provider_id, model_id)
             # If the model was exposed through LiteLLM, queue an unexpose
             # so config.yaml doesn't keep routing to a model whose file
             # is gone. Any queued expose toggle for the same id is moot
@@ -407,26 +527,10 @@ class PendingChanges:
                 # Mirror the deletes loop's guard: a stale-ready model whose
                 # artifact is already gone must clear cleanly, not fail and
                 # strand state.ready=True with the unexpose cascade skipped.
-                artifact_present = True
-                try:
-                    artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001
-                    # Cannot confirm absence; fall back to "try the call".
-                    artifact_present = True
-                if artifact_present:
-                    conflict = find_shared_artifact_owner(self.registry, provider, variant)
-                    if conflict is not None:
-                        reason = f"artifact shared with {conflict.id} — not removed"
-                        self.failures.append(f"clear {model_id}: {reason}")
-                        emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    else:
-                        try:
-                            self._delete(variant)
-                        except Exception as exc:  # noqa: BLE001
-                            reason = _reason(exc)
-                            self.failures.append(f"clear {model_id}: {exc}")
-                            emit(f"delete:fail|{model_id}|{label}|{reason}")
-                            continue
+                if self._remove_artifact_if_present(
+                    model_id, variant, label, provider, "clear", emit
+                ):
+                    continue
                 # (state clear + cascade code below, unchanged — runs whether
                 # the artifact was removed, shared-kept, or already absent)
                 # Unlike the full-delete step above, the ModelEntry stays in

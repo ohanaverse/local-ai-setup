@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, TypedDict
+from typing import Any, Protocol, TypedDict
+
+
+class _Runner(Protocol):
+    """Shared shape for the optional subprocess/HF-call runner providers
+    accept so tests can substitute a mock. `*args` (rather than a fixed
+    `args: list[str]`) is the more general signature: it covers ollama's
+    single-list-positional call style and llamacpp/omlx's freeform
+    `snapshot_download`-style calls without narrowing either."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 class VariantSpec(TypedDict, total=False):

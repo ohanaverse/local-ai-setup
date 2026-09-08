@@ -3,10 +3,13 @@
 SHELL_SCRIPTS := \
 	bin/llm-isolate-provider \
 	bin/llm-restore-providers \
+	bin/lib/poll.sh \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \
 	benchmarks/ornith-1.5-benchmark-multi \
+	benchmarks/lib/benchmark-common.sh \
+	benchmarks/lib/benchmark-multi.sh \
 	wt/bin/*-wt \
 	wt/scripts/agents-smoke.sh
 

@@ -555,6 +555,22 @@ def _parse_family(raw: dict[str, Any]) -> FamilyEntry:
     )
 
 
+def _build_cost(model_id: str, **kwargs: Any) -> Cost:
+    """Construct a Cost, translating a validation ValueError into a
+    model-scoped RegistryError.
+
+    `Cost.__post_init__` raises ValueError with a message prefixed
+    "Cost ..."; every _parse_cost call site needs that reworded to name
+    the offending model, so this centralizes the translation once instead
+    of repeating the try/except at each construction site.
+    """
+    try:
+        return Cost(**kwargs)
+    except ValueError as exc:
+        msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
+        raise RegistryError(msg) from exc
+
+
 def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
     """Validate and construct a Cost from its raw TOML table.
 
@@ -593,32 +609,24 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
     if "kind" in cost_raw:
         kind = cost_raw["kind"]
         if kind == "free":
-            try:
-                return Cost(extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS))
-            except ValueError as exc:
-                msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
-                raise RegistryError(msg) from exc
+            return _build_cost(
+                model_id, extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS)
+            )
         if kind == "per_token":
             price = _number_or_none("price_per_million_tokens")
-            try:
-                return Cost(
-                    input_price_per_million=price,
-                    output_price_per_million=price,
-                    extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
-                )
-            except ValueError as exc:
-                msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
-                raise RegistryError(msg) from exc
+            return _build_cost(
+                model_id,
+                input_price_per_million=price,
+                output_price_per_million=price,
+                extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+            )
         if kind == "subscription":
-            try:
-                return Cost(
-                    subscription_price=_number_or_none("price_per_period"),
-                    subscription_period=_subscription_period_or_none("period"),
-                    extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
-                )
-            except ValueError as exc:
-                msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
-                raise RegistryError(msg) from exc
+            return _build_cost(
+                model_id,
+                subscription_price=_number_or_none("price_per_period"),
+                subscription_period=_subscription_period_or_none("period"),
+                extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+            )
         raise RegistryError(
             f"Model `{model_id}` cost kind must be free/per_token/subscription, got {kind!r}"
         )
@@ -631,18 +639,15 @@ def _parse_cost(model_id: str, cost_raw: Any) -> Cost:
             f"Model `{model_id}` cost `subscription_period` is required when `subscription_price` is set"
         )
 
-    try:
-        return Cost(
-            input_price_per_million=_number_or_none("input_price_per_million"),
-            cache_price_per_million=_number_or_none("cache_price_per_million"),
-            output_price_per_million=_number_or_none("output_price_per_million"),
-            subscription_price=subscription_price,
-            subscription_period=subscription_period,
-            extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
-        )
-    except ValueError as exc:
-        msg = str(exc).replace("Cost", f"Model `{model_id}` cost", 1)
-        raise RegistryError(msg) from exc
+    return _build_cost(
+        model_id,
+        input_price_per_million=_number_or_none("input_price_per_million"),
+        cache_price_per_million=_number_or_none("cache_price_per_million"),
+        output_price_per_million=_number_or_none("output_price_per_million"),
+        subscription_price=subscription_price,
+        subscription_period=subscription_period,
+        extra=unknown_keys(cost_raw, _COST_FIELDS | _LEGACY_COST_FIELDS),
+    )
 
 
 def _parse_model(raw: dict[str, Any]) -> ModelEntry:

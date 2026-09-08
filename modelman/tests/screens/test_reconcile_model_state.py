@@ -84,12 +84,21 @@ def test_reconcile_model_state_skips_list_local_when_nothing_ready(monkeypatch):
 def test_reconcile_model_state_marks_local_artifact_ready(monkeypatch):
     """A local-artifact model the provider reports as downloaded must have
     ready/disk_path/size_bytes written into state — the core contract both
-    screens rely on to show ready/size without a manual toggle."""
+    screens rely on to show ready/size without a manual toggle.
+
+    size_bytes comes from list_local()'s "size_bytes" field, not size_of():
+    for the ollama provider_id, reconcile_model_state skips size_of()
+    entirely (it would rerun and reparse `ollama list` once per model) and
+    sources size from the same list_local() call already used for
+    disk_path. stub.size_of is set to a different value specifically to
+    prove it is never consulted for an ollama-provider model."""
     models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
     reg, state, stub = _seed(monkeypatch, models=models)
     stub.is_downloaded.return_value = True
-    stub.size_of.return_value = 12345
-    stub.list_local.return_value = [{"name": "a", "local_path": "/models/a"}]
+    stub.size_of.return_value = 99999
+    stub.list_local.return_value = [
+        {"name": "a", "local_path": "/models/a", "size_bytes": 12345}
+    ]
 
     reconcile_model_state(models, reg, state)
 
@@ -97,6 +106,7 @@ def test_reconcile_model_state_marks_local_artifact_ready(monkeypatch):
     assert result.ready is True
     assert result.disk_path == "/models/a"
     assert result.size_bytes == 12345
+    stub.size_of.assert_not_called()
 
 
 def test_reconcile_model_state_clears_ready_when_artifact_missing(monkeypatch):
@@ -140,7 +150,14 @@ def test_reconcile_model_state_never_readies_cloud_located_model(monkeypatch):
 def test_reconcile_model_state_survives_list_local_failure(monkeypatch, side_effect):
     """A provider's list_local() call is best-effort (e.g. a transient
     `ollama list` failure) and must not abort reconcile for every other
-    model — is_downloaded/size_of/ready still get written."""
+    model — is_downloaded/size_of/ready still get written.
+
+    For an ollama-provider model, size normally comes from list_local()'s
+    "size_bytes" field (see test_reconcile_model_state_marks_local_artifact_
+    ready) rather than a separate size_of() call — but when list_local()
+    itself fails, reconcile falls back to the per-model size_of() call
+    rather than leaving size unknown. That fallback is what this test
+    exercises and must keep working."""
     models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
     reg, state, stub = _seed(monkeypatch, models=models)
     stub.is_downloaded.return_value = True
