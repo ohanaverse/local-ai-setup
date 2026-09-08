@@ -129,6 +129,25 @@ The screen tests (`tests/screens/*.py`, ~267 tests, ~1.5 min) use Textual's `App
   `ContextVar` set by the caller, which would have silently broken
   progress and cancellation, not just fixed the parallel-download case.
 
+### Adding a new TUI screen
+
+1. Create `src/modelman/screens/<name>.py` extending `Screen[None]`
+2. Add `action_back()` binding (escape key) with queue-check if applicable
+3. Register in `app.py` if pushed from multiple screens, or push directly from caller
+4. Follow the `reload_preserving_cursor` pattern if using DataTable with background refresh
+5. If the screen spawns workers that outlive the screen, capture `self._app_ref = self.app` in `on_mount()` for thread-safe access
+
+### Thread-safety pattern for worker threads
+
+When a screen's worker runs after the screen is popped (e.g., `StatusScreen._run_apply`):
+
+```python
+on_mount: self._app_ref = self.app  # Capture on main thread
+worker: use self._app_ref, never self.app  # self.app raises NoActiveAppError when popped
+```
+
+This pattern is required because `Screen.app` is only valid while the screen is active and accessed from the main thread.
+
 ### Registry and state
 
 - `src/modelman/registry.py` — `Registry` dataclass: providers + models + families. `ModelEntry` now carries `cost` (`Cost` dataclass with flat fields: `input_price_per_million`, `cache_price_per_million`, `output_price_per_million`, `subscription_price`, `subscription_period`; the legacy `kind`/`price_per_million_tokens`/`price_per_period` schema is migrated on load), and an optional per-model `location` that overrides the provider's location for the LOC icon. `usage_tier` has been removed. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching wt's `config.RegistryPath`). See `README.md` for the exact TOML schema.

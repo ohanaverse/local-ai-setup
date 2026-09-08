@@ -289,6 +289,21 @@ In **gateway (litellm) mode** (`[gateway].mode = "litellm"`), non-native models 
 
 The pre-launch `ollamacheck.Check` is **skipped in litellm mode**: a model absent from local `ollama list` is not an error when LiteLLM serves it from a non-local upstream.
 
+### Adding a new agent driver
+
+1. Create `internal/agents/<name>.go` implementing the `Driver` interface:
+   - `Build(m config.Model, yolo bool) LaunchCmd`
+   - `YoloFlag() string`
+2. Implement optional capabilities as needed: `Seeder`, `OllamaURLer`, `Syncer`, `ArgSetter`, `Resumer`
+3. Register in `internal/agents/catalog.go` via `AddEntry()` or `MustAdd()`
+4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
+5. Update the driver table in this file
+
+**Key gotchas:**
+- Direct mode: pass `m.ModelName` (bare name); litellm mode: pass `m.ID` (registry key)
+- If implementing `Resumer`, add session path logic to `internal/session`
+- Test both gateway modes (direct/litellm) if the agent will route through LiteLLM
+
 ## Guard (Go)
 
 `internal/guard` manages the `block-main-commit` pre-commit hook (embedded via `//go:embed`). `Check`/`Install`/`Uninstall`; `Install` is idempotent and appends rather than overwrites. Uses `git rev-parse --git-common-dir` so the hook applies to all worktrees.
