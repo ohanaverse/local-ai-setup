@@ -17,8 +17,9 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>]
 
 One row per model's `(all)`-agents aggregate, plus one row per observed
 (agent, model) combo — sorted by agent name with `(all)` first, then by
-model id. A combo with zero answered and zero skipped surveys in the
-window is omitted. An empty store (or a filter matching nothing) prints
+model id. A combo with no real data (zero answered surveys, and no
+calculated averages) is omitted — this includes rows where all surveys
+were skipped. An empty store (or a filter matching nothing) prints
 `no survey data` and always exits 0 — `wt stats` is a report, never a
 gate.
 
