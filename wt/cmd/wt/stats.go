@@ -57,6 +57,14 @@ func statsCmd(a *app) *cobra.Command {
 			for _, r := range rows {
 				quality, qok := r.Stats.QualityAvg()
 				speed, sok := r.Stats.SpeedAvg()
+				worked, wok := r.Stats.WorkedPct()
+
+				// Exclude rows that have no actual data: no answered surveys,
+				// no skipped surveys, and no calculated a-priori results.
+				if r.Stats.Answered == 0 && r.Stats.Skipped == 0 && !wok && !qok && !sok {
+					continue
+				}
+
 				tableRows = append(tableRows, []string{
 					r.ModelID,
 					r.Agent,
