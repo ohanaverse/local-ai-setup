@@ -80,6 +80,20 @@ def test_build_entry_omlx():
     assert entry["litellm_params"]["api_key"] == "not-needed"
 
 
+def test_build_entry_mlx_lm_server():
+    # mlx_lm_server is an openai/-compatible server like omlx, so it uses
+    # the same policy: prefix="openai/", api_key="not-needed". This test
+    # ensures the policy is correctly wired and produces the expected
+    # model_list entry shape.
+    entry = build_model_list_entry(
+        _model("mlx_lm_server/Qwen3.8-27B-4bit", "mlx_lm_server", "Qwen3.8-27B-4bit"),
+        _provider("mlx_lm_server", base_url="http://localhost:8000/v1"),
+    )
+    assert entry["litellm_params"]["model"] == "openai/Qwen3.8-27B-4bit"
+    assert entry["litellm_params"]["api_key"] == "not-needed"
+    assert entry["litellm_params"]["api_base"] == "http://localhost:8000/v1"
+
+
 def test_build_entry_llamacpp_uses_fixed_model():
     entry = build_model_list_entry(
         _model("llamacpp/ornith-1.5-35b", "llamacpp", "ornith-1.5-35b"),

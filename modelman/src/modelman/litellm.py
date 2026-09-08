@@ -64,12 +64,13 @@ class ProviderPolicy:
     cloud: bool = False
 
 
-# Ordered by the registry's provider ids. ollama needs no api_key; omlx and
-# llamacpp are local OpenAI-compatible servers that ignore the key but
-# require the field; openrouter uses the configured secret_ref.
+# Ordered by the registry's provider ids. ollama needs no api_key; omlx,
+# mlx_lm_server, and llamacpp are local OpenAI-compatible servers that ignore
+# the key but require the field; openrouter uses the configured secret_ref.
 PROVIDER_POLICIES: dict[str, ProviderPolicy] = {
     "ollama": ProviderPolicy(prefix="ollama_chat/"),
     "omlx": ProviderPolicy(prefix="openai/", api_key="not-needed"),
+    "mlx_lm_server": ProviderPolicy(prefix="openai/", api_key="not-needed"),
     "llamacpp": ProviderPolicy(prefix="openai/local-model", fixed_model=True, api_key="dummy-key"),
     "openrouter": ProviderPolicy(prefix="openrouter/", secret_ref=True, cloud=True),
 }
