@@ -4,3 +4,8 @@
 # Agent-benchmark scratch workspaces (modelman/src/modelman/benchmark/agent/workspace.py)
 # Defensive only: workspace.py always uses the OS temp dir, never the repo.
 /tmp/agent-bench-*
+
+# NOTE: a global ~/.gitignore (outside this repo's control) ignores `.claude/`.
+# This repo intentionally tracks `.claude/skills/` — a local negation pattern
+# here can't override the global ignore, so new files under `.claude/` need
+# `git add -f`. (Same convention as wt/.gitignore.)
