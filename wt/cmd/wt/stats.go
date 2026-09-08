@@ -57,12 +57,13 @@ func statsCmd(a *app) *cobra.Command {
 			for _, r := range rows {
 				quality, qok := r.Stats.QualityAvg()
 				speed, sok := r.Stats.SpeedAvg()
-				_, wok := r.Stats.WorkedPct()
 
-				// Exclude rows that have no real data: no answered surveys,
-				// and no calculated a-priori results. "All skipped" rows (Answered == 0)
-				// are excluded as they provide no performance metrics.
-				if r.Stats.Answered == 0 && !wok && !qok && !sok {
+				// Exclude rows with no data: rows where both Answered == 0 and
+				// Skipped == 0 have no survey information at all. Rows with
+				// Answered == 0 but Skipped > 0 ("all skipped") are kept to show
+				// that the agent×model combo was tried but never produced data.
+				// This matches the filter logic in buildStatsRows (lines 127, 139-141).
+				if r.Stats.Answered == 0 && r.Stats.Skipped == 0 {
 					continue
 				}
 
