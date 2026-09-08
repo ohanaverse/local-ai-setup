@@ -786,6 +786,30 @@ def test_is_effectively_exposed_native_not_exposed_not_ready():
     assert is_effectively_exposed(model, state) is True
 
 
+def test_is_effectively_exposed_native_ignores_exposed_override():
+    # Native models are unconditionally exposed: an explicit exposed_override=False
+    # (like the persisted flag) must NOT hide a native model — the native
+    # short-circuit runs before any override is consulted (issue #48 pin).
+    model = _model("agy/contract-fixture:native", "agy", "contract-fixture:native")
+    model.native = True
+    state = StateStore()
+    state.set("agy/contract-fixture:native", ModelState(ready=False, litellm_exposed=False))
+
+    assert is_effectively_exposed(model, state, exposed_override=False) is True
+    assert is_effectively_exposed(model, state, ready_override=False) is True
+
+
+def test_is_effectively_exposed_override_false_hides_non_native():
+    # For non-native models the override path works as documented:
+    # exposed_override=False overrides a persisted true flag. Cloud location
+    # exempts the ready gate, so the override is the only reason this row hides.
+    model = replace(_model("ollama/glm-5", "ollama", "glm-5"), location="cloud")
+    state = StateStore()
+    state.set("ollama/glm-5", ModelState(ready=False, litellm_exposed=True))
+
+    assert is_effectively_exposed(model, state, exposed_override=False) is False
+
+
 def test_passes_ready_gate_local_ready():
     # A ready local model passes the gate apply-time validation enforces
     # (_validated_entry's "model is not ready" rejection must match this).

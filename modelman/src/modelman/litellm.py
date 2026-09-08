@@ -161,7 +161,11 @@ def is_effectively_exposed(
         model: The registry model entry to check.
         state: StateStore for ready/exposed flags.
         exposed_override: Override the persisted litellm_exposed flag.
-        ready_override: Override the persisted ready flag.
+            Applies to non-native models only — native models are
+            unconditionally exposed and ignore this override (and the
+            persisted flag) entirely.
+        ready_override: Override the persisted ready flag. Likewise
+            ignored for native models.
 
     Returns:
         True if the model should show as exposed in the catalog, False otherwise.
