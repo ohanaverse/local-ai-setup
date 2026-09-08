@@ -376,6 +376,7 @@ class ModelScreen(Screen[None]):
                     if is_effectively_exposed(
                         m,
                         self.state,
+                        self.registry,
                         exposed_override=exposed_override,
                         ready_override=ready_override,
                     )
@@ -430,6 +431,7 @@ class ModelScreen(Screen[None]):
         if self.queued_exposes.get(mid) is True and not passes_ready_gate(
             entry,
             self.state,
+            self.registry,
             ready_override=self._projected_ready(mid),
         ):
             self.queued_exposes.pop(mid, None)
@@ -550,6 +552,7 @@ class ModelScreen(Screen[None]):
         if target and not passes_ready_gate(
             entry,
             self.state,
+            self.registry,
             ready_override=self._projected_ready(mid),
         ):
             # Exposing requires ready — the same gate _validated_entry
