@@ -42,7 +42,7 @@ For day-to-day development you can still run focused subsets:
 - `uv run pytest tests/test_queue.py -q` — queue apply logic
 - `uv run pytest -k "not screen" -q` — skip the slow Textual screen tests
 
-The screen tests (`tests/screens/*.py`, ~210+ tests) use Textual's `App.run_test()` and account for most of the 5+ minute runtime; run them in CI or when you have a few minutes.
+The screen tests (`tests/screens/*.py`, ~267 tests, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~880 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
 
 ## Architecture
 
@@ -220,13 +220,16 @@ reach by accident and can lead to analyzing or mutating the wrong branch.
 - CLI entry-point tests use `typer.testing.CliRunner` and `unittest.mock.patch("modelman.main.run_tui")` to assert the TUI is invoked with the right argument. Every subcommand has two layers: the orchestration helpers are tested directly with `tmp_path`-based registry/state fixtures (e.g. `tests/test_expose.py`, `tests/test_sync.py`), and the command wiring (load → run → save → report) is covered by `tests/commands/test_*.py` driving the CLI runner against env-var-redirected paths.
 - Tests redirect config/registry/state paths via `MODELMAN_REGISTRY`, `MODELMAN_STATE` (new) and the legacy `MODELMAN_CONFIG` / `MODELMAN_FAMILY_DIR` (still honored by `migrate` tests). LiteLLM config paths redirect via `MODELMAN_LITELLM_CONFIG`; the LiteLLM DSN via `MODELMAN_LITELLM_DATABASE_URL`.
 - **Run focused tests per change, not the full suite.** When working on a change, run only the test files that exercise the code you touched (plus `make check` for lint/typecheck) — the full suite is slow. Run the entire suite once at the end, when reviewing the whole set of changes (e.g. the final task of a multi-task plan runs `make all`).
-- **Focused test timeout:** `tests/test_expose.py` + `tests/test_queue.py` together take roughly 2.5 minutes; use a longer timeout or run them in the background and poll `TaskOutput`.
+- **Focused test timeout:** `tests/test_expose.py` + `tests/test_queue.py` together run in well under a minute now; default timeouts are fine, but re-measure if a focused run feels slow.
 - **Pyenv `VIRTUAL_ENV` warning:** `uv run` ignores an active pyenv `VIRTUAL_ENV` and uses the project's `.venv`; the emitted warning is expected and can be disregarded.
 - **Local imports in tests:** `test_queue.py` and other test files use `from X import Y` inside test functions (not module-level) as a consistent pattern — this is intentional, not inconsistency
+- **MagicMock provider stubs:** optional `Provider` capabilities (`resolve_local`, `path_of`) auto-exist as truthy mocks — set `stub.resolve_local.return_value = None` (or a well-formed, length-aligned list) when testing code that branches on them; reconcile treats a non-list/misaligned batch result as "no batch support" and falls back to the per-model path.
+- **Ruff bugbear B905 is enforced:** `zip()` needs an explicit `strict=` (usually `strict=True`); a bare `zip()` passes some focused checks but fails `make lint`.
 
 ## Important implementation notes
 
 - The `OllamaProvider` methods accept an optional `runner` argument so tests can substitute a mock. The default runner just calls `subprocess.run`.
+- New `Provider` methods that shell out must accept an optional `runner` arg (like `is_downloaded`/`size_of`/`resolve_local` do): the autouse `_never_call_real_ollama` fixture only patches the module-level default runners, so a non-injectable subprocess call breaks suite hermeticity.
 - `StateStore.set` is the single state-write path (downloads do `state.set(id, replace(state.get(id), ready=True, disk_path=local_path))`; the ISO timestamp + local path shape was the legacy `FamilyManifest.mark_downloaded`, now gone).
 - `Registry`/`StateStore` save helpers rewrite the whole TOML file (`tomli_w`) — preserve unknown keys on round-trip so user-edited fields survive.
 - `llamacpp` checks the Hugging Face cache (`HF_HOME/hub`) for the requested files; `omlx` downloads into `model_dir/<repo-basename>`.
