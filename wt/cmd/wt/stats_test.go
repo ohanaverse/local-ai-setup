@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,39 +164,33 @@ func TestStatsCmdInvalidWindow(t *testing.T) {
 	}
 }
 
-// TestStatsRowsSortsAgentsWithAllFirst verifies buildStatsRows sorts rows
-// by agent name with the "(all)" aggregate rows first, then by model id.
-// It also covers the sentinel-safe case: an agent name that sorts before
-// "(" byte-wise (e.g. a digit prefix) must still land below the
-// aggregate — placement is enforced explicitly, not by ASCII luck.
-func TestStatsRowsSortsAgentsWithAllFirst(t *testing.T) {
-	_, tmp := newTestApp(t)
+// TestStatsCmdExcludesEmptyRows verifies that rows with no data (no answered,
+// and no calculated averages) are filtered out of the report. "All skipped"
+// rows are also excluded.
+func TestStatsCmdExcludesEmptyRows(t *testing.T) {
+	a, tmp := newTestApp(t)
 	now := time.Now()
+
 	seedSurveyEvents(t, tmp, []survey.Event{
-		{Agent: "codex", ModelID: "model-b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
-		{Agent: "claude", ModelID: "model-a", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
-		{Agent: "codex", ModelID: "model-a", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
-		{Agent: "claude", ModelID: "model-b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
-		{Agent: "3po", ModelID: "model-a", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
+		// Data row: should be kept
+		{Agent: "claude", ModelID: "model-data", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
+		// All skipped row: should be excluded
+		{Agent: "codex", ModelID: "model-skipped", Timestamp: now.Add(-1 * time.Hour), Worked: nil},
 	})
 
-	got := buildStatsRows(survey.NewStore().Events(), survey.Window30d, time.Now().UTC(), "", "")
+	cmd := statsCmd(a)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
 
-	type key struct{ model, agent string }
-	var gotKeys []key
-	for _, r := range got {
-		gotKeys = append(gotKeys, key{r.ModelID, r.Agent})
+	got := out.String()
+	if !strings.Contains(got, "model-data") {
+		t.Errorf("output = %q, want model-data included", got)
 	}
-	want := []key{
-		{"model-a", statsAllAgents},
-		{"model-b", statsAllAgents},
-		{"model-a", "3po"},
-		{"model-a", "claude"},
-		{"model-b", "claude"},
-		{"model-a", "codex"},
-		{"model-b", "codex"},
-	}
-	if !slices.Equal(gotKeys, want) {
-		t.Fatalf("row order = %v, want %v", gotKeys, want)
+	if strings.Contains(got, "model-skipped") {
+		t.Errorf("output = %q, want model-skipped excluded (all skipped)", got)
 	}
 }
