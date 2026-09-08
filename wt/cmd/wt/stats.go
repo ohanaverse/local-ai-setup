@@ -132,16 +132,10 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].ModelID != rows[j].ModelID {
-			return rows[i].ModelID < rows[j].ModelID
+		if rows[i].Agent != rows[j].Agent {
+			return rows[i].Agent < rows[j].Agent
 		}
-		if rows[i].Agent == statsAllAgents {
-			return true
-		}
-		if rows[j].Agent == statsAllAgents {
-			return false
-		}
-		return rows[i].Agent < rows[j].Agent
+		return rows[i].ModelID < rows[j].ModelID
 	})
 	return rows
 }

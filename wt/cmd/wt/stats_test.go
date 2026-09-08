@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -161,5 +162,57 @@ func TestStatsCmdInvalidWindow(t *testing.T) {
 	cmd.SetArgs([]string{"--window", "5d"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected an error for an invalid --window value")
+	}
+}
+
+// TestStatsCmdSortsByModelThenAgentWithAllFirst verifies that wt stats
+// prints rows sorted by model id, then agent name, with the per-model
+// "(all)" aggregate row first.
+func TestStatsCmdSortsByModelThenAgentWithAllFirst(t *testing.T) {
+	a, tmp := newTestApp(t)
+	now := time.Now()
+	seedSurveyEvents(t, tmp, []survey.Event{
+		{Agent: "codex", ModelID: "model-b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "model-a", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
+		{Agent: "codex", ModelID: "model-a", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "model-b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
+	})
+
+	cmd := statsCmd(a)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	// Extract ordered (model, agent) pairs from the rendered table.
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var got []string
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "│") {
+			continue
+		}
+		fields := strings.FieldsFunc(line, func(r rune) bool { return r == '│' || r == ' ' })
+		if len(fields) < 2 {
+			continue
+		}
+		// Skip header row and divider-only rows.
+		if fields[0] == "MODEL" || strings.Contains(fields[0], "─") {
+			continue
+		}
+		got = append(got, fields[0]+"|"+fields[1])
+	}
+
+	want := []string{
+		"model-a|(all)",
+		"model-b|(all)",
+		"model-a|claude",
+		"model-b|claude",
+		"model-a|codex",
+		"model-b|codex",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("row order = %v, want %v\noutput:\n%s", got, want, out.String())
 	}
 }
