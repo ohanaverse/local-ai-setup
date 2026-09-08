@@ -24,7 +24,7 @@
 **Files:**
 - Modify: `wt/cmd/wt/stats_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add the following test to `wt/cmd/wt/stats_test.go` after the existing tests:
 
@@ -87,7 +87,7 @@ Add the required import at the top of the test file if not already present:
 "reflect"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -98,7 +98,7 @@ go test ./cmd/wt -run TestStatsCmdSortsByModelThenAgentWithAllFirst -v
 
 Expected: FAIL before the comparator change. The test documents the desired ordering.
 
-- [ ] **Step 3: Commit the test**
+- [x] **Step 3: Commit the test**
 
 ```bash
 git add wt/cmd/wt/stats_test.go
@@ -112,7 +112,7 @@ git commit -m "test(wt stats): add regression test for agent/model sort order"
 **Files:**
 - Modify: `wt/cmd/wt/stats.go`
 
-- [ ] **Step 1: Replace the comparator**
+- [x] **Step 1: Replace the comparator**
 
 In `wt/cmd/wt/stats.go`, locate the `sort.SliceStable` call in `buildStatsRows` and replace it with the agent-first lexicographic comparator:
 
@@ -125,11 +125,11 @@ In `wt/cmd/wt/stats.go`, locate the `sort.SliceStable` call in `buildStatsRows` 
 	})
 ```
 
-- [ ] **Step 2: Remove now-unused sentinel handling in comparator**
+- [x] **Step 2: Remove now-unused sentinel handling in comparator**
 
 The `statsAllAgents` constant is still used for row labels, so keep it. Only the two `if rows[i].Agent == statsAllAgents` and `if rows[j].Agent == statsAllAgents` branches inside the comparator are removed by the replacement above.
 
-- [ ] **Step 3: Run the stats tests**
+- [x] **Step 3: Run the stats tests**
 
 Run:
 
@@ -140,7 +140,7 @@ go test ./cmd/wt -run TestStatsCmd -v
 
 Expected: all `TestStatsCmd*` tests pass, including the new sort-order test.
 
-- [ ] **Step 4: Run the full Go test suite**
+- [x] **Step 4: Run the full Go test suite**
 
 Run:
 
@@ -151,7 +151,7 @@ go test ./...
 
 Expected: PASS across all packages.
 
-- [ ] **Step 5: Build the binary**
+- [x] **Step 5: Build the binary**
 
 Run:
 
@@ -162,13 +162,13 @@ go build ./...
 
 Expected: no compilation errors.
 
-- [ ] **Step 6: Update docs**
+- [x] **Step 6: Update docs**
 
 Update `wt/docs/wt-stats.md`:
 - Change the Output section sort description to: "sorted by agent name with `(all)` first, then by model id."
 - Update the example table to show at least two models under `(all)` and a real agent so the new ordering is visually obvious.
 
-- [ ] **Step 7: Commit the comparator and doc changes**
+- [x] **Step 7: Commit the comparator and doc changes**
 
 ```bash
 git add wt/cmd/wt/stats.go wt/docs/wt-stats.md
@@ -182,7 +182,7 @@ git commit -m "refactor(wt stats): sort by agent then model with (all) first"
 **Files:**
 - None
 
-- [ ] **Step 1: Run against real data if available**
+- [x] **Step 1: Run against real data if available**
 
 If the machine has survey data, run the installed binary:
 
@@ -195,7 +195,7 @@ Confirm visually that:
 - Per-agent sections follow, sorted by agent name.
 - Within each agent section, models are in ascending alphabetical order.
 
-- [ ] **Step 2: Record outcome**
+- [x] **Step 2: Record outcome**
 
 If the manual run is performed, note in the commit message or PR description that the sort order was verified against live data. If no survey data exists, the unit test coverage is sufficient.
 
