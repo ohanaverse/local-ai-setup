@@ -105,6 +105,10 @@ picker's usage store are stubbed via package-level var seams (`tuiRun`,
 `newUsageStore`) — production code calls the var, tests swap it. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 
+**Prefer asserting on unexported functions directly** — same-package tests
+can call them (e.g. `buildStatsRows`); parsing rendered lipgloss output
+couples tests to border glyphs/padding and flakes under forced-color ANSI.
+
 ```bash
 go test ./...                        # all Go tests
 go test ./internal/worktree -v       # verbose, one package
@@ -335,3 +339,7 @@ wt --init            # seed agent instruction files
 make test-agents        # live one-shot smoke: every agent × configured models, both gateway modes
                        # (flips [gateway].mode direct→litellm, restores config afterwards; --modes current for one pass)
 ```
+
+> Verifying a branch's behavior against live data requires building it first
+> (`go build -o /tmp/wt-verify ./cmd/wt`) — `~/.local/bin/wt` is whatever was
+> last `make install`ed and may predate the branch.
