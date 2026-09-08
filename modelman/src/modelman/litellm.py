@@ -97,23 +97,34 @@ def is_cloud(provider_id: str) -> bool:
     return policy.cloud if policy is not None else False
 
 
-def is_cloud_effective(model: ModelEntry) -> bool:
+def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
     """True when a model should be exempt from the ready gate.
 
-    A model is "effectively cloud" for exposure purposes when:
+    A model is "effectively cloud" for exposure purposes when any of:
     - its provider policy declares it cloud (openrouter), or
-    - the model itself is explicitly marked `location = "cloud"`.
+    - the model itself is explicitly marked `location = "cloud"`, or
+    - its provider's registry entry is `location = "cloud"` — the same
+      model-then-provider resolution wt's `ResolveLocation` applies
+      (issue #46 parity).
 
-    Note: a provider whose *provider* location is "cloud" (native/agent
-    providers) is *not* included here; those rows are flag-only and are
-    never routed through LiteLLM, mirroring `model_has_local_artifact`.
+    An unknown provider id (hand-edited registry) is treated as
+    not-cloud, mirroring `is_cloud`'s conservative fallback.
+
+    Note: native providers are excluded upstream — `is_effectively_exposed`
+    short-circuits on native models before this predicate runs.
     """
-    return is_cloud(model.provider_id) or model.location == "cloud"
+    if is_cloud(model.provider_id) or model.location == "cloud":
+        return True
+    try:
+        return registry.provider(model.provider_id).location == "cloud"
+    except KeyError:
+        return False
 
 
 def passes_ready_gate(
     model: ModelEntry,
     state: StateStore,
+    registry: Registry,
     ready_override: bool | None = None,
 ) -> bool:
     """Whether a model passes the expose-time readiness gate.
@@ -130,6 +141,7 @@ def passes_ready_gate(
     Args:
         model: The registry model entry to check.
         state: StateStore for the persisted ready flag.
+        registry: The model registry, for provider-location resolution.
         ready_override: Override the persisted ready flag (used by the TUI
             to project a queued ready toggle before apply runs).
 
@@ -137,12 +149,13 @@ def passes_ready_gate(
         True if the model would pass the ready gate, False otherwise.
     """
     ready = ready_override if ready_override is not None else state.get(model.id).ready
-    return ready or is_cloud_effective(model)
+    return ready or is_cloud_effective(model, registry)
 
 
 def is_effectively_exposed(
     model: ModelEntry,
     state: StateStore,
+    registry: Registry,
     exposed_override: bool | None = None,
     ready_override: bool | None = None,
 ) -> bool:
@@ -165,6 +178,7 @@ def is_effectively_exposed(
     Args:
         model: The registry model entry to check.
         state: StateStore for ready/exposed flags.
+        registry: The model registry, for provider-location resolution.
         exposed_override: Override the persisted litellm_exposed flag.
             Applies to non-native models only — native models are
             unconditionally exposed and ignore this override (and the
@@ -182,7 +196,7 @@ def is_effectively_exposed(
     )
     if not exposed:
         return False
-    return passes_ready_gate(model, state, ready_override=ready_override)
+    return passes_ready_gate(model, state, registry, ready_override=ready_override)
 
 
 class LiteLLMConfigError(Exception):
@@ -513,7 +527,7 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
         # mapped, or a hand-edited registry). Native providers never reach
         # this check — the native guard above rejects them first.
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
-    if not passes_ready_gate(model, state):
+    if not passes_ready_gate(model, state, registry):
         raise ExposeError(f"model {model_id!r} is not ready")
     return build_model_list_entry(model, provider)
 

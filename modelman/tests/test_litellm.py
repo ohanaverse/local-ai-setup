@@ -15,6 +15,7 @@ from modelman.litellm import (
     build_model_list_entry,
     ensure_litellm_settings,
     expose_model,
+is_cloud_effective,
     is_effectively_exposed,
     load_litellm_config,
     passes_ready_gate,
@@ -43,6 +44,13 @@ def _model(mid, provider_id, model_name, model_info=None, cost=None):
         model_info=model_info or {},
         cost=cost,
     )
+
+
+def _registry(*provider_ids):
+    """Minimal Registry with the given providers (location unset → not
+    cloud), so existing predicate tests keep their pre-#46 semantics while
+    satisfying the now-required `registry` parameter."""
+    return Registry(providers=[_provider(pid) for pid in provider_ids])
 
 
 def test_build_entry_ollama():
@@ -746,7 +754,7 @@ def test_is_effectively_exposed_exposed_and_ready():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
 
-    assert is_effectively_exposed(model, state) is True
+    assert is_effectively_exposed(model, state, _registry("ollama")) is True
 
 
 def test_is_effectively_exposed_exposed_not_ready_local():
@@ -757,7 +765,7 @@ def test_is_effectively_exposed_exposed_not_ready_local():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
 
-    assert is_effectively_exposed(model, state) is False
+    assert is_effectively_exposed(model, state, _registry("ollama")) is False
 
 
 def test_is_effectively_exposed_exposed_not_ready_cloud():
@@ -768,7 +776,7 @@ def test_is_effectively_exposed_exposed_not_ready_cloud():
     state = StateStore()
     state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
 
-    assert is_effectively_exposed(model, state) is True
+    assert is_effectively_exposed(model, state, _registry("openrouter")) is True
 
 
 def test_is_effectively_exposed_not_exposed_ready():
@@ -779,7 +787,7 @@ def test_is_effectively_exposed_not_exposed_ready():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
 
-    assert is_effectively_exposed(model, state) is False
+    assert is_effectively_exposed(model, state, _registry("ollama")) is False
 
 
 def test_is_effectively_exposed_exposed_override():
@@ -790,8 +798,8 @@ def test_is_effectively_exposed_exposed_override():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
 
-    assert is_effectively_exposed(model, state, exposed_override=True) is True
-    assert is_effectively_exposed(model, state) is False
+    assert is_effectively_exposed(model, state, _registry("ollama"), exposed_override=True) is True
+    assert is_effectively_exposed(model, state, _registry("ollama")) is False
 
 
 def test_is_effectively_exposed_ready_override():
@@ -801,8 +809,8 @@ def test_is_effectively_exposed_ready_override():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
 
-    assert is_effectively_exposed(model, state, ready_override=True) is True
-    assert is_effectively_exposed(model, state) is False
+    assert is_effectively_exposed(model, state, _registry("ollama"), ready_override=True) is True
+    assert is_effectively_exposed(model, state, _registry("ollama")) is False
 
 
 def test_is_effectively_exposed_native_not_exposed_not_ready():
@@ -813,7 +821,7 @@ def test_is_effectively_exposed_native_not_exposed_not_ready():
     state = StateStore()
     state.set("agy/contract-fixture:native", ModelState(ready=False, litellm_exposed=False))
 
-    assert is_effectively_exposed(model, state) is True
+    assert is_effectively_exposed(model, state, _registry("agy")) is True
 
 
 def test_is_effectively_exposed_native_ignores_exposed_override():
@@ -825,8 +833,8 @@ def test_is_effectively_exposed_native_ignores_exposed_override():
     state = StateStore()
     state.set("agy/contract-fixture:native", ModelState(ready=False, litellm_exposed=False))
 
-    assert is_effectively_exposed(model, state, exposed_override=False) is True
-    assert is_effectively_exposed(model, state, ready_override=False) is True
+    assert is_effectively_exposed(model, state, _registry("agy"), exposed_override=False) is True
+    assert is_effectively_exposed(model, state, _registry("agy"), ready_override=False) is True
 
 
 def test_is_effectively_exposed_override_false_hides_non_native():
@@ -837,7 +845,7 @@ def test_is_effectively_exposed_override_false_hides_non_native():
     state = StateStore()
     state.set("ollama/glm-5", ModelState(ready=False, litellm_exposed=True))
 
-    assert is_effectively_exposed(model, state, exposed_override=False) is False
+    assert is_effectively_exposed(model, state, _registry("ollama"), exposed_override=False) is False
 
 
 def test_passes_ready_gate_local_ready():
@@ -847,7 +855,7 @@ def test_passes_ready_gate_local_ready():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
 
-    assert passes_ready_gate(model, state) is True
+    assert passes_ready_gate(model, state, _registry("ollama")) is True
 
 
 def test_passes_ready_gate_local_not_ready():
@@ -857,7 +865,7 @@ def test_passes_ready_gate_local_not_ready():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
 
-    assert passes_ready_gate(model, state) is False
+    assert passes_ready_gate(model, state, _registry("ollama")) is False
 
 
 def test_passes_ready_gate_cloud_not_ready():
@@ -868,7 +876,7 @@ def test_passes_ready_gate_cloud_not_ready():
     state = StateStore()
     state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
 
-    assert passes_ready_gate(model, state) is True
+    assert passes_ready_gate(model, state, _registry("openrouter")) is True
 
 
 def test_passes_ready_gate_ready_override():
@@ -879,4 +887,67 @@ def test_passes_ready_gate_ready_override():
     state = StateStore()
     state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
 
-    assert passes_ready_gate(model, state, ready_override=True) is True
+    assert passes_ready_gate(model, state, _registry("ollama"), ready_override=True) is True
+
+
+def _registry_with_providers(*providers):
+    """Minimal Registry holding just providers (no models needed by the
+    cloud predicates)."""
+    return Registry(providers=list(providers))
+
+
+def test_is_cloud_effective_provider_location_inherited():
+    # Issue #46: a model with no location of its own on a
+    # location="cloud" provider is effectively cloud, matching wt's
+    # ResolveLocation (model location, then provider location).
+    from modelman.registry import ProviderEntry
+
+    model = _model("handmade/x", "handmade", "x")
+    registry = _registry_with_providers(
+        ProviderEntry(id="handmade", name="Handmade", location="cloud")
+    )
+    assert is_cloud_effective(model, registry) is True
+
+
+def test_is_cloud_effective_provider_local_not_cloud():
+    from modelman.registry import ProviderEntry
+
+    model = _model("handmade/x", "handmade", "x")
+    registry = _registry_with_providers(
+        ProviderEntry(id="handmade", name="Handmade", location="local")
+    )
+    assert is_cloud_effective(model, registry) is False
+
+
+def test_is_cloud_effective_unknown_provider_conservative():
+    # Unknown provider (hand-edited registry referencing an undefined
+    # provider) → not cloud, mirroring is_cloud's conservative fallback.
+    model = _model("handmade/x", "handmade", "x")
+    registry = _registry_with_providers()
+    assert is_cloud_effective(model, registry) is False
+
+
+def test_is_effectively_exposed_provider_cloud_not_ready():
+    # The #46 failure scenario: flag on, ready false, model location
+    # unset, provider location cloud → exposed on both sides.
+    from modelman.registry import ProviderEntry
+
+    model = _model("handmade/x", "handmade", "x")
+    registry = _registry_with_providers(
+        ProviderEntry(id="handmade", name="Handmade", location="cloud")
+    )
+    state = StateStore()
+    state.set("handmade/x", ModelState(ready=False, litellm_exposed=True))
+    assert is_effectively_exposed(model, state, registry=registry) is True
+
+
+def test_passes_ready_gate_provider_cloud_not_ready():
+    from modelman.registry import ProviderEntry
+
+    model = _model("handmade/x", "handmade", "x")
+    registry = _registry_with_providers(
+        ProviderEntry(id="handmade", name="Handmade", location="cloud")
+    )
+    state = StateStore()
+    state.set("handmade/x", ModelState(ready=False, litellm_exposed=True))
+    assert passes_ready_gate(model, state, registry) is True

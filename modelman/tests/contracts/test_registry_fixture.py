@@ -1,6 +1,8 @@
 from pathlib import Path
 
+from modelman.litellm import is_effectively_exposed
 from modelman.registry import load_registry
+from modelman.state import ModelState, StateStore
 
 FIXTURE = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "registry.sample.toml"
 
@@ -13,7 +15,7 @@ def test_load_registry_matches_shared_fixture():
     """
     registry = load_registry(path=FIXTURE)
 
-    assert len(registry.providers) == 3
+    assert len(registry.providers) == 4
     ollama = registry.provider("ollama")
     assert ollama.auth.type == "none"
     assert ollama.auth.base_url == "http://localhost:11434"
@@ -28,7 +30,12 @@ def test_load_registry_matches_shared_fixture():
     # pass CI while breaking on real registries.
     assert agy.location == "cloud"
 
-    assert len(registry.models) == 3
+    pinned = registry.provider("pinned-cloud")
+    assert pinned.auth.type == "api_key"
+    assert pinned.location == "cloud"
+    assert pinned.auth.secret_ref == "PINNED_CLOUD_API_KEY"
+
+    assert len(registry.models) == 4
 
     free_model = registry.model("ollama/contract-fixture:local")
     assert free_model.cost is None
@@ -49,6 +56,24 @@ def test_load_registry_matches_shared_fixture():
     assert native_model.provider_id == "agy"
     assert native_model.native is True
 
+    inherit_model = registry.model("pinned-cloud/contract-fixture:inherit")
+    assert inherit_model.location is None  # inherits provider location
+    assert inherit_model.native is False
+
     family = registry.family("contract-fixture")
     assert family is not None
     assert family.display_name == "Contract Fixture"
+
+
+def test_fixture_pins_provider_location_inheritance():
+    """Issue #46: a model with no location of its own on a
+    location="cloud" provider must be exposed on the Python side exactly
+    as wt's ResolveLocation-based IsExposed treats it."""
+    registry = load_registry(path=FIXTURE)
+    state = StateStore()
+    state.set(
+        "pinned-cloud/contract-fixture:inherit",
+        ModelState(ready=False, litellm_exposed=True),
+    )
+    model = registry.model("pinned-cloud/contract-fixture:inherit")
+    assert is_effectively_exposed(model, state, registry=registry) is True
