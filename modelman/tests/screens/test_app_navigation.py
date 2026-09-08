@@ -17,6 +17,8 @@ from modelman.registry import (
 )
 from modelman.state import StateStore, save_state
 
+from .test_forms import _submit
+
 
 def _seed_registry_and_state(
     tmp_path,
@@ -1821,10 +1823,7 @@ async def test_edit_model_changing_family_queues_move(tmp_path, monkeypatch):
         sel = app.screen.query_one("#family-select", Select)
         assert str(sel.value) == "gemma4:26b-mlx"  # re-edit preselect = current family
         sel.value = "gemma4"
-        # Submit via the Save button: the model Input is disabled in edit mode.
-        app.screen.query_one("#save", Button).focus()
-        await pilot.press("enter")  # submit the (prefilled) edit form
-        await pilot.pause()
+        await _submit(app, pilot)
 
         assert ms.queued_moves == {"ollama/gemma4:26b-mlx": "gemma4"}
         # Registry NOT mutated in memory — move applies at apply time.
@@ -1868,10 +1867,7 @@ async def test_edit_model_same_family_drops_queued_move(tmp_path, monkeypatch):
         sel = app.screen.query_one("#family-select", Select)
         assert str(sel.value) == "gemma4"
         sel.value = "gemma4:26b-mlx"  # ...moved back to the screen family
-        # Submit via the Save button: the model Input is disabled in edit mode.
-        app.screen.query_one("#save", Button).focus()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _submit(app, pilot)
 
     assert ms.queued_moves == {}
 
@@ -1910,14 +1906,11 @@ async def test_edit_model_cost_change_persists_to_registry_on_back(tmp_path, mon
         await pilot.pause()
         assert isinstance(app.screen, ModelForm)
 
-        # Location is immutable in edit mode; edit the cost instead.
+        # Edit the cost (location stays editable for corrections).
         app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
         app.screen.query_one("#subscription-price", Input).value = "20"
-        # Submit via the Save button: the model Input is disabled in edit mode.
-        app.screen.query_one("#save", Button).focus()
-        await pilot.press("enter")  # submit the (prefilled) edit form
-        await pilot.pause()
+        await _submit(app, pilot)
 
         assert ms.registry.models[0].cost == Cost(
             subscription_price=20.0, subscription_period="month"
@@ -1988,13 +1981,11 @@ async def test_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
         await pilot.pause()
         assert isinstance(app.screen, ModelForm)
 
-        # Location is immutable in edit mode; edit the cost instead.
+        # Edit the cost (location stays editable for corrections).
         app.screen.query_one("#subscription-checkbox", Checkbox).value = True
         await pilot.pause()
         app.screen.query_one("#subscription-price", Input).value = "20"
-        app.screen.query_one("#save", Button).focus()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _submit(app, pilot)
 
         await pilot.press("escape")  # back to the family screen
         await pilot.pause()

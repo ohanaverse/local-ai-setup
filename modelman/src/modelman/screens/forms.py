@@ -533,7 +533,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 options=[("cloud", "cloud"), ("local", "local")],
                 value=location_value,
                 allow_blank=False,
-                disabled=editing or location_locked,
+                disabled=location_locked,
                 id="location-select",
             )
             yield Label("Per-token pricing:")
@@ -651,8 +651,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         expected format (native vs HF vs ollama vs cloud-only)."""
         if event.select.id != "provider-select":
             return
+        # Edit mode: provider is locked (disabled Select), but Textual may
+        # still fire Changed on mount. Skip location updates in edit mode
+        # to preserve the variant's location value.
         if self._variant is not None:
-            # Edit mode locks the provider; changes shouldn't happen.
             return
         provider = str(event.value)
         kind = self._provider_kinds.get(provider, self._default_kind(provider))

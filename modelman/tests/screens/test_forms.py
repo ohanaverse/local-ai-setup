@@ -257,7 +257,12 @@ async def test_modelform_edit_prefills_ollama_name():
 @pytest.mark.asyncio
 async def test_modelform_field_order_family_provider_model_location():
     """The composed DOM orders Family before Provider before Model before
-    Location (identity fields grouped, family promoted to top)."""
+    Location (identity fields grouped, family promoted to top).
+
+    Why it matters: This ordering is the UX contract for the add/edit
+    dialogs — if the field order regresses, users lose muscle memory and
+    the tab-order focus flow breaks.
+    """
     form = ModelForm(providers=["ollama"], families=["ornith"], family="ornith")
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -276,8 +281,16 @@ async def test_modelform_field_order_family_provider_model_location():
 
 @pytest.mark.asyncio
 async def test_modelform_edit_mode_disables_identity_fields():
-    """Edit mode disables provider, model, and location; family and the
-    pricing checkboxes remain enabled."""
+    """Edit mode disables provider and model (the model's immutable key);
+    location remains editable to allow correcting mistakes, unless locked
+    by provider kind (native/cloud-only/local-only). Family and pricing
+    checkboxes remain enabled.
+
+    Why it matters: Provider/model are the model's immutable identity —
+    allowing edits would orphan cross-references in registry.toml and wt's
+    rotation state. Location is mutable to let users fix misclassified
+    models without editing registry.toml by hand.
+    """
     variant: VariantSpec = {
         "id": "ollama/glm-5.3:cloud",
         "provider": "ollama",
@@ -298,7 +311,9 @@ async def test_modelform_edit_mode_disables_identity_fields():
         await pilot.pause()
         assert app.screen.query_one("#provider-select", Select).disabled
         assert app.screen.query_one("#model", Input).disabled
-        assert app.screen.query_one("#location-select", Select).disabled
+        # Location is NOT disabled for ollama (not a locked kind) — users
+        # must be able to correct mistaken location values.
+        assert not app.screen.query_one("#location-select", Select).disabled
         assert not app.screen.query_one("#family-select", Select).disabled
         assert not app.screen.query_one("#per-token-checkbox", Checkbox).disabled
         assert not app.screen.query_one("#subscription-checkbox", Checkbox).disabled
@@ -308,7 +323,12 @@ async def test_modelform_edit_mode_disables_identity_fields():
 async def test_modelform_add_mode_identity_fields_enabled_and_provider_focused():
     """Add mode leaves provider, model, and location enabled (location
     subject to provider-kind locking) and focuses the provider Select on
-    mount."""
+    mount.
+
+    Why it matters: Provider is the primary decision when adding a model —
+    focusing it reduces tab presses and ensures the model placeholder
+    matches the provider's expected format before the user types.
+    """
     form = ModelForm(providers=["ollama"], default_provider="ollama")
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -324,7 +344,12 @@ async def test_modelform_add_mode_identity_fields_enabled_and_provider_focused()
 @pytest.mark.asyncio
 async def test_modelform_edit_mode_focuses_family_select():
     """Edit mode focuses the family Select (the first enabled field) on
-    mount; provider/model/location are disabled."""
+    mount; provider/model are disabled, location remains editable.
+
+    Why it matters: Family is the only identity field safe to edit —
+    focusing it streamlines the common re-family operation and confirms
+    the form respects the disabled-field contract for provider/model.
+    """
     variant: VariantSpec = {
         "id": "ollama/glm-5.3:cloud",
         "provider": "ollama",
