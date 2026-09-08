@@ -45,9 +45,19 @@ isolate_one() {
 # Ensure all local services are running (called at script start). Delegates
 # to the already-idempotent bin/llm-restore-providers (it no-ops per-service
 # when already up) rather than duplicating its start/poll logic here.
+#
+# Best-effort, like the inline version this replaced: llm-restore-providers
+# exits 1 when any one service fails its health poll, and these scripts run
+# under set -e, so an unchecked call would abort the whole run (including
+# the OpenRouter rows that need no local service) leaving a header-only
+# result file. A degraded run — some local rows erroring — still beats a
+# zero-row run, so warn and continue instead.
 ensure_all_local_started() {
     echo "[setup] ensuring all local services are running..."
-    "$BENCHMARK_LIB_DIR/../../bin/llm-restore-providers"
+    if ! "$BENCHMARK_LIB_DIR/../../bin/llm-restore-providers"; then
+        echo "[setup] WARNING: one or more local providers failed to start; " \
+            "affected rows will error out, cloud rows still run" >&2
+    fi
 }
 
 # --- Benchmark runner --------------------------------------------------------
@@ -117,7 +127,16 @@ run_streaming() {
 
     local throughput="N/A"
     if [ "${token_count:-0}" -gt 0 ] 2>/dev/null && [ "$duration_ms" -gt 0 ]; then
-        local gen_time_ms=$(( duration_ms - ttft_ms ))
+        # ttft_ms can be "N/A" when no poll sample ever saw >50 bytes (a
+        # backend that buffers the whole reply into one burst, a tiny
+        # max_tokens smoke run, ...). Arithmetic on the string would abort
+        # run_streaming under set -e (row and remaining backends silently
+        # dropped), so fall back to the full duration: the resulting
+        # throughput is then total-time based, not gen-time based.
+        local gen_time_ms="$duration_ms"
+        if [ "$ttft_ms" != "N/A" ]; then
+            gen_time_ms=$(( duration_ms - ttft_ms ))
+        fi
         if [ "$gen_time_ms" -gt 0 ]; then
             throughput=$(python3 -c "print(f'{int($token_count) / ($gen_time_ms/1000):.2f}')")
         fi
