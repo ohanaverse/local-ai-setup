@@ -27,6 +27,10 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 
 The Makefile wraps the standard dev commands. Run `make help` to list targets.
 
+### Code review
+
+- `/code-review` — runs background review on the current diff; **always verify findings manually** before accepting (the review can misanalyze indirect usage like `monkeypatch.setitem()` or local import patterns)
+
 ### Running tests inside the pi agent
 
 **Fixed:** The modelman test suite now has autouse fixtures in `tests/conftest.py` that prevent it from restarting the live LiteLLM proxy or shelling out to the live `ollama` daemon, so the full suite can be run safely while agents (pi, Claude) are using the proxy. The historical connection drops were caused by expose-queue tests calling `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` against the live launchd service during the run.
@@ -218,6 +222,7 @@ reach by accident and can lead to analyzing or mutating the wrong branch.
 - **Run focused tests per change, not the full suite.** When working on a change, run only the test files that exercise the code you touched (plus `make check` for lint/typecheck) — the full suite is slow. Run the entire suite once at the end, when reviewing the whole set of changes (e.g. the final task of a multi-task plan runs `make all`).
 - **Focused test timeout:** `tests/test_expose.py` + `tests/test_queue.py` together take roughly 2.5 minutes; use a longer timeout or run them in the background and poll `TaskOutput`.
 - **Pyenv `VIRTUAL_ENV` warning:** `uv run` ignores an active pyenv `VIRTUAL_ENV` and uses the project's `.venv`; the emitted warning is expected and can be disregarded.
+- **Local imports in tests:** `test_queue.py` and other test files use `from X import Y` inside test functions (not module-level) as a consistent pattern — this is intentional, not inconsistency
 
 ## Important implementation notes
 
