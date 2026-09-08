@@ -495,9 +495,18 @@ def _validated_entry(registry: Registry, state: StateStore, model_id: str) -> di
         raise ExposeError(
             f"model {model_id!r} references unknown provider {model.provider_id!r}"
         ) from None
+    if model.native:
+        # Native ⇒ no LiteLLM policy invariant (#47): a native provider
+        # must never produce a LiteLLM row, even if a stale
+        # PROVIDER_POLICIES entry exists for it (hand-edited registry).
+        raise ExposeError(
+            f"provider {model.provider_id!r} is native and cannot be exposed through LiteLLM"
+        )
     policy = provider_policy(model.provider_id)
     if policy is None:
-        # Native providers hit this check: auth.type == "native" means no LiteLLM mapping.
+        # Provider is not in PROVIDER_POLICIES (a new provider not yet
+        # mapped, or a hand-edited registry). Native providers never reach
+        # this check — the native guard above rejects them first.
         raise ExposeError(f"provider {model.provider_id!r} has no LiteLLM mapping")
     if not passes_ready_gate(model, state):
         raise ExposeError(f"model {model_id!r} is not ready")

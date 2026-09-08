@@ -5,12 +5,16 @@ from dataclasses import replace
 import pytest
 
 from modelman.litellm import (
+    ExposeError,
     LiteLLMConfigError,
+    PROVIDER_POLICIES,
+    ProviderPolicy,
     _database_url_from_config,
     _reverse_model_index,
     _validated_entry,
     build_model_list_entry,
     ensure_litellm_settings,
+    expose_model,
     is_effectively_exposed,
     load_litellm_config,
     passes_ready_gate,
@@ -555,6 +559,32 @@ def test_validated_entry_accepts_not_ready_location_cloud_model():
     state.set("ollama/kimi-k3:cloud", ModelState(ready=False))
     entry = _validated_entry(registry, state, "ollama/kimi-k3:cloud")
     assert entry["model_name"] == "ollama/kimi-k3:cloud"
+
+
+def test_apply_gate_rejects_native_model_with_stale_policy(tmp_path, monkeypatch):
+    """Native ⇒ no LiteLLM policy invariant (#47): even if a native provider
+    has a stale PROVIDER_POLICIES entry (hand-edited registry), a native
+    model is rejected at the apply gate instead of producing an unroutable
+    LiteLLM row. Asserted through expose_model; apply_expose_queue shares
+    _validated_entry and is pinned separately in test_queue.py."""
+    model = _model("agy/contract-fixture:native", "agy", "contract-fixture:native")
+    model.native = True
+    registry = Registry(
+        providers=[_provider("agy", auth_type="native")],
+        models=[model],
+    )
+    state = StateStore()
+    state.set(model.id, ModelState(ready=True, litellm_exposed=False))
+    # provider_policy() stays a pure lookup — simulate the hand-edited
+    # stale entry directly in the table.
+    monkeypatch.setitem(PROVIDER_POLICIES, "agy", ProviderPolicy(prefix="agy/", cloud=False))
+    path = tmp_path / "config.yaml"
+    save_litellm_config({"model_list": []}, path)
+    with pytest.raises(ExposeError, match="native"):
+        expose_model(registry, state, model.id, path)
+    # The rejected expose must not flip the flag or touch the config.
+    assert state.get(model.id).litellm_exposed is False
+    assert load_litellm_config(path)["model_list"] == []
 
 
 def test_roundtrip_preserves_comments_byte_identical(tmp_path):
