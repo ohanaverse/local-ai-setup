@@ -671,7 +671,7 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
     ready gate never sees a spurious 'not ready' rejection."""
     from unittest.mock import MagicMock
 
-    from textual.widgets import Button, DataTable
+    from textual.widgets import DataTable
 
     from modelman.screens.status import StatusScreen
 
@@ -764,7 +764,7 @@ async def test_apply_preserves_other_models_state_rows(tmp_path, monkeypatch):
     re-derived by reconcile on the next mount instead.)"""
     from unittest.mock import MagicMock
 
-    from textual.widgets import Button, DataTable
+    from textual.widgets import DataTable
 
     from modelman.screens.status import StatusScreen
 
@@ -925,7 +925,6 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
     )
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
-    from textual.widgets import Button
 
     from modelman.app import ModelmanApp
 
@@ -1330,7 +1329,7 @@ async def test_discard_cancels_download_for_a_model_added_this_session(
     it, the added model's registry entry is rolled back but its download
     used to keep running — later persisting a dangling modelman.toml row
     (ready=True) for a model_id no longer in the registry."""
-    from textual.widgets import Button, Input, Select
+    from textual.widgets import Input, Select
 
     from modelman.downloads import DownloadState
     from modelman.registry import ModelEntry
@@ -1445,8 +1444,6 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
     """Discarding pending changes must restore the snapshot without
     turning nested Fetch dataclasses into plain dicts."""
     from unittest.mock import MagicMock
-
-    from textual.widgets import Button
 
     from modelman.providers import registry as prov_registry
     from modelman.registry import Fetch
