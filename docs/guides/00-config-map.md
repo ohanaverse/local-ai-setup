@@ -58,7 +58,7 @@ tags = []
 - **Consumers:** `modelman`, plus `wt` (read-only — reads `litellm_exposed` and `ready` to filter the model picker; that read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
 - **Purpose:** per-machine state: ready/downloaded status, disk path, size, LiteLLM exposure flags, and family display names.
 - **Env override:** `MODELMAN_STATE`.
-- **Exposure predicate (both tools):** A model is effectively exposed iff `litellm_exposed = true` AND (`ready = true` OR `location = "cloud"`). Native models (provider `auth.type = "native"`) are always exposed — they cannot route through LiteLLM. Both `wt` and the TUI apply this same rule, so a model offered by `wt` always shows `Y` in the TUI's EXPOSED column.
+- **Exposure predicate (both tools):** A model is effectively exposed iff `litellm_exposed = true` AND (`ready = true` OR effective location is cloud), where effective location resolves model `location` first, then the provider's `location` (issue #46 parity). Native models (provider `auth.type = "native"`) are always exposed — they cannot route through LiteLLM. Both `wt` and the TUI apply this same rule, so a model offered by `wt` always shows `Y` in the TUI's EXPOSED column.
 
 > Excerpt — 24 of the file's 41 `model_state` entries are `litellm_exposed = true` today (13 `ollama/*` + 11 `openrouter/*`). The two exposed local-ollama blocks and one representative exposed `:cloud` block are shown; the other 10 `:cloud` ollama blocks have the identical shape to the `kimi-k3:cloud` example (`ready = false`, `litellm_exposed = true`), and the openrouter blocks are omitted for brevity.
 
