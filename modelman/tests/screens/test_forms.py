@@ -1708,3 +1708,264 @@ async def test_model_form_bad_price_shows_error_and_stays_open():
 
         assert dismissed == [], "form must not dismiss on invalid price"
         assert _rendered_error(app) == "input_price must be a number"
+
+
+# ---------------------------------------------------------------------------
+# "local-only" kind: local-path field (Feature 1 — register a locally
+# produced mlx_lm.convert/dwq output instead of an HF repo)
+# ---------------------------------------------------------------------------
+
+
+async def _submit_via(app: ModelmanApp, pilot, input_id: str) -> None:
+    """Submit the form by focusing a specific enabled Input and pressing
+    Enter. Used for kinds whose primary #model Input is hidden (dual-model)
+    or where a specific field must hold focus for the Enter-submits path."""
+    inp = app.screen.query_one(f"#{input_id}", Input)
+    inp.focus()
+    await pilot.pause()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_local_only_kind_shows_local_path_field_alongside_model():
+    """The local-path field must be visible (not just present in the DOM)
+    for the local-only kind, alongside the existing repo Input — it's an
+    explicit second field, not a heuristic on the single Model input."""
+    form = ModelForm(
+        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#model", Input).display
+        assert app.screen.query_one("#local-path", Input).display
+
+
+@pytest.mark.asyncio
+async def test_submit_local_only_with_local_path_builds_spec_without_repo():
+    """Filling only the local-path field (leaving the repo Input blank)
+    must produce a spec with local_path set and repo/files unset — this
+    is the path a registered mlx_lm.convert/dwq output takes."""
+    form = ModelForm(
+        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#local-path", Input).value = "/data/models/my-quant"
+        await _submit_via(app, pilot, "local-path")
+
+    assert dismissed, "form did not dismiss"
+    spec = dismissed[0].spec
+    assert spec["local_path"] == "/data/models/my-quant"
+    assert spec["repo"] is None
+    assert spec["files"] is None
+    assert spec["name"] == "my-quant"
+    assert spec["id"] == "omlx/my-quant"
+
+
+@pytest.mark.asyncio
+async def test_submit_local_only_both_repo_and_local_path_shows_error():
+    """Setting both the repo Input and the local-path Input is ambiguous —
+    the form must reject it inline rather than silently picking one."""
+    form = ModelForm(
+        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        _fill_model(app, "org/repo")
+        app.screen.query_one("#local-path", Input).value = "/data/models/my-quant"
+        await _submit_via(app, pilot, "local-path")
+
+        assert dismissed == [], "form must not dismiss when repo and local path both set"
+        assert "not both" in _rendered_error(app)
+
+
+@pytest.mark.asyncio
+async def test_edit_local_only_prefills_local_path_field_from_variant():
+    """Editing a local-path-sourced entry must prefill the local-path
+    Input (and leave the repo Input blank) so the dialog reflects what's
+    actually stored, matching how repo-sourced entries prefill #model."""
+    variant: VariantSpec = {
+        "id": "omlx/my-quant",
+        "provider": "omlx",
+        "name": "my-quant",
+        "local_path": "/data/models/my-quant",
+        "repo": None,
+        "files": None,
+    }
+    form = ModelForm(providers=["omlx"], variant=variant, provider_kinds={"omlx": "local-only"})
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#local-path", Input).value == "/data/models/my-quant"
+        assert app.screen.query_one("#model", Input).value == ""
+
+
+# ---------------------------------------------------------------------------
+# "dual-model" kind (mlx_lm_server target+draft pairing, Feature 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dual_model_kind_hides_single_model_field_shows_target_draft():
+    """The dual-model kind must hide the single #model Input (it can't
+    represent a four-value pairing) and show the target/draft field group
+    instead."""
+    form = ModelForm(
+        providers=["mlx_lm_server"],
+        default_provider="mlx_lm_server",
+        provider_kinds={"mlx_lm_server": "dual-model"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert not app.screen.query_one("#model", Input).display
+        assert app.screen.query_one("#target-repo", Input).display
+        assert app.screen.query_one("#target-local-path", Input).display
+        assert app.screen.query_one("#draft-repo", Input).display
+        assert app.screen.query_one("#draft-local-path", Input).display
+
+
+@pytest.mark.asyncio
+async def test_dual_model_location_locked_to_local():
+    """mlx_lm_server's provider location is always local (a subprocess
+    serving a local pairing) — the Location select must be locked the
+    same way local-only is, not left editable."""
+    form = ModelForm(
+        providers=["mlx_lm_server"],
+        default_provider="mlx_lm_server",
+        provider_kinds={"mlx_lm_server": "dual-model"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#location-select", Select)
+        assert sel.disabled
+        assert str(sel.value) == "local"
+
+
+@pytest.mark.asyncio
+async def test_submit_dual_model_both_repos_builds_spec_with_four_keys():
+    """The common case: target and draft are both plain HF repos. The
+    resulting spec must carry all four keys plus a self-describing id
+    (<target-basename>+draft-<draft-basename>) so the pairing reads
+    clearly in the TUI list and wt's picker."""
+    form = ModelForm(
+        providers=["mlx_lm_server"],
+        default_provider="mlx_lm_server",
+        provider_kinds={"mlx_lm_server": "dual-model"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#target-repo", Input).value = "org/target-repo"
+        app.screen.query_one("#draft-repo", Input).value = "org/draft-repo"
+        await _submit_via(app, pilot, "draft-repo")
+
+    assert dismissed, "form did not dismiss"
+    spec = dismissed[0].spec
+    assert spec["repo"] == "org/target-repo"
+    assert spec["local_path"] is None
+    assert spec["draft_repo"] == "org/draft-repo"
+    assert spec["draft_local_path"] is None
+    assert spec["id"] == "mlx_lm_server/target-repo+draft-draft-repo"
+
+
+@pytest.mark.asyncio
+async def test_submit_dual_model_mixed_sourcing():
+    """A pairing may mix sourcing per side (repo target + local-path
+    draft) — the plan calls this out explicitly as a case the provider
+    layer must support, so the form must be able to produce it."""
+    form = ModelForm(
+        providers=["mlx_lm_server"],
+        default_provider="mlx_lm_server",
+        provider_kinds={"mlx_lm_server": "dual-model"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#target-repo", Input).value = "org/target-repo"
+        app.screen.query_one("#draft-local-path", Input).value = "/data/models/draft"
+        await _submit_via(app, pilot, "draft-local-path")
+
+    assert dismissed, "form did not dismiss"
+    spec = dismissed[0].spec
+    assert spec["repo"] == "org/target-repo"
+    assert spec["draft_local_path"] == "/data/models/draft"
+    assert spec["draft_repo"] is None
+
+
+@pytest.mark.asyncio
+async def test_submit_dual_model_missing_target_shows_error():
+    """Leaving the target side entirely blank must be rejected at submit
+    time — a pairing with no target source can never be resolved by the
+    provider."""
+    form = ModelForm(
+        providers=["mlx_lm_server"],
+        default_provider="mlx_lm_server",
+        provider_kinds={"mlx_lm_server": "dual-model"},
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#draft-repo", Input).value = "org/draft-repo"
+        await _submit_via(app, pilot, "draft-repo")
+
+        assert dismissed == [], "form must not dismiss with no target source"
+        assert "target" in _rendered_error(app)
+
+
+@pytest.mark.asyncio
+async def test_edit_dual_model_prefills_all_four_fields():
+    """Editing a pairing must prefill target/draft repo+local-path Inputs
+    from the stored VariantSpec (repo/local_path for target,
+    draft_repo/draft_local_path for draft)."""
+    variant: VariantSpec = {
+        "id": "mlx_lm_server/target-repo+draft-draft",
+        "provider": "mlx_lm_server",
+        "name": "target-repo+draft-draft",
+        "repo": "org/target-repo",
+        "local_path": None,
+        "draft_repo": None,
+        "draft_local_path": "/data/models/draft",
+    }
+    form = ModelForm(
+        providers=["mlx_lm_server"],
+        variant=variant,
+        provider_kinds={"mlx_lm_server": "dual-model"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#target-repo", Input).value == "org/target-repo"
+        assert app.screen.query_one("#target-local-path", Input).value == ""
+        assert app.screen.query_one("#draft-repo", Input).value == ""
+        assert app.screen.query_one("#draft-local-path", Input).value == "/data/models/draft"

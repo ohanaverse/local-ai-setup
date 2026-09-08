@@ -116,6 +116,64 @@ def test_variant_to_model_entry_defaults_cost_to_none():
     assert entry.cost is None
 
 
+def test_variant_to_model_entry_builds_fetch_with_local_path():
+    """A local-path-sourced omlx variant (Feature 1: register a
+    locally-produced mlx_lm.convert/dwq output) must produce a Fetch with
+    local_path set rather than silently dropping it — this is the path
+    the local-only form's local-path field feeds into."""
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))]
+    )
+    variant = {
+        "id": "omlx/my-quant",
+        "provider": "omlx",
+        "name": "my-quant",
+        "local_path": "/data/models/my-quant",
+    }
+    entry = _variant_to_model_entry(variant, family="ornith", registry=registry)
+    assert entry.fetch is not None
+    assert entry.fetch.local_path == "/data/models/my-quant"
+    assert entry.fetch.repo is None
+
+
+def test_variant_to_model_entry_builds_draft_from_draft_keys():
+    """An mlx_lm_server target+draft pairing (Feature 2) must produce
+    entry.draft from the draft_repo/draft_local_path VariantSpec keys —
+    the dual-model form's four-field submit relies on this to round-trip
+    into the registry."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="mlx_lm_server", name="mlx-lm server", auth=AuthConfig(type="none"))
+        ]
+    )
+    variant = {
+        "id": "mlx_lm_server/target-repo+draft-draft",
+        "provider": "mlx_lm_server",
+        "name": "target-repo+draft-draft",
+        "repo": "org/target-repo",
+        "draft_local_path": "/data/models/draft",
+    }
+    entry = _variant_to_model_entry(variant, family="ornith", registry=registry)
+    assert entry.fetch is not None
+    assert entry.fetch.repo == "org/target-repo"
+    assert entry.draft is not None
+    assert entry.draft.repo is None
+    assert entry.draft.local_path == "/data/models/draft"
+
+
+def test_variant_to_model_entry_omits_draft_when_neither_key_set():
+    """A plain (non-pairing) model must not get a spurious empty
+    DraftSpec — draft stays None unless the form actually submitted a
+    draft key, matching the round-trip omission convention used for an
+    all-None Fetch."""
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+    )
+    variant = {"id": "ollama/x", "provider": "ollama", "name": "x"}
+    entry = _variant_to_model_entry(variant, family="ornith", registry=registry)
+    assert entry.draft is None
+
+
 def test_model_entry_to_variant_carries_cost():
     """The provider-facing VariantSpec must carry cost as a plain dict, not
     the registry Cost dataclass, so providers can JSON-serialize it."""

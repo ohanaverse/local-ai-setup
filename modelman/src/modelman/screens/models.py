@@ -26,6 +26,7 @@ from ..registry import (
     LOCATION_CLOUD,
     LOCATION_LOCAL,
     Cost,
+    DraftSpec,
     Fetch,
     ModelEntry,
     Registry,
@@ -66,9 +67,20 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
     repo = variant.get("repo")
     files = variant.get("files")
     quantizations = variant.get("quantizations")
+    local_path = variant.get("local_path")
     fetch = None
-    if repo or files or quantizations:
-        fetch = Fetch(repo=repo, files=files, quantizations=quantizations)
+    if repo or files or quantizations or local_path:
+        fetch = Fetch(repo=repo, files=files, quantizations=quantizations, local_path=local_path)
+
+    # mlx_lm_server's target+draft pairing: the draft side is stored
+    # separately from `fetch` (which stays the target's source). Same
+    # truthiness-guard style as `fetch` above — omit `draft` entirely
+    # when the form submitted neither draft key.
+    draft_repo = variant.get("draft_repo")
+    draft_local_path = variant.get("draft_local_path")
+    draft = None
+    if draft_repo or draft_local_path:
+        draft = DraftSpec(repo=draft_repo, local_path=draft_local_path)
 
     model_info = dict(variant.get("model_info") or {})
     cost_raw = variant.get("cost")
@@ -85,6 +97,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         cost=cost,
         model_info=model_info,
         fetch=fetch,
+        draft=draft,
         # native is derived (never serialized) — re-derive it here so an
         # in-session add/edit doesn't reset the flag and flip the EXPOSED
         # column until the next disk reload. Mirrors _derive_native.
