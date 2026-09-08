@@ -26,6 +26,8 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |
 | [`07-usage-and-spend.md`](docs/guides/07-usage-and-spend.md) | reconcile wt launches vs LiteLLM spend |
 | [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades |
+| [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`modelman benchmark agent`) |
+| [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
 
 ## 60-second health check
 
