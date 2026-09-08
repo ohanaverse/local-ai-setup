@@ -370,8 +370,10 @@ class ConfirmModal(ModelmanModal[bool]):
 class ModelForm(ModelmanModal[ModelFormResult | None]):
     """Add or edit a model. `variant=None` means add; else edit.
 
-    The dialog asks for the provider (add mode only), family, model
-    name, location, and optional pricing sections. Per-token pricing is
+    The dialog shows the family (display-only — family membership is
+    owned by the screen and never edited here), then asks for the
+    provider, model name, and location (all three only settable in add
+    mode), and optional pricing sections. Per-token pricing is
     controlled by `#per-token-checkbox` and reveals `#input-price`,
     `#cache-price`, and `#output-price`. Subscription pricing is
     controlled by `#subscription-checkbox` and reveals
@@ -506,10 +508,14 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
 
         with Vertical():
             yield Label("Family:")
+            # Display-only: the family is owned by the screen the dialog
+            # was opened from; changing it here would silently re-home
+            # the model across cross-referenced keys.
             yield Select(
                 options=[(f, f) for f in self._families],
                 value=(self._family if self._family in self._families else self._families[0]),
                 allow_blank=False,
+                disabled=True,
                 id="family-select",
             )
             yield Label("Provider:")
@@ -533,7 +539,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 options=[("cloud", "cloud"), ("local", "local")],
                 value=location_value,
                 allow_blank=False,
-                disabled=location_locked,
+                disabled=editing or location_locked,
                 id="location-select",
             )
             yield Label("Per-token pricing:")
@@ -601,13 +607,14 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         return repo
 
     def _modal_on_mount(self) -> None:
-        # Focus the first enabled field: the provider Select in add mode
-        # (so the user can pick a provider immediately), the family Select
-        # in edit mode (provider/model/location are all disabled there).
+        # Focus the first editable field: the provider Select in add
+        # mode (so the user can pick a provider immediately); in edit
+        # mode provider/model/location are all disabled, so drop the
+        # cursor on the first editable pricing control instead.
         if self._variant is None:
             self.query_one("#provider-select", Select).focus()
         else:
-            self.query_one("#family-select", Select).focus()
+            self.query_one("#per-token-checkbox", Checkbox).focus()
         # Apply initial visibility for the conditional pricing sections.
         per_token_cb = self.query_one("#per-token-checkbox", Checkbox)
         sub_cb = self.query_one("#subscription-checkbox", Checkbox)

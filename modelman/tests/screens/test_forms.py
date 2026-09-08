@@ -281,15 +281,14 @@ async def test_modelform_field_order_family_provider_model_location():
 
 @pytest.mark.asyncio
 async def test_modelform_edit_mode_disables_identity_fields():
-    """Edit mode disables provider and model (the model's immutable key);
-    location remains editable to allow correcting mistakes, unless locked
-    by provider kind (native/cloud-only/local-only). Family and pricing
-    checkboxes remain enabled.
+    """Edit mode disables family (display-only), provider, model, and
+    location — the model's immutable identity fields. Pricing checkboxes
+    remain enabled.
 
     Why it matters: Provider/model are the model's immutable identity —
     allowing edits would orphan cross-references in registry.toml and wt's
-    rotation state. Location is mutable to let users fix misclassified
-    models without editing registry.toml by hand.
+    rotation state (issue #52). Location and family are likewise
+    immutable on edit; family is display-only in both modes.
     """
     variant: VariantSpec = {
         "id": "ollama/glm-5.3:cloud",
@@ -311,10 +310,10 @@ async def test_modelform_edit_mode_disables_identity_fields():
         await pilot.pause()
         assert app.screen.query_one("#provider-select", Select).disabled
         assert app.screen.query_one("#model", Input).disabled
-        # Location is NOT disabled for ollama (not a locked kind) — users
-        # must be able to correct mistaken location values.
-        assert not app.screen.query_one("#location-select", Select).disabled
-        assert not app.screen.query_one("#family-select", Select).disabled
+        # Location and family are disabled in edit mode too (issue #52):
+        # all identity fields are immutable once the model is added.
+        assert app.screen.query_one("#location-select", Select).disabled
+        assert app.screen.query_one("#family-select", Select).disabled
         assert not app.screen.query_one("#per-token-checkbox", Checkbox).disabled
         assert not app.screen.query_one("#subscription-checkbox", Checkbox).disabled
 
@@ -342,13 +341,13 @@ async def test_modelform_add_mode_identity_fields_enabled_and_provider_focused()
 
 
 @pytest.mark.asyncio
-async def test_modelform_edit_mode_focuses_family_select():
-    """Edit mode focuses the family Select (the first enabled field) on
-    mount; provider/model are disabled, location remains editable.
+async def test_modelform_edit_mode_focuses_first_editable_field():
+    """Edit mode focuses the first editable field (the per-token pricing
+    checkbox) on mount; family/provider/model/location are all disabled.
 
-    Why it matters: Family is the only identity field safe to edit —
-    focusing it streamlines the common re-family operation and confirms
-    the form respects the disabled-field contract for provider/model.
+    Why it matters: All identity fields are immutable (issue #52), so
+    the only editable controls are the pricing sections — focusing the
+    first one confirms the form respects the disabled-field contract.
     """
     variant: VariantSpec = {
         "id": "ollama/glm-5.3:cloud",
@@ -362,7 +361,7 @@ async def test_modelform_edit_mode_focuses_family_select():
         await pilot.pause()
         app.push_screen(form)
         await pilot.pause()
-        assert _focused_id(app) == "family-select"
+        assert _focused_id(app) == "per-token-checkbox"
 
 
 # ---------------------------------------------------------------------------
