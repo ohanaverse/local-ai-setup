@@ -24,6 +24,10 @@ def _basename(repo: str) -> str:
     return repo.split("/")[-1]
 
 
+def _is_local_path_entry(variant: VariantSpec) -> bool:
+    return bool(variant.get("local_path"))
+
+
 class OMLXProvider(Provider):
     name = "omlx"
 
@@ -43,11 +47,23 @@ class OMLXProvider(Provider):
         """
         self._cancel_requested = True
 
-    def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
+    def _target_dir(self, variant: VariantSpec) -> Path | None:
+        """Resolve the on-disk directory for `variant`, or None if it has
+        neither a local_path nor a repo. local_path (a user-produced
+        mlx-lm.convert/dwq output) takes precedence when set; otherwise
+        falls back to the existing repo-keyed download directory."""
+        local_path = variant.get("local_path")
+        if local_path:
+            return Path(local_path)
         repo = variant.get("repo")
-        if not repo:
+        if repo:
+            return _model_dir(self.config) / _basename(repo)
+        return None
+
+    def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
+        target = self._target_dir(variant)
+        if target is None:
             return False
-        target = _model_dir(self.config) / _basename(repo)
         return target.is_dir() and any(target.iterdir())
 
     def download(
@@ -56,11 +72,21 @@ class OMLXProvider(Provider):
         runner: _Runner | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> str:
-        repo = variant.get("repo")
-        if not repo:
+        target = self._target_dir(variant)
+        if target is None:
             raise ValueError(f"omlx variant {variant['id']} missing repo")
+        if variant.get("local_path"):
+            # local_path artifacts are produced by the user (mlx_lm.convert,
+            # dwq, etc.), not downloaded by modelman — download() is a no-op
+            # success once the directory is confirmed to exist. A missing
+            # directory surfaces as a ValueError now, at "download" time,
+            # rather than silently at serve time.
+            if not target.is_dir():
+                raise ValueError(f"local_path does not exist: {target}")
+            return str(target)
         self._cancel_requested = False
-        target = _model_dir(self.config) / _basename(repo)
+        repo = variant.get("repo")
+        assert repo, "_target_dir resolved without local_path, so repo must be set"
         kwargs: dict[str, Any] = {"repo_id": repo, "local_dir": str(target)}
         with HF_DOWNLOAD_LOCK:
             ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
@@ -89,10 +115,9 @@ class OMLXProvider(Provider):
         return models
 
     def size_of(self, variant: VariantSpec) -> int | None:
-        repo = variant.get("repo")
-        if not repo:
+        target = self._target_dir(variant)
+        if target is None:
             return None
-        target = _model_dir(self.config) / _basename(repo)
         if not target.is_dir():
             return None
         total = 0
@@ -103,10 +128,9 @@ class OMLXProvider(Provider):
 
     def path_of(self, variant: VariantSpec) -> str | None:
         """Return the model directory path, or None if not downloaded."""
-        repo = variant.get("repo")
-        if not repo:
+        target = self._target_dir(variant)
+        if target is None:
             return None
-        target = _model_dir(self.config) / _basename(repo)
         if not target.is_dir() or not any(target.iterdir()):
             return None
         return str(target)
@@ -119,11 +143,13 @@ class OMLXProvider(Provider):
         """
         import shutil
 
-        repo = variant.get("repo")
-        if not repo:
+        target = self._target_dir(variant)
+        if target is None:
             raise ValueError(f"omlx variant {variant['id']} missing repo")
-        target = _model_dir(self.config) / _basename(repo)
-        if target.exists():
+        # local_path entries are convert/dwq output the USER produced by
+        # hand, not a modelman download — modelman must never delete them,
+        # regardless of whether the directory currently exists.
+        if not _is_local_path_entry(variant) and target.exists():
             shutil.rmtree(target)
 
     def cleanup_partial_download(self, variant: VariantSpec) -> None:
@@ -136,11 +162,13 @@ class OMLXProvider(Provider):
         """
         import shutil
 
-        repo = variant.get("repo")
-        if not repo:
+        target = self._target_dir(variant)
+        if target is None:
             return
-        target = _model_dir(self.config) / _basename(repo)
-        if target.exists():
+        # Same local_path exemption as delete(): a user-produced convert/dwq
+        # directory is never something modelman created, so it's never
+        # something modelman removes here either.
+        if not _is_local_path_entry(variant) and target.exists():
             shutil.rmtree(target)
 
 
