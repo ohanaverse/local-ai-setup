@@ -51,6 +51,13 @@ litellm_exposed = true
 [model_state."openrouter/contract-fixture:cloud-exposed"]
 litellm_exposed = true
 
+# Provider-inherited cloud location (issue #46): model has no location of
+# its own; the provider's location = "cloud" exempts it from the ready
+# gate. Exposure: flag=true + provider location=cloud → exposed on BOTH
+# sides (wt ResolveLocation and modelman is_cloud_effective).
+[model_state."pinned-cloud/contract-fixture:inherit"]
+litellm_exposed = true
+
 # Legacy family display names. Writers no longer create these (display
 # names live in registry.toml [[families]]); entries stay loadable so
 # pre-existing files keep working. wt never reads this table.

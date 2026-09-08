@@ -34,6 +34,15 @@ location = "cloud"
 [providers.auth]
 type = "native"
 
+[[providers]]
+id = "pinned-cloud"
+name = "Pinned Cloud"
+location = "cloud"
+[providers.auth]
+type = "api_key"
+base_url = "https://pinned-cloud.example/v1"
+secret_ref = "PINNED_CLOUD_API_KEY"
+
 [[families]]
 name = "contract-fixture"
 display_name = "Contract Fixture"
@@ -67,3 +76,13 @@ family = "contract-fixture"
 provider_id = "agy"
 model_name = "contract-fixture:native"
 tags = ["native"]
+
+# Provider-inherited location: model omits `location`, inheriting the
+# provider's "cloud". Both exposure predicates must treat this as cloud
+# (issue #46).
+[[models]]
+id = "pinned-cloud/contract-fixture:inherit"
+family = "contract-fixture"
+provider_id = "pinned-cloud"
+model_name = "org/contract-fixture-inherit"
+tags = ["code"]

@@ -21,8 +21,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Fatalf("loadRegistry() error: %v", err)
 	}
 
-	if len(providers) != 3 {
-		t.Fatalf("got %d providers, want 3", len(providers))
+	if len(providers) != 4 {
+		t.Fatalf("got %d providers, want 4", len(providers))
 	}
 	ollama, openrouter, agy := providers[0], providers[1], providers[2]
 	if ollama.ID != "ollama" || ollama.Auth.Type != "none" || ollama.Auth.BaseURL != "http://localhost:11434" {
@@ -39,12 +39,22 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("agy provider decoded wrong: %+v", agy)
 	}
 
-	if len(models) != 3 {
-		t.Fatalf("got %d models, want 3", len(models))
+	pinned := providers[3]
+	if pinned.ID != "pinned-cloud" || pinned.Auth.Type != "api_key" || pinned.Location != LocationCloud {
+		t.Errorf("pinned-cloud provider decoded wrong: %+v", pinned)
+	}
+
+	if len(models) != 4 {
+		t.Fatalf("got %d models, want 4", len(models))
 	}
 	cloud := models[1]
 	if cloud.ID != "openrouter/contract-fixture:cloud" || cloud.Location != "cloud" || cloud.ProviderID != "openrouter" {
 		t.Errorf("cloud model decoded wrong: %+v", cloud)
+	}
+
+	inherit := models[3]
+	if inherit.ID != "pinned-cloud/contract-fixture:inherit" || inherit.Location != "" || inherit.ProviderID != "pinned-cloud" {
+		t.Errorf("inherit model decoded wrong: %+v", inherit)
 	}
 }
 
@@ -134,5 +144,41 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 	}
 	if !cfg.IsExposed(native) {
 		t.Errorf("IsExposed(native model %q) = false, want true", native.ID)
+	}
+}
+
+// TestRegistryFixtureProviderLocationInheritance pins issue #46 from the
+// Go side: IsExposed resolves the model's location through the provider,
+// so a flag-on, not-ready model on a location=cloud provider is exposed.
+func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+
+	providers, models, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry() error: %v", err)
+	}
+	c := &Config{Providers: providers, Models: models}
+	deriveNative(c)
+	c.SetExposedForTest(map[string]struct {
+		LitellmExposed bool
+		Ready          bool
+	}{
+		"pinned-cloud/contract-fixture:inherit": {LitellmExposed: true, Ready: false},
+	})
+
+	var inherit *Model
+	for i := range models {
+		if models[i].ID == "pinned-cloud/contract-fixture:inherit" {
+			inherit = &models[i]
+		}
+	}
+	if inherit == nil {
+		t.Fatal("fixture missing pinned-cloud/contract-fixture:inherit")
+	}
+	if inherit.Native {
+		t.Errorf("inherit model %q is native, want non-native", inherit.ID)
+	}
+	if !c.IsExposed(*inherit) {
+		t.Error("IsExposed(inherit model) = false, want true (provider location=cloud must inherit)")
 	}
 }
