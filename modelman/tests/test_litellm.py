@@ -5,9 +5,9 @@ from dataclasses import replace
 import pytest
 
 from modelman.litellm import (
+    PROVIDER_POLICIES,
     ExposeError,
     LiteLLMConfigError,
-    PROVIDER_POLICIES,
     ProviderPolicy,
     _database_url_from_config,
     _reverse_model_index,

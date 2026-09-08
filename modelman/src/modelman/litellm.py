@@ -38,10 +38,14 @@ from .state import StateStore
 class ProviderPolicy:
     """How a provider maps onto LiteLLM's model_list.
 
-    The single source of truth for provider-specific exposure rules: the
+    The source of truth for non-native provider exposure rules: the
     config writer (build_model_list_entry) and the TUI's expose gate
     (screens/models.py) both consult this table, so a new provider needs
-    exactly one edit here and both stay in agreement.
+    exactly one edit here and both stay in agreement. Native providers
+    (auth.type == "native") are exempt by rule: they have no LiteLLM
+    mapping, are always shown exposed by is_effectively_exposed, and are
+    rejected at the apply gate (_validated_entry) even if a stale entry
+    exists here.
 
     - prefix       — LiteLLM `model` field prefix. llamacpp's points at
                      the fixed `openai/local-model` (its api_base is the
@@ -155,7 +159,8 @@ def is_effectively_exposed(
     (`passes_ready_gate` / `_validated_entry`): the apply gate governs whether
     a model can be written into LiteLLM's config and may flip the flag it is
     checking. Native models have no LiteLLM mapping, so they are catalog-only
-    and are rejected earlier by `_validated_entry` via the `policy is None` check.
+    and are rejected earlier by `_validated_entry`'s native guard — even if a
+    stale PROVIDER_POLICIES entry exists for their provider.
 
     Args:
         model: The registry model entry to check.
