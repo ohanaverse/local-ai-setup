@@ -232,5 +232,50 @@ class OllamaProvider(Provider):
                 )
         return models
 
+    def resolve_local(
+        self, variants: list[VariantSpec], runner: _Runner | None = None
+    ) -> list[LocalModel | None] | None:
+        """Answer presence/path/size for every variant with ONE `ollama list`.
+
+        The per-variant methods each spawn their own subprocess (`ollama
+        show` for is_downloaded, another `ollama list` for size_of), so a
+        reconcile over N ollama models cost N+1 subprocesses; this makes it
+        one, which is why reconcile_model_state prefers it when available.
+
+        Presence is name-membership in `ollama list` with a `:latest`
+        fallback — matching how `ollama show <name>` resolves a tagless
+        name — while the reported tag (what `list_local` sees) is what
+        sizes are keyed on. `ollama rm`/`ollama pull` work on the same
+        names, so the presence check never disagrees with the delete step
+        that may follow it.
+        """
+        r = (runner or _default_runner)(["ollama", "list"], capture_output=True, text=True)
+        sizes = _parse_ollama_list_sizes(r.stdout)
+        listed: dict[str, LocalModel] = {}
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("NAME"):
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            name = parts[0]
+            listed[name] = {
+                "variant_id": name,
+                "path": f"ollama:{name}",
+                "size_bytes": sizes.get(name),
+            }
+        results: list[LocalModel | None] = []
+        for variant in variants:
+            name = variant["name"]
+            hit = listed.get(name)
+            if hit is None and ":" not in name.rsplit("/", 1)[-1]:
+                # `ollama show x` resolves `x` to `x:latest`; `ollama list`
+                # reports the literal tag. Only default when the name
+                # carries no tag segment of its own.
+                hit = listed.get(f"{name}:latest")
+            results.append(hit)
+        return results
+
 
 ProviderRegistry.register(OllamaProvider)

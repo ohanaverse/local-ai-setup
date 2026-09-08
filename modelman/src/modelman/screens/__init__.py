@@ -61,19 +61,18 @@ def reconcile_model_state(
     updated when the provider reports them.
 
     Shared by FamilyScreen and ModelScreen's background reconcile workers
-    so the write semantics can't drift between the two screens. Groups by
-    provider and calls `list_local()` at most once per provider — calling
-    it inside the per-model loop turns every ready model into its own
-    subprocess/filesystem scan (e.g. `ollama list`), which multiplies with
-    the size of the ready set.
+    so the write semantics can't drift between the two screens.
 
-    For the ollama provider specifically, `size_of()` is also skipped in
-    the per-model loop: it independently reruns `ollama list` and reparses
-    it for every model, which reintroduces the exact per-model subprocess
-    problem `list_local()`-batching above was written to avoid, just via a
-    different method. Ollama's `list_local()` now returns `size_bytes`
-    parsed from the same single `ollama list` call this function already
-    makes, so sizes for ready ollama models come from there instead.
+    Per provider, `resolve_local()` — the batch presence/path/size check —
+    is tried first: providers that implement it (ollama's single `ollama
+    list` answers everything) cost one subprocess for the whole batch
+    instead of one per model. Providers without a batch implementation
+    (resolve_local returns None) take the per-model path:
+    `is_downloaded()`/`size_of()` per model, and `list_local()` at most
+    once per provider and only when at least one model is ready (calling
+    it inside the per-model loop, or unconditionally, turns every
+    reconcile into an extra subprocess/filesystem scan even when nothing
+    in the batch is downloaded).
     """
     # Deferred import: this module is imported by screens/models.py at
     # module load time, and models.py imports ProviderRegistry back —
@@ -100,76 +99,67 @@ def reconcile_model_state(
         if provider is None:
             continue
 
-        # ollama's size_of() reruns and reparses `ollama list` from scratch
-        # per call — for this provider, size comes from list_local() below
-        # instead (parsed once, from the same `ollama list` output as the
-        # paths), so the per-model loop skips calling size_of() at all.
-        skip_size_of = provider_name == "ollama"
-
-        # First pass: is_downloaded/size_of per model, no list_local yet —
-        # list_local is only worth calling (see below) when something in
-        # this provider's batch actually needs a path looked up.
         checked: list[tuple[ModelEntry, bool, int | None]] = []
-        any_ready = False
-        for m in entries:
-            spec = model_entry_to_variant(m)
-            try:
-                ready = bool(provider.is_downloaded(spec))
-            except Exception:
-                ready = False
-            size: int | None = None
-            if not skip_size_of:
+        paths: dict[int, str] = {}
+        specs = [model_entry_to_variant(m) for m in entries]
+        try:
+            resolved = provider.resolve_local(specs)
+        except Exception:
+            resolved = None
+        if isinstance(resolved, list) and len(resolved) == len(specs):
+            # Batch path: one provider call answered every variant. The
+            # isinstance/length check is the batch contract: a None (not
+            # implemented), a misaligned list (provider bug), or a
+            # malformed result all degrade to the per-model path below
+            # rather than silently dropping variants from reconcile.
+            for i, (m, hit) in enumerate(zip(entries, resolved)):
+                if hit is None:
+                    checked.append((m, False, None))
+                    continue
+                size = hit.get("size_bytes")
+                checked.append((m, True, size if isinstance(size, int) else None))
+                path = hit.get("path")
+                if isinstance(path, str):
+                    paths[i] = path
+        else:
+            # Per-model path (no batch support on this provider).
+            any_ready = False
+            for m, spec in zip(entries, specs):
                 try:
-                    raw = provider.size_of(spec)
-                    if isinstance(raw, int):
-                        size = raw
+                    ready = bool(provider.is_downloaded(spec))
                 except Exception:
-                    size = None
-            checked.append((m, ready, size))
-            any_ready = any_ready or ready
-
-        # Second pass: list_local() called at most once per provider, and
-        # only when at least one model is ready — calling it inside the
-        # per-model loop (or unconditionally per provider) turns every
-        # reconcile into an extra subprocess/filesystem scan (e.g. `ollama
-        # list`) even when nothing in the batch is downloaded.
-        local_by_name: dict[str, str] = {}
-        size_by_name: dict[str, int] = {}
-        if any_ready:
-            try:
-                for lm in provider.list_local():
-                    lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
-                    lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
-                    if isinstance(lm_name, str) and isinstance(lp, str):
-                        local_by_name[lm_name] = lp
-                    if skip_size_of and isinstance(lm_name, str):
-                        sb = lm.get("size_bytes")  # type: ignore[attr-defined]
-                        if isinstance(sb, int):
-                            size_by_name[lm_name] = sb
-            except Exception:
-                pass
-
-        for m, ready, size in checked:
-            local_path = (
-                local_by_name.get(m.model_name) or local_by_name.get(m.id) if ready else None
-            )
-            if skip_size_of and ready and size is None:
-                size = size_by_name.get(m.model_name) or size_by_name.get(m.id)
-                if size is None:
-                    # The real OllamaProvider's list_local() always carries
-                    # size_bytes (parsed from the very `ollama list` call
-                    # that already produced the paths above), so this is
-                    # unreachable in production. It exists only as a safety
-                    # net for a provider whose list_local() doesn't report
-                    # sizes — falling back here (instead of leaving size
-                    # unknown) costs one subprocess call only for a model
-                    # that reconcile couldn't otherwise size at all.
+                    ready = False
+                model_size: int | None = None
+                if ready:
                     try:
-                        raw = provider.size_of(model_entry_to_variant(m))
+                        raw = provider.size_of(spec)
                         if isinstance(raw, int):
-                            size = raw
+                            model_size = raw
                     except Exception:
-                        size = None
+                        model_size = None
+                checked.append((m, ready, model_size))
+                any_ready = any_ready or ready
+
+            # list_local() at most once per provider, and only when at
+            # least one model is ready (see docstring).
+            local_by_name: dict[str, str] = {}
+            if any_ready:
+                try:
+                    for lm in provider.list_local():
+                        lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
+                        lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
+                        if isinstance(lm_name, str) and isinstance(lp, str):
+                            local_by_name[lm_name] = lp
+                except Exception:
+                    pass
+            for i, (m, ready, _size) in enumerate(checked):
+                if ready:
+                    found = local_by_name.get(m.model_name) or local_by_name.get(m.id)
+                    if found is not None:
+                        paths[i] = found
+
+        for i, (m, ready, size) in enumerate(checked):
+            local_path = paths.get(i) if ready else None
 
             if model_has_local_artifact(m, provider_entry):
                 existing = state.get(m.id)

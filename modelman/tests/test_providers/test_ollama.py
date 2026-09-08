@@ -123,6 +123,98 @@ def test_cancel_current_terminates_running_proc():
     )  # not auto-cleared; cleared by _tracked_popen_runner
 
 
+def test_resolve_local_batches_variants_with_one_list(mock_runner):
+    """resolve_local answers presence/path/size for the whole batch from ONE
+    `ollama list` call — that single-subprocess property is why
+    reconcile_model_state prefers it over the per-model
+    is_downloaded/size_of path (which would be N+1 subprocesses for N
+    models)."""
+    from modelman.providers.ollama import OllamaProvider
+
+    stdout = (
+        "NAME                          ID            SIZE      MODIFIED\n"
+        "ornith-1.5:35b                abc123        21 GB     2 days ago\n"
+    )
+    runner = mock_runner(returncode=0, stdout=stdout)
+    p = OllamaProvider({})
+    results = p.resolve_local(
+        [
+            {"id": "x", "provider": "ollama", "name": "ornith-1.5:35b"},
+            {"id": "y", "provider": "ollama", "name": "missing:7b"},
+        ],
+        runner=runner,
+    )
+    assert results is not None
+    assert len(results) == 2
+    assert results[0] == {
+        "variant_id": "ornith-1.5:35b",
+        "path": "ollama:ornith-1.5:35b",
+        "size_bytes": 21 * 1024**3,
+    }
+    assert results[1] is None
+    runner.assert_called_once_with(["ollama", "list"], capture_output=True, text=True)
+
+
+def test_resolve_local_tagless_name_resolves_latest(mock_runner):
+    """A tagless registry name (`ollama show x` resolves x -> x:latest) must
+    be found in `ollama list` output via the :latest fallback — list_local
+    reports the literal tag, and without this a tagless model would read as
+    absent and ready-off/delete flows would disagree with reconcile."""
+    from modelman.providers.ollama import OllamaProvider
+
+    stdout = (
+        "NAME                          ID            SIZE      MODIFIED\n"
+        "gemma4:latest                 abc123        17 GB     1 day ago\n"
+    )
+    runner = mock_runner(returncode=0, stdout=stdout)
+    p = OllamaProvider({})
+    results = p.resolve_local(
+        [{"id": "x", "provider": "ollama", "name": "gemma4"}], runner=runner
+    )
+    assert results is not None
+    assert results[0] is not None
+    assert results[0]["size_bytes"] == 17 * 1024**3
+
+
+def test_resolve_local_tagged_name_never_double_falls_back(mock_runner):
+    """A name that already carries a tag must be looked up exactly — no
+    :latest fallback — so a stale `x:latest` row can never answer for an
+    explicitly-tagged `x:9b` query."""
+    from modelman.providers.ollama import OllamaProvider
+
+    stdout = (
+        "NAME                          ID            SIZE      MODIFIED\n"
+        "gemma4:latest                 abc123        17 GB     1 day ago\n"
+    )
+    runner = mock_runner(returncode=0, stdout=stdout)
+    p = OllamaProvider({})
+    results = p.resolve_local(
+        [{"id": "x", "provider": "ollama", "name": "gemma4:9b"}], runner=runner
+    )
+    assert results is not None
+    assert results[0] is None
+
+
+def test_base_provider_resolve_local_is_none():
+    """The base Provider must not implement resolve_local: a default
+    'loop over the per-variant methods' implementation would defeat the
+    batching point (the caller falls back to those methods anyway), and
+    returning None is how a provider reports 'no batch support'."""
+    from modelman.providers.base import Provider
+
+    class Minimal(Provider):
+        def is_downloaded(self, variant):
+            return False
+
+        def download(self, variant):
+            return ""
+
+        def list_local(self):
+            return []
+
+    assert Minimal({}).resolve_local([]) is None
+
+
 def test_cancel_current_kills_proc_that_ignores_sigterm():
     """If the proc doesn't exit within ~1s after SIGTERM, cancel_current()
     must escalate to kill() (SIGKILL)."""
