@@ -112,7 +112,7 @@ def reconcile_model_state(
             # implemented), a misaligned list (provider bug), or a
             # malformed result all degrade to the per-model path below
             # rather than silently dropping variants from reconcile.
-            for i, (m, hit) in enumerate(zip(entries, resolved)):
+            for i, (m, hit) in enumerate(zip(entries, resolved, strict=True)):
                 if hit is None:
                     checked.append((m, False, None))
                     continue
@@ -124,7 +124,7 @@ def reconcile_model_state(
         else:
             # Per-model path (no batch support on this provider).
             any_ready = False
-            for m, spec in zip(entries, specs):
+            for m, spec in zip(entries, specs, strict=True):
                 try:
                     ready = bool(provider.is_downloaded(spec))
                 except Exception:
