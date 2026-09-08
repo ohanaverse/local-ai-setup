@@ -93,8 +93,10 @@ func parseStatsWindow(s string) (time.Duration, error) {
 // buildStatsRows merges the per-model "(all)" aggregate with every
 // per-(agent,model) combo into one row list, applies the --model/--agent
 // filters, drops rows with zero answered and zero skipped in the window,
-// and sorts by model id (the "(all)" row first within a model, then agent
-// name).
+// and sorts by agent name (the "(all)" aggregate rows first, then model
+// id). The aggregate-first placement is enforced explicitly rather than
+// by lexicographic luck: agent names are user-configured and may sort
+// before "(" (digits, "-", non-ASCII).
 func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time, modelFilter, agentFilter string) []statsRow {
 	modelStats := survey.ModelStats(events, window, asOf)
 	combos := survey.AllAgentModelStats(events, window, asOf)
@@ -131,17 +133,16 @@ func buildStatsRows(events []survey.Event, window time.Duration, asOf time.Time,
 		rows = append(rows, statsRow{ModelID: c.ModelID, Agent: c.Agent, Stats: c.Stats})
 	}
 
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].ModelID != rows[j].ModelID {
-			return rows[i].ModelID < rows[j].ModelID
+	sort.Slice(rows, func(i, j int) bool {
+		// Aggregate rows sort before real-agent rows regardless of how
+		// a configured agent name compares to "(all)" byte-wise.
+		if (rows[i].Agent == statsAllAgents) != (rows[j].Agent == statsAllAgents) {
+			return rows[i].Agent == statsAllAgents
 		}
-		if rows[i].Agent == statsAllAgents {
-			return true
+		if rows[i].Agent != rows[j].Agent {
+			return rows[i].Agent < rows[j].Agent
 		}
-		if rows[j].Agent == statsAllAgents {
-			return false
-		}
-		return rows[i].Agent < rows[j].Agent
+		return rows[i].ModelID < rows[j].ModelID
 	})
 	return rows
 }

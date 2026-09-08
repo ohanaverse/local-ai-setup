@@ -16,20 +16,23 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>]
 ## Output
 
 One row per model's `(all)`-agents aggregate, plus one row per observed
-(agent, model) combo — sorted by model id, `(all)` first, then agent name.
-A combo with zero answered and zero skipped surveys in the window is
-omitted. An empty store (or a filter matching nothing) prints
+(agent, model) combo — sorted by agent name with `(all)` first, then by
+model id. A combo with zero answered and zero skipped surveys in the
+window is omitted. An empty store (or a filter matching nothing) prints
 `no survey data` and always exits 0 — `wt stats` is a report, never a
 gate.
 
 ```
 $ wt stats
 ┌────────────────────┬────────┬─────────┬─────────┬───────┬────┬─────────┐
-│ MODEL               │ AGENT  │ WORKED% │ QUALITY │ SPEED │ N  │ SKIPPED │
+│ MODEL              │ AGENT  │ WORKED% │ QUALITY │ SPEED │ N  │ SKIPPED │
 ├────────────────────┼────────┼─────────┼─────────┼───────┼────┼─────────┤
-│ ollama/gemma4:9b    │ (all)  │ 96%     │ 4.2     │ 3.9   │ 12 │ 2       │
-│ ollama/gemma4:9b    │ claude │ 95%     │ 4.3     │ 4.0   │ 8  │ 1       │
-│ ollama/gemma4:9b    │ codex  │ 100%    │ 3.8     │ 3.5   │ 4  │ 1       │
+│ ollama/gemma4:9b   │ (all)  │ 96%     │ 4.2     │ 3.9   │ 12 │ 2       │
+│ ollama/qwen3.8:27b │ (all)  │ 88%     │ 4.0     │ 4.1   │ 5  │ 1       │
+│ ollama/gemma4:9b   │ claude │ 95%     │ 4.3     │ 4.0   │ 8  │ 1       │
+│ ollama/qwen3.8:27b │ claude │ 90%     │ 4.1     │ 4.2   │ 3  │ 0       │
+│ ollama/gemma4:9b   │ codex  │ 100%    │ 3.8     │ 3.5   │ 4  │ 1       │
+│ ollama/qwen3.8:27b │ codex  │ 80%     │ 3.7     │ 3.9   │ 2  │ 1       │
 └────────────────────┴────────┴─────────┴─────────┴───────┴────┴─────────┘
 ```
 
