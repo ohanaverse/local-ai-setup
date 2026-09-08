@@ -7,7 +7,7 @@ from .chat_streaming import ChatStreamingWorkload
 
 
 class LongStreamingWorkload(ChatStreamingWorkload):
-    spec = WorkloadSpec(  # type: ignore[assignment]
+    spec = WorkloadSpec(
         name="long",
         display_name="Long (REST vs GraphQL, 1024 tokens)",
         prompt=(

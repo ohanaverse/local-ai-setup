@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from modelman.benchmark.agent.task import TaskBundle
@@ -25,28 +25,12 @@ def _git(args: list[str], cwd: Path, check: bool = True) -> subprocess.Completed
 class Workspace:
     root: Path
     baseline_sha: str
-    # Memoized _status_since_baseline() result for this instance. Each row
-    # gets its own fresh Workspace (create_workspace()/destroy_workspace()
-    # bracket a single row — see runner.py's _run_single_row), so caching
-    # here can never leak status across rows or passes. Within one row,
-    # gates.py and runner.py call the three status-reading methods below
-    # up to 5-6 times against an unchanged tree (the only mutation is
-    # seed_hidden(), which explicitly invalidates this cache — see there).
-    # `None` means "not yet computed"; recomputed lazily on next access.
-    _status_cache: list[tuple[str, str]] | None = field(default=None, init=False, repr=False)
 
     def seed_hidden(self, task: TaskBundle) -> None:
         """Copy hidden/'s contents into the bundle's configured tests_dir,
         joining the visible test package so unittest's dotted module names
         resolve. Called only after the agent run has already finished —
-        hidden tests must never be visible during the run itself.
-
-        This is the one call in a row's lifecycle that mutates the tree
-        after _status_since_baseline() may have already been cached (gate
-        9 runs last, after gates 3/6/7 have all read status) — invalidate
-        the cache so a hypothetical later status read (there isn't one
-        today, but a future gate could add one) never sees stale data."""
-        self._status_cache = None
+        hidden tests must never be visible during the run itself."""
         if not task.hidden_dir.is_dir():
             return
         tests_dir = task.gates_config["build"]["tests_dir"]
@@ -60,8 +44,6 @@ class Workspace:
         return _git(["diff", self.baseline_sha, "--cached", "--"], cwd=self.root).stdout
 
     def _status_since_baseline(self) -> list[tuple[str, str]]:
-        if self._status_cache is not None:
-            return self._status_cache
         _git(["add", "-A"], cwd=self.root)
         result = _git(["diff", self.baseline_sha, "--cached", "--name-status", "--"], cwd=self.root)
         entries = []
@@ -85,7 +67,6 @@ class Workspace:
             if _is_build_artifact(name):
                 continue
             entries.append((status, name))
-        self._status_cache = entries
         return entries
 
     def new_files_since_baseline(self) -> list[Path]:

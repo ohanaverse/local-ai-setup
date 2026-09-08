@@ -7,7 +7,7 @@ from .chat_streaming import ChatStreamingWorkload
 
 
 class CodeStreamingWorkload(ChatStreamingWorkload):
-    spec = WorkloadSpec(  # type: ignore[assignment]
+    spec = WorkloadSpec(
         name="code",
         display_name="Code (merge sorted lists)",
         prompt="Write a Python function that merges two sorted lists into one sorted list. Do not use built-in sort.",

@@ -182,7 +182,6 @@ def _run_single_row(
     registry: Registry,
     row_dir: Path,
     live_models_path: Path,
-    live_models: dict,
 ) -> RowRunResult:
     row_dir.mkdir(parents=True, exist_ok=True)
     model = registry.model(row.model_id)
@@ -191,7 +190,6 @@ def _run_single_row(
         model.model_name,
         suite.routes_direct,
         live_models_path=live_models_path,
-        live_models=live_models,
     )
 
     workspace = create_workspace(task)
@@ -471,11 +469,6 @@ def run_suite(
     task = load_task(suite.task_path)
     preflight(suite, registry, task)
 
-    # ~/.pi/agent/models.json is static for the life of this run — load and
-    # parse it once here instead of once per row in _run_single_row, which
-    # used to re-read/re-parse the same file for every row and every pass.
-    live_models = pidriver._load_live_models(live_models_path)
-
     rows = _select_rows(suite.rows, row_filter)
     results_dir = results_dir or DEFAULT_RESULTS_DIR
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -527,7 +520,6 @@ def run_suite(
                         registry,
                         row_dir,
                         live_models_path,
-                        live_models,
                     )
                 )
                 if pass_number < suite.passes:

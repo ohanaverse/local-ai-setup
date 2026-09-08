@@ -7,7 +7,7 @@ from .chat_streaming import ChatStreamingWorkload
 
 
 class ShortStreamingWorkload(ChatStreamingWorkload):
-    spec = WorkloadSpec(  # type: ignore[assignment]
+    spec = WorkloadSpec(
         name="short",
         display_name="Short (hi)",
         prompt="hi",
