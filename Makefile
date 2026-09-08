@@ -4,6 +4,8 @@ SHELL_SCRIPTS := \
 	bin/llm-isolate-provider \
 	bin/llm-restore-providers \
 	bin/lib/poll.sh \
+	bin/lib/mlx-lm-resolve.sh \
+	bin/lib/mlx-lm-server.sh \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \

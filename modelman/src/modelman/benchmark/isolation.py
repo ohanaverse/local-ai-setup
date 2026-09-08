@@ -17,7 +17,9 @@ from modelman.benchmark.errors import BenchmarkError
 # llamacpp retired 2026-09-07 (issue #33): kept as a case branch in
 # bin/llm-isolate-provider but not isolatable. Re-enable steps:
 # docs/reference/provider-artifacts.md
-SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset({"ollama", "omlx", "omlx-6bit"})
+SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset(
+    {"ollama", "omlx", "omlx-6bit", "mlx_lm_server"}
+)
 
 
 @dataclass
@@ -38,11 +40,18 @@ def _helper_path(name: str) -> str:
     return path
 
 
-def isolate_provider(provider_id: str) -> IsolateResult:
-    """Delegate service isolation to the local-ai-setup helper."""
+def isolate_provider(provider_id: str, *extra_args: str) -> IsolateResult:
+    """Delegate service isolation to the local-ai-setup helper.
+
+    `extra_args` is forwarded verbatim, after `provider_id`, to the shell
+    helper's argv — e.g. `isolate_provider("mlx_lm_server", target, draft)`.
+    mlx_lm_server has no default target/draft pairing in the shell script
+    (unlike ollama/omlx, which fall back to a baked-in model name), so the
+    pairing must be passed through explicitly on every call.
+    """
     helper = _helper_path("llm-isolate-provider")
     result = subprocess.run(
-        [helper, provider_id],
+        [helper, provider_id, *extra_args],
         capture_output=True,
         text=True,
         check=False,
