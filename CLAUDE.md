@@ -38,6 +38,18 @@
 - **OpenRouter rows are skipped (N/A) without an API key**: the benchmark reads `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`; missing key → OpenRouter rows written as N/A.
 - **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, 06, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all six go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift. (Run the same grep before and after *any* modelman state change — the list of affected guides may drift.)
 
+## Quick test commands
+
+For focused test runs without live provider interference:
+```bash
+# modelman (Python) — conftest.py autouse fixtures prevent live LiteLLM/ollama calls
+cd modelman && uv run pytest tests/test_expose.py -q
+
+# wt (Go) — no special isolation needed
+cd wt && go test ./cmd/wt -run TestStats
+```
+See `modelman/CLAUDE.md` and `wt/CLAUDE.md` for package-specific test patterns.
+
 ## Adding a New Benchmark Backend
 Isolation logic lives in **one place**: `bin/llm-isolate-provider`. The bash
 benchmark scripts call it (with `LLM_ISOLATE_*_MODEL` env overrides for their
