@@ -184,18 +184,12 @@ class StatusScreen(Screen[None]):
         elif verb == "delete:done":
             log.write(f"  [green]✓[/green] Deleted {label}")
         elif verb == "delete:fail":
-            log.write(f"  [red]✗[/red] Failed to delete {label}")
-            if detail:
-                # Defense-in-depth cap: even if _reason didn't truncate,
-                # a malformed/long detail line should not overflow the
-                # wrap=False RichLog.
-                if len(detail) > 200:
-                    detail = detail[:197] + "…"
-                log.write(f"    [red]{detail}[/red]")
-            self._displayed_failures.append(
-                f"Delete failed for {label}: {detail or '(no reason provided)'}"
+            self._record_failure(
+                log,
+                f"  [red]✗[/red] Failed to delete {label}",
+                f"Delete failed for {label}",
+                detail,
             )
-            self._failure_count += 1
         elif verb == "download:start":
             log.write(f"· Downloading {label}...")
         elif verb == "download:done":
@@ -206,15 +200,12 @@ class StatusScreen(Screen[None]):
             suffix = f" ({detail})" if detail else ""
             log.write(f"  [green]✓[/green] Downloaded {label}{suffix}")
         elif verb == "download:fail":
-            log.write(f"  [red]✗[/red] Failed to download {label}")
-            if detail:
-                if len(detail) > 200:
-                    detail = detail[:197] + "…"
-                log.write(f"    [red]{detail}[/red]")
-            self._displayed_failures.append(
-                f"Download failed for {label}: {detail or '(no reason provided)'}"
+            self._record_failure(
+                log,
+                f"  [red]✗[/red] Failed to download {label}",
+                f"Download failed for {label}",
+                detail,
             )
-            self._failure_count += 1
         elif verb == "download:cancelled":
             log.write(f"  [yellow]![/yellow] Cancelled {label}")
         elif verb == "ready:start":
@@ -227,25 +218,16 @@ class StatusScreen(Screen[None]):
             log.write(f"  [green]✓[/green] Moved {label} → {detail}")
         elif verb in ("expose:fail", "unexpose:fail"):
             action = verb.split(":")[0]
-            log.write(f"  [red]✗[/red] Failed to {action} {label}")
-            if detail:
-                if len(detail) > 200:
-                    detail = detail[:197] + "…"
-                log.write(f"    [red]{detail}[/red]")
-            self._displayed_failures.append(
-                f"{action.title()} failed for {label}: {detail or '(no reason provided)'}"
+            self._record_failure(
+                log,
+                f"  [red]✗[/red] Failed to {action} {label}",
+                f"{action.title()} failed for {label}",
+                detail,
             )
-            self._failure_count += 1
         elif verb == "move:fail":
-            log.write(f"  [red]✗[/red] Failed to move {label}")
-            if detail:
-                if len(detail) > 200:
-                    detail = detail[:197] + "…"
-                log.write(f"    [red]{detail}[/red]")
-            self._displayed_failures.append(
-                f"Move failed for {label}: {detail or '(no reason provided)'}"
+            self._record_failure(
+                log, f"  [red]✗[/red] Failed to move {label}", f"Move failed for {label}", detail
             )
-            self._failure_count += 1
         elif verb == "expose:warning":
             # Non-fatal proxy-restart notice (command unset or failed).
             log.write(f"  [yellow]![/yellow] {detail}")
@@ -254,13 +236,9 @@ class StatusScreen(Screen[None]):
         elif verb == "save:done":
             log.write("  [green]✓[/green] Saved manifest")
         elif verb == "save:fail":
-            log.write("  [red]✗[/red] Failed to save manifest")
-            if detail:
-                if len(detail) > 200:
-                    detail = detail[:197] + "…"
-                log.write(f"    [red]{detail}[/red]")
-            self._displayed_failures.append(f"Save failed: {detail or '(no reason provided)'}")
-            self._failure_count += 1
+            self._record_failure(
+                log, "  [red]✗[/red] Failed to save manifest", "Save failed", detail
+            )
         elif verb == "apply:cancelled":
             self.cancelled = True
             self.done = True
@@ -281,6 +259,28 @@ class StatusScreen(Screen[None]):
                 log.write(
                     "\n[bold green]All operations completed successfully.[/bold green] Press Escape to return."
                 )
+
+    def _record_failure(
+        self, log: RichLog, log_line: str, summary_prefix: str, detail: str
+    ) -> None:
+        """Write a `*:fail` event's log line (+ truncated detail) and record
+        it in the end-of-run failure summary, incrementing the count.
+
+        Centralizes the 200-char detail truncation (defense-in-depth cap
+        for a malformed/long provider message overflowing the wrap=False
+        RichLog) and the summary-list bookkeeping shared by every fail
+        branch below. `log_line` is the already-formatted "Failed to ..."
+        message (wording varies per verb — save:fail has no label).
+        `summary_prefix` is the sentence prepended to the failure summary
+        as "{summary_prefix}: {detail}".
+        """
+        log.write(log_line)
+        if detail:
+            if len(detail) > 200:
+                detail = detail[:197] + "…"
+            log.write(f"    [red]{detail}[/red]")
+        self._displayed_failures.append(f"{summary_prefix}: {detail or '(no reason provided)'}")
+        self._failure_count += 1
 
     def _emit(self, line: str) -> None:
         """Helper for the worker to log a plain line (used before the loop)."""

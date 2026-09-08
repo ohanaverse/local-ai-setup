@@ -168,6 +168,65 @@ class PendingChanges:
     _touched_model_ids: set[str] = field(default_factory=set)
     _forgotten_families: set[str] = field(default_factory=set)
 
+    def _remove_artifact_if_present(
+        self,
+        model_id: str,
+        variant: VariantSpec,
+        label: str,
+        provider: object,
+        fail_prefix: str,
+        emit: EventFn,
+    ) -> bool:
+        """Remove `variant`'s on-disk artifact via `provider.delete()`,
+        handling the shared-artifact-owner conflict check and the
+        delete-exception failure path shared by the deletes loop and the
+        ready-off loop's mapped-provider branch.
+
+        First confirms the artifact is actually present (`is_downloaded`,
+        defaulting to "assume present" if the check itself raises, so a
+        real failure surfaces from the delete attempt rather than being
+        swallowed as "already gone"). If another registry entry's
+        `path_of()` resolves to the same on-disk target, the file is kept
+        and a failure is recorded (but this is not a "hard" failure — the
+        caller still proceeds to clear the registry/state row). If
+        `provider.delete()` raises, that failure is recorded and reported
+        as a hard failure.
+
+        `fail_prefix` distinguishes the two callers' failure-message
+        wording ("delete" for a full delete, "clear" for a ready-off
+        clear) — the only difference between the two call sites.
+
+        Returns True iff a hard failure (delete exception) occurred and
+        the caller should `continue` past the rest of its per-model
+        processing, matching both callers' original control flow.
+        """
+        try:
+            artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
+        except Exception:
+            # Cannot confirm absence; fall back to "try the call" and
+            # surface any failure normally.
+            artifact_present = True
+        if not artifact_present:
+            return False
+        conflict = find_shared_artifact_owner(self.registry, provider, variant)
+        if conflict is not None:
+            # Another registry entry resolves to the same on-disk
+            # artifact; removing it would destroy that entry's weights.
+            # Keep the file, still drop this entry's registry/state rows,
+            # and surface why.
+            reason = f"artifact shared with {conflict.id} — not removed"
+            self.failures.append(f"{fail_prefix} {model_id}: {reason}")
+            emit(f"delete:fail|{model_id}|{label}|{reason}")
+            return False
+        try:
+            self._delete(variant)
+        except Exception as exc:  # noqa: BLE001
+            reason = _reason(exc)
+            self.failures.append(f"{fail_prefix} {model_id}: {exc}")
+            emit(f"delete:fail|{model_id}|{label}|{reason}")
+            return True
+        return False
+
     def cancel(self) -> None:
         """Request cancellation of an in-progress apply().
 
@@ -242,35 +301,11 @@ class PendingChanges:
             label = _label(variant)
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
-            artifact_present = True  # default to "try the call"
-            if provider is not None:
-                try:
-                    artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
-                except Exception:
-                    # Cannot confirm absence; fall back to "try the call"
-                    # and surface any failure normally.
-                    artifact_present = True
             emit(f"delete:start|{model_id}|{label}")
-            if provider is not None and artifact_present:
-                conflict = find_shared_artifact_owner(self.registry, provider, variant)
-                if conflict is not None:
-                    # Another registry entry resolves to the same on-disk
-                    # artifact; removing it would destroy that entry's
-                    # weights. Keep the file, still drop this entry's
-                    # registry/state rows, and surface why.
-                    reason = f"artifact shared with {conflict.id} — not removed"
-                    self.failures.append(f"delete {model_id}: {reason}")
-                    emit(f"delete:fail|{model_id}|{label}|{reason}")
-                else:
-                    # Reconcilable provider with an actual artifact to remove:
-                    # ask it to delete the file.
-                    try:
-                        self._delete(variant)
-                    except Exception as exc:  # noqa: BLE001
-                        reason = _reason(exc)
-                        self.failures.append(f"delete {model_id}: {exc}")
-                        emit(f"delete:fail|{model_id}|{label}|{reason}")
-                        continue
+            if provider is not None and self._remove_artifact_if_present(
+                model_id, variant, label, provider, "delete", emit
+            ):
+                continue
             # Either:
             # - flag-only provider (native/unmapped): no on-disk artifact,
             # - or reconcilable provider with no artifact: nothing to delete.
@@ -407,26 +442,10 @@ class PendingChanges:
                 # Mirror the deletes loop's guard: a stale-ready model whose
                 # artifact is already gone must clear cleanly, not fail and
                 # strand state.ready=True with the unexpose cascade skipped.
-                artifact_present = True
-                try:
-                    artifact_present = bool(provider.is_downloaded(variant))  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001
-                    # Cannot confirm absence; fall back to "try the call".
-                    artifact_present = True
-                if artifact_present:
-                    conflict = find_shared_artifact_owner(self.registry, provider, variant)
-                    if conflict is not None:
-                        reason = f"artifact shared with {conflict.id} — not removed"
-                        self.failures.append(f"clear {model_id}: {reason}")
-                        emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    else:
-                        try:
-                            self._delete(variant)
-                        except Exception as exc:  # noqa: BLE001
-                            reason = _reason(exc)
-                            self.failures.append(f"clear {model_id}: {exc}")
-                            emit(f"delete:fail|{model_id}|{label}|{reason}")
-                            continue
+                if self._remove_artifact_if_present(
+                    model_id, variant, label, provider, "clear", emit
+                ):
+                    continue
                 # (state clear + cascade code below, unchanged — runs whether
                 # the artifact was removed, shared-kept, or already absent)
                 # Unlike the full-delete step above, the ModelEntry stays in

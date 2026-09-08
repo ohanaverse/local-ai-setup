@@ -186,7 +186,10 @@ def _run_single_row(
     row_dir.mkdir(parents=True, exist_ok=True)
     model = registry.model(row.model_id)
     target = pidriver.resolve_pi_target(
-        row, model.model_name, suite.routes_direct, live_models_path=live_models_path
+        row,
+        model.model_name,
+        suite.routes_direct,
+        live_models_path=live_models_path,
     )
 
     workspace = create_workspace(task)
@@ -510,7 +513,13 @@ def run_suite(
                 row_dir = _row_dir(run_dir, index, row, pass_number)
                 results.append(
                     _run_single_row(
-                        row, pass_number, task, suite, registry, row_dir, live_models_path
+                        row,
+                        pass_number,
+                        task,
+                        suite,
+                        registry,
+                        row_dir,
+                        live_models_path,
                     )
                 )
                 if pass_number < suite.passes:

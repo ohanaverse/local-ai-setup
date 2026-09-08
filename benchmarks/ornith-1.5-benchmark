@@ -17,25 +17,9 @@ set -e
 MAX_TOKENS="${1:-200}"
 PROMPT="${2:-Explain in detail the differences between REST and GraphQL APIs, including trade-offs in caching, partial responses, and tooling. Be thorough.}"
 
-build_payload() {
-    local model="$1"
-    local stream="$2"
-    python3 - "$model" "$stream" "$MAX_TOKENS" "$PROMPT" <<'PYEOF'
-import json, sys
-model, stream, max_tokens, prompt = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-stream_bool = stream == "true"
-payload = {
-    "model": model,
-    "messages": [{"role": "user", "content": prompt}],
-    "max_tokens": max_tokens,
-    "stream": stream_bool,
-    "temperature": 0.0
-}
-if stream_bool:
-    payload["stream_options"] = {"include_usage": True}
-print(json.dumps(payload))
-PYEOF
-}
+# Shared build_payload/run_streaming/isolate_one/ensure_all_local_started/
+# write_table_header helpers, also used by qwen3.8-benchmark.
+source "$(dirname "$0")/lib/benchmark-common.sh"
 
 declare -A DIRECT_URLS
 declare -A DIRECT_MODELS
@@ -79,100 +63,6 @@ ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
 ISOLATE_ENV[omlx_4bit]="LLM_ISOLATE_OMLX_4BIT_MODEL"
 ISOLATE_ENV[omlx_6bit]="LLM_ISOLATE_OMLX_6BIT_MODEL"
 
-# Stop all local providers, then start+warmup only the requested backend's
-# model (the helper polls until the model actually answers).
-isolate_one() {
-    local key="$1"
-    echo "  [isolation] isolating ${ISOLATE_ID[$key]} (${DIRECT_MODELS[$key]})..."
-    env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
-        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
-}
-
-
-ensure_all_local_started() {
-    echo "[setup] ensuring all local services are running..."
-    if ! curl -s -m 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
-        launchctl kickstart -k "gui/$(id -u)/com.ollama.ollama" 2>/dev/null || true
-    fi
-    if ! curl -s -m 2 http://localhost:8000/v1/models > /dev/null 2>&1; then
-        omlx start > /dev/null 2>&1 || true
-    fi
-    if ! curl -s -m 2 http://localhost:4000/v1/models > /dev/null 2>&1; then
-        if [ -f ~/Library/LaunchAgents/local.litellm.proxy.plist ]; then
-            launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist 2>/dev/null || true
-        fi
-    fi
-
-    echo "[setup] waiting for services..."
-    for i in {1..30}; do
-        ok=true
-        curl -s -m 1 http://localhost:11434/api/tags > /dev/null 2>&1 || ok=false
-        curl -s -m 1 http://localhost:8000/v1/models > /dev/null 2>&1 || ok=false
-        curl -s -m 1 http://localhost:4000/v1/models > /dev/null 2>&1 || ok=false
-        [ "$ok" = "true" ] && break
-        sleep 2
-    done
-}
-
-run_streaming() {
-    local label="$1"
-    local url="$2"
-    local model="$3"
-
-    local payload
-    payload=$(build_payload "$model" "true")
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    local start_ns
-    start_ns=$(date +%s%N)
-    local first_token_ns=""
-
-    curl -s -m 600 -N "$url" \
-        -H "Content-Type: application/json" \
-        -d "$payload" > "$tmpfile" 2>&1 &
-    local pid=$!
-
-    while kill -0 "$pid" 2>/dev/null; do
-        local current_size
-        current_size=$(wc -c < "$tmpfile" 2>/dev/null | tr -d ' ' || echo 0)
-        if [ -z "$first_token_ns" ] && [ "$current_size" -gt 50 ]; then
-            first_token_ns=$(date +%s%N)
-        fi
-        sleep 0.02
-    done
-
-    wait "$pid" || true
-    local end_ns
-    end_ns=$(date +%s%N)
-
-    local duration_ms=$(( (end_ns - start_ns) / 1000000 ))
-    local ttft_ms="N/A"
-    if [ -n "$first_token_ns" ]; then
-        ttft_ms=$(( (first_token_ns - start_ns) / 1000000 ))
-    fi
-
-    local token_count
-    token_count=$(grep -oE '"completion_tokens":[0-9]+' "$tmpfile" | tail -1 | grep -oE '[0-9]+' || echo "0")
-
-    if [ "$token_count" = "0" ]; then
-        token_count=$(grep -E '"content":"[^"]' "$tmpfile" | wc -l | tr -d ' ')
-    fi
-
-    local throughput="N/A"
-    if [ "${token_count:-0}" -gt 0 ] 2>/dev/null && [ "$duration_ms" -gt 0 ]; then
-        local gen_time_ms=$(( duration_ms - ttft_ms ))
-        if [ "$gen_time_ms" -gt 0 ]; then
-            throughput=$(python3 -c "print(f'{int($token_count) / ($gen_time_ms/1000):.2f}')")
-        fi
-    fi
-
-    echo "  $label: TTFT=${ttft_ms}ms, total=${duration_ms}ms, tokens=${token_count}, throughput=${throughput} tok/s"
-    echo "| $label | $ttft_ms | $duration_ms | $token_count | $throughput |" >> "$OUTFILE"
-
-    rm -f "$tmpfile"
-}
-
 OUTFILE="/tmp/ornith-1.5-benchmark-$(date +%Y%m%d-%H%M%S).md"
 {
     echo "# Ornith-1.5 Benchmark Results (ISOLATED runs)"
@@ -196,12 +86,7 @@ echo "=== Ornith-1.5 Benchmark — max_tokens=$MAX_TOKENS ==="
 echo "    (isolated local runs)"
 echo ""
 
-{
-    echo "## Isolated local runs (bypassing LiteLLM)"
-    echo
-    echo "| Backend | TTFT (ms) | Total (ms) | Tokens | Throughput (tok/s) |"
-    echo "|---------|----------:|-----------:|-------:|-------------------:|"
-} >> "$OUTFILE"
+write_table_header "Isolated local runs (bypassing LiteLLM)"
 
 echo "## Direct backend (ISOLATED, one model loaded at a time):"
 for backend in ollama omlx_4bit omlx_6bit; do
@@ -213,13 +98,8 @@ for backend in ollama omlx_4bit omlx_6bit; do
     run_streaming "$display_name (direct)" "${DIRECT_URLS[$backend]}" "${DIRECT_MODELS[$backend]}"
 done
 
-{
-    echo
-    echo "## Isolated local runs (via LiteLLM)"
-    echo
-    echo "| Backend | TTFT (ms) | Total (ms) | Tokens | Throughput (tok/s) |"
-    echo "|---------|----------:|-----------:|-------:|-------------------:|"
-} >> "$OUTFILE"
+echo >> "$OUTFILE"
+write_table_header "Isolated local runs (via LiteLLM)"
 
 echo ""
 echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"

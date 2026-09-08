@@ -18,11 +18,9 @@ and docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import os
 import subprocess
-import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -30,7 +28,8 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from .registry import Cost, ModelEntry, ProviderEntry, Registry
+from ._toml_io import atomic_write
+from .registry import LOCATION_CLOUD, Cost, ModelEntry, ProviderEntry, Registry
 from .state import StateStore
 
 
@@ -113,10 +112,10 @@ def is_cloud_effective(model: ModelEntry, registry: Registry) -> bool:
     Note: native providers are excluded upstream — `is_effectively_exposed`
     short-circuits on native models before this predicate runs.
     """
-    if is_cloud(model.provider_id) or model.location == "cloud":
+    if is_cloud(model.provider_id) or model.location == LOCATION_CLOUD:
         return True
     try:
-        return registry.provider(model.provider_id).location == "cloud"
+        return registry.provider(model.provider_id).location == LOCATION_CLOUD
     except KeyError:
         return False
 
@@ -458,27 +457,13 @@ def save_litellm_config(config: dict[str, Any], path: Path) -> None:
     Round-trip mode preserves the comments and layout of content
     modelman did not touch; only targeted mutations re-serialize.
 
-    The replacement file inherits the existing file's permission bits:
-    mkstemp creates 0600 and os.replace preserves that mode, so without
-    the chmod a config readable by a LiteLLM service running as another
-    user would silently tighten to 0600 on the first write.
+    `preserve_mode=True`: the replacement file inherits the existing
+    file's permission bits. mkstemp creates 0600 and os.replace preserves
+    that mode, so without this a config readable by a LiteLLM service
+    running as another user would silently tighten to 0600 on the first
+    write.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing_mode = path.stat().st_mode & 0o777
-    except OSError:
-        existing_mode = None
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        if existing_mode is not None:
-            os.fchmod(fd, existing_mode)
-        with os.fdopen(fd, "w") as f:
-            _rt_yaml().dump(config, f)
-        os.replace(tmp_name, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
-        raise
+    atomic_write(path, lambda f: _rt_yaml().dump(config, f), preserve_mode=True)
 
 
 def _set_exposed_flag(state: StateStore, model_id: str, exposed: bool) -> bool:

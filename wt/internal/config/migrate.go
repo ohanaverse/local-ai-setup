@@ -154,23 +154,7 @@ func Migrate() (bool, error) {
 	// opencode will never get a native provider here, so this loop just
 	// creates a missing entry or rewires an existing one to ollama-only.
 	for name := range noNativeAgents {
-		found := false
-		for i := range cfg.Agents {
-			if cfg.Agents[i].Name != name {
-				continue
-			}
-			found = true
-			cfg.Agents[i].SupportedProviders = []string{"ollama"}
-			cfg.Agents[i].DefaultProvider = "ollama"
-			break
-		}
-		if !found {
-			cfg.Agents = append(cfg.Agents, Agent{
-				Name:               name,
-				SupportedProviders: []string{"ollama"},
-				DefaultProvider:    "ollama",
-			})
-		}
+		upsertAgent(cfg, name, []string{"ollama"}, "ollama", true)
 	}
 
 	// Seed agy: provider + model + agent. Use the same naming scheme as
@@ -194,22 +178,7 @@ func Migrate() (bool, error) {
 		Location:   LocationCloud,
 		Tags:       []string{"code", "design"},
 	}})
-	agyFound := false
-	for i := range cfg.Agents {
-		if cfg.Agents[i].Name == "agy" {
-			agyFound = true
-			cfg.Agents[i].SupportedProviders = []string{"agy"}
-			cfg.Agents[i].DefaultProvider = "agy"
-			break
-		}
-	}
-	if !agyFound {
-		cfg.Agents = append(cfg.Agents, Agent{
-			Name:               "agy",
-			SupportedProviders: []string{"agy"},
-			DefaultProvider:    "agy",
-		})
-	}
+	upsertAgent(cfg, "agy", []string{"agy"}, "agy", true)
 
 	if err := saveFull(cfg); err != nil {
 		return false, err
@@ -391,40 +360,43 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 	}
 
 	// ── Fixup 2: ensure an agy agent exists ──────────────────────────
-	agyAgentFound := false
-	for i := range cfg.Agents {
-		if cfg.Agents[i].Name == "agy" {
-			agyAgentFound = true
-			if !slices.Equal(cfg.Agents[i].SupportedProviders, []string{"agy"}) ||
-				cfg.Agents[i].DefaultProvider != "agy" {
-				cfg.Agents[i].SupportedProviders = []string{"agy"}
-				cfg.Agents[i].DefaultProvider = "agy"
-				changed = true
-			}
-			break
-		}
-	}
-	if !agyAgentFound {
-		cfg.Agents = append(cfg.Agents, Agent{
-			Name:               "agy",
-			SupportedProviders: []string{"agy"},
-			DefaultProvider:    "agy",
-		})
+	if upsertAgent(cfg, "agy", []string{"agy"}, "agy", true) {
 		changed = true
 	}
 
 	// ── Fixup 3: rewire the opencode agent to ollama only ────────────
-	for i := range cfg.Agents {
-		if cfg.Agents[i].Name != "opencode" {
-			continue
-		}
-		if !slices.Equal(cfg.Agents[i].SupportedProviders, []string{"ollama"}) ||
-			cfg.Agents[i].DefaultProvider != "ollama" {
-			cfg.Agents[i].SupportedProviders = []string{"ollama"}
-			cfg.Agents[i].DefaultProvider = "ollama"
-			changed = true
-		}
+	// insertIfMissing is false: unlike agy, opencode never gets a fresh
+	// agent entry created here if it doesn't already exist.
+	if upsertAgent(cfg, "opencode", []string{"ollama"}, "ollama", false) {
+		changed = true
 	}
 
 	return changed, nil
+}
+
+// upsertAgent finds the agent named name in cfg.Agents (via AgentByName) and
+// rewrites its SupportedProviders/DefaultProvider to providers/
+// defaultProvider if they differ. If no such agent exists and insertIfMissing
+// is true, a new Agent is appended with those fields. Reports whether
+// cfg.Agents was actually mutated (an existing agent's fields were rewritten,
+// or a new agent was appended) — migrateConfigSchema uses this to drive its
+// idempotency tracking; the Migrate() call sites ignore it.
+func upsertAgent(cfg *Config, name string, providers []string, defaultProvider string, insertIfMissing bool) bool {
+	if a, err := cfg.AgentByName(name); err == nil {
+		if slices.Equal(a.SupportedProviders, providers) && a.DefaultProvider == defaultProvider {
+			return false
+		}
+		a.SupportedProviders = providers
+		a.DefaultProvider = defaultProvider
+		return true
+	}
+	if !insertIfMissing {
+		return false
+	}
+	cfg.Agents = append(cfg.Agents, Agent{
+		Name:               name,
+		SupportedProviders: providers,
+		DefaultProvider:    defaultProvider,
+	})
+	return true
 }

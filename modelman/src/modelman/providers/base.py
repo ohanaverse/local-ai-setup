@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, TypedDict
+from typing import Any, Protocol, TypedDict
+
+
+class _Runner(Protocol):
+    """Shared shape for the optional subprocess/HF-call runner providers
+    accept so tests can substitute a mock. `*args` (rather than a fixed
+    `args: list[str]`) is the more general signature: it covers ollama's
+    single-list-positional call style and llamacpp/omlx's freeform
+    `snapshot_download`-style calls without narrowing either."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 class VariantSpec(TypedDict, total=False):
@@ -50,6 +60,28 @@ class Provider(ABC):
 
     @abstractmethod
     def list_local(self) -> list[LocalModel]: ...
+
+    def resolve_local(
+        self, variants: list[VariantSpec]
+    ) -> list[LocalModel | None] | None:
+        """Resolve several variants in one pass: presence, on-disk path, and
+        size for each, positionally aligned with `variants`.
+
+        Returns `None` when the provider has no batch implementation —
+        callers fall back to per-variant `is_downloaded()`/`size_of()`
+        (and `list_local()` for paths). Providers whose check is one
+        subprocess serving every variant (e.g. ollama's single `ollama
+        list`) override this so a caller reconciling N models costs one
+        subprocess instead of N.
+
+        Per-variant results mirror the per-variant methods: `None` means
+        not downloaded; a `LocalModel` means present (with whatever
+        `path`/`size_bytes` the provider can report — either may be
+        unknown). A default "resolve everything via the per-variant
+        methods" implementation would defeat the point; the base returns
+        `None` so unimplemented is unimplemented.
+        """
+        return None
 
     def size_of(self, variant: VariantSpec) -> int | None:
         """Return the on-disk size in bytes for this variant, or None if unknown.

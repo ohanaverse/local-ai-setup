@@ -23,6 +23,8 @@ from ..litellm import (
 from ..queue import PendingChanges
 from ..registry import (
     DEFAULT_PROVIDER_IDS,
+    LOCATION_CLOUD,
+    LOCATION_LOCAL,
     Cost,
     Fetch,
     ModelEntry,
@@ -147,9 +149,9 @@ def _format_location(location: str | None) -> str:
     """LOC column icon: cloud, local, or unknown."""
     if location is None or location == "":
         return "—"
-    if location == "cloud":
+    if location == LOCATION_CLOUD:
         return "↗"
-    if location == "local":
+    if location == LOCATION_LOCAL:
         return "▤"
     return location
 
@@ -666,7 +668,7 @@ class ModelScreen(Screen[None]):
     def action_add_model(self) -> None:
         from .forms import ModelForm
 
-        providers = self._provider_list() or ["ollama", "llamacpp", "omlx"]
+        providers = self._provider_list() or list(DEFAULT_PROVIDER_IDS)
         # Pre-select the provider the user is currently looking at, so
         # adding "another llamacpp model" doesn't make them switch the
         # dropdown back. Fall back to None if no provider is selected.

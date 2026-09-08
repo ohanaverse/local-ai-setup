@@ -5,16 +5,15 @@ set -e
 
 LOG_PREFIX="[llm-restore-providers]"
 
+# shellcheck source=lib/poll.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/poll.sh"
+
 # Wait up to N seconds for a service to answer on its health URL.
 wait_for() {
     local url="$1" name="$2" tries="${3:-30}"
-    local i
-    for ((i = 0; i < tries; i++)); do
-        if curl -s -m 2 "$url" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
+    if poll_until_up "$url" 1 "$tries"; then
+        return 0
+    fi
     echo "$LOG_PREFIX $name did not come back up ($url)" >&2
     return 1
 }

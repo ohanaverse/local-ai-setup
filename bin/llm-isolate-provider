@@ -8,6 +8,9 @@
 
 set -e
 
+# shellcheck source=lib/poll.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/poll.sh"
+
 PROVIDER="$1"
 if [ -z "$PROVIDER" ]; then
     echo "usage: llm-isolate-provider <provider-id>" >&2
@@ -50,25 +53,48 @@ PYEOF
 # After each stop, poll (bounded) until the provider actually lets go instead
 # of sleeping a fixed 3s. Timeouts warn but are not fatal — a stuck stop must
 # not abort the whole isolation (the pre-poll `sleep 3` never did).
+#
+# The providers being stopped are independent processes/ports, so each
+# stop+poll pair is backgrounded and waited on together — isolating costs the
+# slowest stop rather than their sum (same pattern as llm-restore-providers'
+# parallel restart). Only the "all non-target providers stopped before this
+# function returns" guarantee matters to callers, not the order among them.
 stop_all_local() {
     local keep="$1"
+    local pids=()
+
     if [ "$keep" != "ollama" ]; then
-        silence_stdout ollama stop "$OLLAMA_MODEL" || true
-        # `ollama stop` unloads the model but keeps the daemon (port 11434) up,
-        # so poll `ollama ps` for an empty model list, not the port.
-        wait_for_ollama_unloaded 5 \
-            || echo "warning: ollama still has $OLLAMA_MODEL loaded" >&2
+        (
+            silence_stdout ollama stop "$OLLAMA_MODEL" || true
+            # `ollama stop` unloads the model but keeps the daemon (port
+            # 11434) up, so poll `ollama ps` for an empty model list, not
+            # the port.
+            wait_for_ollama_unloaded 5 \
+                || echo "warning: ollama still has $OLLAMA_MODEL loaded" >&2
+        ) &
+        pids+=("$!")
     fi
     if [ "$keep" != "omlx" ]; then
-        silence_stdout omlx stop || true
-        wait_for_port_closed http://localhost:8000/v1/models 5 \
-            || echo "warning: omlx still listening on port 8000" >&2
+        (
+            silence_stdout omlx stop || true
+            wait_for_port_closed http://localhost:8000/v1/models 5 \
+                || echo "warning: omlx still listening on port 8000" >&2
+        ) &
+        pids+=("$!")
     fi
     if [ "$keep" != "llamacpp" ] && [ -f ~/Library/LaunchAgents/local.llamacpp.server.plist ]; then
-        launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
-        wait_for_port_closed http://localhost:8080/v1/models 5 \
-            || echo "warning: llama.cpp still listening on port 8080" >&2
+        (
+            launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist 2>/dev/null || true
+            wait_for_port_closed http://localhost:8080/v1/models 5 \
+                || echo "warning: llama.cpp still listening on port 8080" >&2
+        ) &
+        pids+=("$!")
     fi
+
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid"
+    done
 }
 
 # Poll until `ollama ps` lists no loaded models (model unload ≈ GPU/RAM freed).
@@ -88,14 +114,7 @@ wait_for_ollama_unloaded() {
 # Used after issuing a stop to confirm the OS reclaimed the port.
 wait_for_port_closed() {
     local url="$1" tries="${2:-5}"
-    local i
-    for ((i = 0; i < tries; i++)); do
-        if ! curl -s -m 1 "$url" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 0.2
-    done
-    return 1
+    poll_until_down "$url" 0.2 "$tries"
 }
 
 # Warm up a model on a running server, retrying until it answers or we give up.

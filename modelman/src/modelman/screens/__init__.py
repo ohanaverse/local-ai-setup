@@ -61,11 +61,18 @@ def reconcile_model_state(
     updated when the provider reports them.
 
     Shared by FamilyScreen and ModelScreen's background reconcile workers
-    so the write semantics can't drift between the two screens. Groups by
-    provider and calls `list_local()` at most once per provider — calling
-    it inside the per-model loop turns every ready model into its own
-    subprocess/filesystem scan (e.g. `ollama list`), which multiplies with
-    the size of the ready set.
+    so the write semantics can't drift between the two screens.
+
+    Per provider, `resolve_local()` — the batch presence/path/size check —
+    is tried first: providers that implement it (ollama's single `ollama
+    list` answers everything) cost one subprocess for the whole batch
+    instead of one per model. Providers without a batch implementation
+    (resolve_local returns None) take the per-model path:
+    `is_downloaded()`/`size_of()` per model, and `list_local()` at most
+    once per provider and only when at least one model is ready (calling
+    it inside the per-model loop, or unconditionally, turns every
+    reconcile into an extra subprocess/filesystem scan even when nothing
+    in the batch is downloaded).
     """
     # Deferred import: this module is imported by screens/models.py at
     # module load time, and models.py imports ProviderRegistry back —
@@ -92,47 +99,67 @@ def reconcile_model_state(
         if provider is None:
             continue
 
-        # First pass: is_downloaded/size_of per model, no list_local yet —
-        # list_local is only worth calling (see below) when something in
-        # this provider's batch actually needs a path looked up.
         checked: list[tuple[ModelEntry, bool, int | None]] = []
-        any_ready = False
-        for m in entries:
-            spec = model_entry_to_variant(m)
-            try:
-                ready = bool(provider.is_downloaded(spec))
-            except Exception:
-                ready = False
-            size: int | None = None
-            try:
-                raw = provider.size_of(spec)
-                if isinstance(raw, int):
-                    size = raw
-            except Exception:
-                size = None
-            checked.append((m, ready, size))
-            any_ready = any_ready or ready
+        paths: dict[int, str] = {}
+        specs = [model_entry_to_variant(m) for m in entries]
+        try:
+            resolved = provider.resolve_local(specs)
+        except Exception:
+            resolved = None
+        if isinstance(resolved, list) and len(resolved) == len(specs):
+            # Batch path: one provider call answered every variant. The
+            # isinstance/length check is the batch contract: a None (not
+            # implemented), a misaligned list (provider bug), or a
+            # malformed result all degrade to the per-model path below
+            # rather than silently dropping variants from reconcile.
+            for i, (m, hit) in enumerate(zip(entries, resolved, strict=True)):
+                if hit is None:
+                    checked.append((m, False, None))
+                    continue
+                size = hit.get("size_bytes")
+                checked.append((m, True, size if isinstance(size, int) else None))
+                path = hit.get("path")
+                if isinstance(path, str):
+                    paths[i] = path
+        else:
+            # Per-model path (no batch support on this provider).
+            any_ready = False
+            for m, spec in zip(entries, specs, strict=True):
+                try:
+                    ready = bool(provider.is_downloaded(spec))
+                except Exception:
+                    ready = False
+                model_size: int | None = None
+                if ready:
+                    try:
+                        raw = provider.size_of(spec)
+                        if isinstance(raw, int):
+                            model_size = raw
+                    except Exception:
+                        model_size = None
+                checked.append((m, ready, model_size))
+                any_ready = any_ready or ready
 
-        # Second pass: list_local() called at most once per provider, and
-        # only when at least one model is ready — calling it inside the
-        # per-model loop (or unconditionally per provider) turns every
-        # reconcile into an extra subprocess/filesystem scan (e.g. `ollama
-        # list`) even when nothing in the batch is downloaded.
-        local_by_name: dict[str, str] = {}
-        if any_ready:
-            try:
-                for lm in provider.list_local():
-                    lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
-                    lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
-                    if isinstance(lm_name, str) and isinstance(lp, str):
-                        local_by_name[lm_name] = lp
-            except Exception:
-                pass
+            # list_local() at most once per provider, and only when at
+            # least one model is ready (see docstring).
+            local_by_name: dict[str, str] = {}
+            if any_ready:
+                try:
+                    for lm in provider.list_local():
+                        lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
+                        lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
+                        if isinstance(lm_name, str) and isinstance(lp, str):
+                            local_by_name[lm_name] = lp
+                except Exception:
+                    pass
+            for i, (m, ready, _size) in enumerate(checked):
+                if ready:
+                    found = local_by_name.get(m.model_name) or local_by_name.get(m.id)
+                    if found is not None:
+                        paths[i] = found
 
-        for m, ready, size in checked:
-            local_path = (
-                local_by_name.get(m.model_name) or local_by_name.get(m.id) if ready else None
-            )
+        for i, (m, ready, size) in enumerate(checked):
+            local_path = paths.get(i) if ready else None
 
             if model_has_local_artifact(m, provider_entry):
                 existing = state.get(m.id)

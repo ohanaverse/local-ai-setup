@@ -27,6 +27,10 @@ def _seed(monkeypatch, *, models, provider_location="local"):
     state = StateStore()
     stub = MagicMock()
     stub.name = "ollama"
+    # No resolve_local stub: a bare MagicMock's auto-created resolve_local
+    # returns a non-list, which reconcile's batch-contract check treats as
+    # "no batch support" — exactly the per-model fallback path these tests
+    # exercise. (The one batch-path test below sets resolve_local itself.)
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
     return reg, state, stub
 
@@ -84,19 +88,27 @@ def test_reconcile_model_state_skips_list_local_when_nothing_ready(monkeypatch):
 def test_reconcile_model_state_marks_local_artifact_ready(monkeypatch):
     """A local-artifact model the provider reports as downloaded must have
     ready/disk_path/size_bytes written into state — the core contract both
-    screens rely on to show ready/size without a manual toggle."""
+    screens rely on to show ready/size without a manual toggle.
+
+    Exercises the batch path: resolve_local answers presence, path, and
+    size for the whole batch with one provider call, so is_downloaded,
+    size_of, and list_local are never consulted."""
     models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
     reg, state, stub = _seed(monkeypatch, models=models)
-    stub.is_downloaded.return_value = True
-    stub.size_of.return_value = 12345
-    stub.list_local.return_value = [{"name": "a", "local_path": "/models/a"}]
+    stub.resolve_local.return_value = [
+        {"variant_id": "a", "path": "ollama:a", "size_bytes": 12345}
+    ]
 
     reconcile_model_state(models, reg, state)
 
     result = state.get("ollama/a")
     assert result.ready is True
-    assert result.disk_path == "/models/a"
+    assert result.disk_path == "ollama:a"
     assert result.size_bytes == 12345
+    stub.resolve_local.assert_called_once()
+    stub.is_downloaded.assert_not_called()
+    stub.size_of.assert_not_called()
+    stub.list_local.assert_not_called()
 
 
 def test_reconcile_model_state_clears_ready_when_artifact_missing(monkeypatch):
@@ -115,6 +127,33 @@ def test_reconcile_model_state_clears_ready_when_artifact_missing(monkeypatch):
     assert result.ready is False
     assert result.disk_path is None
     assert result.size_bytes is None
+
+
+def test_reconcile_model_state_misaligned_batch_degrades_to_per_model(monkeypatch):
+    """The batch contract requires a list aligned with the specs: a
+    resolve_local() that returns the wrong length (provider bug) must
+    degrade to the per-model path, not silently drop variants from
+    reconcile — every ready model still gets its state row written."""
+    models = [
+        ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+        ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
+    ]
+    reg, state, stub = _seed(monkeypatch, models=models)
+    stub.resolve_local.return_value = [
+        {"variant_id": "a", "path": "ollama:a", "size_bytes": 1}
+    ]  # length 1 != 2 specs
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 7
+    stub.list_local.return_value = [
+        {"name": "a", "local_path": "/models/a"},
+        {"name": "b", "local_path": "/models/b"},
+    ]
+
+    reconcile_model_state(models, reg, state)
+
+    assert state.get("ollama/a").ready is True
+    assert state.get("ollama/b").ready is True
+    assert state.get("ollama/b").disk_path == "/models/b"
 
 
 def test_reconcile_model_state_never_readies_cloud_located_model(monkeypatch):
@@ -140,7 +179,12 @@ def test_reconcile_model_state_never_readies_cloud_located_model(monkeypatch):
 def test_reconcile_model_state_survives_list_local_failure(monkeypatch, side_effect):
     """A provider's list_local() call is best-effort (e.g. a transient
     `ollama list` failure) and must not abort reconcile for every other
-    model — is_downloaded/size_of/ready still get written."""
+    model — is_downloaded/size_of/ready still get written.
+
+    On the per-model path (resolve_local == None), size comes from
+    size_of() when the provider reports the model present, so a
+    list_local() failure costs only the disk_path, never ready/size. That
+    per-model sizing is what this test exercises and must keep working."""
     models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
     reg, state, stub = _seed(monkeypatch, models=models)
     stub.is_downloaded.return_value = True
