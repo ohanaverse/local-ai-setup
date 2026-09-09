@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,7 +10,11 @@ from pathlib import Path
 import requests
 
 from modelman.benchmark.errors import BenchmarkError
-from modelman.benchmark.isolation import isolate_provider, restore_providers
+from modelman.benchmark.isolation import (
+    isolate_provider,
+    mlx_lm_server_pairing_args,
+    restore_providers,
+)
 from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
@@ -90,43 +93,23 @@ def discover_targets(
     return targets
 
 
-def _normalize_pairing_arg(value: str, *, is_path: bool) -> str:
-    """Normalize one isolate extra-arg: expand and absolutize local_path
-    values (so the isolation key is stable across equivalent spellings —
-    relative vs absolute, trailing slashes, ~ expansion — without requiring
-    the path to exist), but forward HF repo ids verbatim: mlx_lm.server
-    accepts both forms, and abspath'ing a repo id like "org/model" would
-    mangle it into a nonexistent cwd-prefixed filesystem path.
-    """
-    if not is_path:
-        return value
-    return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
-
-
 def _isolate_extra_args(target: Target) -> tuple[str, ...]:
     """Resolve the positional args isolate_provider() must forward for this
     target's provider.
 
-    Every provider except mlx_lm_server takes none. mlx_lm_server has no
-    baked-in default pairing in bin/llm-isolate-provider, so the target+draft
-    strings (local_path preferred over repo, matching the providers'
-    resolution order) must be supplied on every call.
+    Every provider except mlx_lm_server takes none; mlx_lm_server's
+    target+draft pairing resolution (local_path over repo, repo ids
+    verbatim) lives in isolation.mlx_lm_server_pairing_args, shared with the
+    agent benchmark runner, which faces the same helper requirement.
     """
     if target.provider_id != "mlx_lm_server":
         return ()
-    target_str = target.local_path or target.repo
-    draft_str = target.draft_local_path or target.draft_repo
-    if not target_str or not draft_str:
-        raise BenchmarkError(
-            f"mlx_lm_server target {target.model_id!r} is missing a target or "
-            "draft repo/local_path in the registry"
-        )
-    # The local_path-vs-repo fields are the source-of-truth discriminator:
-    # only a value sourced from a local_path field is a filesystem path that
-    # may be normalized; a repo value is an HF repo id and passes through.
-    return (
-        _normalize_pairing_arg(target_str, is_path=target.local_path is not None),
-        _normalize_pairing_arg(draft_str, is_path=target.draft_local_path is not None),
+    return mlx_lm_server_pairing_args(
+        target.model_id,
+        target.local_path,
+        target.repo,
+        target.draft_local_path,
+        target.draft_repo,
     )
 
 

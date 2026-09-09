@@ -24,6 +24,7 @@ from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, prefli
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 from modelman.benchmark.errors import BenchmarkError
+from modelman.benchmark.isolation import mlx_lm_server_pairing_args
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -272,6 +273,33 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
+def _isolate_extra_args_for_group(
+    provider_id: str, group_rows: list[RowConfig], registry: Registry
+) -> tuple[str, ...]:
+    """Resolve the positional args isolate_provider() needs for this group.
+
+    Every provider except mlx_lm_server takes none. mlx_lm_server has no
+    baked-in default pairing in bin/llm-isolate-provider — the helper exits 1
+    without a target+draft — so the pairing must be resolved from the
+    registry the same way modelman.benchmark.runner resolves it (shared
+    helper): local_path over repo, per side, on the group's first row's
+    model. All rows in a group share one provider_id, and mlx_lm_server
+    addresses the server by its model_name, so the first row is the pairing
+    source; suite-level validation (registry.model() in suite parsing)
+    already guarantees every row's model exists.
+    """
+    if provider_id != "mlx_lm_server":
+        return ()
+    model = registry.model(group_rows[0].model_id)
+    return mlx_lm_server_pairing_args(
+        model.id,
+        model.fetch.local_path if model.fetch else None,
+        model.fetch.repo if model.fetch else None,
+        model.draft.local_path if model.draft else None,
+        model.draft.repo if model.draft else None,
+    )
+
+
 def _git_sha() -> str:
     try:
         result = subprocess.run(
@@ -488,7 +516,8 @@ def run_suite(
             # the local backends — which used to mark every cloud row
             # ISOLATION_ERROR before a single request was made.
             try:
-                isolation.isolate_provider(provider_id)
+                extra_args = _isolate_extra_args_for_group(provider_id, group_rows, registry)
+                isolation.isolate_provider(provider_id, *extra_args)
                 isolated_any = True
             except BenchmarkError as exc:
                 for row in group_rows:

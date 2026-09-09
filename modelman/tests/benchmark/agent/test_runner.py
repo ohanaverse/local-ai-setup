@@ -20,7 +20,7 @@ from modelman.benchmark.agent.pidriver import PiRunResult
 from modelman.benchmark.agent.runner import run_suite
 from modelman.benchmark.agent.suite import JudgeConfig, load_suite
 from modelman.benchmark.errors import BenchmarkError
-from modelman.registry import ModelEntry, ProviderEntry, Registry
+from modelman.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Registry
 
 MINI_DRIFT = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
 
@@ -636,3 +636,78 @@ def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_
     assert not (results[0].row_dir / "metrics.log").exists()
     assert (results[0].row_dir / "agent.jsonl.gz").exists()
     assert run_dir.exists()
+
+
+def _mlx_lm_registry() -> Registry:
+    return Registry(
+        providers=[
+            ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")
+        ],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/pair",
+                family="f",
+                provider_id="mlx_lm_server",
+                model_name="pair",
+                fetch=Fetch(local_path="/models/target"),
+                draft=DraftSpec(repo="org/draft"),
+            )
+        ],
+    )
+
+
+def test_run_suite_isolates_mlx_lm_server_with_pairing_args(tmp_path, monkeypatch):
+    """An mlx_lm_server group must resolve its target+draft pairing from the
+    registry and forward it as extra args: the helper exits 1 without the
+    pairing, so a bare isolate_provider(provider_id) call would mark the
+    whole group ISOLATION_ERROR after the suite's setup cost was paid."""
+    calls: list[tuple] = []
+
+    def _isolate(pid, *extra_args):
+        calls.append((pid, *extra_args))
+
+    monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    body = _suite_toml(MINI_DRIFT, models='["mlx_lm_server/pair"]').replace(
+        "[routes.direct.ollama]",
+        "[routes.direct.mlx_lm_server]",
+    )
+    suite = load_suite(_write_suite(tmp_path, body), _mlx_lm_registry())
+    run_suite(
+        suite,
+        _mlx_lm_registry(),
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    # local_path target forwarded verbatim (already absolute); repo-id draft
+    # passed through un-mangled — the same contract
+    # benchmark/runner._isolate_extra_args is tested to honor.
+    assert calls == [("mlx_lm_server", "/models/target", "org/draft")]
+
+
+def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, monkeypatch):
+    """A misregistered mlx_lm_server model with no draft source must fail
+    that group's rows with a clear error, not crash the run or call
+    isolate_provider without the pairing the helper requires."""
+    from modelman.benchmark.agent.runner import _isolate_extra_args_for_group
+
+    registry = Registry(
+        providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/broken",
+                family="f",
+                provider_id="mlx_lm_server",
+                model_name="broken",
+            )
+        ],
+    )
+    row = pidriver_module.RowConfig(
+        label="r1", model_id="mlx_lm_server/broken", thinking="off", route="direct",
+        provider_id="mlx_lm_server",
+    )
+    with pytest.raises(BenchmarkError, match="missing a target or draft"):
+        _isolate_extra_args_for_group("mlx_lm_server", [row], registry)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -29,6 +30,53 @@ class IsolateResult:
     direct_url: str
     ok: bool
     error: str | None
+
+
+def _normalize_pairing_arg(value: str, *, is_path: bool) -> str:
+    """Normalize one isolate extra-arg: expand and absolutize local_path
+    values (so the isolation key is stable across equivalent spellings —
+    relative vs absolute paths, trailing slashes, ~ expansion — without
+    requiring the path to exist), but forward HF repo ids verbatim:
+    mlx_lm.server accepts both forms for --model/--draft-model, and
+    abspath'ing a repo id like "org/model" would mangle it into a
+    nonexistent cwd-prefixed filesystem path.
+    """
+    if not is_path:
+        return value
+    return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+
+def mlx_lm_server_pairing_args(
+    model_id: str,
+    target_local_path: str | None,
+    target_repo: str | None,
+    draft_local_path: str | None,
+    draft_repo: str | None,
+) -> tuple[str, str]:
+    """Resolve the target+draft extra args bin/llm-isolate-provider requires
+    for an mlx_lm_server isolate call.
+
+    mlx_lm_server has no baked-in default pairing in the helper (unlike
+    ollama/omlx, which fall back to a baked-in model name), so the pairing
+    must be passed through explicitly on every call. Resolution order is
+    local_path over repo, matching the providers' own resolution order. The
+    local_path-vs-repo fields are the discriminator: only a local_path value
+    is a filesystem path that may be normalized; a repo value is an HF repo
+    id and passes through verbatim.
+
+    Raises BenchmarkError when either side has no source.
+    """
+    target_str = target_local_path or target_repo
+    draft_str = draft_local_path or draft_repo
+    if not target_str or not draft_str:
+        raise BenchmarkError(
+            f"mlx_lm_server model {model_id!r} is missing a target or "
+            "draft repo/local_path in the registry"
+        )
+    return (
+        _normalize_pairing_arg(target_str, is_path=target_local_path is not None),
+        _normalize_pairing_arg(draft_str, is_path=draft_local_path is not None),
+    )
 
 
 def _helper_path(name: str) -> str:
