@@ -273,24 +273,19 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
-def _isolate_extra_args_for_group(
-    provider_id: str, group_rows: list[RowConfig], registry: Registry
-) -> tuple[str, ...]:
-    """Resolve the positional args isolate_provider() needs for this group.
+def _isolate_extra_args(row: RowConfig, registry: Registry) -> tuple[str, ...]:
+    """Resolve the positional args isolate_provider() needs for one row.
 
     Every provider except mlx_lm_server takes none. mlx_lm_server has no
     baked-in default pairing in bin/llm-isolate-provider — the helper exits 1
     without a target+draft — so the pairing must be resolved from the
     registry the same way modelman.benchmark.runner resolves it (shared
-    helper): local_path over repo, per side, on the group's first row's
-    model. All rows in a group share one provider_id, and mlx_lm_server
-    addresses the server by its model_name, so the first row is the pairing
-    source; suite-level validation (registry.model() in suite parsing)
-    already guarantees every row's model exists.
+    helper): local_path over repo, per side; suite-level validation
+    (registry.model() in suite parsing) already guarantees the model exists.
     """
-    if provider_id != "mlx_lm_server":
+    if row.provider_id != "mlx_lm_server":
         return ()
-    model = registry.model(group_rows[0].model_id)
+    model = registry.model(row.model_id)
     return mlx_lm_server_pairing_args(
         model.id,
         model.fetch.local_path if model.fetch else None,
@@ -506,21 +501,53 @@ def run_suite(
     results: list[RowRunResult] = []
     index = 0
     isolated_any = False
+    # Isolation is keyed on (provider, pairing) rather than bare provider
+    # (mirroring modelman.benchmark.runner's (provider_id, extra_args) key):
+    # consecutive rows sharing a key reuse the running isolation, but
+    # mlx_lm_server is one-model-per-process, so two rows on the same provider
+    # with different target+draft pairings must still trigger a fresh isolate
+    # call. For every provider except mlx_lm_server the pairing is () so the
+    # key reduces to a per-provider value, preserving the old
+    # group-once-per-provider behavior. Rows are sorted by provider first so one
+    # provider's rows stay contiguous; the pairing change is detected with the
+    # per-row `prev_extra` comparison inside the provider group.
     for provider_id, group in itertools.groupby(
-        sorted(rows, key=lambda r: r.provider_id), key=lambda r: r.provider_id
+        sorted(rows, key=lambda r: (r.provider_id, r.model_id)),
+        key=lambda r: r.provider_id,
     ):
         group_rows = list(group)
-        if provider_id in ISOLATABLE_PROVIDERS:
-            # A cloud row contends with nothing on this machine, and running the
-            # helper for it fails outright — bin/llm-isolate-provider knows only
-            # the local backends — which used to mark every cloud row
-            # ISOLATION_ERROR before a single request was made.
+        # Re-isolate within the provider group whenever the pairing changes.
+        # For non-mlx providers the pairing is always () so this isolates once
+        # for the group. A broken mlx_lm_server model (no pairing resolvable)
+        # raises here, before any isolate call, and is contained to its row.
+        prev_extra: tuple[str, ...] | None = None
+        for row in group_rows:
             try:
-                extra_args = _isolate_extra_args_for_group(provider_id, group_rows, registry)
-                isolation.isolate_provider(provider_id, *extra_args)
-                isolated_any = True
+                extra_args = _isolate_extra_args(row, registry)
             except BenchmarkError as exc:
-                for row in group_rows:
+                index += 1
+                for pass_number in range(1, suite.passes + 1):
+                    results.append(
+                        RowRunResult(
+                            row=row,
+                            pass_number=pass_number,
+                            row_dir=_row_dir(run_dir, index, row, pass_number),
+                            gates=None,
+                            metrics=None,
+                            diff_raw="",
+                            error=str(exc),
+                        )
+                    )
+                continue
+            if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
+                # A cloud row contends with nothing on this machine, and running
+                # the helper for it fails outright — bin/llm-isolate-provider
+                # knows only the local backends — which used to mark every cloud
+                # row ISOLATION_ERROR before a single request was made.
+                try:
+                    isolation.isolate_provider(provider_id, *extra_args)
+                    isolated_any = True
+                except BenchmarkError as exc2:
                     index += 1
                     for pass_number in range(1, suite.passes + 1):
                         results.append(
@@ -531,12 +558,12 @@ def run_suite(
                                 gates=None,
                                 metrics=None,
                                 diff_raw="",
-                                error=str(exc),
+                                error=str(exc2),
                             )
                         )
-                continue
+                    continue
+                prev_extra = extra_args
 
-        for row in group_rows:
             index += 1
             for pass_number in range(1, suite.passes + 1):
                 row_dir = _row_dir(run_dir, index, row, pass_number)

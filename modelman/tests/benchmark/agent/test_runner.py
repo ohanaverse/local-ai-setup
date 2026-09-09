@@ -131,6 +131,60 @@ def test_run_suite_isolates_once_per_provider_group(tmp_path, monkeypatch):
     assert all(r.gates is not None and r.gates.results[2].code == "NO_DIFF" for r in results)
 
 
+def test_run_suite_reisolates_mlx_lm_server_between_pairings(tmp_path, monkeypatch):
+    """Two mlx_lm_server rows with DIFFERENT target+draft pairings must each
+    trigger their own isolate call: mlx_lm_server is one-model-per-process, so
+    serving the second row's agent against the first row's still-running
+    server would silently measure the wrong model."""
+    calls: list[tuple] = []
+
+    def _isolate(pid, *extra_args):
+        calls.append((pid, *extra_args))
+
+    monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    registry = Registry(
+        providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/pair1",
+                family="f",
+                provider_id="mlx_lm_server",
+                model_name="pair1",
+                fetch=Fetch(local_path="/models/target1"),
+                draft=DraftSpec(local_path="/models/draft1"),
+            ),
+            ModelEntry(
+                id="mlx_lm_server/pair2",
+                family="f",
+                provider_id="mlx_lm_server",
+                model_name="pair2",
+                fetch=Fetch(local_path="/models/target2"),
+                draft=DraftSpec(local_path="/models/draft2"),
+            ),
+        ],
+    )
+
+    body = (
+        _suite_toml(MINI_DRIFT, models='["mlx_lm_server/pair1", "mlx_lm_server/pair2"]')
+        .replace("[routes.direct.ollama]", "[routes.direct.mlx_lm_server]", 1)
+    )
+    # _suite_toml's route block only contains one ollama section; swap it once.
+    suite = load_suite(_write_suite(tmp_path, body), registry)
+    run_suite(
+        suite,
+        registry,
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    assert calls[0] == ("mlx_lm_server", "/models/target1", "/models/draft1")
+    assert calls[1] == ("mlx_lm_server", "/models/target2", "/models/draft2")
+    assert calls[-1] == calls[1]  # exactly two isolates, then restore
+
+
 def test_diff_captured_before_hidden_tests_are_seeded(tmp_path, monkeypatch):
     """Gate 9 seeds the hidden tests into the workspace; the judge's diff must
     be captured before that seeding, or the frontier-model judge reads the exact
@@ -692,7 +746,7 @@ def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, mon
     """A misregistered mlx_lm_server model with no draft source must fail
     that group's rows with a clear error, not crash the run or call
     isolate_provider without the pairing the helper requires."""
-    from modelman.benchmark.agent.runner import _isolate_extra_args_for_group
+    from modelman.benchmark.agent.runner import _isolate_extra_args
 
     registry = Registry(
         providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
@@ -710,4 +764,4 @@ def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, mon
         provider_id="mlx_lm_server",
     )
     with pytest.raises(BenchmarkError, match="missing a target or draft"):
-        _isolate_extra_args_for_group("mlx_lm_server", [row], registry)
+        _isolate_extra_args(row, registry)
