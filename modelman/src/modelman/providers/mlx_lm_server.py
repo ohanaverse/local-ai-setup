@@ -26,6 +26,18 @@ def _model_dir(config: dict) -> Path:
     return Path(os.path.expanduser(raw))
 
 
+def _resolve_local_path(raw: str) -> Path:
+    """Normalize a user-supplied local_path the same way
+    modelman.benchmark.isolation._normalize_pairing_arg does (expanduser +
+    abspath), so the provider and the isolation helper agree on which
+    directory a relative or tilde path names. Otherwise a registry
+    local_path like `~/mlx/quant/dwq-model` is read literally (a directory
+    literally named `~`) by reconcile/delete while the benchmark expands it
+    to $HOME — the ready-state and the benchmark then disagree about where
+    the weights live."""
+    return Path(os.path.abspath(os.path.expanduser(raw)))
+
+
 def _is_local_path_entry(value: str | None) -> bool:
     return bool(value)
 
@@ -55,7 +67,7 @@ class MLXLMServerProvider(Provider):
         model directory) takes precedence when set."""
         local_path = variant.get("local_path")
         if local_path:
-            return Path(local_path)
+            return _resolve_local_path(local_path)
         repo = variant.get("repo")
         if repo:
             return _model_dir(self.config) / repo_basename(repo)
@@ -66,7 +78,7 @@ class MLXLMServerProvider(Provider):
         draft side (draft_local_path / draft_repo)."""
         local_path = variant.get("draft_local_path")
         if local_path:
-            return Path(local_path)
+            return _resolve_local_path(local_path)
         repo = variant.get("draft_repo")
         if repo:
             return _model_dir(self.config) / repo_basename(repo)
@@ -98,12 +110,18 @@ class MLXLMServerProvider(Provider):
         if local_path:
             # A local_path side is produced by the user (mlx_lm.convert,
             # dwq, etc.), not downloaded by modelman — this is a no-op
-            # success once the directory is confirmed to exist. A missing
-            # directory surfaces as a ValueError now, at "download" time,
-            # rather than silently at serve time.
-            p = Path(local_path)
+            # success once the directory is confirmed to exist and be
+            # non-empty. A missing (or empty) directory surfaces as a
+            # ValueError now, at "download" time, rather than silently at
+            # serve time — or, for an empty dir, as a ready-state that
+            # oscillates: `is_downloaded` requires any(iterdir()), so an
+            # empty dir would flip straight back to not-ready on the next
+            # reconcile.
+            p = _resolve_local_path(local_path)
             if not p.is_dir():
                 raise ValueError(f"local_path does not exist: {p}")
+            if not any(p.iterdir()):
+                raise ValueError(f"local_path is empty: {p}")
             return p
         if repo:
             target = _model_dir(self.config) / repo_basename(repo)
@@ -123,7 +141,11 @@ class MLXLMServerProvider(Provider):
                     return target
                 finally:
                     ProgressTqdm.clear_active_context()
-        raise ValueError(f"mlx_lm_server variant {variant['id']} missing {side} source")
+        raise ValueError(
+            f"mlx_lm_server variant {variant['id']} is missing its {side} "
+            "model — a target+draft speculative-decoding pairing needs a "
+            f"source (repo or local_path) for the {side} side"
+        )
 
     def download(
         self,
@@ -165,12 +187,18 @@ class MLXLMServerProvider(Provider):
         draft = self._draft_dir(variant)
         if target is None and draft is None:
             return None
+        # Dedupe the dirs first: both sides resolving to the same directory
+        # (e.g. a hand-edited config pointing target and draft at one dir)
+        # must be summed once, not twice — the old code double-counted it.
         total = 0
+        seen: set[Path] = set()
         for d in (target, draft):
-            if d is not None and d.is_dir():
-                for f in d.rglob("*"):
-                    if f.is_file():
-                        total += f.stat().st_size
+            if d is None or not d.is_dir() or d in seen:
+                continue
+            seen.add(d)
+            for f in d.rglob("*"):
+                if f.is_file():
+                    total += f.stat().st_size
         return total or None
 
     def path_of(self, variant: VariantSpec) -> str | None:
@@ -198,6 +226,45 @@ class MLXLMServerProvider(Provider):
                 paths.append(str(d))
         return frozenset(paths)
 
+    def _repo_dir(self, repo: str | None) -> Path | None:
+        """The on-disk directory a repo-downloaded side would occupy under
+        model_dir/<basename> — the artifact modelman itself creates when it
+        downloads that side. Distinct from _target_dir/_draft_dir because
+        local_path takes precedence there: when a side carries BOTH a repo
+        and a local_path (a hand-edited config; the forms reject it), the
+        local_path dir is user-produced and exempt, but the repo-downloaded
+        dir under model_dir is modelman's own and becomes orphaned unless
+        delete/cleanup also consider it."""
+        if not repo:
+            return None
+        return _model_dir(self.config) / repo_basename(repo)
+
+    def _removable_dirs(self, variant: VariantSpec) -> list[Path]:
+        """Every on-disk directory delete/cleanup may remove for this variant:
+        each side's repo-downloaded dir plus (when the side has no local_path)
+        the resolved target/draft dir. A local_path dir — produced by the user,
+        never by modelman — is never included, even when it takes precedence
+        over a repo on the same side."""
+        dirs: list[Path] = []
+        # target side
+        target_repo = self._repo_dir(variant.get("repo"))
+        if not _is_local_path_entry(variant.get("local_path")):
+            target = self._target_dir(variant)
+            if target is not None:
+                dirs.append(target)
+        elif target_repo is not None:
+            # local_path precedence: only the repo-downloaded dir is removable.
+            dirs.append(target_repo)
+        # draft side
+        draft_repo = self._repo_dir(variant.get("draft_repo"))
+        if not _is_local_path_entry(variant.get("draft_local_path")):
+            draft = self._draft_dir(variant)
+            if draft is not None:
+                dirs.append(draft)
+        elif draft_repo is not None:
+            dirs.append(draft_repo)
+        return list(dict.fromkeys(dirs))
+
     def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
         """Remove the target and draft on-disk directories, independently.
 
@@ -209,15 +276,10 @@ class MLXLMServerProvider(Provider):
         """
         import shutil
 
-        target = self._target_dir(variant)
-        draft = self._draft_dir(variant)
-        if target is None and draft is None:
+        if self._target_dir(variant) is None and self._draft_dir(variant) is None:
             raise ValueError(f"mlx_lm_server variant {variant['id']} missing target/draft source")
-        for d, local in (
-            (target, _is_local_path_entry(variant.get("local_path"))),
-            (draft, _is_local_path_entry(variant.get("draft_local_path"))),
-        ):
-            if d is not None and not local and d.exists():
+        for d in self._removable_dirs(variant):
+            if d.exists():
                 shutil.rmtree(d)
 
     def cleanup_partial_download(self, variant: VariantSpec) -> None:
@@ -230,13 +292,8 @@ class MLXLMServerProvider(Provider):
         """
         import shutil
 
-        target = self._target_dir(variant)
-        draft = self._draft_dir(variant)
-        for d, local in (
-            (target, _is_local_path_entry(variant.get("local_path"))),
-            (draft, _is_local_path_entry(variant.get("draft_local_path"))),
-        ):
-            if d is not None and not local and d.exists():
+        for d in self._removable_dirs(variant):
+            if d.exists():
                 shutil.rmtree(d)
 
 

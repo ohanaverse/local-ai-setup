@@ -88,6 +88,27 @@ def test_is_downloaded_true_with_mixed_sourcing(provider, tmp_path):
     assert provider.is_downloaded(variant) is True
 
 
+def test_local_path_is_normalized_like_benchmark_isolation(provider, tmp_path, monkeypatch):
+    """A local_path with a leading ~ must resolve to the same absolute
+    directory the benchmark isolation helper uses (expanduser + abspath).
+    The provider and bin/llm-isolate-provider would otherwise disagree about
+    where a `~/...` local_path lives — reconcile says "never downloaded"
+    while the benchmark serves the expanded path."""
+    # Monkeypatch HOME so ~ expansion is deterministic regardless of the host.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    home = tmp_path / "home"
+    _make_dir(home / "quant" / "dwq-model", ("config.json", b"{}"))
+
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "mlx_lm_server",
+        "name": "x",
+        "local_path": "~/quant/dwq-model",
+        "draft_repo": "org/Draft-MLX",
+    }
+    assert provider._target_dir(variant) == (home / "quant" / "dwq-model").resolve()
+
+
 # --- download ---
 
 
@@ -136,8 +157,8 @@ def test_download_mixed_sourcing_downloads_only_repo_side(provider, tmp_path):
 def test_download_local_path_target_is_noop(provider, tmp_path):
     """A local_path target side is never downloaded by modelman; only the
     repo-sourced draft side is fetched in this configuration."""
+    _make_dir(tmp_path / "user-target", ("config.json", b"{}"))
     target_dir = tmp_path / "user-target"
-    target_dir.mkdir()
     md = tmp_path / "models"
     variant: VariantSpec = {
         "id": "x",
@@ -180,6 +201,24 @@ def test_download_raises_when_draft_side_has_no_source(provider):
         patch("modelman.providers.mlx_lm_server.snapshot_download"),
         pytest.raises(ValueError, match="draft"),
     ):
+        provider.download(variant)
+
+
+def test_download_local_path_empty_raises(provider, tmp_path):
+    """A local_path directory that exists but is empty must fail at download
+    time: `is_downloaded` requires any(iterdir()), so treating an empty dir
+    as a successful no-op download would set ready=True only for the next
+    reconcile to flip the row back — an endless ready/not-ready oscillation."""
+    target_dir = tmp_path / "user-target"
+    target_dir.mkdir()  # exists but empty
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "mlx_lm_server",
+        "name": "x",
+        "local_path": str(target_dir),
+        "draft_repo": "org/Draft-MLX",
+    }
+    with pytest.raises(ValueError, match="local_path is empty"):
         provider.download(variant)
 
 
@@ -436,6 +475,55 @@ def test_delete_raises_when_neither_side_has_source(provider):
     variant = {"id": "x", "provider": "mlx_lm_server"}
     with pytest.raises(ValueError):
         provider.delete(variant)
+
+
+def test_delete_removes_orphaned_repo_side_when_local_path_dual_source(provider, tmp_path):
+    """Safety refinement: when a side carries BOTH a repo and a local_path,
+    the local_path dir is user-produced (exempt), but the repo-downloaded
+    dir under model_dir/<basename> is modelman's own and must still be
+    removed — otherwise deleting a dual-source entry orphans multi-GB MLX
+    weights that no registry entry can reach."""
+    md = tmp_path / "models"
+    _make_dir(md / "Target-MLX", ("model.safetensors", b"repo-data"))
+    user_target = tmp_path / "user-target"
+    _make_dir(user_target, ("model.safetensors", b"precious-target"))
+    variant = {
+        "id": "x",
+        "provider": "mlx_lm_server",
+        "repo": "org/Target-MLX",
+        "local_path": str(user_target),
+        "draft_repo": "org/Draft-MLX",
+    }
+
+    provider.delete(variant)
+
+    # modelman's own repo download under model_dir is removed; the
+    # user-produced local_path dir and its weights are untouched.
+    assert not (md / "Target-MLX").exists()
+    assert user_target.exists()
+    assert (user_target / "model.safetensors").exists()
+
+
+def test_cleanup_partial_download_removes_orphaned_repo_side_on_dual_source(
+    provider, tmp_path
+):
+    """The same dual-source repo-dir cleanup must apply to a cancelled
+    download's partial-artifact removal."""
+    md = tmp_path / "models"
+    _make_dir(md / "Draft-MLX", ("partial.bin", b"not finished"))
+    user_target = tmp_path / "user-target"
+    _make_dir(user_target, ("model.safetensors", b"precious-target"))
+    variant = {
+        "id": "x",
+        "provider": "mlx_lm_server",
+        "local_path": str(user_target),
+        "draft_repo": "org/Draft-MLX",
+    }
+
+    provider.cleanup_partial_download(variant)
+
+    assert not (md / "Draft-MLX").exists()
+    assert user_target.exists()
 
 
 # --- cleanup_partial_download: per-side refinement C ---
