@@ -10,7 +10,11 @@ from pathlib import Path
 import requests
 
 from modelman.benchmark.errors import BenchmarkError
-from modelman.benchmark.isolation import isolate_provider, restore_providers
+from modelman.benchmark.isolation import (
+    isolate_provider,
+    mlx_lm_server_pairing_args,
+    restore_providers,
+)
 from modelman.benchmark.results import BenchmarkRun, TargetResult, write_results
 from modelman.benchmark.workloads import Workload
 from modelman.benchmark.workloads.base import BenchmarkMetrics
@@ -46,6 +50,14 @@ class Target:
     provider_id: str
     model_name: str
     family: str
+    # Only populated (and only meaningful) for provider_id == "mlx_lm_server":
+    # mlx_lm_server has no baked-in default target/draft pairing (unlike
+    # ollama/omlx), so the pairing must be resolved from the registry here
+    # and threaded through to isolate_provider() on every isolate call.
+    repo: str | None = None
+    local_path: str | None = None
+    draft_repo: str | None = None
+    draft_local_path: str | None = None
 
 
 def discover_targets(
@@ -72,9 +84,15 @@ def discover_targets(
                 provider_id=model.provider_id,
                 model_name=model.model_name,
                 family=model.family,
+                repo=model.fetch.repo if model.fetch else None,
+                local_path=model.fetch.local_path if model.fetch else None,
+                draft_repo=model.draft.repo if model.draft else None,
+                draft_local_path=model.draft.local_path if model.draft else None,
             )
         )
     return targets
+
+
 
 
 def _run_route(
@@ -127,23 +145,42 @@ def run_benchmark(
     )
 
     session = requests.Session()
-    # Isolation is provider-scoped: consecutive targets on the same provider
-    # reuse the running isolation instead of paying another stop-others +
-    # warmup cycle (~a minute of polling per target otherwise).
-    last_provider: str | None = None
+    # Isolation is keyed on (provider_id, pairing) rather than bare
+    # provider_id: consecutive targets on the same key reuse the running
+    # isolation instead of paying another stop-others + warmup cycle (~a
+    # minute of polling per target otherwise). For every provider except
+    # mlx_lm_server, extra_args is always () so this reduces to the old
+    # provider_id-only comparison. mlx_lm_server is one-model-per-process, so
+    # two consecutive mlx_lm_server targets with *different* pairings must
+    # still trigger a fresh isolate call — comparing only provider_id would
+    # silently keep serving the first pairing.
+    last_isolation_key: tuple[str, tuple[str, ...]] | None = None
     direct_url: str | None = None
     try:
         for target in targets:
             try:
-                if target.provider_id != last_provider:
-                    isolate = isolate_provider(target.provider_id)
+                # Resolve mlx_lm_server pairing args inline; other providers need none.
+                extra_args: tuple[str, ...] = (
+                    mlx_lm_server_pairing_args(
+                        target.model_id,
+                        target.local_path,
+                        target.repo,
+                        target.draft_local_path,
+                        target.draft_repo,
+                    )
+                    if target.provider_id == "mlx_lm_server"
+                    else ()
+                )
+                isolation_key = (target.provider_id, extra_args)
+                if isolation_key != last_isolation_key:
+                    isolate = isolate_provider(target.provider_id, *extra_args)
                     if not isolate.ok:
                         raise BenchmarkError(
                             f"failed to isolate provider {target.provider_id}: "
                             f"{isolate.error or 'unknown error'}"
                         )
                     direct_url = isolate.direct_url
-                    last_provider = target.provider_id
+                    last_isolation_key = isolation_key
             except BenchmarkError as exc:
                 for route in routes:
                     for pass_number in range(1, passes + 1):

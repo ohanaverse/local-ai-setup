@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from modelman.screens.forms import parse_model
+from modelman.screens import forms
+from modelman.screens.forms import default_form_kind, parse_dual_model, parse_model
 
 # ---------------------------------------------------------------------------
 # ollama: model_input is the tag verbatim
@@ -117,3 +118,93 @@ def test_parse_model_openrouter_plain_string_no_split():
     assert name == "anthropic/claude-opus"
     assert repo is None
     assert filename is None
+
+
+# ---------------------------------------------------------------------------
+# default_form_kind: provider -> form kind mapping
+# ---------------------------------------------------------------------------
+
+
+def test_default_form_kind_mlx_lm_server_is_dual_model():
+    """mlx_lm_server represents a target+draft pairing, which needs its own
+    field group (4 inputs) — not the single-Input 'local-only' kind used by
+    llamacpp/omlx. Confirms the new provider maps to the new kind."""
+    assert default_form_kind("mlx_lm_server") == "dual-model"
+
+
+def test_hf_repo_providers_single_source_of_truth():
+    """Regression guard for the plan's called-out hazard: the
+    ('llamacpp', 'omlx') provider tuple used to be hardcoded independently
+    in default_form_kind() and parse_model(). If those two ever drift
+    apart again, parse_model would apply the wrong parsing branch for
+    whatever default_form_kind now calls 'local-only'. Both functions are
+    checked against the single hoisted HF_REPO_PROVIDERS constant here so
+    a future edit to one without the other fails this test.
+
+    mlx_lm_server is a special case: its target side is parsed as an HF
+    repo (it is in HF_REPO_PROVIDERS), but its form kind is 'dual-model'
+    because the draft side is handled separately."""
+    for provider in forms.HF_REPO_PROVIDERS:
+        # parse_model must apply org/repo splitting for this provider: a
+        # bare, slash-free model string is rejected as an invalid HF repo
+        # rather than silently accepted as a plain string.
+        with pytest.raises(ValueError, match="repo"):
+            parse_model(provider, "single-segment")
+
+        expected_kind = "dual-model" if provider == "mlx_lm_server" else "local-only"
+        assert default_form_kind(provider) == expected_kind
+    # Providers deliberately outside the HF set must not be treated as
+    # HF-repo-shaped by either function.
+    for provider in ("ollama", "openrouter"):
+        assert provider not in forms.HF_REPO_PROVIDERS
+    assert "mlx_lm_server" in forms.HF_REPO_PROVIDERS
+
+
+# ---------------------------------------------------------------------------
+# parse_dual_model: mlx_lm_server target+draft pairing (4 inputs)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_dual_model_both_sides_repo():
+    """The common case: target and draft are both plain HF repos."""
+    result = parse_dual_model("org/target-repo", "", "org/draft-repo", "")
+    assert result == ("org/target-repo", None, "org/draft-repo", None)
+
+
+def test_parse_dual_model_both_sides_local_path():
+    """Both sides can be locally-produced mlx-lm directories instead of HF
+    repos (Feature 1 output fed into a Feature 2 pairing)."""
+    result = parse_dual_model("", "/data/target", "", "/data/draft")
+    assert result == (None, "/data/target", None, "/data/draft")
+
+
+def test_parse_dual_model_mixed_sourcing():
+    """A pairing may mix sourcing per side (repo target + local-path
+    draft, or vice versa) — the plan calls this out explicitly as a case
+    the provider layer must support, so the form-level parser must be
+    able to produce it too."""
+    result = parse_dual_model("org/target-repo", "", "", "/data/draft")
+    assert result == ("org/target-repo", None, None, "/data/draft")
+
+
+def test_parse_dual_model_side_missing_both_raises():
+    """Each side needs exactly one source; leaving both blank must be
+    rejected at parse time (naming the offending side) rather than
+    silently producing a variant the provider can never resolve."""
+    with pytest.raises(ValueError, match="target"):
+        parse_dual_model("", "", "org/draft-repo", "")
+
+
+def test_parse_dual_model_side_sets_both_raises():
+    """Setting both a repo and a local path on the same side is
+    ambiguous — reject it (naming the offending side) rather than
+    silently picking one."""
+    with pytest.raises(ValueError, match="draft"):
+        parse_dual_model("org/target-repo", "", "org/draft-repo", "/data/draft")
+
+
+def test_parse_dual_model_strips_whitespace():
+    """Leading/trailing whitespace on any of the four inputs is trimmed
+    before the mutual-exclusion check, matching parse_model's convention."""
+    result = parse_dual_model(" org/target-repo ", "  ", "  ", " /data/draft ")
+    assert result == ("org/target-repo", None, None, "/data/draft")

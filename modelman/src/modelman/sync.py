@@ -28,9 +28,22 @@ from .registry import (
 )
 from .state import ModelState, StateStore
 
-# Providers `modelman sync` reconciles against the filesystem. Same set as
-# registry.DEFAULT_PROVIDER_IDS — that constant is the single source.
-RECONCILABLE_PROVIDERS = DEFAULT_PROVIDER_IDS
+# Providers `modelman sync` reconciles against the filesystem. ollama has its
+# own discovery path (`ollama list`); every other reconcilable provider stores
+# weights in per-model directories on disk. This tuple is derived from
+# DEFAULT_PROVIDER_IDS by excluding ollama (the only default that uses a
+# daemon-list discovery path), plus retired-but-still-registered providers
+# (llamacpp) so existing registry entries continue to be reconciled until
+# removed. Adding a new model-directory provider to DEFAULT_PROVIDER_IDS
+# automatically includes it here — no second update needed.
+MODELDIR_PROVIDER_IDS: tuple[str, ...] = tuple(
+    sorted(set(DEFAULT_PROVIDER_IDS) - {"ollama"} | {"llamacpp"})
+)
+
+# Full set of providers sync can determine downloaded state for: ollama plus
+# every model-dir provider. Computed from MODELDIR_PROVIDER_IDS so the set
+# cannot drift.
+RECONCILABLE_PROVIDERS: tuple[str, ...] = tuple(sorted(set(("ollama",) + MODELDIR_PROVIDER_IDS)))
 
 
 class SyncError(Exception):
@@ -64,6 +77,9 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
     repo = entry.fetch.repo if entry.fetch else None
     files = entry.fetch.files if entry.fetch else None
     quantizations = entry.fetch.quantizations if entry.fetch else None
+    local_path = entry.fetch.local_path if entry.fetch else None
+    draft_repo = entry.draft.repo if entry.draft else None
+    draft_local_path = entry.draft.local_path if entry.draft else None
     return {
         "id": entry.id,
         "provider": entry.provider_id,
@@ -71,6 +87,9 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "repo": repo,
         "files": files,
         "quantizations": quantizations,
+        "local_path": local_path,
+        "draft_repo": draft_repo,
+        "draft_local_path": draft_local_path,
         "location": entry.location,
         "model_info": dict(entry.model_info),
     }
@@ -113,9 +132,13 @@ def _ensure_provider_entries(registry: Registry) -> list[str]:
 
 
 def _modeldir_providers(registry: Registry) -> dict[str, Provider]:
-    """Build llamacpp/omlx provider instances from registry provider entries."""
+    """Build model-dir provider instances from registry provider entries.
+
+    Covers every local provider that stores its weights on disk under a
+    per-model directory. The set is defined by MODELDIR_PROVIDER_IDS.
+    """
     provider_instances: dict[str, Provider] = {}
-    for provider_id in ("llamacpp", "omlx"):
+    for provider_id in MODELDIR_PROVIDER_IDS:
         try:
             entry = registry.provider(provider_id)
         except KeyError:
@@ -130,7 +153,7 @@ def list_modeldir(
     """Return {model_id: (disk_path, size_bytes)} for downloaded model-dir models."""
     downloaded: dict[str, tuple[str, int]] = {}
     for m in registry.models:
-        if m.provider_id not in ("llamacpp", "omlx"):
+        if m.provider_id not in MODELDIR_PROVIDER_IDS:
             continue
         provider = provider_instances.get(m.provider_id)
         if provider is None:

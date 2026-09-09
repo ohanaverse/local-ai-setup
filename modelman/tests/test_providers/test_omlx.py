@@ -282,3 +282,146 @@ def test_cleanup_partial_download_missing_dir_is_noop(tmp_path):
     # never got far enough to create the target directory must not raise.
     provider = OMLXProvider({"model_dir": str(tmp_path)})
     provider.cleanup_partial_download({"id": "x", "provider": "omlx", "repo": "org/never-started"})
+
+
+# --- local_path support (Task 2: locally-produced mlx-lm convert/dwq output) ---
+
+
+def test_is_downloaded_local_path_true(tmp_path):
+    # A local_path-sourced variant (no repo at all) must resolve the same
+    # way a repo-sourced one does: present + non-empty directory -> True.
+    local_dir = tmp_path / "my-custom-dwq-model"
+    local_dir.mkdir()
+    (local_dir / "config.json").write_text("{}")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    assert provider.is_downloaded(variant) is True
+
+
+def test_is_downloaded_local_path_false_when_missing(tmp_path):
+    # A local_path variant pointing at a nonexistent directory must report
+    # False, not raise — reconcile and the delete step call is_downloaded()
+    # on user-typo'd paths and must treat "absent" as a normal answer.
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(tmp_path / "does-not-exist"),
+    }
+    assert provider.is_downloaded(variant) is False
+
+
+def test_download_local_path_is_noop_and_returns_path(tmp_path):
+    # download() on a local_path variant must not call snapshot_download at
+    # all — the artifact already exists by definition (the user produced it).
+    local_dir = tmp_path / "my-custom-dwq-model"
+    local_dir.mkdir()
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    with patch("modelman.providers.omlx.snapshot_download") as mock_dl:
+        path = provider.download(variant)
+        mock_dl.assert_not_called()
+        assert path == str(local_dir)
+
+
+def test_download_local_path_missing_raises(tmp_path):
+    # A typo'd local_path must surface at "download" time (an explicit,
+    # actionable ValueError) rather than silently failing later at serve time.
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    missing = tmp_path / "does-not-exist"
+    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(missing)}
+    with pytest.raises(ValueError, match="local_path does not exist"):
+        provider.download(variant)
+
+
+def test_size_of_local_path_sums_dir(tmp_path):
+    # size_of() must walk the user-produced directory recursively and sum
+    # file sizes (not the directory entry itself) — the TUI SIZE column and
+    # FamilyScreen totals are fed by this, and a None here hides real
+    # disk usage.
+    local_dir = tmp_path / "my-model"
+    local_dir.mkdir()
+    (local_dir / "a.safetensors").write_bytes(b"a" * 50)
+    (local_dir / "b.safetensors").write_bytes(b"b" * 30)
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    assert provider.size_of(variant) == 80
+
+
+def test_size_of_local_path_returns_none_when_missing(tmp_path):
+    # A missing local_path directory yields None (unknown size), not 0 or an
+    # exception — reconcile treats None as "provider can't say" and leaves
+    # the column blank rather than showing a bogus zero.
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(tmp_path / "missing"),
+    }
+    assert provider.size_of(variant) is None
+
+
+def test_path_of_local_path_returns_dir(tmp_path):
+    # path_of() must return the local_path directory verbatim (already
+    # absolute, user-produced) so the TUI details panel and sync write the
+    # real location into state.disk_path instead of a repo-basename
+    # download dir the artifact was never placed in.
+    local_dir = tmp_path / "my-model"
+    local_dir.mkdir()
+    (local_dir / "config.json").write_text("{}")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    assert provider.path_of(variant) == str(local_dir)
+
+
+def test_path_of_local_path_returns_none_when_missing(tmp_path):
+    # A missing local_path directory must yield None — path_of() feeds
+    # reconcile's disk_path (and the details panel), and inventing a path
+    # for an absent directory would make a not-downloaded model look
+    # located.
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(tmp_path / "missing"),
+    }
+    assert provider.path_of(variant) is None
+
+
+def test_delete_local_path_is_noop_directory_still_exists(tmp_path):
+    """Safety-critical (refinement C): a local_path-sourced artifact is a
+    directory the USER produced by hand (e.g. mlx_lm.convert/dwq output) —
+    modelman never created it and must never delete it. delete() must skip
+    shutil.rmtree entirely for a local_path entry, regardless of whether the
+    directory exists, and must not raise. This is the regression guard for
+    the single most important behavior in this task."""
+    local_dir = tmp_path / "user-produced-model"
+    local_dir.mkdir()
+    (local_dir / "model.safetensors").write_bytes(b"precious user data")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant = {"id": "x", "provider": "omlx", "local_path": str(local_dir)}
+
+    provider.delete(variant)  # must not raise, must not touch the directory
+
+    assert local_dir.exists()
+    assert (local_dir / "model.safetensors").exists()
+
+
+def test_cleanup_partial_download_local_path_is_noop_directory_still_exists(tmp_path):
+    """Safety-critical (refinement C): same guarantee as delete() above, but
+    for the cancel/fail cleanup path. A cancelled download callback must
+    never be able to remove a user-produced local_path artifact just because
+    it happens to share the cleanup code path with repo-sourced downloads."""
+    local_dir = tmp_path / "user-produced-model"
+    local_dir.mkdir()
+    (local_dir / "model.safetensors").write_bytes(b"precious user data")
+    provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
+    variant = {"id": "x", "provider": "omlx", "local_path": str(local_dir)}
+
+    provider.cleanup_partial_download(variant)  # must not raise or touch the dir
+
+    assert local_dir.exists()
+    assert (local_dir / "model.safetensors").exists()

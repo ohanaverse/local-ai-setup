@@ -12,7 +12,9 @@
 - `modelman benchmark agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
 - `bin/llm-isolate-provider <ollama|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp branch retained but disabled — see `docs/reference/provider-artifacts.md`)
+- `bin/llm-isolate-provider mlx_lm_server <target> <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional args or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
+- `bin/mlx-quantize <convert|dynamic-quant|dwq> --model <repo-or-path> [--mlx-path <out-dir>]` — thin wrapper around the omlx-bundled mlx_lm quantization tools; see `docs/guides/10-mlx-lm-quantization.md`
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
 - `make lint` — umbrella target (`lint-shell` + `check-links`); lighter than `test-all`
 - `make test-all` — one-stop local verification mirroring CI: lint + modelman `make check`/`make test` + wt `go build`/`vet`/`test`
@@ -28,6 +30,7 @@
 - `.github/workflows/` — shell-ci (root lint), wt-ci (Go + wt lint), modelman-ci (Python)
 - LiteLLM config: `~/.config/litellm/config.yaml`
 - LaunchAgent plists: `~/Library/LaunchAgents/local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers. (The llama.cpp plist was retired 2026-09-07 — artifact + restore steps in `docs/reference/provider-artifacts.md`.)
+- `mlx_lm_server` provider — one target+draft speculative-decoding pairing served by `mlx_lm.server --draft-model` as a plain backgrounded subprocess (pidfile `/tmp/local-ai-setup-mlx-lm-server.pid`, `bin/lib/mlx-lm-server.sh`), never a LaunchAgent (one model per process; sweeping many pairings means restarting it between them, not baking one into a plist). `local_path`-sourced artifacts (from `bin/mlx-quantize`, or the `omlx`/`mlx_lm_server` providers' local-path fields) are user-produced and modelman never deletes them — cleanup after a failed experiment is a manual `rm -rf`. See `docs/reference/provider-artifacts.md` and `docs/guides/10-mlx-lm-quantization.md`.
 
 ## Key Gotchas
 - **Isolation is mandatory**: local MLX/GGUF models share Apple Silicon GPU/RAM and distort each other's benchmarks. Only one local model loaded at a time.

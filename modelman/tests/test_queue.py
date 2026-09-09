@@ -1718,6 +1718,7 @@ def test_apply_delete_skips_artifact_shared_with_other_entry(tmp_path):
     omlx.name = "omlx"
     # Both entries resolve to ~/.omlx/models/qwen — the basename collision.
     omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.artifact_paths.side_effect = lambda v: frozenset([omlx.path_of(v)])
     omlx.is_downloaded.return_value = True
 
     pending = PendingChanges(
@@ -1780,6 +1781,7 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     omlx = MagicMock()
     omlx.name = "omlx"
     omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.artifact_paths.side_effect = lambda v: frozenset([omlx.path_of(v)])
     omlx.is_downloaded.return_value = True
 
     pending = PendingChanges(

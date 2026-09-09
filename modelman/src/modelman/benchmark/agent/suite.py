@@ -82,6 +82,8 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             label = (
                 raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
             )
+            # Populate mlx_lm_server pairing fields from the registry entry.
+            model_entry = registry.model(model_id)
             rows.append(
                 RowConfig(
                     label=label,
@@ -90,6 +92,10 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
                     route=route,
                     provider_id=provider_id,
                     direct_model=raw.get("direct_model"),
+                    target_local_path=model_entry.fetch.local_path if model_entry.fetch else None,
+                    target_repo=model_entry.fetch.repo if model_entry.fetch else None,
+                    draft_local_path=model_entry.draft.local_path if model_entry.draft else None,
+                    draft_repo=model_entry.draft.repo if model_entry.draft else None,
                 )
             )
             continue
@@ -101,6 +107,7 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             index += 1
             provider_id = raw.get("provider") or _provider_for(model_id, registry)
             label = f"{index:02d}--{_short_model(model_id)}--{thinking}--{route}"
+            model_entry = registry.model(model_id)
             rows.append(
                 RowConfig(
                     label=label,
@@ -109,6 +116,10 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
                     route=route,
                     provider_id=provider_id,
                     direct_model=raw.get("direct_model"),
+                    target_local_path=model_entry.fetch.local_path if model_entry.fetch else None,
+                    target_repo=model_entry.fetch.repo if model_entry.fetch else None,
+                    draft_local_path=model_entry.draft.local_path if model_entry.draft else None,
+                    draft_repo=model_entry.draft.repo if model_entry.draft else None,
                 )
             )
     return rows

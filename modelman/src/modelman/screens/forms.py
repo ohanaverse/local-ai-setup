@@ -16,13 +16,26 @@ from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
 from ..registry import Cost, _cost_from_dict, _cost_to_dict
 
+# Providers whose model input is an HF-style 'org/repo[/file]' id, parsed
+# the same way for both the default form kind ("local-only") and
+# parse_model()'s repo/filename splitting. Hoisted to a single constant
+# because this tuple used to be hardcoded independently in both places —
+# a change to one without the other would make parse_model take the wrong
+# branch for whatever default_form_kind now calls "local-only".
+# mlx_lm_server is included because its target side uses the same repo
+# format, even though its form kind is "dual-model" rather than
+# "local-only".
+HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server")
+
 
 def default_form_kind(provider: str) -> str:
     """Default ModelForm 'kind' for a provider id when the caller's
     provider_kinds map doesn't cover it. ModelScreen._provider_kinds
     uses the same rule for its non-native providers, keeping the kind
     policy in one place."""
-    if provider in ("llamacpp", "omlx"):
+    if provider == "mlx_lm_server":
+        return "dual-model"
+    if provider in HF_REPO_PROVIDERS:
         return "local-only"
     if provider == "ollama":
         return "ollama"
@@ -53,9 +66,14 @@ def parse_model(
     slash-splitting — `id` becomes f"{provider}/{model_name}" regardless
     of any '/' the user types.
 
+    mlx_lm_server: the target side is parsed as an HF repo, mirroring
+    llamacpp/omlx. The draft side is handled separately by parse_dual_model
+    and _submit_dual_model; this function only deals with the single
+    target-repo input.
+
     openrouter and any other provider that is neither ollama, an HF
-    provider (llamacpp/omlx), nor native: `model` is stored whole as
-    the model name (e.g. "anthropic/claude-opus") with no repo/files
+    provider (llamacpp/omlx/mlx_lm_server), nor native: `model` is stored
+    whole as the model name (e.g. "anthropic/claude-opus") with no repo/files
     split.
 
     Leading/trailing whitespace on `model` is trimmed before parsing.
@@ -70,13 +88,13 @@ def parse_model(
         if not model:
             raise ValueError("ollama tag is required")
         return (model, None, None)
-    if provider not in ("llamacpp", "omlx"):
+    if provider not in HF_REPO_PROVIDERS:
         # openrouter and any other non-HF, non-native provider: plain
         # string, no repo/files split.
         if not model:
             raise ValueError(f"{provider} model is required")
         return (model, None, None)
-    # HF providers
+    # HF providers (llamacpp, omlx, and mlx_lm_server target side)
     if not model:
         raise ValueError(f"{provider} model is required")
     parts = model.split("/")
@@ -87,6 +105,60 @@ def parse_model(
     repo_id = "/".join(parts[:2])
     filename = "/".join(parts[2:])  # empty string if len == 2
     return (model, repo_id, filename)
+
+
+def _resolve_repo_or_local_path(
+    repo: str, local_path: str, side: str
+) -> tuple[str | None, str | None]:
+    """Shared repo-vs-local-path discriminator for one side of a
+    mutually-exclusive Input pair (a repo Input and a local-path Input,
+    exactly one of which may be filled). `side` names the field group
+    in error messages (e.g. "target", "draft", "model").
+
+    Returns (repo_or_None, local_path_or_None). Raises ValueError when
+    both or neither are set — the dialog never guesses which one the
+    user meant.
+    """
+    repo = repo.strip()
+    local_path = local_path.strip()
+    if repo and local_path:
+        raise ValueError(f"{side}: set either an HF repo or a local path, not both")
+    if not repo and not local_path:
+        raise ValueError(f"{side}: an HF repo or a local path is required")
+    return (repo or None, local_path or None)
+
+
+def parse_dual_model(
+    target_repo: str,
+    target_local_path: str,
+    draft_repo: str,
+    draft_local_path: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Parse the "dual-model" kind's four Inputs (mlx_lm_server target+draft
+    pairing) into (target_repo, target_local_path, draft_repo,
+    draft_local_path).
+
+    Each side (target, draft) is its own mutually-exclusive repo/local-path
+    pair, resolved the same way the "local-only" kind resolves its single
+    pair (see `_resolve_repo_or_local_path`) — reused here for consistency
+    rather than reinventing a second discriminator. This is a standalone
+    function rather than a branch of `parse_model()` because a pairing
+    needs four output values, not parse_model's 3-tuple.
+
+    Raises ValueError (naming the offending side) when a side has neither
+    or both of its two inputs set.
+    """
+    t_repo, t_local_path = _resolve_repo_or_local_path(target_repo, target_local_path, "target")
+    d_repo, d_local_path = _resolve_repo_or_local_path(draft_repo, draft_local_path, "draft")
+    return (t_repo, t_local_path, d_repo, d_local_path)
+
+
+def _basename_of(repo_or_path: str) -> str:
+    """Last '/'-separated segment of an HF repo id or filesystem path —
+    used to build a readable name/id for local-path and dual-model
+    entries (e.g. 'org/repo' -> 'repo', '/data/models/foo/' -> 'foo')."""
+    trimmed = repo_or_path.rstrip("/")
+    return trimmed.split("/")[-1] or repo_or_path
 
 
 def _parse_price(value: str, field: str) -> float | None:
@@ -452,6 +524,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         self._initial_provider: str = initial_provider
 
         model_val = self._reconstruct_model(v) if editing else ""
+        local_path_val = self._reconstruct_local_path(v) if editing else ""
+        target_repo_val, target_local_path_val, draft_repo_val, draft_local_path_val = (
+            self._reconstruct_dual_model(v) if editing else ("", "", "", "")
+        )
         kind = self._provider_kinds.get(initial_provider, self._default_kind(initial_provider))
         placeholder = (
             "e.g. ornith-1.5:35b"
@@ -466,10 +542,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             "cloud"
             if kind in ("native", "cloud-only")
             else "local"
-            if kind == "local-only"
+            if kind in ("local-only", "dual-model")
             else v.get("location") or "local"
         )
-        location_locked = kind in ("native", "cloud-only", "local-only")
+        location_locked = kind in ("native", "cloud-only", "local-only", "dual-model")
 
         # Pricing prefill. Add mode starts with both sections disabled;
         # edit mode reads the flat cost fields from the variant.
@@ -526,12 +602,70 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 disabled=editing,
                 id="provider-select",
             )
-            yield Label("Model:")
+            yield Label("Model:", id="model-label")
             yield Input(
                 value=model_val,
                 placeholder=placeholder,
                 disabled=editing,
                 id="model",
+            )
+            # "local-only" kind (llamacpp/omlx): a second, optional field
+            # for a locally-produced mlx-lm directory (mlx_lm.convert/dwq
+            # output), mutually exclusive with the repo Input above.
+            # Visibility is toggled by kind, not removed from the DOM, so
+            # _modal_on_mount/on_select_changed can query it unconditionally.
+            yield Label(
+                "Local path (instead of HF repo):",
+                classes="pricing-label",
+                id="local-path-label",
+            )
+            yield Input(
+                value=local_path_val,
+                placeholder="/absolute/path/to/local/model/dir",
+                disabled=editing,
+                id="local-path",
+            )
+            # "dual-model" kind (mlx_lm_server): a target+draft pairing.
+            # Each side reuses the same repo-vs-local-path mutual
+            # exclusion as the local-only field above (see
+            # parse_dual_model / _resolve_repo_or_local_path).
+            yield Label("Target model:", id="target-label")
+            yield Label("HF repo (org/repo):", classes="pricing-label", id="target-repo-label")
+            yield Input(
+                value=target_repo_val,
+                placeholder="org/repo",
+                disabled=editing,
+                id="target-repo",
+            )
+            yield Label(
+                "Local path (instead of repo):",
+                classes="pricing-label",
+                id="target-local-path-label",
+            )
+            yield Input(
+                value=target_local_path_val,
+                placeholder="/absolute/path/to/local/model/dir",
+                disabled=editing,
+                id="target-local-path",
+            )
+            yield Label("Draft model:", id="draft-label")
+            yield Label("HF repo (org/repo):", classes="pricing-label", id="draft-repo-label")
+            yield Input(
+                value=draft_repo_val,
+                placeholder="org/repo",
+                disabled=editing,
+                id="draft-repo",
+            )
+            yield Label(
+                "Local path (instead of repo):",
+                classes="pricing-label",
+                id="draft-local-path-label",
+            )
+            yield Input(
+                value=draft_local_path_val,
+                placeholder="/absolute/path/to/local/model/dir",
+                disabled=editing,
+                id="draft-local-path",
             )
             yield Label("", id="model-error")
             yield Label("Location:")
@@ -592,19 +726,43 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     def _reconstruct_model(v: VariantSpec) -> str:
         """Build the dialog's `model` string from a stored VariantSpec.
 
-        For HF providers the model string is `repo` plus `/file` if a
-        single filename is stored. For ollama it's just the tag.
-        For native providers it's the model name. For openrouter it's
-        the plain model string.
+        For HF providers (llamacpp, omlx, and mlx_lm_server's target side)
+        the model string is `repo` plus `/file` if a single filename is
+        stored. For ollama it's just the tag. For native providers it's
+        the model name. For openrouter it's the plain model string.
         """
         provider = v.get("provider")
-        if provider == "ollama" or provider not in ("llamacpp", "omlx"):
+        if provider == "ollama" or provider not in HF_REPO_PROVIDERS:
             return v.get("name") or ""
         repo = v.get("repo") or ""
         files = v.get("files") or []
         if files:
             return f"{repo}/{files[0]}"
         return repo
+
+    @staticmethod
+    def _reconstruct_local_path(v: VariantSpec) -> str:
+        """Prefill the "local-only" kind's local-path Input on edit.
+
+        Empty whenever the stored entry is repo-sourced (or has no
+        local_path at all) — `_reconstruct_model` already covers that case
+        via the repo field.
+        """
+        return v.get("local_path") or ""
+
+    @staticmethod
+    def _reconstruct_dual_model(v: VariantSpec) -> tuple[str, str, str, str]:
+        """Prefill the "dual-model" kind's four Inputs on edit:
+        (target_repo, target_local_path, draft_repo, draft_local_path).
+        Target reuses the existing `repo`/`local_path` VariantSpec keys;
+        draft uses the new `draft_repo`/`draft_local_path` keys.
+        """
+        return (
+            v.get("repo") or "",
+            v.get("local_path") or "",
+            v.get("draft_repo") or "",
+            v.get("draft_local_path") or "",
+        )
 
     def _modal_on_mount(self) -> None:
         # Focus the first editable field: the provider Select in add
@@ -620,6 +778,14 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         sub_cb = self.query_one("#subscription-checkbox", Checkbox)
         self._set_per_token_visibility(bool(per_token_cb.value))
         self._set_subscription_visibility(bool(sub_cb.value))
+        # Apply initial visibility for the kind-specific field groups
+        # (single model Input vs. local-path vs. target+draft pairing).
+        kind = self._provider_kinds.get(
+            self._initial_provider, self._default_kind(self._initial_provider)
+        )
+        self._set_single_model_visibility(kind != "dual-model")
+        self._set_local_path_visibility(kind == "local-only")
+        self._set_dual_model_visibility(kind == "dual-model")
 
     def _set_per_token_visibility(self, show: bool) -> None:
         """Show/hide the per-token labels and price Inputs as a unit."""
@@ -645,6 +811,45 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         except NoMatches:
             return
 
+    def _set_single_model_visibility(self, show: bool) -> None:
+        """Show/hide the single-Input "Model" field (label + Input).
+
+        Hidden for the "dual-model" kind, which uses the target/draft
+        field group instead.
+        """
+        try:
+            self.query_one("#model-label", Label).display = show
+            self.query_one("#model", Input).display = show
+        except NoMatches:
+            return
+
+    def _set_local_path_visibility(self, show: bool) -> None:
+        """Show/hide the "local-only" kind's local-path label + Input."""
+        try:
+            self.query_one("#local-path-label", Label).display = show
+            self.query_one("#local-path", Input).display = show
+        except NoMatches:
+            return
+
+    def _set_dual_model_visibility(self, show: bool) -> None:
+        """Show/hide the "dual-model" kind's target+draft field group."""
+        try:
+            for widget_id in (
+                "#target-label",
+                "#target-repo-label",
+                "#target-repo",
+                "#target-local-path-label",
+                "#target-local-path",
+                "#draft-label",
+                "#draft-repo-label",
+                "#draft-repo",
+                "#draft-local-path-label",
+                "#draft-local-path",
+            ):
+                self.query_one(widget_id).display = show
+        except NoMatches:
+            return
+
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Toggle visibility of the conditional pricing sections."""
         if event.checkbox.id == "per-token-checkbox":
@@ -655,7 +860,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         """In add mode, changing the provider must re-lock location and
         update the model input placeholder to match the new provider's
-        expected format (native vs HF vs ollama vs cloud-only)."""
+        expected format (native vs HF vs ollama vs cloud-only vs dual-model)."""
         if event.select.id != "provider-select":
             return
         # Edit mode: provider is locked (disabled Select), but Textual may
@@ -685,9 +890,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             if kind == "local-only"
             else "local"
         )
-        location_locked = kind in ("native", "cloud-only", "local-only")
+        location_locked = kind in ("native", "cloud-only", "local-only", "dual-model")
         location_select.value = new_location
         location_select.disabled = location_locked
+
+        self._set_single_model_visibility(kind != "dual-model")
+        self._set_local_path_visibility(kind == "local-only")
+        self._set_dual_model_visibility(kind == "dual-model")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -708,61 +917,83 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         """Fallback kind when the caller didn't supply provider_kinds."""
         return default_form_kind(provider)
 
-    def _submit(self) -> None:
-        provider = str(self.query_one("#provider-select", Select).value)
-        kind = self._provider_kinds.get(provider, self._default_kind(provider))
-        raw = self.query_one("#model", Input).value
-        try:
-            name, repo, filename = parse_model(provider, raw, is_native=(kind == "native"))
-        except ValueError as exc:
-            self._show_error(str(exc))
-            return
-        self._clear_error()
-
+    def _parse_cost_from_fields(self) -> Cost | None:
+        """Build the combined per-token/subscription Cost from the pricing
+        checkboxes+Inputs. Shared by both the single-Input and dual-model
+        submit paths so a pricing bug can't diverge between them. Raises
+        ValueError (from parse_cost_fields/parse_subscription_fields) on
+        bad input; returns None when neither section is enabled.
+        """
         per_token_enabled = bool(self.query_one("#per-token-checkbox", Checkbox).value)
         subscription_enabled = bool(self.query_one("#subscription-checkbox", Checkbox).value)
 
         per_token_cost: Cost | None = None
         subscription_cost: Cost | None = None
         if per_token_enabled:
-            try:
-                per_token_cost = parse_cost_fields(
-                    self.query_one("#input-price", Input).value,
-                    self.query_one("#cache-price", Input).value,
-                    self.query_one("#output-price", Input).value,
-                )
-            except ValueError as exc:
-                self._show_error(str(exc))
-                return
-        if subscription_enabled:
-            try:
-                subscription_cost = parse_subscription_fields(
-                    self.query_one("#subscription-price", Input).value,
-                    str(self.query_one("#subscription-period-select", Select).value),
-                )
-            except ValueError as exc:
-                self._show_error(str(exc))
-                return
-
-        cost: Cost | None = None
-        if per_token_cost is not None or subscription_cost is not None:
-            cost = Cost(
-                input_price_per_million=per_token_cost.input_price_per_million
-                if per_token_cost
-                else None,
-                cache_price_per_million=per_token_cost.cache_price_per_million
-                if per_token_cost
-                else None,
-                output_price_per_million=per_token_cost.output_price_per_million
-                if per_token_cost
-                else None,
-                subscription_price=subscription_cost.subscription_price
-                if subscription_cost
-                else None,
-                subscription_period=subscription_cost.subscription_period
-                if subscription_cost
-                else None,
+            per_token_cost = parse_cost_fields(
+                self.query_one("#input-price", Input).value,
+                self.query_one("#cache-price", Input).value,
+                self.query_one("#output-price", Input).value,
             )
+        if subscription_enabled:
+            subscription_cost = parse_subscription_fields(
+                self.query_one("#subscription-price", Input).value,
+                str(self.query_one("#subscription-period-select", Select).value),
+            )
+
+        if per_token_cost is None and subscription_cost is None:
+            return None
+        return Cost(
+            input_price_per_million=per_token_cost.input_price_per_million
+            if per_token_cost
+            else None,
+            cache_price_per_million=per_token_cost.cache_price_per_million
+            if per_token_cost
+            else None,
+            output_price_per_million=per_token_cost.output_price_per_million
+            if per_token_cost
+            else None,
+            subscription_price=subscription_cost.subscription_price if subscription_cost else None,
+            subscription_period=subscription_cost.subscription_period
+            if subscription_cost
+            else None,
+        )
+
+    def _submit(self) -> None:
+        provider = str(self.query_one("#provider-select", Select).value)
+        kind = self._provider_kinds.get(provider, self._default_kind(provider))
+
+        if kind == "dual-model":
+            self._submit_dual_model(provider)
+            return
+
+        raw = self.query_one("#model", Input).value
+        local_path_raw = (
+            self.query_one("#local-path", Input).value.strip() if kind == "local-only" else ""
+        )
+
+        local_path: str | None = None
+        if kind == "local-only" and local_path_raw:
+            if raw.strip():
+                self._show_error("set either an HF repo or a local path, not both")
+                return
+            name: str | None = _basename_of(local_path_raw)
+            repo: str | None = None
+            filename: str | None = None
+            local_path = local_path_raw
+        else:
+            try:
+                name, repo, filename = parse_model(provider, raw, is_native=(kind == "native"))
+            except ValueError as exc:
+                self._show_error(str(exc))
+                return
+        self._clear_error()
+
+        try:
+            cost = self._parse_cost_from_fields()
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
 
         if self._variant is not None:
             vid = self._variant["id"]
@@ -780,6 +1011,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             "provider": provider,
             "name": name or vid,
             "repo": repo,
+            "local_path": local_path,
             "files": [filename] if filename else None,
             "quantizations": existing_quantizations,
             "location": location,
@@ -789,6 +1021,66 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             spec["model_info"] = auto_detect_model_info(name)
         else:
             spec["model_info"] = (self._variant or {}).get("model_info")
+        family = str(self.query_one("#family-select", Select).value)
+        self.dismiss(ModelFormResult(spec=spec, family=family))
+
+    def _submit_dual_model(self, provider: str) -> None:
+        """Handle Save for the "dual-model" kind (mlx_lm_server target+draft
+        pairing). Builds a VariantSpec with the target's `repo`/`local_path`
+        keys plus the new `draft_repo`/`draft_local_path` keys, instead of
+        going through parse_model's single-Input 3-tuple (see
+        parse_dual_model).
+
+        Id convention: `<provider>/<target-basename>+draft-<draft-basename>`
+        — self-describing so the pairing reads clearly in the TUI list and
+        in wt's model picker (e.g. "mlx_lm_server/Qwen3.8-27B+draft-Qwen3.8-4B").
+        """
+        try:
+            target_repo, target_local_path, draft_repo, draft_local_path = parse_dual_model(
+                self.query_one("#target-repo", Input).value,
+                self.query_one("#target-local-path", Input).value,
+                self.query_one("#draft-repo", Input).value,
+                self.query_one("#draft-local-path", Input).value,
+            )
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        self._clear_error()
+
+        try:
+            cost = self._parse_cost_from_fields()
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+
+        # No target/draft-source guard needed here: parse_dual_model already
+        # raised ValueError for any side with neither (or both) of its two
+        # inputs, so target_repo|target_local_path and draft_repo|
+        # draft_local_path each have exactly one source by this point.
+        target_name = _basename_of(target_repo or target_local_path or "")
+        draft_name = _basename_of(draft_repo or draft_local_path or "")
+        combined_name = f"{target_name}+draft-{draft_name}"
+
+        vid = self._variant["id"] if self._variant is not None else f"{provider}/{combined_name}"
+
+        existing_quantizations = (
+            (self._variant or {}).get("quantizations") if self._variant is not None else None
+        )
+        location = str(self.query_one("#location-select", Select).value)
+        spec: VariantSpec = {
+            "id": vid,
+            "provider": provider,
+            "name": combined_name,
+            "repo": target_repo,
+            "local_path": target_local_path,
+            "draft_repo": draft_repo,
+            "draft_local_path": draft_local_path,
+            "files": None,
+            "quantizations": existing_quantizations,
+            "location": location,
+            "cost": _cost_to_dict(cost) if cost is not None else None,
+            "model_info": (self._variant or {}).get("model_info"),
+        }
         family = str(self.query_one("#family-select", Select).value)
         self.dismiss(ModelFormResult(spec=spec, family=family))
 

@@ -95,3 +95,31 @@ UNUSED in its module docstring) and the `llamacpp` case branch in
   must name the exact variant.
 - Setup: [01-initial-setup.md](../guides/01-initial-setup.md),
   backend reference: [oMLX Download and Run.md](oMLX%20Download%20and%20Run.md).
+
+## mlx_lm_server — active, on-demand only (no standing artifact)
+
+- Not a LaunchAgent — a plain backgrounded `mlx_lm.server --draft-model`
+  subprocess, pidfile-managed (`/tmp/local-ai-setup-mlx-lm-server.pid`, log
+  at `/tmp/local-ai-setup-mlx-lm-server.log`) by `bin/lib/mlx-lm-server.sh`.
+  A plist would bake in one fixed target+draft pairing, defeating the goal
+  of sweeping many pairings per benchmark session — so there is nothing to
+  restore from a plist here, only the code wiring below.
+- Registry: `[[providers]] id = "mlx_lm_server"` with
+  `auth.base_url = "http://localhost:8001/v1"` (`_DEFAULT_PROVIDER_TEMPLATES`
+  in `modelman/src/modelman/registry.py`); one variant = one target+draft
+  pairing (`ModelEntry.fetch` = target, `ModelEntry.draft` = draft).
+- Code wiring: `DEFAULT_PROVIDER_IDS` (`registry.py`), `SUPPORTED_PROVIDER_IDS`
+  (`modelman/src/modelman/benchmark/isolation.py`), `PROVIDER_POLICIES`
+  (`modelman/src/modelman/litellm.py`), the `mlx_lm_server` case branch in
+  `bin/llm-isolate-provider`, and the unconditional `mlx_lm_server_stop` in
+  `bin/llm-restore-providers` (this provider is never part of the standing
+  baseline, so restoring the *others* is not enough — it must always be
+  stopped too).
+- **Local-path artifact ownership (shared with the `omlx` provider's
+  `local_path` support):** a directory produced by `bin/mlx-quantize` or
+  hand-run `mlx_lm.convert`/`dwq` is user-produced, not something modelman
+  downloaded. `OMLXProvider`/`MLXLMServerProvider` never `rmtree` a
+  `local_path`-sourced entry's artifact on delete or ready-off — registry/
+  state bookkeeping still runs, only the filesystem removal is skipped.
+  Cleanup of an abandoned experiment is a manual `rm -rf`.
+- Guide: [10-mlx-lm-quantization.md](../guides/10-mlx-lm-quantization.md).

@@ -21,8 +21,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Fatalf("loadRegistry() error: %v", err)
 	}
 
-	if len(providers) != 4 {
-		t.Fatalf("got %d providers, want 4", len(providers))
+	if len(providers) != 5 {
+		t.Fatalf("got %d providers, want 5", len(providers))
 	}
 	ollama, openrouter, agy := providers[0], providers[1], providers[2]
 	if ollama.ID != "ollama" || ollama.Auth.Type != "none" || ollama.Auth.BaseURL != "http://localhost:11434" {
@@ -44,8 +44,18 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("pinned-cloud provider decoded wrong: %+v", pinned)
 	}
 
-	if len(models) != 4 {
-		t.Fatalf("got %d models, want 4", len(models))
+	// The mlx_lm_server provider must decode with the shape modelman's
+	// default template writes (auth.type "none", OpenAI-compatible
+	// base_url, location "local") — a fixture pinned to a shape modelman
+	// never writes lets location-keyed logic pass CI while breaking on
+	// real registries.
+	mlx := providers[4]
+	if mlx.ID != "mlx_lm_server" || mlx.Auth.Type != "none" || mlx.Auth.BaseURL != "http://localhost:8001/v1" || mlx.Location != LocationLocal {
+		t.Errorf("mlx_lm_server provider decoded wrong: %+v", mlx)
+	}
+
+	if len(models) != 5 {
+		t.Fatalf("got %d models, want 5", len(models))
 	}
 	cloud := models[1]
 	if cloud.ID != "openrouter/contract-fixture:cloud" || cloud.Location != "cloud" || cloud.ProviderID != "openrouter" {
@@ -55,6 +65,14 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	inherit := models[3]
 	if inherit.ID != "pinned-cloud/contract-fixture:inherit" || inherit.Location != "" || inherit.ProviderID != "pinned-cloud" {
 		t.Errorf("inherit model decoded wrong: %+v", inherit)
+	}
+
+	// The mlx_lm_server pairing model must decode its provider linkage
+	// (fetch/draft are modelman-only and ignored by wt's parser, but the
+	// provider_id must resolve so the model is offered/eligible).
+	pair := models[4]
+	if pair.ID != "mlx_lm_server/contract-fixture:pair" || pair.ProviderID != "mlx_lm_server" {
+		t.Errorf("mlx_lm_server pairing model decoded wrong: %+v", pair)
 	}
 }
 

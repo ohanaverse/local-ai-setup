@@ -6,7 +6,16 @@ import pytest
 
 from modelman.providers.base import Provider, VariantSpec
 from modelman.providers.ollama import _parse_ollama_list_sizes
-from modelman.registry import AuthConfig, Cost, Fetch, ModelEntry, ProviderEntry, Registry
+from modelman.registry import (
+    AuthConfig,
+    Cost,
+    DraftSpec,
+    Fetch,
+    ModelEntry,
+    ProviderEntry,
+    Registry,
+)
+from modelman.registry import model_entry_to_variant as registry_model_entry_to_variant
 from modelman.state import ModelState, StateStore
 from modelman.sync import (
     SyncError,
@@ -82,6 +91,9 @@ def test_model_entry_to_variant_builds_spec_from_fetch():
         "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
         "files": ["Ornith-1.5-35B-Q4_K_M.gguf"],
         "quantizations": None,
+        "local_path": None,
+        "draft_repo": None,
+        "draft_local_path": None,
         "location": None,
         "model_info": {"supports_function_calling": True},
     }
@@ -115,6 +127,37 @@ def test_model_entry_to_variant_omits_cost():
     )
     spec = _model_entry_to_variant(entry)
     assert "cost" not in spec
+
+
+def test_sync_and_registry_adapters_agree_on_keys():
+    """Highest-risk hazard in the mlx-lm-quantization plan: registry.py's
+    model_entry_to_variant() and sync.py's _model_entry_to_variant() are
+    two independent, not-shared adapters. If only one of them is updated
+    to carry local_path/draft_repo/draft_local_path, the TUI/queue path
+    would see a locally-produced target+draft pairing while `modelman
+    sync` silently sees local_path=None/draft_repo=None — wrong
+    is_downloaded results and a delete path that thinks the entry is
+    repo-based. This test fails immediately if the two adapters' key sets
+    (modulo sync's documented `cost` omission) ever diverge again."""
+    entry = ModelEntry(
+        id="mlx_lm_server/target",
+        family="target",
+        provider_id="mlx_lm_server",
+        model_name="target",
+        fetch=Fetch(repo="org/target-repo", local_path="/models/target"),
+        draft=DraftSpec(repo="org/draft-repo", local_path="/models/draft"),
+        cost=Cost(input_price_per_million=1.0),
+    )
+    registry_spec = registry_model_entry_to_variant(entry)
+    sync_spec = _model_entry_to_variant(entry)
+
+    # sync's adapter deliberately omits `cost` (provider-only subset); every
+    # other key must be identical, including local_path/draft_repo/
+    # draft_local_path values, not just their presence.
+    registry_keys_minus_cost = set(registry_spec) - {"cost"}
+    assert registry_keys_minus_cost == set(sync_spec)
+    for key in registry_keys_minus_cost:
+        assert registry_spec[key] == sync_spec[key], f"adapters disagree on {key!r}"
 
 
 def test_ollama_downloaded_maps_configured_models():

@@ -1,0 +1,76 @@
+#!/bin/bash
+# mlx-quantize — thin wrapper around the omlx-bundled mlx_lm quantization
+# tools (mlx_lm.convert / mlx_lm.dynamic_quant / mlx_lm.dwq).
+#
+# This exists purely for PATH resolution: none of the mlx_lm.* console
+# scripts are on PATH anywhere on this machine, and mlx-lm is not a declared
+# dependency of this repo — the only working copies live inside the
+# versioned omlx Homebrew keg (see lib/mlx-lm-resolve.sh). All flags after
+# the subcommand are forwarded verbatim to the resolved binary; this script
+# never reimplements or validates mlx-lm's own flag surface, which would
+# only drift out of sync with upstream. modelman deliberately does not run
+# these tools itself ("register-only") — this script plus a manual TUI
+# registration step is the whole workflow.
+#
+# Usage:
+#   mlx-quantize convert --model <hf-repo-or-local-path> -q [--mlx-path <out-dir>]
+#   mlx-quantize dynamic-quant --model <hf-repo-or-local-path> [--mlx-path <out-dir>]
+#   mlx-quantize dwq --model <hf-repo-or-local-path> [--mlx-path <out-dir>]
+
+set -e
+
+# shellcheck source=lib/mlx-lm-resolve.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mlx-lm-resolve.sh"
+
+SUBCOMMAND="$1"
+if [ -z "$SUBCOMMAND" ]; then
+    echo "usage: mlx-quantize <convert|dynamic-quant|dwq> [tool args...]" >&2
+    exit 1
+fi
+shift
+
+case "$SUBCOMMAND" in
+    convert)
+        tool=convert
+        ;;
+    dynamic-quant)
+        tool=dynamic_quant
+        ;;
+    dwq)
+        tool=dwq
+        ;;
+    *)
+        echo "mlx-quantize: unknown subcommand '$SUBCOMMAND' (want convert|dynamic-quant|dwq)" >&2
+        exit 1
+        ;;
+esac
+
+bin=$(resolve_mlx_lm_bin "$tool") || exit 1
+
+"$bin" "$@"
+
+# mlx-lm's own --mlx-path default is "mlx_model" (relative to cwd) when the
+# caller didn't pass one — scan for an explicit value so the printed next
+# step names the real output directory rather than always guessing.
+out_dir="mlx_model"
+expect_value=""
+for arg in "$@"; do
+    if [ "$expect_value" = "1" ]; then
+        out_dir="$arg"
+        break
+    fi
+    case "$arg" in
+        --mlx-path=*|--mlx_path=*)
+            out_dir="${arg#*=}"
+            break
+            ;;
+        --mlx-path|--mlx_path)
+            expect_value="1"
+            ;;
+    esac
+done
+
+echo
+echo "Output written to: $out_dir"
+echo "Next: register it in modelman — TUI → Add model → provider 'omlx' →"
+echo "local-path field → paste '$out_dir' (or its absolute path)."

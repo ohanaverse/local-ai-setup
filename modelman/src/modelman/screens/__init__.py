@@ -68,11 +68,12 @@ def reconcile_model_state(
     list` answers everything) cost one subprocess for the whole batch
     instead of one per model. Providers without a batch implementation
     (resolve_local returns None) take the per-model path:
-    `is_downloaded()`/`size_of()` per model, and `list_local()` at most
-    once per provider and only when at least one model is ready (calling
-    it inside the per-model loop, or unconditionally, turns every
-    reconcile into an extra subprocess/filesystem scan even when nothing
-    in the batch is downloaded).
+    `is_downloaded()`/`size_of()`/`path_of()` per model, and `list_local()`
+    at most once per provider, only when at least one model is ready AND
+    path_of() failed to resolve one of the ready ones (calling it inside
+    the per-model loop, or unconditionally, turns every reconcile into an
+    extra subprocess/filesystem scan even when nothing in the batch is
+    downloaded).
     """
     # Deferred import: this module is imported by screens/models.py at
     # module load time, and models.py imports ProviderRegistry back —
@@ -124,7 +125,8 @@ def reconcile_model_state(
         else:
             # Per-model path (no batch support on this provider).
             any_ready = False
-            for m, spec in zip(entries, specs, strict=True):
+            needs_name_sweep = False
+            for i, (m, spec) in enumerate(zip(entries, specs, strict=True)):
                 try:
                     ready = bool(provider.is_downloaded(spec))
                 except Exception:
@@ -137,13 +139,32 @@ def reconcile_model_state(
                             model_size = raw
                     except Exception:
                         model_size = None
+                    # Resolve the path the way `modelman sync` does —
+                    # provider.path_of() — first: for a model-dir provider
+                    # whose variant ids are repo basenames (omlx, and
+                    # mlx_lm_server's "<target>+draft-<draft>" composites),
+                    # list_local()'s variant_id is a directory basename that
+                    # matches neither model_name nor the composite id, so a
+                    # name-only lookup left a downloaded model with ready=True
+                    # and a permanent `path: —` in the details panel. Only a
+                    # model path_of() cannot resolve falls through to the
+                    # name-keyed list_local() sweep below.
+                    try:
+                        p = provider.path_of(spec)
+                    except Exception:
+                        p = None
+                    if isinstance(p, str):
+                        paths[i] = p
+                    else:
+                        needs_name_sweep = True
                 checked.append((m, ready, model_size))
                 any_ready = any_ready or ready
 
-            # list_local() at most once per provider, and only when at
-            # least one model is ready (see docstring).
-            local_by_name: dict[str, str] = {}
-            if any_ready:
+            # list_local() sweep: at most once per provider, only when at
+            # least one model is ready AND path_of() failed to resolve at
+            # least one of them (see docstring).
+            if needs_name_sweep and any_ready:
+                local_by_name: dict[str, str] = {}
                 try:
                     for lm in provider.list_local():
                         lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
@@ -152,11 +173,11 @@ def reconcile_model_state(
                             local_by_name[lm_name] = lp
                 except Exception:
                     pass
-            for i, (m, ready, _size) in enumerate(checked):
-                if ready:
-                    found = local_by_name.get(m.model_name) or local_by_name.get(m.id)
-                    if found is not None:
-                        paths[i] = found
+                for i, (m, ready, _size) in enumerate(checked):
+                    if ready and i not in paths:
+                        found = local_by_name.get(m.model_name) or local_by_name.get(m.id)
+                        if found is not None:
+                            paths[i] = found
 
         for i, (m, ready, size) in enumerate(checked):
             local_path = paths.get(i) if ready else None

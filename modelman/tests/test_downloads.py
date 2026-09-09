@@ -123,6 +123,7 @@ def test_cancel_cleanup_skips_rmtree_when_artifact_is_shared(monkeypatch):
     # Both variants resolve to the same on-disk path — the collision
     # find_shared_artifact_owner is meant to detect.
     provider.path_of.return_value = "/models/shared-basename"
+    provider.artifact_paths.side_effect = lambda v: frozenset([provider.path_of(v)])
     _register_stub_provider(monkeypatch, provider)
 
     registry = Registry(
@@ -314,6 +315,45 @@ def test_success_persists_ready_and_disk_path_to_state(tmp_path, monkeypatch):
     assert entry.ready is True
     assert entry.disk_path == str(tmp_path / "weights.gguf")
     assert entry.size_bytes == 1024
+
+
+def test_success_persists_directory_size_via_provider(tmp_path, monkeypatch):
+    # A directory download (mlx_lm_server's target dir, omlx's
+    # model_dir/<basename>) isn't a single stat() target: _size_of returns
+    # None for a directory. DownloadManager must fall back to the provider's
+    # size_of(variant) so the SIZE column is populated right after a
+    # background ready-on instead of showing '—' until the next reconcile.
+    from modelman.state import load_state
+
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    model_dir = tmp_path / "target-model"
+    model_dir.mkdir()
+    (model_dir / "weights.safetensors").write_bytes(b"x" * 2048)
+
+    provider = MagicMock()
+    provider.download.return_value = str(model_dir)
+    provider.size_of.return_value = 2048
+    _register_stub_provider(monkeypatch, provider)
+
+    mgr = DownloadManager(_FakeApp())
+    # _run invokes app.call_from_thread on completion; wait for persistence.
+    import threading
+
+    done = threading.Event()
+    mgr.start(
+        "mlx_lm_server/pair",
+        {"id": "mlx_lm_server/pair", "provider": "mlx_lm_server", "name": "pair"},
+        {},
+        on_complete=lambda path: done.set(),
+    )
+    assert done.wait(timeout=2)
+
+    loaded = load_state(state_path)
+    entry = loaded.get("mlx_lm_server/pair")
+    assert entry.ready is True
+    assert entry.size_bytes == 2048
 
 
 def test_success_persistence_is_a_merge_not_an_overwrite(tmp_path, monkeypatch):
@@ -550,6 +590,7 @@ def test_clear_state_mid_download_keeps_registry_for_shared_artifact_guard(monke
     provider.download.side_effect = _download
     provider.cancel_current.side_effect = lambda: release.set()
     provider.path_of.return_value = "/models/shared-basename"
+    provider.artifact_paths.side_effect = lambda v: frozenset([provider.path_of(v)])
     _register_stub_provider(monkeypatch, provider)
 
     registry = Registry(

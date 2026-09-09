@@ -43,6 +43,18 @@ type = "api_key"
 base_url = "https://pinned-cloud.example/v1"
 secret_ref = "PINNED_CLOUD_API_KEY"
 
+# mlx_lm_server: a local target+draft speculative-decoding pairing served by
+# mlx_lm.server --draft-model. Mirrors the default template modelman writes
+# (registry.py _DEFAULT_PROVIDER_TEMPLATES) — auth.type "none" with the
+# OpenAI-compatible base_url, no model_dir (the default template omits it).
+[[providers]]
+id = "mlx_lm_server"
+name = "mlx-lm server (target+draft)"
+location = "local"
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8001/v1"
+
 [[families]]
 name = "contract-fixture"
 display_name = "Contract Fixture"
@@ -86,3 +98,18 @@ family = "contract-fixture"
 provider_id = "pinned-cloud"
 model_name = "org/contract-fixture-inherit"
 tags = ["code"]
+
+# mlx_lm_server pairing: a target+draft speculative-decoding pair. The
+# `fetch` names the target repo and `draft` the draft repo — the shape
+# modelman writes for mlx_lm_server models. wt decodes the provider/model
+# rows (fetch/draft are modelman-only and ignored by wt's parser).
+[[models]]
+id = "mlx_lm_server/contract-fixture:pair"
+family = "contract-fixture"
+provider_id = "mlx_lm_server"
+model_name = "org/contract-fixture-target"
+tags = ["code"]
+[models.fetch]
+repo = "org/contract-fixture-target"
+[models.draft]
+repo = "org/contract-fixture-draft"

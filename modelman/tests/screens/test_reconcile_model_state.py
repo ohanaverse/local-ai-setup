@@ -85,6 +85,54 @@ def test_reconcile_model_state_skips_list_local_when_nothing_ready(monkeypatch):
     assert state.get("ollama/b").ready is False
 
 
+def test_reconcile_model_state_resolves_path_via_path_of_before_list_local(monkeypatch):
+    """Regression: the per-model path matched list_local()'s variant_id (a
+    directory basename for model-dir providers) against model_name/id, so a
+    downloaded mlx_lm_server pairing — whose model_name is a
+    "<target>+draft-<draft>" composite that never equals a basename — got
+    ready=True and a size but a permanent `path: —` in the TUI details
+    panel. provider.path_of() (what `modelman sync` uses) resolves the real
+    on-disk directory and must be consulted first; list_local() remains the
+    fallback for providers that cannot resolve per-variant paths."""
+    models = [ModelEntry(id="mlx_lm_server/p", family="f", provider_id="ollama",
+                         model_name="p+draft-d")]
+    reg, state, stub = _seed(monkeypatch, models=models)
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 7
+    stub.path_of.return_value = "/models/target-dir"
+    # A list_local() that only knows directory basenames must never be
+    # consulted when path_of() already answered.
+    stub.list_local.return_value = [{"variant_id": "target", "path": "/models/target"}]
+
+    reconcile_model_state(models, reg, state)
+
+    result = state.get("mlx_lm_server/p")
+    assert result.ready is True
+    assert result.disk_path == "/models/target-dir"
+    assert result.size_bytes == 7
+    stub.list_local.assert_not_called()
+
+
+def test_reconcile_model_state_falls_back_to_list_local_when_path_of_unresolvable(monkeypatch):
+    """A provider whose path_of() returns None (or the base-class default)
+    keeps the list_local() name-keyed sweep as its path source — the ollama
+    case, where reconcile must not regress on the resolution it already
+    had."""
+    models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
+    reg, state, stub = _seed(monkeypatch, models=models)
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 5
+    stub.path_of.return_value = None
+    stub.list_local.return_value = [{"name": "a", "local_path": "/models/a"}]
+
+    reconcile_model_state(models, reg, state)
+
+    result = state.get("ollama/a")
+    assert result.ready is True
+    assert result.disk_path == "/models/a"
+    stub.list_local.assert_called_once()
+
+
 def test_reconcile_model_state_marks_local_artifact_ready(monkeypatch):
     """A local-artifact model the provider reports as downloaded must have
     ready/disk_path/size_bytes written into state — the core contract both
