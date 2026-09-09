@@ -299,6 +299,9 @@ def test_is_downloaded_local_path_true(tmp_path):
 
 
 def test_is_downloaded_local_path_false_when_missing(tmp_path):
+    # A local_path variant pointing at a nonexistent directory must report
+    # False, not raise — reconcile and the delete step call is_downloaded()
+    # on user-typo'd paths and must treat "absent" as a normal answer.
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
     variant: VariantSpec = {
         "id": "x",
@@ -333,6 +336,10 @@ def test_download_local_path_missing_raises(tmp_path):
 
 
 def test_size_of_local_path_sums_dir(tmp_path):
+    # size_of() must walk the user-produced directory recursively and sum
+    # file sizes (not the directory entry itself) — the TUI SIZE column and
+    # FamilyScreen totals are fed by this, and a None here hides real
+    # disk usage.
     local_dir = tmp_path / "my-model"
     local_dir.mkdir()
     (local_dir / "a.safetensors").write_bytes(b"a" * 50)
@@ -343,6 +350,9 @@ def test_size_of_local_path_sums_dir(tmp_path):
 
 
 def test_size_of_local_path_returns_none_when_missing(tmp_path):
+    # A missing local_path directory yields None (unknown size), not 0 or an
+    # exception — reconcile treats None as "provider can't say" and leaves
+    # the column blank rather than showing a bogus zero.
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
     variant: VariantSpec = {
         "id": "x",
@@ -354,6 +364,10 @@ def test_size_of_local_path_returns_none_when_missing(tmp_path):
 
 
 def test_path_of_local_path_returns_dir(tmp_path):
+    # path_of() must return the local_path directory verbatim (already
+    # absolute, user-produced) so the TUI details panel and sync write the
+    # real location into state.disk_path instead of a repo-basename
+    # download dir the artifact was never placed in.
     local_dir = tmp_path / "my-model"
     local_dir.mkdir()
     (local_dir / "config.json").write_text("{}")
@@ -363,6 +377,10 @@ def test_path_of_local_path_returns_dir(tmp_path):
 
 
 def test_path_of_local_path_returns_none_when_missing(tmp_path):
+    # A missing local_path directory must yield None — path_of() feeds
+    # reconcile's disk_path (and the details panel), and inventing a path
+    # for an absent directory would make a not-downloaded model look
+    # located.
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
     variant: VariantSpec = {
         "id": "x",
