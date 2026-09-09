@@ -44,16 +44,16 @@ func TestPromptRunNoopForCommandAgent(t *testing.T) {
 	}
 }
 
-// TestPromptRunYesFlow verifies the full y -> speed -> quality path
-// records a worked event with both ratings and prints the after-survey
-// stats block.
+// TestPromptRunYesFlow verifies the full y -> speed -> quality -> task path
+// records a worked event with both ratings and the task text, and prints
+// the after-survey stats block.
 func TestPromptRunYesFlow(t *testing.T) {
 	withTTY(t, true)
 	now = func() time.Time { return time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC) }
 	t.Cleanup(func() { now = time.Now })
 	store := NewStoreAt(t.TempDir())
 	var out bytes.Buffer
-	PromptRun(strings.NewReader("y\n4\n5\n"), &out, store, "claude", config.Model{ID: "ollama/gemma4:9b"})
+	PromptRun(strings.NewReader("y\n4\n5\nadd task description to wt survey\n"), &out, store, "claude", config.Model{ID: "ollama/gemma4:9b"})
 
 	events := store.Events()
 	if len(events) != 1 {
@@ -69,6 +69,9 @@ func TestPromptRunYesFlow(t *testing.T) {
 	if e.Quality == nil || *e.Quality != 5 {
 		t.Fatalf("Quality = %v, want 5", e.Quality)
 	}
+	if e.Task != "add task description to wt survey" {
+		t.Fatalf("Task = %q, want the free-text answer", e.Task)
+	}
 	if !strings.Contains(out.String(), "survey saved") {
 		t.Errorf("output = %q, want it to contain \"survey saved\"", out.String())
 	}
@@ -77,13 +80,32 @@ func TestPromptRunYesFlow(t *testing.T) {
 	}
 }
 
+// TestPromptRunTaskTrimsWhitespace verifies the free-text task answer is
+// stored trimmed, so a trailing newline-carriage-return from a Windows-style
+// paste or stray spaces doesn't pollute stats grouping downstream.
+func TestPromptRunTaskTrimsWhitespace(t *testing.T) {
+	withTTY(t, true)
+	store := NewStoreAt(t.TempDir())
+	var out bytes.Buffer
+	PromptRun(strings.NewReader("y\n\n\n  fix survey bug  \n"), &out, store, "claude", config.Model{ID: "m"})
+
+	events := store.Events()
+	if len(events) != 1 {
+		t.Fatalf("Events() = %d, want 1", len(events))
+	}
+	if events[0].Task != "fix survey bug" {
+		t.Fatalf("Task = %q, want trimmed \"fix survey bug\"", events[0].Task)
+	}
+}
+
 // TestPromptRunNoFlowStopsAfterQ1 verifies "n" records a failed verdict and
-// never prompts for ratings — a failed run has nothing to rate.
+// never prompts for ratings — a failed run has nothing to rate. The task
+// question still applies to the n-flow, so its input carries a task line.
 func TestPromptRunNoFlowStopsAfterQ1(t *testing.T) {
 	withTTY(t, true)
 	store := NewStoreAt(t.TempDir())
 	var out bytes.Buffer
-	PromptRun(strings.NewReader("n\n"), &out, store, "claude", config.Model{ID: "m"})
+	PromptRun(strings.NewReader("n\ndebug flaky test\n"), &out, store, "claude", config.Model{ID: "m"})
 
 	events := store.Events()
 	if len(events) != 1 {
@@ -91,6 +113,9 @@ func TestPromptRunNoFlowStopsAfterQ1(t *testing.T) {
 	}
 	if events[0].Worked == nil || *events[0].Worked {
 		t.Fatalf("Worked = %v, want false", events[0].Worked)
+	}
+	if events[0].Task != "debug flaky test" {
+		t.Fatalf("Task = %q, want \"debug flaky test\" (task prompt applies to n-flow too)", events[0].Task)
 	}
 	if strings.Contains(out.String(), "speed") {
 		t.Errorf("output = %q, should not prompt for speed after \"no\"", out.String())
@@ -126,7 +151,7 @@ func TestPromptRunInvalidQ1Reprompts(t *testing.T) {
 	withTTY(t, true)
 	store := NewStoreAt(t.TempDir())
 	var out bytes.Buffer
-	PromptRun(strings.NewReader("x\ny\n\n\n"), &out, store, "claude", config.Model{ID: "m"})
+	PromptRun(strings.NewReader("x\ny\n\n\n\n"), &out, store, "claude", config.Model{ID: "m"})
 
 	events := store.Events()
 	if len(events) != 1 {
@@ -147,7 +172,7 @@ func TestPromptRunRatingReprompts(t *testing.T) {
 	withTTY(t, true)
 	store := NewStoreAt(t.TempDir())
 	var out bytes.Buffer
-	PromptRun(strings.NewReader("y\n9\n3\n\n"), &out, store, "claude", config.Model{ID: "m"})
+	PromptRun(strings.NewReader("y\n9\n3\n\n\n"), &out, store, "claude", config.Model{ID: "m"})
 
 	events := store.Events()
 	if len(events) != 1 {

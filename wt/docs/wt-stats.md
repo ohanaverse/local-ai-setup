@@ -45,13 +45,16 @@ percentage.
 
 ## Where the data comes from
 
-Every model-driven agent launch (TUI or non-TUI) prompts up to three
+Every model-driven agent launch (TUI or non-TUI) prompts up to four
 questions immediately after the agent exits:
 
 1. **Did it work?** `[y]es / [n]o / [s]kip (Enter=skip)` — `n` records a
-   failure and stops; `s`/Enter records a skip and stops.
+   failure and stops the rating questions; `s`/Enter records a skip and
+   stops all further questions.
 2. **Speed 1(slow)-5(fast)?** (Enter=skip) — only asked after `y`.
 3. **Quality 1(bad)-5(great)?** (Enter=skip) — only asked after `y`.
+4. **What task were you doing?** (Enter=skip) — free text, asked after any
+   non-skip verdict (both `y` and `n`).
 
 The prompt is silent (no output at all) when stdin is not a TTY, or when
 the launch had no model (command agents like `shell`). There is no config

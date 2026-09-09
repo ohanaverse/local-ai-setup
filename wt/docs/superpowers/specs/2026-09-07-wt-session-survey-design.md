@@ -15,12 +15,14 @@ launching, and (c) dump everything from a single `wt stats` command.
 
 ## Requirements
 
-1. After an agent session ends, prompt up to three questions on the parent
+1. After an agent session ends, prompt up to four questions on the parent
    terminal:
-   - **Q1 — did it work?** Three answers: `y`es (continue), `n`o (stop — no
-     further questions), `s`kip / Enter (record a skip, stop).
+   - **Q1 — did it work?** Three answers: `y`es (continue), `n`o (stop the
+     rating questions), `s`kip / Enter (record a skip, stop).
    - **Q2 — speed**, `1(slow)-5(fast)`, Enter = leave unrated.
    - **Q3 — quality**, `1(bad)-5(great)`, Enter = leave unrated.
+   - **Q4 — task description** (added post-spec): free text, Enter = skip;
+     asked after any non-skip verdict (both `y` and `n`).
 2. Record every answer set (including skips) as append-only JSONL events,
    keyed by agent and model.
 3. Stats windows: 1d / 7d / 30d, per **model** (all agents) and per

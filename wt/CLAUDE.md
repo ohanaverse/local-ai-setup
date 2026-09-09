@@ -62,7 +62,7 @@ For agents, args append to the command; for `shell` (implements `ArgSetter`), th
 
 After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
 
-Immediately after the summary, a post-session survey prompts up to three questions (did it work? speed? quality?) on the parent terminal — see [Session survey](#session-survey-go) below.
+Immediately after the summary, a post-session survey prompts up to four questions (did it work? speed? quality? — and on non-skip answers, what task were you doing) on the parent terminal — see [Session survey](#session-survey-go) below.
 
 ## Session survey (Go)
 
@@ -75,6 +75,14 @@ capture-then-emit pattern the summary line uses). It silently no-ops when
 stdin is not a TTY.
 
 Order on every launch: **summary → survey prompts → after-survey stats**.
+
+- **Paste drain:** after the last question, `PromptRun` flushes the kernel
+  TTY input queue (`drainTTYInput`: `TIOCFLUSH` darwin / `TCFLSH` linux /
+  no-op elsewhere) — a multi-line paste at the free-text question delivers
+  all its lines at once and anything unconsumed would otherwise execute as
+  shell commands in the parent terminal after wt exits. Targeted at
+  `os.Stdin`, not the injected reader, because the residue lives in the
+  kernel queue for fd 0. Don't remove this to "simplify" the survey.
 
 - **Store:** `~/.config/agent-wt/survey.jsonl`, wt-owned, 30-day retention,
   pruned on every write (mirrors `internal/usage`).
@@ -102,7 +110,7 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 **Test seams.** TTY, installed-check, guard, TUI behavior, and the model
 picker's usage store are stubbed via package-level var seams (`tuiRun`,
 `launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
-`newUsageStore`) — production code calls the var, tests swap it. When adding
+`newUsageStore`, `flushTTY`) — production code calls the var, tests swap it. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 
 **Prefer asserting on unexported functions directly** — same-package tests
@@ -138,7 +146,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/config/` | config load/validate/save (agents + joined registry catalog); helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
 | `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
 | `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model picker's per-row usage columns, and the rotation module |
-| `internal/survey/` | post-session survey: append-only JSONL verdicts (worked/speed/quality), 1d/7d/30d stats per model and per agent×model combo — used by the post-run prompt, the model picker's survey segment, and `wt stats` |
+| `internal/survey/` | post-session survey: append-only JSONL verdicts (worked/speed/quality + task description), 1d/7d/30d stats per model and per agent×model combo — used by the post-run prompt, the model picker's survey segment, and `wt stats` |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
