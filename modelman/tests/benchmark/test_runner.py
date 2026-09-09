@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -5,7 +6,13 @@ import pytest
 
 from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.results import BenchmarkMetrics, BenchmarkRun, TargetResult
-from modelman.benchmark.runner import RunSavedButRestoreFailed, discover_targets, run_benchmark
+from modelman.benchmark.runner import (
+    RunSavedButRestoreFailed,
+    Target,
+    _isolate_extra_args,
+    discover_targets,
+    run_benchmark,
+)
 from modelman.benchmark.workloads.base import WorkloadSpec
 from modelman.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
@@ -167,6 +174,37 @@ def test_discover_targets_remote_providers_excluded():
     assert targets == []
 
 
+def test_isolate_extra_args_normalizes_paths_but_not_repo_ids():
+    """_isolate_extra_args must expand/normalize local_path values (stable
+    isolation keys across equivalent path spellings) but forward HF repo ids
+    verbatim — mlx_lm.server accepts both, and abspath'ing a repo id like
+    "org/model" mangles it into a nonexistent cwd-prefixed path that
+    mlx_lm.server then fails to resolve."""
+
+    def _target(**overrides):
+        fields = {
+            "model_id": "mlx_lm_server/p",
+            "provider_id": "mlx_lm_server",
+            "model_name": "p",
+            "family": "f",
+            "repo": None,
+            "local_path": None,
+            "draft_repo": None,
+            "draft_local_path": None,
+        }
+        fields.update(overrides)
+        return Target(**fields)
+
+    # Both sources repo ids → forwarded verbatim.
+    assert _isolate_extra_args(_target(repo="org/t", draft_repo="org/d")) == ("org/t", "org/d")
+    # Both local paths → expanded and normalized.
+    got = _isolate_extra_args(_target(local_path="~/models/t", draft_local_path="/models/d/"))
+    assert got == (str(Path.home() / "models" / "t"), "/models/d")
+    # Mixed: repo target + local_path draft.
+    got = _isolate_extra_args(_target(repo="org/t", draft_local_path="./x/./draft"))
+    assert got == ("org/t", os.path.normpath(os.path.abspath("x/draft")))
+
+
 def test_discover_targets_carries_mlx_lm_server_pairing():
     """discover_targets must resolve the target/draft repo|local_path fields
     onto Target, since isolate_provider() has nowhere else to get the pairing
@@ -239,9 +277,9 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
 
     run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
 
-    assert calls == [
-        ("mlx_lm_server", "/models/target", str(Path("org/draft").resolve()))
-    ]
+    # local_path target normalized; repo-id draft forwarded verbatim (an
+    # abspath'ed repo id would be a nonexistent cwd-prefixed path).
+    assert calls == [("mlx_lm_server", "/models/target", "org/draft")]
 
 
 def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_path, monkeypatch):
@@ -302,8 +340,8 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
     run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
 
     assert calls == [
-        ("mlx_lm_server", str(Path("org/target-1").resolve()), str(Path("org/draft-1").resolve())),
-        ("mlx_lm_server", str(Path("org/target-2").resolve()), str(Path("org/draft-2").resolve())),
+        ("mlx_lm_server", "org/target-1", "org/draft-1"),
+        ("mlx_lm_server", "org/target-2", "org/draft-2"),
     ]
 
 

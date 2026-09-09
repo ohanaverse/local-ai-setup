@@ -90,6 +90,19 @@ def discover_targets(
     return targets
 
 
+def _normalize_pairing_arg(value: str, *, is_path: bool) -> str:
+    """Normalize one isolate extra-arg: expand and absolutize local_path
+    values (so the isolation key is stable across equivalent spellings —
+    relative vs absolute, trailing slashes, ~ expansion — without requiring
+    the path to exist), but forward HF repo ids verbatim: mlx_lm.server
+    accepts both forms, and abspath'ing a repo id like "org/model" would
+    mangle it into a nonexistent cwd-prefixed filesystem path.
+    """
+    if not is_path:
+        return value
+    return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+
 def _isolate_extra_args(target: Target) -> tuple[str, ...]:
     """Resolve the positional args isolate_provider() must forward for this
     target's provider.
@@ -108,12 +121,13 @@ def _isolate_extra_args(target: Target) -> tuple[str, ...]:
             f"mlx_lm_server target {target.model_id!r} is missing a target or "
             "draft repo/local_path in the registry"
         )
-    # Normalize so the isolation key is stable across equivalent references
-    # (relative vs absolute paths, trailing slashes, ~ expansion) without
-    # requiring the path to exist yet.
-    target_str = os.path.normpath(os.path.abspath(os.path.expanduser(target_str)))
-    draft_str = os.path.normpath(os.path.abspath(os.path.expanduser(draft_str)))
-    return (target_str, draft_str)
+    # The local_path-vs-repo fields are the source-of-truth discriminator:
+    # only a value sourced from a local_path field is a filesystem path that
+    # may be normalized; a repo value is an HF repo id and passes through.
+    return (
+        _normalize_pairing_arg(target_str, is_path=target.local_path is not None),
+        _normalize_pairing_arg(draft_str, is_path=target.draft_local_path is not None),
+    )
 
 
 def _run_route(
