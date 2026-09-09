@@ -9,7 +9,7 @@ from typing import Any, Protocol
 import requests
 
 from .registry import Cost, ModelEntry, Registry
-from .state import StateStore
+from .state import StateStore, get_price_refresh_last_run
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -134,7 +134,7 @@ def refresh_prices(registry: Registry, *, runner: _HTTPRunner | None = None) -> 
 def should_run_price_refresh(state: StateStore, registry: Registry) -> bool:
     """Return True when today's refresh has not run and at least one
     cloud/openrouter model exists."""
-    last = state.extra.get("price_refresh_last_run")
+    last = get_price_refresh_last_run(state)
     today = date.today().isoformat()
     if last == today:
         return False
