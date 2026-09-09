@@ -239,7 +239,9 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
 
     run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
 
-    assert calls == [("mlx_lm_server", "/models/target", "org/draft")]
+    assert calls == [
+        ("mlx_lm_server", "/models/target", str(Path("org/draft").resolve()))
+    ]
 
 
 def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_path, monkeypatch):
@@ -300,8 +302,8 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
     run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
 
     assert calls == [
-        ("mlx_lm_server", "org/target-1", "org/draft-1"),
-        ("mlx_lm_server", "org/target-2", "org/draft-2"),
+        ("mlx_lm_server", str(Path("org/target-1").resolve()), str(Path("org/draft-1").resolve())),
+        ("mlx_lm_server", str(Path("org/target-2").resolve()), str(Path("org/draft-2").resolve())),
     ]
 
 

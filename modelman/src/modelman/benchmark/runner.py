@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -107,6 +108,11 @@ def _isolate_extra_args(target: Target) -> tuple[str, ...]:
             f"mlx_lm_server target {target.model_id!r} is missing a target or "
             "draft repo/local_path in the registry"
         )
+    # Normalize so the isolation key is stable across equivalent references
+    # (relative vs absolute paths, trailing slashes, ~ expansion) without
+    # requiring the path to exist yet.
+    target_str = os.path.normpath(os.path.abspath(os.path.expanduser(target_str)))
+    draft_str = os.path.normpath(os.path.abspath(os.path.expanduser(draft_str)))
     return (target_str, draft_str)
 
 
