@@ -58,11 +58,20 @@ mlx_lm_server_start() {
     mlx_lm_server_stop
     # Bounded wait for the OS to actually reclaim the port before rebinding
     # it — `kill` above only sends SIGTERM, it doesn't wait for the process
-    # to exit. A timeout here is a warning, not fatal: worst case the new
-    # process fails to bind and warmup_or_die (in the isolate script) times
-    # out with a clear error, rather than this function hanging.
-    poll_until_down "http://localhost:$port/v1/models" 0.2 15 \
-        || echo "warning: port $port still in use after stopping prior mlx_lm_server" >&2
+    # to exit, and freeing a multi-GB MLX model from GPU/RAM takes the old
+    # server many seconds. A prior 3s window (0.2s x 15) was too short, and
+    # the failure it left behind was not the obvious one: the new process
+    # loses the bind race and dies, but warmup_or_die then polls the port and
+    # the STILL-RUNNING old server answers — isolation reports success, the
+    # benchmark silently measures the previous pairing, and the pidfile names
+    # the dead new process so a later stop is a no-op. Proceeding on a timed-
+    # out wait is worse than failing, so the timeout is fatal here: refuse to
+    # spawn rather than spawn into a port we cannot have. 60s (0.5s x 120)
+    # bounds the normal exit path with a wide margin without hanging forever.
+    if ! poll_until_down "http://localhost:$port/v1/models" 0.5 120; then
+        echo "error: port $port still in use after stopping prior mlx_lm_server — refusing to spawn a replacement that cannot bind (is something else listening on $port?)" >&2
+        return 1
+    fi
 
     "$bin" --model "$target" --draft-model "$draft" --port "$port" \
         >"$MLX_LM_SERVER_LOG" 2>&1 &

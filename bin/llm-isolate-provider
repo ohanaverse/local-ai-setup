@@ -194,7 +194,7 @@ start_omlx() {
 start_mlx_lm_server() {
     local target="$1" draft="$2"
     resolve_mlx_lm_bin server >/dev/null || exit 1
-    mlx_lm_server_start "$target" "$draft" 8001
+    mlx_lm_server_start "$target" "$draft" 8001 || exit 1
     warmup_or_die mlx_lm_server "$target" http://localhost:8001/v1/chat/completions http://localhost:8001/v1/models
 }
 
