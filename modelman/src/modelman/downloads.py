@@ -216,7 +216,18 @@ class DownloadManager:
             if self._states.get(model_id) is None:
                 skip_persist = True
             else:
+                # A file download's size is the single file's stat; a
+                # directory download (mlx_lm_server's target dir, omlx's
+                # model_dir/<basename>) can't be a single stat — fall back
+                # to the provider's size_of() so the SIZE column and sync
+                # totals are populated immediately after a background
+                # ready-on, instead of showing '—' until the next reconcile.
                 size_bytes = self._size_of(local_path)
+                if size_bytes is None:
+                    try:
+                        size_bytes = provider.size_of(variant)
+                    except Exception:  # noqa: BLE001
+                        size_bytes = None
                 state.set(
                     model_id,
                     ModelState(ready=True, disk_path=local_path, size_bytes=size_bytes),
