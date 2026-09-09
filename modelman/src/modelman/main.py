@@ -143,5 +143,25 @@ def unexpose(
         typer.echo(f"warning: {warning}", err=True)
 
 
+@app.command()
+def refresh_prices() -> None:
+    """Refresh per-token pricing for cloud models from OpenRouter."""
+    from .pricing import refresh_prices as run_refresh
+
+    registry = load_registry()
+    result = run_refresh(registry)
+    if result.error is not None:
+        typer.echo(f"error: {result.error}", err=True)
+        raise typer.Exit(1)
+    try:
+        save_registry(registry)
+    except OSError as exc:
+        typer.echo(f"error: failed to save registry: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    typer.echo(f"Refreshed prices for {result.updated} model(s).")
+
+
 if __name__ == "__main__":
     app()
