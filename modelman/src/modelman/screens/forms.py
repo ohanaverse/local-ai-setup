@@ -1045,8 +1045,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             self._show_error(str(exc))
             return
 
-        target_name = _basename_of(target_repo or target_local_path or "")
-        draft_name = _basename_of(draft_repo or draft_local_path or "")
+        target_source = target_repo or target_local_path
+        draft_source = draft_repo or draft_local_path
+        if not target_source or not draft_source:
+            self._show_error("Both target and draft must have a repo or local path set")
+            return
+        target_name = _basename_of(target_source)
+        draft_name = _basename_of(draft_source)
         combined_name = f"{target_name}+draft-{draft_name}"
 
         vid = self._variant["id"] if self._variant is not None else f"{provider}/{combined_name}"

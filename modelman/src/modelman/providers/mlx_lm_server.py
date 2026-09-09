@@ -9,13 +9,14 @@ Face repo (`repo`/`draft_repo`) downloaded into
 from __future__ import annotations
 
 import os
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from huggingface_hub import snapshot_download
 
-from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
+from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm, repo_basename
 from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
 
@@ -25,12 +26,7 @@ def _model_dir(config: dict) -> Path:
     return Path(os.path.expanduser(raw))
 
 
-def _basename(repo: str) -> str:
-    """Last /-separated component of the repo id."""
-    return repo.split("/")[-1]
-
-
-def _is_local_path(value: str | None) -> bool:
+def _is_local_path_entry(value: str | None) -> bool:
     return bool(value)
 
 
@@ -62,7 +58,7 @@ class MLXLMServerProvider(Provider):
             return Path(local_path)
         repo = variant.get("repo")
         if repo:
-            return _model_dir(self.config) / _basename(repo)
+            return _model_dir(self.config) / repo_basename(repo)
         return None
 
     def _draft_dir(self, variant: VariantSpec) -> Path | None:
@@ -73,7 +69,7 @@ class MLXLMServerProvider(Provider):
             return Path(local_path)
         repo = variant.get("draft_repo")
         if repo:
-            return _model_dir(self.config) / _basename(repo)
+            return _model_dir(self.config) / repo_basename(repo)
         return None
 
     def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
@@ -110,10 +106,16 @@ class MLXLMServerProvider(Provider):
                 raise ValueError(f"local_path does not exist: {p}")
             return p
         if repo:
-            target = _model_dir(self.config) / _basename(repo)
+            target = _model_dir(self.config) / repo_basename(repo)
             kwargs: dict[str, Any] = {"repo_id": repo, "local_dir": str(target)}
             with HF_DOWNLOAD_LOCK:
-                ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
+                # Use a weak reference to avoid keeping the entire
+                # MLXLMServerProvider instance alive for the download
+                # duration. The lambda captures only the weakref object.
+                weak_self = weakref.ref(self)
+                ProgressTqdm.set_active_context(
+                    on_progress, lambda: getattr(weak_self(), "_cancel_requested", False)
+                )
                 try:
                     if on_progress is not None:
                         kwargs["tqdm_class"] = ProgressTqdm
@@ -199,8 +201,8 @@ class MLXLMServerProvider(Provider):
         if target is None and draft is None:
             raise ValueError(f"mlx_lm_server variant {variant['id']} missing target/draft source")
         for d, local in (
-            (target, _is_local_path(variant.get("local_path"))),
-            (draft, _is_local_path(variant.get("draft_local_path"))),
+            (target, _is_local_path_entry(variant.get("local_path"))),
+            (draft, _is_local_path_entry(variant.get("draft_local_path"))),
         ):
             if d is not None and not local and d.exists():
                 shutil.rmtree(d)
@@ -218,8 +220,8 @@ class MLXLMServerProvider(Provider):
         target = self._target_dir(variant)
         draft = self._draft_dir(variant)
         for d, local in (
-            (target, _is_local_path(variant.get("local_path"))),
-            (draft, _is_local_path(variant.get("draft_local_path"))),
+            (target, _is_local_path_entry(variant.get("local_path"))),
+            (draft, _is_local_path_entry(variant.get("draft_local_path"))),
         ):
             if d is not None and not local and d.exists():
                 shutil.rmtree(d)

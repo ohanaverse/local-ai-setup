@@ -37,6 +37,11 @@ def human_bytes(n: float) -> str:
     return f"{n:.1f} TB"
 
 
+def repo_basename(repo: str) -> str:
+    """Last /-separated component of a HuggingFace repo id."""
+    return repo.split("/")[-1]
+
+
 class DownloadCancelled(Exception):
     """Raised by ProgressTqdm when `should_cancel` returns True.
 

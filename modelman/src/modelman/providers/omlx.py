@@ -9,7 +9,7 @@ from typing import Any
 
 from huggingface_hub import snapshot_download
 
-from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm
+from ._progress import HF_DOWNLOAD_LOCK, ProgressTqdm, repo_basename
 from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
 
@@ -17,11 +17,6 @@ from .registry import ProviderRegistry
 def _model_dir(config: dict) -> Path:
     raw = config.get("model_dir", "~/.omlx/models")
     return Path(os.path.expanduser(raw))
-
-
-def _basename(repo: str) -> str:
-    """Last /-separated component of the repo id."""
-    return repo.split("/")[-1]
 
 
 def _is_local_path_entry(variant: VariantSpec) -> bool:
@@ -57,7 +52,7 @@ class OMLXProvider(Provider):
             return Path(local_path)
         repo = variant.get("repo")
         if repo:
-            return _model_dir(self.config) / _basename(repo)
+            return _model_dir(self.config) / repo_basename(repo)
         return None
 
     def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
@@ -86,7 +81,11 @@ class OMLXProvider(Provider):
             return str(target)
         self._cancel_requested = False
         repo = variant.get("repo")
-        assert repo, "_target_dir resolved without local_path, so repo must be set"
+        if not repo:
+            raise ValueError(
+                f"omlx variant {variant['id']} missing repo "
+                "(local_path not set, so repo must be provided)"
+            )
         kwargs: dict[str, Any] = {"repo_id": repo, "local_dir": str(target)}
         with HF_DOWNLOAD_LOCK:
             ProgressTqdm.set_active_context(on_progress, lambda: self._cancel_requested)
