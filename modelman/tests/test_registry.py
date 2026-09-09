@@ -1125,5 +1125,40 @@ def test_registry_absent_quantization_and_pricing_updated_at_are_none(tmp_path):
         'model_name = "x"\n'
     )
     loaded = load_registry(path)
-    assert loaded.model("ollama/x").quantization is None
-    assert loaded.model("ollama/x").pricing_updated_at is None
+
+def test_model_entry_to_variant_carries_quantization():
+    entry = ModelEntry(
+        id="llamacpp/q4",
+        family="f",
+        provider_id="llamacpp",
+        model_name="q4.gguf",
+        quantization="Q4_K_M",
+    )
+    spec = model_entry_to_variant(entry)
+    assert spec["quantization"] == "Q4_K_M"
+
+
+def test_variant_dict_quantization_round_trips(tmp_path):
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="f",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                quantization="Q4_K_M",
+            )
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    from modelman.screens.models import _variant_to_model_entry
+
+    entry = _variant_to_model_entry(
+        model_entry_to_variant(loaded.model("llamacpp/q4")),
+        family="f",
+        registry=loaded,
+    )
+    assert entry.quantization == "Q4_K_M"

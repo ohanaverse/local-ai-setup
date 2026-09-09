@@ -98,6 +98,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         model_info=model_info,
         fetch=fetch,
         draft=draft,
+        quantization=variant.get("quantization"),
         # native is derived (never serialized) — re-derive it here so an
         # in-session add/edit doesn't reset the flag and flip the EXPOSED
         # column until the next disk reload. Mirrors _derive_native.

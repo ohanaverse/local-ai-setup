@@ -475,6 +475,7 @@ def model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "location": entry.location,
         "model_info": dict(entry.model_info),
         "cost": _cost_to_dict(entry.cost) if entry.cost is not None else None,
+        "quantization": entry.quantization,
     }
 
 

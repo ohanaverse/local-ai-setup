@@ -30,6 +30,7 @@ class VariantSpec(TypedDict, total=False):
     local_path: str | None  # locally-produced mlx-lm model directory (no HF repo)
     draft_repo: str | None  # mlx_lm_server speculative-decoding draft: HF repo id
     draft_local_path: str | None  # mlx_lm_server draft: locally-produced model directory
+    quantization: str | None  # free-form quant tag (e.g. Q4_K_M); ignored by providers
     model_info: dict | None  # freeform LiteLLM model_info keys
     location: str | None  # "local" | "cloud"
     # Cost as a plain dict so providers can JSON-serialize VariantSpec if
