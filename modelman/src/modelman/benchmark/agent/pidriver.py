@@ -46,6 +46,11 @@ class RowConfig:
     route: str  # "direct" | "litellm"
     provider_id: str
     direct_model: str | None = None  # overrides the launch id for route=direct
+    # mlx_lm_server pairing fields (populated from registry ModelEntry.fetch/draft)
+    target_local_path: str | None = None
+    target_repo: str | None = None
+    draft_local_path: str | None = None
+    draft_repo: str | None = None
 
 
 @dataclass

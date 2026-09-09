@@ -6,10 +6,10 @@ import pytest
 
 from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.results import BenchmarkMetrics, BenchmarkRun, TargetResult
+from modelman.benchmark.isolation import mlx_lm_server_pairing_args
 from modelman.benchmark.runner import (
     RunSavedButRestoreFailed,
     Target,
-    _isolate_extra_args,
     discover_targets,
     run_benchmark,
 )
@@ -174,34 +174,22 @@ def test_discover_targets_remote_providers_excluded():
     assert targets == []
 
 
-def test_isolate_extra_args_normalizes_paths_but_not_repo_ids():
-    """_isolate_extra_args must expand/normalize local_path values (stable
+def test_mlx_lm_server_pairing_args_normalizes_paths_but_not_repo_ids():
+    """mlx_lm_server_pairing_args must expand/normalize local_path values (stable
     isolation keys across equivalent path spellings) but forward HF repo ids
     verbatim — mlx_lm.server accepts both, and abspath'ing a repo id like
     "org/model" mangles it into a nonexistent cwd-prefixed path that
     mlx_lm.server then fails to resolve."""
 
-    def _target(**overrides):
-        fields = {
-            "model_id": "mlx_lm_server/p",
-            "provider_id": "mlx_lm_server",
-            "model_name": "p",
-            "family": "f",
-            "repo": None,
-            "local_path": None,
-            "draft_repo": None,
-            "draft_local_path": None,
-        }
-        fields.update(overrides)
-        return Target(**fields)
-
     # Both sources repo ids → forwarded verbatim.
-    assert _isolate_extra_args(_target(repo="org/t", draft_repo="org/d")) == ("org/t", "org/d")
+    assert mlx_lm_server_pairing_args("m", None, "org/t", None, "org/d") == ("org/t", "org/d")
     # Both local paths → expanded and normalized.
-    got = _isolate_extra_args(_target(local_path="~/models/t", draft_local_path="/models/d/"))
+    got = mlx_lm_server_pairing_args(
+        "m", "~/models/t", None, "/models/d/", None
+    )
     assert got == (str(Path.home() / "models" / "t"), "/models/d")
     # Mixed: repo target + local_path draft.
-    got = _isolate_extra_args(_target(repo="org/t", draft_local_path="./x/./draft"))
+    got = mlx_lm_server_pairing_args("m", None, "org/t", "./x/./draft", None)
     assert got == ("org/t", os.path.normpath(os.path.abspath("x/draft")))
 
 

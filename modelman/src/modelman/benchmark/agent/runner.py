@@ -24,7 +24,6 @@ from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, prefli
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
 from modelman.benchmark.errors import BenchmarkError
-from modelman.benchmark.isolation import mlx_lm_server_pairing_args
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -273,26 +272,6 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
-def _isolate_extra_args(row: RowConfig, registry: Registry) -> tuple[str, ...]:
-    """Resolve the positional args isolate_provider() needs for one row.
-
-    Every provider except mlx_lm_server takes none. mlx_lm_server has no
-    baked-in default pairing in bin/llm-isolate-provider — the helper exits 1
-    without a target+draft — so the pairing must be resolved from the
-    registry the same way modelman.benchmark.runner resolves it (shared
-    helper): local_path over repo, per side; suite-level validation
-    (registry.model() in suite parsing) already guarantees the model exists.
-    """
-    if row.provider_id != "mlx_lm_server":
-        return ()
-    model = registry.model(row.model_id)
-    return mlx_lm_server_pairing_args(
-        model.id,
-        model.fetch.local_path if model.fetch else None,
-        model.fetch.repo if model.fetch else None,
-        model.draft.local_path if model.draft else None,
-        model.draft.repo if model.draft else None,
-    )
 
 
 def _git_sha() -> str:
@@ -523,7 +502,18 @@ def run_suite(
         prev_extra: tuple[str, ...] | None = None
         for row in group_rows:
             try:
-                extra_args = _isolate_extra_args(row, registry)
+                # Resolve mlx_lm_server pairing args inline; other providers need none.
+                extra_args: tuple[str, ...] = (
+                    isolation.mlx_lm_server_pairing_args(
+                        row.model_id,
+                        row.target_local_path,
+                        row.target_repo,
+                        row.draft_local_path,
+                        row.draft_repo,
+                    )
+                    if row.provider_id == "mlx_lm_server"
+                    else ()
+                )
             except BenchmarkError as exc:
                 index += 1
                 for pass_number in range(1, suite.passes + 1):

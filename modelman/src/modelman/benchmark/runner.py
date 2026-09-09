@@ -93,24 +93,6 @@ def discover_targets(
     return targets
 
 
-def _isolate_extra_args(target: Target) -> tuple[str, ...]:
-    """Resolve the positional args isolate_provider() must forward for this
-    target's provider.
-
-    Every provider except mlx_lm_server takes none; mlx_lm_server's
-    target+draft pairing resolution (local_path over repo, repo ids
-    verbatim) lives in isolation.mlx_lm_server_pairing_args, shared with the
-    agent benchmark runner, which faces the same helper requirement.
-    """
-    if target.provider_id != "mlx_lm_server":
-        return ()
-    return mlx_lm_server_pairing_args(
-        target.model_id,
-        target.local_path,
-        target.repo,
-        target.draft_local_path,
-        target.draft_repo,
-    )
 
 
 def _run_route(
@@ -177,7 +159,18 @@ def run_benchmark(
     try:
         for target in targets:
             try:
-                extra_args = _isolate_extra_args(target)
+                # Resolve mlx_lm_server pairing args inline; other providers need none.
+                extra_args: tuple[str, ...] = (
+                    mlx_lm_server_pairing_args(
+                        target.model_id,
+                        target.local_path,
+                        target.repo,
+                        target.draft_local_path,
+                        target.draft_repo,
+                    )
+                    if target.provider_id == "mlx_lm_server"
+                    else ()
+                )
                 isolation_key = (target.provider_id, extra_args)
                 if isolation_key != last_isolation_key:
                     isolate = isolate_provider(target.provider_id, *extra_args)

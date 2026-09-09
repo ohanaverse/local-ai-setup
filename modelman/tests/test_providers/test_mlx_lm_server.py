@@ -291,9 +291,12 @@ def test_artifact_paths_returns_both_target_and_draft_dirs(provider, tmp_path):
     )
 
 
-def test_artifact_paths_excludes_missing_side(provider, tmp_path):
-    """artifact_paths() must only include directories that actually exist,
-    returning an empty set when neither side is present."""
+def test_artifact_paths_returns_configured_paths_not_just_present(provider, tmp_path):
+    """artifact_paths() returns the configured target and draft paths whether
+    present or not, so find_shared_artifact_owner() can detect conflicts before
+    download. This differs from path_of() which is display-only and requires
+    the directory to exist."""
+    md = tmp_path / "models"
     variant: VariantSpec = {
         "id": "x",
         "provider": "mlx_lm_server",
@@ -301,7 +304,10 @@ def test_artifact_paths_excludes_missing_side(provider, tmp_path):
         "repo": "org/Target-MLX",
         "draft_repo": "org/Draft-MLX",
     }
-    assert provider.artifact_paths(variant) == frozenset()
+    # Returns the configured paths even when directories don't exist yet.
+    got = provider.artifact_paths(variant)
+    assert str(md / "Target-MLX") in got
+    assert str(md / "Draft-MLX") in got
 
 
 # --- size_of: sum of target + draft ---

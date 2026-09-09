@@ -29,13 +29,14 @@ def _model_dir(config: dict) -> Path:
 def _resolve_local_path(raw: str) -> Path:
     """Normalize a user-supplied local_path the same way
     modelman.benchmark.isolation._normalize_pairing_arg does (expanduser +
-    abspath), so the provider and the isolation helper agree on which
-    directory a relative or tilde path names. Otherwise a registry
+    abspath + normpath), so the provider and the isolation helper agree on
+    which directory a relative or tilde path names. Otherwise a registry
     local_path like `~/mlx/quant/dwq-model` is read literally (a directory
     literally named `~`) by reconcile/delete while the benchmark expands it
     to $HOME — the ready-state and the benchmark then disagree about where
-    the weights live."""
-    return Path(os.path.abspath(os.path.expanduser(raw)))
+    the weights live. normpath() collapses '..' and '.' components so both
+    sides normalize '~/models/../quant' to '/Users/keith/quant'."""
+    return Path(os.path.normpath(os.path.abspath(os.path.expanduser(raw))))
 
 
 def _is_local_path_entry(value: str | None) -> bool:
@@ -213,17 +214,39 @@ class MLXLMServerProvider(Provider):
         return str(target)
 
     def artifact_paths(self, variant: VariantSpec) -> frozenset[str]:
-        """Return both the target and draft on-disk paths.
+        """Return the configured target and draft paths, whether present or not.
 
         A draft model shared across multiple pairings must be detected as
         still in use, otherwise one pairing's delete can silently remove the
         draft weights another pairing needs. path_of() intentionally stays
         target-only for display; this method is the ownership check.
+
+        Unlike path_of() — which is display-only and requires the directory
+        to exist — this method returns the paths the variant is configured
+        to use (local_path or repo-derived, per side), so shared-artifact
+        detection works even before download. Callers in queue.py and
+        downloads.py treat a path conflict as "another entry owns this
+        artifact" regardless of whether it's on disk yet.
         """
         paths: list[str] = []
-        for d in (self._target_dir(variant), self._draft_dir(variant)):
-            if d is not None and d.is_dir() and any(d.iterdir()):
-                paths.append(str(d))
+        # Target side: local_path takes precedence; otherwise repo-derived dir.
+        target_local = variant.get("local_path")
+        target_repo = variant.get("repo")
+        if target_local:
+            paths.append(str(_resolve_local_path(target_local)))
+        elif target_repo:
+            target_dir = self._repo_dir(target_repo)
+            if target_dir is not None:
+                paths.append(str(target_dir))
+        # Draft side: same resolution order.
+        draft_local = variant.get("draft_local_path")
+        draft_repo = variant.get("draft_repo")
+        if draft_local:
+            paths.append(str(_resolve_local_path(draft_local)))
+        elif draft_repo:
+            draft_dir = self._repo_dir(draft_repo)
+            if draft_dir is not None:
+                paths.append(str(draft_dir))
         return frozenset(paths)
 
     def _repo_dir(self, repo: str | None) -> Path | None:

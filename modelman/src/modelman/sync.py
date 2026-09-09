@@ -30,16 +30,20 @@ from .state import ModelState, StateStore
 
 # Providers `modelman sync` reconciles against the filesystem. ollama has its
 # own discovery path (`ollama list`); every other reconcilable provider stores
-# weights in per-model directories on disk. This tuple intentionally includes
-# retired-but-still-registered providers (llamacpp) so existing registry
-# entries continue to be reconciled until they are removed.
-MODELDIR_PROVIDER_IDS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server")
+# weights in per-model directories on disk. This tuple is derived from
+# DEFAULT_PROVIDER_IDS by excluding ollama (the only default that uses a
+# daemon-list discovery path), plus retired-but-still-registered providers
+# (llamacpp) so existing registry entries continue to be reconciled until
+# removed. Adding a new model-directory provider to DEFAULT_PROVIDER_IDS
+# automatically includes it here — no second update needed.
+MODELDIR_PROVIDER_IDS: tuple[str, ...] = tuple(
+    sorted(set(DEFAULT_PROVIDER_IDS) - {"ollama"} | {"llamacpp"})
+)
 
 # Full set of providers sync can determine downloaded state for: ollama plus
-# every model-dir provider.
-RECONCILABLE_PROVIDERS: tuple[str, ...] = tuple(
-    sorted(set(DEFAULT_PROVIDER_IDS + MODELDIR_PROVIDER_IDS))
-)
+# every model-dir provider. Computed from MODELDIR_PROVIDER_IDS so the set
+# cannot drift.
+RECONCILABLE_PROVIDERS: tuple[str, ...] = tuple(sorted(set(("ollama",) + MODELDIR_PROVIDER_IDS)))
 
 
 class SyncError(Exception):

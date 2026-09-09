@@ -746,7 +746,7 @@ def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, mon
     """A misregistered mlx_lm_server model with no draft source must fail
     that group's rows with a clear error, not crash the run or call
     isolate_provider without the pairing the helper requires."""
-    from modelman.benchmark.agent.runner import _isolate_extra_args
+    from modelman.benchmark import isolation
 
     registry = Registry(
         providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
@@ -759,9 +759,11 @@ def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, mon
             )
         ],
     )
-    row = pidriver_module.RowConfig(
-        label="r1", model_id="mlx_lm_server/broken", thinking="off", route="direct",
-        provider_id="mlx_lm_server",
-    )
     with pytest.raises(BenchmarkError, match="missing a target or draft"):
-        _isolate_extra_args(row, registry)
+        isolation.mlx_lm_server_pairing_args(
+            "mlx_lm_server/broken",
+            None,  # target_local_path
+            None,  # target_repo
+            None,  # draft_local_path
+            None,  # draft_repo
+        )
