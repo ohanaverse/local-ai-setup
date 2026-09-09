@@ -123,6 +123,7 @@ def test_cancel_cleanup_skips_rmtree_when_artifact_is_shared(monkeypatch):
     # Both variants resolve to the same on-disk path — the collision
     # find_shared_artifact_owner is meant to detect.
     provider.path_of.return_value = "/models/shared-basename"
+    provider.artifact_paths.side_effect = lambda v: frozenset([provider.path_of(v)])
     _register_stub_provider(monkeypatch, provider)
 
     registry = Registry(
@@ -550,6 +551,7 @@ def test_clear_state_mid_download_keeps_registry_for_shared_artifact_guard(monke
     provider.download.side_effect = _download
     provider.cancel_current.side_effect = lambda: release.set()
     provider.path_of.return_value = "/models/shared-basename"
+    provider.artifact_paths.side_effect = lambda v: frozenset([provider.path_of(v)])
     _register_stub_provider(monkeypatch, provider)
 
     registry = Registry(

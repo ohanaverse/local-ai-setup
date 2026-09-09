@@ -60,11 +60,12 @@ def _provider_with_events(tmp_path, events: list[str]):
     p.delete.side_effect = fake_delete
     p.download.side_effect = fake_download
     # Distinct on-disk paths per variant: apply()'s shared-artifact guard
-    # consults provider.path_of(), and a MagicMock's cached return_value
-    # would make every same-provider registry entry "share" one artifact,
-    # firing a false conflict on delete (this fixture's registry has two
-    # ollama entries) and flipping the apply from success to error.
+    # consults provider.artifact_paths(), and a MagicMock's cached
+    # return_value would make every same-provider registry entry "share" one
+    # artifact, firing a false conflict on delete (this fixture's registry
+    # has two ollama entries) and flipping the apply from success to error.
     p.path_of.side_effect = lambda v: str(tmp_path / v["id"])
+    p.artifact_paths.side_effect = lambda v: frozenset([p.path_of(v)])
     return p
 
 
@@ -401,10 +402,12 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
     provider = MagicMock()
     provider.name = "ollama"
     provider.is_downloaded.return_value = True
-    # No resolvable on-disk path: the shared-artifact guard reads path_of(),
-    # and a MagicMock's cached return_value would make the registry's other
-    # ollama entry look like it shares o35's artifact (false conflict).
+    # No resolvable on-disk path: the shared-artifact guard reads
+    # artifact_paths(), and a MagicMock's cached return_value would make the
+    # registry's other ollama entry look like it shares o35's artifact
+    # (false conflict).
     provider.path_of.return_value = None
+    provider.artifact_paths.side_effect = lambda v: frozenset()
     provider.delete.side_effect = ConnectionError("dial tcp: i/o timeout")
 
     def run_apply(log_event, _progress, _register):
@@ -480,6 +483,7 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
     provider.name = "ollama"
     provider.is_downloaded.return_value = True
     provider.path_of.return_value = None  # avoid a false shared-artifact conflict
+    provider.artifact_paths.side_effect = lambda v: frozenset()
     provider.delete.side_effect = OSError("No space left on device (ENOSPC) - failed to write file")
 
     def run_apply(log_event, _progress, _register):

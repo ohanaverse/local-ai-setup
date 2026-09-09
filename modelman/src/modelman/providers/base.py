@@ -103,6 +103,18 @@ class Provider(ABC):
         """
         return None
 
+    def artifact_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """Return the set of on-disk paths that make up this variant.
+
+        Defaults to a single-element set from path_of(). Providers whose
+        artifact spans multiple directories (e.g. mlx_lm_server's target+
+        draft pairing) override this so find_shared_artifact_owner() can
+        detect sharing on *any* side and avoid deleting weights still in
+        use by another registry entry.
+        """
+        p = self.path_of(variant)
+        return frozenset([p]) if p is not None else frozenset()
+
     def cleanup_partial_download(self, variant: VariantSpec) -> None:
         """Remove any on-disk remnants of a cancelled or failed download.
 

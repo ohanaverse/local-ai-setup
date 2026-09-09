@@ -174,16 +174,29 @@ class MLXLMServerProvider(Provider):
         return total or None
 
     def path_of(self, variant: VariantSpec) -> str | None:
-        """Return the TARGET directory path only (never the draft's), or
-        None if not downloaded. Keeping this target-only (rather than some
-        combined/draft path) is what keeps find_shared_artifact_owner()
-        meaningful — a draft model shared across multiple pairings
-        shouldn't be spuriously matched as "the same artifact" as another
-        pairing's target."""
+        """Return the TARGET directory path (for display/sync), or None if
+        the target is not present.
+
+        The UI and sync only need one path for status display; the draft is
+        tracked separately for shared-artifact safety via artifact_paths()."""
         target = self._target_dir(variant)
         if target is None or not target.is_dir() or not any(target.iterdir()):
             return None
         return str(target)
+
+    def artifact_paths(self, variant: VariantSpec) -> frozenset[str]:
+        """Return both the target and draft on-disk paths.
+
+        A draft model shared across multiple pairings must be detected as
+        still in use, otherwise one pairing's delete can silently remove the
+        draft weights another pairing needs. path_of() intentionally stays
+        target-only for display; this method is the ownership check.
+        """
+        paths: list[str] = []
+        for d in (self._target_dir(variant), self._draft_dir(variant)):
+            if d is not None and d.is_dir() and any(d.iterdir()):
+                paths.append(str(d))
+        return frozenset(paths)
 
     def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
         """Remove the target and draft on-disk directories, independently.

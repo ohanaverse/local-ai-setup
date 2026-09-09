@@ -785,6 +785,7 @@ async def test_apply_preserves_other_models_state_rows(tmp_path, monkeypatch):
     stub.name = "ollama"
     stub.is_downloaded.return_value = True
     stub.path_of.side_effect = lambda v: f"/fake/{v['id']}"
+    stub.artifact_paths.side_effect = lambda v: frozenset([stub.path_of(v)])
     monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp

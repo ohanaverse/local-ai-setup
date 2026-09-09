@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from modelman.providers.registry import ProviderRegistry
 from modelman.registry import (
     AuthConfig,
     Cost,
@@ -20,6 +21,7 @@ from modelman.registry import (
     RegistryError,
     _default_registry_path,
     _default_wt_config_path,
+    find_shared_artifact_owner,
     family_display_name,
     is_native_provider,
     known_families,
@@ -1047,3 +1049,47 @@ def test_model_entry_to_variant_local_path_and_draft_none_when_unset():
     assert spec["local_path"] is None
     assert spec["draft_repo"] is None
     assert spec["draft_local_path"] is None
+
+
+def test_find_shared_artifact_owner_detects_shared_draft_for_mlx_lm_server(tmp_path):
+    """Two mlx_lm_server pairings with different targets but the same draft
+    model must be detected as sharing an artifact. Otherwise deleting one
+    pairing can rmtree the draft directory the other pairing still needs."""
+    from modelman.providers.mlx_lm_server import MLXLMServerProvider
+
+    models_dir = tmp_path / "models"
+    target_a = models_dir / "Target-A"
+    target_b = models_dir / "Target-B"
+    shared_draft = models_dir / "Shared-Draft"
+    for d in (target_a, target_b, shared_draft):
+        d.mkdir(parents=True)
+        (d / "config.json").write_bytes(b"{}")
+
+    provider = MLXLMServerProvider({"model_dir": str(models_dir)})
+
+    registry = Registry(
+        providers=[ProviderEntry(id="mlx_lm_server", name="MLX-LM Server")],
+        models=[
+            ModelEntry(
+                id="mlx_lm_server/a",
+                family="f",
+                provider_id="mlx_lm_server",
+                model_name="a",
+                fetch=Fetch(repo="org/Target-A"),
+                draft=DraftSpec(repo="org/Shared-Draft"),
+            ),
+            ModelEntry(
+                id="mlx_lm_server/b",
+                family="f",
+                provider_id="mlx_lm_server",
+                model_name="b",
+                fetch=Fetch(repo="org/Target-B"),
+                draft=DraftSpec(repo="org/Shared-Draft"),
+            ),
+        ],
+    )
+
+    variant_a = model_entry_to_variant(registry.model("mlx_lm_server/a"))
+    owner = find_shared_artifact_owner(registry, provider, variant_a)
+    assert owner is not None
+    assert owner.id == "mlx_lm_server/b"

@@ -485,32 +485,33 @@ def find_shared_artifact_owner(
     Dir-based providers key their storage on a coarse segment of the repo
     id (omlx uses the repo *basename*), so two registry entries can share
     one artifact directory; removing it for one silently destroys the
-    other's weights. path_of() is the provider-neutral way to ask "where
-    does this variant live on disk". Returns None when the provider has
-    no path_of or the target can't be resolved — callers treat that as
-    "no conflict" and proceed with the normal delete.
+    other's weights. artifact_paths() is the provider-neutral way to ask
+    "where does this variant live on disk" (path_of() is intentionally
+    display-only for multi-directory providers). Returns None when the
+    provider has no artifact_paths or the paths can't be resolved —
+    callers treat that as "no conflict" and proceed with the normal delete.
 
     Shared by queue.py's delete/ready-off steps and DownloadManager's
     cancelled-download cleanup (downloads.py) — both remove an on-disk
     artifact and must not do so when another registry entry still owns it.
     """
-    path_of = getattr(provider, "path_of", None)
-    if not callable(path_of):
+    artifact_paths = getattr(provider, "artifact_paths", None)
+    if not callable(artifact_paths):
         return None
     try:
-        mine = path_of(variant)
+        mine = artifact_paths(variant)
     except Exception:  # noqa: BLE001
         return None
-    if mine is None:
+    if not mine:
         return None
     for m in registry.models:
         if m.id == variant["id"] or m.provider_id != variant["provider"]:
             continue
         try:
-            theirs = path_of(model_entry_to_variant(m))
+            theirs = artifact_paths(model_entry_to_variant(m))
         except Exception:  # noqa: BLE001
             continue
-        if theirs == mine:
+        if mine & theirs:
             return m
     return None
 
