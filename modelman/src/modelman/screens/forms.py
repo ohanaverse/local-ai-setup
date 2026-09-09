@@ -230,10 +230,12 @@ class ModelFormResult(NamedTuple):
     """ModelForm's dismiss payload: the VariantSpec plus the family the
     user chose. Family is deliberately separate from VariantSpec — the
     spec dict is the provider-facing contract and has no family field;
-    ModelScreen maps family onto ModelEntry.family."""
+    ModelScreen maps family onto ModelEntry.familyC.
+    """
 
     spec: VariantSpec
     family: str
+    pricing_updated_at: str | None = None
 
 
 T = TypeVar("T")
@@ -485,6 +487,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         families: list[str] | None = None,
         family: str | None = None,
         provider_kinds: dict[str, str] | None = None,
+        pricing_updated_at: str | None = None,
     ) -> None:
         super().__init__()
         self._providers = providers
@@ -511,6 +514,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         )
         if self._family is not None and self._family not in self._families:
             self._families.insert(0, self._family)
+        self._pricing_updated_at = pricing_updated_at
 
     def compose(self) -> ComposeResult:
         editing = self._variant is not None
@@ -676,6 +680,14 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 disabled=editing or location_locked,
                 id="location-select",
             )
+            yield Label("Quantization:")
+            quantization_prefill = (v.get("quantization") or "") if editing else ""
+            yield Input(
+                value=quantization_prefill,
+                placeholder="e.g. Q4_K_M",
+                disabled=editing,
+                id="quantization",
+            )
             yield Label("Per-token pricing:")
             yield Checkbox(
                 "Enable per-token pricing",
@@ -715,6 +727,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 allow_blank=False,
                 id="subscription-period-select",
             )
+            timestamp_text = (
+                f"Token pricing updated: {self._pricing_updated_at}"
+                if self._pricing_updated_at
+                else "Token pricing updated: never"
+            )
+            yield Label(timestamp_text, id="pricing-timestamp-label")
             yield self._button_row(
                 [
                     Button("Cancel", id="cancel", variant="default"),
@@ -995,6 +1013,8 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             self._show_error(str(exc))
             return
 
+        quantization = self.query_one("#quantization", Input).value.strip() or None
+
         if self._variant is not None:
             vid = self._variant["id"]
         elif kind == "native":
@@ -1016,13 +1036,14 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             "quantizations": existing_quantizations,
             "location": location,
             "cost": _cost_to_dict(cost) if cost is not None else None,
+            "quantization": quantization,
         }
         if provider == "ollama" and self._variant is None and name:
             spec["model_info"] = auto_detect_model_info(name)
         else:
             spec["model_info"] = (self._variant or {}).get("model_info")
         family = str(self.query_one("#family-select", Select).value)
-        self.dismiss(ModelFormResult(spec=spec, family=family))
+        self.dismiss(ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at))
 
     def _submit_dual_model(self, provider: str) -> None:
         """Handle Save for the "dual-model" kind (mlx_lm_server target+draft
@@ -1053,6 +1074,8 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             self._show_error(str(exc))
             return
 
+        quantization = self.query_one("#quantization", Input).value.strip() or None
+
         # No target/draft-source guard needed here: parse_dual_model already
         # raised ValueError for any side with neither (or both) of its two
         # inputs, so target_repo|target_local_path and draft_repo|
@@ -1079,10 +1102,11 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             "quantizations": existing_quantizations,
             "location": location,
             "cost": _cost_to_dict(cost) if cost is not None else None,
+            "quantization": quantization,
             "model_info": (self._variant or {}).get("model_info"),
         }
         family = str(self.query_one("#family-select", Select).value)
-        self.dismiss(ModelFormResult(spec=spec, family=family))
+        self.dismiss(ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at))
 
 
 class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):

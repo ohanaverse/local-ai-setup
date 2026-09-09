@@ -1969,3 +1969,81 @@ async def test_edit_dual_model_prefills_all_four_fields():
         assert app.screen.query_one("#target-local-path", Input).value == ""
         assert app.screen.query_one("#draft-repo", Input).value == ""
         assert app.screen.query_one("#draft-local-path", Input).value == "/data/models/draft"
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_prefills_quantization():
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+        "quantization": "Q4_K_M",
+    }
+    form = ModelForm(providers=["llamacpp"], variant=variant)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#quantization", Input).value == "Q4_K_M"
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_shows_pricing_timestamp_never_when_unset():
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+    }
+    form = ModelForm(providers=["llamacpp"], variant=variant, pricing_updated_at=None)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        label = app.screen.query_one("#pricing-timestamp-label", Label)
+        assert "never" in str(label.visual)
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_shows_pricing_timestamp_when_set():
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+    }
+    form = ModelForm(providers=["llamacpp"], variant=variant, pricing_updated_at="2026-09-09T14:32:00+00:00")
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        label = app.screen.query_one("#pricing-timestamp-label", Label)
+        assert "2026-09-09" in str(label.visual)
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+async def test_modelform_submit_carries_quantization():
+    form = ModelForm(providers=["ollama"], default_provider="ollama", families=["ornith"], family="ornith")
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        _fill_model(app, "test:1b")
+        app.screen.query_one("#quantization", Input).value = "Q4_K_M"
+        await _submit(app, pilot)
+        await pilot.pause()
+
+    assert len(dismissed) == 1
+    assert dismissed[0].spec["quantization"] == "Q4_K_M"
