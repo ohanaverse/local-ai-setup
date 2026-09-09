@@ -22,7 +22,10 @@ from ..registry import Cost, _cost_from_dict, _cost_to_dict
 # because this tuple used to be hardcoded independently in both places —
 # a change to one without the other would make parse_model take the wrong
 # branch for whatever default_form_kind now calls "local-only".
-HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx")
+# mlx_lm_server is included because its target side uses the same repo
+# format, even though its form kind is "dual-model" rather than
+# "local-only".
+HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server")
 
 
 def default_form_kind(provider: str) -> str:
@@ -30,12 +33,12 @@ def default_form_kind(provider: str) -> str:
     provider_kinds map doesn't cover it. ModelScreen._provider_kinds
     uses the same rule for its non-native providers, keeping the kind
     policy in one place."""
+    if provider == "mlx_lm_server":
+        return "dual-model"
     if provider in HF_REPO_PROVIDERS:
         return "local-only"
     if provider == "ollama":
         return "ollama"
-    if provider == "mlx_lm_server":
-        return "dual-model"
     return "cloud-only"
 
 
@@ -63,9 +66,14 @@ def parse_model(
     slash-splitting — `id` becomes f"{provider}/{model_name}" regardless
     of any '/' the user types.
 
+    mlx_lm_server: the target side is parsed as an HF repo, mirroring
+    llamacpp/omlx. The draft side is handled separately by parse_dual_model
+    and _submit_dual_model; this function only deals with the single
+    target-repo input.
+
     openrouter and any other provider that is neither ollama, an HF
-    provider (llamacpp/omlx), nor native: `model` is stored whole as
-    the model name (e.g. "anthropic/claude-opus") with no repo/files
+    provider (llamacpp/omlx/mlx_lm_server), nor native: `model` is stored
+    whole as the model name (e.g. "anthropic/claude-opus") with no repo/files
     split.
 
     Leading/trailing whitespace on `model` is trimmed before parsing.
@@ -86,7 +94,7 @@ def parse_model(
         if not model:
             raise ValueError(f"{provider} model is required")
         return (model, None, None)
-    # HF providers
+    # HF providers (llamacpp, omlx, and mlx_lm_server target side)
     if not model:
         raise ValueError(f"{provider} model is required")
     parts = model.split("/")
@@ -718,10 +726,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     def _reconstruct_model(v: VariantSpec) -> str:
         """Build the dialog's `model` string from a stored VariantSpec.
 
-        For HF providers the model string is `repo` plus `/file` if a
-        single filename is stored. For ollama it's just the tag.
-        For native providers it's the model name. For openrouter it's
-        the plain model string.
+        For HF providers (llamacpp, omlx, and mlx_lm_server's target side)
+        the model string is `repo` plus `/file` if a single filename is
+        stored. For ollama it's just the tag. For native providers it's
+        the model name. For openrouter it's the plain model string.
         """
         provider = v.get("provider")
         if provider == "ollama" or provider not in HF_REPO_PROVIDERS:

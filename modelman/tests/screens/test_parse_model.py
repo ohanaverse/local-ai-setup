@@ -139,18 +139,25 @@ def test_hf_repo_providers_single_source_of_truth():
     apart again, parse_model would apply the wrong parsing branch for
     whatever default_form_kind now calls 'local-only'. Both functions are
     checked against the single hoisted HF_REPO_PROVIDERS constant here so
-    a future edit to one without the other fails this test."""
+    a future edit to one without the other fails this test.
+
+    mlx_lm_server is a special case: its target side is parsed as an HF
+    repo (it is in HF_REPO_PROVIDERS), but its form kind is 'dual-model'
+    because the draft side is handled separately."""
     for provider in forms.HF_REPO_PROVIDERS:
-        assert default_form_kind(provider) == "local-only"
         # parse_model must apply org/repo splitting for this provider: a
         # bare, slash-free model string is rejected as an invalid HF repo
         # rather than silently accepted as a plain string.
         with pytest.raises(ValueError, match="repo"):
             parse_model(provider, "single-segment")
+
+        expected_kind = "dual-model" if provider == "mlx_lm_server" else "local-only"
+        assert default_form_kind(provider) == expected_kind
     # Providers deliberately outside the HF set must not be treated as
     # HF-repo-shaped by either function.
-    for provider in ("ollama", "mlx_lm_server", "openrouter"):
+    for provider in ("ollama", "openrouter"):
         assert provider not in forms.HF_REPO_PROVIDERS
+    assert "mlx_lm_server" in forms.HF_REPO_PROVIDERS
 
 
 # ---------------------------------------------------------------------------
