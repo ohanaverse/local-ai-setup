@@ -15,7 +15,7 @@ def test_load_registry_matches_shared_fixture():
     """
     registry = load_registry(path=FIXTURE)
 
-    assert len(registry.providers) == 4
+    assert len(registry.providers) == 5
     ollama = registry.provider("ollama")
     assert ollama.auth.type == "none"
     assert ollama.auth.base_url == "http://localhost:11434"
@@ -35,7 +35,17 @@ def test_load_registry_matches_shared_fixture():
     assert pinned.location == "cloud"
     assert pinned.auth.secret_ref == "PINNED_CLOUD_API_KEY"
 
-    assert len(registry.models) == 4
+    # The mlx_lm_server provider must decode with the shape modelman's
+    # default template writes (auth.type "none", OpenAI-compatible
+    # base_url, location "local") — a fixture pinned to a shape modelman
+    # never writes lets location-keyed logic pass CI while breaking on
+    # real registries.
+    mlx = registry.provider("mlx_lm_server")
+    assert mlx.auth.type == "none"
+    assert mlx.auth.base_url == "http://localhost:8001/v1"
+    assert mlx.location == "local"
+
+    assert len(registry.models) == 5
 
     free_model = registry.model("ollama/contract-fixture:local")
     assert free_model.cost is None
@@ -59,6 +69,17 @@ def test_load_registry_matches_shared_fixture():
     inherit_model = registry.model("pinned-cloud/contract-fixture:inherit")
     assert inherit_model.location is None  # inherits provider location
     assert inherit_model.native is False
+
+    # The mlx_lm_server pairing model must decode its target+draft
+    # sources (fetch/draft) — the shape modelman writes for speculative
+    # decoding. A fixture that drops these lets the provider's download
+    # path pass CI while breaking on real registries.
+    pair = registry.model("mlx_lm_server/contract-fixture:pair")
+    assert pair.provider_id == "mlx_lm_server"
+    assert pair.fetch is not None
+    assert pair.fetch.repo == "org/contract-fixture-target"
+    assert pair.draft is not None
+    assert pair.draft.repo == "org/contract-fixture-draft"
 
     family = registry.family("contract-fixture")
     assert family is not None
