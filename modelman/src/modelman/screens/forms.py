@@ -1135,12 +1135,14 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
         deletes: list,
         exposes: list[tuple[str, bool]] | None = None,
         moves: list[tuple[str, str]] | None = None,
+        show_price_reminder: bool = False,
     ) -> None:
         super().__init__()
         self._ready = ready
         self._deletes = deletes
         self._exposes = exposes or []
         self._moves = moves or []
+        self._show_price_reminder = show_price_reminder
 
     def compose(self) -> ComposeResult:
         ready_on = [mid for mid, target in self._ready if target]
@@ -1161,6 +1163,11 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
             for model_id, exposed in self._exposes:
                 mark = "Y" if exposed else "–"
                 yield Label(f"  {mark} {model_id}")
+            if self._show_price_reminder:
+                yield Label(
+                    "token pricing may be stale — run `modelman refresh-prices`.",
+                    id="price-reminder",
+                )
             yield Label("Apply, cancel, or discard these changes?")
             yield self._button_row(
                 [

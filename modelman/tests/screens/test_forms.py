@@ -2047,3 +2047,19 @@ async def test_modelform_submit_carries_quantization():
 
     assert len(dismissed) == 1
     assert dismissed[0].spec["quantization"] == "Q4_K_M"
+
+
+@pytest.mark.asyncio
+async def test_confirm_exit_dialog_shows_price_reminder_when_requested():
+    from modelman.screens.forms import ConfirmExitDialog
+
+    modal = ConfirmExitDialog(
+        ready=[], deletes=[], exposes=[], moves=[], show_price_reminder=True
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(modal)
+        await pilot.pause()
+        label = app.screen.query_one("#price-reminder", Label)
+        assert "modelman refresh-prices" in str(label.visual)

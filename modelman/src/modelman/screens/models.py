@@ -892,12 +892,14 @@ class ModelScreen(Screen[None]):
             return
         from .forms import ConfirmExitDialog
 
+        show_reminder = getattr(self.app, "_price_refresh_skipped_or_failed", False)
         self.app.push_screen(
             ConfirmExitDialog(
                 ready=list(self.queued_ready.items()),
                 deletes=list(self.queued_deletes.values()),
                 exposes=list(self.queued_exposes.items()),
                 moves=list(self.queued_moves.items()),
+                show_price_reminder=show_reminder,
             ),
             self._on_exit_confirm,
         )
