@@ -32,6 +32,7 @@ type Event struct {
 	Worked    *bool     `json:"worked,omitempty"`
 	Speed     *int      `json:"speed,omitempty"`
 	Quality   *int      `json:"quality,omitempty"`
+	Task      string    `json:"task,omitempty"`
 }
 
 func boolPtr(b bool) *bool { return &b }

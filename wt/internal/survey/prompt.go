@@ -54,6 +54,10 @@ func PromptRun(r io.Reader, w io.Writer, store Store, agent string, m config.Mod
 		e = Event{Agent: agent, ModelID: m.ID, Worked: boolPtr(true), Speed: speed, Quality: quality}
 	}
 
+	if verdict != answerSkip {
+		e.Task = promptTask(scanner, w)
+	}
+
 	if err := store.Record(e); err != nil {
 		fmt.Fprintf(os.Stderr, "wt: survey not saved: %v\n", err)
 		return
@@ -103,4 +107,12 @@ func promptRating(scanner *bufio.Scanner, w io.Writer, question string) *int {
 		}
 		fmt.Fprintln(w, "please answer 1-5, or Enter to skip")
 	}
+}
+
+func promptTask(scanner *bufio.Scanner, w io.Writer) string {
+	fmt.Fprint(w, "survey · what task were you doing? (Enter=skip) ")
+	if !scanner.Scan() {
+		return ""
+	}
+	return scanner.Text()
 }
