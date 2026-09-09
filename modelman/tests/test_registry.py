@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from modelman.providers.registry import ProviderRegistry
 from modelman.registry import (
     AuthConfig,
     Cost,
@@ -21,8 +20,8 @@ from modelman.registry import (
     RegistryError,
     _default_registry_path,
     _default_wt_config_path,
-    find_shared_artifact_owner,
     family_display_name,
+    find_shared_artifact_owner,
     is_native_provider,
     known_families,
     load_registry,
