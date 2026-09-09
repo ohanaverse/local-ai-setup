@@ -53,13 +53,21 @@ bin=$(resolve_mlx_lm_bin "$tool") || exit 1
 # caller didn't pass one — scan for an explicit value so the printed next
 # step names the real output directory rather than always guessing.
 out_dir="mlx_model"
-prev=""
+expect_value=""
 for arg in "$@"; do
-    if [ "$prev" = "--mlx-path" ]; then
+    if [ "$expect_value" = "1" ]; then
         out_dir="$arg"
         break
     fi
-    prev="$arg"
+    case "$arg" in
+        --mlx-path=*|--mlx_path=*)
+            out_dir="${arg#*=}"
+            break
+            ;;
+        --mlx-path|--mlx_path)
+            expect_value="1"
+            ;;
+    esac
 done
 
 echo
