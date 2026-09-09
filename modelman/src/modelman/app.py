@@ -39,6 +39,10 @@ class ModelmanApp(App[None]):
         # screen mounts so every screen can reference self.app.downloads
         # the instant it might need it (quit guard, glyph, routing).
         self.downloads = DownloadManager(self)
+        # Set by the startup price-refresh worker when it skips or fails; read
+        # by ModelScreen.action_back to decide whether to show a stale-pricing
+        # reminder in the exit confirmation dialog.
+        self._price_refresh_skipped_or_failed = False
         # Load user preferences (theme, etc.) before any widget
         # mounts so the first frame uses the right colors. A missing
         # file returns defaults; a corrupted file falls back to
@@ -60,6 +64,7 @@ class ModelmanApp(App[None]):
             except Exception:
                 registry = None
             if registry is None:
+                self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
                 return
             from .registry import _default_registry_path
             from .state import _default_state_path
@@ -74,6 +79,63 @@ class ModelmanApp(App[None]):
                     available_providers=configured,
                 )
             )
+        self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
+
+    def _run_price_refresh(self) -> None:
+        """Daily-gated background refresh of OpenRouter prices.
+
+        Runs on a worker thread at startup. Loads the registry, checks the
+        daily gate, fetches prices, saves the registry, and records the
+        refresh date — all fail-soft. Sets ``_price_refresh_skipped_or_failed``
+        so the exit dialog can show a stale-pricing reminder.
+        """
+        from datetime import date
+
+        from .pricing import refresh_prices, should_run_price_refresh
+        from .registry import load_registry, save_registry
+        from .state import StateStore, load_state, locked_state, set_price_refresh_last_run
+
+        try:
+            registry = load_registry()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.notify, f"Could not load registry for price refresh: {exc}")
+            self._price_refresh_skipped_or_failed = True
+            return
+
+        try:
+            state = load_state()
+        except Exception:  # noqa: BLE001
+            state = StateStore()
+
+        if not should_run_price_refresh(state, registry):
+            return
+
+        result = refresh_prices(registry)
+        if result.error is not None:
+            self.call_from_thread(self.notify, f"Token price refresh failed: {result.error}")
+            self._price_refresh_skipped_or_failed = True
+            return
+
+        try:
+            save_registry(registry)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.notify, f"Token prices refreshed but could not save registry: {exc}"
+            )
+            self._price_refresh_skipped_or_failed = True
+            return
+
+        try:
+            with locked_state() as disk_state:
+                set_price_refresh_last_run(disk_state, date.today().isoformat())
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.notify, f"Token prices refreshed but could not record refresh date: {exc}"
+            )
+
+        for warning in result.warnings:
+            self.call_from_thread(self.notify, warning)
+        self.call_from_thread(self.notify, f"Token prices refreshed for {result.updated} model(s)")
 
     def request_quit(self) -> None:
         """The single quit entry point every binding routes through
