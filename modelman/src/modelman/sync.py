@@ -28,9 +28,18 @@ from .registry import (
 )
 from .state import ModelState, StateStore
 
-# Providers `modelman sync` reconciles against the filesystem. Same set as
-# registry.DEFAULT_PROVIDER_IDS — that constant is the single source.
-RECONCILABLE_PROVIDERS = DEFAULT_PROVIDER_IDS
+# Providers `modelman sync` reconciles against the filesystem. ollama has its
+# own discovery path (`ollama list`); every other reconcilable provider stores
+# weights in per-model directories on disk. This tuple intentionally includes
+# retired-but-still-registered providers (llamacpp) so existing registry
+# entries continue to be reconciled until they are removed.
+MODELDIR_PROVIDER_IDS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server")
+
+# Full set of providers sync can determine downloaded state for: ollama plus
+# every model-dir provider.
+RECONCILABLE_PROVIDERS: tuple[str, ...] = tuple(
+    sorted(set(DEFAULT_PROVIDER_IDS + MODELDIR_PROVIDER_IDS))
+)
 
 
 class SyncError(Exception):
@@ -119,9 +128,13 @@ def _ensure_provider_entries(registry: Registry) -> list[str]:
 
 
 def _modeldir_providers(registry: Registry) -> dict[str, Provider]:
-    """Build llamacpp/omlx provider instances from registry provider entries."""
+    """Build model-dir provider instances from registry provider entries.
+
+    Covers every local provider that stores its weights on disk under a
+    per-model directory. The set is defined by MODELDIR_PROVIDER_IDS.
+    """
     provider_instances: dict[str, Provider] = {}
-    for provider_id in ("llamacpp", "omlx"):
+    for provider_id in MODELDIR_PROVIDER_IDS:
         try:
             entry = registry.provider(provider_id)
         except KeyError:
@@ -136,7 +149,7 @@ def list_modeldir(
     """Return {model_id: (disk_path, size_bytes)} for downloaded model-dir models."""
     downloaded: dict[str, tuple[str, int]] = {}
     for m in registry.models:
-        if m.provider_id not in ("llamacpp", "omlx"):
+        if m.provider_id not in MODELDIR_PROVIDER_IDS:
             continue
         provider = provider_instances.get(m.provider_id)
         if provider is None:
