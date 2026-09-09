@@ -2647,3 +2647,38 @@ async def test_deferred_expose_failure_notifies_the_user(tmp_path, monkeypatch):
         captured_actions[0]()
 
     assert any("ollama/x" in n for n in notified), notified
+
+
+# --- pricing_updated_at preservation / refresh ---------------------------
+
+
+
+def test_variant_to_model_entry_preserves_quantization():
+    variant = {
+        "id": "llamacpp/q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+        "quantization": "Q4_K_M",
+    }
+    registry = Registry(
+        providers=[ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none"))]
+    )
+    entry = _variant_to_model_entry(variant, family="f", registry=registry)
+    assert entry.quantization == "Q4_K_M"
+
+
+def test_variant_to_model_entry_has_no_pricing_updated_at():
+    variant = {
+        "id": "llamacpp/q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+    }
+    registry = Registry(
+        providers=[ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none"))]
+    )
+    entry = _variant_to_model_entry(variant, family="f", registry=registry)
+    assert entry.pricing_updated_at is None

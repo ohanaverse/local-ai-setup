@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,29 @@ from .forms import default_form_kind
 
 if TYPE_CHECKING:
     from ..providers.base import VariantSpec
+
+
+def _now_iso() -> str:
+    """UTC timestamp for pricing_updated_at — second precision, no
+    microseconds, so it round-trips cleanly through TOML."""
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
+    """True when any per-token or subscription field differs between two
+    Cost values. None-ness changes count as a change; matching None is
+    not a change."""
+    if old is None and new is None:
+        return False
+    if old is None or new is None:
+        return True
+    return (
+        old.input_price_per_million != new.input_price_per_million
+        or old.cache_price_per_million != new.cache_price_per_million
+        or old.output_price_per_million != new.output_price_per_million
+        or old.subscription_price != new.subscription_price
+        or old.subscription_period != new.subscription_period
+    )
 
 
 def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -> ModelEntry:
@@ -708,6 +732,8 @@ class ModelScreen(Screen[None]):
             self.app.notify("Model ID already exists")
             return
         entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
+        if entry.cost is not None:
+            entry.pricing_updated_at = _now_iso()
         self.registry.models.append(entry)
         self._added_ids.add(variant["id"])
         # Persist immediately (mirrors _on_edit_model): a real-download
@@ -782,6 +808,7 @@ class ModelScreen(Screen[None]):
                 families=self._families_list(),
                 family=self.queued_moves.get(mid, self.family),
                 provider_kinds=self._provider_kinds(),
+                pricing_updated_at=entry.pricing_updated_at,
             ),
             self._on_edit_model,
         )
@@ -820,7 +847,14 @@ class ModelScreen(Screen[None]):
         if result is None:
             return
         updated = result.spec
+        old_entry = next((m for m in self.registry.models if m.id == updated["id"]), None)
+        if old_entry is None:
+            return
         new_entry = _variant_to_model_entry(updated, family=self.family, registry=self.registry)
+        if _cost_changed(old_entry.cost, new_entry.cost):
+            new_entry.pricing_updated_at = _now_iso()
+        else:
+            new_entry.pricing_updated_at = old_entry.pricing_updated_at
         for i, m in enumerate(self.registry.models):
             if m.id == updated["id"]:
                 self.registry.models[i] = new_entry
