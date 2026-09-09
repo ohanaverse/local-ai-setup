@@ -748,17 +748,6 @@ def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group(tmp_path, mon
     isolate_provider without the pairing the helper requires."""
     from modelman.benchmark import isolation
 
-    registry = Registry(
-        providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
-        models=[
-            ModelEntry(
-                id="mlx_lm_server/broken",
-                family="f",
-                provider_id="mlx_lm_server",
-                model_name="broken",
-            )
-        ],
-    )
     with pytest.raises(BenchmarkError, match="missing a target or draft"):
         isolation.mlx_lm_server_pairing_args(
             "mlx_lm_server/broken",

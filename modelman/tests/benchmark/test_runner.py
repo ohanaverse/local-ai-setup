@@ -5,11 +5,10 @@ from pathlib import Path
 import pytest
 
 from modelman.benchmark.errors import BenchmarkError
-from modelman.benchmark.results import BenchmarkMetrics, BenchmarkRun, TargetResult
 from modelman.benchmark.isolation import mlx_lm_server_pairing_args
+from modelman.benchmark.results import BenchmarkMetrics, BenchmarkRun, TargetResult
 from modelman.benchmark.runner import (
     RunSavedButRestoreFailed,
-    Target,
     discover_targets,
     run_benchmark,
 )
