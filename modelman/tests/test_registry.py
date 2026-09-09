@@ -1092,3 +1092,38 @@ def test_find_shared_artifact_owner_detects_shared_draft_for_mlx_lm_server(tmp_p
     owner = find_shared_artifact_owner(registry, provider, variant_a)
     assert owner is not None
     assert owner.id == "mlx_lm_server/b"
+
+
+def test_registry_round_trips_quantization_and_pricing_updated_at(tmp_path):
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/x",
+                family="x",
+                provider_id="ollama",
+                model_name="x",
+                quantization="Q4_K_M",
+                pricing_updated_at="2026-09-09T14:32:00+00:00",
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    m = loaded.model("ollama/x")
+    assert m.quantization == "Q4_K_M"
+    assert m.pricing_updated_at == "2026-09-09T14:32:00+00:00"
+
+
+def test_registry_absent_quantization_and_pricing_updated_at_are_none(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\n'
+        'model_name = "x"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").quantization is None
+    assert loaded.model("ollama/x").pricing_updated_at is None

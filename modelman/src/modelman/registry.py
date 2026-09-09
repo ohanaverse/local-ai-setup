@@ -156,6 +156,8 @@ class ModelEntry:
     fetch: Fetch | None = None
     draft: DraftSpec | None = None
     native: bool = False
+    quantization: str | None = None
+    pricing_updated_at: str | None = None
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -545,6 +547,8 @@ def _model_to_dict(m: ModelEntry) -> dict[str, Any]:
         "cost": _cost_to_dict(m.cost) if m.cost is not None else None,
         "model_info": m.model_info,
         "fetch": _fetch_to_dict(m.fetch) if m.fetch is not None else None,
+        "quantization": m.quantization,
+        "pricing_updated_at": m.pricing_updated_at,
         # A DraftSpec with no fields and no extra set serializes to {}; drop
         # it (rather than writing an empty [models.draft] table) since
         # `draft is None` and "draft carries nothing" should look identical
@@ -738,6 +742,8 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
         model_info=dict(raw.get("model_info", {})),
         fetch=fetch,
         draft=draft,
+        quantization=raw.get("quantization"),
+        pricing_updated_at=raw.get("pricing_updated_at"),
         extra=unknown_keys(
             raw,
             {
@@ -753,6 +759,8 @@ def _parse_model(raw: dict[str, Any]) -> ModelEntry:
                 "fetch",
                 "draft",
                 "usage_tier",
+                "quantization",
+                "pricing_updated_at",
             },
         ),
     )
