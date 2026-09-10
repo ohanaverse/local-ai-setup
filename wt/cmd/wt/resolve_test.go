@@ -2,9 +2,14 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 )
 
 // TestResolveModel covers the non-TUI model resolution path used after
@@ -98,5 +103,116 @@ func TestResolveModelReturnsEligible(t *testing.T) {
 	}
 	if len(eligible) != 2 {
 		t.Fatalf("eligible = %d, want 2", len(eligible))
+	}
+}
+
+// TestResolveModelNoMarkerHidesLocalModels asserts issue #65's picker-
+// filter half for the non-TUI path: with the gate active and no marker,
+// resolveModel treats every local model as ineligible — only cloud models
+// can be auto-selected or listed.
+func TestResolveModelNoMarkerHidesLocalModels(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"claude", "ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("") // gate active, nothing running
+
+	m, _, err := resolveModel("pi", cfg, "", "", "")
+	if err != nil {
+		t.Fatalf("resolveModel() error = %v, want nil (single eligible cloud model)", err)
+	}
+	if m.ID != "claude/opus" {
+		t.Errorf("got %q, want claude/opus", m.ID)
+	}
+}
+
+// TestResolveModelVerifiedMarkerAllowsLocalModel asserts a verified marker
+// makes the marked local model eligible again.
+func TestResolveModelVerifiedMarkerAllowsLocalModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", Family: "qwen3.8", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+
+	m, _, err := resolveModel("pi", cfg, "", "", "")
+	if err != nil || m.ID != "omlx/qwen3.8" {
+		t.Errorf("resolveModel() = (%v, %v), want (omlx/qwen3.8, nil)", m, err)
+	}
+}
+
+// TestResolveModelStaleMarkerErrors asserts the "exit with a message" half:
+// a marker set but not verified is a fatal error for every launch through
+// this agent, not just ones that would have used a local model.
+func TestResolveModelStaleMarkerErrors(t *testing.T) {
+	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
+		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+
+	_, _, err := resolveModel("claude", cfg, "", "", "")
+	var notRunning *localgate.NotRunningError
+	if !errors.As(err, &notRunning) {
+		t.Fatalf("err = %v, want *localgate.NotRunningError", err)
+	}
+	if notRunning.ModelID != "omlx/qwen3.8" {
+		t.Errorf("NotRunningError.ModelID = %q, want omlx/qwen3.8", notRunning.ModelID)
+	}
+}
+
+// TestResolveModelPinnedStaleLocalModelRejected asserts the pinned-model
+// guard: -M pinning a local model that is not the currently-running one
+// gets the specific "start it in modelman" message, not the generic
+// "not in the eligible list" one.
+func TestResolveModelPinnedStaleLocalModelRejected(t *testing.T) {
+	// The running marker (ollama/b) must verify as available so the
+	// pinned-model guard (not the stale-marker path) fires — a fake
+	// `ollama` binary on PATH lists b as running.
+	fakeBin := t.TempDir()
+	fakeOllama := filepath.Join(fakeBin, "ollama")
+	if err := os.WriteFile(fakeOllama, []byte("#!/bin/sh\necho \"NAME    ID    SIZE    MODIFIED\"\necho \"b   abc   5.0 GB   2 days ago\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake ollama: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models: []config.Model{
+			{ID: "ollama/a", ProviderID: "ollama", Family: "a", Tags: []string{"code"}},
+			{ID: "ollama/b", ProviderID: "ollama", Family: "b", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("ollama/b") // b is running, pin a
+
+	_, _, err := resolveModel("pi", cfg, "", "", "ollama/a")
+	var notRunning *localgate.NotRunningError
+	if !errors.As(err, &notRunning) {
+		t.Fatalf("err = %v, want *localgate.NotRunningError", err)
+	}
+	if notRunning.ModelID != "ollama/a" {
+		t.Errorf("NotRunningError.ModelID = %q, want ollama/a", notRunning.ModelID)
 	}
 }
