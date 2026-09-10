@@ -10,6 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -166,6 +167,9 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	}
 	if rerr := rotation.New().Record(m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
+	}
+	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
+		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
 	return runAgentCmd(cmd, agent, m)
 }

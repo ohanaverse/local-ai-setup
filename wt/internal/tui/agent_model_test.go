@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -951,9 +952,34 @@ func TestLaunchAndRecordWritesLast(t *testing.T) {
 	if got := strings.TrimSpace(string(data)); got != first.model.ID {
 		t.Errorf("state file = %q, want %q (launched model)", got, first.model.ID)
 	}
+
+	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
+	if got[first.model.ID] != 1 {
+		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
+	}
 }
 
-// TestNextEntryAfterLaunchAdvancesCursor asserts the picker entry after a
+// TestLaunchAndRecordWritesRefcount asserts that launchAndRecord also
+// records a live-session refcount entry (this test process's pid + the
+// launched model), so the picker's "in use" column can reflect a
+// concurrent wt session. This is the TUI-side counterpart to
+// TestLaunchAndRecordWritesLast, verifying the second state write at the
+// same commit point.
+func TestLaunchAndRecordWritesRefcount(t *testing.T) {
+	dir := tempStateDir(t)
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	first, ok := m.models.Items()[0].(*modelItem)
+	if !ok {
+		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
+	}
+	m.launchModel = first.model
+	m, _ = m.launchAndRecord(exec.Command("true"))
+
+	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
+	if got[first.model.ID] != 1 {
+		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
+	}
+}
 // committed launch lands on the model AFTER the just-launched one. This is
 // the core promise of rotation-by-launch: every launch advances the
 // rotation. The launch is committed via launchAndRecord (the real recording

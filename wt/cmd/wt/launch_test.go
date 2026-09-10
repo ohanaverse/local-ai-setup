@@ -12,6 +12,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
@@ -591,6 +592,79 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(data)); got != "claude/design-b" {
 		t.Fatalf("recorded model = %q, want claude/design-b (a code-tagged model leaked past the -T design filter)", got)
+	}
+}
+
+// TestLaunchFilteredRecordsRefcount verifies the non-TUI launch path
+// records a live-session refcount entry (this process's pid + the launched
+// model) at the same commit point as rotation.Record, so the picker's "in
+// use" column can see a launch made through -W/--cwd/outside-repo, not
+// just the TUI.
+func TestLaunchFilteredRecordsRefcount(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+
+	binDir := t.TempDir()
+	claudeBin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	cfg.ExposeAllForTest()
+
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+
+	store := refcount.NewStoreAt(filepath.Join(dir, "agent-wt"))
+	got := store.Counts([]string{"claude/opus"})
+	if got["claude/opus"] != 1 {
+		t.Fatalf("refcount Counts = %d, want 1", got["claude/opus"])
+	}
+}
+
+// TestCommandAgentDoesNotRecordRefcount verifies a shell (command agent)
+// launch never writes a refcount entry — command agents have no model
+// layer, so there is nothing to attribute an "in use" count to. Command
+// agents take the early-return path in launchFilteredImpl, before the
+// record call, so this pins that control-flow contract (the design notes
+// no explicit guard is needed; this test is the regression lock for that
+// claim).
+func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: []config.Agent{{Name: "shell", SupportedProviders: nil}},
+	}
+
+	if err := launchFiltered("shell", worktree, cfg, false, "", "", "", false, []string{truePath}, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "agent-wt", "refcount.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("refcount.jsonl unexpectedly created for a command agent launch (err=%v)", err)
 	}
 }
 

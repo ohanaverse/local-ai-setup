@@ -11,6 +11,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -801,15 +803,20 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 }
 
 // launchAndRecord records the model as last-launched (so the next picker
-// entry advances rotation) and then runs the agent. Recording happens
-// here — the single commit point reached only after the ollama check and
-// resume prompt have been satisfied — so a cancelled ollama warning, a
-// cancelled resume prompt, or a failed ollama check never advances the
-// rotation. The state write is best-effort: a failure surfaces in m.status
-// and the launch still proceeds.
+// entry advances rotation), records a live-session refcount entry for the
+// model picker's "in use" column, and then runs the agent. Recording
+// happens here — the single commit point reached only after the ollama
+// check and resume prompt have been satisfied — so a cancelled ollama
+// warning, a cancelled resume prompt, or a failed ollama check never
+// advances the rotation or the refcount. Both state writes are
+// best-effort: a failure surfaces in m.status and the launch still
+// proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	if err := rotation.New().Record(m.launchModel.ID); err != nil {
 		m.status = "rotation state not saved: " + err.Error()
+	}
+	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil && m.status == "" {
+		m.status = "refcount state not saved: " + err.Error()
 	}
 	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
 }
