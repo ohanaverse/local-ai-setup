@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
@@ -100,6 +101,14 @@ type model struct {
 	repoRoot         string // cached from entriesLoadedMsg to avoid a second rev-parse
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
+
+	// fatalErr (issue #65) is set by enterModelPhase when modelman's
+	// [local].running_model marker is stale — the probe in
+	// internal/localgate failed. Paired with a tea.Quit return so the
+	// whole program exits; Run() below surfaces it as the function's
+	// returned error, matching the non-TUI path's exit-with-message
+	// behavior (cmd/wt/main.go's runLaunchPath).
+	fatalErr error
 }
 
 // Init returns the initial command. When a worktree path was pre-resolved
@@ -674,18 +683,38 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 // cleared so re-entry validates fresh — without that, every agent pick
 // would re-trigger the same error).
 //
-// Caller is responsible for the len(models) == 0 guard. fullCatalog is the
-// agent's full ModelsForAgent slice (models is a filtered subset of it); it is
-// used to build the family-count map so totals stay accurate across filters.
+// Caller is responsible for the len(models) == 0 guard on the PRE-GATE
+// list; the one-local-model-at-a-time gate (below) can still empty it —
+// when every eligible model was local and nothing is running — and
+// enterModelPhase itself routes back to the agent picker with a message
+// in that case, so a caller's guard alone is not the last word.
+// fullCatalog is the agent's full ModelsForAgent slice (models is a
+// filtered subset of it); it is used to build the family-count map so
+// totals stay accurate across filters.
 func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	// Validate a -M pin BEFORE any list construction: a bad pin routes back to
-	// the agent picker without scanning usage.jsonl or wrapping models. The
-	// eligible slice is the source of truth; a pin that matches at all is one
-	// of these models.
-	if m.pinnedModel != "" && indexOfModelID(models, m.pinnedModel) < 0 {
-		m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
+	// One-local-model-at-a-time gate (issue #65) — the policy lives in
+	// localgate.Apply, shared with cmd/wt/resolve.go's resolveModel. A
+	// stale marker (set but not verified available) quits the whole
+	// program with a message; a clean/empty marker narrows models to
+	// cloud-only, or cloud plus the one verified-running local model.
+	gate, gateErr := localgate.Apply(m.cfg, models, m.pinnedModel)
+	if gateErr != nil {
+		m.fatalErr = gateErr
+		return m, tea.Quit
+	}
+	models = gate.Eligible
+
+	// Route back to the agent picker when the model list can't be shown:
+	// a -M pin that isn't launchable (the gate-specific message when a
+	// local model isn't the running one, the generic one otherwise), or a
+	// gate that emptied the list — every eligible model was local and
+	// nothing is running, which needs a `modelman start`, not a config
+	// edit. The bad pin is cleared so re-entry validates fresh — without
+	// that, every agent pick would re-trigger the same error.
+	routeBack := func(status string) (model, tea.Cmd) {
+		m.status = status
 		m.pinnedModel = ""
 		items := buildAgentList(m.cfg)
 		m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
@@ -693,6 +722,15 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 		m.agentList.SetShowStatusBar(false)
 		m.phase = phaseAgent
 		return m, nil
+	}
+	if gate.PinnedRejected != nil {
+		return routeBack(gate.PinnedRejected.Error())
+	}
+	if m.pinnedModel != "" && config.IndexModelByID(models, m.pinnedModel) < 0 {
+		return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
+	}
+	if len(models) == 0 {
+		return routeBack(fmt.Sprintf("all of agent %q's eligible models are local and no local model is running — start one with `modelman start <id>`", agent))
 	}
 
 	// Build the full-catalog family map so usage aggregation is accurate
@@ -956,11 +994,16 @@ func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, them
 	// from a test invocation sharing the process).
 	pendingSummary = ""
 	pendingSurveyState = pendingSurvey{}
-	_, err := p.Run()
+	finalModel, err := p.Run()
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
 	printPendingSummaryAndSurvey()
+	if err == nil {
+		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
+			err = fm.fatalErr
+		}
+	}
 	return err
 }
 

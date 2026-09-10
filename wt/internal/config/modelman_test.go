@@ -38,7 +38,7 @@ func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	exposed, litellm, err := loadModelmanState()
+	exposed, litellm, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v, want nil", err)
 	}
@@ -63,7 +63,7 @@ func TestLoadModelmanStateHonorsXDG(t *testing.T) {
 exposed = true
 `)
 
-	exposed, _, err := loadModelmanState()
+	exposed, _, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `this is not toml {{{`)
 
-	_, _, err := loadModelmanState()
+	_, _, _, err := loadModelmanState()
 	if err == nil {
 		t.Fatal("expected error for malformed modelman.toml, got nil")
 	}
@@ -110,7 +110,7 @@ litellm_exposed = true
 downloaded = true
 `)
 
-	exposed, _, err := loadModelmanState()
+	exposed, _, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}

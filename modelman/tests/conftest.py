@@ -43,6 +43,13 @@ def _never_call_real_ollama(monkeypatch):
     result."""
     monkeypatch.setattr("modelman.providers.ollama._default_runner", _fake_ollama_runner)
     monkeypatch.setattr("modelman.ollama_caps._default_runner", _fake_ollama_runner)
+    # local_control's availability probe (issue #65) would `ollama ps` and
+    # HTTP-probe localhost:8000/8001 in the marker-matches-idempotent path;
+    # a False probe just means "full restart", which is what tests mocking
+    # stop/isolate expect anyway. Tests of the probe itself patch
+    # _probe_running/_ollama_loaded_names explicitly.
+    monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
+    monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
 
 
 @pytest.fixture

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 )
@@ -400,6 +401,18 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("MODELMAN_REGISTRY", "")
 
+	// The one-local-model-at-a-time gate (issue #65) is active for a
+	// Load()-built Config, so the local ollama model must be marked
+	// running AND verify as available (a fake `ollama` binary on PATH
+	// stands in for the real daemon) or it is filtered out of the
+	// eligible list and the auto-launch short-circuit never fires.
+	fakeBin := t.TempDir()
+	fakeOllama := filepath.Join(fakeBin, "ollama")
+	if err := os.WriteFile(fakeOllama, []byte("#!/bin/sh\necho \"NAME    ID    SIZE    MODIFIED\"\necho \"gemma4:9b   abc   5.0 GB   2 days ago\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake ollama: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	// Write a minimal config with one ollama model so resolveModel returns
 	// a single eligible entry, triggering the auto-launch short-circuit.
 	cfgDir := filepath.Join(home, ".config", "agent-wt")
@@ -422,9 +435,10 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		t.Fatalf("write registry: %v", err)
 	}
 	// Expose the ollama model through the LiteLLM gateway so the
-	// auto-launch short-circuit sees it as eligible.
+	// auto-launch short-circuit sees it as eligible, and mark it as the
+	// running local model (issue #65) so the gate keeps it in the list.
 	if err := os.WriteFile(filepath.Join(regDir, "modelman.toml"),
-		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\n"),
+		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\n\n[local]\nrunning_model = \"ollama/gemma4:9b\"\n"),
 		0o644); err != nil {
 		t.Fatalf("write modelman state: %v", err)
 	}
@@ -688,4 +702,31 @@ func TestRunLaunchPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunLaunchPathExitsOnStaleLocalMarker asserts that a stale
+// [local].running_model marker is fatal even on the "no agent pinned"
+// fast path, which otherwise swallows resolveModelForLaunch's error and
+// falls through to the TUI (resolveModelForLaunch's error is deliberately
+// treated as "not resolved, show the picker" for the ordinary ambiguous-
+// eligible-list case — a stale marker must NOT take that path, or the gate
+// would silently degrade into "just open the TUI" instead of the design's
+// required hard exit).
+func TestRunLaunchPathExitsOnStaleLocalMarker(t *testing.T) {
+	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")()
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
+		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+
+	_, _, eligible, err := resolveModelForLaunch("claude", cfg, "", "", "")
+	var notRunning *localgate.NotRunningError
+	if !errors.As(err, &notRunning) {
+		t.Fatalf("resolveModelForLaunch error = %v, want *localgate.NotRunningError", err)
+	}
+	_ = eligible
 }

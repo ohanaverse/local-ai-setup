@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start <model_id>`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider).
 
 ## Monorepo context
 
@@ -17,7 +17,7 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 
 - **Install dependencies:** `make install` (runs `uv sync`)
 - **Run the CLI during development:** `uv run modelman` (TUI) or `uv run modelman download <family>`
-- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`
+- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`, `uv run modelman start <model_id>`, `uv run modelman stop` (issue #65 — see `local_control.py` below)
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
 - **Lint / format / typecheck:** `make lint`, `make format`, `make typecheck` (or `make check` to run lint+typecheck together)
@@ -42,13 +42,13 @@ For day-to-day development you can still run focused subsets:
 - `uv run pytest tests/test_queue.py -q` — queue apply logic
 - `uv run pytest -k "not screen" -q` — skip the slow Textual screen tests
 
-The screen tests (`tests/screens/*.py`, ~267 tests, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~880 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
+The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~1030 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
 
 ## Architecture
 
 ### Entry point
 
-- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `download <family>` (pushes `ModelScreen`), `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list). Three sub-Typer apps are also mounted: `app.add_typer(benchmark_app, name="benchmark")`, `app.add_typer(usage_app, name="usage")`, and `app.add_typer(litellm_app, name="litellm")`.
+- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `download <family>` (pushes `ModelScreen`), `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list), `start <model_id>` / `stop` (issue #65 local-model lifecycle — see `local_control.py` below). Three sub-Typer apps are also mounted: `app.add_typer(benchmark_app, name="benchmark")`, `app.add_typer(usage_app, name="usage")`, and `app.add_typer(litellm_app, name="litellm")`.
 - `main.py::litellm_app` (mounted as `modelman litellm`) — the LiteLLM routing on/off switch wt consumes: `status` / `on` / `off` / `set --url --api-key`. Routing-policy only: mutates just modelman.toml's `[litellm]` table through `locked_state()` and never starts, stops, or restarts the proxy (proxy lifecycle stays with `restart_litellm_proxy`/`MODELMAN_LITELLM_RESTART_CMD` after config writes). `status` redacts the key to `***<last4>`. wt reads the table read-only (`finalizeCfg`/`loadModelmanState` in `wt/internal/config`).
 
 ### Textual TUI
@@ -160,7 +160,8 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 ### Registry and state
 
 - `src/modelman/registry.py` — `Registry` dataclass: providers + models + families. `ModelEntry` now carries `cost` (`Cost` dataclass with flat fields: `input_price_per_million`, `cache_price_per_million`, `output_price_per_million`, `subscription_price`, `subscription_period`; the legacy `kind`/`price_per_million_tokens`/`price_per_period` schema is migrated on load), and an optional per-model `location` that overrides the provider's location for the LOC icon. `usage_tier` has been removed. `ProviderEntry` carries `protocols` (wire protocols the provider serves — e.g. ollama `["anthropic", "openai-chat"]`, omlx `["openai-chat"]`; defaults to `["openai-chat"]` when absent). wt intersects these with each agent's declared wire protocols when resolving routes. Loaded from/saved to `registry.toml` (path precedence `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` > `~/.config`, matching wt's `config.RegistryPath`). See `README.md` for the exact TOML schema.
-- `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. (`get`/`set`/`forget_family`). Loaded from `modelman.toml` (`MODELMAN_STATE`); display-name resolution lives in `registry.family_display_name`/`known_families`. Also owns the `[litellm]` routing table (`enabled`/`url`/`api_key`) — the LiteLLM on/off switch + proxy endpoint; wt reads it read-only (see the `litellm_app` bullet above).
+- `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. (`get`/`set`/`forget_family`). Loaded from `modelman.toml` (`MODELMAN_STATE`); display-name resolution lives in `registry.family_display_name`/`known_families`. Also owns the `[litellm]` routing table (`enabled`/`url`/`api_key`) — the LiteLLM on/off switch + proxy endpoint; wt reads it read-only (see the `litellm_app` bullet above). Also owns `[local].running_model` (`LocalState`) and the `locked_state()` process-locked whole-file read-modify-write used by `local_control.py` and the merge-based persist in `main.py` (`sync`/`expose`/`unexpose` re-apply only their own keys onto a freshly-loaded file — a whole-file write from a stale snapshot could revert a concurrently-written `[local].running_model` marker).
+- `src/modelman/local_control.py` — `start_local_model(registry, model_id)` / `stop_local_model()` (called directly by `main.py`'s `start`/`stop`, NOT wrapped in a `locked_state` — the subprocesses must run outside the lock). Start flow: resolve the mlx_lm_server pairing (fail-fast, before any teardown — a broken pairing must not stop-all first) → read the marker → if it names this model, PROBE it (name-checked: ollama via `ollama ps` name column, omlx/omlx-6bit via `/v1/models` ids matched lenient-prefix/strict-variant-tail since 4-bit and 6-bit share port 8000, mlx_lm_server via a non-empty `/v1/models` — one target+draft pairing per process) → serving ⇒ no-op success; dead ⇒ clear the stale marker and restart. Then stop-all (failure PRESERVES the marker — the machine state didn't change) → isolate (failure CLEARS the marker, since stop-all already tore down whatever was running) → success ⇒ locked write of the marker. Stop flow: stop-all, then clear the marker only if a fresh read still names the previously-running model (a concurrent `modelman start`'s new marker is not clobbered). `main.py`'s sync/expose/unexpose persist merge-style (above) so they can never revert this marker.
   **Exposure predicate:** a model is effectively exposed for LiteLLM routing iff `exposed = true` (legacy `litellm_exposed` still read as a fallback on load) AND (`ready = true` OR `location = "cloud"`). Native models (provider `auth.type = "native"`) are always exposed — they bypass LiteLLM entirely. This rule is shared with wt (both read `modelman.toml` and apply the same predicate).
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `wt` config) into the registry/state pair. Run once via `uv run modelman migrate`. Also runs `migrate_wt_gateway_to_litellm`: imports wt's legacy `[gateway]` block into modelman.toml's `[litellm]` exactly once (read-only on wt's file) and never clobbers already-set `[litellm]` values — a user's later `modelman litellm set` wins.
 - `src/modelman/pricing.py` — OpenRouter price refresh: `fetch_openrouter_pricing` / `apply_prices` / `refresh_prices` / `should_run_price_refresh`. `_is_cloud_model` excludes native providers (`auth.type="native"`) even though they're `location="cloud"`; the per-token merge (`_merge_api_cost`) preserves manually-set cache/subscription pricing. Driven by the `modelman refresh-prices` CLI and a daily-gated startup worker in `app.py`.
@@ -283,6 +284,20 @@ See `README.md` for the exact TOML schemas for `registry.toml` and `modelman.tom
 - **ModelScreen** `LOC` renders `↗` for `cloud`, `▤` for `local`, and `—` when unset.
 
 Shared helpers for this live in `registry.py`: `LOCATION_LOCAL`, `LOCATION_CLOUD`, and `is_local_location()`.
+
+### Local-model lifecycle (issue #65)
+
+`modelman start <model_id>` / `modelman stop` are the only sanctioned way
+to start or stop a local model for normal (non-benchmark) usage — see
+`src/modelman/local_control.py` and
+`docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md`.
+Both delegate the actual process isolation to `bin/llm-isolate-provider`
+(the same helper `modelman benchmark` uses) and record the running model's
+id in `modelman.toml`'s `[local].running_model` table
+(`src/modelman/state.py`'s `LocalState`). wt reads that marker read-only
+(`wt/internal/config/modelman.go`, `wt/internal/localgate`) to filter its
+model picker to cloud models plus this one verified-running local model —
+see `wt/CLAUDE.md`'s "Local-model gate" section.
 
 ## Foreign agent configs
 

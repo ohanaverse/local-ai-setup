@@ -958,3 +958,115 @@ func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
 		t.Error("ResolveRoute must error when litellm is required but unconfigured")
 	}
 }
+
+// TestLocalGateActiveDefaultsFalse asserts that a hand-built Config{}
+// literal — the shape nearly every existing wt test uses — has the
+// one-local-model-at-a-time gate (issue #65) inactive by default, so this
+// feature does not change behavior for tests that predate it and never
+// opt in via SetLocalRunningForTest.
+func TestLocalGateActiveDefaultsFalse(t *testing.T) {
+	cfg := &Config{}
+	if cfg.LocalGateActive() {
+		t.Error("LocalGateActive() = true for a hand-built Config, want false")
+	}
+	if cfg.LocalRunningModel() != "" {
+		t.Errorf("LocalRunningModel() = %q, want empty", cfg.LocalRunningModel())
+	}
+}
+
+// TestSetLocalRunningForTestActivatesGate asserts the test setter both
+// records the marker and flips LocalGateActive() true, mirroring what
+// finalizeCfg does for a real Load().
+func TestSetLocalRunningForTestActivatesGate(t *testing.T) {
+	cfg := &Config{}
+	cfg.SetLocalRunningForTest("ollama/x")
+	if !cfg.LocalGateActive() {
+		t.Error("LocalGateActive() = false after SetLocalRunningForTest, want true")
+	}
+	if cfg.LocalRunningModel() != "ollama/x" {
+		t.Errorf("LocalRunningModel() = %q, want ollama/x", cfg.LocalRunningModel())
+	}
+}
+
+func filterGateTestConfig() *Config {
+	return &Config{
+		Providers: []Provider{
+			{ID: "claude", Location: LocationCloud, Auth: AuthConfig{Type: "native"}},
+			{ID: "ollama", Location: LocationLocal, Auth: AuthConfig{Type: "none"}},
+			{ID: "omlx", Location: LocationLocal, Auth: AuthConfig{Type: "none"}},
+		},
+	}
+}
+
+// TestFilterToRunningLocalInactiveGateIsNoop asserts the core safety
+// property this task depends on: with the gate inactive (the default for
+// a hand-built Config{}), FilterToRunningLocal returns its input
+// unchanged, regardless of the runningLocalID argument.
+func TestFilterToRunningLocalInactiveGateIsNoop(t *testing.T) {
+	cfg := filterGateTestConfig()
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ollama/a", ProviderID: "ollama"},
+		{ID: "omlx/b", ProviderID: "omlx"},
+	}
+	got := cfg.FilterToRunningLocal(models, "")
+	if len(got) != 3 {
+		t.Fatalf("got %d models, want 3 (gate inactive = no filtering)", len(got))
+	}
+}
+
+// TestFilterToRunningLocalNoMarkerDropsAllLocal asserts "no marker → cloud
+// models only" — the picker-filter half of the design's hard block.
+func TestFilterToRunningLocalNoMarkerDropsAllLocal(t *testing.T) {
+	cfg := filterGateTestConfig()
+	cfg.SetLocalRunningForTest("")
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ollama/a", ProviderID: "ollama"},
+		{ID: "omlx/b", ProviderID: "omlx"},
+	}
+	got := cfg.FilterToRunningLocal(models, "")
+	if len(got) != 1 || got[0].ID != "claude/opus" {
+		t.Fatalf("got %v, want only claude/opus", got)
+	}
+}
+
+// TestFilterToRunningLocalKeepsOnlyTheRunningOne asserts a marked local
+// model is kept and every OTHER local model is still dropped — only one
+// local model is ever offered at a time.
+func TestFilterToRunningLocalKeepsOnlyTheRunningOne(t *testing.T) {
+	cfg := filterGateTestConfig()
+	cfg.SetLocalRunningForTest("ollama/a")
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ollama/a", ProviderID: "ollama"},
+		{ID: "omlx/b", ProviderID: "omlx"},
+	}
+	got := cfg.FilterToRunningLocal(models, "ollama/a")
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if len(got) != 2 || !ids["claude/opus"] || !ids["ollama/a"] {
+		t.Fatalf("got %v, want [claude/opus ollama/a]", got)
+	}
+}
+
+// TestFilterToRunningLocalUnresolvableLocationDropped asserts the gate
+// fails closed: a model whose location cannot be resolved (provider
+// missing from the config — a registry data gap) is DROPPED, not kept.
+// Keeping it would leave a possibly-local model launchable while no
+// local model is running, violating the "no marker → cloud only, by
+// construction" invariant.
+func TestFilterToRunningLocalUnresolvableLocationDropped(t *testing.T) {
+	cfg := filterGateTestConfig()
+	cfg.SetLocalRunningForTest("")
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ghost/x", ProviderID: "ghost"}, // provider absent from cfg
+	}
+	got := cfg.FilterToRunningLocal(models, "")
+	if len(got) != 1 || got[0].ID != "claude/opus" {
+		t.Fatalf("got %v, want only claude/opus", got)
+	}
+}

@@ -18,13 +18,14 @@
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
 - `make lint` — umbrella target (`lint-shell` + `check-links`); lighter than `test-all`
 - `make test-all` — one-stop local verification mirroring CI: lint + modelman `make check`/`make test` + wt `go build`/`vet`/`test`
+- `make install` — install all monorepo components (wt binary + shims via `wt/make install`, modelman into its venv)
 - `bin/check-links` (or `make check-links`) — validates repo-relative markdown links across README, CLAUDE.md, docs/guides, docs/reference, docs/archive, benchmarks; run via `make check-links` or `uv run bin/check-links` so its Python deps are available
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
 - `bin/` — isolation helpers (`llm-isolate-provider`, `llm-restore-providers`) invoked by both `modelman benchmark` (via `modelman/src/modelman/benchmark/isolation.py`, by PATH) and the legacy benchmark scripts. These are monorepo-wide utilities; the modelman package calls them through `$PATH`, not by importing Python code.
 - `modelman/` — model registry TUI/CLI (Python/uv; `src/modelman`, own `CLAUDE.md`, own `Makefile`). Canonical owner of `registry.toml`, `modelman.toml` (exposure state), LiteLLM config writes, and the `modelman benchmark` tool; the agentic coding benchmark (`benchmark/agent/`) is a separate module tree under the same package
-- `wt/` — worktree agent launcher (Go module; `cmd/wt`, `internal/`, own `CLAUDE.md`, own `Makefile`). Reads modelman's `registry.toml` and `modelman.toml` (exposure) read-only; owns `~/.config/agent-wt/config.toml`, rotation + usage state
+- `wt/` — worktree agent launcher (Go module; `cmd/wt`, `internal/`, own `CLAUDE.md`, own `Makefile`). Reads modelman's `registry.toml` and `modelman.toml` (exposure + the `[local].running_model` marker behind the one-local-model-at-a-time gate) read-only; owns `~/.config/agent-wt/config.toml`, rotation + usage state
 - `Makefile` — lint target for shell scripts (root + wt), `check-links` (all tracked markdown), `test-all` (aggregates modelman + wt)
 - `docs/` — guides/ (user playbooks — see Docs above), reference/, contracts/ (cross-language config-format fixtures, read by wt Go + modelman Python contract tests), archive/ (dated docs), superpowers/ (plans+specs)
 - `.github/workflows/` — shell-ci (root lint), wt-ci (Go + wt lint), modelman-ci (Python)

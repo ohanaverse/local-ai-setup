@@ -45,10 +45,10 @@ func Available(modelName string) (bool, error) {
 	return false, nil
 }
 
-// parseOllamaNames extracts the NAME column from `ollama list` output.
-// Mirrors the row shape the old registry parser accepted: header line
-// skipped, rows with fewer than 3 fields skipped, cloud rows (SIZE "-")
-// included since a cloud model is "available" to ollama.
+// parseOllamaNames extracts the NAME column from `ollama list`/`ollama ps`
+// output. Mirrors the row shape the old registry parser accepted: header
+// line skipped, rows with fewer than 3 fields skipped, cloud rows (SIZE
+// "-") included since a cloud model is "available" to ollama.
 func parseOllamaNames(output string) []string {
 	var names []string
 	for i, line := range strings.Split(strings.TrimSpace(output), "\n") {
@@ -62,4 +62,27 @@ func parseOllamaNames(output string) []string {
 		names = append(names, fields[0])
 	}
 	return names
+}
+
+// Loaded checks whether modelName appears in `ollama ps` output — the
+// models ollama has actually LOADED into GPU/RAM, not `ollama list`'s
+// downloaded-but-idle catalog. Consumed by internal/localgate's
+// availability probe, where a downloaded-but-idle model must read as "not
+// running". Returns false with a nil error when ollama is not installed
+// or the daemon is down (no ps output = nothing loaded); returns an error
+// when `ollama ps` fails for another reason.
+func Loaded(modelName string) (bool, error) {
+	if _, err := exec.LookPath("ollama"); err != nil {
+		return false, nil // ollama not installed — nothing is loaded
+	}
+	out, err := exec.Command("ollama", "ps").Output()
+	if err != nil {
+		return false, fmt.Errorf("ollama ps: %w", err)
+	}
+	for _, name := range parseOllamaNames(string(out)) {
+		if name == modelName {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -2,9 +2,15 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 )
 
 // TestResolveModel covers the non-TUI model resolution path used after
@@ -98,5 +104,176 @@ func TestResolveModelReturnsEligible(t *testing.T) {
 	}
 	if len(eligible) != 2 {
 		t.Fatalf("eligible = %d, want 2", len(eligible))
+	}
+}
+
+// TestResolveModelNoMarkerHidesLocalModels asserts issue #65's picker-
+// filter half for the non-TUI path: with the gate active and no marker,
+// resolveModel treats every local model as ineligible — only cloud models
+// can be auto-selected or listed.
+func TestResolveModelNoMarkerHidesLocalModels(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"claude", "ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("") // gate active, nothing running
+
+	m, _, err := resolveModel("pi", cfg, "", "", "")
+	if err != nil {
+		t.Fatalf("resolveModel() error = %v, want nil (single eligible cloud model)", err)
+	}
+	if m.ID != "claude/opus" {
+		t.Errorf("got %q, want claude/opus", m.ID)
+	}
+}
+
+// TestResolveModelVerifiedMarkerAllowsLocalModel asserts a verified marker
+// makes the marked local model eligible again.
+func TestResolveModelVerifiedMarkerAllowsLocalModel(t *testing.T) {
+	// The probe is name-checked: /v1/models must report the marked model's
+	// own id, not merely respond 200.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
+	}))
+	defer srv.Close()
+	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+
+	m, _, err := resolveModel("pi", cfg, "", "", "")
+	if err != nil || m.ID != "omlx/qwen3.8" {
+		t.Errorf("resolveModel() = (%v, %v), want (omlx/qwen3.8, nil)", m, err)
+	}
+}
+
+// TestResolveModelStaleMarkerErrors asserts the "exit with a message" half:
+// a marker set but not verified is a fatal error for every launch through
+// this agent, not just ones that would have used a local model.
+func TestResolveModelStaleMarkerErrors(t *testing.T) {
+	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
+		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+
+	_, _, err := resolveModel("claude", cfg, "", "", "")
+	var notRunning *localgate.NotRunningError
+	if !errors.As(err, &notRunning) {
+		t.Fatalf("err = %v, want *localgate.NotRunningError", err)
+	}
+	if notRunning.ModelID != "omlx/qwen3.8" {
+		t.Errorf("NotRunningError.ModelID = %q, want omlx/qwen3.8", notRunning.ModelID)
+	}
+}
+
+// TestResolveModelPinnedStaleLocalModelRejected asserts the pinned-model
+// guard: -M pinning a local model that is not the currently-running one
+// gets the specific "start it in modelman" message, not the generic
+// "not in the eligible list" one.
+func TestResolveModelPinnedStaleLocalModelRejected(t *testing.T) {
+	// The running marker (ollama/b) must verify as available so the
+	// pinned-model guard (not the stale-marker path) fires — a fake
+	// `ollama` binary on PATH lists b as running.
+	fakeBin := t.TempDir()
+	fakeOllama := filepath.Join(fakeBin, "ollama")
+	if err := os.WriteFile(fakeOllama, []byte("#!/bin/sh\necho \"NAME    ID    SIZE    MODIFIED\"\necho \"b   abc   5.0 GB   2 days ago\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake ollama: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models: []config.Model{
+			{ID: "ollama/a", ProviderID: "ollama", ModelName: "a", Family: "a", Tags: []string{"code"}},
+			{ID: "ollama/b", ProviderID: "ollama", ModelName: "b", Family: "b", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("ollama/b") // b is running, pin a
+
+	_, _, err := resolveModel("pi", cfg, "", "", "ollama/a")
+	var notRunning *localgate.NotRunningError
+	if !errors.As(err, &notRunning) {
+		t.Fatalf("err = %v, want *localgate.NotRunningError", err)
+	}
+	if notRunning.ModelID != "ollama/a" {
+		t.Errorf("NotRunningError.ModelID = %q, want ollama/a", notRunning.ModelID)
+	}
+}
+
+// TestResolveModelGateEmptiedListGivesGateMessage asserts the empty-after-
+// gate error (issue #65, finding #6's non-TUI half): when the gate empties
+// a non-empty eligible list (all models local, none running), resolveModel
+// must produce the gate-specific "start one with modelman start" message —
+// NOT the generic "no models match" wording, which would send the operator
+// hunting for a -T/-F/config problem that isn't there.
+func TestResolveModelGateEmptiedListGivesGateMessage(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("") // gate active, nothing running — gate empties the list
+
+	_, eligible, err := resolveModel("pi", cfg, "", "", "")
+	if err == nil {
+		t.Fatal("expected an error when the gate empties the eligible list")
+	}
+	if !strings.Contains(err.Error(), "no local model is running") ||
+		!strings.Contains(err.Error(), "modelman start") {
+		t.Errorf("err = %q, want the gate-specific message naming modelman start", err)
+	}
+	// The eligible list is the post-filter (empty) list, matching what
+	// callers get on every other error path, and the generic "no models
+	// match" wording must not leak out.
+	if len(eligible) != 0 {
+		t.Errorf("eligible = %d models, want 0 (the gate-filtered list is returned)", len(eligible))
+	}
+	if strings.Contains(err.Error(), "no models match") {
+		t.Errorf("err = %q; generic no-match wording must not be used for a gate-emptied list", err)
+	}
+}
+
+// TestResolveModelNoMatchKeepsGenericMessage is the control for the gate-
+// emptied case: with the gate inactive (no marker, hand-built cfg), an
+// empty eligible list still gets the pre-existing generic "no models
+// match" error — the gate message only appears when the gate was what
+// emptied the list.
+func TestResolveModelNoMatchKeepsGenericMessage(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	_, _, err := resolveModel("pi", cfg, "design", "", "") // -T filter matches nothing
+	if err == nil || !strings.Contains(err.Error(), "no models match") {
+		t.Errorf("err = %v, want the generic no-models-match error", err)
 	}
 }

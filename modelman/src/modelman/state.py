@@ -65,6 +65,16 @@ class LitellmState:
 
 
 @dataclass
+class LocalState:
+    # Registry model id (`<provider_id>/<model_name>`) of the local model
+    # `modelman start` last started, or None if `modelman stop` was last
+    # run (or neither has ever run). wt reads this read-only to filter its
+    # model picker to this one local model plus cloud models — see
+    # docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md.
+    running_model: str | None = None
+
+
+@dataclass
 class ModelState:
     ready: bool = False
     disk_path: str | None = None
@@ -84,6 +94,7 @@ class StateStore:
     models: dict[str, ModelState] = field(default_factory=dict)
     families: dict[str, FamilyState] = field(default_factory=dict)
     litellm: LitellmState = field(default_factory=LitellmState)
+    local: LocalState = field(default_factory=LocalState)
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def get(self, model_id: str) -> ModelState:
@@ -131,11 +142,14 @@ def load_state(path: Path | None = None) -> StateStore:
         url=litellm_raw.get("url"),
         api_key=litellm_raw.get("api_key"),
     )
+    local_raw = raw.get("local", {})
+    local = LocalState(running_model=local_raw.get("running_model"))
     return StateStore(
         models=models,
         families=families,
         litellm=litellm,
-        extra=unknown_keys(raw, {"model_state", "families", "litellm"}),
+        local=local,
+        extra=unknown_keys(raw, {"model_state", "families", "litellm", "local"}),
     )
 
 
@@ -165,6 +179,7 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
                 "api_key": store.litellm.api_key,
             }
         ),
+        "local": drop_none({"running_model": store.local.running_model}),
     }
     atomic_write_toml({**store.extra, **payload}, state_path)
 
