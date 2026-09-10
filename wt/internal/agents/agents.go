@@ -256,6 +256,11 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	if d == nil {
 		return nil, fmt.Errorf("unknown agent: %s", agent)
 	}
+	// Guard nil cfg (used by some command-level tests that only care
+	// about resume/session wiring). A nil config resolves as direct mode.
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	route, err := cfg.ResolveRoute(m)
 	if err != nil {
 		return nil, err
