@@ -77,12 +77,21 @@ stop_all_local() {
 
     if [ "$keep" != "ollama" ]; then
         (
-            silence_stdout ollama stop "$OLLAMA_MODEL" || true
+            # Stop every model ollama actually has loaded, not a baked-in
+            # default: `modelman start`/`modelman stop` may have loaded any
+            # model, and stopping $OLLAMA_MODEL while another one holds the
+            # GPU would leave two models resident (the exact condition this
+            # isolation exists to prevent). `ollama ps` lists loaded models
+            # only; a down daemon lists nothing, which is already "stopped".
+            while IFS= read -r loaded; do
+                [ -n "$loaded" ] || continue
+                silence_stdout ollama stop "$loaded" || true
+            done < <(ollama ps 2>/dev/null | tail -n +2 | awk 'NF {print $1}')
             # `ollama stop` unloads the model but keeps the daemon (port
             # 11434) up, so poll `ollama ps` for an empty model list, not
             # the port.
             wait_for_ollama_unloaded 5 \
-                || echo "warning: ollama still has $OLLAMA_MODEL loaded" >&2
+                || echo "warning: ollama still has models loaded" >&2
         ) &
         pids+=("$!")
     fi
