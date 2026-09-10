@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from modelman.local_control import StartResult, StopResult
 from modelman.main import app
 from modelman.state import load_state
 

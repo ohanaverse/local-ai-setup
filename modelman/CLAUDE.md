@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start <model_id>`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider).
 
 ## Monorepo context
 
@@ -283,6 +283,20 @@ See `README.md` for the exact TOML schemas for `registry.toml` and `modelman.tom
 - **ModelScreen** `LOC` renders `↗` for `cloud`, `▤` for `local`, and `—` when unset.
 
 Shared helpers for this live in `registry.py`: `LOCATION_LOCAL`, `LOCATION_CLOUD`, and `is_local_location()`.
+
+### Local-model lifecycle (issue #65)
+
+`modelman start <model_id>` / `modelman stop` are the only sanctioned way
+to start or stop a local model for normal (non-benchmark) usage — see
+`src/modelman/local_control.py` and
+`docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md`.
+Both delegate the actual process isolation to `bin/llm-isolate-provider`
+(the same helper `modelman benchmark` uses) and record the running model's
+id in `modelman.toml`'s `[local].running_model` table
+(`src/modelman/state.py`'s `LocalState`). wt reads that marker read-only
+(`wt/internal/config/modelman.go`, `wt/internal/localgate`) to filter its
+model picker to cloud models plus this one verified-running local model —
+see `wt/CLAUDE.md`'s "Local-model gate" section.
 
 ## Foreign agent configs
 

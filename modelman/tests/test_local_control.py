@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import pytest
 
-from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     LocalControlError,

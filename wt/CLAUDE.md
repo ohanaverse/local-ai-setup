@@ -227,6 +227,31 @@ This ensures wt's model picker never offers a model the TUI would show as `–` 
 > needs a matching `agy` provider or `Load`/`Validate` fails with
 > `unknown provider "agy"`.
 
+## Local-model gate (issue #65)
+
+wt offers at most one local model at a time, mirroring modelman's own
+process-isolation constraint (Apple Silicon GPU/RAM is shared). The gate
+reads modelman-owned `modelman.toml`'s `[local].running_model` marker
+(`internal/config`'s `Config.LocalRunningModel()`/`LocalGateActive()`),
+verifies it with `internal/localgate.Resolve` (ollama via
+`internal/ollamacheck`, omlx/mlx_lm_server via their `/v1/models`
+endpoints), and applies `Config.FilterToRunningLocal` at the two places wt
+resolves a model list: `cmd/wt/resolve.go`'s `resolveModel` (non-TUI) and
+`internal/tui`'s `enterModelPhase` (TUI). No marker → cloud models only; a
+verified marker → cloud models plus the one running local model; a marker
+that fails its probe (stale — stopped/crashed outside modelman) is fatal —
+wt exits (non-TUI) or quits the whole program (TUI, via `model.fatalErr`)
+with a message naming the fix: `modelman start <id>`. A `-M` pin naming a
+local model that isn't the verified one gets the same message.
+
+`LocalGateActive()` is true only for a `Config` built by `Load()`
+(production); a hand-built `Config{}` literal — the shape nearly every
+pre-issue-#65 test uses — defaults to false, making the gate a no-op there
+unless a test opts in via `SetLocalRunningForTest`.
+
+Start/stop the local model itself with modelman: `modelman start
+<provider>/<name>` / `modelman stop` (see `modelman/CLAUDE.md`).
+
 ## Config (themes)
 
 `wt config` is the user-preference surface (separate from `config.toml`):
