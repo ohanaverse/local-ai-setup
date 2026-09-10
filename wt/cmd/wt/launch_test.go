@@ -446,6 +446,51 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 	}
 }
 
+// TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm verifies that
+// the pre-launch ollama-availability gate consults the per-model resolved
+// route, not the raw litellm on/off toggle: codex speaks only
+// openai-responses, which no local ollama provider serves, so ResolveRoute
+// forces litellm regardless of the toggle. With the toggle off, the old
+// cfg.IsLitellm()-only gate would spuriously run the local `ollama list`
+// check and block on a model absent from it, even though the launch will
+// actually go through the (upstream-served) proxy.
+func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+
+	binDir := t.TempDir()
+	codexBin := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			// No Protocols set: EffectiveProtocols defaults to openai-chat
+			// only, which codex's openai-responses never overlaps.
+			{ID: "ollama", Location: config.LocationLocal},
+		},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "codex", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	// Toggle is off, but a URL+key are configured — codex must still force
+	// litellm via the protocol mismatch, not the toggle.
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	cfg.ExposeAllForTest()
+
+	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)
+	}
+}
+
 // TestLaunchFilteredUsesEligibleAndSlot verifies that the non-TUI launch path
 // (a) calls cfg.EligibleModels to resolve the model list, (b) consults the
 // global rotation via rotation.Last/rotation.Next (no per-slot state) to

@@ -55,19 +55,21 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		return lc
 	}
 
-	token := "ollama"
-	modelRef := r.ModelRef
-	if !r.Litellm {
-		modelRef = m.ModelName
-	}
-	if r.Litellm {
-		token = r.APIKey
+	// The Anthropic client needs a non-empty auth token even when the
+	// endpoint doesn't validate it (e.g. ollama's direct gateway, where
+	// r.APIKey resolves to "" for an auth.type=none provider); fall back
+	// to the "ollama" placeholder only when ResolveRoute gave us no real
+	// key, so a direct-mode provider with a configured secret_ref (not
+	// just ollama) actually authenticates with it.
+	token := r.APIKey
+	if token == "" {
+		token = "ollama"
 	}
 	lc.Env = append(lc.Env,
 		"ANTHROPIC_AUTH_TOKEN="+token,
 		"ANTHROPIC_API_KEY=",
 		"ANTHROPIC_BASE_URL="+r.BaseOrigin,
 	)
-	lc.Args = append(lc.Args, "--model", modelRef)
+	lc.Args = append(lc.Args, "--model", r.ModelRef)
 	return lc
 }

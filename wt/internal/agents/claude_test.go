@@ -156,6 +156,30 @@ func TestClaudeBuildLitellmYolo(t *testing.T) {
 	}
 }
 
+// TestClaudeBuildDirectUsesResolvedAPIKey asserts that in direct mode the
+// claude driver authenticates with the route's resolved API key (from
+// auth.secret_ref) rather than the hardcoded "ollama" placeholder — a
+// registry-driven anthropic-protocol provider other than ollama may need a
+// real secret to authenticate.
+func TestClaudeBuildDirectUsesResolvedAPIKey(t *testing.T) {
+	m := config.Model{ID: "someprovider/x", ModelName: "x", ProviderID: "someprovider"}
+	r := config.Route{BaseOrigin: "http://localhost:9999", APIKey: "sk-real-secret", ModelRef: m.ModelName, Litellm: false}
+	lc := claudeDriver{}.Build(m, false, r)
+	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-real-secret")
+	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:9999")
+}
+
+// TestClaudeBuildDirectFallsBackToOllamaPlaceholder asserts that when the
+// route resolves no API key (e.g. ollama's auth.type=none provider), the
+// driver still sends a non-empty placeholder token — the Anthropic client
+// needs some value even when the endpoint doesn't validate it.
+func TestClaudeBuildDirectFallsBackToOllamaPlaceholder(t *testing.T) {
+	m := config.Model{ID: "ollama/x", ModelName: "x", ProviderID: "ollama"}
+	r := config.Route{BaseOrigin: "http://localhost:11434", APIKey: "", ModelRef: m.ModelName, Litellm: false}
+	lc := claudeDriver{}.Build(m, false, r)
+	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "ollama")
+}
+
 // TestClaudeNativeIgnoresGateway asserts that a native Claude model wins over
 // any gateway configuration: gateway env is cleared, no gateway URL or key is
 // emitted, and --model uses the bare model name.

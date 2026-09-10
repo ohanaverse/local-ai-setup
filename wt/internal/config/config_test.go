@@ -762,6 +762,23 @@ func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
 	}
 }
 
+// TestResolveRouteLitellmMissingAPIKeyErrors ensures that litellm routing
+// with a URL but no API key fails fast at ResolveRoute, instead of launching
+// the agent with an empty gateway token and surfacing an opaque runtime 401
+// from the proxy.
+func TestResolveRouteLitellmMissingAPIKeyErrors(t *testing.T) {
+	cfg := &Config{
+		litellm:   LitellmState{Enabled: true, URL: "http://localhost:4000"}, // no APIKey
+		Providers: []Provider{{ID: "ollama", Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
+	m := Model{ID: "ollama/x", ModelName: "x", ProviderID: "ollama"}
+
+	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
+	if err == nil {
+		t.Fatal("expected an error for litellm routing with a URL but no API key")
+	}
+}
+
 // TestResolveRouteMissingBaseURLErrors ensures a provider with no
 // base_url fails at launch with an actionable message, instead of the
 // pre-fix behavior of silently misrouting to ollama's port.

@@ -135,6 +135,11 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 				"litellm routing is required for this model but no URL is configured — "+
 					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on'")
 		}
+		if c.LitellmAPIKey() == "" {
+			return Route{}, fmt.Errorf(
+				"litellm routing is required for this model but no API key is configured — "+
+					"run 'modelman litellm set --url ... --api-key ...'")
+		}
 		return Route{
 			BaseOrigin: c.LitellmBaseURL(),
 			APIKey:     c.LitellmAPIKey(),

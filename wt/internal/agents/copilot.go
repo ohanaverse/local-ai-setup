@@ -35,9 +35,6 @@ func (copilotDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 
 	baseURL := r.BaseOrigin + "/v1"
 	modelName := r.ModelRef
-	if !r.Litellm {
-		modelName = m.ModelName
-	}
 	apiKey := r.APIKey
 
 	// Use the chat-completions wire API for Ollama/LiteLLM backends.
