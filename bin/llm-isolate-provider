@@ -1,6 +1,7 @@
 #!/bin/bash
 # llm-isolate-provider — stop other local providers, start+warmup one.
 # Usage: llm-isolate-provider <provider-id>
+#        llm-isolate-provider stop-all   (stop every local provider; modelman stop)
 # Supported: ollama, omlx, omlx-6bit, mlx_lm_server
 # (The llamacpp case branch below is retained but disabled — retired
 # 2026-09-07, issue #33. Re-enable steps: docs/reference/provider-artifacts.md.)
@@ -202,6 +203,18 @@ start_mlx_lm_server() {
 }
 
 case "$PROVIDER" in
+    stop-all)
+        # Tear down every local provider with no target kept running —
+        # `modelman stop`'s delegate. stop_all_local's "keep" arg is
+        # compared with `!=` against each provider name, so an empty
+        # string never matches any of them and every branch runs.
+        stop_all_local ""
+        python3 - <<'PYEOF'
+import json
+print(json.dumps({"provider": None, "model": None, "direct_url": None, "ok": True, "error": None}))
+PYEOF
+        exit 0
+        ;;
     ollama)
         stop_all_local ollama
         start_ollama

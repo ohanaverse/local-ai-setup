@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import Any
 
 from modelman.benchmark.errors import BenchmarkError
 
@@ -88,7 +89,7 @@ def _helper_path(name: str) -> str:
     return path
 
 
-def isolate_provider(provider_id: str, *extra_args: str) -> IsolateResult:
+def isolate_provider(provider_id: str, *extra_args: str, env: dict[str, str] | None = None) -> IsolateResult:
     """Delegate service isolation to the local-ai-setup helper.
 
     `extra_args` is forwarded verbatim, after `provider_id`, to the shell
@@ -96,14 +97,19 @@ def isolate_provider(provider_id: str, *extra_args: str) -> IsolateResult:
     mlx_lm_server has no default target/draft pairing in the shell script
     (unlike ollama/omlx, which fall back to a baked-in model name), so the
     pairing must be passed through explicitly on every call.
+
+    `env`, when given, is merged over a copy of the current environment and
+    passed to the subprocess — this is how a caller (modelman start) makes
+    the helper warm up a *specific* model instead of its baked-in default
+    (LLM_ISOLATE_OLLAMA_MODEL etc., see that script's header). Omitted
+    entirely from the subprocess.run() call when None, so existing callers
+    that never pass env see no change in behavior.
     """
     helper = _helper_path("llm-isolate-provider")
-    result = subprocess.run(
-        [helper, provider_id, *extra_args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "check": False}
+    if env is not None:
+        run_kwargs["env"] = {**os.environ, **env}
+    result = subprocess.run([helper, provider_id, *extra_args], **run_kwargs)
     if result.returncode != 0:
         raise BenchmarkError(
             f"isolation failed for {provider_id}: {result.stderr.strip() or result.stdout.strip()}"
@@ -118,6 +124,33 @@ def isolate_provider(provider_id: str, *extra_args: str) -> IsolateResult:
         provider=data.get("provider", provider_id),
         model=data.get("model", ""),
         direct_url=data.get("direct_url", ""),
+        ok=data.get("ok", False),
+        error=data.get("error"),
+    )
+
+
+def stop_all_local_providers() -> IsolateResult:
+    """Stop every local provider via the isolation helper's `stop-all`
+    mode. Used by `modelman stop` (and by `modelman start` before starting
+    a different model) — the single place that knows how to tear down
+    whichever local provider happens to be running, without modelman
+    having to track that itself."""
+    helper = _helper_path("llm-isolate-provider")
+    result = subprocess.run(
+        [helper, "stop-all"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise BenchmarkError(
+            f"stop-all failed: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise BenchmarkError(f"isolation helper returned invalid JSON for stop-all: {exc}") from exc
+    return IsolateResult(
+        provider=data.get("provider") or "stop-all",
+        model=data.get("model") or "",
+        direct_url=data.get("direct_url") or "",
         ok=data.get("ok", False),
         error=data.get("error"),
     )
