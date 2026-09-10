@@ -62,6 +62,8 @@ For agents, args append to the command; for `shell` (implements `ArgSetter`), th
 
 After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
 
+Immediately after the summary, a stale-pricing notice may print (one line, issue #69): when modelman's `price_refresh_last_run` (top-level key in `~/.config/local-ai/modelman.toml`) isn't today's date — or is absent — wt prints `wt: token pricing last refreshed <date> — run 'modelman refresh-prices'` (or the "never been refreshed" variant). wt only notifies; modelman owns the refresh. Parse errors on modelman.toml stay silent.
+
 Immediately after the summary, a post-session survey prompts up to four questions (did it work? speed? quality? — and on non-skip answers, what task were you doing) on the parent terminal — see [Session survey](#session-survey-go) below.
 
 ## Session survey (Go)
