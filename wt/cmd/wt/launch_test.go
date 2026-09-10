@@ -669,11 +669,11 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	}
 }
 
-// TestRunAgentCmdNoticeAfterSummary verifies the stale-pricing notice
-// lands between the summary line and the survey in the non-TUI path.
-// The test uses a captured stdout pipe; notice output (when emitted) is
-// concatenated after the summary in the captured stream.
-func TestRunAgentCmdNoticeAfterSummary(t *testing.T) {
+// TestRunAgentCmdNoticePrintedWithSummary verifies the stale-pricing
+// notice seam is invoked and the summary line is printed in the non-TUI
+// path. The test uses a captured stdout pipe; notice output (when
+// emitted) is concatenated after the summary in the captured stream.
+func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	prevNotice := emitPriceNotice
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
@@ -693,7 +693,11 @@ func TestRunAgentCmdNoticeAfterSummary(t *testing.T) {
 	os.Stdout = w
 
 	cmd := exec.Command(truePath)
-	_ = runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"})
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}); err != nil {
+		w.Close()
+		os.Stdout = old
+		t.Fatalf("runAgentCmd() error: %v", err)
+	}
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -702,7 +706,7 @@ func TestRunAgentCmdNoticeAfterSummary(t *testing.T) {
 	if !strings.Contains(string(out), "wt: claude ·") {
 		t.Errorf("stdout missing summary line: %q", string(out))
 	}
-	// The notice seam was invoked (ordering verified by seam being called after summary in runAgentCmd).
+	// The notice seam was invoked after the summary.
 	if len(order) == 0 {
 		t.Error("emitPriceNotice was not invoked")
 	}

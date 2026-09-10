@@ -21,10 +21,7 @@ import (
 var emitPriceNotice = realEmitPriceNotice
 
 func realEmitPriceNotice() {
-	last, present := config.PriceRefreshLastRun()
-	if notice := agents.PriceNotice(last, present, time.Now()); notice != "" {
-		fmt.Println(notice)
-	}
+	agents.PrintPriceNotice()
 }
 
 // buildLaunch constructs the agent command for the given model and worktree,

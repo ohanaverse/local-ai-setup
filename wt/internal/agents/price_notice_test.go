@@ -40,3 +40,15 @@ func TestPriceNoticeMissingKey(t *testing.T) {
 		t.Errorf("PriceNotice(missing) = %q, want never-refreshed wording", got)
 	}
 }
+
+// TestPriceNoticeMalformedDateFallsBackToNever guards against a corrupt
+// price_refresh_last_run value (e.g. hand-edited TOML) being printed
+// verbatim. The user-facing fallback must be the "never been refreshed"
+// wording so the notice stays actionable.
+func TestPriceNoticeMalformedDateFallsBackToNever(t *testing.T) {
+	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	got := PriceNotice("not-a-date", true, now)
+	if !strings.Contains(got, "never been refreshed") || !strings.Contains(got, "modelman refresh-prices") {
+		t.Errorf("PriceNotice(malformed) = %q, want never-refreshed wording", got)
+	}
+}

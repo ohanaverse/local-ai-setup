@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"fmt"
 	"os"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -16,10 +14,7 @@ import (
 var emitPriceNotice = realEmitPriceNotice
 
 func realEmitPriceNotice() {
-	last, present := config.PriceRefreshLastRun()
-	if notice := agents.PriceNotice(last, present, time.Now()); notice != "" {
-		fmt.Println(notice)
-	}
+	agents.PrintPriceNotice()
 }
 
 // newSurveyStore is a seam for tests: production uses realNewSurveyStore

@@ -232,12 +232,12 @@ func TestPriceRefreshLastRun(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
-			[]byte("price_refresh_last_run = \"2026-09-14\"\n"), 0o644); err != nil {
+			[]byte("price_refresh_last_run = \""+fixturePriceRefreshDate+"\"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		v, ok := PriceRefreshLastRun()
-		if !ok || v != "2026-09-14" {
-			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (\"2026-09-14\", true)", v, ok)
+		if !ok || v != fixturePriceRefreshDate {
+			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (\""+fixturePriceRefreshDate+"\", true)", v, ok)
 		}
 	})
 
