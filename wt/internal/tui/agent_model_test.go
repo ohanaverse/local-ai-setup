@@ -990,6 +990,8 @@ func TestLaunchAndRecordWritesRefcount(t *testing.T) {
 		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
 	}
 }
+
+// TestNextEntryAfterLaunchAdvancesCursor asserts that the cursor after a
 // committed launch lands on the model AFTER the just-launched one. This is
 // the core promise of rotation-by-launch: every launch advances the
 // rotation. The launch is committed via launchAndRecord (the real recording

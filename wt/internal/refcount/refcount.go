@@ -90,7 +90,10 @@ func (s *StoreImpl) Record(pid int, modelID string) error {
 	line = append(line, '\n')
 
 	return s.withLock(func() error {
-		existing, _ := os.ReadFile(s.path())
+		existing, err := os.ReadFile(s.path())
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		return config.WriteFileAtomic(s.path(), append(existing, line...), 0o600)
 	})
 }

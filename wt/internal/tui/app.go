@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -809,14 +810,18 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 // check and resume prompt have been satisfied — so a cancelled ollama
 // warning, a cancelled resume prompt, or a failed ollama check never
 // advances the rotation or the refcount. Both state writes are
-// best-effort: a failure surfaces in m.status and the launch still
-// proceeds.
+// best-effort: a failure of either (or both) surfaces in m.status and the
+// launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
+	var errs []string
 	if err := rotation.New().Record(m.launchModel.ID); err != nil {
-		m.status = "rotation state not saved: " + err.Error()
+		errs = append(errs, "rotation state not saved: "+err.Error())
 	}
-	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil && m.status == "" {
-		m.status = "refcount state not saved: " + err.Error()
+	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil {
+		errs = append(errs, "refcount state not saved: "+err.Error())
+	}
+	if len(errs) > 0 {
+		m.status = strings.Join(errs, "; ")
 	}
 	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
 }
