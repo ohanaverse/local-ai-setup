@@ -10,15 +10,15 @@ type copilotDriver struct{}
 
 func (copilotDriver) YoloFlag() string { return "--yolo" }
 
+func (copilotDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
+
 func (copilotDriver) InstructionPointers() []InstructionPointer {
 	return []InstructionPointer{
 		{Path: ".github/copilot-instructions.md", Content: "Read AGENTS.md and follow all instructions in it.\n"},
 	}
 }
 
-func (copilotDriver) OllamaURL() string { return config.OllamaBaseURL + "/v1" }
-
-func (copilotDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
+func (copilotDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "copilot"}
 	if yolo {
 		lc.Args = append(lc.Args, copilotDriver{}.YoloFlag())
@@ -33,14 +33,9 @@ func (copilotDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		return lc
 	}
 
-	baseURL := copilotDriver{}.OllamaURL()
-	modelName := m.ModelName
-	apiKey := ""
-	if gw.IsLitellm() {
-		baseURL = gw.BaseURL() + "/v1"
-		modelName = m.ID
-		apiKey = gw.APIKey
-	}
+	baseURL := r.BaseOrigin + "/v1"
+	modelName := r.ModelRef
+	apiKey := r.APIKey
 
 	// Use the chat-completions wire API for Ollama/LiteLLM backends.
 	// Copilot CLI's "responses" wire drops leading characters through the

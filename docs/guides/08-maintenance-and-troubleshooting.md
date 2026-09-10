@@ -148,7 +148,7 @@ Present here but absent from `:4000`? config.yaml changed since the proxy last s
 **Step 3 — is it exposed in modelman's state?** Check the per-model exposure flag, then count how many models modelman considers exposed:
 
 ```bash
-grep -B1 'litellm_exposed' /Users/keith/.config/local-ai/modelman.toml | grep -c 'litellm_exposed = true'
+grep -c "exposed = true" /Users/keith/.config/local-ai/modelman.toml
 grep -A5 '^\[model_state."ollama/qwen3.8:27b-mlx"\]' /Users/keith/.config/local-ai/modelman.toml
 ```
 
@@ -158,12 +158,12 @@ grep -A5 '^\[model_state."ollama/qwen3.8:27b-mlx"\]' /Users/keith/.config/local-
 ready = true
 disk_path = "ollama:qwen3.8:27b-mlx"
 size_bytes = 19327352832
-litellm_exposed = true
+exposed = true
 ```
 
-Historical note (2026-08-30, updated 2026-09-03): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models) and eleven openrouter models. The omlx entries remain hand-managed by design and will still show `litellm_exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is the routing source of truth; `litellm_exposed` is bookkeeping. A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
+Historical note (2026-08-30, updated 2026-09-03): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models) and eleven openrouter models. The omlx entries remain hand-managed by design and will still show `exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is still what the proxy serves, but `exposed` is now the sole truth for what wt shows — independent of whether LiteLLM routing is active (`modelman litellm on`/`off` never changes exposure). A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
 
-- **`ready = false` alongside the flag** → mid-cascade: the user pressed `x` on a not-ready model in the TUI, which queues `litellm_exposed = true` AND `ready = true` (a download). The flag is set, but the apply step hasn't run yet, so `config.yaml` has no row. **Do not re-expose** — apply the pending changes from the TUI (or `modelman apply` if exposed via CLI), and the row appears. Re-exposing now is a redundant op that bounces the proxy without fixing the gap.
+- **`ready = false` alongside the flag** → mid-cascade: the user pressed `x` on a not-ready model in the TUI, which queues `exposed = true` AND `ready = true` (a download). The flag is set, but the apply step hasn't run yet, so `config.yaml` has no row. **Do not re-expose** — apply the pending changes from the TUI (or `modelman apply` if exposed via CLI), and the row appears. Re-exposing now is a redundant op that bounces the proxy without fixing the gap.
 - **`ready = true` alongside the flag** (or the model is a cloud model — `provider_id` in `openrouter`, or `location = "cloud"` for an ollama model, where `ready` is permanently false) → genuine drift: modelman expects the row, and it was lost. → step 4 (re-expose replaces the row by id).
 
 (Drift is a known guide 04 gotcha.)

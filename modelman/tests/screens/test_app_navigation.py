@@ -746,7 +746,7 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
     # ready gate reject it, so nothing is exposed yet — it lands when the
     # download succeeds.
     assert final.ready is False
-    assert final.litellm_exposed is False
+    assert final.exposed is False
     from modelman.litellm import load_litellm_config
 
     config = load_litellm_config(litellm_path)

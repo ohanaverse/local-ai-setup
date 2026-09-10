@@ -44,7 +44,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			"ollama/gemma4:9b": {OneDay: 2, SevenDay: 5, ThirtyDay: 10},
 		},
 	}
-	items := buildModelItems([]config.Model{
+	items := buildModelItems(nil, "", []config.Model{
 		{
 			ID:         "ollama/gemma4:9b",
 			ProviderID: "ollama",
@@ -101,7 +101,7 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 			Tags:       []string{"code"},
 		},
 	}
-	items := buildModelItems(models, map[string]string{
+	items := buildModelItems(nil, "", models, map[string]string{
 		"priced":   "test",
 		"unpriced": "test",
 	}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
@@ -157,7 +157,7 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 			},
 		},
 	}
-	items := buildModelItems(models, map[string]string{"partial": "test"}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+	items := buildModelItems(nil, "", models, map[string]string{"partial": "test"}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -184,7 +184,7 @@ func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 		"ollama/gemma4:9b":  "gemma4",
 		"ollama/gemma4:14b": "gemma4",
 	}
-	items := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "ollama/gemma4:14b", nil)
+	items := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "ollama/gemma4:14b", nil)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -226,7 +226,7 @@ func TestBuildModelItemsAppendsSurveySegment(t *testing.T) {
 	stats := map[string]survey.Stats{
 		"ollama/gemma4:9b": {Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39},
 	}
-	items := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", stats)
+	items := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", stats)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -250,8 +250,8 @@ func TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	withoutStats := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
-	withZeroStats := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", map[string]survey.Stats{"ollama/gemma4:9b": {}})
+	withoutStats := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+	withZeroStats := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", map[string]survey.Stats{"ollama/gemma4:9b": {}})
 	if withoutStats[0].line != withZeroStats[0].line {
 		t.Fatalf("nil stats map produced %q, zero-value stats entry produced %q, want identical", withoutStats[0].line, withZeroStats[0].line)
 	}
@@ -271,7 +271,7 @@ func TestBuildModelItemsNoMarkerWithoutLastLaunched(t *testing.T) {
 	}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
 	for _, lastID := range []string{"", "ollama/gone"} {
-		items := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), lastID, nil)
+		items := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), lastID, nil)
 		for i, it := range items {
 			if strings.HasPrefix(it.Title(), markerMarked) {
 				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())
@@ -288,7 +288,7 @@ func TestBuildModelItemsRefColumnBlankWhenUnused(t *testing.T) {
 	refStore := refcount.NewStoreAt(t.TempDir())
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(models, familyOf, store, refStore, "", nil)
+	items := buildModelItems(nil, "", models, familyOf, store, refStore, "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -311,7 +311,7 @@ func TestBuildModelItemsRefColumnRendersDigit(t *testing.T) {
 	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(models, familyOf, store, refStore, "", nil)
+	items := buildModelItems(nil, "", models, familyOf, store, refStore, "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -334,7 +334,7 @@ func TestBuildModelItemsRefColumnClampsAtNine(t *testing.T) {
 	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(models, familyOf, store, refStore, "", nil)
+	items := buildModelItems(nil, "", models, familyOf, store, refStore, "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -356,11 +356,56 @@ func TestBuildModelItemsRefColumnBeforeMarker(t *testing.T) {
 	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(models, familyOf, store, refStore, "ollama/gemma4:9b", nil)
+	items := buildModelItems(nil, "", models, familyOf, store, refStore, "ollama/gemma4:9b", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
 	if got := items[0].Title(); !strings.HasPrefix(got, "1 > ") {
 		t.Errorf("Title() = %q, want it to start with \"1 > \" (ref digit before the last-launched marker)", got)
+	}
+}
+
+// directOnlyTestConfig returns a Config with the gateway off (direct mode)
+// and the two providers the exception-marker tests route against, mirroring
+// a real registry.toml's ollama + openrouter provider shapes.
+func directOnlyTestConfig() *config.Config {
+	c := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or"}},
+		},
+	}
+	return c
+}
+
+var (
+	ollamaTestModel     = config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama", Location: config.LocationLocal}
+	openrouterTestModel = config.Model{ID: "openrouter/qwen/qwen3.8-27b", ModelName: "qwen/qwen3.8-27b", ProviderID: "openrouter", Location: config.LocationCloud}
+)
+
+// TestBuildModelItemsMarksOnlyDeviatingRows: the picker must stay quiet
+// for rows whose transport matches the current mode, and mark only rows
+// that deviate (forced through the proxy) or cannot launch — a per-row
+// transport column on every row would be noise when transport is uniform,
+// and asserting against buildModelItems directly avoids coupling this
+// test to lipgloss border/padding output (wt/CLAUDE.md).
+func TestBuildModelItemsMarksOnlyDeviatingRows(t *testing.T) {
+	cfg := directOnlyTestConfig()
+	items := buildModelItems(cfg, "codex", []config.Model{ollamaTestModel, openrouterTestModel}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+
+	var ollamaItem, openrouterItem modelItem
+	for _, it := range items {
+		switch it.model.ProviderID {
+		case "ollama":
+			ollamaItem = *it
+		case "openrouter":
+			openrouterItem = *it
+		}
+	}
+	if ollamaItem.exception == "" {
+		t.Error("codex+ollama has no direct path (codex speaks only openai-responses) and should be marked")
+	}
+	if openrouterItem.exception == "" {
+		t.Error("codex+openrouter has no direct path and should be marked")
 	}
 }

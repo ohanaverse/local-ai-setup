@@ -458,7 +458,7 @@ def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     )
     save_registry(registry, registry_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
     save_state(state, state_path)
     save_litellm_config(
         {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
@@ -701,8 +701,8 @@ def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
     assert calls == {"load": 1, "save": 1}
     config = real_load(litellm_path)
     assert {r["model_name"] for r in config["model_list"]} == {"ollama/a", "ollama/b"}
-    assert state.get("ollama/a").litellm_exposed is True
-    assert state.get("ollama/b").litellm_exposed is True
+    assert state.get("ollama/a").exposed is True
+    assert state.get("ollama/b").exposed is True
 
 
 def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
@@ -749,9 +749,9 @@ def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
 
     config = load_litellm_config(litellm_path)
     assert [r["model_name"] for r in config["model_list"]] == ["ollama/a"]
-    assert state.get("ollama/a").litellm_exposed is True
+    assert state.get("ollama/a").exposed is True
     # The failed item got no flag flip and is reported with its reason.
-    assert state.get("ollama/b").litellm_exposed is False
+    assert state.get("ollama/b").exposed is False
     assert any("ollama/b" in f and "not ready" in f for f in pending.failures)
 
 
@@ -827,7 +827,7 @@ def test_apply_runs_expose_changes(tmp_path):
         litellm_path=litellm_path,
     )
     pending.apply()
-    assert state.get("ollama/a").litellm_exposed is True
+    assert state.get("ollama/a").exposed is True
     config = load_litellm_config(litellm_path)
     assert config["model_list"][0]["model_name"] == "ollama/a"
 
@@ -923,7 +923,7 @@ def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypat
         models=[model],
     )
     state = StateStore()
-    state.set(model.id, ModelState(ready=True, litellm_exposed=False))
+    state.set(model.id, ModelState(ready=True, exposed=False))
     # provider_policy() stays a pure lookup — simulate the stale entry
     # (a native provider must never actually have one) directly in the table.
     monkeypatch.setitem(PROVIDER_POLICIES, "agy", ProviderPolicy(prefix="agy/"))
@@ -945,7 +945,7 @@ def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypat
     assert (mid, target) == (model.id, True)
     assert error is not None and "native" in error
     # The rejected expose must not flip the flag.
-    assert state.get(model.id).litellm_exposed is False
+    assert state.get(model.id).exposed is False
 
 
 
@@ -1368,7 +1368,7 @@ def test_apply_delete_flag_only_native_model_removes_entry(tmp_path):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("claude/native", ModelState(ready=True, litellm_exposed=False))
+    state.set("claude/native", ModelState(ready=True, exposed=False))
 
     pending = PendingChanges(
         registry=reg,
@@ -1402,7 +1402,7 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("claude/native", ModelState(ready=True, litellm_exposed=True))
+    state.set("claude/native", ModelState(ready=True, exposed=True))
 
     pending = PendingChanges(
         registry=reg,
@@ -1419,7 +1419,7 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
 
     assert state.get("claude/native").ready is False
     # Cascade: was exposed, so an unexpose must have been queued and run.
-    assert state.get("claude/native").litellm_exposed is False
+    assert state.get("claude/native").exposed is False
 
 
 def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
@@ -1766,7 +1766,7 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("omlx/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("omlx/a", ModelState(ready=True, exposed=True))
     # The unexpose cascade routes through the LiteLLM config writer for
     # reconcilable providers, so seed a config the unexpose can actually
     # apply — without it the flag flip is unreachable and the cascade
@@ -1800,7 +1800,7 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
 
     assert omlx.delete.call_count == 0
     assert state.get("omlx/a").ready is False  # state cleared
-    assert state.get("omlx/a").litellm_exposed is False  # cascade still ran
+    assert state.get("omlx/a").exposed is False  # cascade still ran
     assert any("shared with omlx/b" in f for f in pending.failures)
     # Ready-off never removes registry rows — the entry survives.
     assert any(m.id == "omlx/a" for m in reg.models)
@@ -1814,7 +1814,7 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
     and the unexpose cascade was skipped via continue — leaving a route in
     config.yaml to a model whose file is gone."""
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
     providers["ollama"].is_downloaded.return_value = False  # artifact already gone
     # The unexpose cascade routes through the LiteLLM config writer for
     # reconcilable providers, so seed a config the unexpose can actually
@@ -1842,7 +1842,7 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
 
     assert providers["ollama"].delete.call_count == 0  # no rm on a gone model
     assert state.get("ollama/a").ready is False  # stale flag cleared
-    assert state.get("ollama/a").litellm_exposed is False  # cascade ran
+    assert state.get("ollama/a").exposed is False  # cascade ran
     assert pending.failures == []
 
 

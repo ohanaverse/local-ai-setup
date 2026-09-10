@@ -19,8 +19,9 @@ from .litellm import (
 )
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
+from .migrate import migrate_wt_gateway_to_litellm
 from .registry import load_registry, save_registry
-from .state import load_state, save_state
+from .state import load_state, locked_state, save_state
 from .sync import SyncError
 from .sync import sync as run_sync
 from .usage.cli import usage_app
@@ -28,6 +29,60 @@ from .usage.cli import usage_app
 app = typer.Typer(help="Manage local LLM model families across providers.")
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(usage_app, name="usage")
+
+litellm_app = typer.Typer(
+    help="Control whether wt routes agents through LiteLLM or dials providers directly. "
+    "Never starts or stops the proxy service."
+)
+app.add_typer(litellm_app, name="litellm")
+
+
+@litellm_app.command("status")
+def litellm_status():
+    """Show the current [litellm] routing state. Does not touch the proxy."""
+    state = load_state()
+    mode = "on" if state.litellm.enabled else "off"
+    key_display = "(unset)" if not state.litellm.api_key else "***" + state.litellm.api_key[-4:]
+    typer.echo(f"litellm: {mode}")
+    typer.echo(f"  url: {state.litellm.url or '(unset)'}")
+    typer.echo(f"  api_key: {key_display}")
+
+
+@litellm_app.command("on")
+def litellm_on():
+    """Route non-native models through LiteLLM. Does not start the proxy."""
+    with locked_state() as state:
+        state.litellm.enabled = True
+        incomplete = not state.litellm.url or not state.litellm.api_key
+    typer.echo("litellm: on")
+    if incomplete:
+        typer.echo(
+            "warning: litellm.url or litellm.api_key is not set — "
+            "wt will fail at launch time; run 'modelman litellm set --url ... --api-key ...'",
+            err=True,
+        )
+
+
+@litellm_app.command("off")
+def litellm_off():
+    """Dial providers directly where possible. Does not stop the proxy."""
+    with locked_state() as state:
+        state.litellm.enabled = False
+    typer.echo("litellm: off")
+
+
+@litellm_app.command("set")
+def litellm_set(
+    url: str = typer.Option(None, help="LiteLLM proxy base URL"),
+    api_key: str = typer.Option(None, "--api-key", help="LiteLLM proxy API key"),
+):
+    """Set the proxy URL/key wt will use when routing through LiteLLM."""
+    with locked_state() as state:
+        if url is not None:
+            state.litellm.url = url
+        if api_key is not None:
+            state.litellm.api_key = api_key
+    typer.echo("litellm: updated")
 
 
 def run_tui(family: str | None) -> None:
@@ -72,7 +127,20 @@ def migrate(
     )
 
     save_registry(result.registry)
-    save_state(result.state)
+    # Merge rather than overwrite: `migrate` is re-run as a repair step (see
+    # wt/CLAUDE.md's "unknown provider" note), and result.state is a fresh
+    # StateStore that's empty except for whatever this run's legacy
+    # family-manifest import produced. Overwriting modelman.toml with it
+    # outright would wipe [litellm] and every other model's ready/exposed
+    # state on every repair re-run.
+    with locked_state() as state:
+        state.models.update(result.state.models)
+        state.families.update(result.state.families)
+
+    # One-time import of wt's legacy [gateway] block into modelman's
+    # [litellm] table (routing policy only — never touches the proxy).
+    if migrate_wt_gateway_to_litellm(wt_config_path=Path(wt_config).expanduser()):
+        typer.echo("Imported wt's [gateway] into modelman.toml's [litellm] table.")
 
     for warning in result.warnings:
         typer.echo(f"warning: {warning}")
@@ -93,15 +161,20 @@ def sync() -> None:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     save_state(state)
+    # Always persist the registry, not just when providers_added is non-empty:
+    # run_sync also calls backfill_provider_defaults, which mutates existing
+    # provider entries in place (e.g. filling a missing auth.base_url) even
+    # when no provider was added — gating the save on providers_added dropped
+    # that repair on the floor.
+    try:
+        save_registry(registry)
+    except OSError as exc:
+        # The state sync already succeeded; report the registry repair
+        # failure cleanly instead of a traceback. The repair is idempotent
+        # and re-runs on the next sync.
+        typer.echo(f"error: failed to save registry: {exc}", err=True)
+        raise typer.Exit(1) from exc
     if result.providers_added:
-        try:
-            save_registry(registry)
-        except OSError as exc:
-            # The state sync already succeeded; report the registry repair
-            # failure cleanly instead of a traceback. The repair is idempotent
-            # and re-runs on the next sync.
-            typer.echo(f"error: failed to save registry: {exc}", err=True)
-            raise typer.Exit(1) from exc
         typer.echo(f"Added provider entries: {', '.join(result.providers_added)}")
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."

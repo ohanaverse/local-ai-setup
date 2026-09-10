@@ -112,24 +112,12 @@ func TestClaudeSeeder(t *testing.T) {
 	}
 }
 
-// TestClaudeOllamaURL asserts claudeDriver returns the bare gateway URL.
-func TestClaudeOllamaURL(t *testing.T) {
-	var d Driver = claudeDriver{}
-	u, ok := d.(OllamaURLer)
-	if !ok {
-		t.Fatal("claudeDriver does not implement OllamaURLer")
-	}
-	if got := u.OllamaURL(); got != "http://localhost:11434" {
-		t.Errorf("OllamaURL() = %q, want http://localhost:11434", got)
-	}
-}
-
 // TestClaudeBuildLitellm asserts the claude driver routes through the LiteLLM
 // gateway with the registry model id and gateway credentials.
 func TestClaudeBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := claudeDriver{}.Build(m, false, gw)
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := claudeDriver{}.Build(m, false, routeFor(m, gw))
 	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 	assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
@@ -146,8 +134,8 @@ func TestClaudeBuildLitellm(t *testing.T) {
 // permission-skip flag is requested: the yolo flag precedes --model in args.
 func TestClaudeBuildLitellmYolo(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := claudeDriver{}.Build(m, true, gw)
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := claudeDriver{}.Build(m, true, routeFor(m, gw))
 	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 	assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
@@ -168,6 +156,30 @@ func TestClaudeBuildLitellmYolo(t *testing.T) {
 	}
 }
 
+// TestClaudeBuildDirectUsesResolvedAPIKey asserts that in direct mode the
+// claude driver authenticates with the route's resolved API key (from
+// auth.secret_ref) rather than the hardcoded "ollama" placeholder — a
+// registry-driven anthropic-protocol provider other than ollama may need a
+// real secret to authenticate.
+func TestClaudeBuildDirectUsesResolvedAPIKey(t *testing.T) {
+	m := config.Model{ID: "someprovider/x", ModelName: "x", ProviderID: "someprovider"}
+	r := config.Route{BaseOrigin: "http://localhost:9999", APIKey: "sk-real-secret", ModelRef: m.ModelName, Litellm: false}
+	lc := claudeDriver{}.Build(m, false, r)
+	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-real-secret")
+	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:9999")
+}
+
+// TestClaudeBuildDirectFallsBackToOllamaPlaceholder asserts that when the
+// route resolves no API key (e.g. ollama's auth.type=none provider), the
+// driver still sends a non-empty placeholder token — the Anthropic client
+// needs some value even when the endpoint doesn't validate it.
+func TestClaudeBuildDirectFallsBackToOllamaPlaceholder(t *testing.T) {
+	m := config.Model{ID: "ollama/x", ModelName: "x", ProviderID: "ollama"}
+	r := config.Route{BaseOrigin: "http://localhost:11434", APIKey: "", ModelRef: m.ModelName, Litellm: false}
+	lc := claudeDriver{}.Build(m, false, r)
+	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "ollama")
+}
+
 // TestClaudeNativeIgnoresGateway asserts that a native Claude model wins over
 // any gateway configuration: gateway env is cleared, no gateway URL or key is
 // emitted, and --model uses the bare model name.
@@ -178,8 +190,8 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 		ProviderID: "anthropic",
 		Native:     true,
 	}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := claudeDriver{}.Build(m, false, gw)
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := claudeDriver{}.Build(m, false, routeFor(m, gw))
 
 	wantClear := []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
 	for _, key := range wantClear {

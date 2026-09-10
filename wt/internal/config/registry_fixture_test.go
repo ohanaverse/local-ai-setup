@@ -148,10 +148,7 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 
 	cfg := &Config{Providers: providers, Models: models}
 	deriveNative(cfg)
-	cfg.SetExposedForTest(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{})
+	cfg.SetExposedForTest(map[string]ExposureEntry{})
 
 	native := cfg.Models[2]
 	if native.ID != "agy/contract-fixture:native" {
@@ -163,6 +160,40 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 	if !cfg.IsExposed(native) {
 		t.Errorf("IsExposed(native model %q) = false, want true", native.ID)
 	}
+}
+
+// TestRegistryFixtureProviderProtocols pins that wt decodes the shared
+// `protocols` array the same way modelman does; ResolveRoute's direct-vs-
+// litellm decision (Task 5) depends on both languages agreeing on this.
+func TestRegistryFixtureProviderProtocols(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+
+	providers, _, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry() error: %v", err)
+	}
+	ollama := providers[0]
+	if got := ollama.EffectiveProtocols(); !equalProtocols(got, []Protocol{ProtocolAnthropic, ProtocolOpenAIChat}) {
+		t.Errorf("ollama protocols = %v", got)
+	}
+	openrouter := providers[1]
+	if got := openrouter.EffectiveProtocols(); !equalProtocols(got, []Protocol{ProtocolOpenAIChat}) {
+		t.Errorf("openrouter protocols = %v", got)
+	}
+}
+
+// equalProtocols reports whether two protocol slices contain the same
+// elements in the same order.
+func equalProtocols(a, b []Protocol) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestRegistryFixtureProviderLocationInheritance pins issue #46 from the
@@ -177,12 +208,7 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 	}
 	c := &Config{Providers: providers, Models: models}
 	deriveNative(c)
-	c.SetExposedForTest(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{
-		"pinned-cloud/contract-fixture:inherit": {LitellmExposed: true, Ready: false},
-	})
+	c.SetExposedForTest(map[string]ExposureEntry{"pinned-cloud/contract-fixture:inherit": {Exposed: true, Ready: false},})
 
 	var inherit *Model
 	for i := range models {

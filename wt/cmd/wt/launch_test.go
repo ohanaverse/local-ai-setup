@@ -38,8 +38,11 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -76,8 +79,11 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode not installed on PATH; skipping launcher test")
 	}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
 	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -98,7 +104,10 @@ func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, nil, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
+	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, cfg, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -146,10 +155,13 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 	if err := os.WriteFile(modelsPath, []byte(`{"providers":{"ollama":{"models":[]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+		},
+	}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
 	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("buildLaunch: %v", err)
@@ -162,8 +174,8 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 	}
 	if err == nil {
 		got := strings.Join(cmd.Args, " ")
-		if !strings.Contains(got, "--model deepseek-v4-pro:cloud") {
-			t.Errorf("args = %q, want --model deepseek-v4-pro:cloud (sync + verify)", got)
+		if !strings.Contains(got, "--model ollama/deepseek-v4-pro:cloud") {
+			t.Errorf("args = %q, want --model ollama/deepseek-v4-pro:cloud (sync + verify)", got)
 		}
 	}
 }
@@ -414,7 +426,6 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal},
 		},
@@ -427,10 +438,56 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	cfg.ExposeAllForTest()
 
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
 		t.Fatalf("launchFiltered in litellm mode: %v", err)
+	}
+}
+
+// TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm verifies that
+// the pre-launch ollama-availability gate consults the per-model resolved
+// route, not the raw litellm on/off toggle: codex speaks only
+// openai-responses, which no local ollama provider serves, so ResolveRoute
+// forces litellm regardless of the toggle. With the toggle off, the old
+// cfg.IsLitellm()-only gate would spuriously run the local `ollama list`
+// check and block on a model absent from it, even though the launch will
+// actually go through the (upstream-served) proxy.
+func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+
+	binDir := t.TempDir()
+	codexBin := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			// No Protocols set: EffectiveProtocols defaults to openai-chat
+			// only, which codex's openai-responses never overlaps.
+			{ID: "ollama", Location: config.LocationLocal},
+		},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "codex", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	// Toggle is off, but a URL+key are configured — codex must still force
+	// litellm via the protocol mismatch, not the toggle.
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	cfg.ExposeAllForTest()
+
+	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)
 	}
 }
 

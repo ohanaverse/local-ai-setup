@@ -47,6 +47,20 @@ def test_sync_command_reports_error_on_failure(tmp_path, monkeypatch):
         assert "ollama list" in result.output
 
 
+def test_sync_command_saves_registry_even_without_providers_added(tmp_path, monkeypatch):
+    # backfill_provider_defaults mutates existing provider entries in memory
+    # regardless of whether any provider was added; gating the registry save
+    # on providers_added alone silently dropped that repair on the floor.
+    _seed_registry(tmp_path, monkeypatch)
+    with patch("modelman.main.run_sync") as run_sync:
+        run_sync.return_value = SyncResult()  # no providers_added
+        with patch("modelman.main.save_registry") as save_registry_mock:
+            runner = CliRunner()
+            result = runner.invoke(app, ["sync"])
+            assert result.exit_code == 0
+            save_registry_mock.assert_called_once()
+
+
 def test_sync_command_reports_error_when_registry_save_fails(tmp_path, monkeypatch):
     # A registry save failure (e.g. read-only directory) must surface as a
     # clean error + non-zero exit, not an unhandled traceback.

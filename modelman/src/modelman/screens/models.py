@@ -579,7 +579,7 @@ class ModelScreen(Screen[None]):
         if provider_policy(entry.provider_id) is None:
             self.app.notify("Provider has no LiteLLM mapping — cannot expose")
             return
-        persisted_exposed = self.state.get(mid).litellm_exposed
+        persisted_exposed = self.state.get(mid).exposed
         displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
         target = not displayed_exposed
         if target == persisted_exposed:

@@ -21,17 +21,43 @@ type LaunchCmd struct {
 	Warn     string   // printed to stderr by Command when non-empty
 }
 
-// Gateway carries the routing target for non-native models. It is an alias
-// for config.GatewayConfig so the mode predicates and BaseURL helper live in
-// one place (the config package) and cannot drift from the TOML-loaded type.
-type Gateway = config.GatewayConfig
+// Route is an alias so drivers in this package can refer to config.Route
+// unqualified while keeping the type definition in the config package.
+type Route = config.Route
+
+// Protocol is an alias so drivers in this package can refer to config.Protocol
+// unqualified. The constants stay in the config package.
+type Protocol = config.Protocol
+
+// ProtocolDeclarer is an optional Driver capability naming the wire protocols
+// the agent CLI speaks, ordered by preference. Drivers without it (agy, shell)
+// never route a model — agy's models are always native, shell never resolves a
+// route.
+type ProtocolDeclarer interface {
+	Protocols() []Protocol
+}
+
+// ProtocolsFor returns the named agent's declared protocols, or nil if the
+// agent is unknown or its driver doesn't implement ProtocolDeclarer. Used by
+// BuildLaunchCmd (to resolve the actual launch route) and by the model
+// picker (Task 6) — both need the same answer.
+func ProtocolsFor(agent string) []Protocol {
+	driver := ByName(agent)
+	if driver == nil {
+		return nil
+	}
+	if pd, ok := driver.(ProtocolDeclarer); ok {
+		return pd.Protocols()
+	}
+	return nil
+}
 
 // Driver knows how to build a launch command for one agent.
 type Driver interface {
 	// Build returns the command to run agent for the given model.
 	// yolo adds the agent's skip-permissions flag.
-	// gw carries the configured gateway routing target.
-	Build(m config.Model, yolo bool, gw Gateway) LaunchCmd
+	// r carries the resolved route (LitellM or direct provider) for the model.
+	Build(m config.Model, yolo bool, r Route) LaunchCmd
 	// YoloFlag is the agent's permission-skip flag.
 	YoloFlag() string
 }
@@ -87,15 +113,6 @@ type Seeder interface {
 	// InstructionPointers returns the pointer files to create. Each pointer
 	// is written only if it does not already exist.
 	InstructionPointers() []InstructionPointer
-}
-
-// OllamaURLer is an optional Driver capability for agents that route
-// non-native models through a local Ollama-compatible gateway.
-type OllamaURLer interface {
-	// OllamaURL returns the full gateway URL the agent expects. Drivers are
-	// free to include path suffixes such as "/v1" or "/v1/" because each
-	// agent's wire protocol is different.
-	OllamaURL() string
 }
 
 // AgentListEntry is one row returned by ListEntries. Callers convert it to
@@ -266,9 +283,17 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	if d == nil {
 		return nil, fmt.Errorf("unknown agent: %s", agent)
 	}
-	gw := Gateway{}
-	if cfg != nil {
-		gw = cfg.Gateway
+	// Guard nil cfg (used by some command-level tests that only care
+	// about resume/session wiring). A nil config resolves as direct mode.
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	route, err := cfg.ResolveRoute(m, ProtocolsFor(agent))
+	if err != nil {
+		return nil, err
+	}
+	if route.Forced {
+		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
 	}
 	if s, ok := d.(Syncer); ok {
 		if err := s.SyncModels(cfg); err != nil {
@@ -281,7 +306,7 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 		as.SetArgs(extraArgs)
 		extraArgs = nil
 	}
-	cmd, err := Command(d, m, yolo, gw, worktreePath)
+	cmd, err := Command(d, m, yolo, route, worktreePath)
 	if err != nil {
 		return nil, err
 	}
@@ -303,8 +328,8 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 
 // Command resolves the agent binary and returns an exec.Cmd ready to run in
 // workdir, with the driver's extra env merged over the inherited environment.
-func Command(d Driver, m config.Model, yolo bool, gw Gateway, workdir string) (*exec.Cmd, error) {
-	lc := d.Build(m, yolo, gw)
+func Command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, error) {
+	lc := d.Build(m, yolo, r)
 	bin, err := exec.LookPath(lc.Bin)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s not installed", lc.Bin)

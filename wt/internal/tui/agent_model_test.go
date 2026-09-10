@@ -93,7 +93,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// Mirror production enterModelPhase: read the last-launched ID from
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
-	items := buildModelItems(models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
+	items := buildModelItems(nil, "", models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -170,7 +170,7 @@ func TestSelectedEntryMsgEmptyListStaysOnList(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		// No models with provider "ollama".
 	}
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
@@ -195,7 +195,7 @@ func TestSelectedEntryMsgEmptyListSetsActionableStatus(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -214,7 +214,7 @@ func TestPinnedAgentEmptyListStatusUsesFirstActiveTag(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	m := model{
 		cfg:          cfg,
@@ -241,7 +241,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		// No models — ModelsForAgentAndTag returns an empty list.
 	}
 	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
@@ -1158,7 +1158,7 @@ func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
 func buildTestConfigWithModels(models ...config.Model) *config.Config {
 	return &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models:     models,
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
@@ -1173,10 +1173,7 @@ func TestEligibleModelsHidesUnexposed(t *testing.T) {
 		config.Model{ID: "ollama/exposed", ModelName: "exposed", ProviderID: "ollama", Tags: []string{"code"}},
 		config.Model{ID: "ollama/hidden", ModelName: "hidden", ProviderID: "ollama", Tags: []string{"code"}},
 	)
-	cfg.SetExposedForTest(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{"ollama/exposed": {LitellmExposed: true, Ready: true}})
+	cfg.SetExposedForTest(map[string]config.ExposureEntry{"ollama/exposed": {Exposed: true, Ready: true}})
 	models, err := cfg.EligibleModels("claude", "code", "")
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)

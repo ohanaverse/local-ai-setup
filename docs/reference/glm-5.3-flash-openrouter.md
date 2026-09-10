@@ -362,21 +362,27 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 
 | Agent | Ollama Variant | OpenRouter (direct) | OpenRouter (litellm) | Notes |
 |-------|---------------|--------------------|--------------------|-------|
-| claude | ✅ PASS | ❌ FAIL | ❌ FAIL | direct: ollama can't resolve bare name; litellm: prompt injection detection |
-| codex | ✅ PASS | ❌ FAIL | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash |
-| copilot | ✅ PASS | ❌ FAIL | ✅ PASS | direct: 404 at ollama; litellm: full support |
+| claude | ✅ PASS | ✅ PASS (forced proxy) | ✅ PASS | claude speaks anthropic only — direct mode routes through the proxy via protocol negotiation (2026-09-10 cutover) |
+| codex | ✅ PASS | ❌ FAIL | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash (routing works — forced through the proxy in both modes) |
+| copilot | ✅ PASS | ✅ PASS | ✅ PASS | direct mode dials openrouter.ai directly (per-provider direct routing) |
 | opencode | ✅ PASS | ❌ FAIL | ❌ FAIL | ollama-only provider list (see Known Limitations #3) |
-| pi | ✅ PASS | ❌ FAIL | ✅ PASS | direct: 404 at ollama; litellm: full support |
+| pi | ✅ PASS | ✅ PASS | ✅ PASS | direct mode dials openrouter.ai directly (per-provider direct routing) |
 | agy | ✅ PASS | N/A | N/A | Native model only |
 | shell | ✅ PASS | N/A | N/A | No model dependency |
 
 ### Known Limitations
 
-**1. Claude Code + OpenRouter: Prompt Injection Detection (litellm mode)**
+**1. Claude Code + OpenRouter** (resolved 2026-09-10)
 
-In **litellm mode**, Claude Code's safety filters interpret the smoke test prompt format ("Reply with exactly this text and nothing else: WT-SMOKE-...") as a potential prompt injection attempt when routed through the LiteLLM proxy. In **direct mode** the row fails for a different reason: the bare `z-ai/glm-5.3-flash` name goes to local ollama, which cannot resolve it (404). Both are expected; the direct-mode failure is environmental, not a Claude Code safety behavior.
+The 2026-09-02 smoke run saw two failures, both obsolete since the
+litellm-control cutover (per-provider direct routing + protocol
+negotiation): the direct-mode failure was wt misrouting the bare model name
+to local ollama (404 — now wt dials openrouter.ai directly, or forces the
+proxy for protocol mismatches), and the litellm-mode "prompt injection
+detection" no longer reproduces with the current smoke prompt. The row
+passes in both modes; its stale xfail mark was removed from the matrix.
 
-**Workaround:** Manual testing with natural prompts works fine:
+**Workaround (kept for history):** Manual testing with natural prompts works fine:
 ```bash
 wt --cwd -A claude -M openrouter/z-ai/glm-5.3-flash -- -p "What is 2+2?"
 ```

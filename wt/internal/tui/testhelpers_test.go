@@ -19,7 +19,7 @@ func compactModelList(t *testing.T, models []config.Model) list.Model {
 	for _, m := range models {
 		familyOf[m.ID] = m.Family
 	}
-	items := buildModelItems(models, familyOf, newUsageStore(), newRefcountStore(), "", nil)
+	items := buildModelItems(nil, "", models, familyOf, newUsageStore(), newRefcountStore(), "", nil)
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)

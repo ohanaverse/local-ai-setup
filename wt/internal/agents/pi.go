@@ -13,6 +13,8 @@ type piDriver struct{}
 // Pi has no documented permission-bypass flag.
 func (piDriver) YoloFlag() string { return "" }
 
+func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
+
 // SyncModels adds any non-native models from cfg that are missing from pi's
 // models.json, so rotation-selected models are always available to pi.
 func (piDriver) SyncModels(cfg *config.Config) error {
@@ -24,14 +26,15 @@ func (piDriver) SyncModels(cfg *config.Config) error {
 }
 
 // Build passes --model only when the target model is present in pi's
-// models.json and marked _launch: true. Direct mode launches the bare
-// ModelName from pi's "ollama" provider; litellm mode launches
+// models.json and marked _launch: true. Direct mode launches
+// "<provider-id>/<ModelName>" from a pi provider named after the registry
+// provider (ollama, openrouter, etc.); litellm mode launches
 // "litellm/<registry-id>" from the wt-created litellm provider — pi splits
 // --model on the first slash, so a registry id under the "ollama" provider
 // could never be addressed and its bare form would be sent upstream (400 at
 // the gateway). When the entry is missing, Build falls back to pi's default
 // model and surfaces a warning.
-func (piDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
+func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {
 		return lc
@@ -41,13 +44,13 @@ func (piDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		lc.Warn = fmt.Sprintf("pi: cannot locate models.json (%v), using default model", err)
 		return lc
 	}
-	modelArg := m.ModelName
-	providerID := piOllamaProviderID
-	launchID := m.ModelName
-	if gw.IsLitellm() {
-		modelArg = piLitellmProviderID + "/" + m.ID
+	modelArg := r.ProviderID + "/" + r.ModelRef
+	providerID := r.ProviderID
+	launchID := r.ModelRef
+	if r.Litellm {
+		modelArg = piLitellmProviderID + "/" + r.ModelRef
 		providerID = piLitellmProviderID
-		launchID = m.ID
+		launchID = r.ModelRef
 	}
 	if isLaunchable(providerID, launchID, path) {
 		lc.Args = append(lc.Args, "--model", modelArg)

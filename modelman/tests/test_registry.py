@@ -20,6 +20,7 @@ from modelman.registry import (
     RegistryError,
     _default_registry_path,
     _default_wt_config_path,
+    base_origin,
     family_display_name,
     find_shared_artifact_owner,
     is_native_provider,
@@ -879,6 +880,24 @@ def test_load_registry_derives_native_from_provider_auth(tmp_path):
     assert loaded.model("agy/x").native is True
 
 
+def test_load_registry_missing_protocols_key_parses_as_empty(tmp_path):
+    # A pre-upgrade provider entry has no `protocols` key at all. It must
+    # parse to [], not the ["openai-chat"] runtime default — otherwise
+    # sync's backfill_provider_defaults can never distinguish "field
+    # predates this schema" from "field explicitly set to openai-chat",
+    # and the entry stays stuck without its template's protocols forever.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        "[[providers]]\n"
+        'id = "ollama"\n'
+        'name = "Ollama"\n'
+        "[providers.auth]\n"
+        'type = "none"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.provider("ollama").protocols == []
+
+
 def test_save_registry_does_not_persist_native_field(tmp_path):
     # native is derived from provider auth, not stored in registry.toml.
     # If it leaked out, a load→derive→save cycle would create a diff on disk.
@@ -1165,6 +1184,17 @@ def test_variant_dict_quantization_round_trips(tmp_path):
         registry=loaded,
     )
     assert entry.quantization == "Q4_K_M"
+
+
+def test_base_origin_strips_trailing_v1_and_slash():
+    """wt and modelman must agree on how a stored base_url maps to a
+    connectable origin regardless of whether the value was stored with or
+    without a /v1 suffix (both shapes exist in the wild: ollama has
+    neither, openrouter has /api/v1)."""
+    assert base_origin("http://localhost:11434") == "http://localhost:11434"
+    assert base_origin("https://openrouter.ai/api/v1") == "https://openrouter.ai/api"
+    assert base_origin("https://openrouter.ai/api/v1/") == "https://openrouter.ai/api"
+    assert base_origin(None) is None
 
 
 def test_locked_registry_read_modify_write(tmp_path):

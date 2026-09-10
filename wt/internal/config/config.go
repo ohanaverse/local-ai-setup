@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -34,39 +35,201 @@ const (
 // ollama provider's auth base URL.
 const OllamaBaseURL = "http://localhost:11434"
 
-// ── GatewayConfig ─────────────────────────────────────────
+// ── LiteLLM routing state (modelman-sourced) ─────────────
 
-// GatewayConfig is wt-owned gateway routing config.
-type GatewayConfig struct {
-	Mode   string `toml:"mode"` // "direct" | "litellm"
-	URL    string `toml:"url"`
-	APIKey string `toml:"api_key"`
-}
+// IsLitellm reports whether non-native models route through the LiteLLM
+// proxy, sourced read-only from modelman.toml's [litellm].enabled. wt
+// never starts, stops, or restarts the proxy — this is routing policy only.
+func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
 
-// IsDirect reports whether the gateway is disabled/absent.
-func (g GatewayConfig) IsDirect() bool {
-	return g.Mode == "" || g.Mode == "direct"
-}
+// IsDirect reports whether agents dial providers directly where the
+// agent×provider protocol overlap allows it.
+func (c *Config) IsDirect() bool { return !c.litellm.Enabled }
 
-// IsLitellm reports whether the gateway routes through the LiteLLM proxy.
-func (g GatewayConfig) IsLitellm() bool {
-	return g.Mode == "litellm"
-}
+// LitellmBaseURL returns the modelman-sourced proxy URL with any trailing
+// slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
+// so a user URL like "http://localhost:4000/" must not produce a double
+// slash. TrimRight (not TrimSuffix) so a double-slash typo is also
+// normalized.
+func (c *Config) LitellmBaseURL() string { return strings.TrimRight(c.litellm.URL, "/") }
 
-// BaseURL returns g.URL with any trailing slashes removed. Drivers append
-// their own protocol suffix (/v1, /v1/), so a user URL like
-// "http://localhost:4000/" must not produce a double slash. TrimRight (not
-// TrimSuffix) so a double-slash typo is also normalized.
-func (g GatewayConfig) BaseURL() string { return strings.TrimRight(g.URL, "/") }
+// LitellmAPIKey returns the modelman-sourced proxy API key.
+func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
+
+// SetLitellmForTest overrides the modelman-sourced [litellm] routing state.
+// Production wiring goes through finalizeCfg (loadModelmanState); tests in
+// other packages cannot set the unexported field directly.
+func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
 // ── Provider ──────────────────────────────────────────────
+
+// Route is everything a driver needs to dial one model for one launch,
+// resolved once by ResolveRoute so drivers stop knowing about specific
+// providers (e.g. ollama) or transports.
+type Route struct {
+	BaseOrigin string   // scheme://host:port, no wire-path suffix
+	APIKey     string
+	ModelRef   string   // m.ID via the proxy, m.ModelName direct — a property of the endpoint's own catalog
+	Display    string   // m.ModelName, for catalog "name" fields
+	ProviderID string   // registry provider id; meaningful only when !Litellm
+	Protocol   Protocol // chosen common protocol, meaningful only when !Litellm
+	Litellm    bool
+	Forced     bool     // true if litellm was required regardless of the on/off setting (Task 5)
+}
+
+// providerByID returns the provider with the given id and whether it was found.
+func (c *Config) providerByID(id string) (Provider, bool) {
+	for _, p := range c.Providers {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}
+
+// ResolveRoute resolves the Route for launching model m. In direct mode it
+// dials the model's own provider (auth.base_url, resolved through
+// BaseOrigin, and auth.secret_ref resolved through ResolveSecret), using
+// the provider-side model name (m.ModelName). In litellm mode it routes
+// through the configured LiteLLM gateway using the full registry id.
+// ResolveRoute resolves the Route for launching model m for an agent that
+// speaks agentProtocols. It first checks protocol overlap: an empty
+// intersection forces LiteLLM regardless of the on/off toggle. Otherwise,
+// if LiteLLM is on the route goes through the gateway, and if it is off
+// the route dials the provider directly using auth.base_url and
+// auth.secret_ref. Returns an error when direct mode is required (forced or
+// chosen) but the provider has no base_url or LiteLLM is forced but
+// unconfigured.
+func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error) {
+	if m.Native {
+		return Route{}, nil // drivers never call this for native models
+	}
+	// Command agents (e.g. shell) and some test seams pass an empty model.
+	// There is no provider endpoint to resolve in that case.
+	if m.ID == "" && m.ProviderID == "" {
+		return Route{}, nil
+	}
+
+	providerID := m.ProviderID
+	if providerID == "" && strings.Contains(m.ID, "/") {
+		providerID = strings.SplitN(m.ID, "/", 2)[0]
+	}
+	provider, ok := c.providerByID(providerID)
+	if !ok {
+		return Route{}, fmt.Errorf("unknown provider %q for model %q", providerID, m.ID)
+	}
+	// Native providers never route through a gateway; this mirrors deriveNative
+	// and keeps manually-constructed test configs from needing the Native bit
+	// set on every native model.
+	if provider.Auth.Type == "native" {
+		return Route{}, nil
+	}
+
+	common := intersectProtocols(agentProtocols, provider.EffectiveProtocols())
+	forced := len(agentProtocols) > 0 && len(common) == 0
+	useLitellm := forced || c.IsLitellm()
+
+	if useLitellm {
+		if c.LitellmBaseURL() == "" {
+			return Route{}, fmt.Errorf(
+				"litellm routing is required for this model but no URL is configured — "+
+					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on'")
+		}
+		if c.LitellmAPIKey() == "" {
+			return Route{}, fmt.Errorf(
+				"litellm routing is required for this model but no API key is configured — "+
+					"run 'modelman litellm set --url ... --api-key ...'")
+		}
+		return Route{
+			BaseOrigin: c.LitellmBaseURL(),
+			APIKey:     c.LitellmAPIKey(),
+			ModelRef:   m.ID,
+			Display:    m.ModelName,
+			ProviderID: providerID,
+			Litellm:    true,
+			Forced:     forced,
+		}, nil
+	}
+
+	if provider.Auth.BaseURL == "" {
+		return Route{}, fmt.Errorf(
+			"direct routing: provider %q has no auth.base_url in registry.toml — "+
+				"set one, or enable the proxy with 'modelman litellm on'", providerID)
+	}
+	apiKey := ""
+	if provider.Auth.SecretRef != "" {
+		apiKey = ResolveSecret(provider.Auth.SecretRef)
+	}
+	protocol := ProtocolOpenAIChat
+	if len(common) > 0 {
+		protocol = common[0]
+	}
+	return Route{
+		BaseOrigin: BaseOrigin(provider.Auth.BaseURL),
+		APIKey:     apiKey,
+		ModelRef:   m.ModelName,
+		Display:    m.ModelName,
+		ProviderID: providerID,
+		Protocol:   protocol,
+		Litellm:    false,
+	}, nil
+}
+
+// intersectProtocols returns the protocol values common to a and b, ordered
+// by a's preference.
+func intersectProtocols(a, b []Protocol) []Protocol {
+	set := make(map[Protocol]bool, len(b))
+	for _, p := range b {
+		set[p] = true
+	}
+	var out []Protocol
+	for _, p := range a {
+		if set[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // Provider is a source of models with connection info.
 type Provider struct {
 	ID       string     `toml:"id"`
 	Name     string     `toml:"name"`
 	Location Location   `toml:"location,omitempty"`
+	Protocols []Protocol `toml:"protocols,omitempty"`
 	Auth     AuthConfig `toml:"auth"`
+}
+
+// EffectiveProtocols returns the provider's declared protocols, defaulting
+// to openai-chat when the registry entry predates this field.
+func (p Provider) EffectiveProtocols() []Protocol {
+	if len(p.Protocols) == 0 {
+		return []Protocol{ProtocolOpenAIChat}
+	}
+	return p.Protocols
+}
+
+// BaseOrigin normalizes a stored base_url to a bare origin (no /v1
+// suffix). Mirrors Python's registry.base_origin — the two must agree.
+func BaseOrigin(url string) string {
+	trimmed := strings.TrimRight(url, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/v1")
+	return strings.TrimRight(trimmed, "/")
+}
+
+// ResolveSecret resolves a secret_ref-style value: "os.environ/NAME" or a
+// bare "^[A-Z][A-Z0-9_]*$" name reads that env var; anything else is used
+// verbatim. Shared by direct-mode provider auth and [litellm].api_key.
+var envRefName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+func ResolveSecret(ref string) string {
+	if name, ok := strings.CutPrefix(ref, "os.environ/"); ok {
+		return os.Getenv(name)
+	}
+	if envRefName.MatchString(ref) {
+		return os.Getenv(ref)
+	}
+	return ref
 }
 
 // AuthConfig describes how to authenticate with a provider.
@@ -116,14 +279,11 @@ type Agent struct {
 // registry.toml and are never persisted by wt (see Save).
 type Config struct {
 	DefaultTag string          `toml:"default_tag"`
-	Gateway    GatewayConfig   `toml:"gateway"`
 	Providers  []Provider      `toml:"providers"`
 	Models     []Model         `toml:"models"`
 	Agents     []Agent         `toml:"agents"`
-	exposed    map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	} `toml:"-"` // from modelman.toml
+	litellm    LitellmState   `toml:"-"` // from modelman.toml
+	exposed    map[string]ExposureEntry `toml:"-"` // from modelman.toml
 }
 
 // Dir returns the base config directory (~/.config/agent-wt, or
@@ -214,11 +374,12 @@ func Load() (*Config, error) {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	exposed, err := loadModelmanState()
+	exposed, litellm, err := loadModelmanState()
 	if err != nil {
 		return nil, err
 	}
 	cfg.exposed = exposed
+	cfg.litellm = litellm
 	return cfg, nil
 }
 
@@ -242,22 +403,10 @@ func (c *Config) validate() []error {
 		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
 	}
 
-	if c.Gateway.Mode != "" && c.Gateway.Mode != "direct" && c.Gateway.Mode != "litellm" {
-		errs = append(errs, fmt.Errorf("gateway.mode must be empty, direct, or litellm, got %q", c.Gateway.Mode))
-	}
-
-	// litellm mode is unusable without a base URL and bearer token: drivers
-	// would emit empty ANTHROPIC_BASE_URL / base_url values and silently
-	// misroute (claude falls back to api.anthropic.com with the gateway key).
-	// Fail fast at validation time instead.
-	if c.Gateway.IsLitellm() {
-		if c.Gateway.URL == "" {
-			errs = append(errs, fmt.Errorf("gateway.url must be set when gateway.mode is litellm"))
-		}
-		if c.Gateway.APIKey == "" {
-			errs = append(errs, fmt.Errorf("gateway.api_key must be set when gateway.mode is litellm"))
-		}
-	}
+	// Note: no validation of the [litellm] routing state here — it is sourced
+	// from modelman-owned modelman.toml, which wt cannot repair (Global
+	// Constraints: wt never fails closed on modelman.toml). A bad value only
+	// surfaces when ResolveRoute actually needs it at launch time.
 
 	// Providers
 	provIDs := map[string]bool{}
@@ -359,7 +508,7 @@ func deriveNative(cfg *Config) {
 
 // IsExposed reports whether m should appear in wt's model catalog.
 // Native models are always exposed (they cannot route through LiteLLM).
-// Non-native models require litellm_exposed AND (ready OR cloud location).
+// Non-native models require exposed AND (ready OR cloud location).
 //
 // The cloud-location check uses ResolveLocation: a model may omit its own
 // `location` and inherit it from the provider. validate() already guarantees
@@ -369,7 +518,7 @@ func (c *Config) IsExposed(m Model) bool {
 		return true
 	}
 	st, ok := c.exposed[m.ID]
-	if !ok || !st.LitellmExposed {
+	if !ok || !st.Exposed {
 		return false
 	}
 	if loc, err := c.ResolveLocation(m); err == nil && loc == "cloud" {
@@ -379,10 +528,7 @@ func (c *Config) IsExposed(m Model) bool {
 }
 
 // SetExposedForTest replaces the in-memory exposed set. Tests only.
-func (c *Config) SetExposedForTest(exposed map[string]struct {
-	LitellmExposed bool
-	Ready          bool
-}) {
+func (c *Config) SetExposedForTest(exposed map[string]ExposureEntry) {
 	c.exposed = exposed
 }
 
@@ -390,17 +536,11 @@ func (c *Config) SetExposedForTest(exposed map[string]struct {
 // Tests only.
 func (c *Config) ExposeAllForTest() {
 	if c.exposed == nil {
-		c.exposed = make(map[string]struct {
-			LitellmExposed bool
-			Ready          bool
-		})
+		c.exposed = make(map[string]ExposureEntry)
 	}
 	for _, m := range c.Models {
 		if !m.Native {
-			c.exposed[m.ID] = struct {
-				LitellmExposed bool
-				Ready          bool
-			}{LitellmExposed: true, Ready: true}
+			c.exposed[m.ID] = ExposureEntry{Exposed: true, Ready: true}
 		}
 	}
 }

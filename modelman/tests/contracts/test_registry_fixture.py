@@ -17,9 +17,11 @@ def test_load_registry_matches_shared_fixture():
 
     assert len(registry.providers) == 5
     ollama = registry.provider("ollama")
+    assert ollama.protocols == ["anthropic", "openai-chat"]
     assert ollama.auth.type == "none"
     assert ollama.auth.base_url == "http://localhost:11434"
     openrouter = registry.provider("openrouter")
+    assert openrouter.protocols == ["openai-chat"]
     assert openrouter.auth.type == "api_key"
     assert openrouter.auth.secret_ref == "OPENROUTER_API_KEY"
     agy = registry.provider("agy")
@@ -94,7 +96,7 @@ def test_fixture_pins_provider_location_inheritance():
     state = StateStore()
     state.set(
         "pinned-cloud/contract-fixture:inherit",
-        ModelState(ready=False, litellm_exposed=True),
+        ModelState(ready=False, exposed=True),
     )
     model = registry.model("pinned-cloud/contract-fixture:inherit")
     assert is_effectively_exposed(model, state, registry=registry) is True

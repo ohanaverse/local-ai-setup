@@ -87,7 +87,7 @@ func TestModelItemLineFormat(t *testing.T) {
 			for _, m := range tt.models {
 				familyOf[m.ID] = m.Family
 			}
-			items := buildModelItems(tt.models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+			items := buildModelItems(nil, "", tt.models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
 			if len(items) != len(tt.expected) {
 				t.Fatalf("expected %d items, got %d", len(tt.expected), len(items))
 			}

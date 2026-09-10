@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,14 @@ func writeModelmanState(t *testing.T, dir, content string) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 }
 
+// writeLitellmState is writeModelmanState plus a `[litellm]` table entry.
+func writeLitellmState(t *testing.T, dir string, enabled bool, url, apiKey string) LitellmState {
+	t.Helper()
+	content := fmt.Sprintf("[litellm]\nenabled = %v\nurl = %q\napi_key = %q\n", enabled, url, apiKey)
+	writeModelmanState(t, dir, content)
+	return LitellmState{Enabled: enabled, URL: url, APIKey: apiKey}
+}
+
 // TestLoadModelmanStateMissingFileReturnsEmptySet asserts that a missing
 // modelman.toml is not an error: every non-native model is simply unexposed
 // until modelman marks it. This is the first-run state before any model has
@@ -29,12 +38,15 @@ func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	exposed, err := loadModelmanState()
+	exposed, litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v, want nil", err)
 	}
 	if len(exposed) != 0 {
 		t.Errorf("exposed = %v, want empty map", exposed)
+	}
+	if litellm != (LitellmState{}) {
+		t.Errorf("litellm = %+v, want zero value", litellm)
 	}
 }
 
@@ -48,18 +60,18 @@ func TestLoadModelmanStateHonorsXDG(t *testing.T) {
 [model_state]
 
 [model_state.exposed-model]
-litellm_exposed = true
+exposed = true
 `)
 
-	exposed, err := loadModelmanState()
+	exposed, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
 	st, ok := exposed["exposed-model"]
 	if !ok {
 		t.Errorf("exposed[exposed-model] missing, want present")
-	} else if !st.LitellmExposed {
-		t.Errorf("exposed[exposed-model].LitellmExposed = false, want true")
+	} else if !st.Exposed {
+		t.Errorf("exposed[exposed-model].Exposed = false, want true")
 	}
 	if len(exposed) != 1 {
 		t.Errorf("len(exposed) = %d, want 1", len(exposed))
@@ -73,7 +85,7 @@ func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `this is not toml {{{`)
 
-	_, err := loadModelmanState()
+	_, _, err := loadModelmanState()
 	if err == nil {
 		t.Fatal("expected error for malformed modelman.toml, got nil")
 	}
@@ -98,7 +110,7 @@ litellm_exposed = true
 downloaded = true
 `)
 
-	exposed, err := loadModelmanState()
+	exposed, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
@@ -106,8 +118,8 @@ downloaded = true
 	if !ok {
 		t.Fatalf("exposed[legacy-local] missing, want present")
 	}
-	if !st.LitellmExposed {
-		t.Errorf("exposed[legacy-local].LitellmExposed = false, want true")
+	if !st.Exposed {
+		t.Errorf("exposed[legacy-local].Exposed = false, want true")
 	}
 	if !st.Ready {
 		t.Errorf("exposed[legacy-local].Ready = false, want true (via downloaded fallback)")
@@ -119,7 +131,7 @@ downloaded = true
 // exposed; non-native models are exposed only when modelman.toml marks them
 // litellm_exposed. This prevents wt from advertising models that the LiteLLM
 // proxy is not configured to serve.
-func TestLoadExposesOnlyLitellmExposedModels(t *testing.T) {
+func TestLoadExposesOnlyExposedModels(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("MODELMAN_REGISTRY", "")
@@ -166,15 +178,15 @@ tags = ["code"]
 [model_state]
 
 [model_state."ollama/exposed"]
-litellm_exposed = true
+exposed = true
 ready = true
 
 [model_state."ollama/unexposed"]
-litellm_exposed = false
+exposed = false
 ready = false
 
 [model_state."agy/native"]
-litellm_exposed = false
+exposed = false
 ready = false
 `)
 
@@ -312,7 +324,7 @@ func TestModelmanPathExpandsTildeInXDG(t *testing.T) {
 }
 
 // TestIsExposedPredicate implements the exposure rule:
-// native OR (litellm_exposed AND (ready OR cloud location)).
+// native OR (exposed AND (ready OR cloud location)).
 // Cloud location may be inherited from the provider even when the model row
 // omits its own `location` key.
 func TestIsExposedPredicate(t *testing.T) {
@@ -396,22 +408,22 @@ tags = ["code"]
 [model_state]
 
 [model_state."native-provider/native-model"]
-litellm_exposed = false
+exposed = false
 ready = false
 
 [model_state."ollama/local-flag-ready"]
-litellm_exposed = true
+exposed = true
 ready = true
 
 [model_state."ollama/local-flag-not-ready"]
-litellm_exposed = true
+exposed = true
 ready = false
 
 [model_state."openrouter/cloud-flag"]
-litellm_exposed = true
+exposed = true
 
 [model_state."openrouter/cloud-inherited"]
-litellm_exposed = true
+exposed = true
 `)
 
 	cfg, err := Load()

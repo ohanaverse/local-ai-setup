@@ -596,7 +596,7 @@ def test_apply_gate_rejects_native_model_with_stale_policy(tmp_path, monkeypatch
         models=[model],
     )
     state = StateStore()
-    state.set(model.id, ModelState(ready=True, litellm_exposed=False))
+    state.set(model.id, ModelState(ready=True, exposed=False))
     # provider_policy() stays a pure lookup — simulate the hand-edited
     # stale entry directly in the table.
     monkeypatch.setitem(PROVIDER_POLICIES, "agy", ProviderPolicy(prefix="agy/", cloud=False))
@@ -605,7 +605,7 @@ def test_apply_gate_rejects_native_model_with_stale_policy(tmp_path, monkeypatch
     with pytest.raises(ExposeError, match="native"):
         expose_model(registry, state, model.id, path)
     # The rejected expose must not flip the flag or touch the config.
-    assert state.get(model.id).litellm_exposed is False
+    assert state.get(model.id).exposed is False
     assert load_litellm_config(path)["model_list"] == []
 
 
@@ -766,7 +766,7 @@ def test_is_effectively_exposed_exposed_and_ready():
     # with the persisted state on the simplest case.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
 
     assert is_effectively_exposed(model, state, _registry("ollama")) is True
 
@@ -777,7 +777,7 @@ def test_is_effectively_exposed_exposed_not_ready_local():
     # artifact; dropping it would break the ready-gate invariant end to end.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=False, exposed=True))
 
     assert is_effectively_exposed(model, state, _registry("ollama")) is False
 
@@ -788,7 +788,7 @@ def test_is_effectively_exposed_exposed_not_ready_cloud():
     # it here keeps a flagged cloud row rendering Y in the TUI column.
     model = replace(_model("openrouter/qwen", "openrouter", "qwen"), location="cloud")
     state = StateStore()
-    state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
+    state.set("openrouter/qwen", ModelState(ready=False, exposed=True))
 
     assert is_effectively_exposed(model, state, _registry("openrouter")) is True
 
@@ -799,7 +799,7 @@ def test_is_effectively_exposed_not_exposed_ready():
     # models the user never exposed into LiteLLM's config.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
 
     assert is_effectively_exposed(model, state, _registry("ollama")) is False
 
@@ -810,7 +810,7 @@ def test_is_effectively_exposed_exposed_override():
     # override the persisted False flag must still win.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
 
     assert is_effectively_exposed(model, state, _registry("ollama"), exposed_override=True) is True
     assert is_effectively_exposed(model, state, _registry("ollama")) is False
@@ -821,7 +821,7 @@ def test_is_effectively_exposed_ready_override():
     # cascade): flagged-not-ready flips to exposed only under the override.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=False, exposed=True))
 
     assert is_effectively_exposed(model, state, _registry("ollama"), ready_override=True) is True
     assert is_effectively_exposed(model, state, _registry("ollama")) is False
@@ -833,7 +833,7 @@ def test_is_effectively_exposed_native_not_exposed_not_ready():
     model = _model("agy/contract-fixture:native", "agy", "contract-fixture:native")
     model.native = True
     state = StateStore()
-    state.set("agy/contract-fixture:native", ModelState(ready=False, litellm_exposed=False))
+    state.set("agy/contract-fixture:native", ModelState(ready=False, exposed=False))
 
     assert is_effectively_exposed(model, state, _registry("agy")) is True
 
@@ -845,7 +845,7 @@ def test_is_effectively_exposed_native_ignores_exposed_override():
     model = _model("agy/contract-fixture:native", "agy", "contract-fixture:native")
     model.native = True
     state = StateStore()
-    state.set("agy/contract-fixture:native", ModelState(ready=False, litellm_exposed=False))
+    state.set("agy/contract-fixture:native", ModelState(ready=False, exposed=False))
 
     assert is_effectively_exposed(model, state, _registry("agy"), exposed_override=False) is True
     assert is_effectively_exposed(model, state, _registry("agy"), ready_override=False) is True
@@ -857,7 +857,7 @@ def test_is_effectively_exposed_override_false_hides_non_native():
     # exempts the ready gate, so the override is the only reason this row hides.
     model = replace(_model("ollama/glm-5", "ollama", "glm-5"), location="cloud")
     state = StateStore()
-    state.set("ollama/glm-5", ModelState(ready=False, litellm_exposed=True))
+    state.set("ollama/glm-5", ModelState(ready=False, exposed=True))
 
     assert is_effectively_exposed(model, state, _registry("ollama"), exposed_override=False) is False
 
@@ -867,7 +867,7 @@ def test_passes_ready_gate_local_ready():
     # (_validated_entry's "model is not ready" rejection must match this).
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
 
     assert passes_ready_gate(model, state, _registry("ollama")) is True
 
@@ -877,7 +877,7 @@ def test_passes_ready_gate_local_not_ready():
     # pointing at missing artifacts out of LiteLLM's config.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=False, exposed=True))
 
     assert passes_ready_gate(model, state, _registry("ollama")) is False
 
@@ -888,7 +888,7 @@ def test_passes_ready_gate_cloud_not_ready():
     # flag check lives in is_effectively_exposed).
     model = replace(_model("openrouter/qwen", "openrouter", "qwen"), location="cloud")
     state = StateStore()
-    state.set("openrouter/qwen", ModelState(ready=False, litellm_exposed=True))
+    state.set("openrouter/qwen", ModelState(ready=False, exposed=True))
 
     assert passes_ready_gate(model, state, _registry("openrouter")) is True
 
@@ -899,7 +899,7 @@ def test_passes_ready_gate_ready_override():
     # that will exist after apply, not the stale persisted one.
     model = _model("ollama/a", "ollama", "a")
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=False, exposed=True))
 
     assert passes_ready_gate(model, state, _registry("ollama"), ready_override=True) is True
 
@@ -951,7 +951,7 @@ def test_is_effectively_exposed_provider_cloud_not_ready():
         ProviderEntry(id="handmade", name="Handmade", location="cloud")
     )
     state = StateStore()
-    state.set("handmade/x", ModelState(ready=False, litellm_exposed=True))
+    state.set("handmade/x", ModelState(ready=False, exposed=True))
     assert is_effectively_exposed(model, state, registry=registry) is True
 
 
@@ -963,5 +963,5 @@ def test_passes_ready_gate_provider_cloud_not_ready():
         ProviderEntry(id="handmade", name="Handmade", location="cloud")
     )
     state = StateStore()
-    state.set("handmade/x", ModelState(ready=False, litellm_exposed=True))
+    state.set("handmade/x", ModelState(ready=False, exposed=True))
     assert passes_ready_gate(model, state, registry) is True

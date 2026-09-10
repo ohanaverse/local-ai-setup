@@ -106,6 +106,7 @@ class ProviderEntry:
     name: str
     location: str | None = None  # "local" | "cloud"
     model_dir: str | None = None
+    protocols: list[str] = field(default_factory=lambda: ["openai-chat"])
     auth: AuthConfig = field(default_factory=lambda: AuthConfig(type="none"))
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -213,6 +214,20 @@ def known_families(registry: Registry, state: StateStore) -> list[str]:
     )
 
 
+def base_origin(url: str | None) -> str | None:
+    """Normalize a stored base_url to a bare origin (no /v1 suffix) so
+    readers can compare/derive endpoints without mutating the stored
+    value — registry base_url values are written verbatim into LiteLLM's
+    config.yaml and must never be rewritten in place.
+    """
+    if url is None:
+        return None
+    trimmed = url.rstrip("/")
+    if trimmed.endswith("/v1"):
+        trimmed = trimmed[: -len("/v1")].rstrip("/")
+    return trimmed
+
+
 def family_display_name(registry: Registry, state: StateStore, family: str) -> str | None:
     """Registry entry display_name, else legacy state display_name, else
     None. Callers decide the fallback (table column: ""; edit prefill:
@@ -248,10 +263,17 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
         id="ollama",
         name="Ollama",
         location="local",
+        protocols=["anthropic", "openai-chat"],
         auth=AuthConfig(type="none", base_url="http://localhost:11434"),
     ),
     "llamacpp": ProviderEntry(id="llamacpp", name="llama.cpp", location="local"),
-    "omlx": ProviderEntry(id="omlx", name="oMLX", location="local"),
+    "omlx": ProviderEntry(
+        id="omlx",
+        name="oMLX",
+        location="local",
+        protocols=["openai-chat"],
+        auth=AuthConfig(type="none", base_url="http://localhost:8000"),
+    ),
     "mlx_lm_server": ProviderEntry(
         id="mlx_lm_server",
         name="mlx-lm server (target+draft)",
@@ -416,6 +438,7 @@ def _provider_to_dict(p: ProviderEntry) -> dict[str, Any]:
         "name": p.name,
         "location": p.location,
         "model_dir": p.model_dir,
+        "protocols": list(p.protocols) if p.protocols and p.protocols != ["openai-chat"] else None,
         "auth": _auth_to_dict(p.auth),
     }
     return drop_none({**p.extra, **d})
@@ -634,13 +657,19 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
         name=raw.get("name", raw["id"]),
         location=raw.get("location"),
         model_dir=raw.get("model_dir"),
+        # An absent (or empty) `protocols` key must parse to [], not the
+        # ["openai-chat"] default — otherwise backfill_provider_defaults
+        # (sync.py) can never tell "field predates this schema" from
+        # "field explicitly set", and a pre-upgrade omlx/ollama entry stays
+        # permanently stuck without its template's protocols.
+        protocols=list(raw.get("protocols") or []),
         auth=AuthConfig(
             type=auth_raw["type"],
             secret_ref=auth_raw.get("secret_ref"),
             base_url=auth_raw.get("base_url"),
             extra=unknown_keys(auth_raw, {"type", "secret_ref", "base_url"}),
         ),
-        extra=unknown_keys(raw, {"id", "name", "location", "model_dir", "auth"}),
+        extra=unknown_keys(raw, {"id", "name", "location", "model_dir", "auth", "protocols"}),
     )
 
 

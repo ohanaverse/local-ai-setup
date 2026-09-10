@@ -48,7 +48,7 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
     state = StateStore()
-    state.set("ollama/a", ModelState(litellm_exposed=True))
+    state.set("ollama/a", ModelState(exposed=True))
 
     def _fake_isolate(pid):
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8080"})()
@@ -114,8 +114,8 @@ def test_discover_targets_defaults_to_exposed_local_models():
         ],
     )
     state = StateStore()
-    state.set("ollama/a", ModelState(litellm_exposed=True))
-    state.set("ollama/b", ModelState(litellm_exposed=False))
+    state.set("ollama/a", ModelState(exposed=True))
+    state.set("ollama/b", ModelState(exposed=False))
 
     targets = discover_targets(registry, state)
     assert [t.model_id for t in targets] == ["ollama/a"]
@@ -240,7 +240,7 @@ def test_run_benchmark_forwards_mlx_lm_server_pairing_to_isolate(tmp_path, monke
         ],
     )
     state = StateStore()
-    state.set("mlx_lm_server/pair", ModelState(litellm_exposed=True))
+    state.set("mlx_lm_server/pair", ModelState(exposed=True))
 
     calls: list[tuple[str, ...]] = []
 
@@ -301,8 +301,8 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
         ],
     )
     state = StateStore()
-    state.set("mlx_lm_server/pair-1", ModelState(litellm_exposed=True))
-    state.set("mlx_lm_server/pair-2", ModelState(litellm_exposed=True))
+    state.set("mlx_lm_server/pair-1", ModelState(exposed=True))
+    state.set("mlx_lm_server/pair-2", ModelState(exposed=True))
 
     calls: list[tuple[str, ...]] = []
 
@@ -352,7 +352,7 @@ def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_p
         ],
     )
     state = StateStore()
-    state.set("mlx_lm_server/broken", ModelState(litellm_exposed=True))
+    state.set("mlx_lm_server/broken", ModelState(exposed=True))
 
     def _unexpected_isolate(*args, **kwargs):
         raise AssertionError("isolate_provider must not be called with an incomplete pairing")

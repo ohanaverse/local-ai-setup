@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -37,12 +38,16 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // rotation's last-launched row and ref is the live "in use" session count
 // (issue #73) — both are composed into the rendered prefix by Title()
 // rather than baked into .line, so FilterValue (fuzzy matching) and every
-// .line consumer see the unprefixed format.
+// .line consumer see the unprefixed format. exception, when non-empty,
+// appends a per-row deviation note in Title() (e.g. "(via proxy)" for a
+// row protocol negotiation forces through LiteLLM, "(unavailable)" for a
+// row whose route cannot resolve at all).
 type modelItem struct {
-	model  config.Model
-	line   string
-	marked bool
-	ref    int
+	model     config.Model
+	line      string
+	marked    bool
+	ref       int
+	exception string
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
@@ -81,13 +86,17 @@ func (m modelItem) FilterValue() string { return m.line }
 
 // Title renders the compact one-line model representation with the ref
 // column (issue #73's "in use" count) prepended before the last-launched
-// marker prefix.
+// marker prefix, and any exception note appended after the line.
 func (m modelItem) Title() string {
 	prefix := refColumn(m.ref)
-	if m.marked {
-		return prefix + markerMarked + m.line
+	line := m.line
+	if m.exception != "" {
+		line += " " + m.exception
 	}
-	return prefix + markerBlank + m.line
+	if m.marked {
+		return prefix + markerMarked + line
+	}
+	return prefix + markerBlank + line
 }
 
 // Description returns empty because the compact view is one line per item.
@@ -168,8 +177,14 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 // when tags or families narrow the eligible slice. refStore supplies the
 // live "in use" session count (issue #73) rendered as Title()'s leading
 // ref column; it is queried over the same full-catalog IDs as the usage
-// counts, in the same pass.
-func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store, refStore refcount.Store, lastID string, stats map[string]survey.Stats) []*modelItem {
+// counts, in the same pass. cfg and agent drive the per-row exception
+// marker: a row whose agent×provider protocol intersection is empty is
+// forced through LiteLLM ("(via proxy)"), and a row whose route cannot
+// resolve at all is marked "(unavailable)" — both resolved with the same
+// ResolveRoute call BuildLaunchCmd uses, so the picker never disagrees
+// with what a launch would actually do. A nil cfg skips resolution
+// (exception stays empty), which keeps picker-only tests cheap.
+func buildModelItems(cfg *config.Config, agent string, models []config.Model, familyOf map[string]string, s usage.Store, refStore refcount.Store, lastID string, stats map[string]survey.Stats) []*modelItem {
 	// We need per-model and per-family counts for the line format.
 	// Count over the full catalog (familyOf's keys), not just the
 	// eligible subset, so a family's 30-day total includes launches of
@@ -243,12 +258,22 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 			}
 		}
 
-		items = append(items, &modelItem{
+		item := &modelItem{
 			model:  m,
 			line:   line,
 			marked: lastID != "" && m.ID == lastID,
 			ref:    refCounts[m.ID],
-		})
+		}
+		if cfg != nil {
+			route, err := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
+			switch {
+			case err != nil:
+				item.exception = "(unavailable)"
+			case route.Forced:
+				item.exception = "(via proxy)"
+			}
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -277,7 +302,15 @@ func (m *model) phaseModelView() string {
 	headerStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader))
 	dimStyle := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	header := headerStyle.Render(fmt.Sprintf("agent : %s\ntag   : %s\n", m.agent, m.tag))
-	footer := dimStyle.Render("\n[↑/↓] navigate   [enter] launch   [q] quit")
+	// Mode footer: the picker is where an off/on surprise surfaces (a row
+	// marked "(via proxy)" under direct mode), so name the current mode on
+	// the same screen. Falls back to direct when cfg is nil (view-only
+	// tests).
+	mode := "LiteLLM: off (direct)"
+	if m.cfg != nil && m.cfg.IsLitellm() {
+		mode = "LiteLLM: on"
+	}
+	footer := dimStyle.Render(fmt.Sprintf("\n%s\n[↑/↓] navigate   [enter] launch   [q] quit", mode))
 	body := header + m.models.View() + footer
 	// A launch/config/session/ollama error set on the model phase must be
 	// visible; phaseModelView previously dropped m.status, making a failed

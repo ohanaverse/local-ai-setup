@@ -22,12 +22,12 @@ func testConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama"},
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
-			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Tags: []string{"code"}},
-			{ID: "ollama/gemma4:14b", ProviderID: "ollama", Tags: []string{"code"}},
-			{ID: "ollama/gemma4:design", ProviderID: "ollama", Tags: []string{"design"}},
+			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:14b", ModelName: "gemma4:14b", ProviderID: "ollama", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:design", ModelName: "gemma4:design", ProviderID: "ollama", Tags: []string{"design"}},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
@@ -708,9 +708,9 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
-			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
+			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
@@ -737,10 +737,14 @@ func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 	requireBinary(t, "claude")
 	cfg := &config.Config{
 		DefaultTag: "code",
+		// claude×openrouter has no protocol overlap, so the launch resolves to a
+		// forced-litellm route; a gateway URL is required for it to succeed.
+		Providers: []config.Provider{{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or"}}},
 		Models: []config.Model{
-			{ID: "openrouter/gpt-4", ProviderID: "openrouter", Tags: []string{"code"}},
+			{ID: "openrouter/gpt-4", ProviderID: "openrouter", ModelName: "gpt-4", Tags: []string{"code"}},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", selectedPath: "/repo",
 		models: singleModelList(cfg.Models[0])}
 
@@ -767,13 +771,13 @@ func TestNoOllamaWarnInLitellmMode(t *testing.T) {
 	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
-			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
+			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	cfg.ExposeAllForTest()
 	m := phaseModelWithList(t, cfg, "claude", "code")
 	m.selectedPath = "/repo"
@@ -791,7 +795,7 @@ func TestOllamaWarnCancel(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Models: []config.Model{
-			{ID: "ollama/test-model-xyz-not-real", ProviderID: "ollama", ModelName: "test-model-xyz-not-real", Tags: []string{"code"}},
+			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},
 	}
 	m := model{cfg: cfg, phase: phaseOllamaWarn, width: 80, height: 24, agent: "claude", tag: "code", selectedPath: "/repo"}
@@ -1192,8 +1196,8 @@ func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
 	// sort.
 	stubUsageStore(t)
 	models := []config.Model{
-		{ID: "ollama/qwen3.8:27b", Family: "qwen3.8"},
-		{ID: "ollama/other"},
+		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
+		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
 	m.models = compactModelList(t, models)
@@ -1225,8 +1229,8 @@ func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
 func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
 	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
-		{ID: "ollama/qwen3.8:27b", Family: "qwen3.8"},
-		{ID: "ollama/other"},
+		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
+		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
 	}
 	m := model{cfg: testConfig(), phase: phaseModel, width: 80, height: 24}
 	m.models = compactModelList(t, models)
@@ -1262,8 +1266,8 @@ func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
 func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
 	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
-		{ID: "ollama/kimi"},
-		{ID: "ollama/other"},
+		{ID: "ollama/kimi", ModelName: "kimi", ProviderID: "ollama"},
+		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
 	m.models = compactModelList(t, models)
@@ -1294,9 +1298,9 @@ func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
 func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
 	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
-		{ID: "ollama/a"},
-		{ID: "ollama/b"},
-		{ID: "ollama/c"},
+		{ID: "ollama/a", ModelName: "a", ProviderID: "ollama"},
+		{ID: "ollama/b", ModelName: "b", ProviderID: "ollama"},
+		{ID: "ollama/c", ModelName: "c", ProviderID: "ollama"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
 	// Compact production layout: a(0), b(1), c(2) — no dividers.
@@ -1320,9 +1324,9 @@ func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
 func TestModelPickerWrapsFromBottomToTop(t *testing.T) {
 	stubUsageStore(t) // buildModelItems scans the usage store
 	models := []config.Model{
-		{ID: "ollama/a"},
-		{ID: "ollama/b"},
-		{ID: "ollama/c"},
+		{ID: "ollama/a", ModelName: "a", ProviderID: "ollama"},
+		{ID: "ollama/b", ModelName: "b", ProviderID: "ollama"},
+		{ID: "ollama/c", ModelName: "c", ProviderID: "ollama"},
 	}
 	m := model{phase: phaseModel, width: 80, height: 24}
 	// Compact production layout: a(0), b(1), c(2) — no dividers.

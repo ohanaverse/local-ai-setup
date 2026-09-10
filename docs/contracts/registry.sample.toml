@@ -3,6 +3,15 @@
 # (none, api_key, native), full per-token + subscription pricing, model_info,
 # a per-model location override, and a free model.
 #
+# `base_url` is an origin (scheme://host:port) — no wire-protocol suffix.
+# Readers normalize (`base_origin`/`BaseOrigin`) before use; drivers append
+# their own suffix (e.g. "/v1"). Do not change existing base_url values —
+# they are written verbatim into ~/.config/litellm/config.yaml.
+#
+# `protocols` declares which wire protocols this provider serves natively.
+# Absent -> ["openai-chat"]. An agent that speaks none of a provider's
+# protocols is routed through LiteLLM regardless of the on/off setting.
+#
 # Read by:
 #   - wt/internal/config/registry_fixture_test.go (Go)
 #   - modelman/tests/contracts/test_registry_fixture.py (Python)
@@ -14,6 +23,7 @@
 id = "ollama"
 name = "Ollama"
 location = "local"
+protocols = ["anthropic", "openai-chat"]
 [providers.auth]
 type = "none"
 base_url = "http://localhost:11434"
@@ -22,6 +32,7 @@ base_url = "http://localhost:11434"
 id = "openrouter"
 name = "OpenRouter"
 location = "cloud"
+protocols = ["openai-chat"]
 [providers.auth]
 type = "api_key"
 base_url = "https://openrouter.ai/api/v1"

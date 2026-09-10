@@ -7,6 +7,23 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// LitellmState mirrors the `[litellm]` table from
+// ~/.config/local-ai/modelman.toml. wt reads it read-only; modelman owns it.
+// It controls whether agents dial providers directly or route through the
+// LiteLLM proxy.
+type LitellmState struct {
+	Enabled bool   `toml:"enabled"`
+	URL     string `toml:"url"`
+	APIKey  string `toml:"api_key"`
+}
+
+// ExposureEntry is the decoded-in-memory representation of a single model
+// state entry for wt's exposure predicate.
+type ExposureEntry struct {
+	Exposed bool
+	Ready   bool
+}
+
 // modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
 // wt needs read-only access to. The full file is owned by modelman.
 //
@@ -14,51 +31,44 @@ import (
 // accepts `downloaded` as a read-side fallback for pre-registry files).
 // wt materializes both keys into a single Ready bool so the exposure
 // predicate treats legacy entries consistently with modelman.
+//
+// `litellm_exposed` is the legacy spelling of `exposed`; wt ORs the two so
+// a pre-rename file keeps working.
 type modelmanState struct {
 	// price_refresh_last_run is modelman's global "token pricing last
 	// refreshed" date (YYYY-MM-DD), written by `modelman refresh-prices`.
 	// wt reads it post-launch to print a stale-pricing notice.
 	PriceRefreshLastRun string `toml:"price_refresh_last_run"`
 	ModelState          map[string]struct {
-		LitellmExposed bool `toml:"litellm_exposed"`
+		Exposed        bool `toml:"exposed"`
+		LitellmExposed bool `toml:"litellm_exposed"` // back-compat read
 		Ready          bool `toml:"ready"`
 		Downloaded     bool `toml:"downloaded"`
 	} `toml:"model_state"`
+	Litellm LitellmState `toml:"litellm"`
 }
 
-// loadModelmanState reads modelman.toml and returns a map of exposed model ids
-// with their ready state. A missing file returns an empty map (every non-native
-// model is unexposed).
-func loadModelmanState() (map[string]struct {
-	LitellmExposed bool
-	Ready          bool
-}, error) {
+// loadModelmanState reads modelman.toml and returns the exposure map plus the
+// [litellm] routing state. A missing file returns empty values (every
+// non-native model is unexposed; LiteLLM routing defaults to off).
+func loadModelmanState() (map[string]ExposureEntry, LitellmState, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]struct {
-			LitellmExposed bool
-			Ready          bool
-		}{}, nil
+		return map[string]ExposureEntry{}, LitellmState{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read modelman.toml: %w", err)
+		return nil, LitellmState{}, fmt.Errorf("read modelman.toml: %w", err)
 	}
 	var s modelmanState
 	if err := toml.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("parse modelman.toml: %w", err)
+		return nil, LitellmState{}, fmt.Errorf("parse modelman.toml: %w", err)
 	}
-	out := make(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}, len(s.ModelState))
+	out := make(map[string]ExposureEntry, len(s.ModelState))
 	for id, st := range s.ModelState {
-		out[id] = struct {
-			LitellmExposed bool
-			Ready          bool
-		}{LitellmExposed: st.LitellmExposed, Ready: st.Ready || st.Downloaded}
+		out[id] = ExposureEntry{Exposed: st.Exposed || st.LitellmExposed, Ready: st.Ready || st.Downloaded}
 	}
-	return out, nil
+	return out, s.Litellm, nil
 }
 
 // PriceRefreshLastRun returns modelman's global token-pricing refresh

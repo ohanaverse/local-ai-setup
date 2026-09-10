@@ -40,10 +40,13 @@ func readPiModels(t *testing.T, path string) piModelsFile {
 func TestPiSyncModelsAddsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, emptyPiModels)
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-		{ID: "claude/native", ModelName: "native", Native: true},
-	}}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+			{ID: "claude/native", ModelName: "native", Native: true},
+		},
+	}
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -72,9 +75,12 @@ func TestPiSyncModelsAddsMissing(t *testing.T) {
 func TestPiSyncModelsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, emptyPiModels)
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+		},
+	}
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("first syncModels: %v", err)
 	}
@@ -93,9 +99,12 @@ func TestPiSyncModelsIdempotent(t *testing.T) {
 func TestPiSyncModelsUsesModelName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, emptyPiModels)
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+		},
+	}
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -110,9 +119,12 @@ func TestPiSyncModelsUsesModelName(t *testing.T) {
 func TestPiSyncModelsPreservesExisting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://127.0.0.1:11434/v1","models":[{"_launch":false,"contextWindow":1000,"id":"manual-model","input":["text"],"reasoning":false}]}}}`)
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+		},
+	}
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -130,12 +142,47 @@ func TestPiSyncModelsPreservesExisting(t *testing.T) {
 // A missing catalog is not a failure — there is simply nothing to sync.
 func TestPiSyncModelsMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+		},
+	}
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels on missing file = %v, want nil", err)
 	}
+}
+
+// TestPiDirectModelArgPrefixesProvider is the regression for a live bug:
+// pi splits --model on the first slash to find the provider, so an
+// unqualified model name containing a slash (e.g. openrouter's
+// "z-ai/glm-4.6") was silently resolved against provider "z-ai" instead
+// of "openrouter". Direct-mode launches must prefix the provider id.
+func TestPiDirectModelArgPrefixesProvider(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	piDir := filepath.Join(dir, ".pi", "agent")
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(piDir, "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"apiKey":"sk-or","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"z-ai/glm-4.6"}]}}}`)
+
+	m := config.Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
+	r := config.Route{ProviderID: "openrouter", ModelRef: "z-ai/glm-4.6", Litellm: false}
+	lc := piDriver{}.Build(m, false, r)
+	if !argsContain(lc.Args, "--model", "openrouter/z-ai/glm-4.6") {
+		t.Errorf("args = %v, want --model openrouter/z-ai/glm-4.6", lc.Args)
+	}
+}
+
+func argsContain(args []string, flag, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // isLaunchable must return true only when the model is present under the
@@ -184,11 +231,11 @@ func TestSyncModelsLitellm(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, emptyPiModels)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -223,11 +270,11 @@ func TestSyncModelsLitellmDedicatedProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"qwen3.8:27b-mlx"},{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"},{"_launch":false,"id":"user-model"}]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	for run := 1; run <= 2; run++ {
 		if err := syncModels(cfg, path); err != nil {
 			t.Fatalf("syncModels run %d: %v", run, err)
@@ -262,7 +309,7 @@ func TestSyncModelsDirectPreservesLitellmProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"litellm":{"api":"openai-completions","apiKey":"sk-x","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]},"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct"},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
@@ -287,11 +334,12 @@ func TestSyncModelsDirectRevertsGatewayProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -317,11 +365,12 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 	// litellm-mode run.
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"qwen3.8:27b-mlx"}]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -343,7 +392,7 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-remote","baseUrl":"http://192.168.1.50:11434/v1","models":[]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct"},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
@@ -368,11 +417,11 @@ func TestSyncModelsLitellmCreatesMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -406,8 +455,8 @@ func TestPiBuildLitellm(t *testing.T) {
 	writeFile(t, path, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := piDriver{}.Build(m, false, gw)
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := piDriver{}.Build(m, false, routeFor(m, gw))
 	if !slices.Equal(lc.Args, []string{"--model", "litellm/ollama/qwen3.8:27b-mlx"}) {
 		t.Fatalf("expected --model litellm/<registry id>, got %v", lc.Args)
 	}
@@ -426,8 +475,8 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	writeFile(t, filepath.Join(piDir, "models.json"), `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := piDriver{}.Build(m, false, gw)
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := piDriver{}.Build(m, false, routeFor(m, gw))
 	if len(lc.Args) != 0 {
 		t.Fatalf("args = %v, want none (fallback to default)", lc.Args)
 	}
@@ -436,3 +485,64 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	}
 }
 
+
+// syncModels in direct mode must write a schema-valid block when it creates
+// a provider block that pi's catalog does not have yet (e.g. openrouter, the
+// first provider with a secret_ref): baseUrl/apiKey/api must all be
+// non-empty, since pi's schema rejects the WHOLE models.json over an empty
+// field and every --model lookup then fails. This regression was caught live
+// when a direct-mode launch created the openrouter block with empty
+// identity fields and pi rejected the file ("No models available").
+func TestSyncModelsDirectCreatesSchemaValidProviderBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels) // only the ollama block exists
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-or-literal", BaseURL: "https://openrouter.ai/api/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("baseUrl = %q, want https://openrouter.ai/api/v1 (empty would invalidate the whole models.json)", p.BaseURL)
+	}
+	if p.APIKey != "sk-or-literal" {
+		t.Errorf("apiKey = %q, want the resolved secret", p.APIKey)
+	}
+	if p.API != "openai-completions" {
+		t.Errorf("api = %q, want openai-completions", p.API)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "z-ai/glm-5.3-flash" {
+		t.Errorf("models = %+v, want the bare ModelName entry", p.Models)
+	}
+}
+
+// A provider whose secret_ref resolves to empty (env var unset) must be
+// skipped entirely: writing its block would either carry an empty apiKey
+// (schema-invalid) or lose the identity fields.
+func TestSyncModelsSkipsProviderWithUnresolvableSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+	t.Setenv("OPENROUTER_API_KEY", "")
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "OPENROUTER_API_KEY", BaseURL: "https://openrouter.ai/api/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	if _, ok := readPiModels(t, path).Providers["openrouter"]; ok {
+		t.Error("openrouter block written despite unresolvable secret — would poison the catalog with an empty apiKey")
+	}
+}

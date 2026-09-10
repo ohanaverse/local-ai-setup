@@ -14,19 +14,18 @@ import (
 // this file pins the whole reachable matrix so a mode- or provider-dependent
 // regression cannot hide in an untested cell.
 //
-// The reachable matrix (and why the unreachable cells are absent):
+// The reachable matrix:
 //
 //   - native rows: no gateway is consulted. Tested under a litellm gateway on
 //     purpose — proving gateway config cannot leak into a native launch is
 //     the interesting direction (a native launch that inherits gateway env
 //     would silently route a subscription model through the proxy).
-//   - direct mode: wt funnels every non-native model through the local Ollama
-//     OpenAI-compatible endpoint (config.OllamaBaseURL); no driver reads
-//     m.ProviderID on this path, so there is exactly one direct cell per
-//     driver (ollama). Direct × llamacpp/omlx/openrouter is unreachable in
-//     production — ollamacheck rejects a model absent from `ollama list`
-//     before any driver runs — so those cells are deliberately not pinned
-//     here; adding per-provider direct routing would be a feature, not a fix.
+//   - direct mode: wt resolves each model's own provider endpoint
+//     (auth.base_url, normalized through BaseOrigin) and provider-side name
+//     (m.ModelName). Drivers must emit that provider's base URL, not
+//     hardcode localhost:11434. The matrix fixtures include openrouter (cloud,
+//     secret_ref, slashed ModelName), omlx, and llamacpp (local, no auth)
+//     so per-provider routing regressions surface here.
 //   - litellm mode: wt itself is provider-agnostic (it emits the gateway URL
 //     plus the registry id; the provider fan-out happens inside LiteLLM), so
 //     every provider fixture must produce the same env/arg shape with only
@@ -40,9 +39,6 @@ import (
 // ModelName/ID mix-up in the litellm branch, where the registry id is the
 // only string LiteLLM can resolve.
 
-// matrixGateway is the fixed LiteLLM gateway every litellm matrix case uses.
-var matrixGateway = Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-
 // matrixModels mirrors the four provider shapes a real registry.toml carries.
 // IDs are registry keys; ModelNames are provider-side names. The llamacpp and
 // openrouter ModelNames deliberately contain slashes (real registry data
@@ -53,6 +49,37 @@ var matrixModels = []config.Model{
 	{ID: "llamacpp/ornith-1.5-35b", ModelName: "ornith-ai/Ornith-1.5-35B-A3B-GGUF", ProviderID: "llamacpp", Location: config.LocationLocal},
 	{ID: "omlx/Ornith-1.5-35B-A3B-MLX-4bit", ModelName: "Ornith-1.5-35B-A3B-MLX-4bit", ProviderID: "omlx", Location: config.LocationLocal},
 	{ID: "openrouter/qwen/qwen3.8-27b", ModelName: "qwen/qwen3.8-27b", ProviderID: "openrouter", Location: config.LocationCloud},
+}
+
+// matrixConfig returns a Config that mirrors the four provider fixtures with
+// realistic base_url values, used to exercise ResolveRoute's per-provider direct
+// routing in the matrix tests.
+func matrixConfig() *config.Config {
+	c := &config.Config{
+		// Mode stays direct; URL/key are present so forced-litellm tests
+		// (codex, claude+non-ollama) have a gateway to route through.
+		Providers: []config.Provider{
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "llamacpp", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080/v1"}},
+			{ID: "omlx", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8081/v1"}},
+			{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or-matrix"}},
+		},
+		Models: matrixModels,
+	}
+	c.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	return c
+}
+
+// resolvedRoute returns the Route ResolveRoute would emit for m under the
+// given agent protocols. Centralizing this avoids duplicating base_url
+// normalization and negotiation logic in every matrix test.
+func resolvedRoute(t *testing.T, cfg *config.Config, m config.Model, protocols []config.Protocol) config.Route {
+	t.Helper()
+	r, err := cfg.ResolveRoute(m, protocols)
+	if err != nil {
+		t.Fatalf("ResolveRoute(%q): %v", m.ID, err)
+	}
+	return r
 }
 
 // TestGatewayMatrixClaude pins claude's Build across the matrix: direct mode
@@ -71,7 +98,7 @@ func TestGatewayMatrixClaude(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:11434")
 		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "ollama")
 		got, ok := argsFlagValue(lc.Args, "--model")
@@ -80,9 +107,45 @@ func TestGatewayMatrixClaude(t *testing.T) {
 		}
 	})
 
+	t.Run("forced-litellm-openrouter", func(t *testing.T) {
+		// claude speaks anthropic; openrouter only serves openai-chat, so the
+		// empty protocol intersection forces the gateway route even when the
+		// user has LiteLLM off — matrixConfig() carries a URL/key so the
+		// forced route can resolve.
+		m := matrixModels[3]
+		route := resolvedRoute(t, matrixConfig(), m, claudeDriver{}.Protocols())
+		if !route.Litellm || !route.Forced {
+			t.Fatalf("route = %+v, want Litellm=true Forced=true", route)
+		}
+		lc := d.Build(m, false, route)
+		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
+		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
+		assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
+		got, ok := argsFlagValue(lc.Args, "--model")
+		if !ok || got != m.ID {
+			t.Errorf("--model = %q, want registry id %q", got, m.ID)
+		}
+	})
+
+	t.Run("forced-litellm-omlx", func(t *testing.T) {
+		// Same negotiation as openrouter: omlx serves only openai-chat.
+		m := matrixModels[2]
+		route := resolvedRoute(t, matrixConfig(), m, claudeDriver{}.Protocols())
+		if !route.Litellm || !route.Forced {
+			t.Fatalf("route = %+v, want Litellm=true Forced=true", route)
+		}
+		lc := d.Build(m, false, route)
+		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
+		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
+		got, ok := argsFlagValue(lc.Args, "--model")
+		if !ok || got != m.ID {
+			t.Errorf("--model = %q, want registry id %q", got, m.ID)
+		}
+	})
+
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 			assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 			assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
@@ -94,7 +157,7 @@ func TestGatewayMatrixClaude(t *testing.T) {
 	}
 
 	t.Run("native-under-litellm", func(t *testing.T) {
-		lc := d.Build(nativeModel("claude"), false, matrixGateway)
+		lc := d.Build(nativeModel("claude"), false, litellmRoute(nativeModel("claude")))
 		if len(lc.Env) != 0 {
 			t.Errorf("native env = %v, want none (subscription must win over gateway)", lc.Env)
 		}
@@ -120,20 +183,28 @@ func TestGatewayMatrixCodex(t *testing.T) {
 		t.Fatal("codex driver not registered")
 	}
 
-	t.Run("direct-ollama", func(t *testing.T) {
-		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
-		if !slices.Equal(lc.Args, codexProviderArgs(m.ModelName)) {
-			t.Errorf("args = %v, want direct template %v", lc.Args, codexProviderArgs(m.ModelName))
-		}
-		if len(lc.Env) != 0 {
-			t.Errorf("direct env = %v, want none (local endpoint needs no key)", lc.Env)
-		}
-	})
+	// codex speaks only openai-responses and no provider in the matrix serves
+	// it, so with the gateway OFF every pairing is forced through LiteLLM.
+	for _, m := range matrixModels {
+		t.Run("forced-litellm-"+m.ProviderID, func(t *testing.T) {
+			route := resolvedRoute(t, matrixConfig(), m, codexDriver{}.Protocols())
+			if !route.Litellm || !route.Forced {
+				t.Errorf("route = %+v, want Litellm=true Forced=true", route)
+			}
+			lc := d.Build(m, false, route)
+			want := codexLitellmProviderArgs("http://localhost:4000/v1/", m.ID)
+			if !slices.Equal(lc.Args, want) {
+				t.Errorf("args = %v, want litellm template %v", lc.Args, want)
+			}
+			if !slices.Equal(lc.Env, []string{codexGatewayEnvKey + "=sk-litellm"}) {
+				t.Errorf("env = %v, want only the gateway key for env_key lookup", lc.Env)
+			}
+		})
+	}
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			want := codexLitellmProviderArgs("http://localhost:4000/v1/", m.ID)
 			if !slices.Equal(lc.Args, want) {
 				t.Errorf("args = %v, want identical shape across providers %v", lc.Args, want)
@@ -145,7 +216,7 @@ func TestGatewayMatrixCodex(t *testing.T) {
 	}
 
 	t.Run("native-under-litellm", func(t *testing.T) {
-		lc := d.Build(nativeModel("codex"), false, matrixGateway)
+		lc := d.Build(nativeModel("codex"), false, litellmRoute(nativeModel("codex")))
 		if len(lc.Args) != 0 || len(lc.Env) != 0 {
 			t.Errorf("native build = %+v, want bare codex (subscription, no provider block)", lc)
 		}
@@ -168,15 +239,32 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:11434/v1")
+		assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
+		assertEnv(t, lc.Env, "COPILOT_MODEL", m.ModelName)
+	})
+
+	t.Run("direct-openrouter", func(t *testing.T) {
+		m := matrixModels[3]
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
+		assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "https://openrouter.ai/api/v1")
+		assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-or-matrix")
+		assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
+		assertEnv(t, lc.Env, "COPILOT_MODEL", m.ModelName)
+	})
+
+	t.Run("direct-omlx", func(t *testing.T) {
+		m := matrixModels[2]
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
+		assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:8081/v1")
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 		assertEnv(t, lc.Env, "COPILOT_MODEL", m.ModelName)
 	})
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 			assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 			assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
@@ -185,7 +273,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 	}
 
 	t.Run("native-under-litellm", func(t *testing.T) {
-		lc := d.Build(nativeModel("copilot"), false, matrixGateway)
+		lc := d.Build(nativeModel("copilot"), false, litellmRoute(nativeModel("copilot")))
 		if len(lc.Env) != 0 {
 			t.Errorf("native env = %v, want none (subscription must win over gateway)", lc.Env)
 		}
@@ -199,11 +287,12 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 
 // TestGatewayMatrixOpenCode pins opencode's Build across the matrix (no
 // native cell — opencode is ollama-only after the native-provider alignment):
-// direct mode builds inline JSON with the "ollama/<ModelName>" model ref and
-// the Ollama /v1 baseURL; litellm mode builds the wt-declared
-// @ai-sdk/openai-compatible provider at the gateway /v1 with the registry id
-// as both the model ref suffix and the provider models-map key. The JSON is
-// parsed rather than substring-matched so a malformed payload fails loudly.
+// direct mode builds inline JSON with the wt-declared
+// @ai-sdk/openai-compatible provider pointed at the resolved provider's /v1
+// endpoint, using "agent-wt/<ModelName>" as the model ref; litellm mode uses
+// the same custom provider shape pointed at the gateway /v1 with the registry
+// id as the provider models-map key. The JSON is parsed rather than substring-
+// matched so a malformed payload fails loudly.
 func TestGatewayMatrixOpenCode(t *testing.T) {
 	d := ByName("opencode")
 	if d == nil {
@@ -212,42 +301,104 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 		var parsed struct {
-			Model    string `json:"model"`
-			Provider struct {
-				Ollama struct {
-					Options struct {
-						BaseURL string `json:"baseURL"`
-					} `json:"options"`
-					Models map[string]struct {
-						Name string `json:"name"`
-					} `json:"models"`
-				} `json:"ollama"`
+			Model      string `json:"model"`
+			SmallModel string `json:"small_model"`
+			Provider   map[string]struct {
+				NPM     string `json:"npm"`
+				Options struct {
+					BaseURL string `json:"baseURL"`
+					APIKey  string `json:"apiKey"`
+				} `json:"options"`
+				Models map[string]struct {
+					Name string `json:"name"`
+				} `json:"models"`
 			} `json:"provider"`
 		}
 		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 			t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
 		}
-		if parsed.Model != "ollama/"+m.ModelName {
-			t.Errorf("model = %q, want ollama/%s (bare ModelName, not the registry id)", parsed.Model, m.ModelName)
+		if parsed.Model != "agent-wt/"+m.ModelName {
+			t.Errorf("model = %q, want agent-wt/%s (bare ModelName, not the registry id)", parsed.Model, m.ModelName)
 		}
-		if parsed.Provider.Ollama.Options.BaseURL != "http://localhost:11434/v1" {
-			t.Errorf("baseURL = %q, want the Ollama /v1 endpoint", parsed.Provider.Ollama.Options.BaseURL)
+		if parsed.SmallModel != parsed.Model {
+			t.Errorf("small_model = %q, want pinned to %q", parsed.SmallModel, parsed.Model)
 		}
-		entry, ok := parsed.Provider.Ollama.Models[m.ModelName]
+		p := parsed.Provider[opencodeGatewayProviderID]
+		if p.NPM != "@ai-sdk/openai-compatible" {
+			t.Errorf("npm = %q, want @ai-sdk/openai-compatible", p.NPM)
+		}
+		if p.Options.BaseURL != "http://localhost:11434/v1" {
+			t.Errorf("baseURL = %q, want the Ollama /v1 endpoint", p.Options.BaseURL)
+		}
+		entry, ok := p.Models[m.ModelName]
 		if !ok {
-			t.Fatalf("provider models map lacks bare model name %q (opencode rejects catalog-unknown ids): %v", m.ModelName, parsed.Provider.Ollama.Models)
+			t.Fatalf("provider models map lacks bare model name %q (opencode rejects catalog-unknown ids): %v", m.ModelName, p.Models)
 		}
 		if entry.Name != m.ModelName {
 			t.Errorf("models[%q].name = %q, want %q", m.ModelName, entry.Name, m.ModelName)
 		}
 	})
 
+	t.Run("direct-openrouter", func(t *testing.T) {
+		m := matrixModels[3]
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
+		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
+		var parsed struct {
+			Model      string `json:"model"`
+			SmallModel string `json:"small_model"`
+			Provider   map[string]struct {
+				NPM     string `json:"npm"`
+				Options struct {
+					BaseURL string `json:"baseURL"`
+					APIKey  string `json:"apiKey"`
+				} `json:"options"`
+				Models map[string]struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"provider"`
+		}
+		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+			t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
+		}
+		if parsed.Model != "agent-wt/"+m.ModelName {
+			t.Errorf("model = %q, want agent-wt/%s", parsed.Model, m.ModelName)
+		}
+		p := parsed.Provider[opencodeGatewayProviderID]
+		if p.Options.BaseURL != "https://openrouter.ai/api/v1" {
+			t.Errorf("baseURL = %q, want openrouter /v1 endpoint", p.Options.BaseURL)
+		}
+		if p.Options.APIKey != "sk-or-matrix" {
+			t.Errorf("apiKey = %q, want resolved secret", p.Options.APIKey)
+		}
+	})
+
+	t.Run("direct-omlx", func(t *testing.T) {
+		m := matrixModels[2]
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
+		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
+		var parsed struct {
+			Model    string `json:"model"`
+			Provider map[string]struct {
+				Options struct {
+					BaseURL string `json:"baseURL"`
+				} `json:"options"`
+			} `json:"provider"`
+		}
+		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+			t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
+		}
+		p := parsed.Provider[opencodeGatewayProviderID]
+		if p.Options.BaseURL != "http://localhost:8081/v1" {
+			t.Errorf("baseURL = %q, want omlx /v1 endpoint", p.Options.BaseURL)
+		}
+	})
+
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 			var parsed struct {
 				Model      string `json:"model"`
@@ -294,13 +445,13 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 }
 
 // TestGatewayMatrixPi pins pi's Build across the matrix: direct mode passes
-// --model with the bare ModelName resolved against pi's local "ollama"
-// provider; litellm mode passes --model "litellm/<registry-id>" resolved
-// against the wt-created "litellm" provider (pi splits --model on the first
-// slash, so the registry id must ride under a provider whose id cannot appear
-// as the id's first path segment — under "ollama", "openrouter/qwen/…" would
-// be mis-split and the bare tail sent upstream). The fixture catalog carries
-// every matrix id so both branches resolve; native launches pi bare.
+// --model as "<provider-id>/<ModelName>" resolved against a pi provider named
+// after the registry provider (ollama, openrouter, etc.); litellm mode passes
+// --model "litellm/<registry-id>" resolved against the wt-created "litellm"
+// provider (pi splits --model on the first slash, so the registry id must
+// ride under a provider whose id cannot appear as the id's first path
+// segment). The fixture catalog carries every matrix id so both branches
+// resolve; native launches pi bare.
 func TestGatewayMatrixPi(t *testing.T) {
 	d := ByName("pi")
 	if d == nil {
@@ -321,10 +472,23 @@ func TestGatewayMatrixPi(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		got, ok := argsFlagValue(lc.Args, "--model")
-		if !ok || got != m.ModelName {
-			t.Errorf("--model = %q, want bare %q", got, m.ModelName)
+		if !ok || got != "ollama/"+m.ModelName {
+			t.Errorf("--model = %q, want ollama/%s", got, m.ModelName)
+		}
+		if lc.Warn != "" {
+			t.Errorf("warn = %q, want empty for a launchable model", lc.Warn)
+		}
+	})
+
+	t.Run("direct-openrouter", func(t *testing.T) {
+		m := matrixModels[3]
+		writePiModels(t, `{"providers":{"openrouter":{"apiKey":"sk-or-matrix","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"qwen/qwen3.8-27b"}]}}}`)
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
+		got, ok := argsFlagValue(lc.Args, "--model")
+		if !ok || got != "openrouter/"+m.ModelName {
+			t.Errorf("--model = %q, want openrouter/%s", got, m.ModelName)
 		}
 		if lc.Warn != "" {
 			t.Errorf("warn = %q, want empty for a launchable model", lc.Warn)
@@ -333,7 +497,7 @@ func TestGatewayMatrixPi(t *testing.T) {
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			got, ok := argsFlagValue(lc.Args, "--model")
 			if !ok || got != piLitellmProviderID+"/"+m.ID {
 				t.Errorf("--model = %q, want %s/%s", got, piLitellmProviderID, m.ID)
@@ -345,7 +509,7 @@ func TestGatewayMatrixPi(t *testing.T) {
 	}
 
 	t.Run("native", func(t *testing.T) {
-		lc := d.Build(nativeModel("pi"), false, matrixGateway)
+		lc := d.Build(nativeModel("pi"), false, litellmRoute(nativeModel("pi")))
 		if len(lc.Args) != 0 || lc.Warn != "" {
 			t.Errorf("native build = %+v, want bare pi", lc)
 		}
@@ -362,11 +526,13 @@ func TestGatewayMatrixAgy(t *testing.T) {
 		t.Fatal("agy driver not registered")
 	}
 	for _, m := range matrixModels {
-		for _, gw := range []Gateway{directGateway(), matrixGateway} {
-			lc := d.Build(m, false, gw)
-			if len(lc.Args) != 0 || len(lc.Env) != 0 {
-				t.Errorf("agy build for %s under %s = %+v, want bare agy", m.ID, gw.Mode, lc)
-			}
+		lc := d.Build(m, false, directRoute(m))
+		if len(lc.Args) != 0 || len(lc.Env) != 0 {
+			t.Errorf("agy build for %s under direct = %+v, want bare agy", m.ID, lc)
+		}
+		lc = d.Build(m, false, litellmRoute(m))
+		if len(lc.Args) != 0 || len(lc.Env) != 0 {
+			t.Errorf("agy build for %s under litellm = %+v, want bare agy", m.ID, lc)
 		}
 	}
 }
@@ -387,9 +553,9 @@ func TestGatewayMatrixModelIdentityIsProviderIndependent(t *testing.T) {
 		if d == nil {
 			t.Fatalf("%s driver not registered", name)
 		}
-		baseline := d.Build(base, false, matrixGateway)
+		baseline := d.Build(base, false, litellmRoute(base))
 		for _, m := range matrixModels[1:] {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			// Ordered ID-first: the baseline ID contains the baseline
 			// ModelName as a substring ("ollama/<name>"), so a map's random
 			// iteration order could apply the ModelName substitution inside
