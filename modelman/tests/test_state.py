@@ -10,6 +10,7 @@ from pathlib import Path
 
 from modelman.state import (
     FamilyState,
+    LocalState,
     ModelState,
     StateStore,
     _default_state_path,
@@ -265,3 +266,38 @@ def test_price_refresh_last_run_deletion(tmp_path):
     loaded = load_state(path)
     assert get_price_refresh_last_run(loaded) is None
     assert "price_refresh_last_run" not in path.read_text()
+
+
+def test_load_state_reads_local_running_model(tmp_path):
+    # modelman.toml's [local].running_model marks the single local model
+    # wt's picker may currently offer (issue #65). A missing table must
+    # default to None, not raise, since a fresh install has nothing running.
+    path = tmp_path / "modelman.toml"
+    path.write_text('[local]\nrunning_model = "ollama/qwen3.8:27b-mlx"\n')
+    store = load_state(path)
+    assert store.local.running_model == "ollama/qwen3.8:27b-mlx"
+
+
+def test_load_state_missing_local_table_defaults_to_none(tmp_path):
+    store = load_state(tmp_path / "nonexistent.toml")
+    assert store.local == LocalState()
+    assert store.local.running_model is None
+
+
+def test_save_state_round_trips_local_running_model(tmp_path):
+    path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.local.running_model = "omlx/qwen3.8"
+    save_state(store, path)
+    reloaded = load_state(path)
+    assert reloaded.local.running_model == "omlx/qwen3.8"
+
+
+def test_save_state_writes_none_running_model_as_absent(tmp_path):
+    # "absent/empty = none running" per the design doc — a cleared marker
+    # must not round-trip as the literal string "None" or similar.
+    path = tmp_path / "modelman.toml"
+    store = StateStore()
+    save_state(store, path)
+    raw = path.read_text()
+    assert "running_model" not in raw
