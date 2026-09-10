@@ -148,10 +148,7 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 
 	cfg := &Config{Providers: providers, Models: models}
 	deriveNative(cfg)
-	cfg.SetExposedForTest(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{})
+	cfg.SetExposedForTest(map[string]ExposureEntry{})
 
 	native := cfg.Models[2]
 	if native.ID != "agy/contract-fixture:native" {
@@ -177,12 +174,7 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 	}
 	c := &Config{Providers: providers, Models: models}
 	deriveNative(c)
-	c.SetExposedForTest(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{
-		"pinned-cloud/contract-fixture:inherit": {LitellmExposed: true, Ready: false},
-	})
+	c.SetExposedForTest(map[string]ExposureEntry{"pinned-cloud/contract-fixture:inherit": {Exposed: true, Ready: false},})
 
 	var inherit *Model
 	for i := range models {

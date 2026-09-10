@@ -1,12 +1,13 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
 Owner: modelman (the only writer). wt reads this file read-only — just the
-`litellm_exposed` flags, to filter its model picker to models actually
-served through LiteLLM (see wt/internal/config/modelman.go; the shared
-contract fixture is docs/contracts/modelman.sample.toml). See registry.py
-for the canonical, shared model/provider/family definitions this state is
-keyed against, and docs/superpowers/specs/2026-08-27-shared-model-registry-design.md
-for the ownership split.
+`exposed` flags, to filter its model picker to models actually served
+through LiteLLM (see wt/internal/config/modelman.go; the shared contract
+fixture is docs/contracts/modelman.sample.toml). See registry.py for the
+canonical, shared model/provider/family definitions this state is keyed
+against, and
+`docs/superpowers/specs/2026-08-27-shared-model-registry-design.md` for the
+ownership split.
 
 The `families` table is a legacy read-side fallback: family display names
 now live in registry.toml's first-class [[families]] entries (see
@@ -57,11 +58,18 @@ def _default_state_path() -> Path:
 
 
 @dataclass
+class LitellmState:
+    enabled: bool = False
+    url: str | None = None
+    api_key: str | None = None
+
+
+@dataclass
 class ModelState:
     ready: bool = False
     disk_path: str | None = None
     size_bytes: int | None = None
-    litellm_exposed: bool = False
+    exposed: bool = False  # was litellm_exposed
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -75,6 +83,7 @@ class FamilyState:
 class StateStore:
     models: dict[str, ModelState] = field(default_factory=dict)
     families: dict[str, FamilyState] = field(default_factory=dict)
+    litellm: LitellmState = field(default_factory=LitellmState)
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def get(self, model_id: str) -> ModelState:
@@ -101,9 +110,10 @@ def load_state(path: Path | None = None) -> StateStore:
             ready=entry.get("ready", entry.get("downloaded", False)),
             disk_path=entry.get("disk_path"),
             size_bytes=entry.get("size_bytes"),
-            litellm_exposed=entry.get("litellm_exposed", False),
+            exposed=entry.get("exposed", entry.get("litellm_exposed", False)),
             extra=unknown_keys(
-                entry, {"ready", "downloaded", "disk_path", "size_bytes", "litellm_exposed"}
+                entry,
+                {"ready", "downloaded", "disk_path", "size_bytes", "exposed", "litellm_exposed"},
             ),
         )
         for model_id, entry in raw.get("model_state", {}).items()
@@ -115,10 +125,17 @@ def load_state(path: Path | None = None) -> StateStore:
         )
         for family, entry in raw.get("families", {}).items()
     }
+    litellm_raw = raw.get("litellm", {})
+    litellm = LitellmState(
+        enabled=litellm_raw.get("enabled", False),
+        url=litellm_raw.get("url"),
+        api_key=litellm_raw.get("api_key"),
+    )
     return StateStore(
         models=models,
         families=families,
-        extra=unknown_keys(raw, {"model_state", "families"}),
+        litellm=litellm,
+        extra=unknown_keys(raw, {"model_state", "families", "litellm"}),
     )
 
 
@@ -132,7 +149,7 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
                     "ready": s.ready,
                     "disk_path": s.disk_path,
                     "size_bytes": s.size_bytes,
-                    "litellm_exposed": s.litellm_exposed,
+                    "exposed": s.exposed,
                 }
             )
             for model_id, s in store.models.items()
@@ -141,6 +158,13 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
             family: drop_none({**s.extra, "display_name": s.display_name})
             for family, s in store.families.items()
         },
+        "litellm": drop_none(
+            {
+                "enabled": store.litellm.enabled,
+                "url": store.litellm.url,
+                "api_key": store.litellm.api_key,
+            }
+        ),
     }
     atomic_write_toml({**store.extra, **payload}, state_path)
 

@@ -249,9 +249,9 @@ def test_reconcile_preserves_litellm_exposed():
         ]
     )
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=False, exposed=True))
     reconcile(registry, state, {"ollama/a": ("ollama:a", 1024)})
-    assert state.get("ollama/a").litellm_exposed is True
+    assert state.get("ollama/a").exposed is True
 
 
 def test_reconcile_handles_modeldir_providers():

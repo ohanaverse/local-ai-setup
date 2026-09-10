@@ -183,7 +183,7 @@ def reconcile(
     """Update downloaded/disk_path/size_bytes for configured reconcilable models.
 
     `downloaded` maps model_id -> (disk_path, size_bytes). Models not in the
-    map are marked not downloaded. litellm_exposed is preserved (owned by the
+    map are marked not downloaded. exposed is preserved (owned by the
     LiteLLM feature, not sync). Non-reconcilable providers are untouched.
     """
     result = SyncResult()
@@ -199,7 +199,7 @@ def reconcile(
                     ready=True,
                     disk_path=disk_path,
                     size_bytes=size,
-                    litellm_exposed=existing.litellm_exposed,
+                    exposed=existing.exposed,
                 ),
             )
             result.downloaded.append(m.id)
@@ -210,7 +210,7 @@ def reconcile(
                     ready=False,
                     disk_path=None,
                     size_bytes=None,
-                    litellm_exposed=existing.litellm_exposed,
+                    exposed=existing.exposed,
                 ),
             )
             result.not_downloaded.append(m.id)

@@ -164,7 +164,7 @@ def is_effectively_exposed(
     A model is effectively exposed when ANY of these hold:
     - it is a native model (provider auth.type == "native"); native providers
       cannot route through LiteLLM, so they are always considered exposed, OR
-    - its `litellm_exposed` flag is True (or `exposed_override` is True) AND
+    - its `exposed` flag is True (or `exposed_override` is True) AND
       it passes the ready gate: it is ready (or `ready_override` is True) or
       it is a cloud model (exempt from the ready gate).
 
@@ -179,7 +179,7 @@ def is_effectively_exposed(
         model: The registry model entry to check.
         state: StateStore for ready/exposed flags.
         registry: The model registry, for provider-location resolution.
-        exposed_override: Override the persisted litellm_exposed flag.
+        exposed_override: Override the persisted exposed flag.
             Applies to non-native models only — native models are
             unconditionally exposed and ignore this override (and the
             persisted flag) entirely.
@@ -191,9 +191,7 @@ def is_effectively_exposed(
     """
     if model.native:
         return True
-    exposed = (
-        exposed_override if exposed_override is not None else state.get(model.id).litellm_exposed
-    )
+    exposed = exposed_override if exposed_override is not None else state.get(model.id).exposed
     if not exposed:
         return False
     return passes_ready_gate(model, state, registry, ready_override=ready_override)
@@ -468,7 +466,7 @@ def save_litellm_config(config: dict[str, Any], path: Path) -> None:
 
 
 def _set_exposed_flag(state: StateStore, model_id: str, exposed: bool) -> bool:
-    """Flip a model's litellm_exposed flag; return True if it changed.
+    """Flip a model's exposed flag; return True if it changed.
 
     Returns False when the flag was already at the target value, or when
     unexposing a model with no state entry (e.g. it was deleted earlier in
@@ -479,9 +477,9 @@ def _set_exposed_flag(state: StateStore, model_id: str, exposed: bool) -> bool:
     existing = state.get(model_id)
     if model_id not in state.models and not exposed:
         return False
-    if existing.litellm_exposed == exposed:
+    if existing.exposed == exposed:
         return False
-    state.set(model_id, replace(existing, litellm_exposed=exposed))
+    state.set(model_id, replace(existing, exposed=exposed))
     return True
 
 

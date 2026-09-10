@@ -94,7 +94,7 @@ def test_fixture_pins_provider_location_inheritance():
     state = StateStore()
     state.set(
         "pinned-cloud/contract-fixture:inherit",
-        ModelState(ready=False, litellm_exposed=True),
+        ModelState(ready=False, exposed=True),
     )
     model = registry.model("pinned-cloud/contract-fixture:inherit")
     assert is_effectively_exposed(model, state, registry=registry) is True

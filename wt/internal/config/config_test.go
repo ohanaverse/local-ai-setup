@@ -834,10 +834,7 @@ api_key = "test-key"
 // even when the exposure set is empty. Native providers cannot route through
 // LiteLLM, so hiding them would make the agent unusable.
 func TestIsExposedNativeAlways(t *testing.T) {
-	cfg := &Config{exposed: map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{}}
+	cfg := &Config{exposed: map[string]ExposureEntry{}}
 	m := Model{ID: "claude/native", ProviderID: "claude", Native: true}
 	if !cfg.IsExposed(m) {
 		t.Fatalf("native model must be exposed")
@@ -849,10 +846,7 @@ func TestIsExposedNativeAlways(t *testing.T) {
 // This prevents wt from advertising models that the LiteLLM proxy is not
 // configured to serve.
 func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
-	cfg := &Config{exposed: map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{"ollama/qwen3.8:27b-mlx": {LitellmExposed: true, Ready: true}}}
+	cfg := &Config{exposed: map[string]ExposureEntry{"ollama/qwen3.8:27b-mlx": {Exposed: true, Ready: true}}}
 	exposed := Model{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama"}
 	unexposed := Model{ID: "ollama/gemma4:9b", ProviderID: "ollama"}
 	if !cfg.IsExposed(exposed) {

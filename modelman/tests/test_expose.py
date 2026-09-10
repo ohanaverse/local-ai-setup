@@ -65,7 +65,7 @@ def test_expose_model_writes_entry_and_flag(tmp_path):
     state = _state()
     path = _seed_config(tmp_path)
     expose_model(registry, state, "ollama/a", path)
-    assert state.get("ollama/a").litellm_exposed is True
+    assert state.get("ollama/a").exposed is True
     from modelman.litellm import load_litellm_config
 
     config = load_litellm_config(path)
@@ -78,7 +78,7 @@ def test_expose_model_cloud_ok_without_download(tmp_path):
     state = _state(downloaded_a=False)
     path = _seed_config(tmp_path)
     expose_model(registry, state, "openrouter/x", path)
-    assert state.get("openrouter/x").litellm_exposed is True
+    assert state.get("openrouter/x").exposed is True
 
 
 def test_expose_model_not_ready_raises(tmp_path):
@@ -134,7 +134,7 @@ def test_unexpose_model_removes_entry_and_flag(tmp_path):
     path = _seed_config(tmp_path)
     expose_model(registry, state, "ollama/a", path)
     unexpose_model(state, "ollama/a", path)
-    assert state.get("ollama/a").litellm_exposed is False
+    assert state.get("ollama/a").exposed is False
     from modelman.litellm import load_litellm_config
 
     config = load_litellm_config(path)
@@ -145,7 +145,7 @@ def test_unexpose_model_idempotent(tmp_path):
     state = _state()
     path = _seed_config(tmp_path)
     unexpose_model(state, "ollama/a", path)
-    assert state.get("ollama/a").litellm_exposed is False
+    assert state.get("ollama/a").exposed is False
 
 
 def test_unexpose_model_absent_from_registry_is_noop(tmp_path):
@@ -329,4 +329,4 @@ def test_expose_model_restart_failure_nonfatal(tmp_path, monkeypatch):
     monkeypatch.setattr("modelman.litellm.subprocess.run", boom)
     # Must not raise.
     expose_model(registry, state, "ollama/a", path)
-    assert state.get("ollama/a").litellm_exposed is True
+    assert state.get("ollama/a").exposed is True

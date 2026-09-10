@@ -55,6 +55,26 @@ def test_save_writes_ready_key_not_legacy_downloaded(tmp_path):
     assert "downloaded" not in raw_text
 
 
+def test_legacy_litellm_exposed_key_is_rewritten_as_exposed(tmp_path):
+    """A modelman.toml written by a pre-rename modelman still has
+    litellm_exposed keys. Loading and saving it must produce only the new
+    `exposed` key — otherwise the file accumulates both spellings forever
+    and the two languages' readers can silently disagree on which one wins."""
+    path = tmp_path / "modelman.toml"
+    path.write_text(
+        '[model_state."ollama/x"]\n'
+        "ready = true\n"
+        "litellm_exposed = true\n"
+    )
+    store = load_state(path=path)
+    assert store.models["ollama/x"].exposed is True
+
+    save_state(store, path=path)
+    written = path.read_text()
+    assert "litellm_exposed" not in written
+    assert "exposed = true" in written
+
+
 def test_save_then_load_round_trips_model_state(tmp_path):
     # The whole point of the overlay is persistence across runs; if any
     # field is dropped on save/load, download state silently resets.
@@ -65,7 +85,7 @@ def test_save_then_load_round_trips_model_state(tmp_path):
             ready=True,
             disk_path="/models/qwen3.8-27b-q4.gguf",
             size_bytes=17179869184,
-            litellm_exposed=True,
+            exposed=True,
         ),
     )
     path = tmp_path / "modelman.toml"
@@ -77,7 +97,7 @@ def test_save_then_load_round_trips_model_state(tmp_path):
         ready=True,
         disk_path="/models/qwen3.8-27b-q4.gguf",
         size_bytes=17179869184,
-        litellm_exposed=True,
+        exposed=True,
     )
 
 

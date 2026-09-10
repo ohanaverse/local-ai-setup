@@ -120,10 +120,8 @@ type Config struct {
 	Providers  []Provider      `toml:"providers"`
 	Models     []Model         `toml:"models"`
 	Agents     []Agent         `toml:"agents"`
-	exposed    map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	} `toml:"-"` // from modelman.toml
+	litellm    LitellmState   `toml:"-"` // from modelman.toml
+	exposed    map[string]ExposureEntry `toml:"-"` // from modelman.toml
 }
 
 // Dir returns the base config directory (~/.config/agent-wt, or
@@ -214,11 +212,12 @@ func Load() (*Config, error) {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	exposed, err := loadModelmanState()
+	exposed, litellm, err := loadModelmanState()
 	if err != nil {
 		return nil, err
 	}
 	cfg.exposed = exposed
+	cfg.litellm = litellm
 	return cfg, nil
 }
 
@@ -359,7 +358,7 @@ func deriveNative(cfg *Config) {
 
 // IsExposed reports whether m should appear in wt's model catalog.
 // Native models are always exposed (they cannot route through LiteLLM).
-// Non-native models require litellm_exposed AND (ready OR cloud location).
+// Non-native models require exposed AND (ready OR cloud location).
 //
 // The cloud-location check uses ResolveLocation: a model may omit its own
 // `location` and inherit it from the provider. validate() already guarantees
@@ -369,7 +368,7 @@ func (c *Config) IsExposed(m Model) bool {
 		return true
 	}
 	st, ok := c.exposed[m.ID]
-	if !ok || !st.LitellmExposed {
+	if !ok || !st.Exposed {
 		return false
 	}
 	if loc, err := c.ResolveLocation(m); err == nil && loc == "cloud" {
@@ -379,10 +378,7 @@ func (c *Config) IsExposed(m Model) bool {
 }
 
 // SetExposedForTest replaces the in-memory exposed set. Tests only.
-func (c *Config) SetExposedForTest(exposed map[string]struct {
-	LitellmExposed bool
-	Ready          bool
-}) {
+func (c *Config) SetExposedForTest(exposed map[string]ExposureEntry) {
 	c.exposed = exposed
 }
 
@@ -390,17 +386,11 @@ func (c *Config) SetExposedForTest(exposed map[string]struct {
 // Tests only.
 func (c *Config) ExposeAllForTest() {
 	if c.exposed == nil {
-		c.exposed = make(map[string]struct {
-			LitellmExposed bool
-			Ready          bool
-		})
+		c.exposed = make(map[string]ExposureEntry)
 	}
 	for _, m := range c.Models {
 		if !m.Native {
-			c.exposed[m.ID] = struct {
-				LitellmExposed bool
-				Ready          bool
-			}{LitellmExposed: true, Ready: true}
+			c.exposed[m.ID] = ExposureEntry{Exposed: true, Ready: true}
 		}
 	}
 }

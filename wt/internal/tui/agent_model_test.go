@@ -1173,10 +1173,7 @@ func TestEligibleModelsHidesUnexposed(t *testing.T) {
 		config.Model{ID: "ollama/exposed", ModelName: "exposed", ProviderID: "ollama", Tags: []string{"code"}},
 		config.Model{ID: "ollama/hidden", ModelName: "hidden", ProviderID: "ollama", Tags: []string{"code"}},
 	)
-	cfg.SetExposedForTest(map[string]struct {
-		LitellmExposed bool
-		Ready          bool
-	}{"ollama/exposed": {LitellmExposed: true, Ready: true}})
+	cfg.SetExposedForTest(map[string]config.ExposureEntry{"ollama/exposed": {Exposed: true, Ready: true}})
 	models, err := cfg.EligibleModels("claude", "code", "")
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)

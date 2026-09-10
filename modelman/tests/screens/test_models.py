@@ -799,23 +799,23 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
     state = StateStore()
     state.set(
         "ollama/ornith-1.5:35b",
-        ModelState(ready=False, litellm_exposed=True),
+        ModelState(ready=False, exposed=True),
     )
     state.set(
         "ollama/ornith-1.5:7b",
-        ModelState(ready=True, litellm_exposed=False, disk_path="/tmp/ornith-7b"),
+        ModelState(ready=True, exposed=False, disk_path="/tmp/ornith-7b"),
     )
     state.set(
         "ollama/ornith-1.5:14b",
-        ModelState(ready=True, litellm_exposed=True, disk_path="/tmp/ornith-14b"),
+        ModelState(ready=True, exposed=True, disk_path="/tmp/ornith-14b"),
     )
     state.set(
         "openrouter/anthropic/claude-sonnet-4.5",
-        ModelState(ready=False, litellm_exposed=True),
+        ModelState(ready=False, exposed=True),
     )
     state.set(
         "ollama/ornith-1.5:cloud",
-        ModelState(ready=False, litellm_exposed=True),
+        ModelState(ready=False, exposed=True),
     )
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
@@ -1614,7 +1614,7 @@ async def test_r_twice_on_ready_exposed_leaves_queue_empty(tmp_path, monkeypatch
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -1674,7 +1674,7 @@ async def test_r_x_r_preserves_independent_unexpose(tmp_path, monkeypatch):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -1733,7 +1733,7 @@ async def test_x_then_r_drops_queued_expose_with_notification(tmp_path, monkeypa
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -1788,7 +1788,7 @@ async def test_r_then_x_refuses_expose_when_ready_off_queued(tmp_path, monkeypat
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=False))
+    state.set("ollama/a", ModelState(ready=True, exposed=False))
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -1825,7 +1825,7 @@ async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypa
     already queued ready=True), and apply() always failed with 'model is
     not ready'."""
     # (Identical seeding block, except ModelState(ready=False,
-    #  litellm_exposed=False).)
+    #  exposed=False).)
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1842,7 +1842,7 @@ async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypa
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=False, litellm_exposed=False))
+    state.set("ollama/a", ModelState(ready=False, exposed=False))
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -1915,7 +1915,7 @@ async def test_exposed_column_gates_on_projected_ready(tmp_path, monkeypatch):
     )
     save_registry(reg, reg_path)
     state = StateStore()
-    state.set("ollama/a", ModelState(ready=True, litellm_exposed=True))
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
     save_state(state, state_path)
     monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -2542,7 +2542,7 @@ async def test_run_apply_refreshes_stale_state_for_a_just_finished_download(tmp_
 
     assert registered == []  # not deferred — status is "done", not "downloading"
     assert pending_holder[0].exposes == [("ollama/x", True)]
-    assert load_state(state_path).get("ollama/x").litellm_exposed is True
+    assert load_state(state_path).get("ollama/x").exposed is True
 
 
 @pytest.mark.asyncio
@@ -2603,7 +2603,7 @@ async def test_full_apply_flow_with_a_queued_expose_does_not_crash(tmp_path, mon
         log_text = "\n".join(str(line) for line in app.screen.query_one(RichLog).lines)
 
     assert "Unexpected error" not in log_text, log_text
-    assert load_state(state_path).get("ollama/x").litellm_exposed is True
+    assert load_state(state_path).get("ollama/x").exposed is True
 
 
 @pytest.mark.asyncio

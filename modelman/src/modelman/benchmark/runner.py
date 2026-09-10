@@ -75,7 +75,7 @@ def discover_targets(
             continue
         if model_ids is not None and model.id not in model_ids:
             continue
-        if model_ids is None and family is None and not state.get(model.id).litellm_exposed:
+        if model_ids is None and family is None and not state.get(model.id).exposed:
             # Default: only exposed local models.
             continue
         targets.append(

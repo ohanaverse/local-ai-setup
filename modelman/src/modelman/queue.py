@@ -321,7 +321,7 @@ class PendingChanges:
             # so config.yaml doesn't keep routing to a model whose file
             # is gone. Any queued expose toggle for the same id is moot
             # now that the model is being removed.
-            was_exposed = self.state.get(model_id).litellm_exposed
+            was_exposed = self.state.get(model_id).exposed
             self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
             if was_exposed:
                 self.exposes.append((model_id, False))
@@ -468,11 +468,11 @@ class PendingChanges:
             # Flag-only providers have no LiteLLM config row, so just flip
             # the state flag directly instead of routing through the
             # config writer.
-            if not target and self.state.get(model_id).litellm_exposed:
+            if not target and self.state.get(model_id).exposed:
                 self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
                 if provider is None:
                     self.state.set(
-                        model_id, replace(self.state.get(model_id), litellm_exposed=False)
+                        model_id, replace(self.state.get(model_id), exposed=False)
                     )
                     self._touched_model_ids.add(model_id)
                 else:
