@@ -86,27 +86,53 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
 
 **Stale-binary delta:** the installed 2026-08-27 build predates the merge and still serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`. Its picker therefore misses registry-only entries (`medgemma:27b`, `nomic-embed-text:latest`, `gpt-oss:20b`). Same flags, different catalog — rebuild (Prerequisites) before trusting the picker.
 
-### 4. LiteLLM gateway mode
+### 4. LiteLLM routing mode
 
-By default wt agents talk directly to Ollama (`localhost:11434`). To route
-non-native traffic through the LiteLLM proxy (`localhost:4000`) and populate
-the dashboard, add `[gateway]` to `~/.config/agent-wt/config.toml`:
+By default (routing off) wt agents dial providers directly — e.g. Ollama on
+`localhost:11434`. To route non-native traffic through the LiteLLM proxy
+(`localhost:4000`) and populate the dashboard, flip the routing switch with
+modelman. The switch lives in modelman-owned `~/.config/local-ai/modelman.toml`
+(the `[litellm]` table), not in wt's `config.toml` — wt's legacy `gateway`
+config block is gone; wt drops it with a notice on next save:
 
-```toml
-[gateway]
-mode    = "litellm"
-url     = "http://localhost:4000"
-api_key = "sk-…"
+```bash
+# from: ~/github/ohanaverse/local-ai-setup/modelman
+uv run modelman litellm status   # on/off + url + api_key (key masked)
+uv run modelman litellm on       # route non-native models through LiteLLM
+uv run modelman litellm off      # dial providers directly where possible
+uv run modelman litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key wt reads
 ```
 
-In this mode:
-- wt only shows models with `litellm_exposed = true` in `modelman.toml`.
-- The model name passed to agents is the registry id (e.g.
-  `ollama/qwen3.8:27b-mlx`), matching LiteLLM's `model_list` entries.
-- Native models (`claude/native`, `copilot/native`) still use their own
-  subscriptions and are always shown.
-- OpenCode continues to use Ollama directly until its OpenAI-compatible
-  provider block is confirmed.
+This is a routing-policy-only toggle: it writes `enabled`/`url`/`api_key`
+into `[litellm]` and never starts, stops, or restarts the proxy (that stays
+the LaunchAgent job — guide 04 §5). wt reads the table read-only
+(`internal/config/modelman.go`).
+
+Two mechanisms stack on top of the on/off switch:
+
+- **Exposure filter (always on).** wt only shows models with `exposed = true`
+  in `modelman.toml` — independent of whether routing is on or off (the
+  readiness/cloud rule behind the flag is in [00-config-map](00-config-map.md)).
+  Native models (`claude/native`, `copilot/native`) are always shown.
+- **Protocol forcing (can override `off`).** Agents declare wire protocols
+  (claude: `anthropic`; codex: `openai-responses`; copilot/opencode/pi:
+  `openai-chat`) and registry providers declare the protocols they serve
+  (ollama: `["anthropic","openai-chat"]`; default `["openai-chat"]`). With no
+  intersection wt routes through LiteLLM even with routing off, printing a
+  stderr notice:
+
+  ```text
+  wt: codex requires LiteLLM for ollama/qwen3.8:27b-mlx (no direct protocol overlap with provider "ollama") — routing through the proxy
+  ```
+
+  So codex (`openai-responses` only) has no direct path for any local
+  provider, and claude + openrouter forces LiteLLM too (`ResolveRoute` in
+  `internal/config/config.go`). If routing is then required but no URL is
+  configured, the launch errors pointing at `modelman litellm set --url …
+  --api-key …` (or `modelman litellm on`).
+
+In this mode the model name passed to agents is the registry id (e.g.
+`ollama/qwen3.8:27b-mlx`), matching LiteLLM's `model_list` entries.
 
 ### 5. Rotation
 

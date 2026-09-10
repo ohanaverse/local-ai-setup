@@ -1,16 +1,25 @@
 # LiteLLM Gateway Troubleshooting (wt drivers)
 
 Learnings from the 2026-08-31 matrix test that launched every wt agent with
-`ollama/glm-5.3-flash:cloud` through the LiteLLM proxy (`[gateway].mode =
-"litellm"`, proxy at `http://localhost:4000`, model list in
+`ollama/glm-5.3-flash:cloud` through the LiteLLM proxy (LiteLLM routing on —
+at the time via wt's since-retired `[gateway]` block, today via
+`modelman litellm on`; proxy at `http://localhost:4000`, model list in
 `~/.config/litellm/config.yaml`). Each real launch went through `wt` and had
 to answer a one-shot prompt on stdout.
+
+> **Expected notice, not an error.** When the agent's protocol isn't served
+> by the model's provider, wt forces LiteLLM routing and prints
+> `wt: <agent> requires LiteLLM for <model> (no direct protocol overlap with
+> provider "<p>") — routing through the proxy` to stderr. That line is
+> **expected behavior**, not an error: codex triggers it with every local
+> provider (none serves the `openai-responses` wire it requires), and claude
+> triggers it with openrouter (`openai-chat` only).
 
 ## Matrix result (2026-08-31)
 
 | Agent | Result | Notes |
 |---|---|---|
-| claude | ✅ works | `ANTHROPIC_BASE_URL` → gateway, `--model <registry-id>`; a `claude-code:unrecognized_model` notice is benign |
+| claude | ✅ works | `ANTHROPIC_BASE_URL` → LiteLLM proxy, `--model <registry-id>`; a `claude-code:unrecognized_model` notice is benign |
 | pi | ✅ works | after the dedicated `litellm` provider fix (below) |
 | opencode | ✅ works | after the custom-provider fix (below) |
 | copilot | ✅ works | after proxy `litellm_settings.drop_params: true` and wt-side `WIRE_API=completions` (below) |
@@ -19,7 +28,7 @@ to answer a one-shot prompt on stdout.
 | shell | N/A | command executor, not an LLM agent |
 
 Driver-level fixes shipped in wt: pi (`pi.go`, `pi_models.go`), codex
-(`env_key` + gateway env var), opencode (custom provider + models map), and
+(`env_key` + proxy env var), opencode (custom provider + models map), and
 copilot (`WIRE_API=completions`, below). Of the proxy-side fixes, only codex's
 `additional_drop_params` lives in the LiteLLM proxy config, not in wt — a
 setting modelman may clobber (see the modelman settings-persistence spec,
@@ -36,7 +45,7 @@ wire-level truth before believing its error text:
    `~/.litellm.log` (access log: `POST /v1/responses 500`, `POST
    /v1/chat/completions 200`…) and `~/.litellm.err.log` (tracebacks with the
    exact exception, e.g. `TypeError: unhashable type: 'dict'`).
-2. **Probe the gateway directly** to separate client bugs from gateway bugs:
+2. **Probe the proxy directly** to separate client bugs from proxy bugs:
    `curl http://localhost:4000/v1/models -H "Authorization: Bearer <key>"`,
    then `/v1/chat/completions` and `/v1/responses` with the model id.
 3. **pi's model resolution is testable offline.** Load pi's bundle in node and
@@ -74,7 +83,7 @@ its openai-completions streamer — verified in pi 0.84.4). Consequences:
   the required double prefix, and the bare entry shadows it. (pi's TUI picker
   can still reach it — it keeps (provider, id) pairs internally.)
 
-**Fix (shipped):** gateway entries live under a dedicated provider whose id
+**Fix (shipped):** litellm entries live under a dedicated provider whose id
 cannot appear as the first path segment of a registry model id — `litellm` —
 keyed by full registry id, launched as `--model litellm/<registry-id>`. The
 `ollama` provider stays local (`http://localhost:11434/v1`) so its bare-name
@@ -89,7 +98,7 @@ pi's documented keyless placeholder `"ollama"`, never `""`.
 
 ### pi — legacy litellm artifacts are migrated, not kept
 
-Older wt syncs wrote gateway values into the `ollama` provider block plus
+Older wt syncs wrote LiteLLM values into the `ollama` provider block plus
 `ollama/…`-prefixed entries under it. On the next litellm-mode sync wt now:
 restores `ollama` to the local endpoint (bare entries 400 through the proxy),
 prunes the wt-generated prefixed entries (unlaunchable by the grammar above;
@@ -197,7 +206,7 @@ not the bridge alone. wt's fix is driver-side: copilot launches with
 and litellm modes — see `internal/agents/copilot.go`. This deliberately
 diverges from `ollama launch copilot`, which still sets `responses`.
 
-Verified 2026-09-01 in both gateway modes (direct ollama `/v1`, LiteLLM
+Verified 2026-09-01 in both routing modes (direct ollama `/v1`, LiteLLM
 `/v1`) with `ollama/glm-5.3-flash:cloud` one-shot prompts answered
 end-to-end (`scripts/agents-smoke.sh --only copilot`). The proxy-side
 `drop_params` above is still required in litellm mode — completions does
@@ -207,7 +216,7 @@ Re-test trigger: LiteLLM's responses bridge fixes
 ([BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452))
 ship in a release, or copilot CLI's responses client changes.
 
-### opencode — builtin `openai` provider is unusable for gateway models
+### opencode — builtin `openai` provider is unusable for proxy-routed models
 
 opencode resolves model ids against its own catalog: the builtin `openai`
 provider rejects a registry id (`Model not found: openai/ollama/glm-…`), and
@@ -216,7 +225,7 @@ back broken (`"text part <uuid> not found"`). wt therefore declares a fully
 custom provider in `OPENCODE_CONFIG_CONTENT`: `npm: "@ai-sdk/openai-compatible"`
 (chat-completions wire), explicit `models` map keyed by the registry id,
 model ref `agent-wt/<registry-id>` (opencode splits on the first slash), and
-`small_model` pinned to the same gateway model — opencode's default
+`small_model` pinned to the same proxy model — opencode's default
 summarization model (`gpt-5-nano`) otherwise queries the proxy with a model
 name it does not expose (400 noise in litellm's log on every run).
 
@@ -224,7 +233,7 @@ name it does not expose (400 noise in litellm's log on every run).
 
 claude needed no changes in litellm mode. agy takes its model inside its own
 TUI (no `--model`/env contract), and shell is not an LLM agent — neither is
-routable to a specific gateway model by wt.
+routable to a specific proxy model by wt.
 
 ## Ops notes
 
@@ -234,9 +243,10 @@ routable to a specific gateway model by wt.
   >> ~/.litellm.log 2>> ~/.litellm.err.log &`. On machines managed by
   modelman, restart via `MODELMAN_LITELLM_RESTART_CMD` — see
   [README · LiteLLM proxy lifecycle](README.md#litellm-proxy-lifecycle)).
-- The litellm key for probes lives in `[gateway].api_key`
-  (`~/.config/agent-wt/config.toml`) and is also in pi's models.json.
+- The litellm key for probes lives in `[litellm].api_key`
+  (`~/.config/local-ai/modelman.toml`; `modelman litellm status` shows it
+  redacted) and is also in pi's models.json.
 - Direct-mode ollama keeps working as before: the `ollama` provider block in
   pi's models.json must stay on `http://localhost:11434/v1` (wt reverts it if
-  a stale gateway redirect is present); codex/copilot direct branches are
-  unchanged.
+  a stale litellm redirect is present); codex has no direct branch at all
+  (always forced through the proxy), and copilot's direct branch is unchanged.

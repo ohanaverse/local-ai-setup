@@ -51,17 +51,19 @@ ANTHROPIC_BASE_URL="http://localhost:11434"
 
 The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
 
-### Gateway mode (LiteLLM)
+### LiteLLM routing
 
-When `[gateway].mode = "litellm"` is set in `~/.config/agent-wt/config.toml`, `claude-wt` routes non-native models through the LiteLLM proxy at `http://localhost:4000` instead of the local Ollama gateway. The launcher sets:
+When LiteLLM routing is enabled (`modelman litellm status`), `claude-wt` routes non-native models through the LiteLLM proxy (URL from modelman.toml's `[litellm]` table, typically `http://localhost:4000`) instead of dialing the provider directly. The launcher sets:
 
 ```bash
-ANTHROPIC_AUTH_TOKEN="<gateway.api_key>"
+ANTHROPIC_AUTH_TOKEN="<litellm.api_key>"
 ANTHROPIC_API_KEY=""
 ANTHROPIC_BASE_URL="http://localhost:4000"  # trailing slash is normalized
 ```
 
-The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[gateway].api_key` and is forwarded to the LiteLLM proxy as the provider's auth token. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and ignore the gateway.
+The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[litellm].api_key` in `~/.config/local-ai/modelman.toml` and is forwarded to the LiteLLM proxy as the provider's auth token. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and ignore LiteLLM routing.
+
+claude only speaks the `anthropic` wire protocol, so a provider that doesn't serve it (e.g. openrouter, `openai-chat` only) forces LiteLLM routing regardless of the on/off setting — wt prints a one-line stderr notice when that happens.
 
 ## Session resume
 

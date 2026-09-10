@@ -4,13 +4,13 @@
 
 Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026-09-04-agent-coding-benchmark-design.md`. This guide is the day-to-day usage doc; the spec is the source of truth for *why* each rule exists.
 
-This guide, unlike 00/02/04/05/08, embeds no `litellm_exposed` snapshots — nothing here goes stale when a model is exposed/unexposed.
+This guide, unlike 00/02/04/05/08, embeds no `exposed` snapshots — nothing here goes stale when a model is exposed/unexposed.
 
 ## Prerequisites
 
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on `PATH`).
 - `pi` installed and on `PATH` — this harness drives `pi --mode json`, not a direct HTTP request, for the agent rows.
-- A working LiteLLM apiKey already seeded into `~/.pi/agent/models.json` — launch any `wt` agent in litellm gateway mode once if you've never done so; the harness reads that key rather than storing its own.
+- A working LiteLLM apiKey already seeded into `~/.pi/agent/models.json` — flip LiteLLM routing on (`modelman litellm on`) and launch any `wt` agent once if you've never done so; the harness reads that key rather than storing its own.
 - `OPENROUTER_API_KEY` available (via `~/Library/LaunchAgents/local.litellm.proxy.plist` or the env) if your suite's `[judge]` model is an OpenRouter model — preflight checks this before running any agent row.
 
 ## TL;DR
@@ -142,7 +142,7 @@ Every number in that report is self-consistent, which is the point of reading th
 - **`repair_rounds` is accepted but rejected if non-zero.** The seam exists (per-turn retry after a failed run) but is disabled in v1 — see the spec's "Deferred: the repair round."
 - **Local-model timeouts are a config input, not a bug.** A 27B model in a six-round agentic task can exceed `agent_timeout_s`; `TIMEOUT` caps the composite at 0 but is reported as its own outcome class — raise `agent_timeout_s` per-backend rather than reading a timeout as "this model can't do it."
 - **`[judge].thinking` is accepted and currently does nothing.** The judge transport sends model/messages/temperature only, so the judge runs at its model's default reasoning level. Set it as documentation of intent, not as a control.
-- **`route = "openrouter"` for the judge bypasses your gateway** and needs `OPENROUTER_API_KEY` directly (environment or the LiteLLM LaunchAgent's env). It exists because a judge has to be a frontier model and the local gateway serves none — check `curl -s localhost:4000/v1/models | grep -c claude` before assuming a gateway model can play the role.
+- **`route = "openrouter"` for the judge bypasses your LiteLLM proxy** and needs `OPENROUTER_API_KEY` directly (environment or the LiteLLM LaunchAgent's env). It exists because a judge has to be a frontier model and the local gateway serves none — check `curl -s localhost:4000/v1/models | grep -c claude` before assuming a proxy-served model can play the role.
 - **A judge that answers in prose is a `JUDGE_FAIL`, not a low score.** Fenced and preambled JSON is parsed; a refusal or an essay is not scorable. `judge.json`'s `error` field says which happened, and the row's gates/speed data stands regardless.
 - **Judging costs cloud API spend on every row.** `--skip-judge` exists for plumbing checks; `agent judge --row` re-scores a subset of an existing run without re-running agents.
 

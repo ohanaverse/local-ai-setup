@@ -162,17 +162,22 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) is wt-owned, but contains **only agents, preferences, and the optional `[gateway]` section** — Providers/Models live in the registry (below). wt never writes providers/models to this file.
+`~/.config/agent-wt/config.toml` (TOML) is wt-owned and contains **only agents and preferences** — Providers/Models live in the registry (below), and LiteLLM routing state lives in modelman's `modelman.toml` (below). wt never writes providers/models to this file.
 
 Fields:
 
 - **Agent** — tool with ≥1 supported provider and optional default.
 - **DefaultTag** — the default rotation tag group.
-- **`[gateway]`** — optional routing section. `mode` is `"direct"` (default) or `"litellm"`; `url` + `api_key` are required when `mode = "litellm"` (fail-fast validation). In litellm mode non-native models route through the LiteLLM proxy's OpenAI-compatible endpoint instead of local ollama. `GatewayConfig.BaseURL()` trims trailing slashes so drivers append `/v1` (or none for claude) cleanly. The proxy loads `~/.config/litellm/config.yaml` only at startup — modelman (the writer of that file) restarts it after expose changes via `MODELMAN_LITELLM_RESTART_CMD`; wt never restarts the proxy (see `docs/wt-agents/README.md#litellm-proxy-lifecycle`).
+
+> **Legacy `[gateway]` blocks.** LiteLLM routing used to be configured here (`GatewayConfig`); the type and the `[gateway]` table were removed — routing is now modelman-owned (below). `migrateConfigSchema` detects a config.toml still carrying `[gateway]` and prints a one-time stderr notice (`wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by modelman (see 'modelman litellm status'); this block will be dropped on next save`); since `Config` no longer decodes the field, the block is dropped on wt's next save.
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
+
+## LiteLLM routing state (modelman-owned)
+
+Whether non-native models route through the LiteLLM proxy — `Config.IsLitellm()`, read-only from `~/.config/local-ai/modelman.toml`'s `[litellm]` table (`enabled`/`url`/`api_key`, loaded via `finalizeCfg`/`loadModelmanState`) — or dial providers directly (`Config.IsDirect()`) is decided by modelman (`modelman litellm status|on|off|set`). Toggling is routing policy only: wt never flips the switch and never starts, stops, or restarts the proxy. `LitellmBaseURL()` trims trailing slashes so drivers append `/v1` (or nothing for claude) cleanly; the proxy loads `~/.config/litellm/config.yaml` only at startup and modelman restarts it after expose changes via `MODELMAN_LITELLM_RESTART_CMD` (see `docs/wt-agents/README.md#litellm-proxy-lifecycle`).
 
 ## Registry (modelman-owned)
 
@@ -186,7 +191,7 @@ resolver — Go/the OS never expand `~` on their own, so this parity is
 deliberate, not incidental.
 wt loads it read-only via `config.Load` (fail-closed: missing/malformed
 registry is an error; seed with `modelman migrate`) and joins it in memory
-with its own `config.toml`, which now holds only Agents + DefaultTag + gateway. `Save`
+with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
 persists wt-owned fields only — wt never writes providers/models. Extra
 registry fields (model_info, fetch, model_dir, auth secret_ref/base_url)
 are ignored by wt's parser; `cost` IS decoded (`config.ModelCost` in
@@ -200,7 +205,7 @@ update both sides or both CI jobs fail.
 
 **Exposure predicate (shared with modelman):** wt filters models using the same rule as the TUI:
 - Native models (provider `auth.type = "native"`): always exposed
-- Non-native: `litellm_exposed = true` AND (`ready = true` OR `location = "cloud"`)
+- Non-native: `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`)
 
 This ensures wt's model picker never offers a model the TUI would show as `–` in the EXPOSED column.
 
@@ -268,58 +273,75 @@ go run ./cmd/wt rotate code    # debug helper: print the model after the last-la
 
 ## Agents (Go)
 
-Each agent registers a `Driver` (`Build(m config.Model, yolo bool) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor used by both TUI and non-TUI launch paths — drivers should not bypass it.
+Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Route) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor used by both TUI and non-TUI launch paths — it resolves one `config.Route` per launch via `(*config.Config).ResolveRoute(m, agents.ProtocolsFor(agent))` and hands it to `Build`; drivers should not bypass it.
+
+`Route` (`internal/config`) carries everything a launch needs: `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the model's own provider (`auth.base_url`, normalized via `BaseOrigin`, key from `auth.secret_ref` via `ResolveSecret`) with the provider-side model name; litellm/forced routes dial modelman's `[litellm]` URL/key with the registry id.
+
+**Agent protocols.** Agents declare the wire protocols they speak via the `ProtocolDeclarer` capability (`Protocols() []Protocol`); registry providers declare what they serve (`Provider.protocols` in registry.toml, defaulting to `openai-chat`). `ResolveRoute` intersects the two — an empty intersection sets `Forced = true`, routing through LiteLLM regardless of the on/off toggle.
+
+| Agent | Declared protocols |
+|---|---|
+| claude | `anthropic` |
+| codex | `openai-responses` |
+| copilot | `openai-chat` |
+| opencode | `openai-chat` |
+| pi | `openai-chat` |
+| agy, shell | none — agy is a native passthrough and shell is a command runner; neither resolves a route |
+
+Consequence: codex has no direct path for any local provider (none serves `openai-responses`) — codex always routes through LiteLLM, and `BuildLaunchCmd` prints the forced-LiteLLM stderr notice on every direct-mode launch. claude × openrouter (`openai-chat` only) forces LiteLLM the same way.
 
 **Optional capabilities** (interface checks via type assertion in `BuildLaunchCmd`):
 
 | Capability | Consumer | Drivers that implement it |
 |---|---|---|
+| `ProtocolDeclarer` | `Protocols() []Protocol` — the wire protocols the agent speaks; consumed by `ResolveRoute` (direct vs forced-LiteLLM) and the model picker | claude, codex, copilot, opencode, pi |
 | `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, copilot (only drivers implementing `InstructionPointers()`; others skip seeding entirely) |
-| `OllamaURLer` | Per-driver ollama gateway URL — `OllamaURL()` returns `config.OllamaBaseURL` + the driver's wire-protocol suffix (`/`, `/v1`, `/v1/`) | claude, codex, copilot, opencode, pi (via `defaultPiOllamaBaseURL`) |
 | `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
 | `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |
 | `Resumer` | `ResumeFlag()` + `LatestSession(path)` for resume support | claude, opencode |
 
 Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the session lookup in `internal/session` returns nil for them.
 
-**Model id contract.** In **direct mode** drivers hand the **bare provider name** (`m.ModelName`) to the agent CLI — never the registry key (`m.ID`, which carries the `provider/` prefix). In **litellm mode** the rule inverts: claude, codex, copilot, and opencode pass the **registry id** (`m.ID`, e.g. `ollama/qwen3.8:27b-mlx`), because LiteLLM's `model_list` is keyed on it. OpenCode is also mode-dependent: `ollama/<m.ModelName>` in direct mode, `openai/<m.ID>` in litellm mode. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use a model with distinct `ID`/`ModelName` so a wrong id can't slip through silently.
+**Model id contract.** The `m.ID`-vs-`m.ModelName` split is now a property of `Route.Litellm`, resolved centrally in `ResolveRoute` rather than per-driver: litellm/forced routes set `Route.ModelRef` to the **registry id** (`m.ID`, e.g. `ollama/qwen3.8:27b-mlx` — LiteLLM's `model_list` is keyed on it); direct routes set it to the **provider-side name** (`m.ModelName`, dialed at the provider's own `auth.base_url` via `Route.BaseOrigin`). `Route.Display` always carries `m.ModelName` for catalog "name" fields. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use a model with distinct `ID`/`ModelName` so a wrong id can't slip through silently.
 
 | Agent | Launch behavior |
 |---|---|
-| claude | `ANTHROPIC_*` env → ollama gateway + `--model <m.ModelName>`; native: no args |
-| codex | `--model <m.ModelName>` plus four inline `-c` overrides (`model_provider=agent-wt`, `model_providers.agent-wt.{name,base_url,wire_api}`) for ollama-routed models; native: no args (see `docs/wt-agents/codex-wt.md`) |
-| copilot | `COPILOT_PROVIDER_BASE_URL`/`API_KEY`/`WIRE_API`/`COPILOT_MODEL` env; never `--model`. **Ollama-routed models must use the OpenAI-compatible endpoint `http://localhost:11434/v1` with `WIRE_API=completions`** — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge (observed via LiteLLM in litellm mode; verified in both direct and litellm modes 2026-09-01, `glm-5.3-flash:cloud`). This deliberately diverges from `ollama launch copilot`, which still prescribes `responses`. Native models clear all `COPILOT_*` provider env vars. |
-| opencode | ollama-only; `OPENCODE_CONFIG_CONTENT` inline JSON with `ollama/<m.ModelName>`; never `--model` |
-| pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); passes `--model` only when present; no yolo |
+| claude | `ANTHROPIC_*` env (`ANTHROPIC_BASE_URL=r.BaseOrigin`; token `ollama` direct, `r.APIKey` litellm) + `--model <r.ModelRef>`; native: no args |
+| codex | `--model <r.ModelRef>` plus inline `-c` overrides declaring the `agent-wt` provider at `<r.BaseOrigin>/v1/` (`wire_api="responses"`); **non-native codex models always route through LiteLLM** (no local provider serves `openai-responses`), key exported as `AGENT_WT_GATEWAY_API_KEY`; native: no args (see `docs/wt-agents/codex-wt.md`) |
+| copilot | `COPILOT_PROVIDER_BASE_URL=<r.BaseOrigin>/v1`/`API_KEY`/`WIRE_API`/`COPILOT_MODEL=<r.ModelRef>` env; never `--model`. **Must use the chat-completions wire (`WIRE_API=completions`)** — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge (observed via LiteLLM; verified in both direct and litellm modes 2026-09-01, `glm-5.3-flash:cloud`). This deliberately diverges from `ollama launch copilot`, which still prescribes `responses`. Native models clear all `COPILOT_*` provider env vars. |
+| opencode | `OPENCODE_CONFIG_CONTENT` inline JSON with the wt-declared custom provider `agent-wt` at `<r.BaseOrigin>/v1` in both direct and litellm routes; model `agent-wt/<r.ModelRef>`; never `--model` |
+| pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); direct: `--model <r.ProviderID>/<m.ModelName>` from the pi provider named after the registry provider; litellm: `--model litellm/<r.ModelRef>`; no yolo |
 | agy | no model passthrough (chosen in its TUI); **not** a command agent — `IsCommand("agy")` is false, so the launch path still resolves a model and `-A agy` without `-M` errors "multiple models match" (→ TTY error on non-TTY stdin) when >1 agy model is eligible |
 | shell | execs passthrough args as argv, or interactive `bash`; no model/yolo/resume; `ArgSetter` |
 
-In **gateway (litellm) mode** (`[gateway].mode = "litellm"`), non-native models switch from the local ollama gateway to LiteLLM's `/v1`:
+With LiteLLM routing on (`modelman litellm on`) — or forced by a protocol mismatch — non-native models route through the proxy in modelman.toml's `[litellm]` table (`r.BaseOrigin` = its URL with trailing slashes trimmed, `r.APIKey` = its key, `r.ModelRef` = `m.ID`):
 
 | Agent | litellm routing |
 |---|---|
-| claude | `ANTHROPIC_BASE_URL`=`[gateway].url` (no suffix) + `ANTHROPIC_AUTH_TOKEN`=`[gateway].api_key`, `--model <m.ID>` |
-| codex | `--model <m.ID>` plus four `-c` overrides plus `-c model_providers.agent-wt.env_key="AGENT_WT_GATEWAY_API_KEY"` pointing `agent-wt` at `<url>/v1/` (trailing slash), key exported as `AGENT_WT_GATEWAY_API_KEY`. **litellm ≤ 1.98.0 cannot serve codex** (responses→`ollama_chat` bridge crashes on codex's structured `reasoning`); see `docs/wt-agents/litellm-troubleshooting.md` |
-| copilot | `COPILOT_PROVIDER_BASE_URL=<url>/v1` + `COPILOT_PROVIDER_API_KEY=<api_key>`, `COPILOT_MODEL=<m.ID>` |
-| opencode | `OPENCODE_CONFIG_CONTENT` with wt-declared custom provider `agent-wt` (`@ai-sdk/openai-compatible`) at `<url>/v1`, models map keyed by `m.ID`, model `agent-wt/<m.ID>`, `small_model` pinned the same — the builtin `openai` provider can't serve registry ids (catalog validation + responses-API stream mismatch) |
-| pi | syncModels creates a dedicated `litellm` provider (`<url>/v1` + `api_key`) keyed by registry id and launches `--model litellm/<m.ID>`; pi splits `--model` on the first slash, so gateway ids under the `ollama` provider are unreachable — the `ollama` provider stays local (reverted + pruned of wt-generated prefixed entries; empty `apiKey` invalidates pi's whole models.json, reverts write placeholder `"ollama"`) |
+| claude | `ANTHROPIC_BASE_URL`=`r.BaseOrigin` (no suffix) + `ANTHROPIC_AUTH_TOKEN`=`r.APIKey`, `--model <m.ID>` |
+| codex | same `-c` overrides with base_url `<r.BaseOrigin>/v1/` (trailing slash), key exported as `AGENT_WT_GATEWAY_API_KEY` from `r.APIKey`. **Always litellm, even in direct mode** (forced — no local provider serves `openai-responses`). **litellm ≤ 1.98.0 cannot serve codex** (responses→`ollama_chat` bridge crashes on codex's structured `reasoning`); see `docs/wt-agents/litellm-troubleshooting.md` |
+| copilot | `COPILOT_PROVIDER_BASE_URL=<r.BaseOrigin>/v1` + `COPILOT_PROVIDER_API_KEY=<r.APIKey>`, `COPILOT_MODEL=<m.ID>` |
+| opencode | `OPENCODE_CONFIG_CONTENT` with wt-declared custom provider `agent-wt` at `<r.BaseOrigin>/v1`, models map keyed by `m.ID`, model `agent-wt/<m.ID>`, `small_model` pinned the same — the builtin `openai` provider can't serve registry ids (catalog validation + responses-API stream mismatch) |
+| pi | syncModels creates the dedicated `litellm` provider (`<r.BaseOrigin>/v1` + `r.APIKey`) keyed by registry id and launches `--model litellm/<m.ID>`; pi splits `--model` on the first slash, so registry ids under a direct provider block are unreachable — empty `apiKey` invalidates pi's whole models.json, reverts write placeholder `"ollama"` |
 
-The pre-launch `ollamacheck.Check` is **skipped in litellm mode**: a model absent from local `ollama list` is not an error when LiteLLM serves it from a non-local upstream.
+The pre-launch `ollamacheck.Check` is **skipped when LiteLLM routing is on** (`cfg.IsLitellm()`): a model absent from local `ollama list` is not an error when LiteLLM serves it from a non-local upstream.
 
 ### Adding a new agent driver
 
 1. Create `internal/agents/<name>.go` implementing the `Driver` interface:
-   - `Build(m config.Model, yolo bool) LaunchCmd`
+   - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the resolved `Route` (base origin, API key, model ref); never hardcode a provider endpoint
    - `YoloFlag() string`
-2. Implement optional capabilities as needed: `Seeder`, `OllamaURLer`, `Syncer`, `ArgSetter`, `Resumer`
+   - `Protocols() []Protocol` (the `ProtocolDeclarer` capability) — the wire protocols the agent speaks; this drives route resolution
+2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `Resumer`
 3. Register in `internal/agents/catalog.go` via `AddEntry()` or `MustAdd()`
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
 5. Update the driver table in this file
 
 **Key gotchas:**
-- Direct mode: pass `m.ModelName` (bare name); litellm mode: pass `m.ID` (registry key)
+- The model ref comes from `Route.ModelRef` — `ResolveRoute` already picked `m.ID` (litellm/forced) or `m.ModelName` (direct); don't re-derive it
+- If the agent's protocol is served by no local provider (empty intersection in `ResolveRoute`), it always routes through LiteLLM and wt prints the forced-LiteLLM stderr notice — codex is the current example
 - If implementing `Resumer`, add session path logic to `internal/session`
-- Test both gateway modes (direct/litellm) if the agent will route through LiteLLM
+- Test both routing modes (direct/litellm) if the agent will route through LiteLLM
 
 ## Guard (Go)
 
@@ -335,7 +357,7 @@ The pre-launch `ollamacheck.Check` is **skipped in litellm mode**: a model absen
 
 On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Resume (`--resume <id>` claude, `--session <id>` opencode). Non-TUI does the same without prompting.
 
-> **Native models never resume.** A native model (e.g. `claude/native`) launches with no model override; resuming would restore the session's stored model and silently override "native" (routing a gateway model at the real Anthropic API). Both paths skip the session lookup for native models.
+> **Native models never resume.** A native model (e.g. `claude/native`) launches with no model override; resuming would restore the session's stored model and silently override "native" (routing a proxy-routed model at the real Anthropic API). Both paths skip the session lookup for native models.
 
 ## TUI (Go)
 
@@ -368,8 +390,8 @@ wt -W my-feature -A claude   # named worktree + launch
 wt --cwd -A codex    # current repo root
 claude-wt --cwd      # shim forwards to wt
 wt --init            # seed agent instruction files
-make test-agents        # live one-shot smoke: every agent × configured models, both gateway modes
-                       # (flips [gateway].mode direct→litellm, restores config afterwards; --modes current for one pass)
+make test-agents        # live one-shot smoke: every agent × configured models, both routing modes
+                       # (flips [litellm].enabled off/on in modelman.toml — located via MODELMAN_STATE — and restores it afterwards; --modes current for one pass)
 ```
 
 > Verifying a branch's behavior against live data requires building it first

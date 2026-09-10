@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # agents-smoke.sh -- live one-shot smoke test for every wt agent.
 #
-# The run covers every gateway mode in --modes (default direct,litellm) by
-# flipping the [gateway].mode field of wt's own config.toml between passes
-# and restoring the original afterwards. Native rows and shell are gateway
+# The run covers every routing mode in --modes (default direct,litellm) by
+# flipping the [litellm].enabled field of modelman's modelman.toml between
+# passes and restoring the original afterwards. Native rows and shell are
 # mode-invariant and run once, in the first pass.
 
 set -o nounset -o pipefail
@@ -16,7 +16,7 @@ DEFAULT_MODES="direct,litellm"
 # model "-" means launch without -M.
 # @PROMPT@ is replaced with the row's prompt (a single shell-quoted argument).
 # Optional 5th field marks a known-failing row: "xfail" (fails in every
-# gateway mode) or "xfail:direct"/"xfail:litellm" (mode-scoped). A marked
+# routing mode) or "xfail:direct"/"xfail:litellm" (mode-scoped). A marked
 # row that fails prints XFAIL and leaves the exit code alone; a marked row
 # that unexpectedly passes prints XPASS — a loud stale-mark warning. The
 # marks mirror the Known Limitations section of
@@ -111,8 +111,8 @@ is_mode_invariant() {
 # gtimeout needs --foreground: by default it puts the child in its own
 # process group, so a terminal Ctrl-C (delivered to the foreground group)
 # never reaches the running agent, gtimeout neither dies nor forwards, and
-# the script's INT trap is deferred forever — leaving the flipped gateway
-# config unrestored. --foreground keeps the child in the terminal's group;
+# the script's INT trap is deferred forever — leaving the flipped [litellm]
+# state unrestored. --foreground keeps the child in the terminal's group;
 # Ctrl-C kills the row, the trap fires, and the EXIT trap restores the
 # config. (Documented gtimeout caveat: with --foreground, grandchildren of
 # the timed command are not themselves timed out — an orphaned agent can
@@ -143,128 +143,135 @@ preflight() {
   fi
 }
 
-# ── Gateway-mode flipping ─────────────────────────────────────────────
-# The config file is located via `wt config path` so the script and wt
-# always agree on the config directory (XDG_CONFIG_HOME and ~ expansion
-# included) — the script never duplicates wt's precedence rules. Only the
-# [gateway] mode line is rewritten; url/api_key and every other section
-# stay verbatim, and the original is restored on any exit path.
+# ── LiteLLM routing-mode flipping ─────────────────────────────────────────────
+# The routing on/off switch lives in modelman-owned modelman.toml's [litellm]
+# table; wt reads it read-only and never writes it. The script flips
+# [litellm].enabled directly (routing policy only — the proxy process is
+# never started or stopped), leaving url/api_key and every other section
+# verbatim, and the original is restored on any exit path. The file is
+# located via MODELMAN_STATE (modelman's own override) falling back to
+# modelman's default, so the script and modelman agree on the same file.
 
-CONFIG_FILE=""
-CONFIG_BAK=""
+MODELMAN_FILE=""
+MODELMAN_BAK=""
 
-# config_file_path resolves wt's config.toml via `wt config path`. Fails
-# loudly when wt cannot answer (wt config path prints config.Dir() without
-# loading config.toml, so a broken config still resolves here).
-config_file_path() {
-  local dir
-  dir=$(wt config path) || {
-    echo "error: 'wt config path' failed; cannot locate config.toml" >&2
-    return 1
-  }
-  printf '%s\n' "${dir}/config.toml"
+# modelman_file_path resolves modelman's state file. Precedence mirrors
+# modelman/state.py's _default_state_path: MODELMAN_STATE override, else
+# ~/.config/local-ai/modelman.toml (modelman's state default is not XDG-
+# redirected, so the fallback matches modelman rather than wt).
+modelman_file_path() {
+  printf '%s\n' "${MODELMAN_STATE:-$HOME/.config/local-ai/modelman.toml}"
 }
 
-# snapshot_config backs up the original config once, before any flip.
+# snapshot_modelman backs up the original state once, before any flip.
 # Refuses to run when a backup already exists: a leftover backup means a
 # previous run died between snapshot and restore, and overwriting it could
-# destroy the only copy of the user's original config.
-snapshot_config() {
-  if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "error: $CONFIG_FILE not found; wt needs a config.toml to flip gateway modes" >&2
+# destroy the only copy of the user's original modelman.toml.
+snapshot_modelman() {
+  if [[ ! -f "$MODELMAN_FILE" ]]; then
+    echo "error: $MODELMAN_FILE not found; the smoke matrix needs modelman.toml (exposure state + [litellm] routing)" >&2
     return 1
   fi
-  if [[ -e "$CONFIG_BAK" ]]; then
-    echo "error: stale backup $CONFIG_BAK exists; a previous run may have died mid-run." >&2
-    echo "       Inspect it, restore it by hand to $CONFIG_FILE if it holds your config, then remove it." >&2
+  if [[ -e "$MODELMAN_BAK" ]]; then
+    echo "error: stale backup $MODELMAN_BAK exists; a previous run may have died mid-run." >&2
+    echo "       Inspect it, restore it by hand to $MODELMAN_FILE if it holds your config, then remove it." >&2
     return 1
   fi
-  cp -p "$CONFIG_FILE" "$CONFIG_BAK"
+  cp -p "$MODELMAN_FILE" "$MODELMAN_BAK"
 }
 
-# restore_config returns the user's config.toml from the backup. Idempotent:
-# safe to call from both the explicit restore and the EXIT trap.
-restore_config() {
-  if [[ -n "$CONFIG_BAK" && -f "$CONFIG_BAK" ]]; then
-    mv "$CONFIG_BAK" "$CONFIG_FILE"
-    CONFIG_BAK=""
+# restore_modelman returns the user's modelman.toml from the backup.
+# Idempotent: safe to call from both the explicit restore and the EXIT trap.
+restore_modelman() {
+  if [[ -n "$MODELMAN_BAK" && -f "$MODELMAN_BAK" ]]; then
+    mv "$MODELMAN_BAK" "$MODELMAN_FILE"
+    MODELMAN_BAK=""
   fi
 }
 
-# set_gateway_mode rewrites only the [gateway] mode line in CONFIG_FILE to
-# "direct" or "litellm". The temp file first inherits the original's
-# permissions via cp -p, then awk truncates and rewrites it, so the swapped-
-# in file keeps the original's mode/ownership without a stat/chown dance.
-# Atomic mv (same directory). Fails when no [gateway] mode line exists: a
-# section-less config keeps wt in direct mode by default and the script
-# cannot flip what is not written. Section/key patterns tolerate leading
-# whitespace: wt's config writer indents section bodies (e.g. two spaces).
-set_gateway_mode() {
-  local mode="$1"
+# set_litellm_enabled rewrites only the [litellm] enabled line in
+# MODELMAN_FILE to true or false. The temp file first inherits the
+# original's permissions via cp -p, then awk truncates and rewrites it, so
+# the swapped-in file keeps the original's mode/ownership without a
+# stat/chown dance. Atomic mv (same directory). Errors loudly when no
+# [litellm] table exists or the table lacks an enabled line, mirroring the
+# old gateway helper's fail-fast behavior — a silent no-op here would run
+# the whole matrix against the wrong mode without telling you. Section/key
+# patterns tolerate leading whitespace (modelman's TOML writer does not
+# indent section bodies, but tolerate it anyway).
+set_litellm_enabled() {
+  local value="$1"
   local tmp
-  tmp=$(mktemp "${CONFIG_FILE}.XXXXXX") || return 1
-  if ! cp -p "$CONFIG_FILE" "$tmp"; then
+  tmp=$(mktemp "${MODELMAN_FILE}.XXXXXX") || return 1
+  if ! cp -p "$MODELMAN_FILE" "$tmp"; then
     rm -f "$tmp"
     return 1
   fi
-  if ! awk -v mode="$mode" '
-    BEGIN { ingw = 0 }
-    /^[[:space:]]*\[gateway\][[:space:]]*$/ { ingw = 1; print; next }
-    /^[[:space:]]*\[/ { ingw = 0 }
-    ingw && /^[[:space:]]*mode[[:space:]]*=/ { sub(/^[[:space:]]*mode[[:space:]]*=.*/, "mode = \"" mode "\"") }
+  if ! grep -q '^[[:space:]]*\[litellm\][[:space:]]*$' "$tmp"; then
+    echo "error: no [litellm] table in $MODELMAN_FILE (run 'modelman litellm set --url ... --api-key ...' once to create it)" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! awk -v val="$value" '
+    BEGIN { insec = 0 }
+    /^[[:space:]]*\[litellm\][[:space:]]*$/ { insec = 1; print; next }
+    /^[[:space:]]*\[/ { insec = 0 }
+    insec && /^[[:space:]]*enabled[[:space:]]*=/ { sub(/^[[:space:]]*enabled[[:space:]]*=.*/, "enabled = " val) }
     { print }
-  ' "$CONFIG_FILE" >"$tmp"; then
+  ' "$MODELMAN_FILE" >"$tmp"; then
     rm -f "$tmp"
     return 1
   fi
-  if ! grep -q "^mode = \"${mode}\"" "$tmp"; then
-    echo "error: cannot flip gateway mode: no [gateway] mode line in $CONFIG_FILE" >&2
+  if ! grep -q "^enabled = ${value}" "$tmp"; then
+    echo "error: cannot flip routing mode: no enabled line inside [litellm] in $MODELMAN_FILE" >&2
     rm -f "$tmp"
     return 1
   fi
-  mv "$tmp" "$CONFIG_FILE"
+  mv "$tmp" "$MODELMAN_FILE"
 }
 
-# gateway_field reads one field from the [gateway] section (mode, url, or
+# litellm_field reads one field from the [litellm] section (enabled, url, or
 # api_key), stripping TOML quoting. Prints nothing when absent. The dynamic
 # regex "^[[:space:]]*<field>[[:space:]]*=" matches the same key forms as
-# set_gateway_mode's rewrite rule, so read and write stay in lockstep. Both
-# tolerate leading whitespace: wt's config writer indents section bodies.
-gateway_field() {
+# set_litellm_enabled's rewrite rule, so read and write stay in lockstep.
+litellm_field() {
   local field="$1"
   awk -v f="$field" '
-    BEGIN { ingw = 0 }
-    /^[[:space:]]*\[gateway\][[:space:]]*$/ { ingw = 1; next }
-    /^[[:space:]]*\[/ { ingw = 0 }
-    ingw && $0 ~ ("^[[:space:]]*" f "[[:space:]]*=") {
+    BEGIN { insec = 0 }
+    /^[[:space:]]*\[litellm\][[:space:]]*$/ { insec = 1; next }
+    /^[[:space:]]*\[/ { insec = 0 }
+    insec && $0 ~ ("^[[:space:]]*" f "[[:space:]]*=") {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)
       gsub(/"/, "", line)
       print line
       exit
     }
-  ' "$CONFIG_FILE"
+  ' "$MODELMAN_FILE"
 }
 
-# current_gateway_mode prints the effective gateway mode: the [gateway]
-# mode value, or "direct" when the section or key is absent (wt's IsDirect
-# treats "" and "direct" alike).
+# current_gateway_mode prints the effective routing mode: "litellm" when
+# [litellm].enabled is true, else "direct" (a missing table or key reads as
+# off — wt's IsDirect treats an absent table as direct).
 current_gateway_mode() {
-  local mode
-  mode=$(gateway_field "mode")
-  [[ -z "$mode" ]] && mode="direct"
-  printf '%s\n' "$mode"
+  local enabled
+  enabled=$(litellm_field "enabled")
+  if [[ "$enabled" == "true" ]]; then
+    printf 'litellm\n'
+  else
+    printf 'direct\n'
+  fi
 }
 
-# require_litellm_credentials verifies [gateway] carries url and api_key: a
+# require_litellm_credentials verifies [litellm] carries url and api_key: a
 # litellm pass without credentials fails every row with connection errors
 # that read as agent bugs. Failing fast beats a wall of misleading FAILs.
 require_litellm_credentials() {
   local url key
-  url=$(gateway_field "url")
-  key=$(gateway_field "api_key")
+  url=$(litellm_field "url")
+  key=$(litellm_field "api_key")
   if [[ -z "$url" || -z "$key" ]]; then
-    echo "skip: [gateway] lacks url/api_key; the litellm pass would fail every row (see $CONFIG_FILE)" >&2
+    echo "skip: [litellm] lacks url/api_key; the litellm pass would fail every row (see $MODELMAN_FILE)" >&2
     return 1
   fi
 }
@@ -387,12 +394,13 @@ run_tests_for_mode() {
 usage() {
   cat <<'USAGE'
 Usage: scripts/agents-smoke.sh [options]
-  (no args)       Run the live agent smoke tests in both gateway modes
-                  (direct then litellm; config.toml is restored afterwards)
+  (no args)       Run the live agent smoke tests in both routing modes
+                  (direct then litellm; modelman.toml [litellm] state is
+                  restored afterwards)
   --list          Print the test matrix and exit
   --dry-run       Print the wt command for each row and exit
   --only AGENTS   Comma-separated agents to run (default all)
-  --modes MODES   Comma-separated gateway modes to run (default direct,litellm).
+  --modes MODES   Comma-separated routing modes to run (default direct,litellm).
                   "current" runs only the mode already configured.
   --timeout SECS  Per-row timeout (default 180)
   -h, --help      Show this help
@@ -570,15 +578,15 @@ main() {
 
   preflight
 
-  # Everything below flips the gateway config: resolve the path and guard
+  # Everything below flips the [litellm] routing state: resolve the path
   # the original before any flip. (list/dry-run never touch the config.)
-  CONFIG_FILE=$(config_file_path) || exit 1
-  CONFIG_BAK="${CONFIG_FILE}.agents-smoke.bak"
-  snapshot_config || exit 1
+  MODELMAN_FILE=$(modelman_file_path) || exit 1
+  MODELMAN_BAK="${MODELMAN_FILE}.agents-smoke.bak"
+  snapshot_modelman || exit 1
   # Restore the original on any exit path. INT/TERM exit so the EXIT trap
   # fires the restore (a plain restore-and-return handler would let the
   # script continue after Ctrl-C).
-  trap 'restore_config' EXIT
+  trap 'restore_modelman' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -588,17 +596,18 @@ main() {
   IFS=',' read -r -a mode_list <<<"$MODES"
   for mode in "${mode_list[@]}"; do
     if [[ "$mode" == "litellm" ]] && ! require_litellm_credentials; then
-      echo "=== litellm pass skipped (no gateway credentials) ===" >&2
+      echo "=== litellm pass skipped (no [litellm] credentials) ===" >&2
       continue
     fi
+    want="false"; [[ "$mode" == "litellm" ]] && want="true"
     if [[ "$mode" != "$(current_gateway_mode)" ]]; then
-      set_gateway_mode "$mode" || exit 1
+      set_litellm_enabled "$want" || exit 1
     fi
     ((pass_idx++)) || true
     run_tests_for_mode "$mode" "$([[ $pass_idx -eq 1 ]] && echo yes || echo no)" || overall_rc=1
   done
-  restore_config
-  echo "=== gateway config restored to original mode ==="
+  restore_modelman
+  echo "=== modelman.toml restored to original [litellm] state ==="
   exit $overall_rc
 }
 

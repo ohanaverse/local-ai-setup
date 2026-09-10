@@ -70,6 +70,12 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 `$XDG_CONFIG_HOME/agent-wt/`). The theme subcommand writes
 `themes.toml`; other subcommands will add their own files alongside it.
 
+> **LiteLLM routing is not a `wt config` setting.** Whether agents route
+> through the LiteLLM proxy or dial providers directly is modelman-owned:
+> `modelman litellm status` / `on` / `off` controls the `[litellm]` table in
+> `~/.config/local-ai/modelman.toml`, which wt reads read-only. There is no
+> routing surface in the editor — and there never was.
+
 ```
 ~/.config/agent-wt/
 ├── config.toml          # main agent registry (existing)

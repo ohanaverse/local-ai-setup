@@ -56,17 +56,17 @@ OpenCode is the one agent whose CLI uniquely requires the `provider/model` form,
 
 The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) with a `/v1` suffix. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`).
 
-The builtin `ollama` provider resolves model ids against OpenCode's own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. The explicit `models` map registers the bare name so OpenCode accepts it; this is the same catalog-bypass the gateway mode uses (below), just on the builtin provider instead of a custom one.
+The builtin `ollama` provider resolves model ids against OpenCode's own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. The explicit `models` map registers the bare name so OpenCode accepts it; this is the same catalog-bypass the LiteLLM route uses (below), just on the builtin provider instead of a custom one.
 
-### Gateway mode (LiteLLM)
+### LiteLLM routing
 
-When `[gateway].mode = "litellm"`, the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the gateway's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same gateway model:
+When LiteLLM routing is enabled (`modelman litellm status`), the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
 
 ```json
-{"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<gateway.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}
+{"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<litellm.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}
 ```
 
-The builtin `openai` provider is not usable for gateway models: opencode validates model ids against its own catalog ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). opencode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the registry id stays verbatim inside it. Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the proxy with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
+The builtin `openai` provider is not usable for LiteLLM-routed models: opencode validates model ids against its own catalog ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). opencode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the registry id stays verbatim inside it. Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the proxy with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Session resume
 

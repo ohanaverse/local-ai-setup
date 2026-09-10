@@ -2,7 +2,7 @@
 
 > Use this to: produce your own quantized MLX model with mlx-lm's own tooling and register it in modelman, or serve a target+draft pairing through mlx-lm's generic speculative decoding — both without any training/distillation step.
 
-This guide, like [09-agent-benchmarks](09-agent-benchmarks.md), embeds no `litellm_exposed` snapshots — nothing here goes stale when a model is exposed/unexposed.
+This guide, like [09-agent-benchmarks](09-agent-benchmarks.md), embeds no `exposed` snapshots — nothing here goes stale when a model is exposed/unexposed.
 
 Two independent features, both built on the same `mlx_lm.*` tooling bundled inside the omlx Homebrew keg:
 

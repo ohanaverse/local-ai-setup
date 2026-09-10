@@ -127,7 +127,7 @@ Unexposed ollama/gemma4:12b-mlx.
 
 TUI — same toggle from the interactive UI (bare `uv run modelman`): press `x` on a model row; it queues the change and applies it on exit (downloading/pulling first if the model isn't ready yet); the EXPOSED column shows `Y` once the flag is set AND the model is ready (cloud models — `openrouter/*` or `location = "cloud"` rows — are exempt from the ready gate — see [02-providers-and-models](02-providers-and-models.md)).
 
-Before/after, using the real files read-only. This illustrates the `expose` operation on `ollama/gpt-oss:20b`, a model that is in the registry and ready but currently has no LiteLLM row and `litellm_exposed = false`:
+Before/after, using the real files read-only. This illustrates the `expose` operation on `ollama/gpt-oss:20b`, a model that is in the registry and ready but currently has no LiteLLM row and `exposed = false`:
 
 ```bash
 grep -n -A6 'model_name: ollama/gpt-oss:20b' /Users/keith/.config/litellm/config.yaml
@@ -141,7 +141,7 @@ grep -A4 '^\[model_state."ollama/gpt-oss:20b"\]' /Users/keith/.config/local-ai/m
 ready = true
 disk_path = "ollama:gpt-oss:20b"
 size_bytes = 13958643712
-litellm_exposed = false
+exposed = false
 ```
 
 Expected after `uv run modelman expose ollama/gpt-oss:20b`:
@@ -160,10 +160,12 @@ model_list:                                       # banners/comments gone — Py
 
 ```toml
 [model_state."ollama/gpt-oss:20b"]
-litellm_exposed = true                            # ← only field modelman flips; ready/disk_path/size_bytes untouched
+exposed = true                                    # ← only field modelman flips; ready/disk_path/size_bytes untouched
 ```
 
 This model is currently unexposed on this machine — running the command above would produce the "after" state.
+
+Exposure and routing are independent: `expose`/`unexpose` decide which models exist on the proxy, while the `[litellm]` table in `~/.config/local-ai/modelman.toml` (`modelman litellm on|off`, see [00-config-map](00-config-map.md)) only decides whether wt routes agents through it. Toggling `[litellm].enabled` therefore needs no re-exposing of models — and `modelman litellm` never touches the proxy service (no restart).
 
 modelman **does** restart LiteLLM after an exposing write — `expose`/`unexpose` run the restart command from `MODELMAN_LITELLM_RESTART_CMD`, falling back to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` when the var is unset, so a new row is live right away (proxy down ~10–20 s; if the start fails, KeepAlive crash-loops it and `~/.litellm.err.log` is the tell). The TUI status pane and CLI surface a non-fatal warning if the restart itself fails — restart manually per §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
 

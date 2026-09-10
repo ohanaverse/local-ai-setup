@@ -101,11 +101,11 @@ Real output shape (2026-08-29): all section headings, verbatim rows — one WT-o
 - **Matched rows** (launches > 0 *and* requests > 0): agent traffic flowed through the LiteLLM proxy. Normal state for models exposed via LiteLLM.
 - **WT-only launches**: wt launches with no LiteLLM spend — the agent reached the model's native API directly (ollama `:11434` or its cloud endpoints, oMLX `:8000`) and those requests never log to Postgres. On this box that is *most* rows (all the `ollama/...` ones), not a bug. Spends only reconcile for models that went through LiteLLM.
 
-  After enabling `[gateway]` in `wt`, non-native launches route through LiteLLM,
-  so matched rows should become the norm. Remaining `WT-only` rows are usually:
+  After enabling LiteLLM routing (`modelman litellm on`), non-native launches
+  route through LiteLLM, so matched rows should become the norm. Remaining
+  `WT-only` rows are usually:
 
   - native models (unmetered subscriptions)
-  - OpenCode launches (not routed through the gateway in this release)
   - traffic that bypassed wt entirely (e.g. direct `curl` to Ollama/oMLX)
 
 - **LiteLLM-only spend**: something used the proxy without a wt launch in the window — ad-hoc `curl`/scripts/other clients. The live `openrouter/qwen/*` rows ($0.0003–$0.0085) are exactly this.

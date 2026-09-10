@@ -41,7 +41,7 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_L
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman                                # full TUI: browse families → add/edit/delete → queue changes → confirm on exit
 uv run modelman sync                           # reconcile downloaded/disk_path/size_bytes in modelman.toml against providers; never adds models
-uv run modelman expose ollama/gpt-oss:20b      # non-interactive: writes a model_list entry + sets litellm_exposed = true
+uv run modelman expose ollama/gpt-oss:20b      # non-interactive: writes a model_list entry + sets exposed = true
 uv run modelman unexpose ollama/gpt-oss:20b    # removes the entry and clears the flag
 ```
 
@@ -82,6 +82,8 @@ secret_ref = "sk-or-v1-..."
 ```
 
 `secret_ref` is written verbatim as `api_key` into the LiteLLM `model_list` entry on expose (`src/modelman/litellm.py:110`) — put the key or a resolvable secret reference there, never a real `sk-or-v1-…` value into any repo; the README's `"sk-or-v1-..."` placeholder above is the shape. `location = "cloud"` is what exempts this provider's models from the "must be downloaded" expose gate.
+
+Providers also declare a `protocols` field — the list of wire protocols the provider serves (`"anthropic"`, `"openai-chat"`, `"openai-responses"`; default `["openai-chat"]`). Ollama's discovered entry serves `["anthropic","openai-chat"]`. wt compares an agent's protocols against the provider's to pick direct-vs-LiteLLM routing ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4).
 
 Validate the file after editing (read-only registry load):
 
@@ -214,7 +216,7 @@ uv run modelman unexpose ollama/gpt-oss:20b
 Unexposed ollama/gpt-oss:20b.
 ```
 
-On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `litellm_exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y` if both the flag is set and the model is ready, with cloud models — `openrouter/*` or `location = "cloud"` rows — exempt from the ready gate).
+On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y` if both the flag is set and the model is ready, with cloud models — `openrouter/*` or `location = "cloud"` rows — exempt from the ready gate).
 
 ## Verification
 
@@ -249,18 +251,18 @@ grep -A4 '"ollama/gpt-oss:20b"' ~/.config/local-ai/modelman.toml
 ready = true
 disk_path = "ollama:gpt-oss:20b"
 size_bytes = 13958643712
-litellm_exposed = false
+exposed = false
 ```
 
 ```bash
-grep -c "litellm_exposed = true" ~/.config/local-ai/modelman.toml
+grep -c "exposed = true" ~/.config/local-ai/modelman.toml
 ```
 
 ```text
 24
 ```
 
-> **Historical note (2026-08-30, updated 2026-09-03):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — and eleven openrouter models exposed through the TUI/CLI since. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the omlx entries remain hand-managed by design (the llama.cpp rows were retired 2026-09-07) and keep `litellm_exposed = false`.
+> **Historical note (2026-08-30, updated 2026-09-03):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — and eleven openrouter models exposed through the TUI/CLI since. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the omlx entries remain hand-managed by design (the llama.cpp rows were retired 2026-09-07) and keep `exposed = false`.
 
 Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
 
@@ -279,9 +281,9 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 
 ## Gotchas
 
-- **`registry.toml` is canonical + read-only to wt.** Model visibility for agents changes HERE — edit `~/.config/local-ai/registry.toml`, not wt's config. `modelman.toml` is per-machine state (`[model_state]` blocks: `downloaded`, `disk_path`, `size_bytes`, `litellm_exposed`; `[families]` display names); never treat it as the model catalog.
+- **`registry.toml` is canonical + read-only to wt.** Model visibility for agents changes HERE — edit `~/.config/local-ai/registry.toml`, not wt's config. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `exposed` — legacy `downloaded`/`litellm_exposed` keys are still read as fallbacks; `[families]` display names); never treat it as the model catalog.
 - **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`.
-- **`sync` semantics as observed:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), `:cloud` rows land `downloaded = false`, unconfigured models ignored, no models added, `litellm_exposed` preserved. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
+- **`sync` semantics as observed:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), `:cloud` rows land `ready = false`, unconfigured models ignored, no models added, `exposed` preserved. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
 - **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:40-43`).
 - **TUI changes apply on exit only.** Adds/edits/deletes/downloads/exposure toggles sit in an in-memory queue until you confirm the pending set; deletes run before downloads, downloads before exposure changes, then one write of both files.
 - **Secrets:** `secret_ref` is copied verbatim into the LiteLLM entry's `api_key`. The live `config.yaml` currently holds literal `sk-or-v1-…` keys — redact before pasting config anywhere.

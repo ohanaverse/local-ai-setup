@@ -4,8 +4,9 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 
 ## Migrating to modelman exposure
 
-After this update, `wt` only shows non-native models that have `litellm_exposed = true`
-in `~/.config/local-ai/modelman.toml`. To make a model available in `wt`, run:
+After this update, `wt` only shows non-native models that have `exposed = true`
+in `~/.config/local-ai/modelman.toml` (the legacy `litellm_exposed` key is
+still read as a fallback). To make a model available in `wt`, run:
 
 ```bash
 uv run modelman expose ollama/<model>
@@ -15,11 +16,20 @@ Native models (`claude/native`, `copilot/native`) are always shown and do not ne
 
 ## LiteLLM proxy lifecycle
 
-In gateway mode, `wt` routes non-native models through the LiteLLM proxy at
-`:4000`. The proxy loads its model list from `~/.config/litellm/config.yaml`
+With LiteLLM routing on (`modelman litellm on`), `wt` routes non-native models
+through the LiteLLM proxy at `:4000`. The proxy loads its model list from
+`~/.config/litellm/config.yaml`
 **only at startup** — editing that file does not take effect until the proxy is
 restarted; until then it serves a stale model list and returns
 `400 Invalid model name passed in model=…` for any newly added model.
+
+**The on/off routing switch is also modelman-owned.** Whether agents route
+through the proxy or dial providers directly no longer comes from wt's
+(retired) `[gateway]` config block: it lives in the `[litellm]` table of
+`~/.config/local-ai/modelman.toml` and is toggled with `modelman litellm on` /
+`modelman litellm off` (current state: `modelman litellm status`). Toggling is
+routing policy only — it never starts, stops, or restarts the proxy; the
+proxy-process lifecycle below is a separate concern.
 
 **modelman owns reconciliation.** `modelman` is the writer of `config.yaml`
 (`expose`/`unexpose`, TUI `l` key) and restarts the proxy after a successful
@@ -33,8 +43,8 @@ proxy manually:
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
 ```
 
-This affects every gateway-routed agent (claude, codex, copilot, opencode, pi),
-not just one launcher — and the failure modes differ per driver: model-id
+This affects every agent routed through the proxy (claude, codex, copilot,
+opencode, pi), not just one launcher — and the failure modes differ per driver: model-id
 grammar mismatches, strict `ollama_chat` param mapping, and litellm bridge
 bugs all surface as *agent-side* errors ("Invalid model name", "high demand",
 "Model not found", …). Per-driver causes, fixes, and a debugging playbook
@@ -44,7 +54,8 @@ live in [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, rotation, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
 
-Gateway-mode launches have their own failure modes (model-id grammar mismatches, litellm bridge bugs) — see [litellm-troubleshooting.md](litellm-troubleshooting.md) for the driver matrix, known litellm issues, and the debugging playbook.
+LiteLLM-routed launches have their own failure modes (model-id grammar
+mismatches, litellm bridge bugs) — see [litellm-troubleshooting.md](litellm-troubleshooting.md) for the driver matrix, known litellm issues, and the debugging playbook.
 
 ## Agents
 
