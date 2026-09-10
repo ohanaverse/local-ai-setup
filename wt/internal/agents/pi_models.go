@@ -262,7 +262,31 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 			continue
 		}
 
-		p := f.Providers[providerID]
+		wantBaseURL := config.BaseOrigin(provider.Auth.BaseURL) + "/v1"
+		wantAPIKey := defaultPiOllamaAPIKey
+		if provider.Auth.SecretRef != "" {
+			wantAPIKey = config.ResolveSecret(provider.Auth.SecretRef)
+		}
+		// pi's models.json schema requires a non-empty apiKey (see
+		// defaultPiOllamaAPIKey); a provider whose secret cannot be resolved
+		// cannot produce a schema-valid block, so skip it entirely rather
+		// than write one and poison the whole catalog.
+		if wantAPIKey == "" {
+			continue
+		}
+
+		p, existed := f.Providers[providerID]
+		if !existed {
+			// Wholly-new provider block: set the identity fields
+			// unconditionally. The guarded "reset WT-written values" logic
+			// below only fires on pre-existing (gateway-redirected) blocks —
+			// without this branch a fresh block would be written with empty
+			// baseUrl/apiKey, which invalidates the entire models.json for pi.
+			p.API = "openai-completions"
+			p.BaseURL = wantBaseURL
+			p.APIKey = wantAPIKey
+			mutated = true
+		}
 
 		existing := make(map[string]bool, len(p.Models))
 		for _, m := range p.Models {
@@ -283,28 +307,24 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 			mutated = true
 		}
 
-		wantBaseURL := config.BaseOrigin(provider.Auth.BaseURL) + "/v1"
-		wantAPIKey := defaultPiOllamaAPIKey
-		if provider.Auth.SecretRef != "" {
-			wantAPIKey = config.ResolveSecret(provider.Auth.SecretRef)
-		}
-
-		// Reset WT-written values (gateway redirects or non-canonical local
-		// ollama forms) to the provider's direct endpoint. Custom user config
-		// is preserved verbatim.
-		if p.API == "" {
-			p.API = "openai-completions"
-			mutated = true
-		}
-		if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
-			if p.BaseURL != wantBaseURL {
-				p.BaseURL = wantBaseURL
+		if existed {
+			// Reset WT-written values (gateway redirects or non-canonical local
+			// ollama forms) to the provider's direct endpoint. Custom user config
+			// is preserved verbatim.
+			if p.API == "" {
+				p.API = "openai-completions"
 				mutated = true
 			}
-			if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
-				if p.APIKey != wantAPIKey {
-					p.APIKey = wantAPIKey
+			if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
+				if p.BaseURL != wantBaseURL {
+					p.BaseURL = wantBaseURL
 					mutated = true
+				}
+				if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
+					if p.APIKey != wantAPIKey {
+						p.APIKey = wantAPIKey
+						mutated = true
+					}
 				}
 			}
 		}

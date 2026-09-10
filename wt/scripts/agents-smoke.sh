@@ -24,16 +24,16 @@ DEFAULT_MODES="direct,litellm"
 read -r -d '' MATRIX <<'EOF' || true
 claude|claude/native|-p @PROMPT@|own subscription, no model args
 claude|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|gateway round-trip
-claude|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
+claude|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 codex|DEFAULT_OLLAMA_MODEL|exec @PROMPT@|
 codex|openrouter/z-ai/glm-5.3-flash|exec @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
 copilot|copilot/native|-p @PROMPT@|own subscription
 copilot|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
-copilot|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash|xfail:direct
+copilot|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 opencode|DEFAULT_OLLAMA_MODEL|run @PROMPT@|
 opencode|openrouter/z-ai/glm-5.3-flash|run @PROMPT@|OpenRouter GLM-5.3-Flash|xfail
 pi|DEFAULT_OLLAMA_MODEL|-p @PROMPT@|
-pi|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash|xfail:direct
+pi|openrouter/z-ai/glm-5.3-flash|-p @PROMPT@|OpenRouter GLM-5.3-Flash
 agy|agy/native|-p @PROMPT@|native model; driver ignores it
 shell|-|echo @PROMPT@|-- passthrough becomes argv
 EOF
@@ -149,8 +149,11 @@ preflight() {
 # [litellm].enabled directly (routing policy only — the proxy process is
 # never started or stopped), leaving url/api_key and every other section
 # verbatim, and the original is restored on any exit path. The file is
-# located via MODELMAN_STATE (modelman's own override) falling back to
-# modelman's default, so the script and modelman agree on the same file.
+# located at ${XDG_CONFIG_HOME:-$HOME/.config}/local-ai/modelman.toml — the
+# path wt actually reads (wt has no MODELMAN_STATE override, a deliberate
+# asymmetry: MODELMAN_STATE would flip a file wt never sees, and the smoke
+# matrix would run against the wrong mode). modelman honors XDG_CONFIG_HOME
+# at precedence 2, so targeting the XDG path keeps both tools on one file.
 
 MODELMAN_FILE=""
 MODELMAN_BAK=""
@@ -160,7 +163,8 @@ MODELMAN_BAK=""
 # ~/.config/local-ai/modelman.toml (modelman's state default is not XDG-
 # redirected, so the fallback matches modelman rather than wt).
 modelman_file_path() {
-  printf '%s\n' "${MODELMAN_STATE:-$HOME/.config/local-ai/modelman.toml}"
+  local base="${XDG_CONFIG_HOME:-$HOME/.config}"
+  printf '%s\n' "$base/local-ai/modelman.toml"
 }
 
 # snapshot_modelman backs up the original state once, before any flip.

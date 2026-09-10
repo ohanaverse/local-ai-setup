@@ -485,3 +485,64 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	}
 }
 
+
+// syncModels in direct mode must write a schema-valid block when it creates
+// a provider block that pi's catalog does not have yet (e.g. openrouter, the
+// first provider with a secret_ref): baseUrl/apiKey/api must all be
+// non-empty, since pi's schema rejects the WHOLE models.json over an empty
+// field and every --model lookup then fails. This regression was caught live
+// when a direct-mode launch created the openrouter block with empty
+// identity fields and pi rejected the file ("No models available").
+func TestSyncModelsDirectCreatesSchemaValidProviderBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels) // only the ollama block exists
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-or-literal", BaseURL: "https://openrouter.ai/api/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("baseUrl = %q, want https://openrouter.ai/api/v1 (empty would invalidate the whole models.json)", p.BaseURL)
+	}
+	if p.APIKey != "sk-or-literal" {
+		t.Errorf("apiKey = %q, want the resolved secret", p.APIKey)
+	}
+	if p.API != "openai-completions" {
+		t.Errorf("api = %q, want openai-completions", p.API)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "z-ai/glm-5.3-flash" {
+		t.Errorf("models = %+v, want the bare ModelName entry", p.Models)
+	}
+}
+
+// A provider whose secret_ref resolves to empty (env var unset) must be
+// skipped entirely: writing its block would either carry an empty apiKey
+// (schema-invalid) or lose the identity fields.
+func TestSyncModelsSkipsProviderWithUnresolvableSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, emptyPiModels)
+	t.Setenv("OPENROUTER_API_KEY", "")
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "OPENROUTER_API_KEY", BaseURL: "https://openrouter.ai/api/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	if _, ok := readPiModels(t, path).Providers["openrouter"]; ok {
+		t.Error("openrouter block written despite unresolvable secret — would poison the catalog with an empty apiKey")
+	}
+}
