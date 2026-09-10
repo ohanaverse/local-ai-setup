@@ -231,11 +231,11 @@ func TestSyncModelsLitellm(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, emptyPiModels)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -270,11 +270,11 @@ func TestSyncModelsLitellmDedicatedProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"qwen3.8:27b-mlx"},{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"},{"_launch":false,"id":"user-model"}]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	for run := 1; run <= 2; run++ {
 		if err := syncModels(cfg, path); err != nil {
 			t.Fatalf("syncModels run %d: %v", run, err)
@@ -309,7 +309,6 @@ func TestSyncModelsDirectPreservesLitellmProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"litellm":{"api":"openai-completions","apiKey":"sk-x","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]},"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct"},
 		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
@@ -335,12 +334,12 @@ func TestSyncModelsDirectRevertsGatewayProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -366,12 +365,12 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 	// litellm-mode run.
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"qwen3.8:27b-mlx"}]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -393,7 +392,6 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-remote","baseUrl":"http://192.168.1.50:11434/v1","models":[]}}}`)
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct"},
 		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
@@ -419,11 +417,11 @@ func TestSyncModelsLitellmCreatesMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
 	cfg := &config.Config{
-		Gateway: config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	if err := syncModels(cfg, path); err != nil {
 		t.Fatalf("syncModels: %v", err)
 	}
@@ -457,7 +455,7 @@ func TestPiBuildLitellm(t *testing.T) {
 	writeFile(t, path, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := piDriver{}.Build(m, false, routeFor(m, gw))
 	if !slices.Equal(lc.Args, []string{"--model", "litellm/ollama/qwen3.8:27b-mlx"}) {
 		t.Fatalf("expected --model litellm/<registry id>, got %v", lc.Args)
@@ -477,7 +475,7 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	writeFile(t, filepath.Join(piDir, "models.json"), `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := piDriver{}.Build(m, false, routeFor(m, gw))
 	if len(lc.Args) != 0 {
 		t.Fatalf("args = %v, want none (fallback to default)", lc.Args)

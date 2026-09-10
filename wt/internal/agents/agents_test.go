@@ -56,11 +56,12 @@ func litellmRoute(m config.Model) config.Route {
 	}
 }
 
-// routeFor converts a legacy Gateway used in tests into the Route Build expects.
-func routeFor(m config.Model, gw config.GatewayConfig) config.Route {
-	if gw.IsLitellm() {
+// routeFor converts a test LitellmState into the Route Build expects:
+// enabled routes through the proxy, disabled dials the (ollama) direct route.
+func routeFor(m config.Model, gw config.LitellmState) config.Route {
+	if gw.Enabled {
 		return config.Route{
-			BaseOrigin: gw.BaseURL(),
+			BaseOrigin: strings.TrimRight(gw.URL, "/"),
 			APIKey:     gw.APIKey,
 			ModelRef:   m.ID,
 			Display:    m.ModelName,
@@ -104,7 +105,7 @@ func TestByNameUnknown(t *testing.T) {
 	}
 }
 
-// Gateway.BaseURL must strip any trailing slash from the configured URL
+// LitellmBaseURL must strip any trailing slash from the configured URL
 // before drivers append their protocol-specific /v1 or /v1/ suffix.
 // Without this, a user-configured URL like "http://localhost:4000/" would
 // produce double slashes (e.g. "http://localhost:4000//v1") and the agent
@@ -121,9 +122,11 @@ func TestGatewayBaseURLTrim(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		got := config.GatewayConfig{URL: c.url}.BaseURL()
+		cfg := &config.Config{}
+		cfg.SetLitellmForTest(config.LitellmState{URL: c.url})
+		got := cfg.LitellmBaseURL()
 		if got != c.want {
-			t.Errorf("BaseURL(%q) = %q, want %q", c.url, got, c.want)
+			t.Errorf("LitellmBaseURL(%q) = %q, want %q", c.url, got, c.want)
 		}
 	}
 }

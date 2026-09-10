@@ -35,30 +35,31 @@ const (
 // ollama provider's auth base URL.
 const OllamaBaseURL = "http://localhost:11434"
 
-// ── GatewayConfig ─────────────────────────────────────────
+// ── LiteLLM routing state (modelman-sourced) ─────────────
 
-// GatewayConfig is wt-owned gateway routing config.
-type GatewayConfig struct {
-	Mode   string `toml:"mode"` // "direct" | "litellm"
-	URL    string `toml:"url"`
-	APIKey string `toml:"api_key"`
-}
+// IsLitellm reports whether non-native models route through the LiteLLM
+// proxy, sourced read-only from modelman.toml's [litellm].enabled. wt
+// never starts, stops, or restarts the proxy — this is routing policy only.
+func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
 
-// IsDirect reports whether the gateway is disabled/absent.
-func (g GatewayConfig) IsDirect() bool {
-	return g.Mode == "" || g.Mode == "direct"
-}
+// IsDirect reports whether agents dial providers directly where the
+// agent×provider protocol overlap allows it.
+func (c *Config) IsDirect() bool { return !c.litellm.Enabled }
 
-// IsLitellm reports whether the gateway routes through the LiteLLM proxy.
-func (g GatewayConfig) IsLitellm() bool {
-	return g.Mode == "litellm"
-}
+// LitellmBaseURL returns the modelman-sourced proxy URL with any trailing
+// slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
+// so a user URL like "http://localhost:4000/" must not produce a double
+// slash. TrimRight (not TrimSuffix) so a double-slash typo is also
+// normalized.
+func (c *Config) LitellmBaseURL() string { return strings.TrimRight(c.litellm.URL, "/") }
 
-// BaseURL returns g.URL with any trailing slashes removed. Drivers append
-// their own protocol suffix (/v1, /v1/), so a user URL like
-// "http://localhost:4000/" must not produce a double slash. TrimRight (not
-// TrimSuffix) so a double-slash typo is also normalized.
-func (g GatewayConfig) BaseURL() string { return strings.TrimRight(g.URL, "/") }
+// LitellmAPIKey returns the modelman-sourced proxy API key.
+func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
+
+// SetLitellmForTest overrides the modelman-sourced [litellm] routing state.
+// Production wiring goes through finalizeCfg (loadModelmanState); tests in
+// other packages cannot set the unexported field directly.
+func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
 // ── Provider ──────────────────────────────────────────────
 
@@ -126,17 +127,17 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 
 	common := intersectProtocols(agentProtocols, provider.EffectiveProtocols())
 	forced := len(agentProtocols) > 0 && len(common) == 0
-	useLitellm := forced || c.Gateway.IsLitellm()
+	useLitellm := forced || c.IsLitellm()
 
 	if useLitellm {
-		if c.Gateway.BaseURL() == "" {
+		if c.LitellmBaseURL() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no URL is configured — "+
 					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on'")
 		}
 		return Route{
-			BaseOrigin: c.Gateway.BaseURL(),
-			APIKey:     c.Gateway.APIKey,
+			BaseOrigin: c.LitellmBaseURL(),
+			APIKey:     c.LitellmAPIKey(),
 			ModelRef:   m.ID,
 			Display:    m.ModelName,
 			ProviderID: providerID,
@@ -273,7 +274,6 @@ type Agent struct {
 // registry.toml and are never persisted by wt (see Save).
 type Config struct {
 	DefaultTag string          `toml:"default_tag"`
-	Gateway    GatewayConfig   `toml:"gateway"`
 	Providers  []Provider      `toml:"providers"`
 	Models     []Model         `toml:"models"`
 	Agents     []Agent         `toml:"agents"`
@@ -398,22 +398,10 @@ func (c *Config) validate() []error {
 		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
 	}
 
-	if c.Gateway.Mode != "" && c.Gateway.Mode != "direct" && c.Gateway.Mode != "litellm" {
-		errs = append(errs, fmt.Errorf("gateway.mode must be empty, direct, or litellm, got %q", c.Gateway.Mode))
-	}
-
-	// litellm mode is unusable without a base URL and bearer token: drivers
-	// would emit empty ANTHROPIC_BASE_URL / base_url values and silently
-	// misroute (claude falls back to api.anthropic.com with the gateway key).
-	// Fail fast at validation time instead.
-	if c.Gateway.IsLitellm() {
-		if c.Gateway.URL == "" {
-			errs = append(errs, fmt.Errorf("gateway.url must be set when gateway.mode is litellm"))
-		}
-		if c.Gateway.APIKey == "" {
-			errs = append(errs, fmt.Errorf("gateway.api_key must be set when gateway.mode is litellm"))
-		}
-	}
+	// Note: no validation of the [litellm] routing state here — it is sourced
+	// from modelman-owned modelman.toml, which wt cannot repair (Global
+	// Constraints: wt never fails closed on modelman.toml). A bad value only
+	// surfaces when ResolveRoute actually needs it at launch time.
 
 	// Providers
 	provIDs := map[string]bool{}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -371,7 +372,39 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 		changed = true
 	}
 
+	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
+	// GatewayConfig was deleted (Task 9): LiteLLM routing now lives in
+	// modelman-owned modelman.toml's [litellm] table. The decoded Config
+	// simply has no Gateway field, so re-saving drops the block; this
+	// fixup only detects its presence to point the user at the new
+	// control surface. Self-extinguishing: after the triggered Save, the
+	// block is gone and the probe no longer matches.
+	if dropLegacyGateway(Path()) {
+		changed = true
+	}
+
 	return changed, nil
+}
+
+// dropLegacyGateway detects a config.toml still carrying [gateway] (from
+// before GatewayConfig was deleted) and reports a one-time notice. The
+// Gateway field no longer exists on Config, so decoding config.toml
+// simply ignores an unknown [gateway] table (toml decoders skip unknown
+// keys by default) — this fixup only needs to detect it well enough to
+// tell the user where their settings moved.
+func dropLegacyGateway(path string) (changed bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Gateway *struct{} `toml:"gateway"`
+	}
+	if err := toml.Unmarshal(raw, &probe); err != nil || probe.Gateway == nil {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by modelman (see 'modelman litellm status'); this block will be dropped on next save")
+	return true
 }
 
 // upsertAgent finds the agent named name in cfg.Agents (via AgentByName) and

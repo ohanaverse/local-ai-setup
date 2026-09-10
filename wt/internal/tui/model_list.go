@@ -307,7 +307,7 @@ func (m *model) phaseModelView() string {
 	// the same screen. Falls back to direct when cfg is nil (view-only
 	// tests).
 	mode := "LiteLLM: off (direct)"
-	if m.cfg != nil && m.cfg.Gateway.IsLitellm() {
+	if m.cfg != nil && m.cfg.IsLitellm() {
 		mode = "LiteLLM: on"
 	}
 	footer := dimStyle.Render(fmt.Sprintf("\n%s\n[↑/↓] navigate   [enter] launch   [q] quit", mode))

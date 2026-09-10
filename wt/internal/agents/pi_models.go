@@ -113,7 +113,7 @@ func syncModels(cfg *config.Config, path string) error {
 	case os.IsNotExist(err):
 		// No catalog yet. In gateway mode, create one so pi routes through
 		// LiteLLM on first launch; in direct mode there is nothing to sync.
-		if !cfg.Gateway.IsLitellm() {
+		if !cfg.IsLitellm() {
 			return nil
 		}
 	case err != nil:
@@ -128,7 +128,7 @@ func syncModels(cfg *config.Config, path string) error {
 	}
 
 	mutated := false
-	if cfg.Gateway.IsLitellm() {
+	if cfg.IsLitellm() {
 		mutated = syncLitellmProvider(cfg, f) || mutated
 		mutated = revertOllamaProvider(cfg, f) || mutated
 	} else {
@@ -151,9 +151,9 @@ func syncModels(cfg *config.Config, path string) error {
 func syncLitellmProvider(cfg *config.Config, f piModelsFile) bool {
 	p := f.Providers[piLitellmProviderID]
 	mutated := false
-	if p.BaseURL != cfg.Gateway.BaseURL()+"/v1" || p.APIKey != cfg.Gateway.APIKey {
-		p.BaseURL = cfg.Gateway.BaseURL() + "/v1"
-		p.APIKey = cfg.Gateway.APIKey
+	if p.BaseURL != cfg.LitellmBaseURL()+"/v1" || p.APIKey != cfg.LitellmAPIKey() {
+		p.BaseURL = cfg.LitellmBaseURL() + "/v1"
+		p.APIKey = cfg.LitellmAPIKey()
 		if p.API == "" {
 			p.API = "openai-completions"
 		}
@@ -198,10 +198,10 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 		return false
 	}
 	mutated := false
-	if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.Gateway.BaseURL()+"/v1" {
+	if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
 		p.BaseURL = defaultPiOllamaBaseURL
 		// The apiKey was local-ollama or gateway-set; restore pi's placeholder.
-		if isDefaultOllamaAPIKey(p.APIKey) || (cfg.Gateway.APIKey != "" && p.APIKey == cfg.Gateway.APIKey) {
+		if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
 			if p.APIKey != defaultPiOllamaAPIKey {
 				p.APIKey = defaultPiOllamaAPIKey
 				mutated = true
@@ -296,12 +296,12 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 			p.API = "openai-completions"
 			mutated = true
 		}
-		if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.Gateway.BaseURL()+"/v1" {
+		if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
 			if p.BaseURL != wantBaseURL {
 				p.BaseURL = wantBaseURL
 				mutated = true
 			}
-			if isDefaultOllamaAPIKey(p.APIKey) || (cfg.Gateway.APIKey != "" && p.APIKey == cfg.Gateway.APIKey) {
+			if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
 				if p.APIKey != wantAPIKey {
 					p.APIKey = wantAPIKey
 					mutated = true

@@ -190,76 +190,6 @@ func TestValidate_EmptyDefaultTag(t *testing.T) {
 	}
 }
 
-// gateway.mode must be empty, direct, or litellm. Any other value is a
-// configuration error that would otherwise be silently ignored and could
-// cause the launcher to misroute requests. litellm mode additionally requires
-// url and api_key — without them drivers emit empty base URLs and silently
-// misroute (claude falls back to api.anthropic.com with the gateway key).
-func TestValidateGatewayMode(t *testing.T) {
-	base := &Config{
-		DefaultTag: "code",
-		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
-		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
-
-	for _, mode := range []string{"", "direct"} {
-		cfg := *base
-		cfg.Gateway.Mode = mode
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("mode %q should be valid, got: %v", mode, err)
-		}
-	}
-
-	// litellm mode is valid only with url and api_key set.
-	litellm := *base
-	litellm.Gateway = GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	if err := litellm.Validate(); err != nil {
-		t.Errorf("litellm with url+api_key should be valid, got: %v", err)
-	}
-
-	invalid := *base
-	invalid.Gateway.Mode = "proxy"
-	if err := invalid.Validate(); err == nil {
-		t.Fatal("expected error for invalid gateway.mode")
-	} else if !strings.Contains(err.Error(), "gateway.mode") {
-		t.Errorf("error = %q, want it to mention gateway.mode", err)
-	}
-}
-
-// A litellm gateway without a url must fail validation: every driver needs a
-// base URL to route through, and an empty one silently misroutes agents.
-func TestValidateLitellmRequiresURL(t *testing.T) {
-	cfg := &Config{
-		DefaultTag: "code",
-		Gateway:    GatewayConfig{Mode: "litellm", APIKey: "sk-litellm"}, // no url
-		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
-		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for litellm mode without url")
-	} else if !strings.Contains(err.Error(), "gateway.url") {
-		t.Errorf("error = %q, want it to mention gateway.url", err)
-	}
-}
-
-// A litellm gateway without an api_key must fail validation: LiteLLM requires
-// a bearer token, and an empty one makes every agent request 401.
-func TestValidateLitellmRequiresAPIKey(t *testing.T) {
-	cfg := &Config{
-		DefaultTag: "code",
-		Gateway:    GatewayConfig{Mode: "litellm", URL: "http://localhost:4000"}, // no api_key
-		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
-		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for litellm mode without api_key")
-	} else if !strings.Contains(err.Error(), "gateway.api_key") {
-		t.Errorf("error = %q, want it to mention gateway.api_key", err)
-	}
-}
-
 // Provider IDs are the foreign keys that models and agents reference.
 // Duplicates would make those references ambiguous — which "ollama" does a
 // model mean? Validation must catch this.
@@ -853,7 +783,6 @@ func TestResolveRouteMissingBaseURLErrors(t *testing.T) {
 // claude against an endpoint it cannot speak to.
 func TestClaudeForcesLitellmForOpenRouter(t *testing.T) {
 	cfg := &Config{
-		Gateway: GatewayConfig{Mode: "direct"},
 		Providers: []Provider{{
 			ID:   "openrouter",
 			Auth: AuthConfig{Type: "secret_ref", SecretRef: "k", BaseURL: "https://openrouter.ai/api/v1"},
@@ -867,7 +796,7 @@ func TestClaudeForcesLitellmForOpenRouter(t *testing.T) {
 		t.Fatalf("ResolveRoute: expected error when forced litellm has no URL, got nil")
 	}
 
-	cfg.Gateway = GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	cfg.litellm = LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
 	if err != nil {
 		t.Fatalf("ResolveRoute: %v", err)
@@ -883,7 +812,7 @@ func TestClaudeForcesLitellmForOpenRouter(t *testing.T) {
 // proxy regardless of the on/off setting.
 func TestCodexForcesLitellmWhenProviderLacksResponses(t *testing.T) {
 	cfg := &Config{
-		Gateway: GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		litellm: LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []Provider{{
 			ID:   "ollama",
 			Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
@@ -905,7 +834,6 @@ func TestCodexForcesLitellmWhenProviderLacksResponses(t *testing.T) {
 // not over-trigger for pairings that actually work (e.g. copilot+ollama).
 func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
 	cfg := &Config{
-		Gateway: GatewayConfig{Mode: "direct"},
 		Providers: []Provider{{
 			ID:   "ollama",
 			Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
@@ -922,62 +850,17 @@ func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
 	}
 }
 
-// TestGatewayConfigDirectByDefault asserts that a zero-value GatewayConfig
-// is treated as direct (no proxy). This is the safe default: until the user
-// explicitly configures gateway.mode = "litellm", wt must keep routing
-// agents to their native endpoints.
-func TestGatewayConfigDirectByDefault(t *testing.T) {
+// TestLitellmDirectByDefault asserts that a zero-value [litellm] state is
+// treated as direct (no proxy). This is the safe default: until the user
+// explicitly runs `modelman litellm on`, wt must keep routing agents to
+// their provider endpoints directly.
+func TestLitellmDirectByDefault(t *testing.T) {
 	cfg := &Config{}
-	if !cfg.Gateway.IsDirect() {
-		t.Fatalf("expected default gateway mode to be direct")
+	if !cfg.IsDirect() {
+		t.Fatalf("expected default routing mode to be direct")
 	}
-	if cfg.Gateway.IsLitellm() {
-		t.Fatalf("expected default gateway mode not to be litellm")
-	}
-}
-
-// TestGatewayConfigParsedFromTOML asserts that a [gateway] section in
-// config.toml is loaded into Config.Gateway. Without this, the CLI cannot
-// read a user's LiteLLM proxy settings from disk.
-func TestGatewayConfigParsedFromTOML(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
-	writeRegistry(t, dir, "providers = []\nmodels = []\n")
-
-	cfgDir := Dir()
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte(`
-default_tag = "code"
-
-[gateway]
-mode = "litellm"
-url = "http://localhost:4000"
-api_key = "test-key"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.Gateway.Mode != "litellm" {
-		t.Errorf("Gateway.Mode = %q, want %q", cfg.Gateway.Mode, "litellm")
-	}
-	if cfg.Gateway.URL != "http://localhost:4000" {
-		t.Errorf("Gateway.URL = %q, want %q", cfg.Gateway.URL, "http://localhost:4000")
-	}
-	if cfg.Gateway.APIKey != "test-key" {
-		t.Errorf("Gateway.APIKey = %q, want %q", cfg.Gateway.APIKey, "test-key")
-	}
-	if !cfg.Gateway.IsLitellm() {
-		t.Errorf("expected IsLitellm() = true")
-	}
-	if cfg.Gateway.IsDirect() {
-		t.Errorf("expected IsDirect() = false")
+	if cfg.IsLitellm() {
+		t.Fatalf("expected default routing mode not to be litellm")
 	}
 }
 
@@ -1008,3 +891,53 @@ func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
 	}
 }
 
+
+// TestMigrateDropsLegacyGatewayBlock: a config.toml written before this
+// feature still has [gateway]. Once GatewayConfig is deleted from Config,
+// the struct simply can't round-trip that block — Save must not
+// resurrect it, and the user should see one notice pointing them at the
+// new control surface instead of silent data loss.
+func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	writeRegistry(t, dir, "providers = []\nmodels = []\n")
+	cfgDir := Dir()
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n\n[gateway]\nmode = \"litellm\"\nurl = \"http://localhost:4000\"\napi_key = \"sk-x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	written, _ := os.ReadFile(Path())
+	if strings.Contains(string(written), "[gateway]") {
+		t.Error("Save must not re-emit a deleted [gateway] block")
+	}
+}
+
+// TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: wt cannot repair
+// modelman.toml, so a bad value there must not fail Validate() (which
+// runs on every wt invocation, including `wt config`) — it must only
+// surface when a route is actually resolved at launch.
+func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "code",
+		litellm:    LitellmState{Enabled: true}, // no URL
+		Providers:  []Provider{{ID: "ollama", Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() must not fail on an incomplete [litellm] table: %v", err)
+	}
+	_, err := cfg.ResolveRoute(Model{ID: "ollama/x", ProviderID: "ollama"}, []Protocol{ProtocolOpenAIChat})
+	if err == nil {
+		t.Error("ResolveRoute must error when litellm is required but unconfigured")
+	}
+}

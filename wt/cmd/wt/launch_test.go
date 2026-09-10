@@ -426,7 +426,6 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal},
 		},
@@ -439,6 +438,7 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	cfg.ExposeAllForTest()
 
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {

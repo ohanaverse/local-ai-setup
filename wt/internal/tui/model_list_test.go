@@ -369,13 +369,13 @@ func TestBuildModelItemsRefColumnBeforeMarker(t *testing.T) {
 // and the two providers the exception-marker tests route against, mirroring
 // a real registry.toml's ollama + openrouter provider shapes.
 func directOnlyTestConfig() *config.Config {
-	return &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct"},
+	c := &config.Config{
 		Providers: []config.Provider{
 			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 			{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or"}},
 		},
 	}
+	return c
 }
 
 var (

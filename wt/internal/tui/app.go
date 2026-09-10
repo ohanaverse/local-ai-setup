@@ -421,7 +421,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// check is skipped when routing through LiteLLM (any upstream
 				// may serve the model) and when the model is not served by
 				// ollama — ollamacheck only probes the local ollama daemon.
-				if !m.cfg.Gateway.IsLitellm() && ollamacheck.IsOllamaModel(highlighted.model) {
+				if !m.cfg.IsLitellm() && ollamacheck.IsOllamaModel(highlighted.model) {
 					ok, err := ollamacheck.Check(highlighted.model)
 					if err != nil {
 						m.status = "ollama check failed: " + err.Error()

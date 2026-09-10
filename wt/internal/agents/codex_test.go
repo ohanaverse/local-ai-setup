@@ -28,7 +28,7 @@ func codexLitellmProviderArgs(baseURL, model string) []string {
 // proxy rejects every request with 401 "No api key passed in".
 func TestCodexBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := codexDriver{}.Build(m, false, routeFor(m, gw))
 	want := codexLitellmProviderArgs("http://localhost:4000/v1/", "ollama/qwen3.8:27b-mlx")
 	if !slices.Equal(lc.Args, want) {

@@ -55,10 +55,9 @@ var matrixModels = []config.Model{
 // realistic base_url values, used to exercise ResolveRoute's per-provider direct
 // routing in the matrix tests.
 func matrixConfig() *config.Config {
-	return &config.Config{
+	c := &config.Config{
 		// Mode stays direct; URL/key are present so forced-litellm tests
 		// (codex, claude+non-ollama) have a gateway to route through.
-		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{
 			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 			{ID: "llamacpp", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080/v1"}},
@@ -67,6 +66,8 @@ func matrixConfig() *config.Config {
 		},
 		Models: matrixModels,
 	}
+	c.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	return c
 }
 
 // resolvedRoute returns the Route ResolveRoute would emit for m under the

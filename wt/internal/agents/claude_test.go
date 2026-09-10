@@ -116,7 +116,7 @@ func TestClaudeSeeder(t *testing.T) {
 // gateway with the registry model id and gateway credentials.
 func TestClaudeBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := claudeDriver{}.Build(m, false, routeFor(m, gw))
 	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
@@ -134,7 +134,7 @@ func TestClaudeBuildLitellm(t *testing.T) {
 // permission-skip flag is requested: the yolo flag precedes --model in args.
 func TestClaudeBuildLitellmYolo(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := claudeDriver{}.Build(m, true, routeFor(m, gw))
 	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
@@ -166,7 +166,7 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 		ProviderID: "anthropic",
 		Native:     true,
 	}
-	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
 	lc := claudeDriver{}.Build(m, false, routeFor(m, gw))
 
 	wantClear := []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}

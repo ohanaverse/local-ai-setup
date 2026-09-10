@@ -146,7 +146,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	// routing through LiteLLM (any upstream may serve the model) and when the
 	// model is not served by ollama at all — ollamacheck only probes the local
 	// ollama daemon.
-	if !cfg.Gateway.IsLitellm() && ollamacheck.IsOllamaModel(m) {
+	if !cfg.IsLitellm() && ollamacheck.IsOllamaModel(m) {
 		ok, oerr := ollamacheck.Check(m)
 		if oerr != nil {
 			// Print the summary before returning so the user sees the same
