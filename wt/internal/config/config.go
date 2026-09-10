@@ -504,6 +504,19 @@ func (c *Config) ModelsWithTag(tag string) []Model {
 	return out
 }
 
+// IndexModelByID returns the index of the model with the given registry id
+// in models, or -1 when absent. One lookup helper for every consumer of
+// model ids (cmd/wt, internal/tui, internal/localgate's marker resolution)
+// instead of a per-package copy.
+func IndexModelByID(models []Model, id string) int {
+	for i := range models {
+		if models[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // deriveNative marks each model whose provider authenticates natively
 // (auth.type == "native") as Native. It runs after the registry join so the
 // in-memory Native field reflects the registry's auth data — the single

@@ -8,6 +8,7 @@
 package localgate
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,7 +21,7 @@ import (
 // probeTimeout bounds each HTTP availability probe.
 const probeTimeout = 2 * time.Second
 
-// omlxModelsURL and mlxLMServerModelsURL are the endpoints
+// omlxModelsURL and mlxLMServerModelsURL are the /v1/models endpoints
 // bin/llm-isolate-provider's own warmup logic treats as "provider is up"
 // for these two providers (see that script's start_omlx/start_mlx_lm_server
 // functions). Package-level vars so tests can point them at an
@@ -50,49 +51,78 @@ func SetMlxLMServerProbeURLForTest(url string) (restore func()) {
 	return func() { mlxLMServerModelsURL = old }
 }
 
-// providerOf splits a registry model id "<provider>/<name>" on the FIRST
-// "/" — the model name itself may contain one (e.g.
-// openrouter/z-ai/glm-5.3-flash), so only the first separator counts. This
-// mirrors the marker schema in docs/superpowers/specs/2026-09-10-one-local-
-// model-at-a-time-design.md.
-func providerOf(modelID string) (provider, name string, ok bool) {
-	idx := strings.Index(modelID, "/")
-	if idx < 0 {
-		return "", "", false
-	}
-	return modelID[:idx], modelID[idx+1:], true
+// nameMatches reports whether a server-reported model id names the same
+// model as want. Lenient on prefix (a server may report a path-ish
+// spelling of the same model), strict on the variant tail — omlx's 4-bit
+// and 6-bit variants share port 8000 and differ exactly there, so a
+// mismatched tail is a different model, never a spelling variant.
+func nameMatches(served, want string) bool {
+	return served == want || strings.HasSuffix(served, "/"+want) || strings.HasSuffix(want, "/"+served)
 }
 
-// probeURL reports whether a GET to url succeeds with a 2xx status inside
-// probeTimeout.
-func probeURL(url string) bool {
+// fetchModelIDs GETs an OpenAI-compatible /v1/models endpoint and returns
+// the ids of the models the server is actually serving; nil on any
+// failure (connection refused, timeout, non-2xx, non-JSON body) — nil
+// reads as "nothing serving", never as "unknown".
+func fetchModelIDs(url string) []string {
 	resp, err := httpClient.Get(url)
 	if err != nil {
-		return false
+		return nil
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(body.Data))
+	for _, d := range body.Data {
+		if d.ID != "" {
+			ids = append(ids, d.ID)
+		}
+	}
+	return ids
 }
 
-// Available reports whether the local model identified by modelID
-// ("<provider>/<name>") is actually serving right now. Unknown/unsupported
-// providers (including a future mtplx before it is wired in here, issue
-// #66) return false — a marker naming a provider this probe doesn't know
-// about fails closed as "not running" rather than reporting stale state as
-// healthy.
-func Available(modelID string) bool {
-	provider, name, ok := providerOf(modelID)
-	if !ok {
-		return false
-	}
-	switch provider {
+// Available reports whether the local model m is actually serving right
+// now. The probe is name-checked against the marker's model — not just
+// provider liveness: an ollama marker naming a merely-downloaded (never
+// loaded) model must read as "not running" (ollama ps, not ollama list),
+// and oMLX's 4-bit and 6-bit variants share port 8000, so a bare 2xx
+// would verify either as the other.
+//
+// Unknown/unsupported providers (including a future mtplx before it is
+// wired in here, issue #66) return false — a marker naming a provider
+// this probe doesn't know about fails closed as "not running" rather
+// than reporting stale state as healthy.
+func Available(m config.Model) bool {
+	switch m.ProviderID {
 	case "ollama":
-		available, err := ollamacheck.Available(name)
-		return err == nil && available
+		loaded, err := ollamacheck.Loaded(m.ModelName)
+		return err == nil && loaded
 	case "omlx", "omlx-6bit":
-		return probeURL(omlxModelsURL)
+		for _, served := range fetchModelIDs(omlxModelsURL) {
+			if nameMatches(served, m.ModelName) {
+				return true
+			}
+		}
+		return false
 	case "mlx_lm_server":
-		return probeURL(mlxLMServerModelsURL)
+		// One target+draft pairing per process — bin/llm-isolate-provider's
+		// mlx_lm_server branch is the only thing that starts one, and
+		// mlx_lm.server loads its model before serving, so a non-empty
+		// /v1/models is already model-accurate. An exact-name check is not
+		// possible here: the server reports the target string it was
+		// started with (a local_path or repo id), which wt cannot
+		// reconstruct — its registry parser deliberately ignores the
+		// model's fetch/draft fields.
+		return len(fetchModelIDs(mlxLMServerModelsURL)) > 0
 	default:
 		return false
 	}
@@ -120,12 +150,21 @@ func (e *NotRunningError) Error() string {
 // when the marker is set but the probe fails — a stale marker (the model
 // was stopped or crashed outside modelman) that callers should treat as
 // fatal rather than launching.
+//
+// A marker naming a model absent from the catalog (a registry data gap)
+// also fails closed: wt cannot name-checked-probe a model it cannot
+// identify, and presenting an unverifiable id as "verified running" is
+// the failure mode this probe exists to prevent.
 func Resolve(cfg *config.Config) (string, error) {
 	marker := cfg.LocalRunningModel()
 	if marker == "" {
 		return "", nil
 	}
-	if !Available(marker) {
+	idx := config.IndexModelByID(cfg.Models, marker)
+	if idx < 0 {
+		return "", &NotRunningError{ModelID: marker}
+	}
+	if !Available(cfg.Models[idx]) {
 		return "", &NotRunningError{ModelID: marker}
 	}
 	return marker, nil

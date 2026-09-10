@@ -137,15 +137,18 @@ func TestResolveModelNoMarkerHidesLocalModels(t *testing.T) {
 // TestResolveModelVerifiedMarkerAllowsLocalModel asserts a verified marker
 // makes the marked local model eligible again.
 func TestResolveModelVerifiedMarkerAllowsLocalModel(t *testing.T) {
+	// The probe is name-checked: /v1/models must report the marked model's
+	// own id, not merely respond 200.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
 	}))
 	defer srv.Close()
 	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
 
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
-		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", Family: "qwen3.8", Tags: []string{"code"}}},
+		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
 	cfg.ExposeAllForTest()
@@ -199,8 +202,8 @@ func TestResolveModelPinnedStaleLocalModelRejected(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
 		Models: []config.Model{
-			{ID: "ollama/a", ProviderID: "ollama", Family: "a", Tags: []string{"code"}},
-			{ID: "ollama/b", ProviderID: "ollama", Family: "b", Tags: []string{"code"}},
+			{ID: "ollama/a", ProviderID: "ollama", ModelName: "a", Family: "a", Tags: []string{"code"}},
+			{ID: "ollama/b", ProviderID: "ollama", ModelName: "b", Family: "b", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
 	}

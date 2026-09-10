@@ -57,8 +57,11 @@ func TestEnterModelPhaseNoMarkerHidesLocalModels(t *testing.T) {
 // httptest.Server standing in for omlx's /v1/models probe), it appears in
 // the picker alongside cloud models.
 func TestEnterModelPhaseVerifiedMarkerShowsLocalModel(t *testing.T) {
+	// The probe is name-checked: /v1/models must report the marked model's
+	// own id, not merely respond 200.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
 	}))
 	defer srv.Close()
 	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
