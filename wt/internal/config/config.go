@@ -284,6 +284,14 @@ type Config struct {
 	Agents     []Agent         `toml:"agents"`
 	litellm    LitellmState   `toml:"-"` // from modelman.toml
 	exposed    map[string]ExposureEntry `toml:"-"` // from modelman.toml
+	// localRunning is the raw [local].running_model marker from
+	// modelman.toml; localGateActive is true only for a Config built by
+	// Load() (see finalizeCfg) — a hand-built Config{} literal (nearly
+	// every pre-issue-#65 test) leaves it false, so the gate this field
+	// pair drives is a no-op for those tests unless they explicitly opt
+	// in via SetLocalRunningForTest.
+	localRunning    string `toml:"-"`
+	localGateActive bool   `toml:"-"`
 }
 
 // Dir returns the base config directory (~/.config/agent-wt, or
@@ -374,12 +382,14 @@ func Load() (*Config, error) {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	exposed, litellm, err := loadModelmanState()
+	exposed, litellm, localRunning, err := loadModelmanState()
 	if err != nil {
 		return nil, err
 	}
 	cfg.exposed = exposed
 	cfg.litellm = litellm
+	cfg.localRunning = localRunning
+	cfg.localGateActive = true
 	return cfg, nil
 }
 
@@ -543,6 +553,32 @@ func (c *Config) ExposeAllForTest() {
 			c.exposed[m.ID] = ExposureEntry{Exposed: true, Ready: true}
 		}
 	}
+}
+
+// LocalRunningModel returns the raw `[local].running_model` marker from
+// modelman.toml — the registry id of the local model `modelman start` last
+// started, or "" if none (see docs/superpowers/specs/2026-09-10-one-local-
+// model-at-a-time-design.md). This is the unverified marker; a caller that
+// needs to know whether the marked model is actually serving right now
+// should probe it (internal/localgate.Resolve).
+func (c *Config) LocalRunningModel() string { return c.localRunning }
+
+// LocalGateActive reports whether the one-local-model-at-a-time gate
+// (FilterToRunningLocal, and the -M pin checks in cmd/wt/resolve.go and
+// internal/tui) is live for this Config. True only for a Config built by
+// Load() (production). A hand-built Config{} literal — the shape nearly
+// every pre-issue-#65 test uses — defaults to false, so the gate is a
+// no-op for those tests unless they call SetLocalRunningForTest.
+func (c *Config) LocalGateActive() bool { return c.localGateActive }
+
+// SetLocalRunningForTest activates the one-local-model-at-a-time gate (as
+// Load() would) and sets the running-model marker, as if finalizeCfg had
+// read it from modelman.toml. runningModelID == "" simulates "gate active,
+// no local model marked running" (every local model gets filtered out by
+// FilterToRunningLocal). Tests only.
+func (c *Config) SetLocalRunningForTest(runningModelID string) {
+	c.localGateActive = true
+	c.localRunning = runningModelID
 }
 
 // ProviderByID returns the provider with the given id, or nil if not found.

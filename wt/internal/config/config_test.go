@@ -958,3 +958,32 @@ func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
 		t.Error("ResolveRoute must error when litellm is required but unconfigured")
 	}
 }
+
+// TestLocalGateActiveDefaultsFalse asserts that a hand-built Config{}
+// literal — the shape nearly every existing wt test uses — has the
+// one-local-model-at-a-time gate (issue #65) inactive by default, so this
+// feature does not change behavior for tests that predate it and never
+// opt in via SetLocalRunningForTest.
+func TestLocalGateActiveDefaultsFalse(t *testing.T) {
+	cfg := &Config{}
+	if cfg.LocalGateActive() {
+		t.Error("LocalGateActive() = true for a hand-built Config, want false")
+	}
+	if cfg.LocalRunningModel() != "" {
+		t.Errorf("LocalRunningModel() = %q, want empty", cfg.LocalRunningModel())
+	}
+}
+
+// TestSetLocalRunningForTestActivatesGate asserts the test setter both
+// records the marker and flips LocalGateActive() true, mirroring what
+// finalizeCfg does for a real Load().
+func TestSetLocalRunningForTestActivatesGate(t *testing.T) {
+	cfg := &Config{}
+	cfg.SetLocalRunningForTest("ollama/x")
+	if !cfg.LocalGateActive() {
+		t.Error("LocalGateActive() = false after SetLocalRunningForTest, want true")
+	}
+	if cfg.LocalRunningModel() != "ollama/x" {
+		t.Errorf("LocalRunningModel() = %q, want ollama/x", cfg.LocalRunningModel())
+	}
+}

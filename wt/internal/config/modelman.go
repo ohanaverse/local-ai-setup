@@ -46,29 +46,37 @@ type modelmanState struct {
 		Downloaded     bool `toml:"downloaded"`
 	} `toml:"model_state"`
 	Litellm LitellmState `toml:"litellm"`
+	// Local mirrors modelman's [local] table (issue #65): the single
+	// local model `modelman start` last started, or empty if none/
+	// `modelman stop` was last run. wt reads it read-only to filter its
+	// model picker — see internal/localgate and Config.FilterToRunningLocal.
+	Local struct {
+		RunningModel string `toml:"running_model"`
+	} `toml:"local"`
 }
 
-// loadModelmanState reads modelman.toml and returns the exposure map plus the
-// [litellm] routing state. A missing file returns empty values (every
-// non-native model is unexposed; LiteLLM routing defaults to off).
-func loadModelmanState() (map[string]ExposureEntry, LitellmState, error) {
+// loadModelmanState reads modelman.toml and returns the exposure map, the
+// [litellm] routing state, and the [local].running_model marker. A missing
+// file returns empty values (every non-native model is unexposed; LiteLLM
+// routing defaults to off; no local model is marked running).
+func loadModelmanState() (map[string]ExposureEntry, LitellmState, string, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]ExposureEntry{}, LitellmState{}, nil
+		return map[string]ExposureEntry{}, LitellmState{}, "", nil
 	}
 	if err != nil {
-		return nil, LitellmState{}, fmt.Errorf("read modelman.toml: %w", err)
+		return nil, LitellmState{}, "", fmt.Errorf("read modelman.toml: %w", err)
 	}
 	var s modelmanState
 	if err := toml.Unmarshal(data, &s); err != nil {
-		return nil, LitellmState{}, fmt.Errorf("parse modelman.toml: %w", err)
+		return nil, LitellmState{}, "", fmt.Errorf("parse modelman.toml: %w", err)
 	}
 	out := make(map[string]ExposureEntry, len(s.ModelState))
 	for id, st := range s.ModelState {
 		out[id] = ExposureEntry{Exposed: st.Exposed || st.LitellmExposed, Ready: st.Ready || st.Downloaded}
 	}
-	return out, s.Litellm, nil
+	return out, s.Litellm, s.Local.RunningModel, nil
 }
 
 // PriceRefreshLastRun returns modelman's global token-pricing refresh
