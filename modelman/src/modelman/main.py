@@ -17,6 +17,7 @@ from .litellm import (
     expose_model,
     unexpose_model,
 )
+from .local_control import LocalControlError, start_local_model, stop_local_model
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
 from .migrate import migrate_wt_gateway_to_litellm
@@ -234,6 +235,42 @@ def refresh_prices() -> None:
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
     typer.echo(f"Refreshed prices for {result.updated} model(s).")
+
+
+@app.command()
+def start(
+    model_id: str = typer.Argument(..., help="Registry model id to run locally (<provider>/<name>)"),
+) -> None:
+    """Stop any running local model and start model_id, recording it as
+    the single local model wt's picker may offer. Idempotent if model_id
+    is already running."""
+    registry = load_registry()
+    try:
+        with locked_state() as state:
+            result = start_local_model(registry, state, model_id)
+    except LocalControlError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if result.already_running:
+        typer.echo(f"{model_id} is already running.")
+    else:
+        typer.echo(f"Started {model_id}.")
+
+
+@app.command()
+def stop() -> None:
+    """Stop the currently-running local model and clear the marker.
+    No-op when nothing is running."""
+    try:
+        with locked_state() as state:
+            result = stop_local_model(state)
+    except LocalControlError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if result.stopped_model_id is None:
+        typer.echo("No local model is running.")
+    else:
+        typer.echo(f"Stopped {result.stopped_model_id}.")
 
 
 if __name__ == "__main__":
