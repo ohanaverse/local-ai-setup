@@ -987,3 +987,67 @@ func TestSetLocalRunningForTestActivatesGate(t *testing.T) {
 		t.Errorf("LocalRunningModel() = %q, want ollama/x", cfg.LocalRunningModel())
 	}
 }
+
+func filterGateTestConfig() *Config {
+	return &Config{
+		Providers: []Provider{
+			{ID: "claude", Location: LocationCloud, Auth: AuthConfig{Type: "native"}},
+			{ID: "ollama", Location: LocationLocal, Auth: AuthConfig{Type: "none"}},
+			{ID: "omlx", Location: LocationLocal, Auth: AuthConfig{Type: "none"}},
+		},
+	}
+}
+
+// TestFilterToRunningLocalInactiveGateIsNoop asserts the core safety
+// property this task depends on: with the gate inactive (the default for
+// a hand-built Config{}), FilterToRunningLocal returns its input
+// unchanged, regardless of the runningLocalID argument.
+func TestFilterToRunningLocalInactiveGateIsNoop(t *testing.T) {
+	cfg := filterGateTestConfig()
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ollama/a", ProviderID: "ollama"},
+		{ID: "omlx/b", ProviderID: "omlx"},
+	}
+	got := cfg.FilterToRunningLocal(models, "")
+	if len(got) != 3 {
+		t.Fatalf("got %d models, want 3 (gate inactive = no filtering)", len(got))
+	}
+}
+
+// TestFilterToRunningLocalNoMarkerDropsAllLocal asserts "no marker → cloud
+// models only" — the picker-filter half of the design's hard block.
+func TestFilterToRunningLocalNoMarkerDropsAllLocal(t *testing.T) {
+	cfg := filterGateTestConfig()
+	cfg.SetLocalRunningForTest("")
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ollama/a", ProviderID: "ollama"},
+		{ID: "omlx/b", ProviderID: "omlx"},
+	}
+	got := cfg.FilterToRunningLocal(models, "")
+	if len(got) != 1 || got[0].ID != "claude/opus" {
+		t.Fatalf("got %v, want only claude/opus", got)
+	}
+}
+
+// TestFilterToRunningLocalKeepsOnlyTheRunningOne asserts a marked local
+// model is kept and every OTHER local model is still dropped — only one
+// local model is ever offered at a time.
+func TestFilterToRunningLocalKeepsOnlyTheRunningOne(t *testing.T) {
+	cfg := filterGateTestConfig()
+	cfg.SetLocalRunningForTest("ollama/a")
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ollama/a", ProviderID: "ollama"},
+		{ID: "omlx/b", ProviderID: "omlx"},
+	}
+	got := cfg.FilterToRunningLocal(models, "ollama/a")
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if len(got) != 2 || !ids["claude/opus"] || !ids["ollama/a"] {
+		t.Fatalf("got %v, want [claude/opus ollama/a]", got)
+	}
+}

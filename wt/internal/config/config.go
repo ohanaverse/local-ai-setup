@@ -537,6 +537,26 @@ func (c *Config) IsExposed(m Model) bool {
 	return st.Ready
 }
 
+// FilterToRunningLocal narrows models to those launchable under the
+// one-local-model-at-a-time policy (issue #65): cloud and native models
+// pass through unchanged; a local model is kept only when its id equals
+// runningLocalID. A no-op (models returned unchanged) when the gate is
+// not active (LocalGateActive) — every pre-issue-#65 test that builds a
+// Config{} literal directly is unaffected.
+func (c *Config) FilterToRunningLocal(models []Model, runningLocalID string) []Model {
+	if !c.localGateActive {
+		return models
+	}
+	out := make([]Model, 0, len(models))
+	for _, m := range models {
+		if loc, err := c.ResolveLocation(m); err == nil && loc == LocationLocal && m.ID != runningLocalID {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // SetExposedForTest replaces the in-memory exposed set. Tests only.
 func (c *Config) SetExposedForTest(exposed map[string]ExposureEntry) {
 	c.exposed = exposed
