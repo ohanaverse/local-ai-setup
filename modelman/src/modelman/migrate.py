@@ -26,9 +26,10 @@ from .registry import (
     ModelEntry,
     ProviderEntry,
     Registry,
+    _default_wt_config_path,
     default_provider_entry,
 )
-from .state import ModelState, StateStore
+from .state import ModelState, StateStore, locked_state
 
 
 @dataclass
@@ -62,6 +63,27 @@ def migrate(
 
 def _has_provider(registry: Registry, provider_id: str) -> bool:
     return any(p.id == provider_id for p in registry.providers)
+
+
+def migrate_wt_gateway_to_litellm(wt_config_path: Path | None = None) -> bool:
+    """One-time import of wt's legacy [gateway] block into modelman's
+    [litellm] table. Read-only on wt's file; skips if [litellm] is already
+    populated so a user's later `modelman litellm set` is never clobbered."""
+    path = wt_config_path or _default_wt_config_path()
+    if not path.exists():
+        return False
+    wt_raw = tomllib.loads(path.read_text())
+    gateway = wt_raw.get("gateway")
+    if not gateway:
+        return False
+
+    with locked_state() as state:
+        if state.litellm.url or state.litellm.api_key:
+            return False  # already configured; do not overwrite
+        state.litellm.enabled = gateway.get("mode") == "litellm"
+        state.litellm.url = gateway.get("url")
+        state.litellm.api_key = gateway.get("api_key")
+    return True
 
 
 def _find_model(registry: Registry, model_id: str) -> ModelEntry | None:

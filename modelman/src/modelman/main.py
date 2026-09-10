@@ -19,6 +19,7 @@ from .litellm import (
 )
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
+from .migrate import migrate_wt_gateway_to_litellm
 from .registry import load_registry, save_registry
 from .state import load_state, locked_state, save_state
 from .sync import SyncError
@@ -120,6 +121,11 @@ def migrate(
 
     save_registry(result.registry)
     save_state(result.state)
+
+    # One-time import of wt's legacy [gateway] block into modelman's
+    # [litellm] table (routing policy only — never touches the proxy).
+    if migrate_wt_gateway_to_litellm(wt_config_path=Path(wt_config).expanduser()):
+        typer.echo("Imported wt's [gateway] into modelman.toml's [litellm] table.")
 
     for warning in result.warnings:
         typer.echo(f"warning: {warning}")

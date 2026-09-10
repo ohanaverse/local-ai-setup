@@ -9,8 +9,9 @@ fields it uniquely owns (fetch, model_info, download state)."""
 from pathlib import Path
 
 from modelman.manifest import FamilyManifest, save_manifest
-from modelman.migrate import migrate
+from modelman.migrate import migrate, migrate_wt_gateway_to_litellm
 from modelman.providers.base import VariantSpec
+from modelman.state import load_state, locked_state
 
 
 def _write_modelman_config(path: Path) -> None:
@@ -168,3 +169,44 @@ def test_migrate_uses_canonical_provider_defaults(tmp_path):
     omlx = result.registry.provider("omlx")
     assert omlx.name == "oMLX"
     assert omlx.model_dir == "~/.omlx/models"  # still read from legacy config
+
+
+def test_migrate_imports_wt_gateway_into_litellm_table(tmp_path, monkeypatch):
+    """wt cannot write modelman.toml, so the one-time move of an existing
+    [gateway] block (mode/url/api_key) into modelman's [litellm] table has
+    to happen from modelman's side — otherwise every existing wt install
+    loses its LiteLLM configuration the moment this feature ships."""
+    wt_config = tmp_path / "wt-config.toml"
+    wt_config.write_text(
+        '[gateway]\nmode = "litellm"\nurl = "http://localhost:4000"\n'
+        'api_key = "sk-litellm-existing"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    imported = migrate_wt_gateway_to_litellm(wt_config_path=wt_config)
+    assert imported is True
+
+    state = load_state(path=state_path)
+    assert state.litellm.enabled is True
+    assert state.litellm.url == "http://localhost:4000"
+    assert state.litellm.api_key == "sk-litellm-existing"
+
+
+def test_migrate_gateway_import_is_idempotent(tmp_path, monkeypatch):
+    """A second run (e.g. modelman migrate invoked twice) must not clobber
+    a value the user has since changed via `modelman litellm set`."""
+    wt_config = tmp_path / "wt-config.toml"
+    wt_config.write_text(
+        '[gateway]\nmode = "litellm"\nurl = "http://old:4000"\napi_key = "old-key"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    migrate_wt_gateway_to_litellm(wt_config_path=wt_config)
+    with locked_state(path=state_path) as state:
+        state.litellm.url = "http://new:4000"  # user changed it since
+
+    imported_again = migrate_wt_gateway_to_litellm(wt_config_path=wt_config)
+    assert imported_again is False
+    assert load_state(path=state_path).litellm.url == "http://new:4000"

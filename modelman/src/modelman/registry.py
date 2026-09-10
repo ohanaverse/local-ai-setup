@@ -272,6 +272,7 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
         name="oMLX",
         location="local",
         protocols=["openai-chat"],
+        auth=AuthConfig(type="none", base_url="http://localhost:8000"),
     ),
     "mlx_lm_server": ProviderEntry(
         id="mlx_lm_server",

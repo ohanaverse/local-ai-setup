@@ -19,6 +19,7 @@ from .providers.base import Provider, VariantSpec
 from .providers.ollama import _parse_ollama_list_sizes
 from .providers.registry import ProviderRegistry
 from .registry import (
+    _DEFAULT_PROVIDER_TEMPLATES,
     DEFAULT_PROVIDER_IDS,
     ModelEntry,
     Registry,
@@ -132,6 +133,25 @@ def _ensure_provider_entries(registry: Registry) -> list[str]:
     return added
 
 
+def backfill_provider_defaults(registry: Registry) -> Registry:
+    """Fill auth.base_url/protocols on an *existing* provider entry from
+    its default template when the field is missing — _ensure_provider_entries
+    only ever appends providers that are wholly absent, so a provider added
+    before this field existed (every pre-upgrade omlx entry) would
+    otherwise stay permanently unroutable in direct mode. Never overwrites
+    a value the user already set, and providers without a default template
+    (e.g. openrouter) are left alone."""
+    for provider in registry.providers:
+        template = _DEFAULT_PROVIDER_TEMPLATES.get(provider.id)
+        if template is None:
+            continue
+        if not provider.auth.base_url and template.auth.base_url:
+            provider.auth.base_url = template.auth.base_url
+        if not provider.protocols and template.protocols:
+            provider.protocols = list(template.protocols)
+    return registry
+
+
 def _modeldir_providers(registry: Registry) -> dict[str, Provider]:
     """Build model-dir provider instances from registry provider entries.
 
@@ -225,6 +245,10 @@ def sync(
     """Reconcile configured ollama and model-dir models against their providers."""
     providers_added = _ensure_provider_entries(registry)
     providers_added += sync_agent_providers(registry)
+    # Repair pre-existing provider entries that predate a template field
+    # (omlx's auth.base_url, any provider's protocols) — idempotent, and a
+    # no-op for entries the user has already populated.
+    backfill_provider_defaults(registry)
     downloaded = _ollama_downloaded(registry, list_ollama(runner))
     downloaded.update(list_modeldir(registry, _modeldir_providers(registry)))
     result = reconcile(registry, state, downloaded)

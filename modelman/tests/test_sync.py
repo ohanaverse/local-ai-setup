@@ -23,6 +23,7 @@ from modelman.sync import (
     _model_entry_to_variant,
     _modeldir_providers,
     _ollama_downloaded,
+    backfill_provider_defaults,
     list_modeldir,
     list_ollama,
     reconcile,
@@ -568,3 +569,67 @@ def test_sync_registers_agent_providers(tmp_path, monkeypatch):
 
     assert "claude" in result.providers_added
     registry.provider("claude")  # does not raise
+
+
+def test_sync_backfills_missing_omlx_base_url(tmp_path):
+    """omlx's registry template historically had no auth.base_url at all,
+    so every omlx model was unroutable in direct mode with no clear error.
+    sync must fill the gap for an existing provider without disturbing a
+    base_url or protocols value the user has already set by hand."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", location="local", auth=AuthConfig(type="none"))
+        ]
+    )
+    result = backfill_provider_defaults(registry)
+    omlx = next(p for p in result.providers if p.id == "omlx")
+    assert omlx.auth.base_url == "http://localhost:8000"
+    assert omlx.protocols == ["openai-chat"]
+
+
+def test_sync_backfill_preserves_user_set_base_url(tmp_path):
+    """A user-configured base_url (e.g. omlx moved to a non-default port)
+    must never be overwritten by the backfill."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="omlx",
+                name="oMLX",
+                location="local",
+                auth=AuthConfig(type="none", base_url="http://localhost:9999"),
+            )
+        ]
+    )
+    result = backfill_provider_defaults(registry)
+    omlx = next(p for p in result.providers if p.id == "omlx")
+    assert omlx.auth.base_url == "http://localhost:9999"
+
+
+def test_sync_backfills_missing_protocols(tmp_path):
+    """A provider entry that predates the protocols field (protocols = [])
+    gets the template's protocols; a non-empty list is never touched."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="omlx",
+                name="oMLX",
+                location="local",
+                protocols=[],
+                auth=AuthConfig(type="none", base_url="http://localhost:8000"),
+            ),
+            ProviderEntry(
+                id="openrouter",
+                name="OpenRouter",
+                location="cloud",
+                protocols=["openai-chat"],
+                auth=AuthConfig(type="secret_ref", secret_ref="sk-or"),
+            ),
+        ]
+    )
+    result = backfill_provider_defaults(registry)
+    omlx = next(p for p in result.providers if p.id == "omlx")
+    assert omlx.protocols == ["openai-chat"]
+    # openrouter has no default template — untouched either way.
+    openrouter = next(p for p in result.providers if p.id == "openrouter")
+    assert openrouter.protocols == ["openai-chat"]
+    assert openrouter.auth.base_url is None
