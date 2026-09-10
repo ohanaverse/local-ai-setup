@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -155,7 +156,7 @@ func TestSortModelsByUsageKeepsTiedFamiliesAdjacent(t *testing.T) {
 func TestAdjacentModelsShareFamilyColumn(t *testing.T) {
 	stubUsageStore(t) // all-zero usage: registry order preserved
 
-	items := buildModelItems(modelFamilies(), familyOfFor(), newUsageStore(), "", nil)
+	items := buildModelItems(modelFamilies(), familyOfFor(), newUsageStore(), refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 4 {
 		t.Fatalf("got %d items, want 4", len(items))
 	}
@@ -190,7 +191,7 @@ func TestBuildModelItemsFamilyColumnShowsFamilyTotal(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
 		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4"},
 	}
-	items := buildModelItems(models, familyOfFor(), store, "", nil)
+	items := buildModelItems(models, familyOfFor(), store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -224,7 +225,7 @@ func TestBuildModelItemsFamilyCountsUseFullCatalog(t *testing.T) {
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
 	}
-	items := buildModelItems(models, familyOfFor(), store, "", nil)
+	items := buildModelItems(models, familyOfFor(), store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -249,7 +250,7 @@ func TestBuildModelItemsEmptyFamilyShowsAggregate(t *testing.T) {
 		t.Fatalf("seed usage event: %v", err)
 	}
 
-	items := buildModelItems(modelFamilies(), familyOfFor(), store, "", nil)
+	items := buildModelItems(modelFamilies(), familyOfFor(), store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 4 {
 		t.Fatalf("got %d items, want 4", len(items))
 	}

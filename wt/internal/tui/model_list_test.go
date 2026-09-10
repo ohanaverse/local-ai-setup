@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -51,7 +52,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store, "", nil)
+	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -103,7 +104,7 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	items := buildModelItems(models, map[string]string{
 		"priced":   "test",
 		"unpriced": "test",
-	}, store, "", nil)
+	}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -156,7 +157,7 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 			},
 		},
 	}
-	items := buildModelItems(models, map[string]string{"partial": "test"}, store, "", nil)
+	items := buildModelItems(models, map[string]string{"partial": "test"}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -183,17 +184,23 @@ func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 		"ollama/gemma4:9b":  "gemma4",
 		"ollama/gemma4:14b": "gemma4",
 	}
-	items := buildModelItems(models, familyOf, store, "ollama/gemma4:14b", nil)
+	items := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "ollama/gemma4:14b", nil)
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
 	// Equal scores + stable sort = registry order: 9b first, 14b second.
+	// With the leading ref column, the marker sits at columns 3–4; strip
+	// the 2-rune ref prefix before asserting the marker shape.
 	for i, want := range []bool{false, true} {
 		title := items[i].Title()
-		if got := strings.HasPrefix(title, markerMarked); got != want {
+		if len(title) < 4 {
+			t.Fatalf("row %d title %q too short to hold ref column + marker", i, title)
+		}
+		afterRef := title[2:]
+		if got := strings.HasPrefix(afterRef, markerMarked); got != want {
 			t.Errorf("row %d (%q): marker prefix = %v, want %v", i, title, got, want)
 		}
-		if got := strings.HasPrefix(title, markerBlank); got != !want {
+		if got := strings.HasPrefix(afterRef, markerBlank); got != !want {
 			t.Errorf("row %d (%q): blank prefix = %v, want %v", i, title, got, !want)
 		}
 		// The marker must not leak into the line the filter scores.
@@ -219,7 +226,7 @@ func TestBuildModelItemsAppendsSurveySegment(t *testing.T) {
 	stats := map[string]survey.Stats{
 		"ollama/gemma4:9b": {Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39},
 	}
-	items := buildModelItems(models, familyOf, store, "", stats)
+	items := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", stats)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -243,8 +250,8 @@ func TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	withoutStats := buildModelItems(models, familyOf, store, "", nil)
-	withZeroStats := buildModelItems(models, familyOf, store, "", map[string]survey.Stats{"ollama/gemma4:9b": {}})
+	withoutStats := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+	withZeroStats := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", map[string]survey.Stats{"ollama/gemma4:9b": {}})
 	if withoutStats[0].line != withZeroStats[0].line {
 		t.Fatalf("nil stats map produced %q, zero-value stats entry produced %q, want identical", withoutStats[0].line, withZeroStats[0].line)
 	}
@@ -264,11 +271,96 @@ func TestBuildModelItemsNoMarkerWithoutLastLaunched(t *testing.T) {
 	}
 	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
 	for _, lastID := range []string{"", "ollama/gone"} {
-		items := buildModelItems(models, familyOf, store, lastID, nil)
+		items := buildModelItems(models, familyOf, store, refcount.NewStoreAt(t.TempDir()), lastID, nil)
 		for i, it := range items {
 			if strings.HasPrefix(it.Title(), markerMarked) {
 				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())
 			}
 		}
+	}
+}
+
+// TestBuildModelItemsRefColumnBlankWhenUnused verifies a model with zero
+// live sessions renders no ref digit — Title()'s 4-rune prefix stays two
+// blank ref-column spaces followed by the (also blank) marker.
+func TestBuildModelItemsRefColumnBlankWhenUnused(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	refStore := refcount.NewStoreAt(t.TempDir())
+	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	items := buildModelItems(models, familyOf, store, refStore, "", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].Title(); !strings.HasPrefix(got, "    ") {
+		t.Errorf("Title() = %q, want a 4-space blank prefix (no ref digit, no marker)", got)
+	}
+}
+
+// TestBuildModelItemsRefColumnRendersDigit verifies a model with N live
+// sessions (1 <= N <= 9) renders that exact digit as the first rune of
+// Title(), ahead of the marker prefix.
+func TestBuildModelItemsRefColumnRendersDigit(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	dir := t.TempDir()
+	refStore := refcount.NewStoreAt(dir)
+	for pid := 1; pid <= 3; pid++ {
+		if err := refStore.Record(pid, "ollama/gemma4:9b"); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	items := buildModelItems(models, familyOf, store, refStore, "", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].Title(); !strings.HasPrefix(got, "3   ") {
+		t.Errorf("Title() = %q, want it to start with \"3   \" (ref digit, then blank marker)", got)
+	}
+}
+
+// TestBuildModelItemsRefColumnClampsAtNine verifies a model with more than
+// 9 live sessions still renders a single "9" — the design's fixed-width
+// column would misalign if a two-digit count were ever rendered.
+func TestBuildModelItemsRefColumnClampsAtNine(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	dir := t.TempDir()
+	refStore := refcount.NewStoreAt(dir)
+	for pid := 1; pid <= 12; pid++ {
+		if err := refStore.Record(pid, "ollama/gemma4:9b"); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	items := buildModelItems(models, familyOf, store, refStore, "", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].Title(); !strings.HasPrefix(got, "9   ") {
+		t.Errorf("Title() = %q, want it clamped to \"9   \" for 12 live sessions", got)
+	}
+}
+
+// TestBuildModelItemsRefColumnBeforeMarker verifies the ref digit and the
+// last-launched marker compose correctly when both apply to the same row —
+// "1 > " — matching the design's table (ref column, then the rotation
+// marker, then the line).
+func TestBuildModelItemsRefColumnBeforeMarker(t *testing.T) {
+	store := &mockStore{counts: map[string]usage.UsageCounts{}}
+	dir := t.TempDir()
+	refStore := refcount.NewStoreAt(dir)
+	if err := refStore.Record(111, "ollama/gemma4:9b"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
+	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
+	items := buildModelItems(models, familyOf, store, refStore, "ollama/gemma4:9b", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].Title(); !strings.HasPrefix(got, "1 > ") {
+		t.Errorf("Title() = %q, want it to start with \"1 > \" (ref digit before the last-launched marker)", got)
 	}
 }

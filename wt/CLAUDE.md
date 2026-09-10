@@ -252,6 +252,12 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   because Unicode geometric shapes are East Asian Ambiguous width and
   misalign CJK terminals); the cursor still lands on the rotation's
   next-to-use model.
+- The model picker's leftmost column shows a live "in use" session count
+  (issue #73): `buildModelItems` queries `refcount.Store.Counts` over the
+  same full-catalog IDs used for usage, in the same pass, and sets
+  `modelItem.ref`; `Title()` renders it as a 2-rune prefix ("`3 `" or two
+  blank spaces, clamped at 9) *before* the rotation marker. See
+  `internal/refcount`.
 - Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`, consumed by the model picker — see `internal/usage`). The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and hand both the eligible slice and the full catalog to `enterModelPhase`. It builds the `familyOf` map from that full catalog, then `buildModelItems` (`internal/tui/model_list.go`) runs ONE `Store.Counts` pass over those full-catalog IDs and aggregates per-family totals in memory via `usage.AggregateByFamily`. That keeps family 30-day counts accurate even when `-T`/`-F` filters narrow the eligible slice, and avoids a second full-catalog walk per picker entry. It then sorts eligible models descending by family-then-model `CompositeScore` (a recency-weighted integer key) and renders each model as one compact line — the family name and its 30-day count lead every row; no divider/header rows, family context inline. The empty (unnamed "other") family renders `-` in the family column but still shows its true 30-day aggregate, matching the sort key.
 
 ```bash

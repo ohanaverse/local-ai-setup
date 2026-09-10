@@ -93,7 +93,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// Mirror production enterModelPhase: read the last-launched ID from
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
-	items := buildModelItems(models, familyOf, newUsageStore(), lastID, nil)
+	items := buildModelItems(models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -687,7 +687,13 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 
 	markerIdx := -1
 	for i, it := range gotModel.models.Items() {
-		if strings.HasPrefix(it.(*modelItem).Title(), markerMarked) {
+		title := it.(*modelItem).Title()
+		// Strip the 2-rune ref column so the marker check matches the
+		// pre-#73 shape; the ref column is always 2 ASCII runes.
+		if len(title) < 2 {
+			continue
+		}
+		if strings.HasPrefix(title[2:], markerMarked) {
 			if markerIdx != -1 {
 				t.Fatalf("marker on more than one row")
 			}
@@ -716,7 +722,11 @@ func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
 
 	for i, it := range gotModel.models.Items() {
-		if strings.HasPrefix(it.(*modelItem).Title(), markerMarked) {
+		title := it.(*modelItem).Title()
+		if len(title) < 2 {
+			continue
+		}
+		if strings.HasPrefix(title[2:], markerMarked) {
 			t.Errorf("row %d unexpectedly marked with no rotation state: %q", i, it.(*modelItem).Title())
 		}
 	}

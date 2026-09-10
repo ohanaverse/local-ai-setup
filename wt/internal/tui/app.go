@@ -707,7 +707,7 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	// feeds the whole picker, mirroring the single usage Counts() pass.
 	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	// Build the sorted, compact model list.
-	items := buildModelItems(models, familyOf, newUsageStore(), lastID, surveyStats)
+	items := buildModelItems(models, familyOf, newUsageStore(), newRefcountStore(), lastID, surveyStats)
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
