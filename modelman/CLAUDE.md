@@ -17,7 +17,7 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 
 - **Install dependencies:** `make install` (runs `uv sync`)
 - **Run the CLI during development:** `uv run modelman` (TUI) or `uv run modelman download <family>`
-- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`
+- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`, `uv run modelman start <model_id>`, `uv run modelman stop` (issue #65 — see `local_control.py` below)
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
 - **Lint / format / typecheck:** `make lint`, `make format`, `make typecheck` (or `make check` to run lint+typecheck together)
@@ -42,7 +42,7 @@ For day-to-day development you can still run focused subsets:
 - `uv run pytest tests/test_queue.py -q` — queue apply logic
 - `uv run pytest -k "not screen" -q` — skip the slow Textual screen tests
 
-The screen tests (`tests/screens/*.py`, ~267 tests, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~880 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
+The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~1030 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
 
 ## Architecture
 
