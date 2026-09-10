@@ -61,6 +61,10 @@ def test_load_state_matches_shared_fixture():
     assert state.litellm.url == "http://localhost:4000"
     assert state.litellm.api_key == "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
 
+    # [local] running-model marker (issue #65): the single local model
+    # wt's picker may currently offer.
+    assert state.local.running_model == "ollama/contract-fixture:local"
+
     # Global price-refresh timestamp (issue #69): modelman writes this
     # top-level key; wt reads it to notify on stale pricing.
     assert state.extra.get("price_refresh_last_run") == "2026-09-14"

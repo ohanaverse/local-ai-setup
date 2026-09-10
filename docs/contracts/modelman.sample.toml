@@ -26,6 +26,11 @@ enabled = true
 url = "http://localhost:4000"
 api_key = "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
 
+# Single local model wt's picker may currently offer (issue #65). Absent
+# or empty = no local model is running; wt shows cloud models only.
+[local]
+running_model = "ollama/contract-fixture:local"
+
 [model_state."ollama/contract-fixture:local"]
 ready = true
 disk_path = "ollama:contract-fixture:local"
