@@ -1125,6 +1125,9 @@ def test_registry_absent_quantization_and_pricing_updated_at_are_none(tmp_path):
         'model_name = "x"\n'
     )
     loaded = load_registry(path)
+    assert loaded.model("ollama/x").quantization is None
+    assert loaded.model("ollama/x").pricing_updated_at is None
+
 
 def test_model_entry_to_variant_carries_quantization():
     entry = ModelEntry(

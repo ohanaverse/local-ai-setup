@@ -92,8 +92,16 @@ class ModelmanApp(App[None]):
         from datetime import date
 
         from .pricing import refresh_prices, should_run_price_refresh
-        from .registry import load_registry, save_registry
+        from .registry import _default_registry_path, load_registry, save_registry
         from .state import StateStore, load_state, locked_state, set_price_refresh_last_run
+
+        # Skip when the canonical registry file is absent — load_registry()
+        # would fall back to the legacy ~/.config path and save_registry()
+        # would then write to the canonical (env-overridden) path, creating
+        # a stray file. The legacy fallback is a migration concern, not a
+        # refresh concern.
+        if not _default_registry_path().exists():
+            return
 
         try:
             registry = load_registry()

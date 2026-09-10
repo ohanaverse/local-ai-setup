@@ -96,6 +96,7 @@ def test_model_entry_to_variant_builds_spec_from_fetch():
         "draft_local_path": None,
         "location": None,
         "model_info": {"supports_function_calling": True},
+        "quantization": None,
     }
     assert "cost" not in spec
 

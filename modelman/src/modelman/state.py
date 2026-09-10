@@ -28,7 +28,6 @@ from typing import Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 
-
 _PRICE_REFRESH_LAST_RUN_KEY = "price_refresh_last_run"
 
 
