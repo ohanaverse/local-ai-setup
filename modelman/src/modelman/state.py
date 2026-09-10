@@ -28,6 +28,19 @@ from typing import Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
 
+_PRICE_REFRESH_LAST_RUN_KEY = "price_refresh_last_run"
+
+
+def get_price_refresh_last_run(state: StateStore) -> str | None:
+    return state.extra.get(_PRICE_REFRESH_LAST_RUN_KEY)
+
+
+def set_price_refresh_last_run(state: StateStore, date: str | None) -> None:
+    if date is None:
+        state.extra.pop(_PRICE_REFRESH_LAST_RUN_KEY, None)
+    else:
+        state.extra[_PRICE_REFRESH_LAST_RUN_KEY] = date
+
 
 def _default_state_path() -> Path:
     """Compute the state path lazily so env overrides work in tests.

@@ -16,6 +16,7 @@ from modelman.registry import (
     save_registry,
 )
 from modelman.screens.models import (
+    _cost_changed,
     _format_location,
     _format_per_token,
     _format_price,
@@ -2647,3 +2648,61 @@ async def test_deferred_expose_failure_notifies_the_user(tmp_path, monkeypatch):
         captured_actions[0]()
 
     assert any("ollama/x" in n for n in notified), notified
+
+
+# --- pricing_updated_at preservation / refresh ---------------------------
+
+
+
+def test_variant_to_model_entry_preserves_quantization():
+    variant = {
+        "id": "llamacpp/q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+        "quantization": "Q4_K_M",
+    }
+    registry = Registry(
+        providers=[ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none"))]
+    )
+    entry = _variant_to_model_entry(variant, family="f", registry=registry)
+    assert entry.quantization == "Q4_K_M"
+
+
+def test_variant_to_model_entry_has_no_pricing_updated_at():
+    variant = {
+        "id": "llamacpp/q4",
+        "provider": "llamacpp",
+        "name": "q4.gguf",
+        "repo": "foo/bar",
+        "files": ["q4.gguf"],
+    }
+    registry = Registry(
+        providers=[ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none"))]
+    )
+    entry = _variant_to_model_entry(variant, family="f", registry=registry)
+    assert entry.pricing_updated_at is None
+
+
+def test_cost_changed_detects_per_token_change():
+    assert _cost_changed(Cost(input_price_per_million=1.0), Cost(input_price_per_million=2.0))
+
+
+def test_cost_changed_ignores_subscription_only_change():
+    """pricing_updated_at records the last *per-token* refresh; a subscription-
+    only edit must not relabel it, so _cost_changed ignores subscription fields."""
+    per_token = Cost(input_price_per_million=1.0, output_price_per_million=2.0)
+    with_sub = Cost(
+        input_price_per_million=1.0,
+        output_price_per_million=2.0,
+        subscription_price=20.0,
+        subscription_period="month",
+    )
+    assert _cost_changed(per_token, with_sub) is False
+
+
+def test_cost_changed_none_to_some_is_a_change():
+    assert _cost_changed(None, Cost(input_price_per_million=1.0)) is True
+    assert _cost_changed(Cost(input_price_per_million=1.0), None) is True
+    assert _cost_changed(None, None) is False

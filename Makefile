@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell check-links test-all
+.PHONY: lint lint-shell check-links test-all install
 
 SHELL_SCRIPTS := \
 	bin/llm-isolate-provider \
@@ -37,3 +37,7 @@ check-links:
 test-all: lint
 	cd modelman && uv sync && make check && make test
 	cd wt && go build ./... && go vet ./... && go test ./...
+
+install: ## Install all monorepo components (wt + modelman).
+	cd wt && make install
+	cd modelman && make install

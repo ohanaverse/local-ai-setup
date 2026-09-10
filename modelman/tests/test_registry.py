@@ -1092,3 +1092,107 @@ def test_find_shared_artifact_owner_detects_shared_draft_for_mlx_lm_server(tmp_p
     owner = find_shared_artifact_owner(registry, provider, variant_a)
     assert owner is not None
     assert owner.id == "mlx_lm_server/b"
+
+
+def test_registry_round_trips_quantization_and_pricing_updated_at(tmp_path):
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="O", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="ollama/x",
+                family="x",
+                provider_id="ollama",
+                model_name="x",
+                quantization="Q4_K_M",
+                pricing_updated_at="2026-09-09T14:32:00+00:00",
+            ),
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    m = loaded.model("ollama/x")
+    assert m.quantization == "Q4_K_M"
+    assert m.pricing_updated_at == "2026-09-09T14:32:00+00:00"
+
+
+def test_registry_absent_quantization_and_pricing_updated_at_are_none(tmp_path):
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n'
+        '[providers.auth]\ntype = "none"\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\n'
+        'model_name = "x"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.model("ollama/x").quantization is None
+    assert loaded.model("ollama/x").pricing_updated_at is None
+
+
+def test_model_entry_to_variant_carries_quantization():
+    entry = ModelEntry(
+        id="llamacpp/q4",
+        family="f",
+        provider_id="llamacpp",
+        model_name="q4.gguf",
+        quantization="Q4_K_M",
+    )
+    spec = model_entry_to_variant(entry)
+    assert spec["quantization"] == "Q4_K_M"
+
+
+def test_variant_dict_quantization_round_trips(tmp_path):
+    path = tmp_path / "registry.toml"
+    registry = Registry(
+        providers=[ProviderEntry(id="llamacpp", name="L", auth=AuthConfig(type="none"))],
+        models=[
+            ModelEntry(
+                id="llamacpp/q4",
+                family="f",
+                provider_id="llamacpp",
+                model_name="q4.gguf",
+                quantization="Q4_K_M",
+            )
+        ],
+    )
+    save_registry(registry, path)
+    loaded = load_registry(path)
+    from modelman.screens.models import _variant_to_model_entry
+
+    entry = _variant_to_model_entry(
+        model_entry_to_variant(loaded.model("llamacpp/q4")),
+        family="f",
+        registry=loaded,
+    )
+    assert entry.quantization == "Q4_K_M"
+
+
+def test_locked_registry_read_modify_write(tmp_path):
+    """locked_registry() yields a freshly-loaded Registry and saves it on
+    exit, so a caller that mutates the yielded object applies its changes on
+    top of the latest on-disk state rather than a stale snapshot."""
+    from modelman.registry import locked_registry
+
+    path = tmp_path / "registry.toml"
+    save_registry(
+        Registry(
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+            models=[
+                ModelEntry(
+                    id="ollama/a",
+                    family="f",
+                    provider_id="ollama",
+                    model_name="a",
+                )
+            ],
+        ),
+        path,
+    )
+
+    with locked_registry(path) as registry:
+        registry.models.append(
+            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b")
+        )
+
+    loaded = load_registry(path)
+    assert [m.id for m in loaded.models] == ["ollama/a", "ollama/b"]

@@ -92,6 +92,7 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
         "draft_local_path": draft_local_path,
         "location": entry.location,
         "model_info": dict(entry.model_info),
+        "quantization": entry.quantization,
     }
 
 

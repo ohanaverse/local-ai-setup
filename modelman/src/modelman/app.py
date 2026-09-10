@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from typing import Any
 
 from textual.app import App
 
@@ -39,6 +40,10 @@ class ModelmanApp(App[None]):
         # screen mounts so every screen can reference self.app.downloads
         # the instant it might need it (quit guard, glyph, routing).
         self.downloads = DownloadManager(self)
+        # Set by the startup price-refresh worker when it skips or fails; read
+        # by ModelScreen.action_back to decide whether to show a stale-pricing
+        # reminder in the exit confirmation dialog.
+        self._price_refresh_skipped_or_failed = False
         # Load user preferences (theme, etc.) before any widget
         # mounts so the first frame uses the right colors. A missing
         # file returns defaults; a corrupted file falls back to
@@ -60,6 +65,7 @@ class ModelmanApp(App[None]):
             except Exception:
                 registry = None
             if registry is None:
+                self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
                 return
             from .registry import _default_registry_path
             from .state import _default_state_path
@@ -74,6 +80,91 @@ class ModelmanApp(App[None]):
                     available_providers=configured,
                 )
             )
+        self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
+
+    def _run_price_refresh(self) -> None:
+        """Daily-gated background refresh of OpenRouter prices.
+
+        Runs on a worker thread at startup. Checks the daily gate, fetches
+        prices, applies them under the registry lock, and records the refresh
+        date — all fail-soft. Sets ``_price_refresh_skipped_or_failed`` so the
+        exit dialog can show a stale-pricing reminder.
+
+        The fetch happens *before* the lock is taken, so the network round
+        trip never blocks a main-thread registry save (an add/edit the user
+        makes while the API is slow).
+        """
+        from datetime import date
+
+        from .pricing import apply_prices, fetch_openrouter_pricing, should_run_price_refresh
+        from .registry import _default_registry_path, load_registry, locked_registry
+        from .state import StateStore, load_state, locked_state, set_price_refresh_last_run
+
+        # Skip when the canonical registry file is absent — load_registry()
+        # would fall back to the legacy ~/.config path and locked_registry()
+        # would then write to the canonical (env-overridden) path, creating
+        # a stray file. The legacy fallback is a migration concern, not a
+        # refresh concern.
+        if not _default_registry_path().exists():
+            return
+
+        try:
+            registry = load_registry()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.notify, f"Could not load registry for price refresh: {exc}")
+            self._price_refresh_skipped_or_failed = True
+            return
+
+        try:
+            state = load_state()
+        except Exception:  # noqa: BLE001
+            state = StateStore()
+
+        if not should_run_price_refresh(state, registry):
+            return
+
+        try:
+            api_models = fetch_openrouter_pricing()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.notify, f"Token price refresh failed: {exc}")
+            self._price_refresh_skipped_or_failed = True
+            return
+
+        api_by_id: dict[str, dict[str, Any]] = {}
+        for item in api_models:
+            if isinstance(item, dict) and "id" in item:
+                api_by_id[item["id"]] = item
+
+        try:
+            with locked_registry() as disk_registry:
+                result = apply_prices(disk_registry, api_by_id)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.notify, f"Token prices refreshed but could not save registry: {exc}"
+            )
+            self._price_refresh_skipped_or_failed = True
+            return
+
+        # A refresh that updated nothing (cloud candidates existed, but no
+        # OpenRouter entry matched or carried pricing) is not a success worth
+        # gating on: surface the stale-pricing reminder and do NOT record
+        # today's date, so the daily gate allows a same-day retry instead of
+        # suppressing it.
+        if result.updated == 0:
+            self._price_refresh_skipped_or_failed = True
+        else:
+            try:
+                with locked_state() as disk_state:
+                    set_price_refresh_last_run(disk_state, date.today().isoformat())
+            except Exception as exc:  # noqa: BLE001
+                self.call_from_thread(
+                    self.notify,
+                    f"Token prices refreshed but could not record refresh date: {exc}",
+                )
+
+        for warning in result.warnings:
+            self.call_from_thread(self.notify, warning)
+        self.call_from_thread(self.notify, f"Token prices refreshed for {result.updated} model(s)")
 
     def request_quit(self) -> None:
         """The single quit entry point every binding routes through

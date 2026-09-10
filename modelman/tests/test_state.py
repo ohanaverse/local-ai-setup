@@ -13,8 +13,10 @@ from modelman.state import (
     ModelState,
     StateStore,
     _default_state_path,
+    get_price_refresh_last_run,
     load_state,
     save_state,
+    set_price_refresh_last_run,
 )
 
 
@@ -223,3 +225,23 @@ def test_locked_state_serializes_real_concurrent_writers(tmp_path):
     loaded = load_state(path)
     for i in range(10):
         assert loaded.get(f"ollama/m{i}").ready is True
+
+
+def test_price_refresh_last_run_round_trips(tmp_path):
+    path = tmp_path / "modelman.toml"
+    store = StateStore()
+    set_price_refresh_last_run(store, "2026-09-09")
+    save_state(store, path)
+    loaded = load_state(path)
+    assert get_price_refresh_last_run(loaded) == "2026-09-09"
+
+
+def test_price_refresh_last_run_deletion(tmp_path):
+    path = tmp_path / "modelman.toml"
+    store = StateStore()
+    set_price_refresh_last_run(store, "2026-09-09")
+    set_price_refresh_last_run(store, None)
+    save_state(store, path)
+    loaded = load_state(path)
+    assert get_price_refresh_last_run(loaded) is None
+    assert "price_refresh_last_run" not in path.read_text()
