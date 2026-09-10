@@ -242,12 +242,14 @@ def start(
     model_id: str = typer.Argument(..., help="Registry model id to run locally (<provider>/<name>)"),
 ) -> None:
     """Stop any running local model and start model_id, recording it as
-    the single local model wt's picker may offer. Idempotent if model_id
-    is already running."""
+    the single local model wt's picker may offer. Idempotent when
+    model_id's marker still matches a probe of the running process."""
     registry = load_registry()
     try:
-        with locked_state() as state:
-            result = start_local_model(registry, state, model_id)
+        # start_local_model owns the marker read/write (short locked_state
+        # transactions around it); the stop-all/warmup subprocesses must run
+        # outside any state lock.
+        result = start_local_model(registry, model_id)
     except LocalControlError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
@@ -262,8 +264,7 @@ def stop() -> None:
     """Stop the currently-running local model and clear the marker.
     No-op when nothing is running."""
     try:
-        with locked_state() as state:
-            result = stop_local_model(state)
+        result = stop_local_model()
     except LocalControlError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
