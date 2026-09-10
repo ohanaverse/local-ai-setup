@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -76,61 +75,23 @@ func indexOfModelID(models []config.Model, id string) int {
 	return -1
 }
 
-// formatPrice returns a price string with a leading "$". It guarantees at
-// least two decimal places while preserving fractional cents beyond the
-// hundredth. A nil price renders as a hyphen.
-func formatPrice(p *float64) string {
-	if p == nil {
-		return "-"
-	}
-	return "$" + formatPriceNumber(p)
-}
-
-// formatPriceNumber returns the numeric portion of a price string without
-// the leading "$". A nil price renders as a hyphen.
-func formatPriceNumber(p *float64) string {
-	if p == nil {
-		return "-"
-	}
-	s := strconv.FormatFloat(*p, 'f', -1, 64)
-	if i := strings.Index(s, "."); i == -1 {
-		s += ".00"
-	} else {
-		frac := s[i+1:]
-		if len(frac) < 2 {
-			s += strings.Repeat("0", 2-len(frac))
-		}
-	}
-	return s
-}
-
-// formatPerToken returns the compact per-token cost as "$in/cache/out".
-// When all three prices are absent it returns a hyphen; missing individual
-// segments are rendered with a hyphen in their slot.
+// formatPerToken returns per-token costs as "$0.1234 0.2345 0.3456".
+// Each value has exactly 4 decimal places; missing values render as "-0000".
+// When all three prices are absent it returns a hyphen.
 func formatPerToken(cost config.ModelCost) string {
-	in := formatPriceNumber(cost.InputPricePerMillion)
-	cache := formatPriceNumber(cost.CachePricePerMillion)
-	out := formatPriceNumber(cost.OutputPricePerMillion)
-	if in == "-" && cache == "-" && out == "-" {
+	format4dec := func(p *float64) string {
+		if p == nil {
+			return "-0000"
+		}
+		return fmt.Sprintf("%.4f", *p)
+	}
+	in := format4dec(cost.InputPricePerMillion)
+	cache := format4dec(cost.CachePricePerMillion)
+	out := format4dec(cost.OutputPricePerMillion)
+	if in == "-0000" && cache == "-0000" && out == "-0000" {
 		return "-"
 	}
-	return fmt.Sprintf("$%s/%s/%s", in, cache, out)
-}
-
-// formatSubscription returns the subscription price as "$amount/mo" or
-// "$amount/yr". A nil subscription price renders as a hyphen.
-func formatSubscription(cost config.ModelCost) string {
-	if cost.SubscriptionPrice == nil {
-		return "-"
-	}
-	period := cost.SubscriptionPeriod
-	switch period {
-	case "month":
-		period = "mo"
-	case "year":
-		period = "yr"
-	}
-	return fmt.Sprintf("%s/%s", formatPrice(cost.SubscriptionPrice), period)
+	return fmt.Sprintf("$%s %s %s", in, cache, out)
 }
 
 // sortModelsByUsage sorts models in place (stable) descending by family
@@ -187,7 +148,7 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 	// Sort the models in place.
 	sortModelsByUsage(models, familyCounts, modelCounts)
 
-	// Compute max widths for alignment, including the new pricing columns.
+	// Compute max widths for alignment.
 	// Widths are measured in runes so single-byte characters such as the
 	// hyphen used for absent prices do not throw off fmt.Sprintf padding.
 	// The marker prefix is composed in Title() outside this measurement —
@@ -195,12 +156,7 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 	famWidth := 0
 	idWidth := 0
 	ptWidth := 0
-	subWidth := 0
-	type pricingStrings struct {
-		perToken     string
-		subscription string
-	}
-	pricing := make([]pricingStrings, len(models))
+	perToken := make([]string, len(models))
 	for i, m := range models {
 		if w := utf8.RuneCountInString(m.Family); w > famWidth {
 			famWidth = w
@@ -208,13 +164,9 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		if w := utf8.RuneCountInString(m.ID); w > idWidth {
 			idWidth = w
 		}
-		pricing[i].perToken = formatPerToken(m.Cost)
-		pricing[i].subscription = formatSubscription(m.Cost)
-		if w := utf8.RuneCountInString(pricing[i].perToken); w > ptWidth {
+		perToken[i] = formatPerToken(m.Cost)
+		if w := utf8.RuneCountInString(perToken[i]); w > ptWidth {
 			ptWidth = w
-		}
-		if w := utf8.RuneCountInString(pricing[i].subscription); w > subWidth {
-			subWidth = w
 		}
 	}
 
@@ -234,9 +186,9 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 		c := modelCounts[m.ID]
 		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
 
-		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s  %-*s  %-*s",
+		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s  %-*s",
 			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
-			ptWidth, pricing[i].perToken, subWidth, pricing[i].subscription)
+			ptWidth, perToken[i])
 
 		if len(m.Tags) > 0 {
 			line += fmt.Sprintf(" [%s]", strings.Join(m.Tags, ","))
