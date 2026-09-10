@@ -31,22 +31,11 @@ func TestCopilotSeeder(t *testing.T) {
 // with the correct provider environment variables.
 func TestCopilotBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := copilotDriver{}.Build(m, false, gw)
+	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := copilotDriver{}.Build(m, false, routeFor(m, gw))
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 	assertEnv(t, lc.Env, "COPILOT_MODEL", "ollama/qwen3.8:27b-mlx")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 }
 
-// TestCopilotOllamaURL asserts copilotDriver returns the /v1 endpoint.
-func TestCopilotOllamaURL(t *testing.T) {
-	var d Driver = copilotDriver{}
-	u, ok := d.(OllamaURLer)
-	if !ok {
-		t.Fatal("copilotDriver does not implement OllamaURLer")
-	}
-	if got := u.OllamaURL(); got != "http://localhost:11434/v1" {
-		t.Errorf("OllamaURL() = %q, want http://localhost:11434/v1", got)
-	}
-}

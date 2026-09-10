@@ -62,6 +62,47 @@ func (g GatewayConfig) BaseURL() string { return strings.TrimRight(g.URL, "/") }
 
 // ── Provider ──────────────────────────────────────────────
 
+// Route is everything a driver needs to dial one model for one launch,
+// resolved once by ResolveRoute so drivers stop knowing about specific
+// providers (e.g. ollama) or transports.
+type Route struct {
+	BaseOrigin string   // scheme://host:port, no wire-path suffix
+	APIKey     string
+	ModelRef   string   // m.ID via the proxy, m.ModelName direct — a property of the endpoint's own catalog
+	Display    string   // m.ModelName, for catalog "name" fields
+	ProviderID string   // registry provider id; meaningful only when !Litellm
+	Protocol   Protocol // chosen common protocol, meaningful only when !Litellm
+	Litellm    bool
+	Forced     bool     // true if litellm was required regardless of the on/off setting (Task 5)
+}
+
+// ResolveRoute resolves the Route for launching model m. In this revision
+// it reproduces the pre-refactor behavior exactly (ollama origin for every
+// non-native model in direct mode, cfg.Gateway in litellm mode) — later
+// tasks change the body without changing this signature.
+func (c *Config) ResolveRoute(m Model) (Route, error) {
+	if m.Native {
+		return Route{}, nil // drivers never call this for native models
+	}
+	if c.Gateway.IsLitellm() {
+		return Route{
+			BaseOrigin: c.Gateway.BaseURL(),
+			APIKey:     c.Gateway.APIKey,
+			ModelRef:   m.ID,
+			Display:    m.ModelName,
+			ProviderID: m.ProviderID,
+			Litellm:    true,
+		}, nil
+	}
+	return Route{
+		BaseOrigin: OllamaBaseURL,
+		ModelRef:   m.ModelName,
+		Display:    m.ModelName,
+		ProviderID: m.ProviderID,
+		Litellm:    false,
+	}, nil
+}
+
 // Provider is a source of models with connection info.
 type Provider struct {
 	ID       string     `toml:"id"`

@@ -40,9 +40,6 @@ import (
 // ModelName/ID mix-up in the litellm branch, where the registry id is the
 // only string LiteLLM can resolve.
 
-// matrixGateway is the fixed LiteLLM gateway every litellm matrix case uses.
-var matrixGateway = Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-
 // matrixModels mirrors the four provider shapes a real registry.toml carries.
 // IDs are registry keys; ModelNames are provider-side names. The llamacpp and
 // openrouter ModelNames deliberately contain slashes (real registry data
@@ -71,7 +68,7 @@ func TestGatewayMatrixClaude(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:11434")
 		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "ollama")
 		got, ok := argsFlagValue(lc.Args, "--model")
@@ -82,7 +79,7 @@ func TestGatewayMatrixClaude(t *testing.T) {
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 			assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 			assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
@@ -94,7 +91,7 @@ func TestGatewayMatrixClaude(t *testing.T) {
 	}
 
 	t.Run("native-under-litellm", func(t *testing.T) {
-		lc := d.Build(nativeModel("claude"), false, matrixGateway)
+		lc := d.Build(nativeModel("claude"), false, litellmRoute(nativeModel("claude")))
 		if len(lc.Env) != 0 {
 			t.Errorf("native env = %v, want none (subscription must win over gateway)", lc.Env)
 		}
@@ -122,7 +119,7 @@ func TestGatewayMatrixCodex(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		if !slices.Equal(lc.Args, codexProviderArgs(m.ModelName)) {
 			t.Errorf("args = %v, want direct template %v", lc.Args, codexProviderArgs(m.ModelName))
 		}
@@ -133,7 +130,7 @@ func TestGatewayMatrixCodex(t *testing.T) {
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			want := codexLitellmProviderArgs("http://localhost:4000/v1/", m.ID)
 			if !slices.Equal(lc.Args, want) {
 				t.Errorf("args = %v, want identical shape across providers %v", lc.Args, want)
@@ -145,7 +142,7 @@ func TestGatewayMatrixCodex(t *testing.T) {
 	}
 
 	t.Run("native-under-litellm", func(t *testing.T) {
-		lc := d.Build(nativeModel("codex"), false, matrixGateway)
+		lc := d.Build(nativeModel("codex"), false, litellmRoute(nativeModel("codex")))
 		if len(lc.Args) != 0 || len(lc.Env) != 0 {
 			t.Errorf("native build = %+v, want bare codex (subscription, no provider block)", lc)
 		}
@@ -168,7 +165,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:11434/v1")
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 		assertEnv(t, lc.Env, "COPILOT_MODEL", m.ModelName)
@@ -176,7 +173,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 			assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 			assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
@@ -185,7 +182,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 	}
 
 	t.Run("native-under-litellm", func(t *testing.T) {
-		lc := d.Build(nativeModel("copilot"), false, matrixGateway)
+		lc := d.Build(nativeModel("copilot"), false, litellmRoute(nativeModel("copilot")))
 		if len(lc.Env) != 0 {
 			t.Errorf("native env = %v, want none (subscription must win over gateway)", lc.Env)
 		}
@@ -212,7 +209,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 		var parsed struct {
 			Model    string `json:"model"`
@@ -247,7 +244,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 			var parsed struct {
 				Model      string `json:"model"`
@@ -321,7 +318,7 @@ func TestGatewayMatrixPi(t *testing.T) {
 
 	t.Run("direct-ollama", func(t *testing.T) {
 		m := matrixModels[0]
-		lc := d.Build(m, false, directGateway())
+		lc := d.Build(m, false, directRoute(m))
 		got, ok := argsFlagValue(lc.Args, "--model")
 		if !ok || got != m.ModelName {
 			t.Errorf("--model = %q, want bare %q", got, m.ModelName)
@@ -333,7 +330,7 @@ func TestGatewayMatrixPi(t *testing.T) {
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			got, ok := argsFlagValue(lc.Args, "--model")
 			if !ok || got != piLitellmProviderID+"/"+m.ID {
 				t.Errorf("--model = %q, want %s/%s", got, piLitellmProviderID, m.ID)
@@ -345,7 +342,7 @@ func TestGatewayMatrixPi(t *testing.T) {
 	}
 
 	t.Run("native", func(t *testing.T) {
-		lc := d.Build(nativeModel("pi"), false, matrixGateway)
+		lc := d.Build(nativeModel("pi"), false, litellmRoute(nativeModel("pi")))
 		if len(lc.Args) != 0 || lc.Warn != "" {
 			t.Errorf("native build = %+v, want bare pi", lc)
 		}
@@ -362,11 +359,13 @@ func TestGatewayMatrixAgy(t *testing.T) {
 		t.Fatal("agy driver not registered")
 	}
 	for _, m := range matrixModels {
-		for _, gw := range []Gateway{directGateway(), matrixGateway} {
-			lc := d.Build(m, false, gw)
-			if len(lc.Args) != 0 || len(lc.Env) != 0 {
-				t.Errorf("agy build for %s under %s = %+v, want bare agy", m.ID, gw.Mode, lc)
-			}
+		lc := d.Build(m, false, directRoute(m))
+		if len(lc.Args) != 0 || len(lc.Env) != 0 {
+			t.Errorf("agy build for %s under direct = %+v, want bare agy", m.ID, lc)
+		}
+		lc = d.Build(m, false, litellmRoute(m))
+		if len(lc.Args) != 0 || len(lc.Env) != 0 {
+			t.Errorf("agy build for %s under litellm = %+v, want bare agy", m.ID, lc)
 		}
 	}
 }
@@ -387,9 +386,9 @@ func TestGatewayMatrixModelIdentityIsProviderIndependent(t *testing.T) {
 		if d == nil {
 			t.Fatalf("%s driver not registered", name)
 		}
-		baseline := d.Build(base, false, matrixGateway)
+		baseline := d.Build(base, false, litellmRoute(base))
 		for _, m := range matrixModels[1:] {
-			lc := d.Build(m, false, matrixGateway)
+			lc := d.Build(m, false, litellmRoute(m))
 			// Ordered ID-first: the baseline ID contains the baseline
 			// ModelName as a substring ("ollama/<name>"), so a map's random
 			// iteration order could apply the ModelName substitution inside

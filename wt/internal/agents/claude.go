@@ -23,8 +23,6 @@ func (claudeDriver) InstructionPointers() []InstructionPointer {
 	}
 }
 
-func (claudeDriver) OllamaURL() string { return config.OllamaBaseURL }
-
 func (claudeDriver) ResumeFlag() string { return "--resume" }
 
 func (claudeDriver) LatestSession(path string) (*session.Session, error) {
@@ -34,7 +32,7 @@ func (claudeDriver) LatestSession(path string) (*session.Session, error) {
 	})
 }
 
-func (claudeDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
+func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	args := []string{}
 	if yolo {
 		args = append(args, claudeDriver{}.YoloFlag())
@@ -55,21 +53,19 @@ func (claudeDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		return lc
 	}
 
-	if gw.IsLitellm() {
-		lc.Env = append(lc.Env,
-			"ANTHROPIC_AUTH_TOKEN="+gw.APIKey,
-			"ANTHROPIC_API_KEY=",
-			"ANTHROPIC_BASE_URL="+gw.BaseURL(),
-		)
-		lc.Args = append(lc.Args, "--model", m.ID)
-		return lc
+	token := "ollama"
+	modelRef := r.ModelRef
+	if !r.Litellm {
+		modelRef = m.ModelName
 	}
-
+	if r.Litellm {
+		token = r.APIKey
+	}
 	lc.Env = append(lc.Env,
-		"ANTHROPIC_AUTH_TOKEN=ollama",
+		"ANTHROPIC_AUTH_TOKEN="+token,
 		"ANTHROPIC_API_KEY=",
-		"ANTHROPIC_BASE_URL="+claudeDriver{}.OllamaURL(),
+		"ANTHROPIC_BASE_URL="+r.BaseOrigin,
 	)
-	lc.Args = append(lc.Args, "--model", m.ModelName)
+	lc.Args = append(lc.Args, "--model", modelRef)
 	return lc
 }

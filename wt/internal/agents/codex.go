@@ -27,9 +27,7 @@ const ollamaProvider = "agent-wt"
 // proxy rejects every request with 401 "No api key passed in".
 const codexGatewayEnvKey = "AGENT_WT_GATEWAY_API_KEY"
 
-func (codexDriver) OllamaURL() string { return config.OllamaBaseURL + "/v1/" }
-
-func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
+func (codexDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "codex"}
 	if yolo {
 		lc.Args = append(lc.Args, codexDriver{}.YoloFlag())
@@ -43,17 +41,19 @@ func (codexDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 		return lc
 	}
 
-	baseURL := codexDriver{}.OllamaURL()
+	baseURL := ""
 	modelName := m.ModelName
 	configArgs := []string{}
-	if gw.IsLitellm() {
-		baseURL = gw.BaseURL() + "/v1/"
-		modelName = m.ID
-		// The local ollama endpoint needs no key; LiteLLM's v1 API does.
-		lc.Env = append(lc.Env, codexGatewayEnvKey+"="+gw.APIKey)
+	if r.Litellm {
+		baseURL = r.BaseOrigin + "/v1/"
+		modelName = r.ModelRef
+		// LiteLLM's v1 API needs a key; the local endpoint does not.
+		lc.Env = append(lc.Env, codexGatewayEnvKey+"="+r.APIKey)
 		configArgs = append(configArgs,
 			"-c", "model_providers."+ollamaProvider+".env_key=\""+codexGatewayEnvKey+"\"",
 		)
+	} else {
+		baseURL = r.BaseOrigin + "/v1/"
 	}
 
 	lc.Args = append(lc.Args,

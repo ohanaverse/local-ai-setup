@@ -31,7 +31,7 @@ func (piDriver) SyncModels(cfg *config.Config) error {
 // could never be addressed and its bare form would be sent upstream (400 at
 // the gateway). When the entry is missing, Build falls back to pi's default
 // model and surfaces a warning.
-func (piDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
+func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {
 		return lc
@@ -44,10 +44,10 @@ func (piDriver) Build(m config.Model, yolo bool, gw Gateway) LaunchCmd {
 	modelArg := m.ModelName
 	providerID := piOllamaProviderID
 	launchID := m.ModelName
-	if gw.IsLitellm() {
-		modelArg = piLitellmProviderID + "/" + m.ID
+	if r.Litellm {
+		modelArg = piLitellmProviderID + "/" + r.ModelRef
 		providerID = piLitellmProviderID
-		launchID = m.ID
+		launchID = r.ModelRef
 	}
 	if isLaunchable(providerID, launchID, path) {
 		lc.Args = append(lc.Args, "--model", modelArg)

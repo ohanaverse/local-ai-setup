@@ -406,8 +406,8 @@ func TestPiBuildLitellm(t *testing.T) {
 	writeFile(t, path, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := piDriver{}.Build(m, false, gw)
+	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := piDriver{}.Build(m, false, routeFor(m, gw))
 	if !slices.Equal(lc.Args, []string{"--model", "litellm/ollama/qwen3.8:27b-mlx"}) {
 		t.Fatalf("expected --model litellm/<registry id>, got %v", lc.Args)
 	}
@@ -426,8 +426,8 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	writeFile(t, filepath.Join(piDir, "models.json"), `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
 
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := Gateway{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := piDriver{}.Build(m, false, gw)
+	gw := config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	lc := piDriver{}.Build(m, false, routeFor(m, gw))
 	if len(lc.Args) != 0 {
 		t.Fatalf("args = %v, want none (fallback to default)", lc.Args)
 	}
