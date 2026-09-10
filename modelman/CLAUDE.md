@@ -99,6 +99,14 @@ The screen tests (`tests/screens/*.py`, ~267 tests, ~1.5 min) use Textual's `App
   only the model ids/families this run actually touched onto a
   freshly-loaded copy rather than overwriting the whole file from its
   own (possibly stale) in-memory snapshot.
+- `registry.locked_registry()` (`registry.py`) — the registry.toml
+  analogue of `locked_state()`: `save_registry()` now holds a process
+  lock, and `locked_registry()` is the locked read-modify-write
+  context manager. Don't call `save_registry()` from inside it (the
+  lock isn't reentrant → deadlock); mutate the yielded `Registry` and
+  let the context manager persist it. The startup price-refresh worker
+  fetches over the network *before* locking, then applies+saves under
+  `locked_registry()` so a slow API call never blocks a main-thread save.
 - A queued expose (`x`) against a model that's still downloading is
   allowed and queues normally; at apply time, if the model is still
   downloading, `ModelScreen._run_apply` pulls it out of
@@ -154,6 +162,7 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 - `src/modelman/state.py` — `StateStore`: which models are downloaded, exposed, etc. (`get`/`set`/`forget_family`). Loaded from `modelman.toml` (`MODELMAN_STATE`); display-name resolution lives in `registry.family_display_name`/`known_families`.
   **Exposure predicate:** a model is effectively exposed for LiteLLM routing iff `litellm_exposed = true` AND (`ready = true` OR `location = "cloud"`). Native models (provider `auth.type = "native"`) are always exposed — they bypass LiteLLM entirely. This rule is shared with wt (both read `modelman.toml` and apply the same predicate).
 - `src/modelman/migrate.py` — one-shot import of legacy `~/.config/local-ai/config.yaml` + `families/*.yaml` (and optionally `wt` config) into the registry/state pair. Run once via `uv run modelman migrate`.
+- `src/modelman/pricing.py` — OpenRouter price refresh: `fetch_openrouter_pricing` / `apply_prices` / `refresh_prices` / `should_run_price_refresh`. `_is_cloud_model` excludes native providers (`auth.type="native"`) even though they're `location="cloud"`; the per-token merge (`_merge_api_cost`) preserves manually-set cache/subscription pricing. Driven by the `modelman refresh-prices` CLI and a daily-gated startup worker in `app.py`.
 - `src/modelman/sync.py` — reconciles `state` against each provider's actual filesystem (`ollama list`, HF cache scan, omlx model dir). Writes back to state.
 - `src/modelman/litellm.py` — `expose_model`/`unexpose_model` add/remove entries in the LiteLLM config's `model_list` (one load/save per CLI call; `unexpose_model` is a no-op for ids missing from the registry). `PendingChanges.apply()` batches its queued exposes through `apply_expose_queue` instead — one config load/save for the whole queue. Every writer runs `ensure_litellm_settings()` before save (value-enforces `litellm_settings.drop_params: true`; adds `additional_drop_params: ["reasoning_effort"]` to every `ollama_chat/*` row missing it — the BerriAI/litellm#37452 codex workaround) and saves/restarts only when the parsed document or an exposed flag actually changed. Provider prefix/api_key/cloud rules live in `PROVIDER_POLICIES` (`is_cloud()` is the TUI's gate). After a config write that actually changed the model list, `restart_litellm_proxy()` runs the `MODELMAN_LITELLM_RESTART_CMD` command (30s timeout) to reconcile the running proxy, falling back to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` when the var is unset (the var is exported only from interactive shells like ~/.zshrc — an unset env used to silently skip the restart and leave the proxy stale); it returns warning strings (command failed) rather than printing to stderr, so the CLI surfaces them and the TUI routes them through the apply event channel (`expose:warning|…`). `_set_exposed_flag` returns whether the flag changed, so a no-op unexpose of an already-removed model does not bounce the proxy.
 - `src/modelman/_toml_io.py` — shared atomic-write helpers: `atomic_write()` (temp file + rename; `binary`/`preserve_mode` options — litellm.py's YAML writer passes `preserve_mode=True` so config permission bits survive rewrites), `atomic_write_toml()` (registry/state TOML writes), plus `tomllib`/`tomli_w` shims (`drop_none`, `unknown_keys` for round-trip preservation).
