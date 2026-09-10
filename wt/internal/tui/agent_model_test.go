@@ -93,7 +93,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// Mirror production enterModelPhase: read the last-launched ID from
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
-	items := buildModelItems(models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
+	items := buildModelItems(nil, "", models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
