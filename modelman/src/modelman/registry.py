@@ -280,6 +280,14 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
         location="local",
         auth=AuthConfig(type="none", base_url="http://localhost:8001/v1"),
     ),
+    "mtplx": ProviderEntry(
+        id="mtplx",
+        name="MTPLX",
+        location="local",
+        model_dir="~/.mtplx/models",
+        protocols=["openai-chat"],
+        auth=AuthConfig(type="none", base_url="http://localhost:8003/v1"),
+    ),
 }
 
 # Provider ids that have a canonical default entry (the reconcilable local
@@ -287,7 +295,7 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
 # fall back to its generic title()-cased import.
 # llamacpp retired 2026-09-07 (issue #33): provider code kept in
 # providers/llamacpp.py; re-enable steps in docs/reference/provider-artifacts.md.
-DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx", "mlx_lm_server")
+DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx", "mlx_lm_server", "mtplx")
 
 
 def _default_wt_config_path() -> Path:
