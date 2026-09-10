@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
@@ -100,6 +101,14 @@ type model struct {
 	repoRoot         string // cached from entriesLoadedMsg to avoid a second rev-parse
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
+
+	// fatalErr (issue #65) is set by enterModelPhase when modelman's
+	// [local].running_model marker is stale — the probe in
+	// internal/localgate failed. Paired with a tea.Quit return so the
+	// whole program exits; Run() below surfaces it as the function's
+	// returned error, matching the non-TUI path's exit-with-message
+	// behavior (cmd/wt/main.go's runLaunchPath).
+	fatalErr error
 }
 
 // Init returns the initial command. When a worktree path was pre-resolved
@@ -680,12 +689,37 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
+	// One-local-model-at-a-time gate (issue #65) — mirrors
+	// cmd/wt/resolve.go's resolveModel. A stale marker (set but not
+	// verified available) quits the whole program with a message; a
+	// clean/empty marker narrows models to cloud-only, or cloud plus the
+	// one verified-running local model.
+	runningLocal, gateErr := localgate.Resolve(m.cfg)
+	if gateErr != nil {
+		m.fatalErr = gateErr
+		return m, tea.Quit
+	}
+	pinRejected := ""
+	if m.pinnedModel != "" && m.cfg.LocalGateActive() {
+		if idx := indexOfModelID(models, m.pinnedModel); idx >= 0 {
+			pm := models[idx]
+			if loc, lerr := m.cfg.ResolveLocation(pm); lerr == nil && loc == config.LocationLocal && pm.ID != runningLocal {
+				pinRejected = (&localgate.NotRunningError{ModelID: pm.ID}).Error()
+			}
+		}
+	}
+	models = m.cfg.FilterToRunningLocal(models, runningLocal)
+
 	// Validate a -M pin BEFORE any list construction: a bad pin routes back to
 	// the agent picker without scanning usage.jsonl or wrapping models. The
 	// eligible slice is the source of truth; a pin that matches at all is one
 	// of these models.
-	if m.pinnedModel != "" && indexOfModelID(models, m.pinnedModel) < 0 {
-		m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
+	if m.pinnedModel != "" && (pinRejected != "" || indexOfModelID(models, m.pinnedModel) < 0) {
+		if pinRejected != "" {
+			m.status = pinRejected
+		} else {
+			m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
+		}
 		m.pinnedModel = ""
 		items := buildAgentList(m.cfg)
 		m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
@@ -956,11 +990,16 @@ func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, them
 	// from a test invocation sharing the process).
 	pendingSummary = ""
 	pendingSurveyState = pendingSurvey{}
-	_, err := p.Run()
+	finalModel, err := p.Run()
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
 	printPendingSummaryAndSurvey()
+	if err == nil {
+		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
+			err = fm.fatalErr
+		}
+	}
 	return err
 }
 
