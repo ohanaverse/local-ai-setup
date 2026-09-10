@@ -15,7 +15,11 @@ import (
 // wt materializes both keys into a single Ready bool so the exposure
 // predicate treats legacy entries consistently with modelman.
 type modelmanState struct {
-	ModelState map[string]struct {
+	// price_refresh_last_run is modelman's global "token pricing last
+	// refreshed" date (YYYY-MM-DD), written by `modelman refresh-prices`.
+	// wt reads it post-launch to print a stale-pricing notice.
+	PriceRefreshLastRun string `toml:"price_refresh_last_run"`
+	ModelState          map[string]struct {
 		LitellmExposed bool `toml:"litellm_exposed"`
 		Ready          bool `toml:"ready"`
 		Downloaded     bool `toml:"downloaded"`
@@ -55,4 +59,26 @@ func loadModelmanState() (map[string]struct {
 		}{LitellmExposed: st.LitellmExposed, Ready: st.Ready || st.Downloaded}
 	}
 	return out, nil
+}
+
+// PriceRefreshLastRun returns modelman's global token-pricing refresh
+// date (price_refresh_last_run in ~/.config/local-ai/modelman.toml) as
+// (value, present). present is false when the file or key is missing or
+// the file cannot be read/parsed — the notice must stay silent on errors,
+// matching how loadModelmanState tolerates a missing file. wt is a
+// read-only consumer; modelman owns the key.
+func PriceRefreshLastRun() (string, bool) {
+	path := ModelmanPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var s modelmanState
+	if err := toml.Unmarshal(data, &s); err != nil {
+		return "", false
+	}
+	if s.PriceRefreshLastRun == "" {
+		return "", false
+	}
+	return s.PriceRefreshLastRun, true
 }

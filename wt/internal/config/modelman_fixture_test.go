@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+// fixturePriceRefreshDate is the value of price_refresh_last_run in the
+// shared modelman.toml contract fixture. Centralizing it makes the
+// relationship between the fixture and the accessor tests explicit and
+// avoids updating multiple literals when the fixture date changes.
+const fixturePriceRefreshDate = "2026-09-14"
+
 // TestLoadModelmanStateMatchesSharedFixture guards wt's modelman.toml
 // decoding against the shape modelman actually writes. The fixture at
 // docs/contracts/modelman.sample.toml is also read by modelman's
@@ -109,4 +115,10 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Errorf("expected openrouter/contract-fixture:cloud-exposed to have litellm_exposed=true")
 	}
 	// ready defaults to false for missing key
+
+	// Global price-refresh date (issue #69): wt's stale-pricing notice
+	// reads this top-level key; a decode regression fails both CI jobs.
+	if v, ok := PriceRefreshLastRun(); !ok || v != fixturePriceRefreshDate {
+		t.Errorf("PriceRefreshLastRun() = (%q, %v), want (%q, true)", v, ok, fixturePriceRefreshDate)
+	}
 }

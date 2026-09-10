@@ -14,6 +14,13 @@
 # - Local model with litellm_exposed=true, ready=false → NOT exposed
 # - Cloud model with litellm_exposed=true (no ready key) → exposed
 
+# Global "token pricing last refreshed" date (YYYY-MM-DD), written by
+# `modelman refresh-prices` (set_price_refresh_last_run in state.py).
+# wt reads it after each launch to print a stale-pricing notice
+# (see wt/internal/agents/price_notice.go). A missing key means
+# pricing has never been refreshed.
+price_refresh_last_run = "2026-09-14"
+
 [model_state."ollama/contract-fixture:local"]
 ready = true
 disk_path = "ollama:contract-fixture:local"

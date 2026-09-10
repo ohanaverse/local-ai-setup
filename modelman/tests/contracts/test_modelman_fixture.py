@@ -57,3 +57,7 @@ def test_load_state_matches_shared_fixture():
     family = state.families.get("contract-fixture")
     assert family is not None
     assert family.display_name == "Contract Fixture (legacy)"
+
+    # Global price-refresh timestamp (issue #69): modelman writes this
+    # top-level key; wt reads it to notify on stale pricing.
+    assert state.extra.get("price_refresh_last_run") == "2026-09-14"
