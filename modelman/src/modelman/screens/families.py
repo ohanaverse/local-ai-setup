@@ -18,7 +18,7 @@ from ..registry import (
     load_registry,
     save_registry,
 )
-from ..state import StateStore, load_state, save_state
+from ..state import StateStore, load_state, locked_state, save_state
 from . import reconcile_model_state, reload_preserving_cursor
 from .forms import AddFamilyModal, ConfirmModal, EditFamilyModal
 from .models import ModelScreen
@@ -43,6 +43,7 @@ class FamilyScreen(Screen[None]):
         ("d", "delete_family", "Delete"),
         ("enter", "open_family", "Open"),
         ("g", "open_downloads", "Downloads"),
+        ("l", "toggle_litellm", "LiteLLM"),
         ("q", "quit", "Quit"),
     ]
 
@@ -79,6 +80,10 @@ class FamilyScreen(Screen[None]):
         yield Header()
         yield DataTable(id="family-table", cursor_type="row")
         yield Static("Refreshing sizes…", id="refresh-indicator")
+        # Persistent routing-mode status: the LiteLLM on/off toggle is
+        # routing policy (Task 7), so the family screen surfaces it where
+        # the user manages models — updated by _update_litellm_status().
+        yield Static("", id="litellm-status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -88,6 +93,8 @@ class FamilyScreen(Screen[None]):
         table = self.query_one(DataTable)
         table.add_columns("FAMILY", "DISPLAY", "VARIANTS", "DOWNLOADED", "SIZE")
         self._load_from_disk()
+        self.reload()
+        self._update_litellm_status()
         self.reload()
         # Reconcile against provider state so the size and downloaded columns
         # reflect reality even when modelman.toml is stale. In-memory only.
@@ -258,6 +265,30 @@ class FamilyScreen(Screen[None]):
                 )
 
         reload_preserving_cursor(self.query_one(DataTable), _repopulate)
+
+    def _update_litellm_status(self) -> None:
+        """Render the [litellm] routing mode in the screen's status area.
+
+        Purely display: never starts, stops, or restarts the proxy — the
+        toggle only flips modelman.toml's [litellm].enabled (Task 7).
+        """
+        mode = "on" if self.state.litellm.enabled else "off"
+        url_display = (
+            f" ({self.state.litellm.url})" if mode == "on" and self.state.litellm.url else ""
+        )
+        self.query_one("#litellm-status", Static).update(
+            f"LiteLLM: {mode}{url_display}  [l] toggle"
+        )
+
+    def action_toggle_litellm(self) -> None:
+        """Flip [litellm].enabled on `l`. Routing policy only — the proxy
+        process is never touched. locked_state() re-reads the on-disk
+        state so the flip applies on top of the latest file, then the
+        in-memory snapshot and status line are resynced."""
+        with locked_state(self.state_path) as disk_state:
+            disk_state.litellm.enabled = not disk_state.litellm.enabled
+        self.state = load_state(self.state_path)
+        self._update_litellm_status()
 
     def action_add_family(self) -> None:
         if self._reconciling:
