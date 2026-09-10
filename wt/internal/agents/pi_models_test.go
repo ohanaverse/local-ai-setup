@@ -41,7 +41,7 @@ func TestPiSyncModelsAddsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, emptyPiModels)
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 			{ID: "claude/native", ModelName: "native", Native: true},
@@ -76,7 +76,7 @@ func TestPiSyncModelsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, emptyPiModels)
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
@@ -100,7 +100,7 @@ func TestPiSyncModelsUsesModelName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, emptyPiModels)
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
@@ -120,7 +120,7 @@ func TestPiSyncModelsPreservesExisting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://127.0.0.1:11434/v1","models":[{"_launch":false,"contextWindow":1000,"id":"manual-model","input":["text"],"reasoning":false}]}}}`)
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
@@ -143,7 +143,7 @@ func TestPiSyncModelsPreservesExisting(t *testing.T) {
 func TestPiSyncModelsMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},
@@ -310,7 +310,7 @@ func TestSyncModelsDirectPreservesLitellmProvider(t *testing.T) {
 	writeFile(t, path, `{"providers":{"litellm":{"api":"openai-completions","apiKey":"sk-x","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]},"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://localhost:11434/v1","models":[]}}}`)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{Mode: "direct"},
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
@@ -336,7 +336,7 @@ func TestSyncModelsDirectRevertsGatewayProvider(t *testing.T) {
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[]}}}`)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
@@ -367,7 +367,7 @@ func TestSyncModelsDirectRevertsWhenNoModelsAdded(t *testing.T) {
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-litellm","baseUrl":"http://localhost:4000/v1","models":[{"_launch":true,"id":"qwen3.8:27b-mlx"}]}}}`)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},
@@ -394,7 +394,7 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 	writeFile(t, path, `{"providers":{"ollama":{"api":"openai-completions","apiKey":"sk-remote","baseUrl":"http://192.168.1.50:11434/v1","models":[]}}}`)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{Mode: "direct"},
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"},
 		},

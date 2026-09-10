@@ -50,7 +50,7 @@ func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 	requireBinary(t, "opencode")
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	cmd, err := launchAgent("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
 		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
@@ -227,7 +227,7 @@ func TestLaunchAgentSyncsPi(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama", },
 		},

@@ -22,7 +22,7 @@ func testConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
 			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Tags: []string{"code"}},
@@ -708,7 +708,7 @@ func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
 	stubUsageStore(t)
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},
@@ -737,6 +737,9 @@ func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
 	requireBinary(t, "claude")
 	cfg := &config.Config{
 		DefaultTag: "code",
+		// claude×openrouter has no protocol overlap, so the launch resolves to a
+		// forced-litellm route; a gateway URL is required for it to succeed.
+		Gateway:    config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or"}}},
 		Models: []config.Model{
 			{ID: "openrouter/gpt-4", ProviderID: "openrouter", ModelName: "gpt-4", Tags: []string{"code"}},
@@ -769,7 +772,7 @@ func TestNoOllamaWarnInLitellmMode(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Gateway:    config.GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
-		Providers:  []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
 		},

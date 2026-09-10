@@ -91,7 +91,15 @@ func (c *Config) providerByID(id string) (Provider, bool) {
 // BaseOrigin, and auth.secret_ref resolved through ResolveSecret), using
 // the provider-side model name (m.ModelName). In litellm mode it routes
 // through the configured LiteLLM gateway using the full registry id.
-func (c *Config) ResolveRoute(m Model) (Route, error) {
+// ResolveRoute resolves the Route for launching model m for an agent that
+// speaks agentProtocols. It first checks protocol overlap: an empty
+// intersection forces LiteLLM regardless of the on/off toggle. Otherwise,
+// if LiteLLM is on the route goes through the gateway, and if it is off
+// the route dials the provider directly using auth.base_url and
+// auth.secret_ref. Returns an error when direct mode is required (forced or
+// chosen) but the provider has no base_url or LiteLLM is forced but
+// unconfigured.
+func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error) {
 	if m.Native {
 		return Route{}, nil // drivers never call this for native models
 	}
@@ -100,16 +108,6 @@ func (c *Config) ResolveRoute(m Model) (Route, error) {
 	if m.ID == "" && m.ProviderID == "" {
 		return Route{}, nil
 	}
-	if c.Gateway.IsLitellm() {
-		return Route{
-			BaseOrigin: c.Gateway.BaseURL(),
-			APIKey:     c.Gateway.APIKey,
-			ModelRef:   m.ID,
-			Display:    m.ModelName,
-			ProviderID: m.ProviderID,
-			Litellm:    true,
-		}, nil
-	}
 
 	providerID := m.ProviderID
 	if providerID == "" && strings.Contains(m.ID, "/") {
@@ -117,7 +115,7 @@ func (c *Config) ResolveRoute(m Model) (Route, error) {
 	}
 	provider, ok := c.providerByID(providerID)
 	if !ok {
-		return Route{}, fmt.Errorf("direct routing: unknown provider %q for model %q", providerID, m.ID)
+		return Route{}, fmt.Errorf("unknown provider %q for model %q", providerID, m.ID)
 	}
 	// Native providers never route through a gateway; this mirrors deriveNative
 	// and keeps manually-constructed test configs from needing the Native bit
@@ -125,6 +123,28 @@ func (c *Config) ResolveRoute(m Model) (Route, error) {
 	if provider.Auth.Type == "native" {
 		return Route{}, nil
 	}
+
+	common := intersectProtocols(agentProtocols, provider.EffectiveProtocols())
+	forced := len(agentProtocols) > 0 && len(common) == 0
+	useLitellm := forced || c.Gateway.IsLitellm()
+
+	if useLitellm {
+		if c.Gateway.BaseURL() == "" {
+			return Route{}, fmt.Errorf(
+				"litellm routing is required for this model but no URL is configured — "+
+					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on'")
+		}
+		return Route{
+			BaseOrigin: c.Gateway.BaseURL(),
+			APIKey:     c.Gateway.APIKey,
+			ModelRef:   m.ID,
+			Display:    m.ModelName,
+			ProviderID: providerID,
+			Litellm:    true,
+			Forced:     forced,
+		}, nil
+	}
+
 	if provider.Auth.BaseURL == "" {
 		return Route{}, fmt.Errorf(
 			"direct routing: provider %q has no auth.base_url in registry.toml — "+
@@ -134,14 +154,35 @@ func (c *Config) ResolveRoute(m Model) (Route, error) {
 	if provider.Auth.SecretRef != "" {
 		apiKey = ResolveSecret(provider.Auth.SecretRef)
 	}
+	protocol := ProtocolOpenAIChat
+	if len(common) > 0 {
+		protocol = common[0]
+	}
 	return Route{
 		BaseOrigin: BaseOrigin(provider.Auth.BaseURL),
 		APIKey:     apiKey,
 		ModelRef:   m.ModelName,
 		Display:    m.ModelName,
 		ProviderID: providerID,
+		Protocol:   protocol,
 		Litellm:    false,
 	}, nil
+}
+
+// intersectProtocols returns the protocol values common to a and b, ordered
+// by a's preference.
+func intersectProtocols(a, b []Protocol) []Protocol {
+	set := make(map[Protocol]bool, len(b))
+	for _, p := range b {
+		set[p] = true
+	}
+	var out []Protocol
+	for _, p := range a {
+		if set[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Provider is a source of models with connection info.

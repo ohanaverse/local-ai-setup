@@ -123,7 +123,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
 			// Two code models in the gemma4 family.
@@ -201,7 +201,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 func singleModelConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
 		},

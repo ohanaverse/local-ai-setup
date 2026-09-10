@@ -17,6 +17,8 @@ type claudeDriver struct{}
 
 func (claudeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
 
+func (claudeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolAnthropic} }
+
 func (claudeDriver) InstructionPointers() []InstructionPointer {
 	return []InstructionPointer{
 		{Path: "CLAUDE.md", Content: "@AGENTS.md\n"},

@@ -15,6 +15,8 @@ type opencodeDriver struct{}
 
 func (opencodeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
 
+func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
+
 func (opencodeDriver) ResumeFlag() string { return "--session" }
 
 func (opencodeDriver) LatestSession(path string) (*session.Session, error) {

@@ -56,9 +56,11 @@ var matrixModels = []config.Model{
 // routing in the matrix tests.
 func matrixConfig() *config.Config {
 	return &config.Config{
-		Gateway: config.GatewayConfig{Mode: "direct"},
+		// Mode stays direct; URL/key are present so forced-litellm tests
+		// (codex, claude+non-ollama) have a gateway to route through.
+		Gateway: config.GatewayConfig{Mode: "direct", URL: "http://localhost:4000", APIKey: "sk-litellm"},
 		Providers: []config.Provider{
-			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 			{ID: "llamacpp", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080/v1"}},
 			{ID: "omlx", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8081/v1"}},
 			{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or-matrix"}},
@@ -67,12 +69,12 @@ func matrixConfig() *config.Config {
 	}
 }
 
-// resolvedDirectRoute returns the direct-mode Route ResolveRoute would emit
-// for m in the matrix config. Centralizing this avoids duplicating the
-// base_url normalization rules and secret resolution in every matrix test.
-func resolvedDirectRoute(t *testing.T, cfg *config.Config, m config.Model) config.Route {
+// resolvedRoute returns the Route ResolveRoute would emit for m under the
+// given agent protocols. Centralizing this avoids duplicating base_url
+// normalization and negotiation logic in every matrix test.
+func resolvedRoute(t *testing.T, cfg *config.Config, m config.Model, protocols []config.Protocol) config.Route {
 	t.Helper()
-	r, err := cfg.ResolveRoute(m)
+	r, err := cfg.ResolveRoute(m, protocols)
 	if err != nil {
 		t.Fatalf("ResolveRoute(%q): %v", m.ID, err)
 	}
@@ -104,27 +106,39 @@ func TestGatewayMatrixClaude(t *testing.T) {
 		}
 	})
 
-	t.Run("direct-openrouter", func(t *testing.T) {
+	t.Run("forced-litellm-openrouter", func(t *testing.T) {
+		// claude speaks anthropic; openrouter only serves openai-chat, so the
+		// empty protocol intersection forces the gateway route even when the
+		// user has LiteLLM off — matrixConfig() carries a URL/key so the
+		// forced route can resolve.
 		m := matrixModels[3]
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
-		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "https://openrouter.ai/api")
-		// Claude's direct-mode token remains the ollama placeholder; protocol
-		// negotiation (Task 5) will force claude+openrouter through LiteLLM.
-		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "ollama")
+		route := resolvedRoute(t, matrixConfig(), m, claudeDriver{}.Protocols())
+		if !route.Litellm || !route.Forced {
+			t.Fatalf("route = %+v, want Litellm=true Forced=true", route)
+		}
+		lc := d.Build(m, false, route)
+		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
+		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
+		assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
 		got, ok := argsFlagValue(lc.Args, "--model")
-		if !ok || got != m.ModelName {
-			t.Errorf("--model = %q, want bare %q", got, m.ModelName)
+		if !ok || got != m.ID {
+			t.Errorf("--model = %q, want registry id %q", got, m.ID)
 		}
 	})
 
-	t.Run("direct-omlx", func(t *testing.T) {
+	t.Run("forced-litellm-omlx", func(t *testing.T) {
+		// Same negotiation as openrouter: omlx serves only openai-chat.
 		m := matrixModels[2]
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
-		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:8081")
-		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "ollama")
+		route := resolvedRoute(t, matrixConfig(), m, claudeDriver{}.Protocols())
+		if !route.Litellm || !route.Forced {
+			t.Fatalf("route = %+v, want Litellm=true Forced=true", route)
+		}
+		lc := d.Build(m, false, route)
+		assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
+		assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 		got, ok := argsFlagValue(lc.Args, "--model")
-		if !ok || got != m.ModelName {
-			t.Errorf("--model = %q, want bare %q", got, m.ModelName)
+		if !ok || got != m.ID {
+			t.Errorf("--model = %q, want registry id %q", got, m.ID)
 		}
 	})
 
@@ -168,16 +182,24 @@ func TestGatewayMatrixCodex(t *testing.T) {
 		t.Fatal("codex driver not registered")
 	}
 
-	t.Run("direct-ollama", func(t *testing.T) {
-		m := matrixModels[0]
-		lc := d.Build(m, false, directRoute(m))
-		if !slices.Equal(lc.Args, codexProviderArgs(m.ModelName)) {
-			t.Errorf("args = %v, want direct template %v", lc.Args, codexProviderArgs(m.ModelName))
-		}
-		if len(lc.Env) != 0 {
-			t.Errorf("direct env = %v, want none (local endpoint needs no key)", lc.Env)
-		}
-	})
+	// codex speaks only openai-responses and no provider in the matrix serves
+	// it, so with the gateway OFF every pairing is forced through LiteLLM.
+	for _, m := range matrixModels {
+		t.Run("forced-litellm-"+m.ProviderID, func(t *testing.T) {
+			route := resolvedRoute(t, matrixConfig(), m, codexDriver{}.Protocols())
+			if !route.Litellm || !route.Forced {
+				t.Errorf("route = %+v, want Litellm=true Forced=true", route)
+			}
+			lc := d.Build(m, false, route)
+			want := codexLitellmProviderArgs("http://localhost:4000/v1/", m.ID)
+			if !slices.Equal(lc.Args, want) {
+				t.Errorf("args = %v, want litellm template %v", lc.Args, want)
+			}
+			if !slices.Equal(lc.Env, []string{codexGatewayEnvKey + "=sk-litellm"}) {
+				t.Errorf("env = %v, want only the gateway key for env_key lookup", lc.Env)
+			}
+		})
+	}
 
 	for _, m := range matrixModels {
 		t.Run("litellm-"+m.ProviderID, func(t *testing.T) {
@@ -224,7 +246,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 
 	t.Run("direct-openrouter", func(t *testing.T) {
 		m := matrixModels[3]
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "https://openrouter.ai/api/v1")
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-or-matrix")
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
@@ -233,7 +255,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 
 	t.Run("direct-omlx", func(t *testing.T) {
 		m := matrixModels[2]
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:8081/v1")
 		assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 		assertEnv(t, lc.Env, "COPILOT_MODEL", m.ModelName)
@@ -321,7 +343,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 
 	t.Run("direct-openrouter", func(t *testing.T) {
 		m := matrixModels[3]
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
 		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 		var parsed struct {
 			Model      string `json:"model"`
@@ -354,7 +376,7 @@ func TestGatewayMatrixOpenCode(t *testing.T) {
 
 	t.Run("direct-omlx", func(t *testing.T) {
 		m := matrixModels[2]
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
 		content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 		var parsed struct {
 			Model    string `json:"model"`
@@ -462,7 +484,7 @@ func TestGatewayMatrixPi(t *testing.T) {
 	t.Run("direct-openrouter", func(t *testing.T) {
 		m := matrixModels[3]
 		writePiModels(t, `{"providers":{"openrouter":{"apiKey":"sk-or-matrix","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"qwen/qwen3.8-27b"}]}}}`)
-		lc := d.Build(m, false, resolvedDirectRoute(t, matrixConfig(), m))
+		lc := d.Build(m, false, resolvedRoute(t, matrixConfig(), m, []config.Protocol{config.ProtocolOpenAIChat}))
 		got, ok := argsFlagValue(lc.Args, "--model")
 		if !ok || got != "openrouter/"+m.ModelName {
 			t.Errorf("--model = %q, want openrouter/%s", got, m.ModelName)

@@ -39,7 +39,7 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
 		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
@@ -80,7 +80,7 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 		t.Skip("opencode not installed on PATH; skipping launcher test")
 	}
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
 		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
@@ -105,7 +105,7 @@ func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, cfg, nil)
 	if err != nil {
@@ -156,7 +156,7 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
 			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
 		},

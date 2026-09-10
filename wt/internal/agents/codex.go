@@ -10,6 +10,8 @@ type codexDriver struct{}
 
 func (codexDriver) YoloFlag() string { return "--dangerously-bypass-approvals-and-sandbox" }
 
+func (codexDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIResponses} }
+
 // ollamaProvider is the model provider codex-wt declares with inline -c
 // overrides so a non-native launch routes through the local Ollama gateway
 // instead of falling back to the "openai" provider, whose lack of credentials

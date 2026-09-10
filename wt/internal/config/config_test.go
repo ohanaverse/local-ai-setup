@@ -817,7 +817,7 @@ func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
 	}
 	m := Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
 
-	route, err := cfg.ResolveRoute(m)
+	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
 	if err != nil {
 		t.Fatalf("ResolveRoute: %v", err)
 	}
@@ -841,9 +841,84 @@ func TestResolveRouteMissingBaseURLErrors(t *testing.T) {
 	}
 	m := Model{ID: "omlx/some-model", ModelName: "some-model", ProviderID: "omlx"}
 
-	_, err := cfg.ResolveRoute(m)
+	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
 	if err == nil {
 		t.Fatal("expected an error for a provider with no base_url in direct mode")
+	}
+}
+
+// TestClaudeForcesLitellmForOpenRouter: claude only speaks anthropic;
+// openrouter only serves openai-chat. The empty intersection must force
+// litellm even when the user has it switched off, rather than launching
+// claude against an endpoint it cannot speak to.
+func TestClaudeForcesLitellmForOpenRouter(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{Mode: "direct"},
+		Providers: []Provider{{
+			ID:   "openrouter",
+			Auth: AuthConfig{Type: "secret_ref", SecretRef: "k", BaseURL: "https://openrouter.ai/api/v1"},
+		}},
+	}
+	m := Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
+
+	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
+	if err == nil {
+		// forced litellm requires a configured gateway URL
+		t.Fatalf("ResolveRoute: expected error when forced litellm has no URL, got nil")
+	}
+
+	cfg.Gateway = GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"}
+	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if !route.Litellm || !route.Forced {
+		t.Errorf("route = %+v, want Litellm=true Forced=true", route)
+	}
+}
+
+// TestCodexForcesLitellmWhenProviderLacksResponses: codex speaks only
+// openai-responses, and no local provider serves it — codex has no
+// working direct path at all, and must always be routed through the
+// proxy regardless of the on/off setting.
+func TestCodexForcesLitellmWhenProviderLacksResponses(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{Mode: "litellm", URL: "http://localhost:4000", APIKey: "sk-litellm"},
+		Providers: []Provider{{
+			ID:   "ollama",
+			Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
+		}},
+	}
+	m := Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
+
+	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIResponses})
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if !route.Forced {
+		t.Errorf("route = %+v, want Forced=true", route)
+	}
+}
+
+// TestDirectRouteWhenProtocolsOverlap: when the intersection is non-empty
+// and litellm is off, the pairing must dial direct — forced-litellm must
+// not over-trigger for pairings that actually work (e.g. copilot+ollama).
+func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
+	cfg := &Config{
+		Gateway: GatewayConfig{Mode: "direct"},
+		Providers: []Provider{{
+			ID:   "ollama",
+			Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
+		}},
+	}
+	m := Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
+
+	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if route.Litellm || route.Forced {
+		t.Errorf("route = %+v, want a direct, non-forced route", route)
 	}
 }
 

@@ -13,6 +13,8 @@ type piDriver struct{}
 // Pi has no documented permission-bypass flag.
 func (piDriver) YoloFlag() string { return "" }
 
+func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
+
 // SyncModels adds any non-native models from cfg that are missing from pi's
 // models.json, so rotation-selected models are always available to pi.
 func (piDriver) SyncModels(cfg *config.Config) error {

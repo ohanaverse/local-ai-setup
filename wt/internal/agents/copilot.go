@@ -10,6 +10,8 @@ type copilotDriver struct{}
 
 func (copilotDriver) YoloFlag() string { return "--yolo" }
 
+func (copilotDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
+
 func (copilotDriver) InstructionPointers() []InstructionPointer {
 	return []InstructionPointer{
 		{Path: ".github/copilot-instructions.md", Content: "Read AGENTS.md and follow all instructions in it.\n"},

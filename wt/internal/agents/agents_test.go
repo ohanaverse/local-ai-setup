@@ -839,7 +839,7 @@ func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	cmd, err := BuildLaunchCmd("claude",
 		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},

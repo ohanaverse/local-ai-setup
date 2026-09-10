@@ -25,6 +25,33 @@ type LaunchCmd struct {
 // unqualified while keeping the type definition in the config package.
 type Route = config.Route
 
+// Protocol is an alias so drivers in this package can refer to config.Protocol
+// unqualified. The constants stay in the config package.
+type Protocol = config.Protocol
+
+// ProtocolDeclarer is an optional Driver capability naming the wire protocols
+// the agent CLI speaks, ordered by preference. Drivers without it (agy, shell)
+// never route a model — agy's models are always native, shell never resolves a
+// route.
+type ProtocolDeclarer interface {
+	Protocols() []Protocol
+}
+
+// ProtocolsFor returns the named agent's declared protocols, or nil if the
+// agent is unknown or its driver doesn't implement ProtocolDeclarer. Used by
+// BuildLaunchCmd (to resolve the actual launch route) and by the model
+// picker (Task 6) — both need the same answer.
+func ProtocolsFor(agent string) []Protocol {
+	driver := ByName(agent)
+	if driver == nil {
+		return nil
+	}
+	if pd, ok := driver.(ProtocolDeclarer); ok {
+		return pd.Protocols()
+	}
+	return nil
+}
+
 // Driver knows how to build a launch command for one agent.
 type Driver interface {
 	// Build returns the command to run agent for the given model.
@@ -261,9 +288,12 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	route, err := cfg.ResolveRoute(m)
+	route, err := cfg.ResolveRoute(m, ProtocolsFor(agent))
 	if err != nil {
 		return nil, err
+	}
+	if route.Forced {
+		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
 	}
 	if s, ok := d.(Syncer); ok {
 		if err := s.SyncModels(cfg); err != nil {
