@@ -438,7 +438,7 @@ def _provider_to_dict(p: ProviderEntry) -> dict[str, Any]:
         "name": p.name,
         "location": p.location,
         "model_dir": p.model_dir,
-        "protocols": p.protocols if p.protocols != ["openai-chat"] else None,
+        "protocols": list(p.protocols) if p.protocols and p.protocols != ["openai-chat"] else None,
         "auth": _auth_to_dict(p.auth),
     }
     return drop_none({**p.extra, **d})
@@ -657,7 +657,12 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
         name=raw.get("name", raw["id"]),
         location=raw.get("location"),
         model_dir=raw.get("model_dir"),
-        protocols=list(raw.get("protocols", ["openai-chat"])),
+        # An absent (or empty) `protocols` key must parse to [], not the
+        # ["openai-chat"] default — otherwise backfill_provider_defaults
+        # (sync.py) can never tell "field predates this schema" from
+        # "field explicitly set", and a pre-upgrade omlx/ollama entry stays
+        # permanently stuck without its template's protocols.
+        protocols=list(raw.get("protocols") or []),
         auth=AuthConfig(
             type=auth_raw["type"],
             secret_ref=auth_raw.get("secret_ref"),

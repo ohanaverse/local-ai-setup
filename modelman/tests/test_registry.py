@@ -880,6 +880,24 @@ def test_load_registry_derives_native_from_provider_auth(tmp_path):
     assert loaded.model("agy/x").native is True
 
 
+def test_load_registry_missing_protocols_key_parses_as_empty(tmp_path):
+    # A pre-upgrade provider entry has no `protocols` key at all. It must
+    # parse to [], not the ["openai-chat"] runtime default — otherwise
+    # sync's backfill_provider_defaults can never distinguish "field
+    # predates this schema" from "field explicitly set to openai-chat",
+    # and the entry stays stuck without its template's protocols forever.
+    path = tmp_path / "registry.toml"
+    path.write_text(
+        "[[providers]]\n"
+        'id = "ollama"\n'
+        'name = "Ollama"\n'
+        "[providers.auth]\n"
+        'type = "none"\n'
+    )
+    loaded = load_registry(path)
+    assert loaded.provider("ollama").protocols == []
+
+
 def test_save_registry_does_not_persist_native_field(tmp_path):
     # native is derived from provider auth, not stored in registry.toml.
     # If it leaked out, a load→derive→save cycle would create a diff on disk.

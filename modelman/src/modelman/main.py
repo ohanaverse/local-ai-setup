@@ -53,7 +53,14 @@ def litellm_on():
     """Route non-native models through LiteLLM. Does not start the proxy."""
     with locked_state() as state:
         state.litellm.enabled = True
+        incomplete = not state.litellm.url or not state.litellm.api_key
     typer.echo("litellm: on")
+    if incomplete:
+        typer.echo(
+            "warning: litellm.url or litellm.api_key is not set — "
+            "wt will fail at launch time; run 'modelman litellm set --url ... --api-key ...'",
+            err=True,
+        )
 
 
 @litellm_app.command("off")
@@ -120,7 +127,15 @@ def migrate(
     )
 
     save_registry(result.registry)
-    save_state(result.state)
+    # Merge rather than overwrite: `migrate` is re-run as a repair step (see
+    # wt/CLAUDE.md's "unknown provider" note), and result.state is a fresh
+    # StateStore that's empty except for whatever this run's legacy
+    # family-manifest import produced. Overwriting modelman.toml with it
+    # outright would wipe [litellm] and every other model's ready/exposed
+    # state on every repair re-run.
+    with locked_state() as state:
+        state.models.update(result.state.models)
+        state.families.update(result.state.families)
 
     # One-time import of wt's legacy [gateway] block into modelman's
     # [litellm] table (routing policy only — never touches the proxy).
@@ -146,15 +161,20 @@ def sync() -> None:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     save_state(state)
+    # Always persist the registry, not just when providers_added is non-empty:
+    # run_sync also calls backfill_provider_defaults, which mutates existing
+    # provider entries in place (e.g. filling a missing auth.base_url) even
+    # when no provider was added — gating the save on providers_added dropped
+    # that repair on the floor.
+    try:
+        save_registry(registry)
+    except OSError as exc:
+        # The state sync already succeeded; report the registry repair
+        # failure cleanly instead of a traceback. The repair is idempotent
+        # and re-runs on the next sync.
+        typer.echo(f"error: failed to save registry: {exc}", err=True)
+        raise typer.Exit(1) from exc
     if result.providers_added:
-        try:
-            save_registry(registry)
-        except OSError as exc:
-            # The state sync already succeeded; report the registry repair
-            # failure cleanly instead of a traceback. The repair is idempotent
-            # and re-runs on the next sync.
-            typer.echo(f"error: failed to save registry: {exc}", err=True)
-            raise typer.Exit(1) from exc
         typer.echo(f"Added provider entries: {', '.join(result.providers_added)}")
     typer.echo(
         f"Synced: {len(result.downloaded)} downloaded, {len(result.not_downloaded)} not downloaded."

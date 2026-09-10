@@ -41,6 +41,9 @@ def test_litellm_set_writes_url_and_key(tmp_path, monkeypatch):
 
 
 def test_litellm_status_redacts_key(tmp_path, monkeypatch):
+    # `litellm status` is a routine debugging/screen-share command; it must
+    # never print the raw proxy API key to stdout, only the redacted
+    # `***<last4>` form main.py's litellm_status computes.
     state_path = tmp_path / "modelman.toml"
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     runner.invoke(

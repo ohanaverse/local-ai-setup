@@ -78,7 +78,7 @@ def migrate_wt_gateway_to_litellm(wt_config_path: Path | None = None) -> bool:
         return False
 
     with locked_state() as state:
-        if state.litellm.url or state.litellm.api_key:
+        if state.litellm.url or state.litellm.api_key or state.litellm.enabled:
             return False  # already configured; do not overwrite
         state.litellm.enabled = gateway.get("mode") == "litellm"
         state.litellm.url = gateway.get("url")
