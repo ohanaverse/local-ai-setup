@@ -599,7 +599,8 @@ main() {
       echo "=== litellm pass skipped (no [litellm] credentials) ===" >&2
       continue
     fi
-    want="false"; [[ "$mode" == "litellm" ]] && want="true"
+    want="false"
+    [[ "$mode" == "litellm" ]] && want="true"
     if [[ "$mode" != "$(current_gateway_mode)" ]]; then
       set_litellm_enabled "$want" || exit 1
     fi
