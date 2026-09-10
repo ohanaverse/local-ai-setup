@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -66,7 +67,40 @@ type Provider struct {
 	ID       string     `toml:"id"`
 	Name     string     `toml:"name"`
 	Location Location   `toml:"location,omitempty"`
+	Protocols []Protocol `toml:"protocols,omitempty"`
 	Auth     AuthConfig `toml:"auth"`
+}
+
+// EffectiveProtocols returns the provider's declared protocols, defaulting
+// to openai-chat when the registry entry predates this field.
+func (p Provider) EffectiveProtocols() []Protocol {
+	if len(p.Protocols) == 0 {
+		return []Protocol{ProtocolOpenAIChat}
+	}
+	return p.Protocols
+}
+
+// BaseOrigin normalizes a stored base_url to a bare origin (no /v1
+// suffix). Mirrors Python's registry.base_origin — the two must agree.
+func BaseOrigin(url string) string {
+	trimmed := strings.TrimRight(url, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/v1")
+	return strings.TrimRight(trimmed, "/")
+}
+
+// ResolveSecret resolves a secret_ref-style value: "os.environ/NAME" or a
+// bare "^[A-Z][A-Z0-9_]*$" name reads that env var; anything else is used
+// verbatim. Shared by direct-mode provider auth and [litellm].api_key.
+var envRefName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+func ResolveSecret(ref string) string {
+	if name, ok := strings.CutPrefix(ref, "os.environ/"); ok {
+		return os.Getenv(name)
+	}
+	if envRefName.MatchString(ref) {
+		return os.Getenv(ref)
+	}
+	return ref
 }
 
 // AuthConfig describes how to authenticate with a provider.

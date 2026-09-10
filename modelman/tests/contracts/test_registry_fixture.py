@@ -17,9 +17,11 @@ def test_load_registry_matches_shared_fixture():
 
     assert len(registry.providers) == 5
     ollama = registry.provider("ollama")
+    assert ollama.protocols == ["anthropic", "openai-chat"]
     assert ollama.auth.type == "none"
     assert ollama.auth.base_url == "http://localhost:11434"
     openrouter = registry.provider("openrouter")
+    assert openrouter.protocols == ["openai-chat"]
     assert openrouter.auth.type == "api_key"
     assert openrouter.auth.secret_ref == "OPENROUTER_API_KEY"
     agy = registry.provider("agy")

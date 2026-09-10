@@ -7,6 +7,40 @@ import (
 	"testing"
 )
 
+// TestBaseOriginTrimsV1Suffix pins the normalization rule readers apply to
+// stored base_url values — the values themselves are never rewritten
+// in-place (openrouter's /api/v1 must round-trip into LiteLLM's config.yaml
+// unchanged), so any URL comparison/derivation goes through this function.
+func TestBaseOriginTrimsV1Suffix(t *testing.T) {
+	cases := map[string]string{
+		"http://localhost:11434":        "http://localhost:11434",
+		"https://openrouter.ai/api/v1":  "https://openrouter.ai/api",
+		"https://openrouter.ai/api/v1/": "https://openrouter.ai/api",
+	}
+	for in, want := range cases {
+		if got := BaseOrigin(in); got != want {
+			t.Errorf("BaseOrigin(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestResolveSecretEnvAndLiteral pins that a secret_ref/api_key value can
+// be either a literal (today's live registry shape) or an env-var
+// reference (the fixture's shape) — a wrong resolution here would send a
+// stale or empty credential to a real provider.
+func TestResolveSecretEnvAndLiteral(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-from-env")
+	if got := ResolveSecret("os.environ/OPENROUTER_API_KEY"); got != "sk-or-from-env" {
+		t.Errorf("os.environ/ form: got %q", got)
+	}
+	if got := ResolveSecret("OPENROUTER_API_KEY"); got != "sk-or-from-env" {
+		t.Errorf("bare env-name form: got %q", got)
+	}
+	if got := ResolveSecret("sk-or-v1-literal"); got != "sk-or-v1-literal" {
+		t.Errorf("literal form: got %q", got)
+	}
+}
+
 // Path must honor XDG_CONFIG_HOME when set, and fall back to ~/.config when
 // not. Getting this wrong means the tool reads/writes the wrong config file
 // and users lose their settings or see defaults unexpectedly.

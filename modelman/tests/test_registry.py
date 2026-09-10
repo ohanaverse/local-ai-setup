@@ -20,6 +20,7 @@ from modelman.registry import (
     RegistryError,
     _default_registry_path,
     _default_wt_config_path,
+    base_origin,
     family_display_name,
     find_shared_artifact_owner,
     is_native_provider,
@@ -1165,6 +1166,17 @@ def test_variant_dict_quantization_round_trips(tmp_path):
         registry=loaded,
     )
     assert entry.quantization == "Q4_K_M"
+
+
+def test_base_origin_strips_trailing_v1_and_slash():
+    """wt and modelman must agree on how a stored base_url maps to a
+    connectable origin regardless of whether the value was stored with or
+    without a /v1 suffix (both shapes exist in the wild: ollama has
+    neither, openrouter has /api/v1)."""
+    assert base_origin("http://localhost:11434") == "http://localhost:11434"
+    assert base_origin("https://openrouter.ai/api/v1") == "https://openrouter.ai/api"
+    assert base_origin("https://openrouter.ai/api/v1/") == "https://openrouter.ai/api"
+    assert base_origin(None) is None
 
 
 def test_locked_registry_read_modify_write(tmp_path):

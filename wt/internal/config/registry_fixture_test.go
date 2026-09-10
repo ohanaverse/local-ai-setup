@@ -162,6 +162,40 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 	}
 }
 
+// TestRegistryFixtureProviderProtocols pins that wt decodes the shared
+// `protocols` array the same way modelman does; ResolveRoute's direct-vs-
+// litellm decision (Task 5) depends on both languages agreeing on this.
+func TestRegistryFixtureProviderProtocols(t *testing.T) {
+	t.Setenv("MODELMAN_REGISTRY", "../../../docs/contracts/registry.sample.toml")
+
+	providers, _, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry() error: %v", err)
+	}
+	ollama := providers[0]
+	if got := ollama.EffectiveProtocols(); !equalProtocols(got, []Protocol{ProtocolAnthropic, ProtocolOpenAIChat}) {
+		t.Errorf("ollama protocols = %v", got)
+	}
+	openrouter := providers[1]
+	if got := openrouter.EffectiveProtocols(); !equalProtocols(got, []Protocol{ProtocolOpenAIChat}) {
+		t.Errorf("openrouter protocols = %v", got)
+	}
+}
+
+// equalProtocols reports whether two protocol slices contain the same
+// elements in the same order.
+func equalProtocols(a, b []Protocol) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestRegistryFixtureProviderLocationInheritance pins issue #46 from the
 // Go side: IsExposed resolves the model's location through the provider,
 // so a flag-on, not-ready model on a location=cloud provider is exposed.
