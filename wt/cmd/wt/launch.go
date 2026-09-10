@@ -15,6 +15,18 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
+// emitPriceNotice is a seam for tests: production prints modelman's
+// stale-pricing notice (issue #69) after the summary; tests swap it to
+// observe whether the call was made without touching the real modelman.toml.
+var emitPriceNotice = realEmitPriceNotice
+
+func realEmitPriceNotice() {
+	last, present := config.PriceRefreshLastRun()
+	if notice := agents.PriceNotice(last, present, time.Now()); notice != "" {
+		fmt.Println(notice)
+	}
+}
+
 // buildLaunch constructs the agent command for the given model and worktree,
 // appending passthrough args and a resume flag when a prior session exists.
 // It is a thin wrapper around agents.BuildLaunchCmd so tests can assert the
@@ -177,6 +189,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
 	// summary would glue to that partial output. Println adds the trailing
 	// newline itself, so the line is always self-terminated.
 	fmt.Println("\n" + agents.Summary(agent, m, time.Since(start)))
+	emitPriceNotice()
 	survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
 	if err != nil {
 		var ee *exec.ExitError
