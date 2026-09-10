@@ -76,13 +76,29 @@ type Route struct {
 	Forced     bool     // true if litellm was required regardless of the on/off setting (Task 5)
 }
 
-// ResolveRoute resolves the Route for launching model m. In this revision
-// it reproduces the pre-refactor behavior exactly (ollama origin for every
-// non-native model in direct mode, cfg.Gateway in litellm mode) — later
-// tasks change the body without changing this signature.
+// providerByID returns the provider with the given id and whether it was found.
+func (c *Config) providerByID(id string) (Provider, bool) {
+	for _, p := range c.Providers {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}
+
+// ResolveRoute resolves the Route for launching model m. In direct mode it
+// dials the model's own provider (auth.base_url, resolved through
+// BaseOrigin, and auth.secret_ref resolved through ResolveSecret), using
+// the provider-side model name (m.ModelName). In litellm mode it routes
+// through the configured LiteLLM gateway using the full registry id.
 func (c *Config) ResolveRoute(m Model) (Route, error) {
 	if m.Native {
 		return Route{}, nil // drivers never call this for native models
+	}
+	// Command agents (e.g. shell) and some test seams pass an empty model.
+	// There is no provider endpoint to resolve in that case.
+	if m.ID == "" && m.ProviderID == "" {
+		return Route{}, nil
 	}
 	if c.Gateway.IsLitellm() {
 		return Route{
@@ -94,11 +110,36 @@ func (c *Config) ResolveRoute(m Model) (Route, error) {
 			Litellm:    true,
 		}, nil
 	}
+
+	providerID := m.ProviderID
+	if providerID == "" && strings.Contains(m.ID, "/") {
+		providerID = strings.SplitN(m.ID, "/", 2)[0]
+	}
+	provider, ok := c.providerByID(providerID)
+	if !ok {
+		return Route{}, fmt.Errorf("direct routing: unknown provider %q for model %q", providerID, m.ID)
+	}
+	// Native providers never route through a gateway; this mirrors deriveNative
+	// and keeps manually-constructed test configs from needing the Native bit
+	// set on every native model.
+	if provider.Auth.Type == "native" {
+		return Route{}, nil
+	}
+	if provider.Auth.BaseURL == "" {
+		return Route{}, fmt.Errorf(
+			"direct routing: provider %q has no auth.base_url in registry.toml — "+
+				"set one, or enable the proxy with 'modelman litellm on'", providerID)
+	}
+	apiKey := ""
+	if provider.Auth.SecretRef != "" {
+		apiKey = ResolveSecret(provider.Auth.SecretRef)
+	}
 	return Route{
-		BaseOrigin: OllamaBaseURL,
+		BaseOrigin: BaseOrigin(provider.Auth.BaseURL),
+		APIKey:     apiKey,
 		ModelRef:   m.ModelName,
 		Display:    m.ModelName,
-		ProviderID: m.ProviderID,
+		ProviderID: providerID,
 		Litellm:    false,
 	}, nil
 }

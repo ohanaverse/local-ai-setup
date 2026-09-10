@@ -38,8 +38,11 @@ func TestBuildLaunchClaudeResume(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
 	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -76,8 +79,11 @@ func TestBuildLaunchOpenCodeResume(t *testing.T) {
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode not installed on PATH; skipping launcher test")
 	}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
 	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -98,7 +104,10 @@ func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, nil, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
+	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, cfg, nil)
 	if err != nil {
 		t.Fatalf("buildLaunch: %v", err)
 	}
@@ -146,10 +155,13 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 	if err := os.WriteFile(modelsPath, []byte(`{"providers":{"ollama":{"models":[]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
+		},
+	}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
 	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("buildLaunch: %v", err)
@@ -162,8 +174,8 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 	}
 	if err == nil {
 		got := strings.Join(cmd.Args, " ")
-		if !strings.Contains(got, "--model deepseek-v4-pro:cloud") {
-			t.Errorf("args = %q, want --model deepseek-v4-pro:cloud (sync + verify)", got)
+		if !strings.Contains(got, "--model ollama/deepseek-v4-pro:cloud") {
+			t.Errorf("args = %q, want --model ollama/deepseek-v4-pro:cloud (sync + verify)", got)
 		}
 	}
 }

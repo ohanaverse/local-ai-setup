@@ -256,20 +256,62 @@ func TestCopilot(t *testing.T) {
 // OPENCODE_CONFIG_CONTENT env var containing inline JSON. After the
 // native-provider alignment, opencode is ollama-only — there is no native
 // branch to test.
+// OpenCode receives its model configuration via a single
+// OPENCODE_CONFIG_CONTENT env var containing inline JSON. In direct mode
+// it declares the same @ai-sdk/openai-compatible custom provider as in
+// gateway mode, pointed at the resolved provider's /v1 endpoint. The model
+// ref is "agent-wt/<ModelName>" so slashed provider-side names (e.g. openrouter)
+// are not mis-split.
 func TestOpenCode(t *testing.T) {
 	d := ByName("opencode")
 	if d == nil {
 		t.Fatal("opencode driver not registered")
 	}
-	lc := d.Build(ollamaCloudModel("deepseek-v4-pro:cloud"), false, directRoute(ollamaCloudModel("deepseek-v4-pro:cloud")))
+	m := ollamaCloudModel("deepseek-v4-pro:cloud")
+	lc := d.Build(m, false, directRoute(m))
 	if len(lc.Args) != 0 {
 		t.Errorf("opencode should not pass --model, got args %v", lc.Args)
 	}
-	if len(lc.Env) != 1 || !strings.Contains(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
+	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want OPENCODE_CONFIG_CONTENT", lc.Env)
 	}
-	if !strings.Contains(lc.Env[0], `"model":"ollama/deepseek-v4-pro:cloud"`) {
-		t.Errorf("config missing model: %s", lc.Env[0])
+	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
+	var parsed struct {
+		Model      string `json:"model"`
+		SmallModel string `json:"small_model"`
+		Provider   map[string]struct {
+			NPM     string `json:"npm"`
+			Options struct {
+				BaseURL string `json:"baseURL"`
+				APIKey  string `json:"apiKey"`
+			} `json:"options"`
+			Models map[string]struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
+	}
+	if parsed.Model != "agent-wt/deepseek-v4-pro:cloud" {
+		t.Errorf("model = %q, want agent-wt/deepseek-v4-pro:cloud", parsed.Model)
+	}
+	if parsed.SmallModel != parsed.Model {
+		t.Errorf("small_model = %q, want pinned to %q", parsed.SmallModel, parsed.Model)
+	}
+	p := parsed.Provider[opencodeGatewayProviderID]
+	if p.NPM != "@ai-sdk/openai-compatible" {
+		t.Errorf("npm = %q, want @ai-sdk/openai-compatible", p.NPM)
+	}
+	if p.Options.BaseURL != config.OllamaBaseURL+"/v1" {
+		t.Errorf("baseURL = %q, want Ollama /v1 endpoint", p.Options.BaseURL)
+	}
+	entry, ok := p.Models["deepseek-v4-pro:cloud"]
+	if !ok {
+		t.Fatalf("provider models map lacks bare model name: %v", p.Models)
+	}
+	if entry.Name != "deepseek-v4-pro:cloud" {
+		t.Errorf("models[deepseek-v4-pro:cloud].name = %q, want %q", entry.Name, "deepseek-v4-pro:cloud")
 	}
 }
 
@@ -306,9 +348,9 @@ func TestPiYoloFlag(t *testing.T) {
 func TestPiBuildVerified(t *testing.T) {
 	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"deepseek-v4-pro:cloud"}]}}}`)
 	d := ByName("pi")
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
 	lc := d.Build(m, false, directRoute(m))
-	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
+	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "ollama/deepseek-v4-pro:cloud" {
 		t.Errorf("args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
 	if lc.Warn != "" {
@@ -321,7 +363,7 @@ func TestPiBuildVerified(t *testing.T) {
 func TestPiBuildNotVerified(t *testing.T) {
 	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":false,"id":"deepseek-v4-pro:cloud"}]}}}`)
 	d := ByName("pi")
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
 	lc := d.Build(m, false, directRoute(m))
 	if len(lc.Args) != 0 {
 		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
@@ -335,7 +377,7 @@ func TestPiBuildNotVerified(t *testing.T) {
 func TestPiBuildMissingFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // no models.json created
 	d := ByName("pi")
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
 	lc := d.Build(m, false, directRoute(m))
 	if len(lc.Args) != 0 {
 		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
@@ -638,24 +680,14 @@ func TestCopilotOllamaPrefix(t *testing.T) {
 	}
 }
 
-// OpenCode is the one driver whose CLI uniquely requires the
-// provider/model form (see docs/wt-agents/opencode-wt.md), so its inline
-// JSON config deliberately constructs "ollama/" + m.ModelName — the bare
-// provider-side name, NOT m.ID. The model field in OPENCODE_CONFIG_CONTENT
-// must be "ollama/<ModelName>", never "ollama/ollama/<ModelName>". The
-// double prefix is the trap to avoid: m.ID already carries the "ollama/"
-// prefix (it is the registry key), so constructing "ollama/" + m.ID would
-// yield "ollama/ollama/<ModelName>". A future refactor that switches this
-// slot to m.ID would reintroduce the bug; this test locks in the correct
-// m.ModelName shape.
-//
-// The same config also pins the baseURL to config.OllamaBaseURL plus the
-// driver-provided /v1 suffix — no double suffix. Pre-refactor this code used
-// config.OllamaBaseURL (no path) and the format string added /v1; when the
-// refactor moved the /v1 into the driver, the format string was not updated,
-// producing baseURL=http://localhost:11434/v1/v1 which the ollama gateway
-// rejects. Parsing the JSON (not substring-matching) keeps both halves of
-// the config honest.
+// OpenCode's inline JSON config now deliberately uses the wt-declared
+// "agent-wt" custom provider in both direct and gateway modes. The model ref
+// is "agent-wt/<ModelName>" — the bare provider-side name, NOT m.ID
+// ("ollama/deepseek-v4-pro:cloud" is the registry key). A future refactor
+// that switches this slot to m.ID would produce
+// "agent-wt/ollama/deepseek-v4-pro:cloud", which the provider's own models
+// map cannot resolve. This test locks in the correct m.ModelName shape and
+// verifies the driver appends exactly one /v1 suffix to the resolved base URL.
 func TestOpenCodeOllamaPrefix(t *testing.T) {
 	d := ByName("opencode")
 	if d == nil {
@@ -667,27 +699,37 @@ func TestOpenCodeOllamaPrefix(t *testing.T) {
 	}
 	payload := strings.TrimPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=")
 	var parsed struct {
-		Model    string `json:"model"`
-		Provider struct {
-			Ollama struct {
-				Options struct {
-					BaseURL string `json:"baseURL"`
-					APIKey  string `json:"apiKey"`
-				} `json:"options"`
-			} `json:"ollama"`
+		Model      string `json:"model"`
+		SmallModel string `json:"small_model"`
+		Provider   map[string]struct {
+			NPM     string `json:"npm"`
+			Options struct {
+				BaseURL string `json:"baseURL"`
+				APIKey  string `json:"apiKey"`
+			} `json:"options"`
+			Models map[string]struct {
+				Name string `json:"name"`
+			} `json:"models"`
 		} `json:"provider"`
 	}
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\npayload=%s", err, payload)
 	}
-	if got, want := parsed.Model, "ollama/deepseek-v4-pro:cloud"; got != want {
-		t.Errorf("model = %q, want %q (provider/model form, bare ModelName not m.ID)", got, want)
+	if got, want := parsed.Model, "agent-wt/deepseek-v4-pro:cloud"; got != want {
+		t.Errorf("model = %q, want %q (agent-wt/<ModelName>, bare ModelName not m.ID)", got, want)
 	}
-	if got, want := parsed.Provider.Ollama.Options.BaseURL, "http://localhost:11434/v1"; got != want {
+	if parsed.SmallModel != parsed.Model {
+		t.Errorf("small_model = %q, want pinned to %q", parsed.SmallModel, parsed.Model)
+	}
+	p := parsed.Provider[opencodeGatewayProviderID]
+	if p.NPM != "@ai-sdk/openai-compatible" {
+		t.Errorf("npm = %q, want @ai-sdk/openai-compatible", p.NPM)
+	}
+	if got, want := p.Options.BaseURL, "http://localhost:11434/v1"; got != want {
 		t.Errorf("baseURL = %q, want %q (driver appends /v1; format string must not double-suffix)", got, want)
 	}
-	if strings.Contains(parsed.Provider.Ollama.Options.BaseURL, "/v1/v1") {
-		t.Errorf("baseURL has doubled /v1/v1 suffix: %s", parsed.Provider.Ollama.Options.BaseURL)
+	if strings.Contains(p.Options.BaseURL, "/v1/v1") {
+		t.Errorf("baseURL has doubled /v1/v1 suffix: %s", p.Options.BaseURL)
 	}
 }
 
@@ -796,10 +838,13 @@ func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
 	if !Installed("claude") {
 		t.Skip("claude not installed on PATH; skipping launcher test")
 	}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
 	cmd, err := BuildLaunchCmd("claude",
 		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},
 		"/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, &config.Config{}, nil)
+		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("BuildLaunchCmd: %v", err)
 	}

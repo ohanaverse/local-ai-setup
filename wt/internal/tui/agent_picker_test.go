@@ -123,17 +123,17 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama"},
+			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
 			// Two code models in the gemma4 family.
-			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
-			{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:14b", ModelName: "gemma4:14b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
 			// One design model in a different family — must be filtered out
 			// by the -T code,design AND -F gemma4 combo below (design tag
 			// AND gemma4 family → still includes only the gemma4 family
 			// models, so design-only is excluded because it isn't gemma4).
-			{ID: "ollama/llama3:design", ProviderID: "ollama", Family: "llama3", Tags: []string{"design"}},
+			{ID: "ollama/llama3:design", ModelName: "llama3:design", ProviderID: "ollama", Family: "llama3", Tags: []string{"design"}},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
@@ -201,9 +201,9 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 func singleModelConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama"}},
+		Providers:  []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
-			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"ollama"}},

@@ -31,8 +31,11 @@ func TestLaunchAgentUnknownAgent(t *testing.T) {
 // wiring that the bash wrappers do for claude.
 func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 	requireBinary(t, "claude")
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
+	}
+	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet", ProviderID: "claude"}, "/tmp/repo", false,
+		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -46,8 +49,11 @@ func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
 // with a session appends --session <id> to the command args.
 func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 	requireBinary(t, "opencode")
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+	}
 	cmd, err := launchAgent("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, nil, nil)
+		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -62,7 +68,10 @@ func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
 // path.
 func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
 	requireBinary(t, "claude")
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet"}, "/tmp/repo", false, nil, nil, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
+	}
+	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet", ProviderID: "claude"}, "/tmp/repo", false, nil, cfg, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -217,10 +226,13 @@ func TestLaunchAgentSyncsPi(t *testing.T) {
 	if err := os.WriteFile(modelsPath, []byte(`{"providers":{"ollama":{"models":[]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Models: []config.Model{
-		{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"},
-	}}
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud"}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Models: []config.Model{
+			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama", },
+		},
+	}
+	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
 	cmd, err := launchAgent("pi", m, "/tmp", false, nil, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("launchAgent: %v", err)
@@ -231,8 +243,8 @@ func TestLaunchAgentSyncsPi(t *testing.T) {
 	}
 	if err == nil {
 		got := strings.Join(cmd.Args, " ")
-		if !strings.Contains(got, "--model deepseek-v4-pro:cloud") {
-			t.Errorf("args = %q, want --model deepseek-v4-pro:cloud (sync + verify)", got)
+		if !strings.Contains(got, "--model ollama/deepseek-v4-pro:cloud") {
+			t.Errorf("args = %q, want --model ollama/deepseek-v4-pro:cloud (sync + verify)", got)
 		}
 	}
 }

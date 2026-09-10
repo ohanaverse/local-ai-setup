@@ -142,11 +142,11 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 
 	// Fail fast if the selected ollama model is not available locally.
 	// This runs before session lookup and full command construction so we
-	// don't waste work on a model we can't launch. In gateway (litellm) mode
-	// the check is skipped: models may be served by any upstream behind
-	// LiteLLM (llama.cpp, oMLX, OpenRouter), not just local ollama, so a
-	// model absent from `ollama list` must not hard-block the launch.
-	if !cfg.Gateway.IsLitellm() {
+	// don't waste work on a model we can't launch. The check is skipped when
+	// routing through LiteLLM (any upstream may serve the model) and when the
+	// model is not served by ollama at all — ollamacheck only probes the local
+	// ollama daemon.
+	if !cfg.Gateway.IsLitellm() && ollamacheck.IsOllamaModel(m) {
 		ok, oerr := ollamacheck.Check(m)
 		if oerr != nil {
 			// Print the summary before returning so the user sees the same

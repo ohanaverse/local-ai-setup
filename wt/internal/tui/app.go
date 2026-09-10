@@ -417,11 +417,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// NOT recorded here: the user can still cancel the ollama
 				// warning or the resume prompt, or the check can fail, and
 				// in none of those cases did a launch happen. Recording
-				// lives in launchAndRecord, the single commit point. In
-				// gateway (litellm) mode the check is skipped: models may be
-				// served by any upstream behind LiteLLM, not just local
-				// ollama, so an absent `ollama list` entry must not warn.
-				if !m.cfg.Gateway.IsLitellm() {
+				// lives in launchAndRecord, the single commit point. The
+				// check is skipped when routing through LiteLLM (any upstream
+				// may serve the model) and when the model is not served by
+				// ollama — ollamacheck only probes the local ollama daemon.
+				if !m.cfg.Gateway.IsLitellm() && ollamacheck.IsOllamaModel(highlighted.model) {
 					ok, err := ollamacheck.Check(highlighted.model)
 					if err != nil {
 						m.status = "ollama check failed: " + err.Error()

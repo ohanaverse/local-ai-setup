@@ -24,8 +24,9 @@ func (piDriver) SyncModels(cfg *config.Config) error {
 }
 
 // Build passes --model only when the target model is present in pi's
-// models.json and marked _launch: true. Direct mode launches the bare
-// ModelName from pi's "ollama" provider; litellm mode launches
+// models.json and marked _launch: true. Direct mode launches
+// "<provider-id>/<ModelName>" from a pi provider named after the registry
+// provider (ollama, openrouter, etc.); litellm mode launches
 // "litellm/<registry-id>" from the wt-created litellm provider — pi splits
 // --model on the first slash, so a registry id under the "ollama" provider
 // could never be addressed and its bare form would be sent upstream (400 at
@@ -41,9 +42,9 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		lc.Warn = fmt.Sprintf("pi: cannot locate models.json (%v), using default model", err)
 		return lc
 	}
-	modelArg := m.ModelName
-	providerID := piOllamaProviderID
-	launchID := m.ModelName
+	modelArg := r.ProviderID + "/" + r.ModelRef
+	providerID := r.ProviderID
+	launchID := r.ModelRef
 	if r.Litellm {
 		modelArg = piLitellmProviderID + "/" + r.ModelRef
 		providerID = piLitellmProviderID

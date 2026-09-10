@@ -132,7 +132,7 @@ func syncModels(cfg *config.Config, path string) error {
 		mutated = syncLitellmProvider(cfg, f) || mutated
 		mutated = revertOllamaProvider(cfg, f) || mutated
 	} else {
-		mutated = syncDirectOllama(cfg, f) || mutated
+		mutated = syncDirectProviders(cfg, f) || mutated
 	}
 	if !mutated {
 		return nil
@@ -236,55 +236,82 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 	return mutated
 }
 
-// syncDirectOllama adds missing non-native cfg models to provider "ollama"
-// keyed by bare ModelName and reverts gateway-set provider values, mirroring
-// the pre-gateway behavior. Returns whether anything changed.
-func syncDirectOllama(cfg *config.Config, f piModelsFile) bool {
-	p := f.Providers[piOllamaProviderID]
-	mutated := false
-
-	existing := make(map[string]bool, len(p.Models))
-	for _, m := range p.Models {
-		existing[m.ID] = true
-	}
+// syncDirectProviders writes one pi provider entry per registry provider
+// id (not just ollama), using each provider's own base_url and secret_ref,
+// so a direct-mode launch of, e.g., an openrouter model resolves against
+// openrouter's own endpoint instead of being folded into the "ollama"
+// provider under a bare, possibly-slashed model name. pi splits --model on
+// the first slash, so an unqualified model name containing a slash (e.g.
+// openrouter's "z-ai/glm-4.6") would otherwise resolve against provider
+// "z-ai" silently. Providers without a base_url are skipped — the same
+// condition surfaces as an error from ResolveRoute at launch time. Returns
+// whether anything changed.
+func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
+	byProvider := map[string][]config.Model{}
 	for _, m := range cfg.Models {
 		if m.Native || m.ModelName == "" {
 			continue
 		}
-		if existing[m.ModelName] {
-			continue
-		}
-		p.Models = append(p.Models, piModel{
-			Launch:        true,
-			ContextWindow: 262144,
-			ID:            m.ModelName,
-			Input:         []string{"text", "image"},
-			Reasoning:     true,
-		})
-		existing[m.ModelName] = true
-		mutated = true
+		byProvider[m.ProviderID] = append(byProvider[m.ProviderID], m)
 	}
 
-	// Reset the provider to the standard local Ollama endpoint when the
-	// current values are either gateway values wt itself wrote (they match
-	// the configured gateway) or local-ollama values in a non-canonical form
-	// (e.g. 127.0.0.1 instead of localhost). A user's own custom provider
-	// config (e.g. a remote ollama server) is preserved verbatim.
-	if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.Gateway.BaseURL()+"/v1" {
-		if p.BaseURL != defaultPiOllamaBaseURL {
-			p.BaseURL = defaultPiOllamaBaseURL
+	mutated := false
+	for providerID, models := range byProvider {
+		provider := cfg.ProviderByID(providerID)
+		if provider == nil || provider.Auth.BaseURL == "" {
+			continue
+		}
+
+		p := f.Providers[providerID]
+
+		existing := make(map[string]bool, len(p.Models))
+		for _, m := range p.Models {
+			existing[m.ID] = true
+		}
+		for _, m := range models {
+			if existing[m.ModelName] {
+				continue
+			}
+			p.Models = append(p.Models, piModel{
+				Launch:        true,
+				ContextWindow: 262144,
+				ID:            m.ModelName,
+				Input:         []string{"text", "image"},
+				Reasoning:     true,
+			})
+			existing[m.ModelName] = true
 			mutated = true
 		}
-		// The baseUrl was local-ollama or gateway-set, so the apiKey was too.
-		if isDefaultOllamaAPIKey(p.APIKey) || (cfg.Gateway.APIKey != "" && p.APIKey == cfg.Gateway.APIKey) {
-			if p.APIKey != defaultPiOllamaAPIKey {
-				p.APIKey = defaultPiOllamaAPIKey
+
+		wantBaseURL := config.BaseOrigin(provider.Auth.BaseURL) + "/v1"
+		wantAPIKey := defaultPiOllamaAPIKey
+		if provider.Auth.SecretRef != "" {
+			wantAPIKey = config.ResolveSecret(provider.Auth.SecretRef)
+		}
+
+		// Reset WT-written values (gateway redirects or non-canonical local
+		// ollama forms) to the provider's direct endpoint. Custom user config
+		// is preserved verbatim.
+		if p.API == "" {
+			p.API = "openai-completions"
+			mutated = true
+		}
+		if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.Gateway.BaseURL()+"/v1" {
+			if p.BaseURL != wantBaseURL {
+				p.BaseURL = wantBaseURL
 				mutated = true
 			}
+			if isDefaultOllamaAPIKey(p.APIKey) || (cfg.Gateway.APIKey != "" && p.APIKey == cfg.Gateway.APIKey) {
+				if p.APIKey != wantAPIKey {
+					p.APIKey = wantAPIKey
+					mutated = true
+				}
+			}
 		}
-	}
-	if mutated {
-		f.Providers[piOllamaProviderID] = p
+
+		if mutated {
+			f.Providers[providerID] = p
+		}
 	}
 	return mutated
 }

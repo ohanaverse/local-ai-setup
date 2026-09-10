@@ -805,6 +805,48 @@ tags = ["code", "design"]
 	}
 }
 
+// TestResolveRouteDirectUsesProviderBaseURL is the regression for the
+// original bug this feature exists to fix: before this change, every
+// non-ollama provider silently dialed localhost:11434 in direct mode.
+func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{{
+			ID:   "openrouter",
+			Auth: AuthConfig{Type: "secret_ref", SecretRef: "sk-or-v1-test", BaseURL: "https://openrouter.ai/api/v1"},
+		}},
+	}
+	m := Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
+
+	route, err := cfg.ResolveRoute(m)
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if route.BaseOrigin != "https://openrouter.ai/api" {
+		t.Errorf("BaseOrigin = %q, want https://openrouter.ai/api", route.BaseOrigin)
+	}
+	if route.APIKey != "sk-or-v1-test" {
+		t.Errorf("APIKey = %q", route.APIKey)
+	}
+	if route.ModelRef != "z-ai/glm-4.6" {
+		t.Errorf("ModelRef = %q, want bare ModelName in direct mode", route.ModelRef)
+	}
+}
+
+// TestResolveRouteMissingBaseURLErrors ensures a provider with no
+// base_url fails at launch with an actionable message, instead of the
+// pre-fix behavior of silently misrouting to ollama's port.
+func TestResolveRouteMissingBaseURLErrors(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{{ID: "omlx", Auth: AuthConfig{Type: "none"}}},
+	}
+	m := Model{ID: "omlx/some-model", ModelName: "some-model", ProviderID: "omlx"}
+
+	_, err := cfg.ResolveRoute(m)
+	if err == nil {
+		t.Fatal("expected an error for a provider with no base_url in direct mode")
+	}
+}
+
 // TestGatewayConfigDirectByDefault asserts that a zero-value GatewayConfig
 // is treated as direct (no proxy). This is the safe default: until the user
 // explicitly configures gateway.mode = "litellm", wt must keep routing
