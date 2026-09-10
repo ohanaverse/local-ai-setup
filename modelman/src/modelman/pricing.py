@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 import requests
 
-from .registry import Cost, ModelEntry, Registry
+from .registry import Cost, ModelEntry, Registry, is_native_provider
 from .state import StateStore, get_price_refresh_last_run
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -43,7 +43,9 @@ def _per_token_to_per_million(value: Any) -> float | None:
 def _cost_from_api_entry(entry: dict[str, Any]) -> Cost | None:
     """Build a Cost from an OpenRouter model object.
 
-    Tries ``pricing.<key>`` first, then top-level keys.
+    Tries ``pricing.<key>`` first, then top-level keys. Only the per-token
+    fields the API actually carries are populated; subscription fields are
+    always left unset (OpenRouter never reports them).
     """
     pricing = entry.get("pricing", entry)
     if not isinstance(pricing, dict):
@@ -67,13 +69,21 @@ def _cost_from_api_entry(entry: dict[str, Any]) -> Cost | None:
 
 
 def _is_cloud_model(registry: Registry, model: ModelEntry) -> bool:
-    if model.provider_id == "openrouter" or model.location == "cloud":
-        return True
+    # Native providers (auth.type == "native" — the wt agent providers
+    # sync_agent_providers registers with location="cloud") route straight to
+    # the agent CLI and are never priced via OpenRouter. They must be excluded
+    # even though their provider location says "cloud", or a daily refresh
+    # would warn "No OpenRouter match" for every agent and could overwrite an
+    # agent's native cost if its name collided with a real model id.
     try:
         provider = registry.provider(model.provider_id)
     except KeyError:
+        provider = None
+    if provider is not None and is_native_provider(provider):
         return False
-    return provider.location == "cloud"
+    if model.provider_id == "openrouter" or model.location == "cloud":
+        return True
+    return provider is not None and provider.location == "cloud"
 
 
 def fetch_openrouter_pricing(runner: _HTTPRunner | None = None) -> list[dict[str, Any]]:
@@ -86,6 +96,67 @@ def fetch_openrouter_pricing(runner: _HTTPRunner | None = None) -> list[dict[str
     if not isinstance(models, list):
         raise ValueError("OpenRouter response missing 'data' list")
     return models
+
+
+def _merge_api_cost(existing: Cost | None, api: Cost) -> Cost:
+    """Merge OpenRouter per-token prices onto an existing Cost.
+
+    Input/output prices are always overwritten — they are what the refresh
+    measures. The cache price is overwritten only when the API actually
+    reported one (``input_cache_read`` is usually absent), and subscription
+    fields are never overwritten (OpenRouter never reports them), so a
+    refresh never silently nulls a manually-set cache or subscription price.
+    Unknown ``extra`` cost keys survive the merge the same way they survive a
+    registry round-trip.
+    """
+    existing = existing if existing is not None else Cost()
+    cache = api.cache_price_per_million
+    return Cost(
+        input_price_per_million=api.input_price_per_million,
+        output_price_per_million=api.output_price_per_million,
+        cache_price_per_million=cache if cache is not None else existing.cache_price_per_million,
+        subscription_price=existing.subscription_price,
+        subscription_period=existing.subscription_period,
+        extra=dict(existing.extra),
+    )
+
+
+def apply_prices(
+    registry: Registry, api_by_id: dict[str, dict[str, Any]]
+) -> RefreshResult:
+    """Apply already-fetched OpenRouter pricing to cloud models in
+    ``registry``, mutating ``registry.models`` in place.
+
+    Split from refresh_prices() so a caller that holds the registry lock
+    (locked_registry) can fetch over the network *first*, then load→apply→save
+    under the lock without blocking main-thread saves for the fetch duration.
+    """
+    candidates = [m for m in registry.models if _is_cloud_model(registry, m)]
+    if not candidates:
+        return RefreshResult(updated=0, warnings=[], error=None)
+
+    updated = 0
+    warnings: list[str] = []
+    now = datetime.now(UTC).replace(microsecond=0).isoformat()
+
+    for model in candidates:
+        api_entry = api_by_id.get(model.model_name)
+        if api_entry is None:
+            warnings.append(f"No OpenRouter match for {model.id} ({model.model_name})")
+            continue
+        try:
+            cost = _cost_from_api_entry(api_entry)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Could not parse pricing for {model.id}: {exc}")
+            continue
+        if cost is None:
+            warnings.append(f"No pricing data for {model.id}")
+            continue
+        model.cost = _merge_api_cost(model.cost, cost)
+        model.pricing_updated_at = now
+        updated += 1
+
+    return RefreshResult(updated=updated, warnings=warnings, error=None)
 
 
 def refresh_prices(registry: Registry, *, runner: _HTTPRunner | None = None) -> RefreshResult:
@@ -107,28 +178,7 @@ def refresh_prices(registry: Registry, *, runner: _HTTPRunner | None = None) -> 
         if isinstance(item, dict) and "id" in item:
             api_by_id[item["id"]] = item
 
-    updated = 0
-    warnings: list[str] = []
-    now = datetime.now(UTC).replace(microsecond=0).isoformat()
-
-    for model in candidates:
-        api_entry = api_by_id.get(model.model_name)
-        if api_entry is None:
-            warnings.append(f"No OpenRouter match for {model.id} ({model.model_name})")
-            continue
-        try:
-            cost = _cost_from_api_entry(api_entry)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"Could not parse pricing for {model.id}: {exc}")
-            continue
-        if cost is None:
-            warnings.append(f"No pricing data for {model.id}")
-            continue
-        model.cost = cost
-        model.pricing_updated_at = now
-        updated += 1
-
-    return RefreshResult(updated=updated, warnings=warnings, error=None)
+    return apply_prices(registry, api_by_id)
 
 
 def should_run_price_refresh(state: StateStore, registry: Registry) -> bool:

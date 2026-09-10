@@ -53,9 +53,15 @@ def _now_iso() -> str:
 
 
 def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
-    """True when any per-token or subscription field differs between two
-    Cost values. None-ness changes count as a change; matching None is
-    not a change."""
+    """True when any *per-token* price differs between two Cost values.
+
+    Deliberately ignores subscription fields: ``pricing_updated_at`` records
+    when per-token prices were last refreshed (or set), and an edit that only
+    changes a subscription price/period must not relabel that timestamp —
+    subscription pricing is a different dimension from the per-token prices
+    the refresh measures. None-ness changes count as a change; matching None
+    is not a change.
+    """
     if old is None and new is None:
         return False
     if old is None or new is None:
@@ -64,8 +70,6 @@ def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
         old.input_price_per_million != new.input_price_per_million
         or old.cache_price_per_million != new.cache_price_per_million
         or old.output_price_per_million != new.output_price_per_million
-        or old.subscription_price != new.subscription_price
-        or old.subscription_period != new.subscription_period
     )
 
 

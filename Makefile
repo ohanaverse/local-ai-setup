@@ -40,4 +40,4 @@ test-all: lint
 
 install: ## Install all monorepo components (wt + modelman).
 	cd wt && make install
-	cd modelman && uv sync
+	cd modelman && make install

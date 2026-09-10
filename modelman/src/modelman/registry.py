@@ -10,9 +10,12 @@ modelman.toml.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
+import threading
 import tomllib
+from collections.abc import Generator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -564,14 +567,60 @@ def _family_to_dict(f: FamilyEntry) -> dict[str, Any]:
     return drop_none({**f.extra, **d})
 
 
-def save_registry(registry: Registry, path: Path | None = None) -> None:
-    registry_path = Path(path) if path else _default_registry_path()
+def _write_registry(registry: Registry, path: Path) -> None:
+    """Serialize ``registry`` to ``path`` atomically.
+
+    The write half of save_registry, split out so locked_registry() can save
+    under the same lock without calling save_registry() (which would deadlock
+    on a non-reentrant lock).
+    """
     payload = {
         "providers": [_provider_to_dict(p) for p in registry.providers],
         "families": [_family_to_dict(f) for f in registry.families],
         "models": [_model_to_dict(m) for m in registry.models],
     }
-    atomic_write_toml(payload, registry_path)
+    atomic_write_toml(payload, path)
+
+
+# Process-wide lock serializing every registry.toml write. registry.toml has
+# multiple concurrent writers once the startup price-refresh worker (app.py)
+# can save on a background thread while ModelScreen.save_registry and
+# PendingChanges.apply() save from the main thread. save_registry() is a
+# whole-file overwrite of whatever Registry object it is handed — with no
+# lock, two such writers silently clobber each other's unrelated changes.
+_REGISTRY_LOCK = threading.Lock()
+
+
+def save_registry(registry: Registry, path: Path | None = None) -> None:
+    """Serialize ``registry`` to registry.toml, holding the process lock so
+    concurrent writers (the startup price-refresh worker vs. main-thread
+    screen/apply saves) cannot interleave and drop each other's changes.
+
+    Callers that already hold _REGISTRY_LOCK (inside locked_registry()) must
+    call _write_registry() directly to avoid deadlocking on the
+    non-reentrant lock.
+    """
+    registry_path = Path(path) if path else _default_registry_path()
+    with _REGISTRY_LOCK:
+        _write_registry(registry, registry_path)
+
+
+@contextlib.contextmanager
+def locked_registry(path: Path | None = None) -> Generator[Registry]:
+    """Atomically read-modify-write registry.toml.
+
+    The registry analogue of state.locked_state(): acquires the process lock,
+    loads the current on-disk Registry, yields it for the caller to mutate in
+    place, and saves it back before releasing the lock. The startup
+    price-refresh worker uses this so its refresh prices are always applied on
+    top of the latest on-disk registry, rather than a possibly-stale snapshot
+    that overwrites a model the user added/edited while the API fetch was in
+    flight.
+    """
+    with _REGISTRY_LOCK:
+        registry = load_registry(path)
+        yield registry
+        _write_registry(registry, path if path is not None else _default_registry_path())
 
 
 def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:

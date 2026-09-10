@@ -115,7 +115,12 @@ def test_refresh_prices_leaves_prices_untouched_on_api_failure():
 def test_refresh_prices_matches_cloud_provider_as_well_as_model_location():
     registry = Registry(
         providers=[
-            ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")),
+            ProviderEntry(
+                id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+            ),
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="none")
+            ),
         ],
         models=[
             ModelEntry(
@@ -141,6 +146,43 @@ def test_refresh_prices_matches_cloud_provider_as_well_as_model_location():
     assert registry.model("claude/opus").cost.output_price_per_million == pytest.approx(75.0)
 
 
+def test_refresh_prices_skips_native_providers():
+    """A native provider (auth.type == "native" — the wt agent providers) is
+    not routed through OpenRouter, so it must be excluded from the refresh
+    candidate set even though sync_agent_providers tags it location="cloud".
+    Otherwise every agent would emit a daily 'No OpenRouter match' warning."""
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")),
+        ],
+        models=[
+            ModelEntry(
+                id="claude/opus",
+                family="x",
+                provider_id="claude",
+                model_name="anthropic/claude-opus",
+                cost=Cost(input_price_per_million=1.0),
+            )
+        ],
+    )
+    payload = {
+        "data": [
+            {
+                "id": "anthropic/claude-opus",
+                "pricing": {"prompt": "0.000015", "completion": "0.000075"},
+            }
+        ]
+    }
+    result = refresh_prices(registry, runner=_runner(payload))
+
+    assert result.error is None
+    assert result.updated == 0
+    assert result.warnings == []
+    # The native model's cost is untouched (its native price is not an
+    # OpenRouter price to overwrite).
+    assert registry.model("claude/opus").cost.input_price_per_million == 1.0
+
+
 def test_refresh_prices_missing_cache_price_becomes_none():
     registry = _make_registry(
         ModelEntry(
@@ -155,3 +197,62 @@ def test_refresh_prices_missing_cache_price_becomes_none():
 
     cost = registry.model("openrouter/gpt-4o").cost
     assert cost.cache_price_per_million is None
+
+
+def test_refresh_prices_preserves_manual_cache_and_subscription_pricing():
+    """The API only reports per-token input/output (and, occasionally, cache)
+    prices. A refresh must overwrite input/output but NEVER null a manually-set
+    cache price or subscription the API entry doesn't carry — otherwise every
+    daily refresh silently destroys user-entered pricing."""
+    registry = _make_registry(
+        ModelEntry(
+            id="openrouter/gpt-4o",
+            family="x",
+            provider_id="openrouter",
+            model_name="openai/gpt-4o",
+            cost=Cost(
+                input_price_per_million=2.5,
+                output_price_per_million=10.0,
+                cache_price_per_million=1.0,
+                subscription_price=20.0,
+                subscription_period="month",
+            ),
+        ),
+    )
+    # API reports only prompt/completion — no input_cache_read, no subscription.
+    payload = {"data": [{"id": "openai/gpt-4o", "pricing": {"prompt": "0.000003", "completion": "0.000012"}}]}
+    result = refresh_prices(registry, runner=_runner(payload))
+
+    assert result.updated == 1
+    cost = registry.model("openrouter/gpt-4o").cost
+    assert cost is not None
+    assert cost.input_price_per_million == pytest.approx(3.0)  # overwritten
+    assert cost.output_price_per_million == pytest.approx(12.0)  # overwritten
+    assert cost.cache_price_per_million == pytest.approx(1.0)  # preserved
+    assert cost.subscription_price == 20.0  # preserved
+    assert cost.subscription_period == "month"  # preserved
+
+
+def test_refresh_prices_overwrites_cache_when_api_reports_it():
+    """When the API does report a cache price, it should replace the existing
+    one — the merge only preserves cache on API absence, not always."""
+    registry = _make_registry(
+        ModelEntry(
+            id="openrouter/gpt-4o",
+            family="x",
+            provider_id="openrouter",
+            model_name="openai/gpt-4o",
+            cost=Cost(cache_price_per_million=9.9),
+        ),
+    )
+    payload = {
+        "data": [
+            {
+                "id": "openai/gpt-4o",
+                "pricing": {"prompt": "0.000001", "completion": "0.000002", "input_cache_read": "0.0000005"},
+            }
+        ]
+    }
+    refresh_prices(registry, runner=_runner(payload))
+
+    assert registry.model("openrouter/gpt-4o").cost.cache_price_per_million == pytest.approx(0.5)

@@ -230,7 +230,7 @@ class ModelFormResult(NamedTuple):
     """ModelForm's dismiss payload: the VariantSpec plus the family the
     user chose. Family is deliberately separate from VariantSpec — the
     spec dict is the provider-facing contract and has no family field;
-    ModelScreen maps family onto ModelEntry.familyC.
+    ModelScreen maps family onto ModelEntry.family.
     """
 
     spec: VariantSpec

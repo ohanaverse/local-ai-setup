@@ -2029,9 +2029,6 @@ async def test_modelform_edit_shows_pricing_timestamp_when_set():
 
 
 @pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
 async def test_modelform_submit_carries_quantization():
     form = ModelForm(providers=["ollama"], default_provider="ollama", families=["ornith"], family="ornith")
     dismissed: list = []

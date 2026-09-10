@@ -1165,3 +1165,34 @@ def test_variant_dict_quantization_round_trips(tmp_path):
         registry=loaded,
     )
     assert entry.quantization == "Q4_K_M"
+
+
+def test_locked_registry_read_modify_write(tmp_path):
+    """locked_registry() yields a freshly-loaded Registry and saves it on
+    exit, so a caller that mutates the yielded object applies its changes on
+    top of the latest on-disk state rather than a stale snapshot."""
+    from modelman.registry import locked_registry
+
+    path = tmp_path / "registry.toml"
+    save_registry(
+        Registry(
+            providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))],
+            models=[
+                ModelEntry(
+                    id="ollama/a",
+                    family="f",
+                    provider_id="ollama",
+                    model_name="a",
+                )
+            ],
+        ),
+        path,
+    )
+
+    with locked_registry(path) as registry:
+        registry.models.append(
+            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b")
+        )
+
+    loaded = load_registry(path)
+    assert [m.id for m in loaded.models] == ["ollama/a", "ollama/b"]
