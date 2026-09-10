@@ -391,7 +391,7 @@ wt --cwd -A codex    # current repo root
 claude-wt --cwd      # shim forwards to wt
 wt --init            # seed agent instruction files
 make test-agents        # live one-shot smoke: every agent × configured models, both routing modes
-                       # (flips [litellm].enabled off/on in modelman.toml — located via MODELMAN_STATE — and restores it afterwards; --modes current for one pass)
+                       # (flips [litellm].enabled off/on in modelman.toml — resolved at ${XDG_CONFIG_HOME:-$HOME/.config}/local-ai/modelman.toml, the path wt reads — and restores it afterwards; --modes current for one pass)
 ```
 
 > Verifying a branch's behavior against live data requires building it first
