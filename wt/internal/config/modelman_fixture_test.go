@@ -109,4 +109,10 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Errorf("expected openrouter/contract-fixture:cloud-exposed to have litellm_exposed=true")
 	}
 	// ready defaults to false for missing key
+
+	// Global price-refresh date (issue #69): wt's stale-pricing notice
+	// reads this top-level key; a decode regression fails both CI jobs.
+	if v, ok := PriceRefreshLastRun(); !ok || v != "2026-09-14" {
+		t.Errorf("PriceRefreshLastRun() = (%q, %v), want (%q, true)", v, ok, "2026-09-14")
+	}
 }

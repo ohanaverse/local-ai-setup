@@ -207,6 +207,77 @@ ready = false
 	}
 }
 
+// TestPriceRefreshLastRun guards wt's read of modelman.toml's global
+// price_refresh_last_run key (issue #69). wt prints a stale-pricing
+// notice after each launch, so a silent decode regression would either
+// nag every run or never warn at all. Parse errors must suppress the
+// notice (present=false) to match the exposure flags' tolerance.
+func TestPriceRefreshLastRun(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		t.Setenv("MODELMAN_REGISTRY", "")
+		v, ok := PriceRefreshLastRun()
+		if ok || v != "" {
+			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (``, false)", v, ok)
+		}
+	})
+
+	t.Run("key present", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		t.Setenv("MODELMAN_REGISTRY", "")
+		stateDir := filepath.Join(dir, "local-ai")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
+			[]byte("price_refresh_last_run = \"2026-09-14\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := PriceRefreshLastRun()
+		if !ok || v != "2026-09-14" {
+			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (\"2026-09-14\", true)", v, ok)
+		}
+	})
+
+	t.Run("file without key", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		t.Setenv("MODELMAN_REGISTRY", "")
+		stateDir := filepath.Join(dir, "local-ai")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
+			[]byte("[families.x]\ndisplay_name = \"X\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := PriceRefreshLastRun()
+		if ok || v != "" {
+			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (``, false)", v, ok)
+		}
+	})
+
+	t.Run("malformed toml is silent", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		t.Setenv("MODELMAN_REGISTRY", "")
+		stateDir := filepath.Join(dir, "local-ai")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "modelman.toml"),
+			[]byte("not [ valid toml"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := PriceRefreshLastRun()
+		if ok || v != "" {
+			t.Errorf("PriceRefreshLastRun() = (%q, %v), want (``, false)", v, ok)
+		}
+	})
+}
+
 // TestModelmanPathHonorsXDG asserts that ModelmanPath() uses the same
 // XDG base-directory resolution as RegistryPath(): when XDG_CONFIG_HOME is
 // set, the returned path is exactly $XDG/local-ai/modelman.toml. A suffix-only
