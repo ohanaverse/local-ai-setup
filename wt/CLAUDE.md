@@ -129,7 +129,7 @@ make help                            # list Makefile targets
 
 Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `check` (shellcheck lint + shfmt format-check).
 
-Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
+Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,localgate}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
@@ -156,6 +156,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/initseed/` | `--init` seeding |
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
+| `internal/localgate/` | one-local-model-at-a-time gate (issue #65): name-checked availability probe + shared Apply policy |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
 | `docs/superpowers/` | specs + plans |
@@ -231,18 +232,36 @@ This ensures wt's model picker never offers a model the TUI would show as `–` 
 
 wt offers at most one local model at a time, mirroring modelman's own
 process-isolation constraint (Apple Silicon GPU/RAM is shared). The gate
+policy lives in ONE place — `internal/localgate.Apply` — shared by
+`cmd/wt/resolve.go`'s `resolveModel` (non-TUI) and `internal/tui`'s
+`enterModelPhase` (TUI), so the two launch paths cannot diverge. Apply
 reads modelman-owned `modelman.toml`'s `[local].running_model` marker
 (`internal/config`'s `Config.LocalRunningModel()`/`LocalGateActive()`),
-verifies it with `internal/localgate.Resolve` (ollama via
-`internal/ollamacheck`, omlx/mlx_lm_server via their `/v1/models`
-endpoints), and applies `Config.FilterToRunningLocal` at the two places wt
-resolves a model list: `cmd/wt/resolve.go`'s `resolveModel` (non-TUI) and
-`internal/tui`'s `enterModelPhase` (TUI). No marker → cloud models only; a
-verified marker → cloud models plus the one running local model; a marker
-that fails its probe (stale — stopped/crashed outside modelman) is fatal —
-wt exits (non-TUI) or quits the whole program (TUI, via `model.fatalErr`)
-with a message naming the fix: `modelman start <id>`. A `-M` pin naming a
-local model that isn't the verified one gets the same message.
+verifies it with `internal/localgate.Resolve`'s NAME-CHECKED probe (ollama
+via `ollamacheck.Loaded` — `ollama ps`, the loaded set, not `ollama list`'s
+downloaded-but-idle catalog; omlx/omlx-6bit via a name-checked
+`/v1/models` — 4-bit and 6-bit variants share port 8000 and differ exactly
+in the variant tail; mlx_lm_server via a non-empty `/v1/models`, exact
+names unreconstructable since one process serves one target+draft pairing),
+rejects a `-M` pin naming a local model that isn't the verified one, and
+narrows the list with `Config.FilterToRunningLocal`, which fails closed on
+unresolvable locations (a registry data gap drops the model rather than
+keeping a possibly-local one). Callers map the outcome to their own UX:
+
+- No marker → cloud models only.
+- Verified marker → cloud models plus the one running local model.
+- Stale marker (set but probe fails) → `*NotRunningError` is fatal for
+  every launch through the caller: wt exits (non-TUI) or quits the whole
+  program (TUI, via `model.fatalErr`) with the fix: `modelman start <id>`.
+- Pinned local model that isn't the verified one → the same
+  `modelman start` message (non-TUI fatal; TUI routes back to the agent
+  picker with the message as status, clearing the bad pin).
+- Gate empties a non-empty eligible list (every eligible model was local,
+  nothing running) → a gate-specific error ("all of agent X's eligible
+  models are local and no local model is running — start one with
+  `modelman start <id>`"), not the generic "no models match" wording; the
+  TUI likewise routes back to the agent picker instead of showing a silent
+  empty model list.
 
 `LocalGateActive()` is true only for a `Config` built by `Load()`
 (production); a hand-built `Config{}` literal — the shape nearly every
