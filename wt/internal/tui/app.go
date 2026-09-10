@@ -958,6 +958,7 @@ func printPendingSummaryAndSurvey() {
 		// Println adds the trailing newline itself.
 		fmt.Println("\n" + pendingSummary)
 		pendingSummary = ""
+		emitPriceNotice()
 	}
 	if pendingSurveyState.agent != "" {
 		runSurvey(pendingSurveyState.agent, pendingSurveyState.m)

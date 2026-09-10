@@ -1579,11 +1579,12 @@ func TestPrePathInitPinnedCommandLaunches(t *testing.T) {
 // path's summary → survey ordering) and clears both package vars so a
 // later launch in the same process doesn't replay stale state.
 func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
-	prevSummary, prevSurvey, prevRunSurvey := pendingSummary, pendingSurveyState, runSurvey
+	prevSummary, prevSurvey, prevRunSurvey, prevNotice := pendingSummary, pendingSurveyState, runSurvey, emitPriceNotice
 	t.Cleanup(func() {
 		pendingSummary = prevSummary
 		pendingSurveyState = prevSurvey
 		runSurvey = prevRunSurvey
+		emitPriceNotice = prevNotice
 	})
 
 	pendingSummary = "wt: claude · claude/sonnet · 1s"
@@ -1595,6 +1596,8 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		called = true
 		calledWith = pendingSurvey{agent: agent, m: m}
 	}
+	noticeCalled := false
+	emitPriceNotice = func() { noticeCalled = true }
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -1622,23 +1625,32 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 	if pendingSurveyState.agent != "" {
 		t.Errorf("pendingSurveyState = %+v, want cleared", pendingSurveyState)
 	}
+	if !noticeCalled {
+		t.Error("emitPriceNotice was not invoked after the summary")
+	}
 }
 
 // TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch verifies runSurvey is
 // never invoked when no launch happened (pendingSurveyState.agent == ""),
 // e.g. the user quit from the worktree picker without launching anything.
 func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
-	prevSurvey, prevRunSurvey := pendingSurveyState, runSurvey
+	prevSurvey, prevRunSurvey, prevNotice := pendingSurveyState, runSurvey, emitPriceNotice
 	t.Cleanup(func() {
 		pendingSurveyState = prevSurvey
 		runSurvey = prevRunSurvey
+		emitPriceNotice = prevNotice
 	})
 	pendingSurveyState = pendingSurvey{}
 	called := false
 	runSurvey = func(agent string, m config.Model) { called = true }
+	noticeCalled := false
+	emitPriceNotice = func() { noticeCalled = true }
 
 	printPendingSummaryAndSurvey()
 	if called {
 		t.Fatal("runSurvey was invoked with no pending launch")
+	}
+	if noticeCalled {
+		t.Error("emitPriceNotice invoked with no launch")
 	}
 }

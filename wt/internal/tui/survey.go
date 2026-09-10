@@ -1,11 +1,26 @@
 package tui
 
 import (
+	"fmt"
 	"os"
+	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
+
+// emitPriceNotice is a seam for tests: production prints modelman's
+// stale-pricing notice (issue #69) after the summary; tests swap it to
+// observe ordering without touching the real modelman.toml.
+var emitPriceNotice = realEmitPriceNotice
+
+func realEmitPriceNotice() {
+	last, present := config.PriceRefreshLastRun()
+	if notice := agents.PriceNotice(last, present, time.Now()); notice != "" {
+		fmt.Println(notice)
+	}
+}
 
 // newSurveyStore is a seam for tests: production uses realNewSurveyStore
 // (the default config dir); tests swap it to isolate from the real
