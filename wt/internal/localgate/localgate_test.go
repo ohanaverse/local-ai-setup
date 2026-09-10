@@ -214,3 +214,163 @@ func TestResolveMarkerStale(t *testing.T) {
 		t.Errorf("NotRunningError.ModelID = %q, want omlx/qwen3.8", nre.ModelID)
 	}
 }
+
+// idsOf maps Apply's result to the eligible model ids, in order, so the
+// Apply tests can assert the filtered list without repeating the loop.
+func idsOf(models []config.Model) []string {
+	ids := make([]string, len(models))
+	for i, m := range models {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// TestApplyInactiveGateIsNoop pins the hand-built-Config contract: a bare
+// Config{} literal (the shape pre-issue-#65 tests use — LocalGateActive()
+// false) gets its models back untouched, so the gate can never surprise a
+// caller that didn't opt into it.
+func TestApplyInactiveGateIsNoop(t *testing.T) {
+	cfg := &config.Config{}
+	models := []config.Model{
+		{ID: "omlx/qwen3.8", ProviderID: "omlx"},
+	}
+	res, err := Apply(cfg, models, "")
+	if err != nil {
+		t.Fatalf("Apply() err = %v, want nil", err)
+	}
+	if len(res.Eligible) != 1 || res.Eligible[0].ID != "omlx/qwen3.8" {
+		t.Errorf("Eligible = %v, want the input unchanged", idsOf(res.Eligible))
+	}
+}
+
+// TestApplyFiltersToRunningLocal covers the healthy gate path: marker set
+// and verified, gate active → cloud (claude/native) survives, the running
+// local model survives, and every other local model is dropped.
+func TestApplyFiltersToRunningLocal(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("Ornith-1.5-35B-A3B-MLX-4bit"))
+	defer srv.Close()
+	defer SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", Location: config.LocationCloud},
+			{ID: "omlx/Ornith-1.5-35B-A3B-MLX-4bit", ModelName: "Ornith-1.5-35B-A3B-MLX-4bit", ProviderID: "omlx", Location: config.LocationLocal},
+			{ID: "omlx/other", ModelName: "other", ProviderID: "omlx", Location: config.LocationLocal},
+		},
+	}
+	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
+	res, err := Apply(cfg, cfg.Models, "")
+	if err != nil {
+		t.Fatalf("Apply() err = %v, want nil", err)
+	}
+	if res.RunningLocal != "omlx/Ornith-1.5-35B-A3B-MLX-4bit" {
+		t.Errorf("RunningLocal = %q", res.RunningLocal)
+	}
+	got := idsOf(res.Eligible)
+	if len(got) != 2 || got[0] != "claude/opus" || got[1] != "omlx/Ornith-1.5-35B-A3B-MLX-4bit" {
+		t.Errorf("Eligible = %v, want [claude/opus omlx/Ornith-...-4bit]", got)
+	}
+}
+
+// TestApplyPinnedLocalRejected asserts the -M pin policy: pinning an
+// otherwise-eligible LOCAL model that isn't the verified-running one is a
+// PinnedRejected (the caller renders `modelman start <id>`), while the
+// filter still drops the non-running locals from the eligible list.
+func TestApplyPinnedLocalRejected(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("Ornith-1.5-35B-A3B-MLX-4bit"))
+	defer srv.Close()
+	defer SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", Location: config.LocationCloud},
+			{ID: "omlx/Ornith-1.5-35B-A3B-MLX-4bit", ModelName: "Ornith-1.5-35B-A3B-MLX-4bit", ProviderID: "omlx", Location: config.LocationLocal},
+			{ID: "omlx/other", ModelName: "other", ProviderID: "omlx", Location: config.LocationLocal},
+		},
+	}
+	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
+	res, err := Apply(cfg, cfg.Models, "omlx/other")
+	if err != nil {
+		t.Fatalf("Apply() err = %v, want nil (rejection is Result-level, not fatal)", err)
+	}
+	nre, ok := res.PinnedRejected.(*NotRunningError)
+	if !ok {
+		t.Fatalf("PinnedRejected = %v (%T), want *NotRunningError", res.PinnedRejected, res.PinnedRejected)
+	}
+	if nre.ModelID != "omlx/other" {
+		t.Errorf("PinnedRejected.ModelID = %q, want omlx/other", nre.ModelID)
+	}
+	if len(res.Eligible) != 2 {
+		t.Errorf("Eligible = %v, want cloud + running local only", idsOf(res.Eligible))
+	}
+}
+
+// TestApplyPinnedRunningLocalAccepted asserts the inverse of
+// TestApplyPinnedLocalRejected: pinning the verified-running local model is
+// fine — no PinnedRejected — and that model stays in the eligible list.
+func TestApplyPinnedRunningLocalAccepted(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("Ornith-1.5-35B-A3B-MLX-4bit"))
+	defer srv.Close()
+	defer SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", Location: config.LocationCloud},
+			{ID: "omlx/Ornith-1.5-35B-A3B-MLX-4bit", ModelName: "Ornith-1.5-35B-A3B-MLX-4bit", ProviderID: "omlx", Location: config.LocationLocal},
+		},
+	}
+	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
+	res, err := Apply(cfg, cfg.Models, "omlx/Ornith-1.5-35B-A3B-MLX-4bit")
+	if err != nil {
+		t.Fatalf("Apply() err = %v, want nil", err)
+	}
+	if res.PinnedRejected != nil {
+		t.Errorf("PinnedRejected = %v, want nil for the running model", res.PinnedRejected)
+	}
+}
+
+// TestApplyPinnedUnresolvableLocationRejected asserts the pin path fails
+// closed too: a pinned model whose location cannot be resolved (provider
+// absent from the config — a registry data gap) is treated as local, so
+// pinning it while no local model is running is rejected rather than
+// silently allowed.
+func TestApplyPinnedUnresolvableLocationRejected(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "ghost/x", ProviderID: "ghost"}, // provider absent from cfg
+		},
+	}
+	cfg.SetLocalRunningForTest("")
+	res, err := Apply(cfg, cfg.Models, "ghost/x")
+	if err != nil {
+		t.Fatalf("Apply() err = %v, want nil", err)
+	}
+	nre, ok := res.PinnedRejected.(*NotRunningError)
+	if !ok {
+		t.Fatalf("PinnedRejected = %v (%T), want *NotRunningError", res.PinnedRejected, res.PinnedRejected)
+	}
+	if nre.ModelID != "ghost/x" {
+		t.Errorf("PinnedRejected.ModelID = %q, want ghost/x", nre.ModelID)
+	}
+}
+
+// TestApplyStaleMarkerFatal asserts the fatal path survives Apply: a
+// marker whose probe fails returns an error (not a Result), so callers
+// block every launch until `modelman start`/`modelman stop` repairs it.
+func TestApplyStaleMarkerFatal(t *testing.T) {
+	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")()
+
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "omlx/qwen3.8", ModelName: "qwen3.8", ProviderID: "omlx", Location: config.LocationLocal},
+		},
+	}
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+	res, err := Apply(cfg, cfg.Models, "")
+	if err == nil {
+		t.Fatalf("Apply() err = nil, want *NotRunningError; Result = %+v", res)
+	}
+	if _, ok := err.(*NotRunningError); !ok {
+		t.Fatalf("err = %v (%T), want *NotRunningError", err, err)
+	}
+}

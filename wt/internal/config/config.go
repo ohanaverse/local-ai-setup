@@ -553,16 +553,22 @@ func (c *Config) IsExposed(m Model) bool {
 // FilterToRunningLocal narrows models to those launchable under the
 // one-local-model-at-a-time policy (issue #65): cloud and native models
 // pass through unchanged; a local model is kept only when its id equals
-// runningLocalID. A no-op (models returned unchanged) when the gate is
-// not active (LocalGateActive) — every pre-issue-#65 test that builds a
-// Config{} literal directly is unaffected.
+// runningLocalID. A model whose location cannot be resolved (a registry
+// data gap) is dropped — the gate must fail closed, or such a model would
+// stay launchable while no local model is running, violating the "no
+// marker → cloud only, by construction" invariant. (Production Load()
+// configs have resolvable locations — validate() enforces it — so this
+// only bites hand-built test configs and registry data gaps.) A no-op
+// (models returned unchanged) when the gate is not active
+// (LocalGateActive) — every pre-issue-#65 test that builds a Config{}
+// literal directly is unaffected.
 func (c *Config) FilterToRunningLocal(models []Model, runningLocalID string) []Model {
 	if !c.localGateActive {
 		return models
 	}
 	out := make([]Model, 0, len(models))
 	for _, m := range models {
-		if loc, err := c.ResolveLocation(m); err == nil && loc == LocationLocal && m.ID != runningLocalID {
+		if loc, err := c.ResolveLocation(m); err != nil || (loc == LocationLocal && m.ID != runningLocalID) {
 			continue
 		}
 		out = append(out, m)

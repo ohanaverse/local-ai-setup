@@ -104,19 +104,6 @@ func (m modelItem) Title() string {
 // the interface while rendering nothing.
 func (m modelItem) Description() string { return "" }
 
-// indexOfModelID returns the index of the model with the given ID in models,
-// or -1 if not found. Used to validate a pinned -M model against the agent's
-// eligible list, and to position the list cursor on the rotation's
-// next-to-use model.
-func indexOfModelID(models []config.Model, id string) int {
-	for i, m := range models {
-		if m.ID == id {
-			return i
-		}
-	}
-	return -1
-}
-
 // formatPerToken returns per-token costs as "$0.1234 0.2345 0.3456".
 // Each value has exactly 4 decimal places; missing values render as "-0000".
 // When all three prices are absent it returns a hyphen.

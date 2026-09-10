@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -217,5 +218,62 @@ func TestResolveModelPinnedStaleLocalModelRejected(t *testing.T) {
 	}
 	if notRunning.ModelID != "ollama/a" {
 		t.Errorf("NotRunningError.ModelID = %q, want ollama/a", notRunning.ModelID)
+	}
+}
+
+// TestResolveModelGateEmptiedListGivesGateMessage asserts the empty-after-
+// gate error (issue #65, finding #6's non-TUI half): when the gate empties
+// a non-empty eligible list (all models local, none running), resolveModel
+// must produce the gate-specific "start one with modelman start" message —
+// NOT the generic "no models match" wording, which would send the operator
+// hunting for a -T/-F/config problem that isn't there.
+func TestResolveModelGateEmptiedListGivesGateMessage(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("") // gate active, nothing running — gate empties the list
+
+	_, eligible, err := resolveModel("pi", cfg, "", "", "")
+	if err == nil {
+		t.Fatal("expected an error when the gate empties the eligible list")
+	}
+	if !strings.Contains(err.Error(), "no local model is running") ||
+		!strings.Contains(err.Error(), "modelman start") {
+		t.Errorf("err = %q, want the gate-specific message naming modelman start", err)
+	}
+	// The eligible list is the post-filter (empty) list, matching what
+	// callers get on every other error path, and the generic "no models
+	// match" wording must not leak out.
+	if len(eligible) != 0 {
+		t.Errorf("eligible = %d models, want 0 (the gate-filtered list is returned)", len(eligible))
+	}
+	if strings.Contains(err.Error(), "no models match") {
+		t.Errorf("err = %q; generic no-match wording must not be used for a gate-emptied list", err)
+	}
+}
+
+// TestResolveModelNoMatchKeepsGenericMessage is the control for the gate-
+// emptied case: with the gate inactive (no marker, hand-built cfg), an
+// empty eligible list still gets the pre-existing generic "no models
+// match" error — the gate message only appears when the gate was what
+// emptied the list.
+func TestResolveModelNoMatchKeepsGenericMessage(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	_, _, err := resolveModel("pi", cfg, "design", "", "") // -T filter matches nothing
+	if err == nil || !strings.Contains(err.Error(), "no models match") {
+		t.Errorf("err = %v, want the generic no-models-match error", err)
 	}
 }

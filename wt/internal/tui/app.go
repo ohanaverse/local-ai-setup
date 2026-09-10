@@ -683,43 +683,38 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 // cleared so re-entry validates fresh — without that, every agent pick
 // would re-trigger the same error).
 //
-// Caller is responsible for the len(models) == 0 guard. fullCatalog is the
-// agent's full ModelsForAgent slice (models is a filtered subset of it); it is
-// used to build the family-count map so totals stay accurate across filters.
+// Caller is responsible for the len(models) == 0 guard on the PRE-GATE
+// list; the one-local-model-at-a-time gate (below) can still empty it —
+// when every eligible model was local and nothing is running — and
+// enterModelPhase itself routes back to the agent picker with a message
+// in that case, so a caller's guard alone is not the last word.
+// fullCatalog is the agent's full ModelsForAgent slice (models is a
+// filtered subset of it); it is used to build the family-count map so
+// totals stay accurate across filters.
 func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	// One-local-model-at-a-time gate (issue #65) — mirrors
-	// cmd/wt/resolve.go's resolveModel. A stale marker (set but not
-	// verified available) quits the whole program with a message; a
-	// clean/empty marker narrows models to cloud-only, or cloud plus the
-	// one verified-running local model.
-	runningLocal, gateErr := localgate.Resolve(m.cfg)
+	// One-local-model-at-a-time gate (issue #65) — the policy lives in
+	// localgate.Apply, shared with cmd/wt/resolve.go's resolveModel. A
+	// stale marker (set but not verified available) quits the whole
+	// program with a message; a clean/empty marker narrows models to
+	// cloud-only, or cloud plus the one verified-running local model.
+	gate, gateErr := localgate.Apply(m.cfg, models, m.pinnedModel)
 	if gateErr != nil {
 		m.fatalErr = gateErr
 		return m, tea.Quit
 	}
-	pinRejected := ""
-	if m.pinnedModel != "" && m.cfg.LocalGateActive() {
-		if idx := indexOfModelID(models, m.pinnedModel); idx >= 0 {
-			pm := models[idx]
-			if loc, lerr := m.cfg.ResolveLocation(pm); lerr == nil && loc == config.LocationLocal && pm.ID != runningLocal {
-				pinRejected = (&localgate.NotRunningError{ModelID: pm.ID}).Error()
-			}
-		}
-	}
-	models = m.cfg.FilterToRunningLocal(models, runningLocal)
+	models = gate.Eligible
 
-	// Validate a -M pin BEFORE any list construction: a bad pin routes back to
-	// the agent picker without scanning usage.jsonl or wrapping models. The
-	// eligible slice is the source of truth; a pin that matches at all is one
-	// of these models.
-	if m.pinnedModel != "" && (pinRejected != "" || indexOfModelID(models, m.pinnedModel) < 0) {
-		if pinRejected != "" {
-			m.status = pinRejected
-		} else {
-			m.status = fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent)
-		}
+	// Route back to the agent picker when the model list can't be shown:
+	// a -M pin that isn't launchable (the gate-specific message when a
+	// local model isn't the running one, the generic one otherwise), or a
+	// gate that emptied the list — every eligible model was local and
+	// nothing is running, which needs a `modelman start`, not a config
+	// edit. The bad pin is cleared so re-entry validates fresh — without
+	// that, every agent pick would re-trigger the same error.
+	routeBack := func(status string) (model, tea.Cmd) {
+		m.status = status
 		m.pinnedModel = ""
 		items := buildAgentList(m.cfg)
 		m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
@@ -727,6 +722,15 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 		m.agentList.SetShowStatusBar(false)
 		m.phase = phaseAgent
 		return m, nil
+	}
+	if gate.PinnedRejected != nil {
+		return routeBack(gate.PinnedRejected.Error())
+	}
+	if m.pinnedModel != "" && config.IndexModelByID(models, m.pinnedModel) < 0 {
+		return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
+	}
+	if len(models) == 0 {
+		return routeBack(fmt.Sprintf("all of agent %q's eligible models are local and no local model is running — start one with `modelman start <id>`", agent))
 	}
 
 	// Build the full-catalog family map so usage aggregation is accurate

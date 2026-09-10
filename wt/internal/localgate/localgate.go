@@ -169,3 +169,47 @@ func Resolve(cfg *config.Config) (string, error) {
 	}
 	return marker, nil
 }
+
+// Result is Apply's outcome: the verified running local model id, the
+// eligible list after the gate's filter, and — when pinned (-M) named an
+// otherwise-eligible local model that isn't the running one — the
+// pinned-local rejection. Callers map PinnedRejected to their own UX (the
+// non-TUI path treats it as fatal; the TUI routes back to the agent
+// picker with the message as status).
+type Result struct {
+	RunningLocal   string
+	Eligible       []config.Model
+	PinnedRejected error
+}
+
+// Apply is the one-local-model-at-a-time gate policy (issue #65) in one
+// place, shared by cmd/wt/resolve.go (non-TUI launch) and internal/tui's
+// enterModelPhase so the two launch paths can never diverge: resolve the
+// marker, reject a pinned local model that isn't the running one, then
+// narrow models to cloud-plus-the-one-running-local. error is fatal (a
+// stale marker blocks every launch through the caller, not just ones that
+// would have picked a local model, until `modelman start`/`modelman stop`
+// repairs it). pinned is the -M flag value ("" = not pinned).
+func Apply(cfg *config.Config, models []config.Model, pinned string) (Result, error) {
+	runningLocal, err := Resolve(cfg)
+	if err != nil {
+		return Result{}, err
+	}
+	res := Result{RunningLocal: runningLocal, Eligible: models}
+	if !cfg.LocalGateActive() {
+		return res, nil
+	}
+	if pinned != "" {
+		if idx := config.IndexModelByID(models, pinned); idx >= 0 {
+			pm := models[idx]
+			// Fail closed on an unresolvable location (a registry data
+			// gap): treat the model as local, so a pin it names is
+			// rejected rather than silently allowed.
+			if loc, lerr := cfg.ResolveLocation(pm); (lerr != nil || loc == config.LocationLocal) && pm.ID != runningLocal {
+				res.PinnedRejected = &NotRunningError{ModelID: pm.ID}
+			}
+		}
+	}
+	res.Eligible = cfg.FilterToRunningLocal(models, runningLocal)
+	return res, nil
+}

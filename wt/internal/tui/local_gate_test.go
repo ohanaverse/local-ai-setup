@@ -137,3 +137,62 @@ func errorsAsNotRunning(err error, target **localgate.NotRunningError) bool {
 	}
 	return ok
 }
+
+// TestEnterModelPhaseGateEmptiedRoutesBack asserts finding #6's TUI half:
+// when the gate empties an otherwise-non-empty eligible list (every
+// eligible model was local, nothing running), the picker must not show as
+// a silent empty screen — enterModelPhase routes back to the agent picker
+// with a status message pointing at `modelman start`, so the screen the
+// user lands on explains the fix instead of looking like an empty list.
+func TestEnterModelPhaseGateEmptiedRoutesBack(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("") // gate active, nothing running — gate empties the list
+	m := model{cfg: cfg, width: 80, height: 24}
+	models, _ := cfg.EligibleModels("pi", "", "")
+	fullCatalog, _ := cfg.ModelsForAgent("pi")
+
+	got, cmd := m.enterModelPhase("pi", models, fullCatalog, "code")
+
+	if got.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (routed back, not an empty model picker)", got.phase)
+	}
+	if !strings.Contains(got.status, "no local model is running") ||
+		!strings.Contains(got.status, "modelman start") {
+		t.Errorf("status = %q, want the gate-specific message naming `modelman start`", got.status)
+	}
+	if cmd != nil {
+		t.Errorf("cmd = %v, want nil (route-back does not quit the program)", cmd)
+	}
+}
+
+// TestEnterModelPhasePinnedNotInEligibleRoutesBack is the control for the
+// gate-emptying route-back: a -M pin that isn't launchable for a NON-gate
+// reason (not in the agent's eligible list) still routes back, but with
+// the generic pin message — the two messages must not be swapped, or the
+// gate message would tell users to run modelman start for a config typo.
+func TestEnterModelPhasePinnedNotInEligibleRoutesBack(t *testing.T) {
+	cfg := gateTestConfig()
+	cfg.SetLocalRunningForTest("") // nothing running (irrelevant to this pin's failure)
+	m := model{cfg: cfg, width: 80, height: 24, pinnedModel: "claude/missing"}
+	models, _ := cfg.EligibleModels("claude", "", "")
+	fullCatalog, _ := cfg.ModelsForAgent("claude")
+
+	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+
+	if got.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent", got.phase)
+	}
+	if strings.Contains(got.status, "modelman start") || strings.Contains(got.status, "no local model") {
+		t.Errorf("status = %q; the gate message must not be used for a generic pin miss", got.status)
+	}
+}

@@ -1051,3 +1051,22 @@ func TestFilterToRunningLocalKeepsOnlyTheRunningOne(t *testing.T) {
 		t.Fatalf("got %v, want [claude/opus ollama/a]", got)
 	}
 }
+
+// TestFilterToRunningLocalUnresolvableLocationDropped asserts the gate
+// fails closed: a model whose location cannot be resolved (provider
+// missing from the config — a registry data gap) is DROPPED, not kept.
+// Keeping it would leave a possibly-local model launchable while no
+// local model is running, violating the "no marker → cloud only, by
+// construction" invariant.
+func TestFilterToRunningLocalUnresolvableLocationDropped(t *testing.T) {
+	cfg := filterGateTestConfig()
+	cfg.SetLocalRunningForTest("")
+	models := []Model{
+		{ID: "claude/opus", ProviderID: "claude"},
+		{ID: "ghost/x", ProviderID: "ghost"}, // provider absent from cfg
+	}
+	got := cfg.FilterToRunningLocal(models, "")
+	if len(got) != 1 || got[0].ID != "claude/opus" {
+		t.Fatalf("got %v, want only claude/opus", got)
+	}
+}
