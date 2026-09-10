@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -92,7 +93,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// Mirror production enterModelPhase: read the last-launched ID from
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
-	items := buildModelItems(models, familyOf, newUsageStore(), lastID, nil)
+	items := buildModelItems(models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -686,7 +687,13 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 
 	markerIdx := -1
 	for i, it := range gotModel.models.Items() {
-		if strings.HasPrefix(it.(*modelItem).Title(), markerMarked) {
+		title := it.(*modelItem).Title()
+		// Strip the 2-rune ref column so the marker check matches the
+		// pre-#73 shape; the ref column is always 2 ASCII runes.
+		if len(title) < 2 {
+			continue
+		}
+		if strings.HasPrefix(title[2:], markerMarked) {
 			if markerIdx != -1 {
 				t.Fatalf("marker on more than one row")
 			}
@@ -715,7 +722,11 @@ func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
 
 	for i, it := range gotModel.models.Items() {
-		if strings.HasPrefix(it.(*modelItem).Title(), markerMarked) {
+		title := it.(*modelItem).Title()
+		if len(title) < 2 {
+			continue
+		}
+		if strings.HasPrefix(title[2:], markerMarked) {
 			t.Errorf("row %d unexpectedly marked with no rotation state: %q", i, it.(*modelItem).Title())
 		}
 	}
@@ -951,9 +962,36 @@ func TestLaunchAndRecordWritesLast(t *testing.T) {
 	if got := strings.TrimSpace(string(data)); got != first.model.ID {
 		t.Errorf("state file = %q, want %q (launched model)", got, first.model.ID)
 	}
+
+	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
+	if got[first.model.ID] != 1 {
+		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
+	}
 }
 
-// TestNextEntryAfterLaunchAdvancesCursor asserts the picker entry after a
+// TestLaunchAndRecordWritesRefcount asserts that launchAndRecord also
+// records a live-session refcount entry (this test process's pid + the
+// launched model), so the picker's "in use" column can reflect a
+// concurrent wt session. This is the TUI-side counterpart to
+// TestLaunchAndRecordWritesLast, verifying the second state write at the
+// same commit point.
+func TestLaunchAndRecordWritesRefcount(t *testing.T) {
+	dir := tempStateDir(t)
+	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	first, ok := m.models.Items()[0].(*modelItem)
+	if !ok {
+		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
+	}
+	m.launchModel = first.model
+	m, _ = m.launchAndRecord(exec.Command("true"))
+
+	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
+	if got[first.model.ID] != 1 {
+		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
+	}
+}
+
+// TestNextEntryAfterLaunchAdvancesCursor asserts that the cursor after a
 // committed launch lands on the model AFTER the just-launched one. This is
 // the core promise of rotation-by-launch: every launch advances the
 // rotation. The launch is committed via launchAndRecord (the real recording

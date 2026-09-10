@@ -10,6 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -24,6 +25,18 @@ var version = "0.1.0"
 // tuiRun is the entry point for the interactive TUI. It is a package-level
 // variable so tests can stub it out (the real tui.Run requires a TTY).
 var tuiRun = tui.Run
+
+// sweepRefcounts is a seam for tests: production sweeps the live-session
+// refcount state at the top of every launch; tests stub it to observe the
+// call without touching a real state file.
+var sweepRefcounts = realSweepRefcounts
+
+// realSweepRefcounts drops dead-pid entries from refcount.jsonl (issue
+// #73). Best-effort: a sweep failure means stale "in use" counts, never a
+// blocked launch.
+func realSweepRefcounts() {
+	_ = refcount.NewStore().Sweep()
+}
 
 // needsModelPicker reports whether the CLI must route to the interactive
 // model picker. True when:
@@ -88,6 +101,13 @@ func runLaunchPath(
 	args []string,
 	launchPath, root string,
 ) error {
+	// Sweep dead-pid entries from the live-session refcount state before
+	// anything else — this is the single funnel every launch goes through
+	// (TUI, non-TUI, -W, --cwd, outside-repo, and shell-wt), and the sweep
+	// must run even for shell-wt (which never builds a model picker) to
+	// keep other concurrent sessions' counts accurate. Best-effort.
+	sweepRefcounts()
+
 	// Install the guard once when inside any git repo.
 	if root != "" {
 		maybeInstallGuard()

@@ -633,13 +633,17 @@ func TestRunLaunchPath(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// Stub tuiRun, launchFiltered, and maybeInstallGuard to capture
-			// the dispatched path and guard behavior.
+			// Stub tuiRun, launchFiltered, maybeInstallGuard, and
+			// sweepRefcounts to capture the dispatched path, guard
+			// behavior, and refcount sweep — the sweep must fire on every
+			// branch (including "shell", which never builds a picker),
+			// since it is the single funnel every launch goes through.
 			oldTUI := tuiRun
 			oldLaunch := launchFiltered
 			oldGuard := maybeInstallGuard
+			oldSweep := sweepRefcounts
 			var gotPath string
-			var gotTUI, gotLaunch, gotGuard bool
+			var gotTUI, gotLaunch, gotGuard, gotSweep bool
 			tuiRun = func(bool, string, string, string, string, []string, themes.Theme, string, *config.Config) error {
 				gotTUI = true
 				gotPath = c.launchPath
@@ -651,10 +655,12 @@ func TestRunLaunchPath(t *testing.T) {
 				return nil
 			}
 			maybeInstallGuard = func() { gotGuard = true }
+			sweepRefcounts = func() { gotSweep = true }
 			defer func() {
 				tuiRun = oldTUI
 				launchFiltered = oldLaunch
 				maybeInstallGuard = oldGuard
+				sweepRefcounts = oldSweep
 			}()
 
 			cmd := &cobra.Command{}
@@ -676,6 +682,9 @@ func TestRunLaunchPath(t *testing.T) {
 			}
 			if gotGuard != c.wantGuard {
 				t.Errorf("maybeInstallGuard called = %v, want %v", gotGuard, c.wantGuard)
+			}
+			if !gotSweep {
+				t.Error("sweepRefcounts not called; the sweep must run on every runLaunchPath branch, including shell-wt")
 			}
 		})
 	}

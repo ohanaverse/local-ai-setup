@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -22,15 +23,26 @@ var newUsageStore = realNewUsageStore
 // seam: a Store rooted at the default config dir.
 func realNewUsageStore() usage.Store { return usage.NewStore() }
 
+// newRefcountStore is a seam for tests: production uses
+// realNewRefcountStore (the default config dir); tests swap it to isolate
+// from the real refcount.jsonl.
+var newRefcountStore = realNewRefcountStore
+
+// realNewRefcountStore is the production implementation of the
+// newRefcountStore seam: a Store rooted at the default config dir.
+func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
+
 // modelItem adapts a config.Model to a list.Item for the model picker.
 // The compact representation is baked onto .line; marked records the
-// rotation's last-launched row and is composed into the rendered prefix by
-// Title() rather than baked into .line, so FilterValue (fuzzy matching) and
-// every .line consumer see the unprefixed format.
+// rotation's last-launched row and ref is the live "in use" session count
+// (issue #73) — both are composed into the rendered prefix by Title()
+// rather than baked into .line, so FilterValue (fuzzy matching) and every
+// .line consumer see the unprefixed format.
 type modelItem struct {
 	model  config.Model
 	line   string
 	marked bool
+	ref    int
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
@@ -43,18 +55,39 @@ const (
 	markerBlank  = "  "
 )
 
+// refClamp is the highest digit the ref column ever renders — a single
+// glyph keeps the column width fixed regardless of how many concurrent
+// sessions are actually using a model.
+const refClamp = 9
+
+// refColumn renders the ref count's 2-rune prefix: "<digit> " when ref > 0
+// (clamped at refClamp), or two blank spaces when the model is unused.
+// Kept the same width as markerMarked/markerBlank so every row's columns
+// line up regardless of ref/marked state.
+func refColumn(ref int) string {
+	if ref <= 0 {
+		return "  "
+	}
+	if ref > refClamp {
+		ref = refClamp
+	}
+	return fmt.Sprintf("%d ", ref)
+}
+
 // FilterValue returns the full line so the list's built-in fuzzy filter
 // narrows by both family and ID. Deliberately excludes the marker prefix:
 // the user never typed it, so it would only pollute match ranking.
 func (m modelItem) FilterValue() string { return m.line }
 
-// Title renders the compact one-line model representation with the
-// last-launched marker prefix.
+// Title renders the compact one-line model representation with the ref
+// column (issue #73's "in use" count) prepended before the last-launched
+// marker prefix.
 func (m modelItem) Title() string {
+	prefix := refColumn(m.ref)
 	if m.marked {
-		return markerMarked + m.line
+		return prefix + markerMarked + m.line
 	}
-	return markerBlank + m.line
+	return prefix + markerBlank + m.line
 }
 
 // Description returns empty because the compact view is one line per item.
@@ -132,8 +165,11 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 // computing a compact one-line representation for each model that
 // includes family context and usage counts. familyOf maps the FULL
 // catalog's model IDs to families so family totals are accurate even
-// when tags or families narrow the eligible slice.
-func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store, lastID string, stats map[string]survey.Stats) []*modelItem {
+// when tags or families narrow the eligible slice. refStore supplies the
+// live "in use" session count (issue #73) rendered as Title()'s leading
+// ref column; it is queried over the same full-catalog IDs as the usage
+// counts, in the same pass.
+func buildModelItems(models []config.Model, familyOf map[string]string, s usage.Store, refStore refcount.Store, lastID string, stats map[string]survey.Stats) []*modelItem {
 	// We need per-model and per-family counts for the line format.
 	// Count over the full catalog (familyOf's keys), not just the
 	// eligible subset, so a family's 30-day total includes launches of
@@ -144,6 +180,11 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 	}
 	modelCounts := s.Counts(catalogIDs)
 	familyCounts := usage.AggregateByFamily(familyOf, modelCounts)
+
+	// One Counts pass over the same full-catalog IDs used for usage, so a
+	// filtered (-T/-F) picker still shows accurate "in use" counts for
+	// every row it renders.
+	refCounts := refStore.Counts(catalogIDs)
 
 	// Sort the models in place.
 	sortModelsByUsage(models, familyCounts, modelCounts)
@@ -206,6 +247,7 @@ func buildModelItems(models []config.Model, familyOf map[string]string, s usage.
 			model:  m,
 			line:   line,
 			marked: lastID != "" && m.ID == lastID,
+			ref:    refCounts[m.ID],
 		})
 	}
 	return items
