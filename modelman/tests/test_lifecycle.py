@@ -118,6 +118,17 @@ def test_stop_mtplx_runs_mtplx_stop():
     assert result.ok is True
 
 
+def test_stop_non_mtplx_returns_error_envelope_not_raise():
+    """stop() must return a {"ok": false, "error": ...} LifecycleResult for
+    any provider it doesn't (yet) implement, matching every other path in
+    this module's JSON-envelope contract — not raise, which would crash
+    _main() with an uncaught traceback instead of the envelope the CLI's
+    usage string promises for `stop [provider]`."""
+    result = stop("omlx")
+    assert result.ok is False
+    assert "omlx" in (result.error or "")
+
+
 def test_stop_all_stops_mtplx_and_delegates_others():
     with (
         patch("modelman.providers.lifecycle.stop", return_value=LifecycleResult("mtplx", "", "", True, None)) as mock_stop,

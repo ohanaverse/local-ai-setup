@@ -284,7 +284,7 @@ def stop(provider_id: str) -> LifecycleResult:
     """Stop one provider."""
     if provider_id == "mtplx":
         return _stop_mtplx()
-    raise NotImplementedError(f"stop not implemented for {provider_id}")
+    return LifecycleResult(provider_id, "", "", False, f"stop not implemented for {provider_id}")
 
 
 def stop_all() -> LifecycleResult:
