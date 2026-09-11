@@ -502,18 +502,23 @@ def run_suite(
         prev_extra: tuple[str, ...] | None = None
         for row in group_rows:
             try:
-                # Resolve mlx_lm_server pairing args inline; other providers need none.
-                extra_args: tuple[str, ...] = (
-                    isolation.mlx_lm_server_pairing_args(
+                # Resolve provider-specific positional args inline, mirroring
+                # modelman.benchmark.runner's Target-based resolution.
+                extra_args: tuple[str, ...]
+                if row.provider_id == "mlx_lm_server":
+                    extra_args = isolation.mlx_lm_server_pairing_args(
                         row.model_id,
                         row.target_local_path,
                         row.target_repo,
                         row.draft_local_path,
                         row.draft_repo,
                     )
-                    if row.provider_id == "mlx_lm_server"
-                    else ()
-                )
+                elif row.provider_id == "mtplx":
+                    # MTPLX is single-model-per-process; pass the repo id so
+                    # bin/llm-isolate-provider starts the requested model.
+                    extra_args = (registry.model(row.model_id).model_name,)
+                else:
+                    extra_args = ()
             except BenchmarkError as exc:
                 index += 1
                 for pass_number in range(1, suite.passes + 1):
