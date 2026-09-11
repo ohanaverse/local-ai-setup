@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from modelman.providers.mtplx import MTPLXProvider
 
 
