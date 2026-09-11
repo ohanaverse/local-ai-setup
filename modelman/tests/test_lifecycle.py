@@ -318,3 +318,42 @@ def test_delegate_isolate_forwards_extra_args():
     args = mock_run.call_args.args[0]
     assert args == ["/bin/llm-isolate-provider", "mlx_lm_server", "org/target", "org/draft"]
     assert mock_run.call_args.kwargs.get("env") is None
+
+
+def test_stop_others_prefers_llm_isolate_helper_env(monkeypatch):
+    """_stop_others must resolve the isolation helper via the
+    LLM_ISOLATE_HELPER env var before PATH.
+
+    The bash shim is routinely invoked by absolute path (the benchmark
+    scripts resolve it via `dirname $0`) with bin/ NOT on PATH, so
+    shutil.which() returns None there — without the env var, the mtplx
+    isolate fails after the helper already stopped every other provider.
+    The shim exports its own path so resolution never depends on PATH."""
+    calls = []
+    monkeypatch.setenv("LLM_ISOLATE_HELPER", "/abs/llm-isolate-provider")
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.shutil.which", lambda name: None
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("modelman.providers.lifecycle.subprocess.run", fake_run)
+    from modelman.providers.lifecycle import _stop_others
+
+    _stop_others()
+    assert calls == [["/abs/llm-isolate-provider", "stop-all"]]
+
+
+def test_stop_others_without_env_or_path_raises(monkeypatch):
+    """No env var AND no PATH entry must surface a clean LifecycleError
+    (envelope contract), never a None-subscript crash."""
+    monkeypatch.delenv("LLM_ISOLATE_HELPER", raising=False)
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.shutil.which", lambda name: None
+    )
+    from modelman.providers.lifecycle import LifecycleError, _stop_others
+
+    with pytest.raises(LifecycleError, match="not found"):
+        _stop_others()

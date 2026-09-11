@@ -252,25 +252,39 @@ PYEOF
         # shim delegates entirely and passes the module's JSON through.
         # Forward an explicit model arg so callers (modelman start, benchmark
         # sweeps) can select a specific mtplx model instead of defaulting to
-        # the first one in the registry.
+        # the registry's single mtplx entry.
         #
-        # Unlike modelman itself (installed into modelman/.venv via `uv
-        # sync`), this script invokes the ambient `python3` directly — `make
-        # install` never puts modelman on its import path. Guard here so a
-        # missing import fails clean (JSON-envelope error contract) instead
-        # of a raw ModuleNotFoundError traceback.
-        if ! python3 -c 'import modelman' 2>/dev/null; then
-            echo "modelman is not importable by the ambient python3 (no 'import modelman')." >&2
-            echo "Normal modelman commands work via 'cd modelman && uv run ...', but this" >&2
-            echo "script's mtplx isolation needs modelman importable directly. Fix by" >&2
-            echo "exporting PYTHONPATH=<repo>/modelman/src, or installing modelman" >&2
-            echo "editable into the ambient python3 (e.g. 'python3 -m pip install -e modelman')." >&2
-            exit 1
+        # Self-contained like every other branch of this script: the
+        # benchmark scripts resolve this helper by absolute path with no
+        # bin/ on PATH, so nothing here may depend on ambient PATH or on
+        # ambient python3 being able to import modelman — a pyenv .pth can
+        # make the ambient interpreter import a DIFFERENT checkout's
+        # modelman (e.g. the main repo while a worktree's script runs).
+        # Prefer the repo venv's interpreter (the lifecycle import chain
+        # pulls third-party tomli_w, which ambient python3 usually lacks),
+        # pinned relative to this script's own location; fall back to
+        # ambient python3 with PYTHONPATH pointing at this repo's src.
+        MTPLX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        MTPLX_PY="$MTPLX_ROOT/modelman/.venv/bin/python"
+        if [ ! -x "$MTPLX_PY" ]; then
+            MTPLX_PY=""
+            if ! PYTHONPATH="$MTPLX_ROOT/modelman/src${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 -c 'import modelman.providers.lifecycle' 2>/dev/null; then
+                echo "modelman is not importable and $MTPLX_ROOT/modelman/.venv is missing." >&2
+                echo "Run 'make install' (creates modelman/.venv), or install the" >&2
+                echo "lifecycle deps into the ambient python3." >&2
+                exit 1
+            fi
         fi
-        if [ -n "${2:-}" ]; then
-            python3 -m modelman.providers.lifecycle isolate mtplx "$2"
+        # Thread this script's own absolute path to the lifecycle module:
+        # its _stop_others must not re-resolve the helper via PATH (see
+        # above — this shim is routinely invoked with bin/ off PATH).
+        export LLM_ISOLATE_HELPER="$MTPLX_ROOT/bin/llm-isolate-provider"
+        if [ -n "$MTPLX_PY" ]; then
+            "$MTPLX_PY" -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"}
         else
-            python3 -m modelman.providers.lifecycle isolate mtplx
+            PYTHONPATH="$MTPLX_ROOT/modelman/src${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"}
         fi
         exit $?
         ;;

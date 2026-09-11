@@ -53,8 +53,13 @@ def _resolve_mtplx_model(model: str | None) -> str:
 
 def _stop_others() -> None:
     """Stop every local provider except the one about to start, by
-    delegating to the bash helper's stop-all mode (transition period)."""
-    helper = shutil.which("llm-isolate-provider")
+    delegating to the bash helper's stop-all mode (transition period).
+
+    The helper's own absolute path (exported by the bash shim as
+    LLM_ISOLATE_HELPER) wins over PATH: the shim is routinely invoked by
+    absolute path with bin/ absent from PATH, where shutil.which() would
+    return None and fail an isolate that already stopped everything."""
+    helper = os.environ.get("LLM_ISOLATE_HELPER") or shutil.which("llm-isolate-provider")
     if helper is None:
         raise LifecycleError("isolation helper 'llm-isolate-provider' not found on PATH")
     result = subprocess.run([helper, "stop-all"], capture_output=True, text=True, check=False)
