@@ -30,8 +30,15 @@ def _dir_name(model_name: str) -> str:
 def _repo_id(dir_name: str) -> str:
     """Map an MTPLX `<org>--<model>` dir name back to `org/model`.
 
-    This is the exact inverse of `_dir_name`, so multi-slash repo ids
-    round-trip correctly (`org/sub/model` <-> `org--sub--model`)."""
+    Round-trips correctly for multi-slash repo ids (`org/sub/model` <->
+    `org--sub--model`), the common case. NOT a true inverse of `_dir_name`
+    when an org/model segment itself contains a literal `--`: MTPLX's own
+    `<org>--<model>` directory-naming convention (which this function only
+    matches, not defines) has no way to distinguish a `--` that came from a
+    `/` from one that was already there, so e.g. `org/model--v2` round-trips
+    to `org/model/v2`, not the original id. Harmless in practice — real HF
+    repo ids essentially never contain a literal double-hyphen — but not the
+    exact inverse the earlier version of this docstring claimed."""
     return dir_name.replace("--", "/")
 
 
