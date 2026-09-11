@@ -68,6 +68,11 @@ def parse_model(
       - 3+ segments: one specific file. repo_id = first two joined
         by '/', filename = remaining segments joined by '/'.
 
+    mtplx: model is validated the same way (>= 2 '/'-separated segments,
+      non-empty org) but is never split into repo+filename — MTPLX caches
+      a whole repo dir, so repo_id = full input, filename = "" regardless
+      of how many slashes the repo id contains.
+
     Native providers (is_native=True): `model` is used verbatim as the
     model name; blank input defaults to the sentinel "native". No
     slash-splitting — `id` becomes f"{provider}/{model_name}" regardless
@@ -109,6 +114,12 @@ def parse_model(
         raise ValueError(f"{provider} model must be 'org/repo' (or 'org/repo/file')")
     if not parts[0]:
         raise ValueError("repo org must not be empty")
+    if provider == "mtplx":
+        # MTPLX caches a whole repo dir (mtplx.py's _dir_name/_repo_id), never
+        # a single file within a repo — a multi-slash repo id (org/sub/model)
+        # must round-trip whole, not get split into a 2-segment repo plus a
+        # filename tail the way llamacpp/omlx repo+file inputs do.
+        return (model, model, "")
     repo_id = "/".join(parts[:2])
     filename = "/".join(parts[2:])  # empty string if len == 2
     return (model, repo_id, filename)
