@@ -88,6 +88,15 @@ def _start_mtplx_serve(model: str) -> None:
                 str(MTPLX_PORT),
                 "--host",
                 "127.0.0.1",
+                # Without --model-id, mtplx serves under a slug it derives
+                # from the artifact (e.g. "mtplx-qwen38-27b-optimized-
+                # quality"), not the org/model repo id — /v1/models would
+                # never list `model`, so _wait_for_model would time out
+                # even though the server is healthy (confirmed live:
+                # 2026-09-10). Pinning --model-id to the resolved repo id
+                # makes /v1/models report exactly what we poll for.
+                "--model-id",
+                model,
             ],
             stdout=log,
             stderr=log,

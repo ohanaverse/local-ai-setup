@@ -1,8 +1,9 @@
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from modelman.providers.lifecycle import (
     LifecycleResult,
+    _start_mtplx_serve,
     isolate,
     stop,
     stop_all,
@@ -64,6 +65,26 @@ def test_isolate_mtplx_no_model_in_registry_returns_error():
         result = isolate("mtplx")
     assert result.ok is False
     assert "no mtplx model" in (result.error or "")
+
+
+def test_start_mtplx_serve_pins_model_id():
+    # Live smoke test (2026-09-10) found that mtplx serve, without
+    # --model-id, reports a slug it derives from the artifact (e.g.
+    # "mtplx-qwen38-27b-optimized-quality") in /v1/models — never the
+    # org/model repo id _wait_for_model polls for — so isolation timed
+    # out even though the server was healthy. Pinning --model-id to the
+    # resolved model makes /v1/models report exactly what's expected.
+    with (
+        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
+        patch("modelman.providers.lifecycle._stop_mtplx"),
+        patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
+        patch("builtins.open", mock_open()),
+    ):
+        mock_popen.return_value = MagicMock(pid=1234)
+        _start_mtplx_serve("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
+    args = mock_popen.call_args.args[0]
+    assert "--model-id" in args
+    assert args[args.index("--model-id") + 1] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
 
 
 def test_stop_mtplx_runs_mtplx_stop():
