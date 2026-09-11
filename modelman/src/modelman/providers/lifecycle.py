@@ -1,0 +1,262 @@
+"""Local-provider lifecycle: start/stop/warmup for on-demand local models.
+
+This module is the first step toward consolidating local-provider lifecycle
+logic in Python (issue #79). For now it owns MTPLX directly and delegates
+ollama/omlx/mlx_lm_server to the existing bash helper (bin/llm-isolate-
+provider) during the transition period.
+
+The CLI entry point (`python3 -m modelman.providers.lifecycle isolate mtplx`)
+prints a single JSON object on stdout — the same envelope bin/llm-isolate-
+provider emits — so the bash shim can delegate its `mtplx` case here and pass
+the JSON straight through.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from dataclasses import asdict, dataclass
+
+from ..registry import load_registry
+
+MTPLX_PORT = 8003
+MTPLX_BASE = "http://localhost:8003"
+MTPLX_DIRECT_URL = "http://localhost:8003/v1/chat/completions"
+MTPLX_PIDFILE = "/tmp/local-ai-setup-mtplx.pid"
+MTPLX_LOG = "/tmp/local-ai-setup-mtplx.log"
+
+
+@dataclass
+class LifecycleResult:
+    provider: str
+    model: str
+    direct_url: str
+    ok: bool
+    error: str | None
+
+
+class LifecycleError(Exception):
+    """Raised for internal lifecycle failures that map to ok=False."""
+
+
+def _resolve_mtplx_model(model: str | None) -> str:
+    """The MTPLX repo id to serve: the explicit `model`, else the single
+    mtplx model in the registry."""
+    if model:
+        return model
+    registry = load_registry()
+    for m in registry.models:
+        if m.provider_id == "mtplx":
+            return m.model_name
+    raise LifecycleError("no mtplx model in the registry")
+
+
+def _stop_others() -> None:
+    """Stop every local provider except the one about to start, by
+    delegating to the bash helper's stop-all mode (transition period)."""
+    helper = shutil.which("llm-isolate-provider")
+    if helper is None:
+        raise LifecycleError("isolation helper 'llm-isolate-provider' not found on PATH")
+    result = subprocess.run([helper, "stop-all"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise LifecycleError(
+            f"failed to stop other providers: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def _start_mtplx_serve(model: str) -> None:
+    """Start `mtplx serve` in the background, tracked by a pidfile."""
+    bin_path = shutil.which("mtplx")
+    if bin_path is None:
+        raise LifecycleError("mtplx binary not found on PATH")
+    # Stop any prior instance first so a re-start is idempotent (mirrors
+    # mlx-lm-server.sh's unconditional-stop-before-spawn).
+    _stop_mtplx()
+    with open(MTPLX_LOG, "ab") as log:
+        proc = subprocess.Popen(
+            [
+                bin_path,
+                "serve",
+                "--model",
+                model,
+                "--port",
+                str(MTPLX_PORT),
+                "--host",
+                "127.0.0.1",
+            ],
+            stdout=log,
+            stderr=log,
+        )
+    with open(MTPLX_PIDFILE, "w") as f:
+        f.write(str(proc.pid))
+
+
+def _http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — localhost probe
+            data = json.loads(resp.read().decode())
+    except (OSError, ValueError):
+        return []
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [
+        item["id"]
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+
+
+def _wait_for_model(model: str, timeout: float = 300.0) -> None:
+    """Poll /v1/models until it lists `model` (or the deadline passes)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ids = _http_models_ids(f"{MTPLX_BASE}/v1/models")
+        if any(served == model or served.endswith("/" + model) for served in ids):
+            return
+        time.sleep(1.0)
+    raise LifecycleError(f"timed out waiting for mtplx to serve {model}")
+
+
+def _warmup(model: str, timeout: float = 120.0) -> None:
+    """Send a 1-token chat completion to force the model into GPU/RAM."""
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "temperature": 0,
+            "stream": False,
+        }
+    ).encode()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(
+                MTPLX_DIRECT_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                body = resp.read().decode()
+            if '"object":"chat.completion"' in body:
+                return
+        except OSError:
+            pass
+        time.sleep(1.0)
+    raise LifecycleError(f"failed to warm up mtplx model {model}")
+
+
+def _stop_mtplx() -> LifecycleResult:
+    """Stop MTPLX via `mtplx stop --port 8003 --grace-seconds 10`. Safe to
+    call when nothing is running (mtplx stop exits 0)."""
+    if shutil.which("mtplx") is None:
+        return LifecycleResult("mtplx", "", MTPLX_DIRECT_URL, False, "mtplx binary not found on PATH")
+    result = subprocess.run(
+        ["mtplx", "stop", "--port", str(MTPLX_PORT), "--grace-seconds", "10"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return LifecycleResult(
+            "mtplx", "", MTPLX_DIRECT_URL, False,
+            result.stderr.strip() or result.stdout.strip() or "mtplx stop failed",
+        )
+    return LifecycleResult("mtplx", "", MTPLX_DIRECT_URL, True, None)
+
+
+def _delegate_stop_all() -> LifecycleResult:
+    helper = shutil.which("llm-isolate-provider")
+    if helper is None:
+        return LifecycleResult("stop-all", "", "", False, "isolation helper not found on PATH")
+    result = subprocess.run([helper, "stop-all"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return LifecycleResult("stop-all", "", "", False, result.stderr.strip() or result.stdout.strip())
+    return LifecycleResult("stop-all", "", "", True, None)
+
+
+def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str, ...] = ()) -> LifecycleResult:
+    """Stop every other local provider and start the requested one."""
+    if provider_id != "mtplx":
+        # Transition: delegate non-mtplx providers to the bash helper.
+        return _delegate_isolate(provider_id, model, extra_args)
+    try:
+        resolved = _resolve_mtplx_model(model)
+        _stop_others()
+        _start_mtplx_serve(resolved)
+        _wait_for_model(resolved)
+        _warmup(resolved)
+    except LifecycleError as exc:
+        return LifecycleResult("mtplx", model or "", MTPLX_DIRECT_URL, False, str(exc))
+    return LifecycleResult("mtplx", resolved, MTPLX_DIRECT_URL, True, None)
+
+
+def _delegate_isolate(provider_id: str, model: str | None, extra_args: tuple[str, ...]) -> LifecycleResult:
+    helper = shutil.which("llm-isolate-provider")
+    if helper is None:
+        return LifecycleResult(provider_id, model or "", "", False, "isolation helper not found on PATH")
+    env = None
+    if model:
+        env = {**os.environ, f"LLM_ISOLATE_{provider_id.upper().replace('-', '_')}_MODEL": model}
+    result = subprocess.run([helper, provider_id, *extra_args], capture_output=True, text=True, check=False, env=env)
+    if result.returncode != 0:
+        return LifecycleResult(provider_id, model or "", "", False, result.stderr.strip() or result.stdout.strip())
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return LifecycleResult(provider_id, model or "", "", False, "invalid JSON from isolation helper")
+    return LifecycleResult(
+        provider=data.get("provider", provider_id),
+        model=data.get("model", ""),
+        direct_url=data.get("direct_url", ""),
+        ok=data.get("ok", False),
+        error=data.get("error"),
+    )
+
+
+def stop(provider_id: str) -> LifecycleResult:
+    """Stop one provider."""
+    if provider_id == "mtplx":
+        return _stop_mtplx()
+    raise NotImplementedError(f"stop not implemented for {provider_id}")
+
+
+def stop_all() -> LifecycleResult:
+    """Stop every local provider."""
+    mtplx_result = stop("mtplx")
+    others = _delegate_stop_all()
+    ok = mtplx_result.ok and others.ok
+    error = None if ok else (mtplx_result.error or others.error)
+    return LifecycleResult("stop-all", "", "", ok, error)
+
+
+def _main(argv: list[str]) -> int:
+    if not argv:
+        print("usage: lifecycle <isolate|stop|stop-all> [provider] [model] ...", file=sys.stderr)
+        return 1
+    cmd = argv[0]
+    if cmd == "isolate":
+        provider = argv[1] if len(argv) > 1 else ""
+        model = argv[2] if len(argv) > 2 else None
+        extra_args = tuple(argv[3:])
+        result = isolate(provider, model, extra_args=extra_args)
+    elif cmd == "stop":
+        provider = argv[1] if len(argv) > 1 else ""
+        result = stop(provider)
+    elif cmd == "stop-all":
+        result = stop_all()
+    else:
+        print(f"unknown command: {cmd}", file=sys.stderr)
+        return 1
+    print(json.dumps(asdict(result)))
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))
