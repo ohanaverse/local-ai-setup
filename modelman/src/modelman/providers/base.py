@@ -52,6 +52,14 @@ class Provider(ABC):
 
     name: str = ""
 
+    # True for a provider that manages its own on-disk cache outside
+    # modelman's control (its own CLI populates the cache; modelman only
+    # discovers what's already there — see download()'s NotImplementedError
+    # on such providers). A ready-on for one of these is a flag flip, never
+    # a real DownloadManager download; ModelScreen._provider_can_download()
+    # reads this instead of hardcoding provider ids.
+    manages_own_cache: bool = False
+
     def __init__(self, config: dict):
         self.config = config
 

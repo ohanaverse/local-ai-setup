@@ -48,6 +48,7 @@ def _is_local_path_entry(variant: VariantSpec) -> bool:
 
 class MTPLXProvider(Provider):
     name = "mtplx"
+    manages_own_cache = True
 
     def _target_dir(self, variant: VariantSpec) -> Path | None:
         name = variant.get("name")

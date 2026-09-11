@@ -47,6 +47,15 @@ def test_download_raises(tmp_path):
         p.download(_variant("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"))
 
 
+def test_mtplx_declares_manages_own_cache():
+    """MTPLXProvider must declare manages_own_cache = True — this is what
+    ModelScreen._provider_can_download() reads instead of hardcoding the
+    provider id, so a missing flag here would silently make MTPLX
+    downloadable through DownloadManager (which raises NotImplementedError,
+    per test_download_raises above)."""
+    assert MTPLXProvider.manages_own_cache is True
+
+
 def test_delete_removes_model_dir(tmp_path):
     p = MTPLXProvider({"model_dir": str(tmp_path / "models")})
     d = tmp_path / "models" / "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"

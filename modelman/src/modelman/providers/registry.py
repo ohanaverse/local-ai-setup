@@ -23,3 +23,12 @@ class ProviderRegistry:
     @classmethod
     def available(cls) -> list[str]:
         return sorted(cls._providers)
+
+    @classmethod
+    def get_class(cls, name: str) -> type[Provider] | None:
+        """The registered Provider class for `name`, or None if unregistered.
+
+        Unlike get(), this doesn't require a config dict or construct an
+        instance — for callers that only need to read a class-level
+        capability flag (e.g. Provider.manages_own_cache)."""
+        return cls._providers.get(name)
