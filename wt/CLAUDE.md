@@ -372,20 +372,7 @@ The pre-launch `ollamacheck.Check` is **skipped when LiteLLM routing is on** (`c
 
 ### Adding a new agent driver
 
-1. Create `internal/agents/<name>.go` implementing the `Driver` interface:
-   - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the resolved `Route` (base origin, API key, model ref); never hardcode a provider endpoint
-   - `YoloFlag() string`
-   - `Protocols() []Protocol` (the `ProtocolDeclarer` capability) — the wire protocols the agent speaks; this drives route resolution
-2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `Resumer`
-3. Register in `internal/agents/catalog.go` via `AddEntry()` or `MustAdd()`
-4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
-5. Update the driver table in this file
-
-**Key gotchas:**
-- The model ref comes from `Route.ModelRef` — `ResolveRoute` already picked `m.ID` (litellm/forced) or `m.ModelName` (direct); don't re-derive it
-- If the agent's protocol is served by no local provider (empty intersection in `ResolveRoute`), it always routes through LiteLLM and wt prints the forced-LiteLLM stderr notice — codex is the current example
-- If implementing `Resumer`, add session path logic to `internal/session`
-- Test both routing modes (direct/litellm) if the agent will route through LiteLLM
+See the `adding-a-wt-agent` skill.
 
 ## Guard (Go)
 

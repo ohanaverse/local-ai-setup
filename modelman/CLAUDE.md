@@ -140,11 +140,7 @@ The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`
 
 ### Adding a new TUI screen
 
-1. Create `src/modelman/screens/<name>.py` extending `Screen[None]`
-2. Add `action_back()` binding (escape key) with queue-check if applicable
-3. Register in `app.py` if pushed from multiple screens, or push directly from caller
-4. Follow the `reload_preserving_cursor` pattern if using DataTable with background refresh
-5. If the screen spawns workers that outlive the screen, capture `self._app_ref = self.app` in `on_mount()` for thread-safe access
+See the `adding-a-tui-screen` skill.
 
 ### Thread-safety pattern for worker threads
 
@@ -217,14 +213,7 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 
 ### Adding a new provider
 
-1. Create `src/modelman/providers/<name>.py` with a class extending `Provider`.
-2. Call `ProviderRegistry.register(TheProvider)` at the bottom of the module.
-3. Add a `[[providers]]` entry to `registry.toml` with `id = "<name>"`.
-4. Reference it from models via `provider_id = "<name>"`.
-5. (Optional) Override `size_of` so the size column is populated for downloaded variants.
-6. Add a `ProviderPolicy` entry to `PROVIDER_POLICIES` in `src/modelman/litellm.py` (prefix, api_key, cloud flag). This table is the single source of truth for LiteLLM exposure — both the config writer and the TUI's expose gate read it, and an unmapped provider cannot be exposed.
-
-No changes to `main.py` are required unless a new CLI subcommand is also added.
+See the `adding-a-provider` skill.
 
 ## ModelForm parsing rules
 
