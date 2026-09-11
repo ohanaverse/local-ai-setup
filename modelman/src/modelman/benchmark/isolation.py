@@ -6,10 +6,10 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
 from typing import Any
 
 from modelman.benchmark.errors import BenchmarkError
+from modelman.local_process import ProcessResult as IsolateResult
 
 # What bin/llm-isolate-provider can actually isolate, mirroring that script's
 # own "Supported:" header comment — the shell script is the real source of
@@ -20,17 +20,14 @@ from modelman.benchmark.errors import BenchmarkError
 # bin/llm-isolate-provider but not isolatable. Re-enable steps:
 # docs/reference/provider-artifacts.md
 SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset(
-    {"ollama", "omlx", "omlx-6bit", "mlx_lm_server"}
+    {"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"}
 )
 
-
-@dataclass
-class IsolateResult:
-    provider: str
-    model: str
-    direct_url: str
-    ok: bool
-    error: str | None
+# IsolateResult is modelman.local_process.ProcessResult under its
+# established name here — shared with modelman.providers.lifecycle
+# (imported there as LifecycleResult) so a future field addition applies to
+# both isolation paths at once instead of drifting between two duplicate
+# dataclasses.
 
 
 def _normalize_pairing_arg(value: str, *, is_path: bool) -> str:

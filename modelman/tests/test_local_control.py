@@ -313,3 +313,44 @@ def test_name_matches_lenient_prefix_strict_variant_tail():
     assert _name_matches("repo", "org/repo")
     assert not _name_matches("ornith-1.5-35b-a3b-mlx-4bit", "ornith-1.5-35b-a3b-mlx-6bit")
     assert not _name_matches("other-model", "qwen3.8:27b-mlx")
+
+
+def test_start_mtplx_isolates_without_env_var(tmp_path):
+    """start_local_model() must call isolate_provider('mtplx', ..., env=None)
+    rather than mapping mtplx through an env-var override like ollama/omlx
+    do, and must persist the running-model marker in modelman.toml's
+    [local] table on success. Passing an env var here would misroute mtplx
+    isolation through the wrong bash-shim mechanism; skipping the marker
+    write would leave wt's local-model gate pointing at a stale model."""
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none", base_url="http://localhost:8003/v1"))
+    )
+    registry.models.append(
+        ModelEntry(
+            id="mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            family="qwen3.8",
+            provider_id="mtplx",
+            model_name="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        )
+    )
+    state_path = _state_path(tmp_path)
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="mtplx",
+            model="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            direct_url="http://localhost:8003/v1/chat/completions",
+            ok=True,
+            error=None,
+        )
+        result = start_local_model(registry, "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", state_path)
+    mock_isolate.assert_called_once_with(
+        "mtplx",
+        "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        env=None,
+    )
+    assert result.direct_url == "http://localhost:8003/v1/chat/completions"
+    assert load_state(state_path).local.running_model == "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"

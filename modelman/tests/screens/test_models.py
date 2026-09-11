@@ -2706,3 +2706,31 @@ def test_cost_changed_none_to_some_is_a_change():
     assert _cost_changed(None, Cost(input_price_per_million=1.0)) is True
     assert _cost_changed(Cost(input_price_per_million=1.0), None) is True
     assert _cost_changed(None, None) is False
+
+
+def test_provider_can_download_treats_mtplx_as_flag_only():
+    """MTPLX has a registered Provider class, but modelman never runs a
+    download for it — the TUI ready toggle must be flag-only, not routed
+    through DownloadManager."""
+    from pathlib import Path
+
+    from modelman.providers.registry import ProviderRegistry
+    from modelman.screens.models import ModelScreen
+
+    assert "mtplx" in ProviderRegistry.available()
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none")),
+            ProviderEntry(id="mtplx", name="MTPLX", auth=AuthConfig(type="none")),
+        ]
+    )
+    screen = ModelScreen(
+        registry=registry,
+        state=StateStore(),
+        family="f",
+        registry_path=Path("/tmp/registry.toml"),
+        state_path=Path("/tmp/modelman.toml"),
+    )
+    assert screen._provider_can_download("ollama") is True
+    assert screen._provider_can_download("mtplx") is False
+    assert screen._provider_can_download("unknown") is False

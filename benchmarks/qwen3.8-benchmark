@@ -33,10 +33,13 @@ declare -A DIRECT_MODELS
 declare -A LITELLM_MODELS
 DIRECT_URLS[ollama]="http://localhost:11434/api/chat"
 DIRECT_URLS[omlx]="http://localhost:8000/v1/chat/completions"
+DIRECT_URLS[mtplx]="http://localhost:8003/v1/chat/completions"
 DIRECT_MODELS[ollama]="qwen3.8:27b-mlx"
 DIRECT_MODELS[omlx]="Qwen3.8-27B-4bit"
+DIRECT_MODELS[mtplx]="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
 LITELLM_MODELS[ollama]="ollama/qwen3.8:27b-mlx"
 LITELLM_MODELS[omlx]="omlx/Qwen3.8-27B-4bit"
+LITELLM_MODELS[mtplx]="mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
 
 LITELLM_URL="http://localhost:4000/v1/chat/completions"
 # Prefer the LaunchAgent-exported env var; fall back to reading the plist directly
@@ -68,8 +71,12 @@ ISOLATE_HELPER="$(cd "$(dirname "$0")/../bin" && pwd)/llm-isolate-provider"
 declare -A ISOLATE_ID
 ISOLATE_ID[ollama]="ollama"
 ISOLATE_ID[omlx]="omlx"
+ISOLATE_ID[mtplx]="mtplx"
 
 # Env var per backend (helper naming: LLM_ISOLATE_<PROVIDER>_MODEL).
+# ISOLATE_ENV[mtplx] is intentionally omitted — isolate_one() forwards its
+# model as a positional arg instead (mtplx is single-model-per-process, like
+# mlx_lm_server's target/draft positional args).
 declare -A ISOLATE_ENV
 ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
 ISOLATE_ENV[omlx]="LLM_ISOLATE_OMLX_4BIT_MODEL"
@@ -103,7 +110,7 @@ echo ""
 write_table_header "Isolated local runs (bypassing LiteLLM)"
 
 echo "## Direct backend (ISOLATED, one model loaded at a time):"
-for backend in ollama omlx; do
+for backend in ollama omlx mtplx; do
     display_name="$backend"
     echo ""
     isolate_one "$backend"
@@ -117,7 +124,7 @@ write_table_header "Isolated local runs (via LiteLLM)"
 
 echo ""
 echo "## Through LiteLLM proxy (ISOLATED, one model loaded at a time):"
-for backend in ollama omlx; do
+for backend in ollama omlx mtplx; do
     display_name="$backend"
     echo ""
     isolate_one "$backend"
@@ -163,6 +170,7 @@ done
     echo "- **Local backends are run in isolation**: before each test, all local models are unloaded from RAM."
     echo "  - **Ollama**: \`ollama stop qwen3.8:27b-mlx\` — daemon keeps :11434 bound but no model in GPU/RAM"
     echo "  - **oMLX**: \`omlx stop\` — service halts entirely"
+    echo "  - **MTPLX**: \`mtplx stop --port 8003 --grace-seconds 10\` — backgrounded serve process halts"
     echo "- **OpenRouter** is cloud-only; no local service management needed. Each of the four models is tested both directly against the OpenRouter API and via LiteLLM."
     echo "- All backends use the **same prompt** with \`temperature=0.0\`."
     echo "- \`throughput\` excludes TTFT (prefill) — it's generation-only."

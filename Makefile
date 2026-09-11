@@ -6,6 +6,7 @@ SHELL_SCRIPTS := \
 	bin/lib/poll.sh \
 	bin/lib/mlx-lm-resolve.sh \
 	bin/lib/mlx-lm-server.sh \
+	bin/lib/mtplx.sh \
 	bin/mlx-quantize \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \

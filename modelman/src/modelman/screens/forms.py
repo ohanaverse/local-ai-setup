@@ -25,7 +25,14 @@ from ..registry import Cost, _cost_from_dict, _cost_to_dict
 # mlx_lm_server is included because its target side uses the same repo
 # format, even though its form kind is "dual-model" rather than
 # "local-only".
-HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server")
+HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtplx")
+
+# Subset of HF_REPO_PROVIDERS whose "local-only" form also offers a
+# mutually-exclusive local-path Input for user-produced artifacts. MTPLX is
+# deliberately excluded: it discovers models in its own ~/.mtplx/models cache and
+# never accepts a user-supplied local_path, so showing the field would suggest
+# an unsupported workflow.
+LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx")
 
 
 def default_form_kind(provider: str) -> str:
@@ -60,6 +67,11 @@ def parse_model(
       - 2 segments: whole repo. repo_id = full input, filename = "".
       - 3+ segments: one specific file. repo_id = first two joined
         by '/', filename = remaining segments joined by '/'.
+
+    mtplx: model is validated the same way (>= 2 '/'-separated segments,
+      non-empty org) but is never split into repo+filename — MTPLX caches
+      a whole repo dir, so repo_id = full input, filename = "" regardless
+      of how many slashes the repo id contains.
 
     Native providers (is_native=True): `model` is used verbatim as the
     model name; blank input defaults to the sentinel "native". No
@@ -102,6 +114,12 @@ def parse_model(
         raise ValueError(f"{provider} model must be 'org/repo' (or 'org/repo/file')")
     if not parts[0]:
         raise ValueError("repo org must not be empty")
+    if provider == "mtplx":
+        # MTPLX caches a whole repo dir (mtplx.py's _dir_name/_repo_id), never
+        # a single file within a repo — a multi-slash repo id (org/sub/model)
+        # must round-trip whole, not get split into a 2-segment repo plus a
+        # filename tail the way llamacpp/omlx repo+file inputs do.
+        return (model, model, "")
     repo_id = "/".join(parts[:2])
     filename = "/".join(parts[2:])  # empty string if len == 2
     return (model, repo_id, filename)
@@ -802,8 +820,16 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             self._initial_provider, self._default_kind(self._initial_provider)
         )
         self._set_single_model_visibility(kind != "dual-model")
-        self._set_local_path_visibility(kind == "local-only")
+        self._set_local_path_visibility(
+            kind == "local-only" and self._supports_local_path(self._initial_provider)
+        )
         self._set_dual_model_visibility(kind == "dual-model")
+
+    @staticmethod
+    def _supports_local_path(provider: str) -> bool:
+        """Whether the given provider's local-only form exposes the optional
+        local-path Input for user-produced artifacts."""
+        return provider in LOCAL_PATH_PROVIDERS
 
     def _set_per_token_visibility(self, show: bool) -> None:
         """Show/hide the per-token labels and price Inputs as a unit."""
@@ -913,7 +939,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         location_select.disabled = location_locked
 
         self._set_single_model_visibility(kind != "dual-model")
-        self._set_local_path_visibility(kind == "local-only")
+        self._set_local_path_visibility(
+            kind == "local-only" and self._supports_local_path(provider)
+        )
         self._set_dual_model_visibility(kind == "dual-model")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -986,12 +1014,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             return
 
         raw = self.query_one("#model", Input).value
+        show_local_path = kind == "local-only" and self._supports_local_path(provider)
         local_path_raw = (
-            self.query_one("#local-path", Input).value.strip() if kind == "local-only" else ""
+            self.query_one("#local-path", Input).value.strip() if show_local_path else ""
         )
 
         local_path: str | None = None
-        if kind == "local-only" and local_path_raw:
+        if show_local_path and local_path_raw:
             if raw.strip():
                 self._show_error("set either an HF repo or a local path, not both")
                 return
@@ -1018,6 +1047,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         if self._variant is not None:
             vid = self._variant["id"]
         elif kind == "native":
+            vid = f"{provider}/{name}"
+        elif provider == "mtplx":
+            # MTPLX ids keep raw slashes (OpenRouter-style provider/rest,
+            # where rest may itself contain '/'), matching the live
+            # registry.toml convention and parse_model()'s mtplx branch
+            # above — unlike llamacpp/omlx, whose ids must be escaped to
+            # form a single valid path segment elsewhere.
             vid = f"{provider}/{name}"
         else:
             vid = f"{provider}/{name.replace('/', '--')}"  # type: ignore[union-attr]

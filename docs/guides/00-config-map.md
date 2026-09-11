@@ -60,7 +60,7 @@ tags = []
 - **Env override:** `MODELMAN_STATE`.
 - **Exposure predicate (both tools):** A model is effectively exposed iff `exposed = true` AND (`ready = true` OR effective location is cloud), where effective location resolves model `location` first, then the provider's `location` (issue #46 parity). Native models (provider `auth.type = "native"`) are always exposed — they cannot route through LiteLLM. Both `wt` and the TUI apply this same rule, so a model offered by `wt` always shows `Y` in the TUI's EXPOSED column.
 
-> Excerpt — 24 of the file's 41 `model_state` entries are `exposed = true` today (13 `ollama/*` + 11 `openrouter/*`). The two exposed local-ollama blocks and one representative exposed `:cloud` block are shown; the other 10 `:cloud` ollama blocks have the identical shape to the `kimi-k3:cloud` example (`ready = false`, `exposed = true`), and the openrouter blocks are omitted for brevity. The `[litellm]` routing table — read by wt — is shown at the top.
+> Excerpt — 27 of the file's 41 `model_state` entries are `exposed = true` today (13 `ollama/*` + 12 `openrouter/*` + 1 `omlx/*` + 1 `mtplx/*`). The two exposed local-ollama blocks and one representative exposed `:cloud` block are shown; the other 10 `:cloud` ollama blocks have the identical shape to the `kimi-k3:cloud` example (`ready = false`, `exposed = true`), and the openrouter/omlx/mtplx blocks are omitted for brevity. The `[litellm]` routing table — read by wt — is shown at the top.
 
 ```toml
 [litellm]
@@ -141,7 +141,7 @@ variants:
 ### `~/.config/litellm/config.yaml`
 
 - **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
-- **Hand-managed entries:** of the 35 `model_list` rows, modelman owns the 24 exposed ids (13 `ollama/*` + 11 `openrouter/*`); the remaining 9 — 3 omlx variants, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
+- **Hand-managed entries:** of the 36 `model_list` rows, modelman owns the 27 exposed ids (13 `ollama/*` + 12 `openrouter/*` + 1 `omlx/*` + 1 `mtplx/*`, issue #66); the remaining 9 — 3 omlx variants, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
 - **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
 - **Env override:** `MODELMAN_LITELLM_CONFIG`.

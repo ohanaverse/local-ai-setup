@@ -51,6 +51,10 @@ class RowConfig:
     target_repo: str | None = None
     draft_local_path: str | None = None
     draft_repo: str | None = None
+    # mtplx isolation arg (populated from registry ModelEntry.model_name),
+    # mirroring the mlx_lm_server fields above rather than a live registry
+    # lookup inside the isolation loop.
+    mtplx_model_name: str | None = None
 
 
 @dataclass

@@ -1745,6 +1745,23 @@ async def test_local_only_kind_shows_local_path_field_alongside_model():
 
 
 @pytest.mark.asyncio
+async def test_mtplx_local_only_kind_hides_local_path_field():
+    """MTPLX is a local-only HF-repo provider but does not support
+    user-supplied local_path artifacts, so the optional local-path Input must
+    be hidden to avoid suggesting an unsupported workflow."""
+    form = ModelForm(
+        providers=["mtplx"], default_provider="mtplx", provider_kinds={"mtplx": "local-only"}
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#model", Input).display
+        assert not app.screen.query_one("#local-path", Input).display
+
+
+@pytest.mark.asyncio
 async def test_submit_local_only_with_local_path_builds_spec_without_repo():
     """Filling only the local-path field (leaving the repo Input blank)
     must produce a spec with local_path set and repo/files unset — this
@@ -1768,6 +1785,41 @@ async def test_submit_local_only_with_local_path_builds_spec_without_repo():
     assert spec["files"] is None
     assert spec["name"] == "my-quant"
     assert spec["id"] == "omlx/my-quant"
+
+
+@pytest.mark.asyncio
+async def test_submit_mtplx_repo_only_produces_correct_spec():
+    """MTPLX accepts an HF-style repo id and stores it as repo/name, with no
+    local_path. Unlike llamacpp/omlx, the id keeps the repo id's raw slashes
+    rather than escaping them to '--': this matches the live registry.toml
+    convention (OpenRouter-style provider/rest, where rest may itself
+    contain '/'), not llamacpp/omlx's need for a single valid path segment."""
+    form = ModelForm(
+        providers=["mtplx"], default_provider="mtplx", provider_kinds={"mtplx": "local-only"}
+    )
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        _fill_model(app, "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
+        await pilot.pause()
+        await _submit(app, pilot)
+        await pilot.pause()
+
+    assert dismissed, "form did not dismiss"
+    spec = dismissed[0].spec
+    assert spec["provider"] == "mtplx"
+    assert spec["repo"] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    assert spec["files"] is None
+    assert spec["local_path"] is None
+    assert spec["location"] == "local"
+    assert spec["name"] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    # Raw slashes, not '--'-escaped: mirrors the live registry.toml
+    # convention (mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality), not
+    # llamacpp/omlx's path-segment escaping.
+    assert spec["id"] == "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
 
 
 @pytest.mark.asyncio

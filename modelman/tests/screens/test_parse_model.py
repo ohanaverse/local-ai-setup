@@ -85,6 +85,27 @@ def test_parse_model_hf_omlx_same_as_llamacpp():
     assert name == "org/repo/file.safetensors"
 
 
+def test_parse_model_mtplx_multi_slash_repo_not_split():
+    """MTPLX caches a whole repo dir under <org>--<model> (mtplx.py's
+    _dir_name/_repo_id); unlike llamacpp/omlx it has no concept of a single
+    file within a repo, so a multi-slash repo id must be kept whole, not
+    split into a 2-segment repo plus a filename tail."""
+    name, repo, filename = parse_model("mtplx", "org/sub/model")
+    assert name == "org/sub/model"
+    assert repo == "org/sub/model"
+    assert filename == ""
+
+
+def test_parse_model_mtplx_two_segment_repo_unchanged():
+    """A 2-segment mtplx repo id has no filename tail to strip in the
+    first place, so it must round-trip whole exactly like the multi-slash
+    case above — this pins that the fix doesn't regress the common case."""
+    name, repo, filename = parse_model("mtplx", "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
+    assert name == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    assert repo == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    assert filename == ""
+
+
 def test_parse_model_hf_whitespace_stripped():
     """Leading/trailing whitespace on the input is trimmed before parsing."""
     name, repo, filename = parse_model(

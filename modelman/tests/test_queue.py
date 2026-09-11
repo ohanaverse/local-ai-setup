@@ -1874,6 +1874,44 @@ def test_apply_no_longer_downloads_ready_on_entries(tmp_path):
     provider.download.assert_not_called()
 
 
+def test_apply_ready_on_manages_own_cache_provider_flips_flag(tmp_path):
+    """A ready-on against a manages_own_cache provider (MTPLX) is a queued
+    flag flip, not a download.
+
+    MTPLX caches its own weights via the `mtplx` CLI, so the TUI queues its
+    ready-on into PendingChanges — but a Provider class IS present, so the
+    providers dict holds a live MTPLXProvider. mtplx is the first provider
+    that is both mapped and flag-only; without the carve-out the ready
+    loop's DownloadManager assert fires and aborts the whole apply
+    mid-run, losing every remaining queued change."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="mtplx/x", family="f", provider="mtplx", name="Org/x"),
+    )
+    state_path = tmp_path / "modelman.toml"
+    state = _make_state()
+    provider = MagicMock()
+    # Neither download nor delete may run for a ready-on: the flag flip is
+    # the whole operation (the user cached the weights via the mtplx CLI).
+    provider.download.side_effect = AssertionError("download() must not be called")
+    provider.delete.side_effect = AssertionError("delete() must not be called")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        family="f",
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"mtplx": provider},
+        ready=[("mtplx/x", {"id": "mtplx/x", "provider": "mtplx", "name": "Org/x"}, True)],
+    )
+    pending.apply()
+    provider.download.assert_not_called()
+    provider.delete.assert_not_called()
+    assert state.get("mtplx/x").ready is True
+    assert pending.failures == []
+
+
 def test_apply_ready_off_still_clears_artifact(tmp_path):
     # Ready-off (the queued "clear" case) is unchanged by this task: it
     # must still call provider.delete() and clear state.

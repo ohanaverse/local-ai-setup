@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .litellm import apply_expose_queue
+from .providers.registry import ProviderRegistry
 from .registry import (
     FamilyEntry,
     find_shared_artifact_owner,
@@ -389,18 +390,34 @@ class PendingChanges:
             label = _label(variant)
             provider_id = variant["provider"]
             provider = self.providers.get(provider_id)
+            # A provider that manages its own cache (MTPLX via the mtplx
+            # CLI) has no download for apply() to drive — its ready-on is
+            # a queued flag flip (the user cached the weights themselves),
+            # mirroring the screen's _provider_can_download rule. mtplx is
+            # the first provider that is BOTH Provider-mapped and
+            # flag-only: without this carve-out the assert below fires and
+            # aborts the whole apply. Class-level lookup via
+            # ProviderRegistry, not instance getattr — test mocks
+            # auto-create any attribute touched on an instance, which
+            # would misroute every mocked provider.
+            provider_cls = ProviderRegistry.get_class(provider_id)
+            manages_own_cache = bool(
+                provider_cls is not None and provider_cls.manages_own_cache
+            )
             # Real downloads no longer run inside apply() — the caller
             # (ModelScreen) must route a ready-on against a real provider
             # through DownloadManager.start() instead of queuing it here.
-            # A target=True entry reaching this point with a provider
-            # present is a caller bug, not a runtime condition to handle.
-            assert not (provider is not None and target), (
+            # A target=True entry reaching this point with a downloadable
+            # provider present is a caller bug, not a runtime condition.
+            assert not (provider is not None and not manages_own_cache and target), (
                 f"ready-on for {model_id!r} must go through DownloadManager, "
                 "not PendingChanges.apply()"
             )
-            if provider is None:
-                # Flag-only provider (native or unmapped): no provider call
-                # exists — but ready-off still means "remove the artifact",
+            if provider is None or (manages_own_cache and target):
+                # Flag-only flip (native/unmapped provider, or a
+                # manages_own_cache ready-on): no provider call exists for
+                # the ready-on itself — but a provider-is-None ready-off
+                # still means "remove the artifact",
                 # so drop the file recorded in state.disk_path, mirroring
                 # what a mapped provider's delete() would do.
                 emit(f"ready:start|{model_id}|{label}")

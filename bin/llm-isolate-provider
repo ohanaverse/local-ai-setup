@@ -1,8 +1,15 @@
 #!/bin/bash
 # llm-isolate-provider — stop other local providers, start+warmup one.
-# Usage: llm-isolate-provider <provider-id>
-#        llm-isolate-provider stop-all   (stop every local provider; modelman stop)
-# Supported: ollama, omlx, omlx-6bit, mlx_lm_server
+# Usage: llm-isolate-provider <provider-id> [model-or-target] [draft]
+#        llm-isolate-provider stop-all [keep]  (stop every local provider, or
+#        keep one provider's models loaded; modelman stop passes no keep)
+# Supported: ollama, omlx, omlx-6bit, mlx_lm_server, mtplx
+#   mlx_lm_server requires [target] [draft] positional args (or
+#     LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL); mtplx accepts
+#     an optional [model-or-target] positional arg (else the single mtplx
+#     model in the registry; an ambiguous registry — more than one mtplx
+#     entry — fails loudly rather than guessing); every other provider
+#     ignores extra args.
 # (The llamacpp case branch below is retained but disabled — retired
 # 2026-09-07, issue #33. Re-enable steps: docs/reference/provider-artifacts.md.)
 # On success, print JSON with provider/model/direct_url.
@@ -16,10 +23,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/poll.sh"
 # sources the resolver for its own scope.
 # shellcheck source=lib/mlx-lm-server.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mlx-lm-server.sh"
+# shellcheck source=lib/mtplx.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mtplx.sh"
 
 PROVIDER="$1"
 if [ -z "$PROVIDER" ]; then
-    echo "usage: llm-isolate-provider <provider-id>" >&2
+    echo "usage: llm-isolate-provider <provider-id> [model-or-target] [draft]" >&2
     exit 1
 fi
 
@@ -34,22 +43,6 @@ OMLX_6BIT_MODEL="${LLM_ISOLATE_OMLX_6BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-6bit}"
 # downloaded.
 MLXLM_MODEL="${LLM_ISOLATE_MLXLM_MODEL:-}"
 MLXLM_DRAFT_MODEL="${LLM_ISOLATE_MLXLM_DRAFT_MODEL:-}"
-
-# This script's stdout is its contract: isolation.py parses it as a single JSON
-# object. `omlx stop` shells out to brew, which narrates ("Stopping `omlx`...")
-# on *stdout*, so an isolate whose target needed oMLX stopped produced
-# prose-then-JSON and the caller died with "isolation helper returned invalid
-# JSON" — which, because the stop only happens when the service is up, made
-# every other run fail. Discard a command's stdout narration outright rather
-# than routing it through this script's own stderr and then redirecting that
-# to /dev/null at the call site — that combination discarded the command's
-# real stderr too, since both narration-turned-stderr and the command's own
-# stderr land on the same fd once redirected. Any future subprocess call that
-# narrates on stdout must route through this helper rather than repeating the
-# pattern ad hoc.
-silence_stdout() {
-    "$@" 1>/dev/null
-}
 
 warmup_payload() {
     local model="$1"
@@ -119,6 +112,10 @@ stop_all_local() {
         ) &
         pids+=("$!")
     fi
+    if [ "$keep" != "mtplx" ]; then
+        mtplx_stop &
+        pids+=("$!")
+    fi
 
     local pid
     for pid in "${pids[@]}"; do
@@ -137,13 +134,6 @@ wait_for_ollama_unloaded() {
         sleep 0.2
     done
     return 1
-}
-
-# Poll until `url` stops responding or we hit the deadline (tries × 0.2s).
-# Used after issuing a stop to confirm the OS reclaimed the port.
-wait_for_port_closed() {
-    local url="$1" tries="${2:-5}"
-    poll_until_down "$url" 0.2 "$tries"
 }
 
 # Warm up a model on a running server, retrying until it answers or we give up.
@@ -213,11 +203,14 @@ start_mlx_lm_server() {
 
 case "$PROVIDER" in
     stop-all)
-        # Tear down every local provider with no target kept running —
-        # `modelman stop`'s delegate. stop_all_local's "keep" arg is
-        # compared with `!=` against each provider name, so an empty
-        # string never matches any of them and every branch runs.
-        stop_all_local ""
+        # Tear down every local provider, optionally keeping one
+        # provider's models loaded — `modelman stop`'s delegate (no
+        # keep), and the Python lifecycle's mtplx path (keep=mtplx when
+        # the already-running instance serves the target model).
+        # stop_all_local's "keep" arg is compared with `!=` against each
+        # provider name, so an empty string never matches any of them
+        # and every branch runs.
+        stop_all_local "${2:-}"
         python3 - <<'PYEOF'
 import json
 print(json.dumps({"provider": None, "model": None, "direct_url": None, "ok": True, "error": None}))
@@ -259,6 +252,48 @@ PYEOF
         start_mlx_lm_server "$target" "$draft"
         model="$target (+draft $draft)"
         direct_url="http://localhost:8001/v1/chat/completions"
+        ;;
+    mtplx)
+        # MTPLX start/stop/warmup lives in the Python lifecycle module; the
+        # shim delegates entirely and passes the module's JSON through.
+        # Forward an explicit model arg so callers (modelman start, benchmark
+        # sweeps) can select a specific mtplx model instead of defaulting to
+        # the registry's single mtplx entry — an ambiguous registry (more
+        # than one mtplx entry) refuses rather than guessing.
+        #
+        # Self-contained like every other branch of this script: the
+        # benchmark scripts resolve this helper by absolute path with no
+        # bin/ on PATH, so nothing here may depend on ambient PATH or on
+        # ambient python3 being able to import modelman — a pyenv .pth can
+        # make the ambient interpreter import a DIFFERENT checkout's
+        # modelman (e.g. the main repo while a worktree's script runs).
+        # Prefer the repo venv's interpreter (the lifecycle import chain
+        # pulls third-party tomli_w, which ambient python3 usually lacks),
+        # pinned relative to this script's own location; fall back to
+        # ambient python3 with PYTHONPATH pointing at this repo's src.
+        MTPLX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        MTPLX_PY="$MTPLX_ROOT/modelman/.venv/bin/python"
+        if [ ! -x "$MTPLX_PY" ]; then
+            MTPLX_PY=""
+            if ! PYTHONPATH="$MTPLX_ROOT/modelman/src${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 -c 'import modelman.providers.lifecycle' 2>/dev/null; then
+                echo "modelman is not importable and $MTPLX_ROOT/modelman/.venv is missing." >&2
+                echo "Run 'make install' (creates modelman/.venv), or install the" >&2
+                echo "lifecycle deps into the ambient python3." >&2
+                exit 1
+            fi
+        fi
+        # Thread this script's own absolute path to the lifecycle module:
+        # its _stop_others must not re-resolve the helper via PATH (see
+        # above — this shim is routinely invoked with bin/ off PATH).
+        export LLM_ISOLATE_HELPER="$MTPLX_ROOT/bin/llm-isolate-provider"
+        if [ -n "$MTPLX_PY" ]; then
+            "$MTPLX_PY" -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"}
+        else
+            PYTHONPATH="$MTPLX_ROOT/modelman/src${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"}
+        fi
+        exit $?
         ;;
     *)
         echo "unknown provider: $PROVIDER" >&2

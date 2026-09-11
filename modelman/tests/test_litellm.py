@@ -94,6 +94,25 @@ def test_build_entry_mlx_lm_server():
     assert entry["litellm_params"]["api_base"] == "http://localhost:8000/v1"
 
 
+def test_build_entry_mtplx():
+    # mtplx is an openai/-compatible server like omlx/mlx_lm_server, so it
+    # uses the same policy: prefix="openai/", api_key="not-needed". This
+    # test ensures PROVIDER_POLICIES maps mtplx (a provider with no
+    # PendingChanges.apply()-managed downloads — see mtplx.py's raising
+    # download()) so `modelman expose` doesn't reject it as unmapped.
+    entry = build_model_list_entry(
+        _model(
+            "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            "mtplx",
+            "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        ),
+        _provider("mtplx", base_url="http://localhost:8003/v1"),
+    )
+    assert entry["litellm_params"]["model"] == "openai/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    assert entry["litellm_params"]["api_key"] == "not-needed"
+    assert entry["litellm_params"]["api_base"] == "http://localhost:8003/v1"
+
+
 def test_build_entry_llamacpp_uses_fixed_model():
     entry = build_model_list_entry(
         _model("llamacpp/ornith-1.5-35b", "llamacpp", "ornith-1.5-35b"),

@@ -24,9 +24,7 @@ the short transactions stay correct.
 
 from __future__ import annotations
 
-import json
 import subprocess
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,19 +35,11 @@ from .benchmark.isolation import (
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
 )
+from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from .local_process import http_models_ids as _http_models_ids
+from .providers.mtplx import MTPLX_BASE
 from .registry import Registry, base_origin, model_has_local_artifact
 from .state import load_state, locked_state
-
-# Maps a registry provider_id to the LLM_ISOLATE_*_MODEL env var
-# bin/llm-isolate-provider reads for that provider's model name (see that
-# script's header comment). mlx_lm_server is absent here — it takes
-# target/draft as positional args (mlx_lm_server_pairing_args), not an env
-# var.
-_ENV_VAR_BY_PROVIDER = {
-    "ollama": "LLM_ISOLATE_OLLAMA_MODEL",
-    "omlx": "LLM_ISOLATE_OMLX_4BIT_MODEL",
-    "omlx-6bit": "LLM_ISOLATE_OMLX_6BIT_MODEL",
-}
 
 # Probe endpoint fallbacks for providers whose registry entry lacks an
 # auth.base_url (mirroring _DEFAULT_PROVIDER_TEMPLATES in registry.py).
@@ -58,6 +48,7 @@ _DEFAULT_BASE_ORIGIN = {
     "omlx": "http://localhost:8000",
     "omlx-6bit": "http://localhost:8000",
     "mlx_lm_server": "http://localhost:8001",
+    "mtplx": MTPLX_BASE,
 }
 
 # Subprocess seam so tests can keep the probe hermetic (conftest patches
@@ -100,24 +91,6 @@ def _ollama_loaded_names() -> list[str]:
         if fields:
             names.append(fields[0])
     return names
-
-
-def _http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
-    """Model ids from an OpenAI-compatible /v1/models response, or [] on any
-    error (connection refused, timeout, non-JSON body)."""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — localhost probe
-            data = json.loads(resp.read().decode())
-    except (OSError, ValueError):
-        return []
-    items = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        return []
-    return [
-        item["id"]
-        for item in items
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ]
 
 
 def _name_matches(served: str, want: str) -> bool:
@@ -221,6 +194,12 @@ def start_local_model(
         except BenchmarkError as exc:
             raise LocalControlError(str(exc)) from exc
         extra_args = (target, draft)
+    elif model.provider_id == "mtplx":
+        # MTPLX is single-model-per-process and has no baked-in default in the
+        # bash helper. Pass the requested repo id as a positional arg so the
+        # lifecycle module starts exactly this model; no env override is used.
+        extra_args = (model.model_name,)
+        env = None
     else:
         env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
 

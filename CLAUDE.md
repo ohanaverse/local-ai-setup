@@ -11,7 +11,7 @@
 - `./benchmarks/ornith-1.5-benchmark [max_tokens]` — single-pass (3 Ornith-1.5-35B local variants + OpenRouter)
 - `modelman benchmark agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
-- `bin/llm-isolate-provider <ollama|omlx|omlx-6bit>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp branch retained but disabled — see `docs/reference/provider-artifacts.md`)
+- `bin/llm-isolate-provider <ollama|omlx|omlx-6bit|mtplx>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp branch retained but disabled — see `docs/reference/provider-artifacts.md`)
 - `bin/llm-isolate-provider mlx_lm_server <target> <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional args or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
 - `bin/llm-restore-providers` — bring all providers back up after a benchmark
 - `bin/mlx-quantize <convert|dynamic-quant|dwq> --model <repo-or-path> [--mlx-path <out-dir>]` — thin wrapper around the omlx-bundled mlx_lm quantization tools; see `docs/guides/10-mlx-lm-quantization.md`
@@ -35,7 +35,7 @@
 
 ## Key Gotchas
 - **Isolation is mandatory**: local MLX/GGUF models share Apple Silicon GPU/RAM and distort each other's benchmarks. Only one local model loaded at a time.
-- **Stop mechanisms per backend**: Ollama `ollama stop <model>` (daemon stays up), oMLX `omlx stop` (halts service). (llama.cpp — formerly `launchctl unload` — was retired 2026-09-07; see `docs/reference/provider-artifacts.md`.)
+- **Stop mechanisms per backend**: Ollama `ollama stop <model>` (daemon stays up), oMLX `omlx stop` (halts service), MTPLX `mtplx stop --port 8003 --grace-seconds 10` (single-model-per-process, a plain backgrounded subprocess tracked by a pidfile, never a LaunchAgent). (llama.cpp — formerly `launchctl unload` — was retired 2026-09-07; see `docs/reference/provider-artifacts.md`.)
 - **oMLX serves both 4-bit and 6-bit variants** — warmup must name the exact variant (`omlx` vs `omlx-6bit`).
 - **Shebang split**: benchmark scripts use `#!/opt/homebrew/bin/bash` (Homebrew bash); `bin/` helpers use `#!/bin/bash`. Exception: `bin/check-links` uses `#!/usr/bin/env python3` — regex/URL-decoding markdown link parsing isn't reasonable in bash.
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
@@ -55,14 +55,4 @@ cd wt && go test ./cmd/wt -run TestStats
 See `modelman/CLAUDE.md` and `wt/CLAUDE.md` for package-specific test patterns.
 
 ## Adding a New Benchmark Backend
-Isolation logic lives in **one place**: `bin/llm-isolate-provider`. The bash
-benchmark scripts call it (with `LLM_ISOLATE_*_MODEL` env overrides for their
-model names), and `modelman benchmark` delegates to it
-(`modelman/src/modelman/benchmark/isolation.py`). Adding a backend:
-1. Add to `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS`, `ISOLATE_ID`, `ISOLATE_ENV` associative arrays in the benchmark script
-2. Add the model to `~/.config/litellm/config.yaml`
-3. Add a new branch in `bin/llm-isolate-provider`'s case statement (and matching `LLM_ISOLATE_*_MODEL` env var) — both the bash scripts and `modelman benchmark` isolate through it
-4. modelman side: add a provider entry to `~/.config/local-ai/registry.toml` (via `modelman sync` or the TUI) and confirm the provider id is in `LOCAL_PROVIDERS` in `modelman/src/modelman/benchmark/runner.py` — a backend missing from that set is silently skipped by `modelman benchmark`
-5. If the new backend should also be isolatable for `modelman benchmark agent`, add it to `SUPPORTED_PROVIDER_IDS` in `modelman/src/modelman/benchmark/isolation.py` — a backend missing from that set runs unisolated with no error
-6. Smoke test: `./benchmarks/qwen3.8-benchmark 30` (and `bin/llm-isolate-provider <new-backend>`)
-7. Update the benchmark doc with new numbers
+See the `adding-a-benchmark-backend` skill.

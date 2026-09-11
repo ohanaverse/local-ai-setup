@@ -332,6 +332,95 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
     ]
 
 
+def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatch):
+    """An mtplx target's model_name (the HF repo id) must reach
+    isolate_provider() as an extra_arg — otherwise every mtplx target would
+    fall back to registry resolution: silently the wrong weights if some
+    other mtplx entry happens to be the registry's single match, or an
+    outright refusal once the registry holds more than one."""
+    import modelman.benchmark.runner as runner_module
+
+    registry = Registry(
+        providers=[ProviderEntry(id="mtplx", name="MTPLX", location="local")],
+        models=[
+            ModelEntry(
+                id="mtplx/org/repo",
+                family="f",
+                provider_id="mtplx",
+                model_name="org/repo",
+            )
+        ],
+    )
+    state = StateStore()
+    state.set("mtplx/org/repo", ModelState(exposed=True))
+
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_isolate(provider_id, *extra_args):
+        calls.append((provider_id, *extra_args))
+        return type("I", (), {"ok": True, "direct_url": "http://localhost:8003"})()
+
+    def _fake_route(session, target, route, url, workload, pass_number):
+        return TargetResult(
+            model_id=target.model_id,
+            provider_id=target.provider_id,
+            route=route,
+            pass_number=pass_number,
+            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
+            error=None,
+        )
+
+    monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
+    monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(runner_module, "_run_route", _fake_route)
+
+    run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+
+    assert calls == [("mtplx", "org/repo")]
+
+
+def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monkeypatch):
+    """Two consecutive mtplx targets with different repo ids must each trigger
+    a fresh isolate_provider() call, because mtplx is single-model-per-process
+    (like mlx_lm_server) and cannot switch models without a restart."""
+    import modelman.benchmark.runner as runner_module
+
+    registry = Registry(
+        providers=[ProviderEntry(id="mtplx", name="MTPLX", location="local")],
+        models=[
+            ModelEntry(id="mtplx/org/repo-1", family="f", provider_id="mtplx", model_name="org/repo-1"),
+            ModelEntry(id="mtplx/org/repo-2", family="f", provider_id="mtplx", model_name="org/repo-2"),
+        ],
+    )
+    state = StateStore()
+    state.set("mtplx/org/repo-1", ModelState(exposed=True))
+    state.set("mtplx/org/repo-2", ModelState(exposed=True))
+
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_isolate(provider_id, *extra_args):
+        calls.append((provider_id, *extra_args))
+        return type("I", (), {"ok": True, "direct_url": "http://localhost:8003"})()
+
+    def _fake_route(session, target, route, url, workload, pass_number):
+        return TargetResult(
+            model_id=target.model_id,
+            provider_id=target.provider_id,
+            route=route,
+            pass_number=pass_number,
+            metrics=BenchmarkMetrics(ttft_ms=1, total_ms=2, completion_tokens=3, prompt_tokens=4),
+            error=None,
+        )
+
+    monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
+    monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(runner_module, "_run_route", _fake_route)
+
+    run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
+
+    assert calls == [("mtplx", "org/repo-1"), ("mtplx", "org/repo-2")]
+
+
 def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_path, monkeypatch):
     """A mistakenly-registered mlx_lm_server model with no draft source must
     fail that single target with a clear error, not crash the whole run or

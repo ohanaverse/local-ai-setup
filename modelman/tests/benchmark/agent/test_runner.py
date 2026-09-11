@@ -185,6 +185,49 @@ def test_run_suite_reisolates_mlx_lm_server_between_pairings(tmp_path, monkeypat
     assert calls[-1] == calls[1]  # exactly two isolates, then restore
 
 
+def test_run_suite_isolates_mtplx_with_model_name(tmp_path, monkeypatch):
+    """An mtplx row must pass its registry repo id as the isolate extra_args,
+    mirroring modelman.benchmark.runner's existing mtplx branch — mtplx is
+    single-model-per-process and has no baked-in default, so an isolate call
+    with no model arg either serves the wrong weights (if this row's model
+    happens to be the registry's single mtplx match) or is refused outright
+    (once the registry holds more than one) instead of serving the row's
+    model."""
+    calls: list[tuple] = []
+
+    def _isolate(pid, *extra_args):
+        calls.append((pid, *extra_args))
+
+    monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    registry = Registry(
+        providers=[ProviderEntry(id="mtplx", name="MTPLX", location="local")],
+        models=[
+            ModelEntry(
+                id="mtplx/model",
+                family="f",
+                provider_id="mtplx",
+                model_name="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            ),
+        ],
+    )
+
+    body = _suite_toml(MINI_DRIFT, models='["mtplx/model"]').replace(
+        "[routes.direct.ollama]", "[routes.direct.mtplx]", 1
+    )
+    suite = load_suite(_write_suite(tmp_path, body), registry)
+    run_suite(
+        suite,
+        registry,
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    assert calls == [("mtplx", "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")]
+
+
 def test_diff_captured_before_hidden_tests_are_seeded(tmp_path, monkeypatch):
     """Gate 9 seeds the hidden tests into the workspace; the judge's diff must
     be captured before that seeding, or the frontier-model judge reads the exact

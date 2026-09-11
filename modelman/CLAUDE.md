@@ -140,11 +140,7 @@ The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`
 
 ### Adding a new TUI screen
 
-1. Create `src/modelman/screens/<name>.py` extending `Screen[None]`
-2. Add `action_back()` binding (escape key) with queue-check if applicable
-3. Register in `app.py` if pushed from multiple screens, or push directly from caller
-4. Follow the `reload_preserving_cursor` pattern if using DataTable with background refresh
-5. If the screen spawns workers that outlive the screen, capture `self._app_ref = self.app` in `on_mount()` for thread-safe access
+See the `adding-a-tui-screen` skill.
 
 ### Thread-safety pattern for worker threads
 
@@ -173,9 +169,10 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 
 - `src/modelman/providers/base.py` defines the `Provider` abstract base class and the `VariantSpec` / `LocalModel` TypedDicts. `VariantSpec` is `total=False` with a freeform `model_info: dict[str, Any] | None` for LiteLLM-style capability keys. `Provider` requires `name`, `is_downloaded`, `download`, `list_local`, and `size_of(variant) -> int | None` (default returns `None`). Optional: `path_of(variant)` (default `None`) and `resolve_local(variants)` (batch presence/path/size, default `None` = unsupported — callers fall back to the per-variant methods; ollama implements it with one `ollama list`).
 - `src/modelman/providers/registry.py` — `ProviderRegistry.register(cls)` / `.get(name, config)`.
-- Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
+- Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`, `mtplx.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
 - `src/modelman/providers/__init__.py` imports every provider module solely to trigger registration. Code that needs providers should import from `modelman.providers` rather than a single submodule.
 - `src/modelman/providers/_progress.py` — shared progress-callback helpers (`llamacpp.py`/`omlx.py`/`ollama.py` all use it) plus `DownloadCancelled`, raised by the HF `ProgressTqdm` bar when its `should_cancel` callable returns True. `PendingChanges.apply()` (`queue.py`) catches `DownloadCancelled` around the download step — this is what makes `StatusScreen`'s Cancel button actually interrupt an in-flight HuggingFace download instead of waiting for it to finish.
+- `src/modelman/providers/mtplx.py` — MTPLX is discovery-only: it finds models MTPLX has already cached under `~/.mtplx/models` (dir names `<org>--<model>`, mapped back to the registry's `org/model` repo id by `_dir_name`/`_repo_id`) and its `download()` always raises `NotImplementedError` — MTPLX manages its own cache via the `mtplx` CLI, modelman never drives a download for it. The live server's start/stop/warmup lives separately in `src/modelman/providers/lifecycle.py`, not in the provider class: `mtplx serve` runs as a plain backgrounded subprocess (never a LaunchAgent, one model per process like `mlx_lm_server`) tracked by a pidfile at `/tmp/local-ai-setup-mtplx.pid`, serving on port 8003; `bin/llm-isolate-provider`'s `mtplx` branch shells out to `python3 -m modelman.providers.lifecycle isolate mtplx` to drive it.
 
 ### Ollama capability detection
 
@@ -216,14 +213,7 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 
 ### Adding a new provider
 
-1. Create `src/modelman/providers/<name>.py` with a class extending `Provider`.
-2. Call `ProviderRegistry.register(TheProvider)` at the bottom of the module.
-3. Add a `[[providers]]` entry to `registry.toml` with `id = "<name>"`.
-4. Reference it from models via `provider_id = "<name>"`.
-5. (Optional) Override `size_of` so the size column is populated for downloaded variants.
-6. Add a `ProviderPolicy` entry to `PROVIDER_POLICIES` in `src/modelman/litellm.py` (prefix, api_key, cloud flag). This table is the single source of truth for LiteLLM exposure — both the config writer and the TUI's expose gate read it, and an unmapped provider cannot be exposed.
-
-No changes to `main.py` are required unless a new CLI subcommand is also added.
+See the `adding-a-provider` skill.
 
 ## ModelForm parsing rules
 

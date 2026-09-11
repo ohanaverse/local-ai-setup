@@ -630,18 +630,24 @@ class ModelScreen(Screen[None]):
     def _provider_can_download(self, provider_id: str) -> bool:
         """True when a ready-on against this provider is a real
         download/pull and must go through DownloadManager: the provider
-        has a registered Provider class (ollama/omlx/llamacpp). This is
-        deliberately NOT model_has_local_artifact — an ollama *cloud*
-        model has no local artifact but its ready-on still runs a real
-        `ollama pull` (that's what registers the tag), so it must route
-        through DownloadManager too; native/unmapped providers have no
-        Provider class and keep the queued flag flip. Mirrors _run_apply's
-        try/except-KeyError flag-only rule."""
+        has a registered Provider class (ollama/omlx/llamacpp) that does NOT
+        declare manages_own_cache. This is deliberately NOT
+        model_has_local_artifact — an ollama *cloud* model has no local
+        artifact but its ready-on still runs a real `ollama pull` (that's
+        what registers the tag), so it must route through DownloadManager
+        too; native/unmapped providers have no Provider class and keep the
+        queued flag flip. A provider that manages its own cache outside
+        modelman's control (MTPLX via the `mtplx` CLI) declares
+        manages_own_cache = True and is also treated as flag-only. Mirrors
+        _run_apply's try/except-KeyError flag-only rule."""
         if self._provider_entry_or_none(provider_id) is None:
             return False
         from ..providers.registry import ProviderRegistry
 
-        return provider_id in ProviderRegistry.available()
+        provider_cls = ProviderRegistry.get_class(provider_id)
+        if provider_cls is None:
+            return False
+        return not provider_cls.manages_own_cache
 
     def _start_download(self, entry: ModelEntry) -> None:
         """Route a real ready-on through DownloadManager instead of the
