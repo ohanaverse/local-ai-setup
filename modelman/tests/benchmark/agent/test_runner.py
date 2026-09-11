@@ -189,8 +189,10 @@ def test_run_suite_isolates_mtplx_with_model_name(tmp_path, monkeypatch):
     """An mtplx row must pass its registry repo id as the isolate extra_args,
     mirroring modelman.benchmark.runner's existing mtplx branch — mtplx is
     single-model-per-process and has no baked-in default, so an isolate call
-    with no model arg silently serves whichever mtplx model happens to be
-    first in the registry instead of the row's model."""
+    with no model arg either serves the wrong weights (if this row's model
+    happens to be the registry's single mtplx match) or is refused outright
+    (once the registry holds more than one) instead of serving the row's
+    model."""
     calls: list[tuple] = []
 
     def _isolate(pid, *extra_args):

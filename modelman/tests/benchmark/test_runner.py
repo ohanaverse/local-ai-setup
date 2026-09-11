@@ -334,8 +334,10 @@ def test_run_benchmark_reisolates_between_different_mlx_lm_server_pairings(tmp_p
 
 def test_run_benchmark_forwards_mtplx_model_name_to_isolate(tmp_path, monkeypatch):
     """An mtplx target's model_name (the HF repo id) must reach
-    isolate_provider() as an extra_arg — otherwise every mtplx target falls
-    back to the first mtplx model in the registry."""
+    isolate_provider() as an extra_arg — otherwise every mtplx target would
+    fall back to registry resolution: silently the wrong weights if some
+    other mtplx entry happens to be the registry's single match, or an
+    outright refusal once the registry holds more than one."""
     import modelman.benchmark.runner as runner_module
 
     registry = Registry(

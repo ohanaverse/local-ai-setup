@@ -6,8 +6,10 @@
 # Supported: ollama, omlx, omlx-6bit, mlx_lm_server, mtplx
 #   mlx_lm_server requires [target] [draft] positional args (or
 #     LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL); mtplx accepts
-#     an optional [model-or-target] positional arg (else the first mtplx
-#     model in the registry); every other provider ignores extra args.
+#     an optional [model-or-target] positional arg (else the single mtplx
+#     model in the registry; an ambiguous registry — more than one mtplx
+#     entry — fails loudly rather than guessing); every other provider
+#     ignores extra args.
 # (The llamacpp case branch below is retained but disabled — retired
 # 2026-09-07, issue #33. Re-enable steps: docs/reference/provider-artifacts.md.)
 # On success, print JSON with provider/model/direct_url.
@@ -256,7 +258,8 @@ PYEOF
         # shim delegates entirely and passes the module's JSON through.
         # Forward an explicit model arg so callers (modelman start, benchmark
         # sweeps) can select a specific mtplx model instead of defaulting to
-        # the registry's single mtplx entry.
+        # the registry's single mtplx entry — an ambiguous registry (more
+        # than one mtplx entry) refuses rather than guessing.
         #
         # Self-contained like every other branch of this script: the
         # benchmark scripts resolve this helper by absolute path with no

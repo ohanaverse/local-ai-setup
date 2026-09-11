@@ -55,14 +55,22 @@ def _log_tail(max_bytes: int = 1024) -> str:
 
 def _resolve_mtplx_model(model: str | None) -> str:
     """The MTPLX repo id to serve: the explicit `model`, else the single
-    mtplx model in the registry."""
+    mtplx model in the registry. With no explicit model and more than one
+    mtplx entry, refuse rather than guess — a caller that failed to
+    forward the model name would otherwise silently serve (and
+    benchmark) the wrong weights with no error."""
     if model:
         return model
     registry = load_registry()
-    for m in registry.models:
-        if m.provider_id == "mtplx":
-            return m.model_name
-    raise LifecycleError("no mtplx model in the registry")
+    matches = [m.model_name for m in registry.models if m.provider_id == "mtplx"]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise LifecycleError("no mtplx model in the registry")
+    raise LifecycleError(
+        f"model required: registry holds {len(matches)} mtplx models "
+        f"({', '.join(matches)})"
+    )
 
 
 def _stop_others(keep: str = "") -> None:

@@ -512,3 +512,35 @@ def test_isolate_mtplx_different_model_restarts():
     mock_stop.assert_called_once_with()
     mock_start.assert_called_once_with("Some/Model")
     assert result.ok is True
+
+
+def test_isolate_mtplx_ambiguous_registry_refuses_instead_of_guessing():
+    """With no explicit model and more than one mtplx entry, isolate()
+    must refuse, not silently serve the first registry match.
+
+    This branch already had to patch four callers that failed to
+    forward the model name; without the refusal a fifth such gap would
+    serve (and benchmark) the wrong weights with ok=true — the
+    silent-wrong-weights failure mode."""
+    from modelman.registry import ModelEntry, Registry
+
+    two = Registry(
+        providers=[],
+        models=[
+            ModelEntry(
+                id=f"mtplx/Org/m{n}",
+                family="qwen3.8",
+                provider_id="mtplx",
+                model_name=f"Org/m{n}",
+            )
+            for n in (1, 2)
+        ],
+    )
+    with (
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
+        patch("modelman.providers.lifecycle.load_registry", return_value=two),
+    ):
+        result = isolate("mtplx")
+    assert result.ok is False
+    assert "model required" in (result.error or "")
+    mock_stop.assert_not_called()  # refuse before any teardown

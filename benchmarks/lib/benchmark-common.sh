@@ -46,7 +46,9 @@ PYEOF
 # model as a positional arg instead of an env var (bin/llm-isolate-provider's
 # mtplx case reads $2) — forward DIRECT_MODELS[$key] positionally so
 # isolation selects the model this run actually requested, instead of
-# falling back to whichever mtplx model happens to be first in the registry.
+# falling back to registry resolution: silently the wrong weights if some
+# other mtplx entry happens to be the registry's single match, or an
+# outright refusal once the registry holds more than one.
 # ISOLATE_EXTRA[$key], if set, is word-split and appended after the model —
 # a future backend needing a second positional arg (e.g. a draft model) sets
 # it; every current backend leaves it unset/empty.
