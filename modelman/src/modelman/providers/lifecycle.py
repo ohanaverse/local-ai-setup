@@ -20,8 +20,9 @@ import subprocess
 import sys
 import time
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 
+from ..benchmark.isolation import IsolateResult as LifecycleResult
 from ..registry import load_registry
 
 MTPLX_PORT = 8003
@@ -37,15 +38,6 @@ _ENV_VAR_BY_PROVIDER = {
     "omlx": "LLM_ISOLATE_OMLX_4BIT_MODEL",
     "omlx-6bit": "LLM_ISOLATE_OMLX_6BIT_MODEL",
 }
-
-
-@dataclass
-class LifecycleResult:
-    provider: str
-    model: str
-    direct_url: str
-    ok: bool
-    error: str | None
 
 
 class LifecycleError(Exception):
