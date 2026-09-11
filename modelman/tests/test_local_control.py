@@ -316,6 +316,12 @@ def test_name_matches_lenient_prefix_strict_variant_tail():
 
 
 def test_start_mtplx_isolates_without_env_var(tmp_path):
+    """start_local_model() must call isolate_provider('mtplx', ..., env=None)
+    rather than mapping mtplx through an env-var override like ollama/omlx
+    do, and must persist the running-model marker in modelman.toml's
+    [local] table on success. Passing an env var here would misroute mtplx
+    isolation through the wrong bash-shim mechanism; skipping the marker
+    write would leave wt's local-model gate pointing at a stale model."""
     registry = _registry()
     registry.providers.append(
         ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none", base_url="http://localhost:8003/v1"))

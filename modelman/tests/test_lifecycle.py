@@ -29,6 +29,11 @@ def _mtplx_registry():
 
 
 def test_isolate_mtplx_starts_serve_and_warmup():
+    """isolate('mtplx') must stop other providers, start mtplx serve for the
+    registry's mtplx model, wait for it to come up, and run a warmup call
+    before reporting success. Skipping any of these steps would return
+    ok=True for a server that isn't actually ready to take chat
+    completions."""
     with (
         patch("modelman.providers.lifecycle._stop_others") as mock_stop,
         # _start_mtplx_serve now returns the Popen handle isolate() must
@@ -51,6 +56,11 @@ def test_isolate_mtplx_starts_serve_and_warmup():
 
 
 def test_isolate_mtplx_uses_explicit_model():
+    """An explicit model argument to isolate('mtplx', model) must be
+    forwarded to _start_mtplx_serve verbatim rather than being ignored in
+    favor of the registry default. The positional arg is the only way a
+    benchmark sweep selects which model gets served; a forwarding gap would
+    silently serve the registry default instead."""
     with (
         patch("modelman.providers.lifecycle._stop_others"),
         patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
@@ -62,6 +72,10 @@ def test_isolate_mtplx_uses_explicit_model():
 
 
 def test_isolate_mtplx_no_model_in_registry_returns_error():
+    """isolate('mtplx') must return an error envelope, not raise, when the
+    registry has no mtplx model configured. An uncaught exception here
+    would crash the isolation helper's JSON-envelope contract that the bash
+    shim and benchmark tooling depend on."""
     from modelman.registry import Registry
 
     with (
@@ -74,6 +88,11 @@ def test_isolate_mtplx_no_model_in_registry_returns_error():
 
 
 def test_start_mtplx_serve_pins_model_id():
+    """_start_mtplx_serve must always pass --model-id explicitly to
+    `mtplx serve`. Without it, mtplx derives its own slug for /v1/models
+    that never matches the org/model repo id _wait_for_model polls for,
+    so isolation times out even though the server is healthy (see the
+    2026-09-10 live smoke test note below)."""
     # Live smoke test (2026-09-10) found that mtplx serve, without
     # --model-id, reports a slug it derives from the artifact (e.g.
     # "mtplx-qwen38-27b-optimized-quality") in /v1/models — never the
@@ -161,6 +180,11 @@ def test_stop_all_delegates_to_bash_helper_only():
 
 
 def test_cli_prints_json_envelope(capsys):
+    """The CLI's stdout on success must be exactly the JSON envelope and
+    nothing else — stdout IS the contract the bash shim and
+    modelman/benchmark/isolation.py parse. A stray traceback or empty
+    stdout here surfaces downstream only as "isolation helper returned
+    invalid JSON", not the real cause."""
     from modelman.providers.lifecycle import _main
 
     with patch("modelman.providers.lifecycle.isolate", return_value=LifecycleResult("mtplx", "m", "http://localhost:8003/v1/chat/completions", True, None)):

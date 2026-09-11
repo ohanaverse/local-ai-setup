@@ -1229,6 +1229,11 @@ def test_locked_registry_read_modify_write(tmp_path):
 
 
 def test_mtplx_provider_has_default_template():
+    """Confirms mtplx has a built-in default provider template (id, name,
+    local model_dir, openai-chat protocol, no-auth base_url on port 8003)
+    registered under DEFAULT_PROVIDER_IDS. Without this, a fresh
+    registry.toml or backfill_provider_defaults would have no way to add an
+    mtplx provider entry automatically."""
     from modelman.registry import DEFAULT_PROVIDER_IDS, default_provider_entry
 
     assert "mtplx" in DEFAULT_PROVIDER_IDS
