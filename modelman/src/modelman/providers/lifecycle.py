@@ -90,16 +90,22 @@ def _wait_for_port_closed(url: str, timeout: float = 10.0) -> None:
 
 
 def _start_mtplx_serve(model: str) -> None:
-    """Start `mtplx serve` in the background, tracked by a pidfile."""
+    """Start `mtplx serve` in the background, tracked by a pidfile.
+
+    Assumes the caller (isolate()) has already stopped any prior mtplx
+    instance via _stop_others() — stopping it again here would pay a second
+    full `mtplx stop --grace-seconds 10` for no benefit, since _stop_others()
+    already tore it down as part of the same isolate call."""
     bin_path = shutil.which("mtplx")
     if bin_path is None:
         raise LifecycleError("mtplx binary not found on PATH")
-    # Stop any prior instance first so a re-start is idempotent (mirrors
-    # mlx-lm-server.sh's unconditional-stop-before-spawn).
-    _stop_mtplx()
     # Wait for the OS to reclaim port 8003 before spawning the new process.
     # Spawning into a still-held port can leave the old process answering
-    # warmup, or the new process may die immediately and leave a stale pidfile.
+    # warmup, or the new process may die immediately and leave a stale
+    # pidfile. This is a fast poll (returns immediately once the port is
+    # closed, which _stop_others() should have already achieved) kept as a
+    # safety net: the bash stop-all's own port-closed poll only retries 5
+    # times before warning-and-continuing, rather than blocking until closed.
     _wait_for_port_closed(f"{MTPLX_BASE}/v1/models")
     with open(MTPLX_LOG, "ab") as log:
         proc = subprocess.Popen(

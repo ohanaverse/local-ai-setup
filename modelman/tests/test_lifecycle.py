@@ -78,7 +78,6 @@ def test_start_mtplx_serve_pins_model_id():
     # resolved model makes /v1/models report exactly what's expected.
     with (
         patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._stop_mtplx"),
         patch("modelman.providers.lifecycle._wait_for_port_closed"),
         patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
         patch("builtins.open", mock_open()),
@@ -89,6 +88,23 @@ def test_start_mtplx_serve_pins_model_id():
     args = mock_popen.call_args.args[0]
     assert "--model-id" in args
     assert args[args.index("--model-id") + 1] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+
+
+def test_start_mtplx_serve_does_not_stop_mtplx_again():
+    """isolate() already stops mtplx (via _stop_others()'s stop-all) before
+    calling _start_mtplx_serve(). A second _stop_mtplx() call here just pays
+    an extra 10s-grace subprocess + port-poll for no behavioral benefit."""
+    with (
+        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_stop,
+        patch("modelman.providers.lifecycle._wait_for_port_closed"),
+        patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
+        patch("builtins.open", mock_open()),
+        patch("modelman.providers.lifecycle.time.sleep"),
+    ):
+        mock_popen.return_value = MagicMock(pid=1234, poll=MagicMock(return_value=None))
+        _start_mtplx_serve("org/repo")
+    mock_stop.assert_not_called()
 
 
 def test_stop_mtplx_runs_mtplx_stop():
@@ -196,7 +212,6 @@ def test_start_mtplx_serve_raises_when_port_still_held():
 
     with (
         patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._stop_mtplx"),
         patch("modelman.providers.lifecycle._wait_for_port_closed", side_effect=LifecycleError("port still answering")),
         patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
         pytest.raises(LifecycleError, match="port still answering"),
@@ -215,7 +230,6 @@ def test_start_mtplx_serve_raises_when_process_exits_immediately():
     proc.poll.return_value = 1
     with (
         patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._stop_mtplx"),
         patch("modelman.providers.lifecycle._wait_for_port_closed"),
         patch("modelman.providers.lifecycle.subprocess.Popen", return_value=proc),
         patch("modelman.providers.lifecycle.time.sleep"),
