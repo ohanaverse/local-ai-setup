@@ -375,11 +375,18 @@ def test_stop_others_prefers_llm_isolate_helper_env(monkeypatch):
     scripts resolve it via `dirname $0`) with bin/ NOT on PATH, so
     shutil.which() returns None there — without the env var, the mtplx
     isolate fails after the helper already stopped every other provider.
-    The shim exports its own path so resolution never depends on PATH."""
+    The shim exports its own path so resolution never depends on PATH.
+
+    shutil.which is stubbed to return a DIFFERENT path (not None): if
+    `_stop_others` only fell back to PATH and happened to ignore the env
+    var, this test would still see a call, just to the wrong helper —
+    stubbing which() to a distinct value is what makes this test actually
+    prove precedence rather than merely proving PATH-fallback works."""
     calls = []
     monkeypatch.setenv("LLM_ISOLATE_HELPER", "/abs/llm-isolate-provider")
     monkeypatch.setattr(
-        "modelman.providers.lifecycle.shutil.which", lambda name: None
+        "modelman.providers.lifecycle.shutil.which",
+        lambda name: "/usr/local/bin/llm-isolate-provider",
     )
 
     def fake_run(cmd, **kwargs):
@@ -517,6 +524,58 @@ def test_isolate_mtplx_same_model_keeps_loaded():
     mock_start.assert_not_called()
     mock_warmup.assert_called_once_with("Some/Model")
     assert result.ok is True
+
+
+def test_isolate_mtplx_keep_path_tears_down_wedged_server_on_warmup_failure():
+    """A keep-path warmup failure (server answers /v1/models but hangs or
+    errors on chat completions — a wedged server) must tear the server
+    down, not leave it running.
+
+    Without this, the keep branch never sets `started`, so the except
+    block's `if started: _stop_mtplx()` teardown never fires — the wedged
+    server stays up forever, and every future isolate() call just
+    re-probes it as 'serving', retries the same doomed warmup, and fails
+    again with no path to recovery short of a manual `mtplx stop`."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    with (
+        patch("modelman.providers.lifecycle._serving_model", return_value=True),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
+        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
+        patch(
+            "modelman.providers.lifecycle._warmup",
+            side_effect=LifecycleError("failed to warm up"),
+        ),
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_stop.assert_called_once_with(keep="mtplx")
+    mock_start.assert_not_called()
+    mock_cleanup.assert_called_once()
+    assert result.ok is False
+    assert "failed to warm up" in (result.error or "")
+
+
+def test_isolate_mtplx_keep_path_stop_others_failure_does_not_teardown():
+    """A _stop_others(keep='mtplx') failure on the keep path must NOT
+    trigger _stop_mtplx() teardown: the mtplx server itself is healthy
+    and untouched — only stopping the OTHER providers failed, which has
+    nothing to do with mtplx's health and must not tear it down."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    with (
+        patch("modelman.providers.lifecycle._serving_model", return_value=True),
+        patch(
+            "modelman.providers.lifecycle._stop_others",
+            side_effect=LifecycleError("failed to stop other providers"),
+        ),
+        patch("modelman.providers.lifecycle._warmup") as mock_warmup,
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_warmup.assert_not_called()
+    mock_cleanup.assert_not_called()
+    assert result.ok is False
 
 
 def test_isolate_mtplx_different_model_restarts():

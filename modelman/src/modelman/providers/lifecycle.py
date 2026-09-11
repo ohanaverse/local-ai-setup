@@ -296,6 +296,15 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
             # single-model-per-process, so only the SAME model is
             # keepable — a different model takes the full restart below.
             _stop_others(keep="mtplx")
+            # From here, `started` means "a live mtplx process exists that
+            # this call is responsible for tearing down on failure" — not
+            # literally "this call spawned it". A wedged server (answers
+            # /v1/models but hangs or errors on chat completions) must not
+            # be left running for the next isolate() call to retry warmup
+            # against forever with no path to recovery. Set only after
+            # _stop_others succeeds: a failure there stopped the OTHER
+            # providers, not mtplx, so it must not trigger mtplx teardown.
+            started = True
             _warmup(resolved)
         else:
             _stop_others()
