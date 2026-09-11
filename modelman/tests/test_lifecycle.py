@@ -357,3 +357,72 @@ def test_stop_others_without_env_or_path_raises(monkeypatch):
 
     with pytest.raises(LifecycleError, match="not found"):
         _stop_others()
+
+
+def test_isolate_stops_serve_when_model_wait_fails():
+    """A half-started isolate (serve up, model load/warmup failed) must
+    stop the spawned mtplx serve.
+
+    Otherwise the orphan holds port 8003 and GPU/RAM while local_control
+    clears the [local].running_model marker on failure, so nothing tears
+    it down — violating the one-local-model-at-a-time invariant this
+    module exists to enforce."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    with (
+        patch("modelman.providers.lifecycle._stop_others"),
+        patch("modelman.providers.lifecycle._start_mtplx_serve"),
+        patch(
+            "modelman.providers.lifecycle._wait_for_model",
+            side_effect=LifecycleError("timed out"),
+        ),
+        patch("modelman.providers.lifecycle._warmup"),
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_cleanup.assert_called_once()
+    assert result.ok is False
+    assert "timed out" in (result.error or "")
+
+
+def test_isolate_registry_error_returns_envelope_not_traceback():
+    """A corrupt registry.toml (RegistryError, not LifecycleError) must
+    surface as an ok=False envelope, never a raw traceback — the bash
+    shim and benchmark isolation parse stdout as JSON."""
+    from modelman.registry import RegistryError
+
+    with (
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
+        patch(
+            "modelman.providers.lifecycle.load_registry",
+            side_effect=RegistryError("corrupt"),
+        ),
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
+    ):
+        result = isolate("mtplx")
+    assert result.ok is False
+    assert "corrupt" in (result.error or "")
+    # The failure happened before serve started: nothing to tear down,
+    # and stop-others must not have run either (fail before any teardown).
+    mock_stop.assert_not_called()
+    mock_cleanup.assert_not_called()
+
+
+def test_cli_registry_error_prints_json_envelope(capsys):
+    """The CLI entry point must answer a corrupt registry with a JSON
+    envelope on stdout and exit 1 — this is the bash-shim stdout contract
+    that modelman/benchmark/isolation.py parses (invalid JSON there
+    surfaces as the non-actionable 'isolation helper returned invalid
+    JSON')."""
+    from modelman.providers.lifecycle import _main
+    from modelman.registry import RegistryError
+
+    with patch(
+        "modelman.providers.lifecycle.load_registry",
+        side_effect=RegistryError("corrupt"),
+    ):
+        code = _main(["isolate", "mtplx"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert out["ok"] is False
+    assert "corrupt" in out["error"]

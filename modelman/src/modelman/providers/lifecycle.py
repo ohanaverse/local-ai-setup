@@ -13,6 +13,7 @@ the JSON straight through.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -230,13 +231,25 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
     if provider_id != "mtplx":
         # Transition: delegate non-mtplx providers to the bash helper.
         return _delegate_isolate(provider_id, model, extra_args)
+    started = False
     try:
         resolved = _resolve_mtplx_model(model)
         _stop_others()
         _start_mtplx_serve(resolved)
+        started = True
         _wait_for_model(resolved)
         _warmup(resolved)
-    except LifecycleError as exc:
+    except Exception as exc:  # noqa: BLE001 — envelope contract, never a traceback
+        # RegistryError/TOMLDecodeError from load_registry() are NOT
+        # LifecycleError; anything escaping here must still return the
+        # JSON envelope the bash shim and benchmark isolation parse.
+        if started:
+            # Teardown: serve is up but load/warmup failed — a running
+            # orphan holding port 8003 and GPU/RAM breaks the one-local-
+            # model invariant this module exists to enforce. Best-effort:
+            # a cleanup failure must not mask the original error.
+            with contextlib.suppress(Exception):  # noqa: BLE001
+                _stop_mtplx()
         return LifecycleResult("mtplx", model or "", MTPLX_DIRECT_URL, False, str(exc))
     return LifecycleResult("mtplx", resolved, MTPLX_DIRECT_URL, True, None)
 
@@ -292,19 +305,22 @@ def _main(argv: list[str]) -> int:
         print("usage: lifecycle <isolate|stop|stop-all> [provider] [model] ...", file=sys.stderr)
         return 1
     cmd = argv[0]
-    if cmd == "isolate":
-        provider = argv[1] if len(argv) > 1 else ""
-        model = argv[2] if len(argv) > 2 else None
-        extra_args = tuple(argv[3:])
-        result = isolate(provider, model, extra_args=extra_args)
-    elif cmd == "stop":
-        provider = argv[1] if len(argv) > 1 else ""
-        result = stop(provider)
-    elif cmd == "stop-all":
-        result = stop_all()
-    else:
-        print(f"unknown command: {cmd}", file=sys.stderr)
-        return 1
+    try:
+        if cmd == "isolate":
+            provider = argv[1] if len(argv) > 1 else ""
+            model = argv[2] if len(argv) > 2 else None
+            extra_args = tuple(argv[3:])
+            result = isolate(provider, model, extra_args=extra_args)
+        elif cmd == "stop":
+            provider = argv[1] if len(argv) > 1 else ""
+            result = stop(provider)
+        elif cmd == "stop-all":
+            result = stop_all()
+        else:
+            print(f"unknown command: {cmd}", file=sys.stderr)
+            return 1
+    except Exception as exc:  # noqa: BLE001 — CLI contract: one JSON envelope or nothing
+        result = LifecycleResult(cmd, "", "", False, f"{type(exc).__name__}: {exc}")
     print(json.dumps(asdict(result)))
     return 0 if result.ok else 1
 
