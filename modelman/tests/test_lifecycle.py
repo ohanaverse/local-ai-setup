@@ -1,7 +1,7 @@
 import json
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
-from unittest.mock import MagicMock, mock_open, patch
 
 from modelman.providers.lifecycle import (
     LifecycleResult,
@@ -168,7 +168,7 @@ def test_warmup_matches_spaced_json():
     the warmup success check must match that form, not only compact JSON."""
     from modelman.providers.lifecycle import _warmup
 
-    body = '{"object": "chat.completion", "choices": []}'.encode()
+    body = b'{"object": "chat.completion", "choices": []}'
     with patch("modelman.providers.lifecycle.urllib.request.urlopen", _mock_urlopen(body)):
         # Should return without raising.
         _warmup("org/repo")
@@ -184,9 +184,9 @@ def test_warmup_fails_when_no_chat_completion_marker():
         patch("modelman.providers.lifecycle.urllib.request.urlopen", _mock_urlopen(body)),
         patch("modelman.providers.lifecycle.time.monotonic", side_effect=[0.0, 1.0, 1000.0]),
         patch("modelman.providers.lifecycle.time.sleep"),
+        pytest.raises(LifecycleError, match="warm up"),
     ):
-        with pytest.raises(LifecycleError, match="warm up"):
-            _warmup("org/repo", timeout=1.0)
+        _warmup("org/repo", timeout=1.0)
 
 
 def test_start_mtplx_serve_raises_when_port_still_held():
@@ -199,9 +199,9 @@ def test_start_mtplx_serve_raises_when_port_still_held():
         patch("modelman.providers.lifecycle._stop_mtplx"),
         patch("modelman.providers.lifecycle._wait_for_port_closed", side_effect=LifecycleError("port still answering")),
         patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
+        pytest.raises(LifecycleError, match="port still answering"),
     ):
-        with pytest.raises(LifecycleError, match="port still answering"):
-            _start_mtplx_serve("org/repo")
+        _start_mtplx_serve("org/repo")
     mock_popen.assert_not_called()
 
 
@@ -220,9 +220,9 @@ def test_start_mtplx_serve_raises_when_process_exits_immediately():
         patch("modelman.providers.lifecycle.subprocess.Popen", return_value=proc),
         patch("modelman.providers.lifecycle.time.sleep"),
         patch("builtins.open", mock_open()),
+        pytest.raises(LifecycleError, match="exited immediately"),
     ):
-        with pytest.raises(LifecycleError, match="exited immediately"):
-            _start_mtplx_serve("org/repo")
+        _start_mtplx_serve("org/repo")
 
 
 def test_delegate_isolate_forwards_extra_args():

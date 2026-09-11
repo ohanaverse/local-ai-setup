@@ -161,6 +161,7 @@ def run_benchmark(
             try:
                 # Resolve provider-specific positional args inline; providers
                 # with a baked-in default model (ollama/omlx) need none.
+                extra_args: tuple[str, ...]
                 if target.provider_id == "mlx_lm_server":
                     extra_args = mlx_lm_server_pairing_args(
                         target.model_id,
