@@ -57,7 +57,7 @@ def test_supported_provider_ids_matches_llm_isolate_providers_documented_list():
     SUPPORTED_PROVIDER_IDS, so it must be hand-updated (together with
     isolation.py's SUPPORTED_PROVIDER_IDS and the shell header comment) any
     time the supported set changes."""
-    assert frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server"}) == isolation.SUPPORTED_PROVIDER_IDS
+    assert frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"}) == isolation.SUPPORTED_PROVIDER_IDS
 
 
 def test_isolate_provider_forwards_extra_args():

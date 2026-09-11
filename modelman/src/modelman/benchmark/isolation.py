@@ -20,7 +20,7 @@ from modelman.benchmark.errors import BenchmarkError
 # bin/llm-isolate-provider but not isolatable. Re-enable steps:
 # docs/reference/provider-artifacts.md
 SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset(
-    {"ollama", "omlx", "omlx-6bit", "mlx_lm_server"}
+    {"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"}
 )
 
 

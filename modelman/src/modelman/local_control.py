@@ -58,6 +58,7 @@ _DEFAULT_BASE_ORIGIN = {
     "omlx": "http://localhost:8000",
     "omlx-6bit": "http://localhost:8000",
     "mlx_lm_server": "http://localhost:8001",
+    "mtplx": "http://localhost:8003",
 }
 
 # Subprocess seam so tests can keep the probe hermetic (conftest patches
@@ -221,6 +222,10 @@ def start_local_model(
         except BenchmarkError as exc:
             raise LocalControlError(str(exc)) from exc
         extra_args = (target, draft)
+    elif model.provider_id == "mtplx":
+        # The lifecycle module resolves the MTPLX model name from the
+        # registry; no LLM_ISOLATE_*_MODEL env var is needed.
+        env = None
     else:
         env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
 
