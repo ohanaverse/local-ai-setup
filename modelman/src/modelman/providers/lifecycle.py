@@ -74,11 +74,14 @@ def _wait_for_port_closed(url: str, timeout: float = 10.0) -> None:
     """Poll a localhost URL until it stops responding, or raise on timeout.
 
     A response — success or HTTP error status — means something is still
-    listening. `HTTPError` is a `URLError`/`OSError` subclass, so it must be
-    caught before the general `OSError` catch below, or a server merely
+    listening. `HTTPError` is a `URLError`/`OSError` subclass, so it must
+    be caught before the `URLError` catch below, or a server merely
     answering with a non-2xx status (e.g. 404 for a not-yet-ready path)
-    would be misread as the port having closed. Only a connection-level
-    failure (refused, reset, no route) means the port actually closed.
+    would be misread as the port having closed. A read `TimeoutError` is
+    also NOT a closed port: the listener accepted the connection and then
+    stalled (hung, or draining under load) — exactly the "still holds the
+    port" case this poll exists to catch. Only a connection-level failure
+    (refused, reset, no route) means the port actually closed.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -87,8 +90,19 @@ def _wait_for_port_closed(url: str, timeout: float = 10.0) -> None:
                 resp.read()
         except urllib.error.HTTPError:
             pass  # server answered (with an error status) — still open
-        except OSError:
-            return
+        except urllib.error.URLError as exc:
+            # urlopen wraps connection-level failures in URLError. A
+            # connect timeout (reason is a TimeoutError) is ambiguous —
+            # treat it as still open rather than risk spawning into a
+            # held port.
+            if isinstance(exc.reason, TimeoutError):
+                pass
+            else:
+                return  # refused / reset / no route — port closed
+        except TimeoutError:
+            pass  # accepted the connection, then stalled mid-read — still open
+        except ConnectionError:
+            return  # reset at read time — the listener is dying or gone
         time.sleep(0.2)
     raise LifecycleError(f"port still answering at {url} after {timeout}s")
 

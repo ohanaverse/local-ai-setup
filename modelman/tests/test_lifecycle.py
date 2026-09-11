@@ -280,6 +280,25 @@ def test_wait_for_port_closed_returns_on_connection_refused():
         _wait_for_port_closed("http://localhost:8003/v1/models", timeout=1.0)  # must not raise
 
 
+def test_wait_for_port_closed_read_timeout_means_still_open():
+    """A read TimeoutError means the listener accepted the connection and
+    then stalled (hung server / still draining under the 10s stop grace)
+    — the port is still held. Declaring it closed spawns a new mtplx
+    serve into the busy port, which dies as the misleading 'exited
+    immediately (address already in use)' instead of the intended 'port
+    still held' error."""
+    from modelman.providers.lifecycle import LifecycleError, _wait_for_port_closed
+
+    with (
+        patch(
+            "modelman.providers.lifecycle.urllib.request.urlopen",
+            side_effect=TimeoutError,
+        ),
+        pytest.raises(LifecycleError, match="still answering"),
+    ):
+        _wait_for_port_closed("http://localhost:8003/v1/models", timeout=0.3)
+
+
 def test_start_mtplx_serve_raises_when_process_exits_immediately():
     """A bad CLI flag or missing weights can make mtplx serve exit before the
     model ever loads; start must surface that instead of waiting 300s."""
