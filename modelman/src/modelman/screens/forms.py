@@ -1048,6 +1048,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             vid = self._variant["id"]
         elif kind == "native":
             vid = f"{provider}/{name}"
+        elif provider == "mtplx":
+            # MTPLX ids keep raw slashes (OpenRouter-style provider/rest,
+            # where rest may itself contain '/'), matching the live
+            # registry.toml convention and parse_model()'s mtplx branch
+            # above — unlike llamacpp/omlx, whose ids must be escaped to
+            # form a single valid path segment elsewhere.
+            vid = f"{provider}/{name}"
         else:
             vid = f"{provider}/{name.replace('/', '--')}"  # type: ignore[union-attr]
 

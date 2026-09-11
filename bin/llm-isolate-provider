@@ -249,6 +249,20 @@ PYEOF
         # Forward an explicit model arg so callers (modelman start, benchmark
         # sweeps) can select a specific mtplx model instead of defaulting to
         # the first one in the registry.
+        #
+        # Unlike modelman itself (installed into modelman/.venv via `uv
+        # sync`), this script invokes the ambient `python3` directly — `make
+        # install` never puts modelman on its import path. Guard here so a
+        # missing import fails clean (JSON-envelope error contract) instead
+        # of a raw ModuleNotFoundError traceback.
+        if ! python3 -c 'import modelman' 2>/dev/null; then
+            echo "modelman is not importable by the ambient python3 (no 'import modelman')." >&2
+            echo "Normal modelman commands work via 'cd modelman && uv run ...', but this" >&2
+            echo "script's mtplx isolation needs modelman importable directly. Fix by" >&2
+            echo "exporting PYTHONPATH=<repo>/modelman/src, or installing modelman" >&2
+            echo "editable into the ambient python3 (e.g. 'python3 -m pip install -e modelman')." >&2
+            exit 1
+        fi
         if [ -n "${2:-}" ]; then
             python3 -m modelman.providers.lifecycle isolate mtplx "$2"
         else

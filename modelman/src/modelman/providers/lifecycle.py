@@ -280,12 +280,16 @@ def stop(provider_id: str) -> LifecycleResult:
 
 
 def stop_all() -> LifecycleResult:
-    """Stop every local provider."""
-    mtplx_result = stop("mtplx")
-    others = _delegate_stop_all()
-    ok = mtplx_result.ok and others.ok
-    error = None if ok else (mtplx_result.error or others.error)
-    return LifecycleResult("stop-all", "", "", ok, error)
+    """Stop every local provider.
+
+    Delegates entirely to the bash helper's stop-all mode, which already
+    tears down mtplx via the shared `mtplx_stop` bash function as part of
+    the same call — calling `stop("mtplx")` here too would double-stop it
+    (paying a second full `mtplx stop --grace-seconds 10`) and, on a
+    machine without the `mtplx` binary installed, would misreport overall
+    failure even though every real provider was torn down cleanly.
+    """
+    return _delegate_stop_all()
 
 
 def _main(argv: list[str]) -> int:

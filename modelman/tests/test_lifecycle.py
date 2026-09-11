@@ -129,15 +129,23 @@ def test_stop_non_mtplx_returns_error_envelope_not_raise():
     assert "omlx" in (result.error or "")
 
 
-def test_stop_all_stops_mtplx_and_delegates_others():
+def test_stop_all_delegates_to_bash_helper_only():
+    """stop_all() must delegate entirely to _delegate_stop_all() and return
+    its result as-is, without also calling stop("mtplx") directly: the bash
+    helper's stop-all mode already tears down mtplx via the shared
+    mtplx_stop function, so a direct call here would double-stop it and
+    (on a machine missing the mtplx binary) misreport overall failure even
+    though every real provider was torn down cleanly. stop() itself is
+    unaffected and is tested separately above."""
     with (
-        patch("modelman.providers.lifecycle.stop", return_value=LifecycleResult("mtplx", "", "", True, None)) as mock_stop,
+        patch("modelman.providers.lifecycle.stop") as mock_stop,
         patch("modelman.providers.lifecycle._delegate_stop_all", return_value=LifecycleResult("stop-all", "", "", True, None)) as mock_delegate,
     ):
         result = stop_all()
-    mock_stop.assert_called_once_with("mtplx")
+    mock_stop.assert_not_called()
     mock_delegate.assert_called_once()
     assert result.ok is True
+    assert result.provider == "stop-all"
 
 
 def test_cli_prints_json_envelope(capsys):

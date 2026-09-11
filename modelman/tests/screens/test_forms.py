@@ -1790,7 +1790,10 @@ async def test_submit_local_only_with_local_path_builds_spec_without_repo():
 @pytest.mark.asyncio
 async def test_submit_mtplx_repo_only_produces_correct_spec():
     """MTPLX accepts an HF-style repo id and stores it as repo/name, with no
-    local_path. The id escapes the slash in the repo id like other HF providers."""
+    local_path. Unlike llamacpp/omlx, the id keeps the repo id's raw slashes
+    rather than escaping them to '--': this matches the live registry.toml
+    convention (OpenRouter-style provider/rest, where rest may itself
+    contain '/'), not llamacpp/omlx's need for a single valid path segment."""
     form = ModelForm(
         providers=["mtplx"], default_provider="mtplx", provider_kinds={"mtplx": "local-only"}
     )
@@ -1813,7 +1816,10 @@ async def test_submit_mtplx_repo_only_produces_correct_spec():
     assert spec["local_path"] is None
     assert spec["location"] == "local"
     assert spec["name"] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
-    assert spec["id"] == "mtplx/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"
+    # Raw slashes, not '--'-escaped: mirrors the live registry.toml
+    # convention (mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality), not
+    # llamacpp/omlx's path-segment escaping.
+    assert spec["id"] == "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
 
 
 @pytest.mark.asyncio
