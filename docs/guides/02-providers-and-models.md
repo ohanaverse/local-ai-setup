@@ -259,10 +259,10 @@ grep -c "exposed = true" ~/.config/local-ai/modelman.toml
 ```
 
 ```text
-24
+27
 ```
 
-> **Historical note (2026-08-30, updated 2026-09-03):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 24: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — and eleven openrouter models exposed through the TUI/CLI since. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the omlx entries remain hand-managed by design (the llama.cpp rows were retired 2026-09-07) and keep `exposed = false`.
+> **Historical note (2026-08-30, updated 2026-09-10):** `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models — the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models — twelve openrouter models exposed through the TUI/CLI since, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`) exposed by hand, and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66) exposed via `modelman expose`. Other in-registry ollama models like `ollama/gpt-oss:20b` above simply haven't been exposed, and the remaining omlx entries stay hand-managed by design (the llama.cpp rows were retired 2026-09-07) and keep `exposed = false`.
 
 Registry-side probe for a newly added model (only applies after a TUI add — `sync` and `expose` never add model ids); expected output mirrors the Step-3 ornith entry shape (the `id` line plus the 3 lines after it):
 
