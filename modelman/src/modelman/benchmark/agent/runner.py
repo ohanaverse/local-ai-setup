@@ -516,7 +516,13 @@ def run_suite(
                 elif row.provider_id == "mtplx":
                     # MTPLX is single-model-per-process; pass the repo id so
                     # bin/llm-isolate-provider starts the requested model.
-                    extra_args = (registry.model(row.model_id).model_name,)
+                    # Pre-resolved onto the row at suite-load time (like the
+                    # mlx_lm_server pairing fields above) rather than a live
+                    # registry lookup here — suite.py's _expand_rows() always
+                    # populates it from the row's own model_id, so it is
+                    # never None for a row that reached this loop.
+                    assert row.mtplx_model_name is not None
+                    extra_args = (row.mtplx_model_name,)
                 else:
                     extra_args = ()
             except BenchmarkError as exc:

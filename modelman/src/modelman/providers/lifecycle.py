@@ -19,10 +19,13 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from dataclasses import asdict
 
-from ..benchmark.isolation import IsolateResult as LifecycleResult
+from ..local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from ..local_process import ProcessResult as LifecycleResult
+from ..local_process import http_models_ids as _http_models_ids
 from ..registry import load_registry
 
 MTPLX_PORT = 8003
@@ -30,14 +33,6 @@ MTPLX_BASE = "http://localhost:8003"
 MTPLX_DIRECT_URL = "http://localhost:8003/v1/chat/completions"
 MTPLX_PIDFILE = "/tmp/local-ai-setup-mtplx.pid"
 MTPLX_LOG = "/tmp/local-ai-setup-mtplx.log"
-
-# Provider ids that use an LLM_ISOLATE_*_MODEL env var in bin/llm-isolate-provider.
-# mlx_lm_server is deliberately absent: it takes target+draft as positional args.
-_ENV_VAR_BY_PROVIDER = {
-    "ollama": "LLM_ISOLATE_OLLAMA_MODEL",
-    "omlx": "LLM_ISOLATE_OMLX_4BIT_MODEL",
-    "omlx-6bit": "LLM_ISOLATE_OMLX_6BIT_MODEL",
-}
 
 
 class LifecycleError(Exception):
@@ -70,11 +65,22 @@ def _stop_others() -> None:
 
 
 def _wait_for_port_closed(url: str, timeout: float = 10.0) -> None:
-    """Poll a localhost URL until it stops responding, or raise on timeout."""
+    """Poll a localhost URL until it stops responding, or raise on timeout.
+
+    A response — success or HTTP error status — means something is still
+    listening. `HTTPError` is a `URLError`/`OSError` subclass, so it must be
+    caught before the general `OSError` catch below, or a server merely
+    answering with a non-2xx status (e.g. 404 for a not-yet-ready path)
+    would be misread as the port having closed. Only a connection-level
+    failure (refused, reset, no route) means the port actually closed.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            urllib.request.urlopen(url, timeout=1.0)  # noqa: S310 — localhost probe
+            with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — localhost probe
+                resp.read()
+        except urllib.error.HTTPError:
+            pass  # server answered (with an error status) — still open
         except OSError:
             return
         time.sleep(0.2)
@@ -134,31 +140,14 @@ def _start_mtplx_serve(model: str) -> None:
             with open(MTPLX_LOG, "rb") as f:
                 f.seek(0, 2)
                 size = f.tell()
-                if isinstance(size, int):
-                    f.seek(max(0, size - 1024))
-                    log_tail = f.read().decode(errors="replace")[-512:]
+                f.seek(max(0, size - 1024))
+                log_tail = f.read().decode(errors="replace")[-512:]
         except OSError:
             pass
         raise LifecycleError(
             f"mtplx serve exited immediately (exit {proc.poll()})"
             + (f"; log tail: {log_tail}" if log_tail else "")
         )
-
-
-def _http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — localhost probe
-            data = json.loads(resp.read().decode())
-    except (OSError, ValueError):
-        return []
-    items = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        return []
-    return [
-        item["id"]
-        for item in items
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ]
 
 
 def _wait_for_model(model: str, timeout: float = 300.0) -> None:
@@ -204,10 +193,11 @@ def _warmup(model: str, timeout: float = 120.0) -> None:
 def _stop_mtplx() -> LifecycleResult:
     """Stop MTPLX via `mtplx stop --port 8003 --grace-seconds 10`. Safe to
     call when nothing is running (mtplx stop exits 0)."""
-    if shutil.which("mtplx") is None:
+    bin_path = shutil.which("mtplx")
+    if bin_path is None:
         return LifecycleResult("mtplx", "", MTPLX_DIRECT_URL, False, "mtplx binary not found on PATH")
     result = subprocess.run(
-        ["mtplx", "stop", "--port", str(MTPLX_PORT), "--grace-seconds", "10"],
+        [bin_path, "stop", "--port", str(MTPLX_PORT), "--grace-seconds", "10"],
         capture_output=True,
         text=True,
         check=False,

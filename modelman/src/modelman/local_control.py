@@ -35,7 +35,8 @@ from .benchmark.isolation import (
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
 )
-from .providers.lifecycle import _ENV_VAR_BY_PROVIDER, _http_models_ids
+from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from .local_process import http_models_ids as _http_models_ids
 from .registry import Registry, base_origin, model_has_local_artifact
 from .state import load_state, locked_state
 

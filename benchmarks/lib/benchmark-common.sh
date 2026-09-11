@@ -7,8 +7,15 @@
 # or write_table_header. isolate_one expects ISOLATE_HELPER, ISOLATE_ID,
 # ISOLATE_ENV, and DIRECT_MODELS to be set by the sourcing script (each
 # script keeps its own copies of these — they differ per backend set).
+# ISOLATE_EXTRA is optional: a sourcing script may set
+# ISOLATE_EXTRA[key]="second-positional-arg" for a future backend whose
+# no-ISOLATE_ENV branch needs more than one positional arg after the model
+# (e.g. a draft-model repo); every current backend leaves it unset, which
+# isolate_one treats as no extra args.
 
 BENCHMARK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+declare -A ISOLATE_EXTRA
 
 # Build JSON payload via Python
 build_payload() {
@@ -40,6 +47,9 @@ PYEOF
 # mtplx case reads $2) — forward DIRECT_MODELS[$key] positionally so
 # isolation selects the model this run actually requested, instead of
 # falling back to whichever mtplx model happens to be first in the registry.
+# ISOLATE_EXTRA[$key], if set, is word-split and appended after the model —
+# a future backend needing a second positional arg (e.g. a draft model) sets
+# it; every current backend leaves it unset/empty.
 isolate_one() {
     local key="$1"
     echo "  [isolation] isolating ${ISOLATE_ID[$key]} (${DIRECT_MODELS[$key]})..."
@@ -47,7 +57,11 @@ isolate_one() {
         env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
             "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
     else
-        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" >/dev/null
+        # ISOLATE_EXTRA[$key] is deliberately word-split below: it's a
+        # space-separated list of additional positional args, empty for
+        # every current single-arg backend.
+        # shellcheck disable=SC2086
+        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" ${ISOLATE_EXTRA[$key]:-} >/dev/null
     fi
 }
 

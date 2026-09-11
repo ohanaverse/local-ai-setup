@@ -1,8 +1,12 @@
 #!/bin/bash
 # llm-isolate-provider — stop other local providers, start+warmup one.
-# Usage: llm-isolate-provider <provider-id>
+# Usage: llm-isolate-provider <provider-id> [model-or-target] [draft]
 #        llm-isolate-provider stop-all   (stop every local provider; modelman stop)
 # Supported: ollama, omlx, omlx-6bit, mlx_lm_server, mtplx
+#   mlx_lm_server requires [target] [draft] positional args (or
+#     LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL); mtplx accepts
+#     an optional [model-or-target] positional arg (else the first mtplx
+#     model in the registry); every other provider ignores extra args.
 # (The llamacpp case branch below is retained but disabled — retired
 # 2026-09-07, issue #33. Re-enable steps: docs/reference/provider-artifacts.md.)
 # On success, print JSON with provider/model/direct_url.
@@ -21,7 +25,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mtplx.sh"
 
 PROVIDER="$1"
 if [ -z "$PROVIDER" ]; then
-    echo "usage: llm-isolate-provider <provider-id>" >&2
+    echo "usage: llm-isolate-provider <provider-id> [model-or-target] [draft]" >&2
     exit 1
 fi
 

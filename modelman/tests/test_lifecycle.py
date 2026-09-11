@@ -108,12 +108,20 @@ def test_start_mtplx_serve_does_not_stop_mtplx_again():
 
 
 def test_stop_mtplx_runs_mtplx_stop():
-    with patch("modelman.providers.lifecycle.subprocess.run") as mock_run:
+    """subprocess.run must be invoked with the shutil.which-resolved binary
+    path, not a bare "mtplx" literal — matching _start_mtplx_serve's own
+    resolve-once-then-reuse pattern. Mocking shutil.which also makes this
+    test hermetic: it previously depended on a real `mtplx` being on the
+    ambient PATH to reach the (correctly, but accidentally) same result."""
+    with (
+        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
+        patch("modelman.providers.lifecycle.subprocess.run") as mock_run,
+    ):
         mock_run.return_value.returncode = 0
         result = stop("mtplx")
     mock_run.assert_called_once()
     args = mock_run.call_args.args[0]
-    assert args[:2] == ["mtplx", "stop"]
+    assert args[:2] == ["/usr/local/bin/mtplx", "stop"]
     assert "--port" in args and "8003" in args
     assert result.ok is True
 
@@ -239,6 +247,39 @@ def test_start_mtplx_serve_raises_when_port_still_held():
     mock_popen.assert_not_called()
 
 
+def test_wait_for_port_closed_treats_http_error_as_still_open():
+    """HTTPError (e.g. a 404/500 from the health path) means the server
+    answered — the port is NOT closed. HTTPError is a URLError/OSError
+    subclass, so a bare `except OSError` would misread it as "closed" and
+    let a spawn proceed into a port that is still held by the prior
+    process."""
+    from urllib.error import HTTPError
+
+    from modelman.providers.lifecycle import LifecycleError, _wait_for_port_closed
+
+    mock_urlopen = MagicMock(side_effect=HTTPError("http://x", 404, "not found", None, None))
+    with (
+        patch("modelman.providers.lifecycle.urllib.request.urlopen", mock_urlopen),
+        patch("modelman.providers.lifecycle.time.monotonic", side_effect=[0.0, 0.0, 1000.0]),
+        patch("modelman.providers.lifecycle.time.sleep"),
+        pytest.raises(LifecycleError, match="still answering"),
+    ):
+        _wait_for_port_closed("http://localhost:8003/v1/models", timeout=1.0)
+    mock_urlopen.assert_called_once()
+
+
+def test_wait_for_port_closed_returns_on_connection_refused():
+    """A true connection-level failure (port actually closed) must return
+    immediately rather than being misread as "still open"."""
+    from modelman.providers.lifecycle import _wait_for_port_closed
+
+    with patch(
+        "modelman.providers.lifecycle.urllib.request.urlopen",
+        side_effect=ConnectionRefusedError(),
+    ):
+        _wait_for_port_closed("http://localhost:8003/v1/models", timeout=1.0)  # must not raise
+
+
 def test_start_mtplx_serve_raises_when_process_exits_immediately():
     """A bad CLI flag or missing weights can make mtplx serve exit before the
     model ever loads; start must surface that instead of waiting 300s."""
@@ -247,12 +288,19 @@ def test_start_mtplx_serve_raises_when_process_exits_immediately():
     proc = MagicMock()
     proc.pid = 1234
     proc.poll.return_value = 1
+    # mock_open() doesn't simulate real file position tracking — .tell()
+    # and read_data must be configured explicitly so the log-tail read
+    # (f.seek(0, 2); size = f.tell(); f.seek(...); f.read().decode(...))
+    # behaves like a real (here, empty) file instead of returning a bare
+    # MagicMock from .tell() that can't be compared against an int.
+    log_mock = mock_open(read_data=b"")
+    log_mock.return_value.tell.return_value = 0
     with (
         patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
         patch("modelman.providers.lifecycle._wait_for_port_closed"),
         patch("modelman.providers.lifecycle.subprocess.Popen", return_value=proc),
         patch("modelman.providers.lifecycle.time.sleep"),
-        patch("builtins.open", mock_open()),
+        patch("builtins.open", log_mock),
         pytest.raises(LifecycleError, match="exited immediately"),
     ):
         _start_mtplx_serve("org/repo")

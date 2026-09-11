@@ -12,14 +12,13 @@
 # shellcheck source=poll.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/poll.sh"
 
-MTPLX_STOP_PORT=8003
-
 # Stop MTPLX via `mtplx stop --grace-seconds 10`, tolerating "nothing
 # running" (mtplx stop exits 0 either way), then poll (bounded, 5 tries) for
 # the port to actually close — a warning, not a failure, if it doesn't:
 # neither caller can afford to abort its whole run over a stuck mtplx stop.
 mtplx_stop() {
-    silence_stdout mtplx stop --port "$MTPLX_STOP_PORT" --grace-seconds 10 || true
-    wait_for_port_closed "http://localhost:$MTPLX_STOP_PORT/v1/models" 5 \
-        || echo "warning: mtplx still listening on port $MTPLX_STOP_PORT" >&2
+    local port=8003
+    silence_stdout mtplx stop --port "$port" --grace-seconds 10 || true
+    wait_for_port_closed "http://localhost:$port/v1/models" 5 \
+        || echo "warning: mtplx still listening on port $port" >&2
 }
