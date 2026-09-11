@@ -4,6 +4,7 @@
 from . import (
     llamacpp,  # noqa: F401
     mlx_lm_server,  # noqa: F401
+    mtplx,  # noqa: F401
     ollama,  # noqa: F401
     omlx,  # noqa: F401
 )
