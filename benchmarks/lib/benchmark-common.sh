@@ -109,7 +109,7 @@ run_streaming() {
     # Detect error responses (auth failure, provider 429/5xx, etc.)
     if grep -q '"error"' "$tmpfile"; then
         local errmsg
-        errmsg=$(grep -oE '"message":"[^"]*"' "$tmpfile" | head -1)
+        errmsg=$(grep -oE '"message": *"[^"]*"' "$tmpfile" | head -1)
         echo "  $label: ERROR ${errmsg:-unknown}"
         echo "| $label | N/A | N/A | N/A | N/A |" >> "$OUTFILE"
         rm -f "$tmpfile"
@@ -125,11 +125,15 @@ run_streaming() {
         ttft_ms=$(( (first_token_ns - start_ns) / 1000000 ))
     fi
 
+    # Both patterns tolerate an optional space after the colon: ollama/omlx
+    # emit compact JSON ("completion_tokens":30), while mtplx's serializer
+    # inserts a space ("completion_tokens": 30) — a no-space-only pattern
+    # silently reports tokens=0 for any backend using the spaced style.
     local token_count
-    token_count=$(grep -oE '"completion_tokens":[0-9]+' "$tmpfile" | tail -1 | grep -oE '[0-9]+' || echo "0")
+    token_count=$(grep -oE '"completion_tokens": *[0-9]+' "$tmpfile" | tail -1 | grep -oE '[0-9]+' || echo "0")
 
     if [ "$token_count" = "0" ]; then
-        token_count=$(grep -E '"content":"[^"]' "$tmpfile" | wc -l | tr -d ' ')
+        token_count=$(grep -E '"content": *"[^"]' "$tmpfile" | wc -l | tr -d ' ')
     fi
 
     local throughput="N/A"
