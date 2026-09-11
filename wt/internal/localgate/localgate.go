@@ -29,6 +29,7 @@ const probeTimeout = 2 * time.Second
 var (
 	omlxModelsURL        = "http://localhost:8000/v1/models"
 	mlxLMServerModelsURL = "http://localhost:8001/v1/models"
+	mtplxModelsURL       = "http://localhost:8003/v1/models"
 )
 
 // httpClient is a seam so tests can rely on probeTimeout without waiting
@@ -49,6 +50,14 @@ func SetMlxLMServerProbeURLForTest(url string) (restore func()) {
 	old := mlxLMServerModelsURL
 	mlxLMServerModelsURL = url
 	return func() { mlxLMServerModelsURL = old }
+}
+
+// SetMtplxProbeURLForTest is SetOmlxProbeURLForTest's mtplx counterpart.
+// Tests only.
+func SetMtplxProbeURLForTest(url string) (restore func()) {
+	old := mtplxModelsURL
+	mtplxModelsURL = url
+	return func() { mtplxModelsURL = old }
 }
 
 // nameMatches reports whether a server-reported model id names the same
@@ -97,8 +106,7 @@ func fetchModelIDs(url string) []string {
 // and oMLX's 4-bit and 6-bit variants share port 8000, so a bare 2xx
 // would verify either as the other.
 //
-// Unknown/unsupported providers (including a future mtplx before it is
-// wired in here, issue #66) return false — a marker naming a provider
+// Unknown/unsupported providers return false — a marker naming a provider
 // this probe doesn't know about fails closed as "not running" rather
 // than reporting stale state as healthy.
 func Available(m config.Model) bool {
@@ -123,6 +131,13 @@ func Available(m config.Model) bool {
 		// reconstruct — its registry parser deliberately ignores the
 		// model's fetch/draft fields.
 		return len(fetchModelIDs(mlxLMServerModelsURL)) > 0
+	case "mtplx":
+		for _, served := range fetchModelIDs(mtplxModelsURL) {
+			if nameMatches(served, m.ModelName) {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}

@@ -105,11 +105,28 @@ func TestAvailableMlxLmServerEmptyModelList(t *testing.T) {
 }
 
 // TestAvailableUnknownProviderIsUnavailable asserts that a marker naming a
-// not-yet-wired-in provider (e.g. the future mtplx, issue #66) fails
-// closed as "not running" rather than panicking or reporting healthy.
+// provider this probe doesn't know about fails closed as "not running"
+// rather than panicking or reporting healthy.
 func TestAvailableUnknownProviderIsUnavailable(t *testing.T) {
-	if Available(config.Model{ID: "mtplx/some-model", ModelName: "some-model"}) {
+	if Available(config.Model{ID: "ghost/some-model", ModelName: "some-model", ProviderID: "ghost"}) {
 		t.Error("expected an unknown provider to report unavailable")
+	}
+}
+
+// TestAvailableMtplxNameChecked asserts the mtplx probe verifies the MARKED
+// model on port 8003, not just provider liveness.
+func TestAvailableMtplxNameChecked(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"))
+	defer srv.Close()
+	defer SetMtplxProbeURLForTest(srv.URL)()
+
+	m := config.Model{ID: "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", ModelName: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", ProviderID: "mtplx"}
+	if !Available(m) {
+		t.Error("expected the served mtplx model to be available")
+	}
+	other := config.Model{ID: "mtplx/Other/Model", ModelName: "Other/Model", ProviderID: "mtplx"}
+	if Available(other) {
+		t.Error("expected a different served model to be unavailable")
 	}
 }
 
