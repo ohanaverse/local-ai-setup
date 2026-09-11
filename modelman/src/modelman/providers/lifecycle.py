@@ -40,6 +40,19 @@ class LifecycleError(Exception):
     """Raised for internal lifecycle failures that map to ok=False."""
 
 
+def _log_tail(max_bytes: int = 1024) -> str:
+    """The last ~512 chars of the mtplx serve log — the crash cause for
+    'serve died' error messages (empty string when unreadable)."""
+    try:
+        with open(MTPLX_LOG, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return f.read().decode(errors="replace")[-512:]
+    except OSError:
+        return ""
+
+
 def _resolve_mtplx_model(model: str | None) -> str:
     """The MTPLX repo id to serve: the explicit `model`, else the single
     mtplx model in the registry."""
@@ -107,8 +120,10 @@ def _wait_for_port_closed(url: str, timeout: float = 10.0) -> None:
     raise LifecycleError(f"port still answering at {url} after {timeout}s")
 
 
-def _start_mtplx_serve(model: str) -> None:
-    """Start `mtplx serve` in the background, tracked by a pidfile.
+def _start_mtplx_serve(model: str) -> subprocess.Popen:
+    """Start `mtplx serve` in the background, tracked by a pidfile, and
+    return the Popen handle so the caller can watch for process death
+    during the model-load poll.
 
     Assumes the caller (isolate()) has already stopped any prior mtplx
     instance via _stop_others() — stopping it again here would pay a second
@@ -155,25 +170,29 @@ def _start_mtplx_serve(model: str) -> None:
     # bad CLI flag) before committing to a full model-load poll.
     time.sleep(0.2)
     if proc.poll() is not None:
-        log_tail = ""
-        try:
-            with open(MTPLX_LOG, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 1024))
-                log_tail = f.read().decode(errors="replace")[-512:]
-        except OSError:
-            pass
+        log_tail = _log_tail()
         raise LifecycleError(
             f"mtplx serve exited immediately (exit {proc.poll()})"
             + (f"; log tail: {log_tail}" if log_tail else "")
         )
+    return proc
 
 
-def _wait_for_model(model: str, timeout: float = 300.0) -> None:
-    """Poll /v1/models until it lists `model` (or the deadline passes)."""
+def _wait_for_model(model: str, proc: subprocess.Popen, timeout: float = 300.0) -> None:
+    """Poll /v1/models until it lists `model`, the serve process dies, or
+    the deadline passes."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            # The serve process died mid-load (OOM kill, missing weights
+            # discovered late): without this check the HTTP poll below
+            # runs the full 300s against a dead port while the real
+            # crash cause stays buried in the log.
+            log_tail = _log_tail()
+            raise LifecycleError(
+                f"mtplx serve exited during model load (exit {proc.returncode})"
+                + (f"; log tail: {log_tail}" if log_tail else "")
+            )
         ids = _http_models_ids(f"{MTPLX_BASE}/v1/models")
         if any(served == model or served.endswith("/" + model) for served in ids):
             return
@@ -249,9 +268,9 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
     try:
         resolved = _resolve_mtplx_model(model)
         _stop_others()
-        _start_mtplx_serve(resolved)
+        proc = _start_mtplx_serve(resolved)
         started = True
-        _wait_for_model(resolved)
+        _wait_for_model(resolved, proc)
         _warmup(resolved)
     except Exception as exc:  # noqa: BLE001 — envelope contract, never a traceback
         # RegistryError/TOMLDecodeError from load_registry() are NOT

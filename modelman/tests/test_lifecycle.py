@@ -31,7 +31,11 @@ def _mtplx_registry():
 def test_isolate_mtplx_starts_serve_and_warmup():
     with (
         patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
+        # _start_mtplx_serve now returns the Popen handle isolate() must
+        # forward into _wait_for_model — configure the mock's return value
+        # explicitly so this flow stays visible even though Mock()'s
+        # implicit MagicMock return would already satisfy it.
+        patch("modelman.providers.lifecycle._start_mtplx_serve", return_value=MagicMock()) as mock_start,
         patch("modelman.providers.lifecycle._wait_for_model") as mock_wait,
         patch("modelman.providers.lifecycle._warmup") as mock_warmup,
         patch("modelman.providers.lifecycle.load_registry", return_value=_mtplx_registry()),
@@ -39,7 +43,7 @@ def test_isolate_mtplx_starts_serve_and_warmup():
         result = isolate("mtplx")
     mock_stop.assert_called_once()
     mock_start.assert_called_once_with("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
-    mock_wait.assert_called_once()
+    mock_wait.assert_called_once_with("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", mock_start.return_value)
     mock_warmup.assert_called_once()
     assert result.ok is True
     assert result.provider == "mtplx"
@@ -445,3 +449,23 @@ def test_cli_registry_error_prints_json_envelope(capsys):
     assert code == 1
     assert out["ok"] is False
     assert "corrupt" in out["error"]
+
+
+def test_wait_for_model_raises_promptly_when_serve_dies():
+    """A serve process that dies mid-load (OOM kill, missing weights
+    found late) must fail the wait immediately with the log tail, not
+    poll a dead port for the full 300s deadline — the real crash cause
+    would otherwise sit unread in the mtplx log."""
+    from modelman.providers.lifecycle import LifecycleError, _wait_for_model
+
+    proc = MagicMock()
+    proc.poll.return_value = 137  # SIGKILL'd (OOM) on first check
+    proc.returncode = 137
+    with (
+        patch(
+            "modelman.providers.lifecycle._http_models_ids",
+            side_effect=AssertionError("must not poll HTTP after process death"),
+        ),
+        pytest.raises(LifecycleError, match="exited during model load"),
+    ):
+        _wait_for_model("Org/Model", proc, timeout=300.0)
