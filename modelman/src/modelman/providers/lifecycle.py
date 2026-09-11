@@ -77,6 +77,18 @@ def _stop_others() -> None:
         )
 
 
+def _wait_for_port_closed(url: str, timeout: float = 10.0) -> None:
+    """Poll a localhost URL until it stops responding, or raise on timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=1.0)  # noqa: S310 — localhost probe
+        except OSError:
+            return
+        time.sleep(0.2)
+    raise LifecycleError(f"port still answering at {url} after {timeout}s")
+
+
 def _start_mtplx_serve(model: str) -> None:
     """Start `mtplx serve` in the background, tracked by a pidfile."""
     bin_path = shutil.which("mtplx")
@@ -85,6 +97,10 @@ def _start_mtplx_serve(model: str) -> None:
     # Stop any prior instance first so a re-start is idempotent (mirrors
     # mlx-lm-server.sh's unconditional-stop-before-spawn).
     _stop_mtplx()
+    # Wait for the OS to reclaim port 8003 before spawning the new process.
+    # Spawning into a still-held port can leave the old process answering
+    # warmup, or the new process may die immediately and leave a stale pidfile.
+    _wait_for_port_closed(f"{MTPLX_BASE}/v1/models")
     with open(MTPLX_LOG, "ab") as log:
         proc = subprocess.Popen(
             [
@@ -111,6 +127,24 @@ def _start_mtplx_serve(model: str) -> None:
         )
     with open(MTPLX_PIDFILE, "w") as f:
         f.write(str(proc.pid))
+    # Give the process a moment to fail (missing weights, port conflict,
+    # bad CLI flag) before committing to a full model-load poll.
+    time.sleep(0.2)
+    if proc.poll() is not None:
+        log_tail = ""
+        try:
+            with open(MTPLX_LOG, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                if isinstance(size, int):
+                    f.seek(max(0, size - 1024))
+                    log_tail = f.read().decode(errors="replace")[-512:]
+        except OSError:
+            pass
+        raise LifecycleError(
+            f"mtplx serve exited immediately (exit {proc.poll()})"
+            + (f"; log tail: {log_tail}" if log_tail else "")
+        )
 
 
 def _http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
@@ -161,7 +195,7 @@ def _warmup(model: str, timeout: float = 120.0) -> None:
             )
             with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
                 body = resp.read().decode()
-            if '"object":"chat.completion"' in body:
+            if '"chat.completion"' in body:
                 return
         except OSError:
             pass

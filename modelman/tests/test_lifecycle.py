@@ -1,4 +1,6 @@
 import json
+
+import pytest
 from unittest.mock import MagicMock, mock_open, patch
 
 from modelman.providers.lifecycle import (
@@ -77,10 +79,12 @@ def test_start_mtplx_serve_pins_model_id():
     with (
         patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
         patch("modelman.providers.lifecycle._stop_mtplx"),
+        patch("modelman.providers.lifecycle._wait_for_port_closed"),
         patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
         patch("builtins.open", mock_open()),
+        patch("modelman.providers.lifecycle.time.sleep"),
     ):
-        mock_popen.return_value = MagicMock(pid=1234)
+        mock_popen.return_value = MagicMock(pid=1234, poll=MagicMock(return_value=None))
         _start_mtplx_serve("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
     args = mock_popen.call_args.args[0]
     assert "--model-id" in args
@@ -149,6 +153,76 @@ def test_delegate_isolate_mtplx_uses_positional_arg_not_env_var():
     assert args == ["/bin/llm-isolate-provider", "mtplx"]
     env = mock_run.call_args.kwargs.get("env")
     assert env is None
+
+
+def _mock_urlopen(body: bytes):
+    """Return a MagicMock that behaves as a context manager yielding an object
+    whose .read() returns `body`."""
+    m = MagicMock()
+    m.return_value.__enter__.return_value.read.return_value = body
+    return m
+
+
+def test_warmup_matches_spaced_json():
+    """MTPLX may serialize the response with spaces between keys and values;
+    the warmup success check must match that form, not only compact JSON."""
+    from modelman.providers.lifecycle import _warmup
+
+    body = '{"object": "chat.completion", "choices": []}'.encode()
+    with patch("modelman.providers.lifecycle.urllib.request.urlopen", _mock_urlopen(body)):
+        # Should return without raising.
+        _warmup("org/repo")
+
+
+def test_warmup_fails_when_no_chat_completion_marker():
+    """A response that never contains a chat.completion marker must time out
+    (here we make the deadline immediate by mocking time)."""
+    from modelman.providers.lifecycle import LifecycleError, _warmup
+
+    body = b'{"object":"list"}'
+    with (
+        patch("modelman.providers.lifecycle.urllib.request.urlopen", _mock_urlopen(body)),
+        patch("modelman.providers.lifecycle.time.monotonic", side_effect=[0.0, 1.0, 1000.0]),
+        patch("modelman.providers.lifecycle.time.sleep"),
+    ):
+        with pytest.raises(LifecycleError, match="warm up"):
+            _warmup("org/repo", timeout=1.0)
+
+
+def test_start_mtplx_serve_raises_when_port_still_held():
+    """If the previous mtplx process has not released port 8003, start must
+    fail fast instead of spawning into a port it cannot bind."""
+    from modelman.providers.lifecycle import LifecycleError, _start_mtplx_serve
+
+    with (
+        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
+        patch("modelman.providers.lifecycle._stop_mtplx"),
+        patch("modelman.providers.lifecycle._wait_for_port_closed", side_effect=LifecycleError("port still answering")),
+        patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
+    ):
+        with pytest.raises(LifecycleError, match="port still answering"):
+            _start_mtplx_serve("org/repo")
+    mock_popen.assert_not_called()
+
+
+def test_start_mtplx_serve_raises_when_process_exits_immediately():
+    """A bad CLI flag or missing weights can make mtplx serve exit before the
+    model ever loads; start must surface that instead of waiting 300s."""
+    from modelman.providers.lifecycle import LifecycleError, _start_mtplx_serve
+
+    proc = MagicMock()
+    proc.pid = 1234
+    proc.poll.return_value = 1
+    with (
+        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
+        patch("modelman.providers.lifecycle._stop_mtplx"),
+        patch("modelman.providers.lifecycle._wait_for_port_closed"),
+        patch("modelman.providers.lifecycle.subprocess.Popen", return_value=proc),
+        patch("modelman.providers.lifecycle.time.sleep"),
+        patch("builtins.open", mock_open()),
+    ):
+        with pytest.raises(LifecycleError, match="exited immediately"):
+            _start_mtplx_serve("org/repo")
 
 
 def test_delegate_isolate_forwards_extra_args():

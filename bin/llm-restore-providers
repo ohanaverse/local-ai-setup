@@ -47,18 +47,23 @@ restart_launchd() {
     wait_for "$url" "$name"
 }
 
+stop_mtplx() {
+    silence_stdout mtplx stop --port 8003 --grace-seconds 10 || true
+    wait_for_port_closed http://localhost:8003/v1/models 5 \
+        || echo "warning: mtplx still listening on port 8003" >&2
+}
+
 # Restart all providers in parallel — they are independent, so wall time is
 # the slowest service, not the sum.
 #
-# mlx_lm_server is never part of the standing baseline (unlike ollama/omlx/
-# litellm, which are always-on services this script restores), so its entry
-# here is a *stop*, not a restart. It must run unconditionally on every
-# invocation of this script: `modelman benchmark` calls isolate_provider()
-# per-target but restore_providers() only once at the very end of a run, so
-# if the last isolated target happened to be mlx_lm_server, this is the only
-# place its subprocess gets torn down — otherwise it would keep running
-# (holding GPU/RAM) right alongside the providers restored below, defeating
-# the point of isolation.
+# mlx_lm_server and mtplx are never part of the standing baseline (unlike
+# ollama/omlx/litellm, which are always-on services this script restores), so
+# their entries here are *stops*, not restarts. They must run unconditionally on
+# every invocation: `modelman benchmark` calls isolate_provider() per-target but
+# restore_providers() only once at the very end of a run, so if the last
+# isolated target was one of them, this is the only place its subprocess gets
+# torn down — otherwise it would keep running (holding GPU/RAM) right alongside
+# the providers restored below, defeating the point of isolation.
 FAILED=0
 restart_ollama & p1=$!
 restart_omlx & p2=$!
@@ -66,10 +71,12 @@ restart_omlx & p2=$!
 # in docs/reference/provider-artifacts.md.
 restart_launchd ~/Library/LaunchAgents/local.litellm.proxy.plist http://localhost:4000/v1/models litellm & p3=$!
 mlx_lm_server_stop & p4=$!
+stop_mtplx & p5=$!
 wait $p1 || FAILED=1
 wait $p2 || FAILED=1
 wait $p3 || FAILED=1
 wait $p4 || FAILED=1
+wait $p5 || FAILED=1
 
 if [ "$FAILED" -ne 0 ]; then
     echo "$LOG_PREFIX one or more providers failed to restore" >&2
