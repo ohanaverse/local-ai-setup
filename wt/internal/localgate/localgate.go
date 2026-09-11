@@ -29,7 +29,10 @@ const probeTimeout = 2 * time.Second
 var (
 	omlxModelsURL        = "http://localhost:8000/v1/models"
 	mlxLMServerModelsURL = "http://localhost:8001/v1/models"
-	mtplxModelsURL       = "http://localhost:8003/v1/models"
+	// Port 8003 is mtplx's fixed serve port; modelman's single source is
+	// modelman/providers/mtplx.py (MTPLX_PORT). Bash (bin/lib/mtplx.sh) and
+	// Go each carry the number once — keep them in lockstep if it moves.
+	mtplxModelsURL = "http://localhost:8003/v1/models"
 )
 
 // httpClient is a seam so tests can rely on probeTimeout without waiting

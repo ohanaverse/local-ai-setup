@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._toml_io import atomic_write_toml, drop_none, unknown_keys
+from .providers.mtplx import MTPLX_V1_BASE
 
 if TYPE_CHECKING:
     from .providers.base import VariantSpec
@@ -286,7 +287,7 @@ _DEFAULT_PROVIDER_TEMPLATES: dict[str, ProviderEntry] = {
         location="local",
         model_dir="~/.mtplx/models",
         protocols=["openai-chat"],
-        auth=AuthConfig(type="none", base_url="http://localhost:8003/v1"),
+        auth=AuthConfig(type="none", base_url=MTPLX_V1_BASE),
     ),
 }
 

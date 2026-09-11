@@ -37,6 +37,7 @@ from .benchmark.isolation import (
 )
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
+from .providers.mtplx import MTPLX_BASE
 from .registry import Registry, base_origin, model_has_local_artifact
 from .state import load_state, locked_state
 
@@ -47,7 +48,7 @@ _DEFAULT_BASE_ORIGIN = {
     "omlx": "http://localhost:8000",
     "omlx-6bit": "http://localhost:8000",
     "mlx_lm_server": "http://localhost:8001",
-    "mtplx": "http://localhost:8003",
+    "mtplx": MTPLX_BASE,
 }
 
 # Subprocess seam so tests can keep the probe hermetic (conftest patches

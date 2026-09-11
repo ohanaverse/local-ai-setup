@@ -17,6 +17,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/poll.sh"
 # the port to actually close — a warning, not a failure, if it doesn't:
 # neither caller can afford to abort its whole run over a stuck mtplx stop.
 mtplx_stop() {
+    # Port 8003 is mtplx's fixed serve port. modelman's single source for
+    # it is modelman/providers/mtplx.py (MTPLX_PORT); this bash constant
+    # and wt's localgate.go each carry the number once — keep the three
+    # in lockstep when it ever moves.
     local port=8003
     silence_stdout mtplx stop --port "$port" --grace-seconds 10 || true
     wait_for_port_closed "http://localhost:$port/v1/models" 5 \

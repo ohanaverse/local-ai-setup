@@ -28,10 +28,9 @@ from ..local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from ..local_process import ProcessResult as LifecycleResult
 from ..local_process import http_models_ids as _http_models_ids
 from ..registry import load_registry
+from .mtplx import MTPLX_BASE, MTPLX_PORT, MTPLX_V1_BASE
 
-MTPLX_PORT = 8003
-MTPLX_BASE = "http://localhost:8003"
-MTPLX_DIRECT_URL = "http://localhost:8003/v1/chat/completions"
+MTPLX_DIRECT_URL = f"{MTPLX_V1_BASE}/chat/completions"
 MTPLX_PIDFILE = "/tmp/local-ai-setup-mtplx.pid"
 MTPLX_LOG = "/tmp/local-ai-setup-mtplx.log"
 

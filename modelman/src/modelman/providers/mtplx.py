@@ -16,6 +16,17 @@ from typing import Any
 from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
 
+# The mtplx serve port and derived base URLs — the single source of
+# truth inside modelman: lifecycle.py (server management), registry.py
+# (the provider template's auth.base_url), and local_control.py (probe
+# fallback) all import from here. The bash (bin/lib/mtplx.sh) and Go
+# (wt/internal/localgate) sides each keep their own single in-file
+# constant — cross-language sharing happens through registry.toml's
+# auth.base_url, not imports.
+MTPLX_PORT = 8003
+MTPLX_BASE = f"http://localhost:{MTPLX_PORT}"
+MTPLX_V1_BASE = f"{MTPLX_BASE}/v1"
+
 
 def _model_dir(config: dict) -> Path:
     raw = config.get("model_dir", "~/.mtplx/models")
