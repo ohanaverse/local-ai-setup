@@ -34,3 +34,19 @@ poll_until_down() {
     done
     return 1
 }
+
+# Discard a command's stdout narration. Use for commands that print
+# progress/status on stdout but whose output must not pollute a caller's
+# stdout contract (e.g. `omlx stop` printing "Stopping `omlx`..." would
+# corrupt the JSON contract of bin/llm-isolate-provider).
+silence_stdout() {
+    "$@" 1>/dev/null
+}
+
+# Poll until `url` stops responding or we hit the deadline (tries × 0.2s).
+# Thin wrapper around poll_until_down with the interval used historically
+# by the isolation/restore helpers after issuing a stop.
+wait_for_port_closed() {
+    local url="$1" tries="${2:-5}"
+    poll_until_down "$url" 0.2 "$tries"
+}

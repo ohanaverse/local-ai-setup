@@ -35,6 +35,10 @@ def _repo_id(dir_name: str) -> str:
     return dir_name.replace("--", "/")
 
 
+def _is_local_path_entry(variant: VariantSpec) -> bool:
+    return bool(variant.get("local_path"))
+
+
 class MTPLXProvider(Provider):
     name = "mtplx"
 
@@ -91,12 +95,19 @@ class MTPLXProvider(Provider):
         return str(target)
 
     def delete(self, variant: VariantSpec, runner: _Runner | None = None) -> None:
+        """Remove the cached model directory under ~/.mtplx/models.
+
+        Mirrors oMLX's shared-artifact guard: a variant carrying an explicit
+        `local_path` is treated as a user-produced artifact (even though the
+        MTPLX form does not currently expose the field), and modelman must
+        never delete those.
+        """
         import shutil
 
         target = self._target_dir(variant)
         if target is None:
             raise ValueError(f"mtplx variant {variant['id']} missing name")
-        if target.exists():
+        if not _is_local_path_entry(variant) and target.exists():
             shutil.rmtree(target)
 
 

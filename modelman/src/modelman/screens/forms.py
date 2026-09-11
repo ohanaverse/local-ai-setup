@@ -27,6 +27,13 @@ from ..registry import Cost, _cost_from_dict, _cost_to_dict
 # "local-only".
 HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtplx")
 
+# Subset of HF_REPO_PROVIDERS whose "local-only" form also offers a
+# mutually-exclusive local-path Input for user-produced artifacts. MTPLX is
+# deliberately excluded: it discovers models in its own ~/.mtplx/models cache and
+# never accepts a user-supplied local_path, so showing the field would suggest
+# an unsupported workflow.
+LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx")
+
 
 def default_form_kind(provider: str) -> str:
     """Default ModelForm 'kind' for a provider id when the caller's
@@ -802,8 +809,16 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             self._initial_provider, self._default_kind(self._initial_provider)
         )
         self._set_single_model_visibility(kind != "dual-model")
-        self._set_local_path_visibility(kind == "local-only")
+        self._set_local_path_visibility(
+            kind == "local-only" and self._supports_local_path(self._initial_provider)
+        )
         self._set_dual_model_visibility(kind == "dual-model")
+
+    @staticmethod
+    def _supports_local_path(provider: str) -> bool:
+        """Whether the given provider's local-only form exposes the optional
+        local-path Input for user-produced artifacts."""
+        return provider in LOCAL_PATH_PROVIDERS
 
     def _set_per_token_visibility(self, show: bool) -> None:
         """Show/hide the per-token labels and price Inputs as a unit."""
@@ -913,7 +928,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         location_select.disabled = location_locked
 
         self._set_single_model_visibility(kind != "dual-model")
-        self._set_local_path_visibility(kind == "local-only")
+        self._set_local_path_visibility(
+            kind == "local-only" and self._supports_local_path(provider)
+        )
         self._set_dual_model_visibility(kind == "dual-model")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -986,12 +1003,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             return
 
         raw = self.query_one("#model", Input).value
+        show_local_path = kind == "local-only" and self._supports_local_path(provider)
         local_path_raw = (
-            self.query_one("#local-path", Input).value.strip() if kind == "local-only" else ""
+            self.query_one("#local-path", Input).value.strip() if show_local_path else ""
         )
 
         local_path: str | None = None
-        if kind == "local-only" and local_path_raw:
+        if show_local_path and local_path_raw:
             if raw.strip():
                 self._show_error("set either an HF repo or a local path, not both")
                 return

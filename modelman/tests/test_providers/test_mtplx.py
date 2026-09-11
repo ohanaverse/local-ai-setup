@@ -56,6 +56,24 @@ def test_delete_removes_model_dir(tmp_path):
     assert not d.exists()
 
 
+def test_delete_skips_local_path_variants(tmp_path):
+    """Variants carrying an explicit local_path are treated as user-produced
+    artifacts (mirroring oMLX). modelman must never delete them, even if a
+    directory with the same repo-derived name happens to exist."""
+    p = MTPLXProvider({"model_dir": str(tmp_path / "models")})
+    d = tmp_path / "models" / "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"
+    d.mkdir(parents=True)
+    (d / "w").write_bytes(b"x")
+    variant = {
+        "id": "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        "provider": "mtplx",
+        "name": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        "local_path": "/data/user-model",
+    }
+    p.delete(variant)
+    assert d.exists()
+
+
 def test_dir_name_and_repo_id_round_trip_for_multi_slash_repo():
     from modelman.providers.mtplx import _dir_name, _repo_id
 

@@ -35,22 +35,6 @@ OMLX_6BIT_MODEL="${LLM_ISOLATE_OMLX_6BIT_MODEL:-Ornith-1.5-35B-A3B-MLX-6bit}"
 MLXLM_MODEL="${LLM_ISOLATE_MLXLM_MODEL:-}"
 MLXLM_DRAFT_MODEL="${LLM_ISOLATE_MLXLM_DRAFT_MODEL:-}"
 
-# This script's stdout is its contract: isolation.py parses it as a single JSON
-# object. `omlx stop` shells out to brew, which narrates ("Stopping `omlx`...")
-# on *stdout*, so an isolate whose target needed oMLX stopped produced
-# prose-then-JSON and the caller died with "isolation helper returned invalid
-# JSON" — which, because the stop only happens when the service is up, made
-# every other run fail. Discard a command's stdout narration outright rather
-# than routing it through this script's own stderr and then redirecting that
-# to /dev/null at the call site — that combination discarded the command's
-# real stderr too, since both narration-turned-stderr and the command's own
-# stderr land on the same fd once redirected. Any future subprocess call that
-# narrates on stdout must route through this helper rather than repeating the
-# pattern ad hoc.
-silence_stdout() {
-    "$@" 1>/dev/null
-}
-
 warmup_payload() {
     local model="$1"
     python3 - "$model" <<'PYEOF'
@@ -145,13 +129,6 @@ wait_for_ollama_unloaded() {
         sleep 0.2
     done
     return 1
-}
-
-# Poll until `url` stops responding or we hit the deadline (tries × 0.2s).
-# Used after issuing a stop to confirm the OS reclaimed the port.
-wait_for_port_closed() {
-    local url="$1" tries="${2:-5}"
-    poll_until_down "$url" 0.2 "$tries"
 }
 
 # Warm up a model on a running server, retrying until it answers or we give up.
