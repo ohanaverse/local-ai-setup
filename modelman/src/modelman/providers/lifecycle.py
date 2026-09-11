@@ -30,6 +30,14 @@ MTPLX_DIRECT_URL = "http://localhost:8003/v1/chat/completions"
 MTPLX_PIDFILE = "/tmp/local-ai-setup-mtplx.pid"
 MTPLX_LOG = "/tmp/local-ai-setup-mtplx.log"
 
+# Provider ids that use an LLM_ISOLATE_*_MODEL env var in bin/llm-isolate-provider.
+# mlx_lm_server is deliberately absent: it takes target+draft as positional args.
+_ENV_VAR_BY_PROVIDER = {
+    "ollama": "LLM_ISOLATE_OLLAMA_MODEL",
+    "omlx": "LLM_ISOLATE_OMLX_4BIT_MODEL",
+    "omlx-6bit": "LLM_ISOLATE_OMLX_6BIT_MODEL",
+}
+
 
 @dataclass
 class LifecycleResult:
@@ -211,8 +219,11 @@ def _delegate_isolate(provider_id: str, model: str | None, extra_args: tuple[str
     if helper is None:
         return LifecycleResult(provider_id, model or "", "", False, "isolation helper not found on PATH")
     env = None
-    if model:
-        env = {**os.environ, f"LLM_ISOLATE_{provider_id.upper().replace('-', '_')}_MODEL": model}
+    if model and provider_id in _ENV_VAR_BY_PROVIDER:
+        # Only set the env var for providers that read it in the bash helper.
+        # MTPLX receives the model as a positional arg; mlx_lm_server receives
+        # target/draft as positional args — both are forwarded via extra_args.
+        env = {**os.environ, _ENV_VAR_BY_PROVIDER[provider_id]: model}
     result = subprocess.run([helper, provider_id, *extra_args], capture_output=True, text=True, check=False, env=env)
     if result.returncode != 0:
         return LifecycleResult(provider_id, model or "", "", False, result.stderr.strip() or result.stdout.strip())

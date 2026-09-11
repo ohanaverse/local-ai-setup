@@ -159,18 +159,22 @@ def run_benchmark(
     try:
         for target in targets:
             try:
-                # Resolve mlx_lm_server pairing args inline; other providers need none.
-                extra_args: tuple[str, ...] = (
-                    mlx_lm_server_pairing_args(
+                # Resolve provider-specific positional args inline; providers
+                # with a baked-in default model (ollama/omlx) need none.
+                if target.provider_id == "mlx_lm_server":
+                    extra_args = mlx_lm_server_pairing_args(
                         target.model_id,
                         target.local_path,
                         target.repo,
                         target.draft_local_path,
                         target.draft_repo,
                     )
-                    if target.provider_id == "mlx_lm_server"
-                    else ()
-                )
+                elif target.provider_id == "mtplx":
+                    # MTPLX is single-model-per-process; pass the repo id so
+                    # bin/llm-isolate-provider starts the requested model.
+                    extra_args = (target.model_name,)
+                else:
+                    extra_args = ()
                 isolation_key = (target.provider_id, extra_args)
                 if isolation_key != last_isolation_key:
                     isolate = isolate_provider(target.provider_id, *extra_args)

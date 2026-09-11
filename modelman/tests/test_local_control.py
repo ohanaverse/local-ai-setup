@@ -341,6 +341,10 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
             error=None,
         )
         result = start_local_model(registry, "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", state_path)
-    mock_isolate.assert_called_once_with("mtplx", env=None)
+    mock_isolate.assert_called_once_with(
+        "mtplx",
+        "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        env=None,
+    )
     assert result.direct_url == "http://localhost:8003/v1/chat/completions"
     assert load_state(state_path).local.running_model == "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"

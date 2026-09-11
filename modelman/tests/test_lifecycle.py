@@ -118,3 +118,48 @@ def test_cli_prints_json_envelope(capsys):
     assert rc == 0
     data = json.loads(out)
     assert data == {"provider": "mtplx", "model": "m", "direct_url": "http://localhost:8003/v1/chat/completions", "ok": True, "error": None}
+
+
+def test_delegate_isolate_sets_env_var_for_mapped_providers():
+    """ollama/omlx env overrides must use the exact variable names the bash
+    helper reads; the magic-formula approach was wrong for providers like
+    mlx_lm_server and never applied to MTPLX."""
+    from modelman.providers.lifecycle import _delegate_isolate
+
+    with patch("modelman.providers.lifecycle.shutil.which", return_value="/bin/llm-isolate-provider"), patch("modelman.providers.lifecycle.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = json.dumps({"provider": "ollama", "model": "m", "direct_url": "http://localhost:11434/v1/chat/completions", "ok": True, "error": None})
+        _delegate_isolate("ollama", "ornith-1.5:35b", ())
+    env = mock_run.call_args.kwargs.get("env")
+    assert env is not None
+    assert env["LLM_ISOLATE_OLLAMA_MODEL"] == "ornith-1.5:35b"
+
+
+def test_delegate_isolate_mtplx_uses_positional_arg_not_env_var():
+    """MTPLX receives the model via the bash helper's positional arg, not an
+    env var — this is the contract the shim now forwards to the lifecycle
+    module."""
+    from modelman.providers.lifecycle import _delegate_isolate
+
+    with patch("modelman.providers.lifecycle.shutil.which", return_value="/bin/llm-isolate-provider"), patch("modelman.providers.lifecycle.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = json.dumps({"provider": "mtplx", "model": "m", "direct_url": "http://localhost:8003/v1/chat/completions", "ok": True, "error": None})
+        _delegate_isolate("mtplx", "org/repo", ())
+    args = mock_run.call_args.args[0]
+    assert args == ["/bin/llm-isolate-provider", "mtplx"]
+    env = mock_run.call_args.kwargs.get("env")
+    assert env is None
+
+
+def test_delegate_isolate_forwards_extra_args():
+    """mlx_lm_server target/draft positional args must pass through to the
+    helper unchanged."""
+    from modelman.providers.lifecycle import _delegate_isolate
+
+    with patch("modelman.providers.lifecycle.shutil.which", return_value="/bin/llm-isolate-provider"), patch("modelman.providers.lifecycle.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = json.dumps({"provider": "mlx_lm_server", "model": "m", "direct_url": "http://localhost:8001/v1/chat/completions", "ok": True, "error": None})
+        _delegate_isolate("mlx_lm_server", None, ("org/target", "org/draft"))
+    args = mock_run.call_args.args[0]
+    assert args == ["/bin/llm-isolate-provider", "mlx_lm_server", "org/target", "org/draft"]
+    assert mock_run.call_args.kwargs.get("env") is None

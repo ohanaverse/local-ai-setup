@@ -271,7 +271,14 @@ PYEOF
     mtplx)
         # MTPLX start/stop/warmup lives in the Python lifecycle module; the
         # shim delegates entirely and passes the module's JSON through.
-        python3 -m modelman.providers.lifecycle isolate mtplx
+        # Forward an explicit model arg so callers (modelman start, benchmark
+        # sweeps) can select a specific mtplx model instead of defaulting to
+        # the first one in the registry.
+        if [ -n "${2:-}" ]; then
+            python3 -m modelman.providers.lifecycle isolate mtplx "$2"
+        else
+            python3 -m modelman.providers.lifecycle isolate mtplx
+        fi
         exit $?
         ;;
     *)

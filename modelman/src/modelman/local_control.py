@@ -223,8 +223,10 @@ def start_local_model(
             raise LocalControlError(str(exc)) from exc
         extra_args = (target, draft)
     elif model.provider_id == "mtplx":
-        # The lifecycle module resolves the MTPLX model name from the
-        # registry; no LLM_ISOLATE_*_MODEL env var is needed.
+        # MTPLX is single-model-per-process and has no baked-in default in the
+        # bash helper. Pass the requested repo id as a positional arg so the
+        # lifecycle module starts exactly this model; no env override is used.
+        extra_args = (model.model_name,)
         env = None
     else:
         env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
