@@ -65,9 +65,12 @@ def _resolve_mtplx_model(model: str | None) -> str:
     raise LifecycleError("no mtplx model in the registry")
 
 
-def _stop_others() -> None:
+def _stop_others(keep: str = "") -> None:
     """Stop every local provider except the one about to start, by
     delegating to the bash helper's stop-all mode (transition period).
+    `keep` names one provider whose models stay loaded — mirroring the
+    per-provider branches' stop_all_local keep arg (the helper's own
+    helper path resolution note from Task 2 stays as written).
 
     The helper's own absolute path (exported by the bash shim as
     LLM_ISOLATE_HELPER) wins over PATH: the shim is routinely invoked by
@@ -76,7 +79,8 @@ def _stop_others() -> None:
     helper = os.environ.get("LLM_ISOLATE_HELPER") or shutil.which("llm-isolate-provider")
     if helper is None:
         raise LifecycleError("isolation helper 'llm-isolate-provider' not found on PATH")
-    result = subprocess.run([helper, "stop-all"], capture_output=True, text=True, check=False)
+    cmd = [helper, "stop-all"] + ([keep] if keep else [])
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise LifecycleError(
             f"failed to stop other providers: {result.stderr.strip() or result.stdout.strip()}"
@@ -200,6 +204,16 @@ def _wait_for_model(model: str, proc: subprocess.Popen, timeout: float = 300.0) 
     raise LifecycleError(f"timed out waiting for mtplx to serve {model}")
 
 
+def _serving_model(resolved: str) -> bool:
+    """True when the mtplx instance on MTPLX_PORT already lists
+    `resolved` (same lenient match as _wait_for_model): a same-model
+    re-isolate can keep the loaded weights instead of paying a full
+    stop + reload. http_models_ids returns [] on any error, so a down
+    or wedged server reads as "not serving" — the safe fallback."""
+    ids = _http_models_ids(f"{MTPLX_BASE}/v1/models")
+    return any(served == resolved or served.endswith("/" + resolved) for served in ids)
+
+
 def _warmup(model: str, timeout: float = 120.0) -> None:
     """Send a 1-token chat completion to force the model into GPU/RAM."""
     payload = json.dumps(
@@ -267,11 +281,21 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
     started = False
     try:
         resolved = _resolve_mtplx_model(model)
-        _stop_others()
-        proc = _start_mtplx_serve(resolved)
-        started = True
-        _wait_for_model(resolved, proc)
-        _warmup(resolved)
+        if _serving_model(resolved):
+            # Keep semantics, matching the bash providers (stop_all_local
+            # $provider skips the target): re-isolating the model mtplx
+            # is already serving pays only warmup, not a full stop +
+            # respawn + multi-minute reload. mtplx is
+            # single-model-per-process, so only the SAME model is
+            # keepable — a different model takes the full restart below.
+            _stop_others(keep="mtplx")
+            _warmup(resolved)
+        else:
+            _stop_others()
+            proc = _start_mtplx_serve(resolved)
+            started = True
+            _wait_for_model(resolved, proc)
+            _warmup(resolved)
     except Exception as exc:  # noqa: BLE001 — envelope contract, never a traceback
         # RegistryError/TOMLDecodeError from load_registry() are NOT
         # LifecycleError; anything escaping here must still return the

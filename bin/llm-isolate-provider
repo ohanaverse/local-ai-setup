@@ -1,7 +1,8 @@
 #!/bin/bash
 # llm-isolate-provider — stop other local providers, start+warmup one.
 # Usage: llm-isolate-provider <provider-id> [model-or-target] [draft]
-#        llm-isolate-provider stop-all   (stop every local provider; modelman stop)
+#        llm-isolate-provider stop-all [keep]  (stop every local provider, or
+#        keep one provider's models loaded; modelman stop passes no keep)
 # Supported: ollama, omlx, omlx-6bit, mlx_lm_server, mtplx
 #   mlx_lm_server requires [target] [draft] positional args (or
 #     LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL); mtplx accepts
@@ -200,11 +201,14 @@ start_mlx_lm_server() {
 
 case "$PROVIDER" in
     stop-all)
-        # Tear down every local provider with no target kept running —
-        # `modelman stop`'s delegate. stop_all_local's "keep" arg is
-        # compared with `!=` against each provider name, so an empty
-        # string never matches any of them and every branch runs.
-        stop_all_local ""
+        # Tear down every local provider, optionally keeping one
+        # provider's models loaded — `modelman stop`'s delegate (no
+        # keep), and the Python lifecycle's mtplx path (keep=mtplx when
+        # the already-running instance serves the target model).
+        # stop_all_local's "keep" arg is compared with `!=` against each
+        # provider name, so an empty string never matches any of them
+        # and every branch runs.
+        stop_all_local "${2:-}"
         python3 - <<'PYEOF'
 import json
 print(json.dumps({"provider": None, "model": None, "direct_url": None, "ok": True, "error": None}))

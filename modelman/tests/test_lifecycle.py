@@ -469,3 +469,46 @@ def test_wait_for_model_raises_promptly_when_serve_dies():
         pytest.raises(LifecycleError, match="exited during model load"),
     ):
         _wait_for_model("Org/Model", proc, timeout=300.0)
+
+
+def test_isolate_mtplx_same_model_keeps_loaded():
+    """Re-isolating the model mtplx is already serving must not pay a
+    full stop + reload: the bash providers keep an already-loaded target
+    (stop_all_local's keep arg), and the mtplx path now does the same by
+    name-checking /v1/models before tearing down — mtplx is
+    single-model-per-process, so 'same provider' is only keepable when
+    it is the same model."""
+    with (
+        patch(
+            "modelman.providers.lifecycle._serving_model", return_value=True
+        ) as mock_probe,
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
+        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
+        patch("modelman.providers.lifecycle._wait_for_model"),
+        patch("modelman.providers.lifecycle._warmup") as mock_warmup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_probe.assert_called_once_with("Some/Model")
+    mock_stop.assert_called_once_with(keep="mtplx")
+    mock_start.assert_not_called()
+    mock_warmup.assert_called_once_with("Some/Model")
+    assert result.ok is True
+
+
+def test_isolate_mtplx_different_model_restarts():
+    """A different model (or no server) must take the full restart path:
+    mtplx is single-model-per-process, so serving model B means a stop +
+    respawn, and _stop_others must tear mtplx down too (no keep)."""
+    with (
+        patch(
+            "modelman.providers.lifecycle._serving_model", return_value=False
+        ),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
+        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
+        patch("modelman.providers.lifecycle._wait_for_model"),
+        patch("modelman.providers.lifecycle._warmup"),
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_stop.assert_called_once_with()
+    mock_start.assert_called_once_with("Some/Model")
+    assert result.ok is True
