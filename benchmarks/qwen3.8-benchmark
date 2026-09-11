@@ -74,8 +74,9 @@ ISOLATE_ID[omlx]="omlx"
 ISOLATE_ID[mtplx]="mtplx"
 
 # Env var per backend (helper naming: LLM_ISOLATE_<PROVIDER>_MODEL).
-# ISOLATE_ENV[mtplx] is intentionally omitted — the lifecycle module
-# resolves the model name from the registry.
+# ISOLATE_ENV[mtplx] is intentionally omitted — isolate_one() forwards its
+# model as a positional arg instead (mtplx is single-model-per-process, like
+# mlx_lm_server's target/draft positional args).
 declare -A ISOLATE_ENV
 ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
 ISOLATE_ENV[omlx]="LLM_ISOLATE_OMLX_4BIT_MODEL"

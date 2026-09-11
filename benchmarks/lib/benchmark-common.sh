@@ -35,9 +35,11 @@ PYEOF
 
 # Stop all local providers, then start+warmup only the requested backend's
 # model (the helper polls until the model actually answers). A backend with
-# no ISOLATE_ENV entry (e.g. mtplx — the lifecycle module resolves its model
-# from the registry, so no LLM_ISOLATE_*_MODEL override is needed) is called
-# with no env override rather than an empty-named `env` assignment.
+# no ISOLATE_ENV entry (e.g. mtplx) is single-model-per-process and takes its
+# model as a positional arg instead of an env var (bin/llm-isolate-provider's
+# mtplx case reads $2) — forward DIRECT_MODELS[$key] positionally so
+# isolation selects the model this run actually requested, instead of
+# falling back to whichever mtplx model happens to be first in the registry.
 isolate_one() {
     local key="$1"
     echo "  [isolation] isolating ${ISOLATE_ID[$key]} (${DIRECT_MODELS[$key]})..."
@@ -45,7 +47,7 @@ isolate_one() {
         env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
             "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
     else
-        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
+        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" >/dev/null
     fi
 }
 
