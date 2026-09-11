@@ -2,7 +2,7 @@
 # llm-isolate-provider — stop other local providers, start+warmup one.
 # Usage: llm-isolate-provider <provider-id>
 #        llm-isolate-provider stop-all   (stop every local provider; modelman stop)
-# Supported: ollama, omlx, omlx-6bit, mlx_lm_server
+# Supported: ollama, omlx, omlx-6bit, mlx_lm_server, mtplx
 # (The llamacpp case branch below is retained but disabled — retired
 # 2026-09-07, issue #33. Re-enable steps: docs/reference/provider-artifacts.md.)
 # On success, print JSON with provider/model/direct_url.
@@ -116,6 +116,14 @@ stop_all_local() {
             mlx_lm_server_stop
             wait_for_port_closed http://localhost:8001/v1/models 5 \
                 || echo "warning: mlx_lm_server still listening on port 8001" >&2
+        ) &
+        pids+=("$!")
+    fi
+    if [ "$keep" != "mtplx" ]; then
+        (
+            silence_stdout mtplx stop --port 8003 --grace-seconds 10 || true
+            wait_for_port_closed http://localhost:8003/v1/models 5 \
+                || echo "warning: mtplx still listening on port 8003" >&2
         ) &
         pids+=("$!")
     fi
@@ -259,6 +267,12 @@ PYEOF
         start_mlx_lm_server "$target" "$draft"
         model="$target (+draft $draft)"
         direct_url="http://localhost:8001/v1/chat/completions"
+        ;;
+    mtplx)
+        # MTPLX start/stop/warmup lives in the Python lifecycle module; the
+        # shim delegates entirely and passes the module's JSON through.
+        python3 -m modelman.providers.lifecycle isolate mtplx
+        exit $?
         ;;
     *)
         echo "unknown provider: $PROVIDER" >&2
