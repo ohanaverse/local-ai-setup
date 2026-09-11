@@ -54,3 +54,11 @@ def test_delete_removes_model_dir(tmp_path):
     (d / "w").write_bytes(b"x")
     p.delete(_variant("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"))
     assert not d.exists()
+
+
+def test_dir_name_and_repo_id_round_trip_for_multi_slash_repo():
+    from modelman.providers.mtplx import _dir_name, _repo_id
+
+    assert _dir_name("org/sub/model") == "org--sub--model"
+    assert _repo_id("org--sub--model") == "org/sub/model"
+    assert _repo_id(_dir_name("org/model")) == "org/model"

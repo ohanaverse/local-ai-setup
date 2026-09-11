@@ -635,8 +635,12 @@ class ModelScreen(Screen[None]):
         model has no local artifact but its ready-on still runs a real
         `ollama pull` (that's what registers the tag), so it must route
         through DownloadManager too; native/unmapped providers have no
-        Provider class and keep the queued flag flip. Mirrors _run_apply's
-        try/except-KeyError flag-only rule."""
+        Provider class and keep the queued flag flip. MTPLX has a Provider
+        class but manages its own cache via the `mtplx` CLI, so it is also
+        treated as flag-only. Mirrors _run_apply's try/except-KeyError
+        flag-only rule."""
+        if provider_id == "mtplx":
+            return False
         if self._provider_entry_or_none(provider_id) is None:
             return False
         from ..providers.registry import ProviderRegistry

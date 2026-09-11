@@ -28,8 +28,11 @@ def _dir_name(model_name: str) -> str:
 
 
 def _repo_id(dir_name: str) -> str:
-    """Map an MTPLX `<org>--<model>` dir name back to `org/model`."""
-    return dir_name.replace("--", "/", 1)
+    """Map an MTPLX `<org>--<model>` dir name back to `org/model`.
+
+    This is the exact inverse of `_dir_name`, so multi-slash repo ids
+    round-trip correctly (`org/sub/model` <-> `org--sub--model`)."""
+    return dir_name.replace("--", "/")
 
 
 class MTPLXProvider(Provider):

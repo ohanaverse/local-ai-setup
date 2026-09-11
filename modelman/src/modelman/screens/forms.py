@@ -25,7 +25,7 @@ from ..registry import Cost, _cost_from_dict, _cost_to_dict
 # mlx_lm_server is included because its target side uses the same repo
 # format, even though its form kind is "dual-model" rather than
 # "local-only".
-HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server")
+HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtplx")
 
 
 def default_form_kind(provider: str) -> str:
