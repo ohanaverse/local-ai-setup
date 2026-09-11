@@ -9,6 +9,8 @@ LOG_PREFIX="[llm-restore-providers]"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/poll.sh"
 # shellcheck source=lib/mlx-lm-server.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mlx-lm-server.sh"
+# shellcheck source=lib/mtplx.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mtplx.sh"
 
 # Wait up to N seconds for a service to answer on its health URL.
 wait_for() {
@@ -47,12 +49,6 @@ restart_launchd() {
     wait_for "$url" "$name"
 }
 
-stop_mtplx() {
-    silence_stdout mtplx stop --port 8003 --grace-seconds 10 || true
-    wait_for_port_closed http://localhost:8003/v1/models 5 \
-        || echo "warning: mtplx still listening on port 8003" >&2
-}
-
 # Restart all providers in parallel — they are independent, so wall time is
 # the slowest service, not the sum.
 #
@@ -71,7 +67,7 @@ restart_omlx & p2=$!
 # in docs/reference/provider-artifacts.md.
 restart_launchd ~/Library/LaunchAgents/local.litellm.proxy.plist http://localhost:4000/v1/models litellm & p3=$!
 mlx_lm_server_stop & p4=$!
-stop_mtplx & p5=$!
+mtplx_stop & p5=$!
 wait $p1 || FAILED=1
 wait $p2 || FAILED=1
 wait $p3 || FAILED=1

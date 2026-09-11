@@ -16,6 +16,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/poll.sh"
 # sources the resolver for its own scope.
 # shellcheck source=lib/mlx-lm-server.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mlx-lm-server.sh"
+# shellcheck source=lib/mtplx.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/mtplx.sh"
 
 PROVIDER="$1"
 if [ -z "$PROVIDER" ]; then
@@ -104,11 +106,7 @@ stop_all_local() {
         pids+=("$!")
     fi
     if [ "$keep" != "mtplx" ]; then
-        (
-            silence_stdout mtplx stop --port 8003 --grace-seconds 10 || true
-            wait_for_port_closed http://localhost:8003/v1/models 5 \
-                || echo "warning: mtplx still listening on port 8003" >&2
-        ) &
+        mtplx_stop &
         pids+=("$!")
     fi
 
