@@ -34,12 +34,19 @@ PYEOF
 # --- Service management ----------------------------------------------------
 
 # Stop all local providers, then start+warmup only the requested backend's
-# model (the helper polls until the model actually answers).
+# model (the helper polls until the model actually answers). A backend with
+# no ISOLATE_ENV entry (e.g. mtplx — the lifecycle module resolves its model
+# from the registry, so no LLM_ISOLATE_*_MODEL override is needed) is called
+# with no env override rather than an empty-named `env` assignment.
 isolate_one() {
     local key="$1"
     echo "  [isolation] isolating ${ISOLATE_ID[$key]} (${DIRECT_MODELS[$key]})..."
-    env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
+    if [ -n "${ISOLATE_ENV[$key]:-}" ]; then
+        env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
+            "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
+    else
         "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
+    fi
 }
 
 # Ensure all local services are running (called at script start). Delegates
