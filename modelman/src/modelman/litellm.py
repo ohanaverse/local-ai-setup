@@ -71,6 +71,7 @@ PROVIDER_POLICIES: dict[str, ProviderPolicy] = {
     "ollama": ProviderPolicy(prefix="ollama_chat/"),
     "omlx": ProviderPolicy(prefix="openai/", api_key="not-needed"),
     "mlx_lm_server": ProviderPolicy(prefix="openai/", api_key="not-needed"),
+    "mtplx": ProviderPolicy(prefix="openai/", api_key="not-needed"),
     "llamacpp": ProviderPolicy(prefix="openai/local-model", fixed_model=True, api_key="dummy-key"),
     "openrouter": ProviderPolicy(prefix="openrouter/", secret_ref=True, cloud=True),
 }
