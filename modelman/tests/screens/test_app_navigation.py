@@ -551,6 +551,161 @@ async def test_apply_preserves_other_models_state_rows(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_table_repaints_after_returning_from_apply(tmp_path, monkeypatch):
+    """_run_apply (models.py) mutates self.registry/self.state in place but
+    never touches the DataTable widget itself — only reload() repopulates
+    it. Once StatusScreen is dismissed and control returns to ModelScreen,
+    the table must show the post-apply row set immediately, not the stale
+    pre-apply rows left over from before Escape was pressed."""
+    from textual.widgets import DataTable
+
+    from modelman.screens.status import StatusScreen
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    q8 = ModelEntry(id="ollama/q8", family="ornith", provider_id="ollama", model_name="ornith:8b")
+    _reg_path, _state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[o35, q8],
+        downloaded={"ollama/o35": "/fake/o35", "ollama/q8": "/fake/q8"},
+    )
+
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.path_of.side_effect = lambda v: f"/fake/{v['id']}"
+    stub.artifact_paths.side_effect = lambda v: frozenset([stub.path_of(v)])
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        assert mt.row_count == 2
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")  # queue delete of o35
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        for _ in range(50):
+            await pilot.pause()
+            if isinstance(app.screen, StatusScreen) and app.screen.done:
+                break
+
+        await pilot.press("escape")  # back to ModelScreen
+        await pilot.pause()
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        row_ids = {str(k.value) for k in mt.rows}
+        assert row_ids == {"ollama/q8"}, f"table still shows stale rows: {row_ids}"
+
+
+@pytest.mark.asyncio
+async def test_discard_after_apply_does_not_resurrect_earlier_applied_delete(
+    tmp_path, monkeypatch
+):
+    """A Discard must only undo changes queued since the last apply, not
+    resurrect a delete from an earlier apply in the same session.
+
+    ModelScreen is now the app's single long-lived root screen (it's never
+    recreated per family the way the old FamilyScreen->ModelScreen flow
+    was), so its discard-snapshot has to be retaken after every apply run —
+    otherwise a later Discard rolls all the way back to the snapshot taken
+    at app launch, silently undoing every apply since, even ones already
+    saved to disk. Regression test for that scenario: apply a delete of
+    o35, return to the model list, queue an unrelated delete of q8, then
+    discard — o35 must stay deleted and q8's queued delete must be the
+    only thing discard undoes."""
+    from unittest.mock import MagicMock
+
+    from textual.widgets import DataTable
+
+    from modelman.screens.status import StatusScreen
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    q8 = ModelEntry(id="ollama/q8", family="ornith", provider_id="ollama", model_name="ornith:8b")
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[o35, q8],
+        downloaded={"ollama/o35": "/fake/o35", "ollama/q8": "/fake/q8"},
+    )
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.path_of.side_effect = lambda v: f"/fake/{v['id']}"
+    stub.artifact_paths.side_effect = lambda v: frozenset([stub.path_of(v)])
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+    from modelman.registry import load_registry
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let reconcile settle
+
+        # Apply #1: delete o35 (sorts first: "ornith:35b" < "ornith:8b").
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        for _ in range(50):
+            await pilot.pause()
+            if isinstance(app.screen, StatusScreen) and app.screen.done:
+                break
+
+        # Confirm the delete landed before doing anything else.
+        assert "ollama/o35" not in [m.id for m in load_registry(reg_path).models]
+
+        # Back to ModelScreen — this is what must retake the snapshot.
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Queue an unrelated delete of q8, then discard it.
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "discard":
+                btn.press()
+                break
+        await pilot.pause()
+
+    reloaded = [m.id for m in load_registry(reg_path).models]
+    assert "ollama/o35" not in reloaded  # the earlier apply must stay applied
+    assert "ollama/q8" in reloaded  # the discarded queue-only delete must not land
+
+
+@pytest.mark.asyncio
 async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
     """Escape with a queued change shows the confirm dialog; Apply runs
     PendingChanges and persists the flip. Uses a cloud-provider model

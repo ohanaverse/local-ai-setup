@@ -293,7 +293,11 @@ class StatusScreen(Screen[None]):
     def action_back(self) -> None:
         # Only allow going back once the apply has finished or been cancelled.
         if self.done:
-            self.app.pop_screen()
+            # dismiss() (not app.pop_screen() directly) so ModelScreen's
+            # push_screen callback fires and it can retake its discard
+            # snapshot from the post-apply state — see
+            # ModelScreen._push_status_screen.
+            self.dismiss()
             return
         # Still running: ask whether to cancel or wait.
         from .forms import CancelApplyDialog

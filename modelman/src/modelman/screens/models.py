@@ -41,7 +41,7 @@ from ..registry import (
     save_registry,
 )
 from ..state import ModelState, StateStore, load_state, locked_state
-from . import reconcile_model_state, reload_preserving_cursor
+from . import reconcile_model_state, reload_preserving_cursor, row_key_at
 from .forms import default_form_kind
 
 if TYPE_CHECKING:
@@ -267,12 +267,15 @@ class ModelScreen(Screen[None]):
         # Snapshot for discard: restore if the user exits without applying.
         # Spans the whole registry now — this screen isn't scoped to one
         # family, so there's no other family's data to preserve alongside it.
-        self._snapshot_models: list[ModelEntry] = [
-            ModelEntry(**_entry_kwargs(m)) for m in registry.models
-        ]
-        self._snapshot_state_entries: dict[str, ModelState] = {
-            mid: ModelState(**_state_kwargs(s)) for mid, s in state.models.items()
-        }
+        # Retaken after every apply run (see _on_status_screen_dismissed):
+        # this screen is the app's single long-lived root now (never
+        # recreated per family), so without retaking it a Discard many
+        # applies later would roll all the way back to the state at app
+        # launch — silently resurrecting earlier applies that already
+        # succeeded and were saved to disk.
+        self._snapshot_models: list[ModelEntry] = []
+        self._snapshot_state_entries: dict[str, ModelState] = {}
+        self._retake_snapshot()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -737,21 +740,10 @@ class ModelScreen(Screen[None]):
         legacy state.families keys, sorted."""
         return known_families(self.registry, self.state)
 
-    @staticmethod
-    def _row_key_at(table: DataTable, row: int) -> str | None:
-        """Model id at `row` in `table`, or None when out of range (empty
-        table, or a stale cursor_row during a reload race). The single
-        place every row-under-cursor action derives a model id from, so a
-        future change to how row keys map to model ids only needs to
-        change here."""
-        if row < 0 or row >= table.row_count:
-            return None
-        return str(list(table.rows.keys())[row].value)
-
     def _current_model_id(self) -> str | None:
         """Model id under #model-table's cursor, or None (empty table)."""
         mt = self.query_one("#model-table", DataTable)
-        return self._row_key_at(mt, mt.cursor_row)
+        return row_key_at(mt, mt.cursor_row)
 
     def _current_entry(self) -> ModelEntry | None:
         """ModelEntry under the cursor, or None (empty table, or the id
@@ -884,7 +876,7 @@ class ModelScreen(Screen[None]):
             mt = self.query_one("#model-table", DataTable)
         except NoMatches:
             return  # not mounted (e.g. screen teardown race)
-        mid = self._row_key_at(mt, cursor_row)
+        mid = row_key_at(mt, cursor_row)
         if mid is None:
             details.update("path: —")
             return
@@ -1032,12 +1024,30 @@ class ModelScreen(Screen[None]):
 
         This screen stays underneath (not popped): _run_apply mutates
         self.registry/self.state in place and clears the queues as it
-        goes, so by the time StatusScreen pops itself on completion, this
-        screen is already showing the post-apply state.
+        goes. That mutation alone doesn't repaint the DataTable, though —
+        the dismiss callback (_on_status_screen_dismissed) is what
+        actually reloads this screen once the user backs out of
+        StatusScreen, and also retakes the discard snapshot from that
+        post-apply state so a later Discard can't resurrect a change this
+        apply already made and saved to disk.
         """
         from .status import StatusScreen
 
-        self.app.push_screen(StatusScreen(run_apply=self._run_apply))
+        self.app.push_screen(
+            StatusScreen(run_apply=self._run_apply), self._on_status_screen_dismissed
+        )
+
+    def _on_status_screen_dismissed(self, _result: None) -> None:
+        """Called when StatusScreen is dismissed, returning control to this
+        screen after an apply run. _run_apply mutates self.registry/
+        self.state in place but never touches the DataTable itself, so
+        without an explicit reload here the table would keep showing
+        stale rows — a deleted model still listed, a just-applied
+        download's STATUS/SIZE/EXPOSED columns unrefreshed — until some
+        unrelated action happened to trigger reload()."""
+        self._retake_snapshot()
+        self.reload()
+        self._refresh_pending_bar()
 
     def _register_deferred_expose(self, model_id: str, litellm_path: Path) -> None:
         """Defer a queued expose against a still-downloading model: it
@@ -1165,9 +1175,23 @@ class ModelScreen(Screen[None]):
         self._ready_cascade_for_expose.clear()
         self._added_ids.clear()
 
+    def _retake_snapshot(self) -> None:
+        """(Re)capture the discard baseline from the current registry/state.
+
+        Called from __init__ (the initial baseline) and again whenever
+        control returns from a StatusScreen apply run (see
+        _on_status_screen_dismissed), so a later Discard only undoes
+        changes queued since that point — never an earlier apply that
+        already succeeded and was saved to disk.
+        """
+        self._snapshot_models = [ModelEntry(**_entry_kwargs(m)) for m in self.registry.models]
+        self._snapshot_state_entries = {
+            mid: ModelState(**_state_kwargs(s)) for mid, s in self.state.models.items()
+        }
+
     def _restore_snapshot(self) -> None:
-        """Restore the in-memory registry/state to the snapshot taken on
-        mount, dropping any queued mutations.
+        """Restore the in-memory registry/state to the last-taken snapshot
+        (see _retake_snapshot), dropping any queued mutations.
 
         The snapshot spans the whole registry (this screen isn't scoped to
         one family), so restore is a straight replace rather than a
