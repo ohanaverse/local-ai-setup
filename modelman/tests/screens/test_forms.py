@@ -265,6 +265,34 @@ async def test_modelform_edit_prefills_name_when_no_repo_data():
 
 
 @pytest.mark.asyncio
+async def test_modelform_edit_prefills_name_for_omlx_local_path_entry():
+    """A hand-registered omlx entry (repo unset, local_path set — the only
+    supported shape for omlx per bin/mlx-quantize's printed registry.toml
+    snippet) must still show an identifier on edit. omlx's local-path
+    Input was removed from this dialog (see
+    test_omlx_local_only_kind_hides_local_path_field), so the old
+    repo-or-local_path fallback left the Model field blank with no field
+    at all showing the model's identity; it must fall back to `name`
+    like the mtplx no-repo-data case does.
+    """
+    variant: VariantSpec = {
+        "id": "omlx-dwq",
+        "provider": "omlx",
+        "name": "Ornith-1.5-35B-DWQ",
+        "repo": None,
+        "local_path": "/Users/keith/models/ornith-1.5-35b-dwq",
+    }
+    form = ModelForm(providers=["omlx"], variant=variant)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        inp = app.screen.query_one("#model", Input)
+        assert inp.value == "Ornith-1.5-35B-DWQ"
+
+
+@pytest.mark.asyncio
 async def test_modelform_edit_prefills_ollama_name():
     variant: VariantSpec = {
         "id": "ollama-35b",

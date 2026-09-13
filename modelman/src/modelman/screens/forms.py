@@ -777,9 +777,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         discovery-created mtplx entry never round-tripped through this
         dialog's _submit(). Every VariantSpec has `name` populated
         unconditionally, unlike repo/files. A local_path-sourced entry
-        (repo unset but local_path set) is left blank as before: that's
-        the local-only kind's other, mutually-exclusive Input's job to
-        prefill, not this one's.
+        (repo unset but local_path set) is left blank only when the
+        provider's local-only form still shows the mutually-exclusive
+        local-path Input to prefill it (see LOCAL_PATH_PROVIDERS) —
+        otherwise (e.g. omlx, whose dialog field was removed) that
+        Input isn't shown either, so falling back to `name` keeps some
+        identifier visible instead of leaving the dialog blank.
         """
         provider = v.get("provider")
         if provider == "ollama" or provider not in HF_REPO_PROVIDERS:
@@ -788,7 +791,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         files = v.get("files") or []
         if files:
             return f"{repo}/{files[0]}"
-        if repo or v.get("local_path"):
+        if repo:
+            return repo
+        if v.get("local_path") and ModelForm._supports_local_path(provider):
             return repo
         return v.get("name") or ""
 
