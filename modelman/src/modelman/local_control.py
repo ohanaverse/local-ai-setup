@@ -421,22 +421,25 @@ def _register_discovered_model(
         # A no-op for name-keyed providers, which never read fetch.repo.
         fetch=Fetch(repo=match.variant_id),
     )
-    with locked_registry(registry_path) as fresh:
-        # Defense-in-depth against a concurrent registration or a hand-edited
-        # registry.toml: the id is derived from (provider, native name), so a
-        # collision means this artifact is already registered and appending
-        # would duplicate it in registry.toml AND in LiteLLM's model_list.
-        # Raising here (inside the lock, before the write) leaves the file
-        # untouched — locked_registry only saves on a clean exit.
-        if any(m.id == model_id for m in fresh.models):
-            raise LocalControlError(f"{model_id} is already registered")
-        fresh.models.append(entry)
-    registry.models.append(entry)
+    try:
+        with locked_registry(registry_path) as fresh:
+            # Defense-in-depth against a concurrent registration or a hand-edited
+            # registry.toml: the id is derived from (provider, native name), so a
+            # collision means this artifact is already registered and appending
+            # would duplicate it in registry.toml AND in LiteLLM's model_list.
+            # Raising here (inside the lock, before the write) leaves the file
+            # untouched — locked_registry only saves on a clean exit.
+            if any(m.id == model_id for m in fresh.models):
+                raise LocalControlError(f"{model_id} is already registered")
+            fresh.models.append(entry)
+        registry.models.append(entry)
 
-    model_state = ModelState(ready=True, disk_path=match.path, size_bytes=match.size_bytes)
-    with locked_state(state_path) as fresh_state:
-        fresh_state.set(model_id, model_state)
-    state.set(model_id, model_state)
+        model_state = ModelState(ready=True, disk_path=match.path, size_bytes=match.size_bytes)
+        with locked_state(state_path) as fresh_state:
+            fresh_state.set(model_id, model_state)
+        state.set(model_id, model_state)
+    except OSError as exc:
+        raise LocalControlError(f"failed to register {model_id}: {exc}") from exc
 
     try:
         warnings = expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
@@ -456,8 +459,15 @@ def _register_discovered_model(
     # expose_model() mutates state.models[model_id] in place (sets exposed)
     # but never persists it - merge just this one key back, mirroring
     # main.py's `expose` command.
-    with locked_state(state_path) as fresh_state:
-        fresh_state.models[model_id] = state.models[model_id]
+    try:
+        with locked_state(state_path) as fresh_state:
+            fresh_state.models[model_id] = state.models[model_id]
+    except OSError as exc:
+        raise LocalControlError(
+            f"{model_id} was registered and exposed but the final state merge "
+            f"failed: {exc} — re-run `modelman start {match.variant_id}`; it will "
+            "reuse that entry rather than register it again"
+        ) from exc
     return entry, warnings
 
 
@@ -689,8 +699,15 @@ def start_local_model(
             "running model was already stopped)"
         )
 
-    with locked_state(state_path) as fresh:
-        fresh.local.running_model = resolved_id
+    try:
+        with locked_state(state_path) as fresh:
+            fresh.local.running_model = resolved_id
+    except OSError as exc:
+        raise LocalControlError(
+            f"{resolved_id} started successfully but the [local].running_model "
+            f"marker could not be persisted: {exc} — wt's picker will not see it "
+            "as running until `modelman start` succeeds"
+        ) from exc
     return StartResult(
         model_id=resolved_id,
         already_running=False,

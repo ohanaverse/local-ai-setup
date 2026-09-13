@@ -431,6 +431,25 @@ def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_pa
     assert load_state(state_path).local.running_model == "ollama/llama3.2:3b"
 
 
+def test_start_unregistered_name_registry_write_failure_raises_local_control_error(tmp_path):
+    # A registry.toml write failure while registering a discovered model
+    # (full disk, read-only filesystem) must surface as a clean
+    # LocalControlError the CLI already knows how to print, not an unguarded
+    # OSError/traceback — mirrors the OSError handling main.py's `sync`
+    # command already applies around its own registry/state saves.
+    registry = _registry()
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]}
+
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.locked_registry", side_effect=OSError("disk full")),
+        pytest.raises(LocalControlError, match="failed to register"),
+    ):
+        start_local_model(registry, "llama3.2:3b", family="discovered", registry_path=registry_path)
+
+
 def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_path):
     # Regression test for a bug this branch's review found: auto-registering
     # a discovered omlx artifact without ModelEntry.fetch left OMLXProvider
