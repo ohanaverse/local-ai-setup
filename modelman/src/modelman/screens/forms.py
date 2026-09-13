@@ -766,6 +766,15 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         the model string is `repo` plus `/file` if a single filename is
         stored. For ollama it's just the tag. For native providers it's
         the model name. For openrouter it's the plain model string.
+
+        Falls back to `name` when an HF provider's entry has neither
+        repo nor local_path data at all (fetch is None) — e.g. a
+        discovery-created mtplx entry never round-tripped through this
+        dialog's _submit(). Every VariantSpec has `name` populated
+        unconditionally, unlike repo/files. A local_path-sourced entry
+        (repo unset but local_path set) is left blank as before: that's
+        the local-only kind's other, mutually-exclusive Input's job to
+        prefill, not this one's.
         """
         provider = v.get("provider")
         if provider == "ollama" or provider not in HF_REPO_PROVIDERS:
@@ -774,7 +783,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         files = v.get("files") or []
         if files:
             return f"{repo}/{files[0]}"
-        return repo
+        if repo or v.get("local_path"):
+            return repo
+        return v.get("name") or ""
 
     @staticmethod
     def _reconstruct_local_path(v: VariantSpec) -> str:

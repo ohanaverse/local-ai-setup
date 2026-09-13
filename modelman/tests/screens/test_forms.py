@@ -238,6 +238,33 @@ async def test_modelform_edit_prefills_repo_only_when_no_file():
 
 
 @pytest.mark.asyncio
+async def test_modelform_edit_prefills_name_when_no_repo_data():
+    """A discovery-created HF-repo-family entry (e.g. mtplx, which is
+    populated by hand/discovery rather than through this dialog's
+    _submit()) can have no fetch.repo/files at all. The Model field
+    must still show the entry's identity via `name` instead of
+    rendering blank, since a blank field is indistinguishable from an
+    intentionally-cleared value and would let editing silently wipe
+    the model's identity on save.
+    """
+    variant: VariantSpec = {
+        "id": "mtplx-q1",
+        "provider": "mtplx",
+        "name": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        "repo": None,
+        "files": None,
+    }
+    form = ModelForm(providers=["mtplx"], variant=variant)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        inp = app.screen.query_one("#model", Input)
+        assert inp.value == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+
+
+@pytest.mark.asyncio
 async def test_modelform_edit_prefills_ollama_name():
     variant: VariantSpec = {
         "id": "ollama-35b",
