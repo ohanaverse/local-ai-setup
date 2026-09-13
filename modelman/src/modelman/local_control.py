@@ -47,6 +47,7 @@ from .providers.mtplx import MTPLX_BASE
 from .providers.registry import ProviderRegistry
 from .registry import (
     LOCATION_LOCAL,
+    Fetch,
     ModelEntry,
     ProviderEntry,
     Registry,
@@ -412,6 +413,13 @@ def _register_discovered_model(
         model_name=match.variant_id,
         location=LOCATION_LOCAL,
         source="discovered",
+        # Providers that derive their on-disk path from fetch.repo/local_path
+        # (omlx) rather than model_name (ollama, mtplx) can only resolve this
+        # artifact again if repo is populated — list_local()'s variant_id IS
+        # the repo-basename-shaped identifier omlx's own repo_basename()
+        # would produce, so it round-trips through _target_dir() correctly.
+        # A no-op for name-keyed providers, which never read fetch.repo.
+        fetch=Fetch(repo=match.variant_id),
     )
     with locked_registry(registry_path) as fresh:
         # Defense-in-depth against a concurrent registration or a hand-edited

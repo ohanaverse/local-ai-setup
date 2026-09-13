@@ -431,6 +431,53 @@ def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_pa
     assert load_state(state_path).local.running_model == "ollama/llama3.2:3b"
 
 
+def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_path):
+    # Regression test for a bug this branch's review found: auto-registering
+    # a discovered omlx artifact without ModelEntry.fetch left OMLXProvider
+    # unable to re-derive the artifact's on-disk directory afterward
+    # (_target_dir() only reads variant['repo']/['local_path'], both sourced
+    # from fetch, never the model name) — the model modelman just started
+    # and registered would show up as "not downloaded" on the very next
+    # `modelman start` inventory. Uses the real OMLXProvider (like the
+    # omlx join-mismatch tests below) rather than the name-keyed
+    # _patch_provider_local_models stub, since the stub can't reproduce a
+    # bug that only exists in OMLXProvider's own path derivation.
+    model_dir = _omlx_model_dir(tmp_path, basename="Qwen3.8-27B-4bit")
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="omlx", name="oMLX", location="local",
+                model_dir=str(model_dir), auth=AuthConfig(type="none"),
+            )
+        ],
+    )
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+    litellm_path = tmp_path / "config.yaml"
+    litellm_path.write_text("model_list: []\n")
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control._probe_running", return_value=False),
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="Qwen3.8-27B-4bit",
+            direct_url="http://localhost:8000/v1/chat/completions", ok=True, error=None,
+        )
+        start_local_model(
+            registry, "Qwen3.8-27B-4bit", state_path,
+            family="qwen3.8", registry_path=registry_path, litellm_path=litellm_path,
+        )
+
+    inventory = inventory_local_models(load_registry(registry_path), load_state(state_path))
+    assert inventory.downloaded == [
+        InventoryEntry(model_id="omlx/Qwen3.8-27B-4bit", running=False, size_bytes=2048)
+    ]
+    assert inventory.not_downloaded == []
+
+
 def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
     registry = _registry()
     registry.providers.append(
