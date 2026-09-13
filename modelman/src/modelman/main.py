@@ -18,8 +18,9 @@ from .litellm import (
     unexpose_model,
 )
 from .local_control import (
+    DiscoveredModelNeedsFamily,
     LocalControlError,
-    list_local_exposed_models,
+    inventory_local_models,
     start_local_model,
     stop_local_model,
 )
@@ -258,46 +259,97 @@ def refresh_prices() -> None:
     typer.echo(f"Refreshed prices for {result.updated} model(s).")
 
 
+def _format_size(n: int | None) -> str:
+    if n is None:
+        return "—"
+    value = float(n)
+    if value < 1024:
+        return f"{int(value)} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        value /= 1024
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+    return f"{value:.1f} PB"
+
+
 @app.command()
 def start(
     model_id: str | None = typer.Argument(
         None,
-        help="Registry model id to run locally (<provider>/<name>). "
-        "Omit to list local models with expose on.",
+        help="Registry model id, or a provider-native model name, to run locally. "
+        "Omit to list local models.",
     ),
 ) -> None:
     """Stop any running local model and start model_id, recording it as
     the single local model wt's picker may offer. Idempotent when
     model_id's marker still matches a probe of the running process.
-    Omit model_id to list local models with expose on, indicating which
-    (if any) is currently running."""
+
+    model_id may be a registry id, an existing model's native
+    provider-side name, or the native name of a model a provider has on
+    disk but that has no registry.toml entry yet — the last case prompts
+    for a family, then registers, exposes, and starts it in one step.
+
+    Omit model_id to print a live inventory: models registered and on
+    disk, models registered but missing their artifact, and on-disk
+    models with no registry.toml entry yet.
+    """
     registry = load_registry()
     if model_id is None:
         state = load_state()
-        statuses = list_local_exposed_models(registry, state)
-        if not statuses:
-            typer.echo("No local models are exposed. Use `modelman expose <model_id>` to enable one.")
+        inventory = inventory_local_models(registry, state)
+        if not (inventory.downloaded or inventory.not_downloaded or inventory.discovered):
+            typer.echo("No local models found. `modelman start <name>` will register one it finds on disk.")
             return
-        typer.echo("Local models available to start:")
-        for status in statuses:
-            marker = "*" if status.running else " "
-            suffix = " (running)" if status.running else ""
-            typer.echo(f"{marker} {status.model_id}{suffix}")
-        typer.echo()
+        if inventory.downloaded:
+            typer.echo("Registered, on disk:")
+            for entry in inventory.downloaded:
+                marker = "*" if entry.running else " "
+                suffix = " (running)" if entry.running else ""
+                typer.echo(f"{marker} {entry.model_id}\t{_format_size(entry.size_bytes)}{suffix}")
+            typer.echo()
+        if inventory.not_downloaded:
+            typer.echo("Registered, not downloaded:")
+            for model_id_str in inventory.not_downloaded:
+                typer.echo(f"  {model_id_str}")
+            typer.echo()
+        if inventory.discovered:
+            typer.echo("Discovered (not in registry.toml — `modelman start <name>` to add):")
+            for disc in inventory.discovered:
+                typer.echo(f"  {disc.provider_id}:{disc.variant_id}\t{_format_size(disc.size_bytes)}")
+            typer.echo()
         typer.echo("Run `modelman start <model_id>` to start one.")
         return
-    try:
-        # start_local_model owns the marker read/write (short locked_state
-        # transactions around it); the stop-all/warmup subprocesses must run
-        # outside any state lock.
-        result = start_local_model(registry, model_id)
-    except LocalControlError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from exc
+
+    family: str | None = None
+    while True:
+        try:
+            # start_local_model owns the marker read/write (short locked_state
+            # transactions around it); the stop-all/warmup subprocesses must run
+            # outside any state lock.
+            result = start_local_model(registry, model_id, family=family)
+            break
+        except DiscoveredModelNeedsFamily as exc:
+            hint = f" (existing: {', '.join(exc.suggested_families)})" if exc.suggested_families else ""
+            typer.echo(f"{exc.provider_id}/{exc.variant_id} was found on disk but isn't registered yet.{hint}")
+            # default="" stops click's own prompt() from silently re-looping
+            # on blank input (its built-in retry never returns an empty
+            # string when no default is set) so this loop can print its own
+            # "cannot be empty" message and re-prompt.
+            answer = typer.prompt("Family name for this model", default="", show_default=False)
+            while not answer.strip():
+                typer.echo("Family name cannot be empty.")
+                answer = typer.prompt("Family name for this model", default="", show_default=False)
+            family = answer.strip()
+        except LocalControlError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
     if result.already_running:
-        typer.echo(f"{model_id} is already running.")
+        typer.echo(f"{result.model_id} is already running.")
     else:
-        typer.echo(f"Started {model_id}.")
+        typer.echo(f"Started {result.model_id}.")
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 @app.command()
