@@ -286,11 +286,12 @@ class ModelScreen(Screen[None]):
         # Captured once while mounted: `self.app` (Screen.app) resolves via
         # a contextvar that isn't set on a background thread, falling back
         # to walking self._parent up to the App — a walk that raises
-        # NoActiveAppError once this screen is popped. _run_apply and the
-        # deferred-expose closure it registers both run later, on
-        # StatusScreen's worker thread, after ModelScreen has already been
-        # popped (_push_status_screen pops before pushing StatusScreen) —
-        # they must use this reference instead of `self.app`.
+        # NoActiveAppError once this screen is off the main thread.
+        # _run_apply and the deferred-expose closure it registers both run
+        # later, on StatusScreen's worker thread, so they must use this
+        # reference instead of `self.app` (this screen itself stays on the
+        # stack underneath StatusScreen — see _push_status_screen — but the
+        # contextvar hazard is independent of that and applies regardless).
         self._app_ref = self.app
         mt = self.query_one("#model-table", DataTable)
         mt.add_columns(
@@ -317,10 +318,15 @@ class ModelScreen(Screen[None]):
 
     def _scroll_cursor_to_family(self, family: str) -> None:
         """One-time cursor placement for `modelman download <family>`:
-        move to that family's first row instead of filtering the list."""
+        move to that family's first row instead of filtering the list.
+        Walks the table's existing row order (already produced by
+        reload()'s call to _sorted_models()) instead of sorting the whole
+        registry a second time just to find one row."""
         mt = self.query_one("#model-table", DataTable)
-        for i, m in enumerate(self._sorted_models()):
-            if m.family == family:
+        models_by_id = {m.id: m for m in self.registry.models}
+        for i, row_key in enumerate(mt.rows.keys()):
+            entry = models_by_id.get(str(row_key.value))
+            if entry is not None and entry.family == family:
                 mt.move_cursor(row=i)
                 return
 
@@ -531,14 +537,10 @@ class ModelScreen(Screen[None]):
         )
 
     def action_toggle_ready(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0:
-            return
-        row_key = list(mt.rows.keys())[mt.cursor_row]
-        mid = str(row_key.value)
-        entry = next((m for m in self.registry.models if m.id == mid), None)
+        entry = self._current_entry()
         if entry is None:
             return
+        mid = entry.id
 
         if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
             # Three-way 'r': downloading -> cancel. The model's readiness
@@ -596,14 +598,10 @@ class ModelScreen(Screen[None]):
         self.reload()
 
     def action_toggle_expose(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0:
-            return
-        row_key = list(mt.rows.keys())[mt.cursor_row]
-        mid = str(row_key.value)
-        entry = next((m for m in self.registry.models if m.id == mid), None)
+        entry = self._current_entry()
         if entry is None:
             return
+        mid = entry.id
         if provider_policy(entry.provider_id) is None:
             self.app.notify("Provider has no LiteLLM mapping — cannot expose")
             return
@@ -739,22 +737,42 @@ class ModelScreen(Screen[None]):
         legacy state.families keys, sorted."""
         return known_families(self.registry, self.state)
 
+    @staticmethod
+    def _row_key_at(table: DataTable, row: int) -> str | None:
+        """Model id at `row` in `table`, or None when out of range (empty
+        table, or a stale cursor_row during a reload race). The single
+        place every row-under-cursor action derives a model id from, so a
+        future change to how row keys map to model ids only needs to
+        change here."""
+        if row < 0 or row >= table.row_count:
+            return None
+        return str(list(table.rows.keys())[row].value)
+
+    def _current_model_id(self) -> str | None:
+        """Model id under #model-table's cursor, or None (empty table)."""
+        mt = self.query_one("#model-table", DataTable)
+        return self._row_key_at(mt, mt.cursor_row)
+
+    def _current_entry(self) -> ModelEntry | None:
+        """ModelEntry under the cursor, or None (empty table, or the id
+        under the cursor no longer matches a registry entry)."""
+        mid = self._current_model_id()
+        if mid is None:
+            return None
+        return next((m for m in self.registry.models if m.id == mid), None)
+
     def _current_family(self) -> str | None:
         """The family of the model under the cursor, or None (empty table,
         or nothing to key off of). Used to default the Add dialog's family
         Select to "whatever I'm looking at" now that there's no
         family-scoped screen to inherit it from."""
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0 or mt.cursor_row < 0 or mt.cursor_row >= mt.row_count:
-            return None
-        mid = str(list(mt.rows.keys())[mt.cursor_row].value)
-        entry = next((m for m in self.registry.models if m.id == mid), None)
+        entry = self._current_entry()
         return entry.family if entry is not None else None
 
     def action_add_model(self) -> None:
         from .forms import ModelForm
 
-        providers = self._provider_list() or list(DEFAULT_PROVIDER_IDS)
+        providers = self._provider_list()
         # Pre-select the provider the user is currently looking at, so
         # adding "another llamacpp model" doesn't make them switch the
         # dropdown back. Fall back to None if no provider is selected.
@@ -802,14 +820,10 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
 
     def action_delete_model(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0:
-            return
-        row_key = list(mt.rows.keys())[mt.cursor_row]
-        mid = str(row_key.value)
-        entry = next((m for m in self.registry.models if m.id == mid), None)
+        entry = self._current_entry()
         if entry is None:
             return
+        mid = entry.id
         if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
             # The weights are being written right now; deleting mid-flight
             # would race the download thread. Cancel first instead.
@@ -829,18 +843,10 @@ class ModelScreen(Screen[None]):
         self.reload()
 
     def action_edit_model(self) -> None:
-        mt = self.query_one("#model-table", DataTable)
-        if mt.row_count == 0:
-            return
-        # cursor_row can briefly exceed row_count during a reload race;
-        # bail instead of crashing.
-        if mt.cursor_row >= mt.row_count:
-            return
-        row_key = list(mt.rows.keys())[mt.cursor_row]
-        mid = str(row_key.value)
-        entry = next((m for m in self.registry.models if m.id == mid), None)
+        entry = self._current_entry()
         if entry is None:
             return
+        mid = entry.id
         if self.app.downloads.is_downloading(mid):  # type: ignore[attr-defined]
             # An edit that changes the variant mid-download would race the
             # in-flight write; move/edit must wait for the download.
@@ -878,11 +884,10 @@ class ModelScreen(Screen[None]):
             mt = self.query_one("#model-table", DataTable)
         except NoMatches:
             return  # not mounted (e.g. screen teardown race)
-        if cursor_row < 0 or cursor_row >= mt.row_count:
+        mid = self._row_key_at(mt, cursor_row)
+        if mid is None:
             details.update("path: —")
             return
-        row_key = list(mt.rows.keys())[cursor_row]
-        mid = str(row_key.value)
         path = self.state.get(mid).disk_path if self._is_ready(mid) else None
         details.update(Text(f"path: {path or '—'}"))
 
@@ -1107,10 +1112,11 @@ class ModelScreen(Screen[None]):
         litellm_path = default_litellm_config_path()
         # DownloadManager status per model, snapshotted once. Uses
         # self._app_ref (captured on_mount), not self.app: this method runs
-        # on StatusScreen's worker thread after ModelScreen has already
-        # been popped (_push_status_screen pops before pushing
-        # StatusScreen), and Screen.app raises NoActiveAppError once
-        # popped and off the main thread.
+        # on StatusScreen's worker thread, and Screen.app raises
+        # NoActiveAppError when accessed off the main thread (this screen
+        # stays on the stack underneath StatusScreen — see
+        # _push_status_screen — but the contextvar hazard applies
+        # regardless of whether the screen is popped).
         # is_downloading() alone would also race: it flips to False the
         # instant a download finishes, before this screen's on_complete
         # callback reloads self.state from disk.
