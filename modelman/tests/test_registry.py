@@ -21,7 +21,6 @@ from modelman.registry import (
     _default_registry_path,
     _default_wt_config_path,
     base_origin,
-    family_display_name,
     find_shared_artifact_owner,
     is_native_provider,
     known_families,
@@ -329,28 +328,6 @@ def test_known_families_union_of_derived_entries_and_state():
     )
     state = StateStore(families={"legacy": FamilyState()})
     assert known_families(registry, state) == ["derived", "entry-only", "legacy"]
-
-
-def test_family_display_name_resolution_order():
-    # Registry entry wins over legacy state; both fall back to None.
-    registry = Registry(families=[FamilyEntry(name="a", display_name="Registry Name")])
-    state = StateStore(
-        families={
-            "a": FamilyState(display_name="Legacy Name"),
-            "b": FamilyState(display_name="Only Legacy"),
-        }
-    )
-    assert family_display_name(registry, state, "a") == "Registry Name"
-    assert family_display_name(registry, state, "b") == "Only Legacy"
-    assert family_display_name(registry, state, "c") is None
-
-
-def test_family_display_name_ignores_empty_display_name():
-    # An empty display_name is treated as unset (falls through to the
-    # next source), matching state.family_display_name's truthiness check.
-    registry = Registry(families=[FamilyEntry(name="a", display_name="")])
-    state = StateStore(families={"a": FamilyState(display_name="Legacy")})
-    assert family_display_name(registry, state, "a") == "Legacy"
 
 
 def test_models_by_family_filters_and_preserves_order():

@@ -104,7 +104,7 @@ def test_save_then_load_round_trips_model_state(tmp_path):
 
 def test_family_state_dataclass_round_trips_display_name():
     # display_name is optional; a family with no display name must round-trip
-    # as None so family_display_name() can fall back to the family id.
+    # as None so a caller can fall back to the family id.
     assert FamilyState(display_name="Qwen 3.8").display_name == "Qwen 3.8"
     assert FamilyState().display_name is None
 
