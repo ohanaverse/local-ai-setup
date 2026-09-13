@@ -811,6 +811,29 @@ def test_inventory_registered_omlx_model_is_downloaded_and_not_rediscovered(tmp_
     assert inventory.unqueryable_providers == []
 
 
+def test_inventory_excludes_mlx_lm_server_artifacts_from_discovery(tmp_path):
+    # mlx_lm_server's on-disk directories are individual target/draft
+    # models, never independently startable — Provider.supports_discovery
+    # = False on MLXLMServerProvider must keep them out of `modelman
+    # start`'s discovered bucket even though list_local() happily
+    # enumerates them (this replaced a hardcoded provider-id set in
+    # local_control.py with the provider declaring its own capability).
+    model_dir = tmp_path / "mlx-lm-server-models"
+    (model_dir / "some-target-repo").mkdir(parents=True)
+    (model_dir / "some-target-repo" / "weights.safetensors").write_bytes(b"x")
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="mlx_lm_server", name="mlx-lm server", location="local",
+                model_dir=str(model_dir), auth=AuthConfig(type="none"),
+            )
+        ],
+    )
+    inventory = inventory_local_models(registry, StateStore())
+    assert inventory.discovered == []
+    assert inventory.unqueryable_providers == []
+
+
 def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(tmp_path):
     # The duplicate-registration bug: the old "discovered" listing told the
     # user to type the on-disk basename, but the native-name match compared

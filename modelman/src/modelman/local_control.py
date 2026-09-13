@@ -52,6 +52,7 @@ from .registry import (
     ProviderEntry,
     Registry,
     base_origin,
+    is_local_location,
     known_families,
     locked_registry,
     model_entry_to_variant,
@@ -73,13 +74,6 @@ _DEFAULT_BASE_ORIGIN = {
 # Subprocess seam so tests can keep the probe hermetic (conftest patches
 # it); production calls subprocess.run directly.
 _default_runner = subprocess.run
-
-# Providers modelman can both list a live on-disk catalog for and start via
-# bin/llm-isolate-provider. mlx_lm_server is a target+draft pairing chosen at
-# start time (not a single downloaded artifact) and llamacpp is retired —
-# neither maps onto "discover one artifact, register it" (see the design's
-# Non-goals).
-DISCOVERY_PROVIDER_IDS: frozenset[str] = frozenset({"ollama", "omlx", "omlx-6bit", "mtplx"})
 
 
 class LocalControlError(Exception):
@@ -335,14 +329,22 @@ def _provider_local_models(
     Tolerant by design: a provider with no registered Provider class or whose
     list_local() raises contributes nothing rather than failing the whole
     call — but it is reported in the second return value so callers can say
-    "unknown" instead of "nothing there". Providers outside
-    DISCOVERY_PROVIDER_IDS are skipped by design (see its docstring), not
-    reported as failures.
+    "unknown" instead of "nothing there". Cloud-located providers (location
+    not local/legacy-empty — openrouter, native agents) are skipped by
+    design, not reported as failures: they have no on-disk artifacts to
+    discover. A local provider whose class opts out via
+    Provider.supports_discovery (mlx_lm_server's pairing, retired llamacpp)
+    is skipped the same way. A local provider id with NO registered class
+    (e.g. a hand-edited "omlx-6bit" row) falls through to the unqueryable
+    path below, same as any other provider construction failure.
     """
     found: dict[tuple[str, str], LocalModel] = {}
     unqueryable: set[str] = set()
     for entry in registry.providers:
-        if entry.id not in DISCOVERY_PROVIDER_IDS:
+        if not is_local_location(entry.location):
+            continue
+        provider_cls = ProviderRegistry.get_class(entry.id)
+        if provider_cls is not None and not getattr(provider_cls, "supports_discovery", True):
             continue
         provider = _provider_instance(registry, entry.id)
         if provider is None:

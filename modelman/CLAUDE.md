@@ -291,7 +291,9 @@ model picker to cloud models plus this one verified-running local model —
 see `wt/CLAUDE.md`'s "Local-model gate" section.
 
 `modelman start`'s no-arg listing and its discovered-model auto-register
-path (`DISCOVERY_PROVIDER_IDS` in `local_control.py`) ask the local
+path (`_provider_local_models` in `local_control.py`, gated on each
+provider's `Provider.supports_discovery` class attribute — `False` for
+mlx_lm_server's target+draft pairing and retired llamacpp) ask the local
 providers live rather than trusting only `modelman.toml`'s cached `ready`
 flag. Two different questions, two different mechanisms: "is this
 *registered* model on disk?" goes through the provider's own

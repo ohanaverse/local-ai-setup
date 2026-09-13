@@ -60,6 +60,15 @@ class Provider(ABC):
     # reads this instead of hardcoding provider ids.
     manages_own_cache: bool = False
 
+    # True for a provider whose list_local() enumerates individually
+    # registerable, single-artifact models — `modelman start`'s "discover
+    # an unregistered on-disk model" flow (local_control.py) reads this
+    # instead of hardcoding provider ids. False for a provider whose
+    # on-disk unit isn't a single startable artifact (mlx_lm_server's
+    # target+draft pairing is chosen at start time, not discovered) or that
+    # is retired (llamacpp).
+    supports_discovery: bool = True
+
     def __init__(self, config: dict):
         self.config = config
 

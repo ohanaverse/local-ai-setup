@@ -45,6 +45,12 @@ def _is_local_path_entry(value: str | None) -> bool:
 
 class MLXLMServerProvider(Provider):
     name = "mlx_lm_server"
+    # list_local() enumerates individual model directories, but a startable
+    # unit here is a target+draft PAIRING chosen at start time
+    # (mlx_lm_server_pairing_args) — no single directory is independently
+    # registerable, so `modelman start`'s discovery flow excludes this
+    # provider (see the design's Non-goals).
+    supports_discovery = False
 
     def __init__(self, options: dict[str, Any]) -> None:
         super().__init__(options)
