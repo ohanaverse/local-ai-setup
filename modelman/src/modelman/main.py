@@ -337,7 +337,7 @@ def start(
             # "cannot be empty" message and re-prompt.
             answer = typer.prompt("Family name for this model", default="", show_default=False)
             while not answer.strip():
-                typer.echo("Family name cannot be empty.")
+                typer.echo("Family name cannot be empty.", err=True)
                 answer = typer.prompt("Family name for this model", default="", show_default=False)
             family = answer.strip()
         except LocalControlError as exc:

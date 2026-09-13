@@ -292,5 +292,5 @@ def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
         result = runner.invoke(app, ["start", "llama3.2:3b"], input="\ngeneral\n")
 
     assert result.exit_code == 0, result.stdout
-    assert "cannot be empty" in result.stdout
+    assert "cannot be empty" in result.output
     assert load_state(path=state_path).local.running_model == "ollama/llama3.2:3b"
