@@ -371,6 +371,11 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
 
 
 def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
+    # A bare provider-native name matching an on-disk, unregistered artifact
+    # can't be auto-registered without a family — this is the interactive
+    # prompt path the CLI's `start` command catches and retries. Also
+    # verifies the failure has no side effects: nothing is written before
+    # the family is known.
     registry = _registry()
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
@@ -385,6 +390,13 @@ def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
 
 
 def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_path):
+    # The full discover -> register -> expose -> start pipeline for a
+    # provider-native name with no registry.toml entry: this is the
+    # single most consequential path this branch adds, so it asserts on
+    # every artifact it should produce — the registry.toml entry (family/
+    # provider/name/source/location), the in-memory registry the caller
+    # keeps using for the rest of the call, the ready+exposed+sized state,
+    # and the running marker.
     registry = _registry()
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
@@ -498,6 +510,10 @@ def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_pa
 
 
 def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
+    # A discovered name matching on-disk artifacts from two different
+    # providers is genuinely ambiguous — auto-registering either one would
+    # silently guess wrong, so this must raise and require the user to
+    # register manually instead.
     registry = _registry()
     registry.providers.append(
         ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
@@ -630,6 +646,9 @@ def _patch_provider_local_models(mapping: dict[str, list[dict]]):
 
 
 def test_inventory_downloaded_bucket_includes_size_and_running_marker():
+    # `modelman start`'s no-arg listing must surface the actually-verified
+    # size and running status for a registered, on-disk model — not just
+    # whatever modelman.toml happens to have cached.
     registry = _listing_registry()
     state = _listing_state(running_model="ollama/exposed-model")
     mapping = {
@@ -647,6 +666,9 @@ def test_inventory_downloaded_bucket_includes_size_and_running_marker():
 
 
 def test_inventory_not_downloaded_bucket_lists_registered_missing_artifacts():
+    # Registered models the live provider reports nothing for must be
+    # listed as missing, regardless of exposed status — this is what tells
+    # a user which registry.toml entries need a real download.
     registry = _listing_registry()
     state = _listing_state()
     with _patch_provider_local_models({"ollama": []}):
@@ -659,6 +681,10 @@ def test_inventory_not_downloaded_bucket_lists_registered_missing_artifacts():
 
 
 def test_inventory_discovered_bucket_excludes_already_registered():
+    # An on-disk artifact the provider reports must appear in "discovered"
+    # only when no registry.toml entry already names it — otherwise every
+    # already-registered model would be re-offered for registration on
+    # every `modelman start` listing.
     registry = _listing_registry()
     state = _listing_state()
     mapping = {
