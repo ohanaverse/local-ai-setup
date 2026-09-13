@@ -14,10 +14,20 @@ runner = CliRunner()
 
 
 def _stub_provider(local_models: list[dict]):
+    """An ollama-shaped provider stub: `local_models` is both what it
+    enumerates (`list_local`) and what it confirms present for a registered
+    variant (`is_downloaded`/`size_of`, keyed on the variant's name — for
+    ollama the provider spelling and the registry spelling are the same
+    string). `resolve_local` returns None (no batch implementation) so the
+    per-variant methods are the ones exercised."""
     from unittest.mock import MagicMock
 
+    by_name = {lm["variant_id"]: lm for lm in local_models}
     stub = MagicMock()
     stub.list_local.return_value = local_models
+    stub.resolve_local.return_value = None
+    stub.is_downloaded.side_effect = lambda spec, *a, **k: spec.get("name") in by_name
+    stub.size_of.side_effect = lambda spec, *a, **k: by_name.get(spec.get("name"), {}).get("size_bytes")
     return stub
 
 
@@ -170,18 +180,16 @@ def test_start_command_no_args_shows_three_sections(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
-    from unittest.mock import MagicMock
-
     def get_class(name):
         return object if name == "ollama" else None
 
     def get(name, config):
-        stub = MagicMock()
-        stub.list_local.return_value = [
-            {"variant_id": "x", "path": "ollama:x", "size_bytes": 4_900_000_000},
-            {"variant_id": "z", "path": "ollama:z", "size_bytes": 1_073_741_824},
-        ]
-        return stub
+        return _stub_provider(
+            [
+                {"variant_id": "x", "path": "ollama:x", "size_bytes": 4_900_000_000},
+                {"variant_id": "z", "path": "ollama:z", "size_bytes": 1_073_741_824},
+            ]
+        )
 
     with (
         patch("modelman.local_control.ProviderRegistry.get_class", side_effect=get_class),
@@ -217,19 +225,15 @@ def test_start_command_discovers_and_prompts_for_family(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
 
-    from unittest.mock import MagicMock
-
     from modelman.benchmark.isolation import IsolateResult
 
     def get_class(name):
         return object if name == "ollama" else None
 
     def get(name, config):
-        stub = MagicMock()
-        stub.list_local.return_value = [
-            {"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}
-        ]
-        return stub
+        return _stub_provider(
+            [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]
+        )
 
     with (
         patch("modelman.local_control.ProviderRegistry.get_class", side_effect=get_class),
@@ -265,19 +269,15 @@ def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
 
-    from unittest.mock import MagicMock
-
     from modelman.benchmark.isolation import IsolateResult
 
     def get_class(name):
         return object if name == "ollama" else None
 
     def get(name, config):
-        stub = MagicMock()
-        stub.list_local.return_value = [
-            {"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": None}
-        ]
-        return stub
+        return _stub_provider(
+            [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": None}]
+        )
 
     with (
         patch("modelman.local_control.ProviderRegistry.get_class", side_effect=get_class),
@@ -294,3 +294,37 @@ def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     assert "cannot be empty" in result.output
     assert load_state(path=state_path).local.running_model == "ollama/llama3.2:3b"
+
+
+def test_start_command_no_args_warns_when_a_provider_cannot_be_queried(tmp_path, monkeypatch):
+    # A provider that can't answer (stopped ollama daemon, or a registry.toml
+    # provider id modelman has no Provider class for) must not be reported as
+    # "not downloaded" with no further comment — that would send the user off
+    # to re-download models they already have. The ambiguity gets its own line.
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    from unittest.mock import MagicMock
+
+    def get(name, config):
+        stub = MagicMock()
+        stub.list_local.side_effect = RuntimeError("daemon unreachable")
+        stub.resolve_local.return_value = None
+        stub.is_downloaded.side_effect = RuntimeError("daemon unreachable")
+        return stub
+
+    with (
+        patch("modelman.local_control.ProviderRegistry.get_class", return_value=object),
+        patch("modelman.local_control.ProviderRegistry.get", side_effect=get),
+    ):
+        result = runner.invoke(app, ["start"])
+    assert result.exit_code == 0, result.output
+    assert "Registered, not downloaded:" in result.stdout
+    assert "ollama: could not be queried" in result.output

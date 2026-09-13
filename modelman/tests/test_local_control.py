@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from modelman.benchmark.isolation import IsolateResult
+from modelman.litellm import ExposeError
 from modelman.local_control import (
     DiscoveredModel,
     DiscoveredModelNeedsFamily,
@@ -22,10 +23,12 @@ from modelman.local_control import (
 )
 from modelman.registry import (
     AuthConfig,
+    Fetch,
     ModelEntry,
     ProviderEntry,
     Registry,
     load_registry,
+    locked_registry,
     save_registry,
 )
 from modelman.state import ModelState, StateStore, load_state, save_state
@@ -523,16 +526,34 @@ def _listing_state(running_model: str | None = None) -> StateStore:
 
 
 def _patch_provider_local_models(mapping: dict[str, list[dict]]):
-    """Patch ProviderRegistry so _provider_local_models(registry) sees
-    `mapping` (provider_id -> list of LocalModel dicts) without shelling
-    out to any real provider CLI or scanning a real directory."""
+    """Patch ProviderRegistry so local_control sees `mapping` (provider_id ->
+    list of LocalModel dicts) without shelling out to any real provider CLI or
+    scanning a real directory.
+
+    The stub answers BOTH questions local_control asks a provider: what is on
+    disk (`list_local`) and whether one registered variant is on disk
+    (`resolve_local`/`is_downloaded`/`size_of`). The per-variant answers are
+    keyed on the variant's `name` (i.e. ModelEntry.model_name), so this helper
+    is ollama-shaped by construction — the provider spelling and the registry
+    spelling agree. omlx, where they don't, is covered by the real-provider
+    fixtures further down.
+    """
 
     def get_class(name):
         return object if name in mapping else None
 
     def get(name, config):
+        by_name = {lm["variant_id"]: lm for lm in mapping.get(name, [])}
         stub = MagicMock()
         stub.list_local.return_value = mapping.get(name, [])
+        # None = no batch implementation; the caller falls back to the
+        # per-variant methods below (a bare MagicMock would be a truthy
+        # non-list and silently take the same fallback).
+        stub.resolve_local.return_value = None
+        stub.is_downloaded.side_effect = lambda spec, *a, **k: spec.get("name") in by_name
+        stub.size_of.side_effect = lambda spec, *a, **k: by_name.get(spec.get("name"), {}).get(
+            "size_bytes"
+        )
         return stub
 
     return patch.multiple(
@@ -591,14 +612,18 @@ def test_inventory_discovered_bucket_excludes_already_registered():
 
 
 def test_inventory_tolerates_a_provider_list_local_failure():
-    # A down ollama daemon or a provider whose list_local() raises must not
-    # blank out the whole inventory — it just contributes nothing.
+    # A down ollama daemon fails every provider call: the inventory must
+    # still be produced (no exception escaping to the CLI), with the
+    # unanswerable models listed rather than dropped — the ambiguity is
+    # surfaced separately via unqueryable_providers, not by crashing.
     registry = _listing_registry()
     state = _listing_state()
 
     def get(name, config):
         stub = MagicMock()
         stub.list_local.side_effect = RuntimeError("daemon unreachable")
+        stub.resolve_local.return_value = None
+        stub.is_downloaded.side_effect = RuntimeError("daemon unreachable")
         return stub
 
     with patch.multiple(
@@ -616,7 +641,8 @@ def test_inventory_tolerates_a_provider_list_local_failure():
 def test_inventory_skips_providers_with_no_registered_class():
     # A registry.toml entry for a provider id nothing registers under
     # ProviderRegistry (e.g. a hand-edited "omlx-6bit" row today) must be
-    # skipped, not raise KeyError.
+    # skipped, not raise KeyError — and reported as unqueryable rather than
+    # silently contributing an empty (i.e. "nothing on disk") answer.
     registry = _listing_registry()
     registry.providers.append(
         ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none"))
@@ -625,3 +651,239 @@ def test_inventory_skips_providers_with_no_registered_class():
     with _patch_provider_local_models({"ollama": []}):
         inventory = inventory_local_models(registry, state)
     assert inventory.discovered == []
+    assert inventory.unqueryable_providers == ["omlx-6bit"]
+
+
+# --- omlx join-mismatch regression tests -----------------------------------
+#
+# Every other fixture in this file is ollama-shaped, where a provider's
+# list_local() variant_id is byte-identical to the registered
+# ModelEntry.model_name. omlx is the counter-example that broke the original
+# implementation: list_local() reports the model DIRECTORY BASENAME
+# ("Qwen3.8-27B-4bit") while the registry entry holds the full HuggingFace
+# repo id ("mlx-community/Qwen3.8-27B-4bit"). These tests drive the REAL
+# OMLXProvider against a temp model dir so the mismatch is genuine rather
+# than a stub's idea of it.
+
+
+def _omlx_model_dir(tmp_path: Path, basename: str = "Qwen3.8-27B-4bit") -> Path:
+    """Create ~/.omlx/models-style <model_dir>/<repo basename>/ with a file
+    in it and return the model_dir."""
+    model_dir = tmp_path / "omlx-models"
+    (model_dir / basename).mkdir(parents=True)
+    (model_dir / basename / "weights.safetensors").write_bytes(b"x" * 2048)
+    return model_dir
+
+
+_OMLX_MODEL_ID = "omlx/mlx-community--Qwen3.8-27B-4bit"
+
+
+def _omlx_registry(model_dir: Path) -> Registry:
+    return Registry(
+        providers=[
+            ProviderEntry(
+                id="omlx",
+                name="oMLX",
+                location="local",
+                model_dir=str(model_dir),
+                auth=AuthConfig(type="none"),
+            )
+        ],
+        models=[
+            ModelEntry(
+                id=_OMLX_MODEL_ID,
+                family="qwen3.8",
+                provider_id="omlx",
+                model_name="mlx-community/Qwen3.8-27B-4bit",
+                location="local",
+                fetch=Fetch(repo="mlx-community/Qwen3.8-27B-4bit"),
+            )
+        ],
+    )
+
+
+def test_inventory_registered_omlx_model_is_downloaded_and_not_rediscovered(tmp_path):
+    # The bug this branch's final review found: an omlx model registered
+    # under its full repo id but reported on disk under its directory
+    # basename was bucketed BOTH as "registered, not downloaded" and as a
+    # brand-new "discovered" artifact. It must be neither: it is registered
+    # and present, with a real size (which list_local() never reports for
+    # omlx, but size_of() does).
+    registry = _omlx_registry(_omlx_model_dir(tmp_path))
+    inventory = inventory_local_models(registry, StateStore())
+    assert inventory.downloaded == [
+        InventoryEntry(model_id=_OMLX_MODEL_ID, running=False, size_bytes=2048)
+    ]
+    assert inventory.not_downloaded == []
+    assert inventory.discovered == []
+    assert inventory.unqueryable_providers == []
+
+
+def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(tmp_path):
+    # The duplicate-registration bug: the old "discovered" listing told the
+    # user to type the on-disk basename, but the native-name match compared
+    # it verbatim against model_name (the full repo id), missed, and fell
+    # through to auto-registration — writing a SECOND registry.toml entry and
+    # a SECOND LiteLLM model_list row for an already-registered, already-
+    # exposed artifact.
+    registry = _omlx_registry(_omlx_model_dir(tmp_path))
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+    litellm_path = tmp_path / "config.yaml"
+    litellm_path.write_text("model_list: []\n")
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="mlx-community/Qwen3.8-27B-4bit",
+            direct_url="http://localhost:8000/v1/chat/completions", ok=True, error=None,
+        )
+        result = start_local_model(
+            registry, "Qwen3.8-27B-4bit", state_path,
+            registry_path=registry_path, litellm_path=litellm_path,
+        )
+
+    assert result.model_id == _OMLX_MODEL_ID
+    mock_isolate.assert_called_once_with(
+        "omlx", env={"LLM_ISOLATE_OMLX_4BIT_MODEL": "mlx-community/Qwen3.8-27B-4bit"}
+    )
+    # Singular registry entry and an untouched LiteLLM config: nothing was
+    # re-registered or re-exposed.
+    assert [m.id for m in load_registry(registry_path).models] == [_OMLX_MODEL_ID]
+    assert litellm_path.read_text() == "model_list: []\n"
+
+
+def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_path):
+    # The same join, exercised through start_local_model's resolution path
+    # with no family: an already-registered omlx model must never raise
+    # DiscoveredModelNeedsFamily just because its on-disk spelling differs.
+    registry = _omlx_registry(_omlx_model_dir(tmp_path))
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="mlx-community/Qwen3.8-27B-4bit",
+            direct_url=None, ok=True, error=None,
+        )
+        # The full repo id must keep resolving too (registry-id lookup misses
+        # it; the native-name match is what catches it).
+        result = start_local_model(
+            registry, "mlx-community/Qwen3.8-27B-4bit", state_path, registry_path=registry_path
+        )
+    assert result.model_id == _OMLX_MODEL_ID
+
+
+def test_inventory_flags_providers_whose_presence_check_raises():
+    # "Couldn't ask the provider" must be distinguishable from "confirmed not
+    # downloaded": a stopped ollama daemon makes is_downloaded() raise, and
+    # silently relabelling every registered ollama model as missing would send
+    # the user off to re-download models they already have.
+    registry = _listing_registry()
+    state = _listing_state()
+
+    def get(name, config):
+        stub = MagicMock()
+        # Enumeration still works; only the per-model presence check fails.
+        stub.list_local.return_value = [
+            {"variant_id": "brand-new-model", "path": "ollama:brand-new-model", "size_bytes": 1}
+        ]
+        stub.resolve_local.return_value = None
+        stub.is_downloaded.side_effect = RuntimeError("daemon unreachable")
+        return stub
+
+    with patch.multiple(
+        "modelman.local_control.ProviderRegistry",
+        get_class=MagicMock(return_value=object),
+        get=MagicMock(side_effect=get),
+    ):
+        inventory = inventory_local_models(registry, state)
+    assert inventory.downloaded == []
+    assert inventory.unqueryable_providers == ["ollama"]
+    # The discovery half is unaffected — the two questions are asked
+    # separately, so one failing does not blind the other.
+    assert [d.variant_id for d in inventory.discovered] == ["brand-new-model"]
+
+
+def test_inventory_falls_back_to_cached_size_when_provider_reports_none():
+    # A present model whose provider cannot size it (omlx's list_local(), any
+    # provider without size_of()) must still show the size modelman.toml
+    # already cached from an earlier reconcile, not "—".
+    registry = _listing_registry()
+    state = _listing_state()
+    state.set("ollama/exposed-model", ModelState(ready=True, exposed=True, size_bytes=4_900_000_000))
+    mapping = {"ollama": [{"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": None}]}
+    with _patch_provider_local_models(mapping):
+        inventory = inventory_local_models(registry, state)
+    assert InventoryEntry(
+        model_id="ollama/exposed-model", running=False, size_bytes=4_900_000_000
+    ) in inventory.downloaded
+
+
+def test_register_discovered_model_keeps_registry_and_state_when_expose_fails(tmp_path):
+    # expose_model() runs AFTER the registry entry and ready=True state are
+    # persisted, so an ExposeError leaves a registered-but-unexposed model.
+    # That partial state is deliberate (a retry resolves the entry by its
+    # native name instead of registering a duplicate) — this test pins both
+    # the persistence and the error.
+    registry = _registry()
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]}
+
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.expose_model", side_effect=ExposeError("no litellm config")),
+        pytest.raises(LocalControlError, match="registered"),
+    ):
+        start_local_model(
+            registry, "llama3.2:3b", state_path,
+            family="discovered", registry_path=registry_path,
+        )
+
+    entry = load_registry(registry_path).model("ollama/llama3.2:3b")
+    assert entry.model_name == "llama3.2:3b"
+    persisted = load_state(state_path).get("ollama/llama3.2:3b")
+    assert persisted.ready is True
+    assert persisted.exposed is False
+    # Nothing was started: the failure happens during resolution.
+    assert load_state(state_path).local.running_model is None
+
+
+def test_register_discovered_model_refuses_an_id_that_already_exists(tmp_path):
+    # Defense-in-depth against a race or a hand-edited registry.toml: the id
+    # is derived from (provider, native name), so a colliding id means the
+    # model is already registered — appending a second entry would duplicate
+    # it in registry.toml and in LiteLLM's model_list.
+    registry = _registry()
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    # On-disk registry already has the entry; the in-memory copy passed in
+    # does not (the race this guards against).
+    with locked_registry(registry_path) as fresh:
+        fresh.models.append(
+            ModelEntry(
+                id="ollama/llama3.2:3b", family="other", provider_id="ollama",
+                model_name="llama3.2:3b", location="local", source="discovered",
+            )
+        )
+    state_path = _state_path(tmp_path)
+    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]}
+
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(LocalControlError, match="already registered"),
+    ):
+        start_local_model(
+            registry, "llama3.2:3b", state_path,
+            family="discovered", registry_path=registry_path,
+        )
+    assert [m.id for m in load_registry(registry_path).models].count("ollama/llama3.2:3b") == 1

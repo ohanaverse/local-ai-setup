@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered, each cross-referenced against every in-scope provider's `Provider.list_local()` rather than trusting only cached state; `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
 
 ## Monorepo context
 
@@ -291,9 +291,20 @@ model picker to cloud models plus this one verified-running local model —
 see `wt/CLAUDE.md`'s "Local-model gate" section.
 
 `modelman start`'s no-arg listing and its discovered-model auto-register
-path (`DISCOVERY_PROVIDER_IDS` in `local_control.py`) query each
-in-scope local provider's `list_local()` live rather than trusting only
-`modelman.toml`'s cached `ready` flag — see
+path (`DISCOVERY_PROVIDER_IDS` in `local_control.py`) ask the local
+providers live rather than trusting only `modelman.toml`'s cached `ready`
+flag. Two different questions, two different mechanisms: "is this
+*registered* model on disk?" goes through the provider's own
+`resolve_local()`/`is_downloaded()`/`size_of()` (`_registered_presence`),
+which derive the artifact path the same way `download()` does, while
+"what's on disk that ISN'T registered?" goes through `list_local()`
+(`_provider_local_models`). Never join the two on an exact
+`variant_id == model_name`: omlx's `list_local()` reports the model
+directory's basename while its `ModelEntry.model_name` holds the full HF
+repo id — `_name_matches` (`_registered_under_name`, and the native-name
+match in `_resolve_or_register`) is what bridges the two spellings, and an
+exact comparison there both hid every registered omlx model and
+duplicate-registered it. See
 `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`
 (monorepo-root docs).
 

@@ -25,6 +25,7 @@ the short transactions stay correct.
 from __future__ import annotations
 
 import subprocess
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,16 +42,18 @@ from .benchmark.isolation import (
 from .litellm import ExposeError, default_litellm_config_path, expose_model
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
-from .providers.base import LocalModel
+from .providers.base import LocalModel, Provider
 from .providers.mtplx import MTPLX_BASE
 from .providers.registry import ProviderRegistry
 from .registry import (
     LOCATION_LOCAL,
     ModelEntry,
+    ProviderEntry,
     Registry,
     base_origin,
     known_families,
     locked_registry,
+    model_entry_to_variant,
     model_has_local_artifact,
     provider_config,
 )
@@ -135,6 +138,12 @@ class LocalModelInventory:
     downloaded: list[InventoryEntry]
     not_downloaded: list[str]
     discovered: list[DiscoveredModel]
+    # Provider ids modelman could not ask (no Provider class registered for
+    # the id, or the provider raised). For these, "not downloaded"/"nothing
+    # discovered" means UNKNOWN, not "confirmed absent" — a stopped ollama
+    # daemon would otherwise silently relabel every registered ollama model
+    # as missing. The CLI prints a caveat naming them.
+    unqueryable_providers: list[str] = field(default_factory=list)
 
 
 def _ollama_loaded_names() -> list[str]:
@@ -209,49 +218,175 @@ def _clear_stale_marker(expected: tuple[str, ...], state_path: Path | None) -> N
         pass  # the LocalControlError about the failed start is the user's answer
 
 
-def _provider_local_models(registry: Registry) -> dict[tuple[str, str], LocalModel]:
-    """(provider_id, variant_id) -> LocalModel for every artifact every
-    in-scope, registered, live provider currently reports on disk.
+def _provider_entry(registry: Registry, provider_id: str) -> ProviderEntry | None:
+    """The registry.toml provider row for `provider_id`, or None."""
+    return next((p for p in registry.providers if p.id == provider_id), None)
 
-    Tolerant by design: a provider id with no registered Provider class
-    (e.g. a hand-edited "omlx-6bit" registry.toml row today — see
-    DISCOVERY_PROVIDER_IDS's docstring) or whose list_local() raises
-    contributes nothing rather than failing the whole call — this backs
-    both the `start` listing and the start-by-native-name fallback, and
-    neither should go blind because one provider is unreachable.
+
+def _provider_instance(registry: Registry, provider_id: str) -> Provider | None:
+    """A live Provider for `provider_id`, or None when it cannot be built (no
+    registry.toml row, nothing registered under that id — e.g. a hand-edited
+    "omlx-6bit" row today — or construction raised).
+
+    None always means "this provider cannot be asked", never "this provider
+    reports nothing": every caller has to keep those apart (see
+    LocalModelInventory.unqueryable_providers).
+    """
+    entry = _provider_entry(registry, provider_id)
+    if entry is None:
+        return None
+    if ProviderRegistry.get_class(provider_id) is None:
+        return None
+    try:
+        return ProviderRegistry.get(provider_id, provider_config(entry))
+    except Exception:
+        return None
+
+
+@dataclass
+class _RegisteredPresence:
+    """Answer to "which REGISTERED models are actually on disk?"."""
+
+    # model.id -> size in bytes, or None when present but unsized. A missing
+    # key means "not on disk" — unless the model's provider is in
+    # `unqueryable`, in which case it means "couldn't tell".
+    on_disk: dict[str, int | None]
+    unqueryable: set[str]
+
+
+def _registered_presence(registry: Registry, models: list[ModelEntry]) -> _RegisteredPresence:
+    """Ask each provider whether each of `models` is on disk, and how big.
+
+    Deliberately NOT derived from list_local(): a provider's on-disk spelling
+    is not always the registry's. omlx's list_local() reports the model
+    directory's basename ("Qwen3.8-27B-4bit") while the matching
+    ModelEntry.model_name holds the full HF repo id
+    ("mlx-community/Qwen3.8-27B-4bit"), so joining the two on an exact
+    (provider_id, model_name) match bucketed every registered-and-present omlx
+    model as "not downloaded". is_downloaded()/size_of()/resolve_local() route
+    through each provider's OWN path derivation (OMLXProvider._target_dir()
+    derives the basename from the variant's repo), so they are provider-correct
+    by construction — and omlx's size_of() reports a real size where its
+    list_local() always reports None.
+
+    Same strategy as screens/__init__.py's reconcile_model_state(): try the
+    batched resolve_local() per provider first (only ollama implements it —
+    one `ollama list` for the whole batch), fall back to the per-model calls
+    when it is unimplemented, misaligned, or raises.
+    """
+    by_provider: dict[str, list[ModelEntry]] = defaultdict(list)
+    for model in models:
+        by_provider[model.provider_id].append(model)
+
+    on_disk: dict[str, int | None] = {}
+    unqueryable: set[str] = set()
+    for provider_id, entries in by_provider.items():
+        provider = _provider_instance(registry, provider_id)
+        if provider is None:
+            unqueryable.add(provider_id)
+            continue
+        specs = [model_entry_to_variant(m) for m in entries]
+        try:
+            resolved = provider.resolve_local(specs)
+        except Exception:
+            resolved = None
+        if isinstance(resolved, list) and len(resolved) == len(specs):
+            # Batch contract (mirrors reconcile_model_state): anything that
+            # is not a positionally-aligned list degrades to the per-model
+            # path below rather than silently dropping models.
+            for model, hit in zip(entries, resolved, strict=True):
+                if hit is None:
+                    continue
+                size = hit.get("size_bytes")
+                on_disk[model.id] = size if isinstance(size, int) else None
+            continue
+        for model, spec in zip(entries, specs, strict=True):
+            try:
+                downloaded = bool(provider.is_downloaded(spec))
+            except Exception:
+                # A raising is_downloaded() is "unknown", not "absent" —
+                # OllamaProvider raises precisely when the daemon is down.
+                unqueryable.add(provider_id)
+                continue
+            if not downloaded:
+                continue
+            try:
+                size = provider.size_of(spec)
+            except Exception:
+                size = None
+            on_disk[model.id] = size if isinstance(size, int) else None
+    return _RegisteredPresence(on_disk=on_disk, unqueryable=unqueryable)
+
+
+def _provider_local_models(
+    registry: Registry,
+) -> tuple[dict[tuple[str, str], LocalModel], set[str]]:
+    """(provider_id, variant_id) -> LocalModel for every artifact every
+    in-scope, registered, live provider currently reports on disk, plus the
+    set of in-scope provider ids that could not be enumerated.
+
+    This answers only "what is on disk that modelman may not know about?" —
+    enumeration is the one question a presence check keyed on already-known
+    names cannot answer. Whether a given entry here is already registered is
+    decided by _registered_under_name(), never by comparing this map's keys
+    to registry ids: the keys are the provider's spelling, not the registry's.
+
+    Tolerant by design: a provider with no registered Provider class or whose
+    list_local() raises contributes nothing rather than failing the whole
+    call — but it is reported in the second return value so callers can say
+    "unknown" instead of "nothing there". Providers outside
+    DISCOVERY_PROVIDER_IDS are skipped by design (see its docstring), not
+    reported as failures.
     """
     found: dict[tuple[str, str], LocalModel] = {}
+    unqueryable: set[str] = set()
     for entry in registry.providers:
         if entry.id not in DISCOVERY_PROVIDER_IDS:
             continue
-        if ProviderRegistry.get_class(entry.id) is None:
+        provider = _provider_instance(registry, entry.id)
+        if provider is None:
+            unqueryable.add(entry.id)
             continue
-        provider = ProviderRegistry.get(entry.id, provider_config(entry))
         try:
             local_models = provider.list_local()
         except Exception:
-            local_models = []
+            unqueryable.add(entry.id)
+            continue
         for local_model in local_models:
             found[(entry.id, local_model["variant_id"])] = local_model
-    return found
+    return found, unqueryable
 
 
-def _registered_pairs(registry: Registry) -> set[tuple[str, str]]:
-    return {(m.provider_id, m.model_name) for m in registry.models}
+def _registered_under_name(registry: Registry, provider_id: str, variant_id: str) -> bool:
+    """Whether some registry.toml entry on `provider_id` already names the
+    artifact that provider reports on disk as `variant_id`.
+
+    Uses _name_matches rather than an exact model_name comparison for the same
+    reason _probe_running does: the provider's spelling and the registry's
+    differ (omlx reports a directory basename, the registry holds the full HF
+    repo id), and an exact match re-"discovers" every registered omlx model.
+    _name_matches is symmetric — each of its three disjuncts has a mirror — so
+    the argument order carries no meaning here.
+    """
+    return any(
+        m.provider_id == provider_id and _name_matches(m.model_name, variant_id)
+        for m in registry.models
+    )
 
 
 def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
-    """Unregistered on-disk artifacts, across every in-scope provider,
-    whose native name is exactly `name`."""
-    local_map = _provider_local_models(registry)
-    registered_pairs = _registered_pairs(registry)
+    """Unregistered on-disk artifacts, across every in-scope provider, whose
+    native name matches `name` (leniently, per _name_matches: a user may type
+    either the on-disk basename the listing shows or the full repo id)."""
+    local_map, _unqueryable = _provider_local_models(registry)
     return [
         DiscoveredModel(
             provider_id=provider_id, variant_id=variant_id,
             path=local_model["path"], size_bytes=local_model.get("size_bytes"),
         )
         for (provider_id, variant_id), local_model in local_map.items()
-        if variant_id == name and (provider_id, variant_id) not in registered_pairs
+        if _name_matches(variant_id, name)
+        and not _registered_under_name(registry, provider_id, variant_id)
     ]
 
 
@@ -279,6 +414,14 @@ def _register_discovered_model(
         source="discovered",
     )
     with locked_registry(registry_path) as fresh:
+        # Defense-in-depth against a concurrent registration or a hand-edited
+        # registry.toml: the id is derived from (provider, native name), so a
+        # collision means this artifact is already registered and appending
+        # would duplicate it in registry.toml AND in LiteLLM's model_list.
+        # Raising here (inside the lock, before the write) leaves the file
+        # untouched — locked_registry only saves on a clean exit.
+        if any(m.id == model_id for m in fresh.models):
+            raise LocalControlError(f"{model_id} is already registered")
         fresh.models.append(entry)
     registry.models.append(entry)
 
@@ -290,7 +433,18 @@ def _register_discovered_model(
     try:
         warnings = expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
     except ExposeError as exc:
-        raise LocalControlError(f"discovered model {model_id} could not be exposed: {exc}") from exc
+        # The registry entry and its ready=true state are already persisted at
+        # this point (both are prerequisites for exposing), so this leaves a
+        # registered-but-unexposed model rather than nothing — say so, and say
+        # that a retry reuses it: the entry now resolves by its native name
+        # (_resolve_or_register's second step), so a re-run exposes and starts
+        # it instead of registering a duplicate.
+        raise LocalControlError(
+            f"{model_id} was registered (registry.toml + modelman.toml, ready=true) "
+            f"but could not be exposed to LiteLLM: {exc} — fix the LiteLLM config and "
+            f"re-run `modelman start {match.variant_id}`; it will reuse that entry "
+            "rather than register it again"
+        ) from exc
     # expose_model() mutates state.models[model_id] in place (sets exposed)
     # but never persists it - merge just this one key back, mirroring
     # main.py's `expose` command.
@@ -321,13 +475,17 @@ def _resolve_or_register(
     except KeyError:
         pass
 
+    # _name_matches, not ==: the name a user types comes from the provider's
+    # spelling (the discovered listing prints omlx's directory basename,
+    # "Qwen3.8-27B-4bit") while model_name holds the registry's (the full repo
+    # id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison missed that
+    # model and fell through to the register-a-discovered-model step below,
+    # duplicating an already-registered, already-exposed artifact.
     native_matches = [
         m
         for m in registry.models
-        if m.model_name == model_id
-        and model_has_local_artifact(
-            m, next((p for p in registry.providers if p.id == m.provider_id), None)
-        )
+        if _name_matches(m.model_name, model_id)
+        and model_has_local_artifact(m, _provider_entry(registry, m.provider_id))
     ]
     if len(native_matches) == 1:
         return native_matches[0], []
@@ -354,42 +512,51 @@ def _resolve_or_register(
 
 def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelInventory:
     """Live, three-way view of local models: registered models split into
-    downloaded/not-downloaded by cross-referencing each in-scope provider's
-    list_local() against registry.toml, plus on-disk artifacts with no
-    registry.toml entry at all ("discovered").
+    downloaded/not-downloaded by asking each provider whether its artifact is
+    on disk, plus on-disk artifacts with no registry.toml entry at all
+    ("discovered").
+
+    Those are two different questions and each gets the tool that answers it
+    correctly. "Is this registered model present?" goes through
+    _registered_presence() (the providers' own presence checks, immune to the
+    spelling mismatch between list_local() and model_name); "what is on disk
+    that isn't registered?" goes through _provider_local_models() (list_local()
+    is the only enumeration there is), with _registered_under_name() deciding
+    what counts as already-known.
 
     `modelman start` (no model_id) prints this. Unlike the exposed-only
     listing this replaces, `downloaded`/`not_downloaded` include every
     local-artifact registered model regardless of its exposed flag — this
     is a full local inventory, not just "what can I start right now".
     """
-    local_map = _provider_local_models(registry)
-    registered_pairs = _registered_pairs(registry)
+    local_map, discovery_unqueryable = _provider_local_models(registry)
     running_marker = state.local.running_model
 
     local_models = [
         model
         for model in registry.models
-        if model_has_local_artifact(
-            model, next((p for p in registry.providers if p.id == model.provider_id), None)
-        )
+        if model_has_local_artifact(model, _provider_entry(registry, model.provider_id))
     ]
+    presence = _registered_presence(registry, local_models)
 
     downloaded: list[InventoryEntry] = []
     not_downloaded: list[str] = []
     for model in sorted(local_models, key=lambda m: m.id):
-        hit = local_map.get((model.provider_id, model.model_name))
-        if hit is None:
+        if model.id not in presence.on_disk:
             not_downloaded.append(model.id)
             continue
         running = False
         if model.id == running_marker:
-            provider = next((p for p in registry.providers if p.id == model.provider_id), None)
+            provider = _provider_entry(registry, model.provider_id)
             probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
             running = _probe_running(model.provider_id, model.model_name, probe_origin)
-        downloaded.append(
-            InventoryEntry(model_id=model.id, running=running, size_bytes=hit.get("size_bytes"))
-        )
+        # A provider that can't size an artifact it confirms is present (no
+        # size_of() implementation) must not regress the size modelman.toml
+        # already cached from an earlier reconcile into a "—".
+        size = presence.on_disk[model.id]
+        if size is None:
+            size = state.get(model.id).size_bytes
+        downloaded.append(InventoryEntry(model_id=model.id, running=running, size_bytes=size))
 
     discovered = [
         DiscoveredModel(
@@ -399,9 +566,14 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             size_bytes=local_model.get("size_bytes"),
         )
         for (provider_id, variant_id), local_model in sorted(local_map.items())
-        if (provider_id, variant_id) not in registered_pairs
+        if not _registered_under_name(registry, provider_id, variant_id)
     ]
-    return LocalModelInventory(downloaded=downloaded, not_downloaded=not_downloaded, discovered=discovered)
+    return LocalModelInventory(
+        downloaded=downloaded,
+        not_downloaded=not_downloaded,
+        discovered=discovered,
+        unqueryable_providers=sorted(presence.unqueryable | discovery_unqueryable),
+    )
 
 
 def start_local_model(
@@ -439,7 +611,7 @@ def start_local_model(
     )
     resolved_id = model.id
 
-    provider = next((p for p in registry.providers if p.id == model.provider_id), None)
+    provider = _provider_entry(registry, model.provider_id)
     if not model_has_local_artifact(model, provider):
         raise LocalControlError(f"{resolved_id} is a cloud model — modelman start only runs local models")
 

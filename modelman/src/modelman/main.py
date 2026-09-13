@@ -20,6 +20,7 @@ from .litellm import (
 from .local_control import (
     DiscoveredModelNeedsFamily,
     LocalControlError,
+    LocalModelInventory,
     inventory_local_models,
     start_local_model,
     stop_local_model,
@@ -272,6 +273,21 @@ def _format_size(n: int | None) -> str:
     return f"{value:.1f} PB"
 
 
+def _echo_inventory_caveats(inventory: LocalModelInventory) -> None:
+    """Name the providers the inventory could not ask.
+
+    Without this, "not downloaded"/"nothing discovered" for an unreachable
+    provider (a stopped ollama daemon, a registry.toml provider id modelman
+    has no Provider class for) is indistinguishable from a confirmed-absent
+    artifact — the user would be told to re-download models they already have.
+    """
+    for provider_id in inventory.unqueryable_providers:
+        typer.echo(
+            f"{provider_id}: could not be queried — entries above may be inaccurate",
+            err=True,
+        )
+
+
 @app.command()
 def start(
     model_id: str | None = typer.Argument(
@@ -299,6 +315,7 @@ def start(
         inventory = inventory_local_models(registry, state)
         if not (inventory.downloaded or inventory.not_downloaded or inventory.discovered):
             typer.echo("No local models found. `modelman start <name>` will register one it finds on disk.")
+            _echo_inventory_caveats(inventory)
             return
         if inventory.downloaded:
             typer.echo("Registered, on disk:")
@@ -317,6 +334,7 @@ def start(
             for disc in inventory.discovered:
                 typer.echo(f"  {disc.provider_id}:{disc.variant_id}\t{_format_size(disc.size_bytes)}")
             typer.echo()
+        _echo_inventory_caveats(inventory)
         typer.echo("Run `modelman start <model_id>` to start one.")
         return
 
