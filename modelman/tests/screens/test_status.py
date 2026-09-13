@@ -338,7 +338,7 @@ async def test_status_screen_renders_provider_progress(app_with_apply, tmp_path)
 
 @pytest.mark.asyncio
 async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
-    """StatusScreen pushes, runs apply in a worker, and pops to FamilyScreen on done."""
+    """StatusScreen pushes, runs apply in a worker, and pops back to the model screen on done."""
     from textual.widgets import RichLog
 
     from modelman.app import ModelmanApp

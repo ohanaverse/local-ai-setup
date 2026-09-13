@@ -1,5 +1,5 @@
 """DownloadScreen — live view of DownloadManager's in-flight and
-finished downloads, opened with 'g' from FamilyScreen and ModelScreen."""
+finished downloads, opened with 'g' from ModelScreen."""
 
 from __future__ import annotations
 

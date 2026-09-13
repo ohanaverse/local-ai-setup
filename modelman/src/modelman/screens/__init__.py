@@ -60,8 +60,8 @@ def reconcile_model_state(
     marked ready here — only disk_path/size_bytes are opportunistically
     updated when the provider reports them.
 
-    Shared by FamilyScreen and ModelScreen's background reconcile workers
-    so the write semantics can't drift between the two screens.
+    Used by ModelScreen's background reconcile worker so the write
+    semantics live in one place.
 
     Per provider, `resolve_local()` — the batch presence/path/size check —
     is tried first: providers that implement it (ollama's single `ollama

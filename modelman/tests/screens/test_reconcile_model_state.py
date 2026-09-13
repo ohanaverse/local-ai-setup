@@ -1,8 +1,8 @@
 """Tests for the shared reconcile_model_state helper.
 
-FamilyScreen and ModelScreen both delegate their background reconcile
-worker to this single function so the ready/disk_path/size_bytes write
-semantics can't drift between the two screens.
+ModelScreen delegates its background reconcile worker to this single
+function so the ready/disk_path/size_bytes write semantics live in one
+place.
 """
 
 from unittest.mock import MagicMock
