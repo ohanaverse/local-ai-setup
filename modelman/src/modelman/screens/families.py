@@ -8,6 +8,7 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from ..formatting import format_size
 from ..registry import (
     FamilyEntry,
     Registry,
@@ -22,18 +23,6 @@ from ..state import StateStore, load_state, locked_state, save_state
 from . import reconcile_model_state, reload_preserving_cursor
 from .forms import AddFamilyModal, ConfirmModal, EditFamilyModal
 from .models import ModelScreen
-
-
-def _human_size(n) -> str:
-    if n is None:
-        return "—"
-    if n < 1024:
-        return f"{n} B"
-    for unit in ("KB", "MB", "GB", "TB"):
-        n /= 1024
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-    return f"{n:.1f} PB"
 
 
 class FamilyScreen(Screen[None]):
@@ -253,7 +242,7 @@ class FamilyScreen(Screen[None]):
                 size_str = (
                     "—"
                     if downloaded_count == 0 or (unknown and total_size == 0)
-                    else _human_size(total_size)
+                    else format_size(total_size)
                 )
                 table.add_row(
                     family,

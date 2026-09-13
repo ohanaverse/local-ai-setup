@@ -203,7 +203,7 @@ def test_start_command_no_args_shows_three_sections(tmp_path, monkeypatch):
     assert "Registered, not downloaded:" in result.stdout
     assert "ollama/y" in result.stdout
     assert "Discovered" in result.stdout
-    # 1_073_741_824 B = 1 GiB exactly, chosen so _format_size's repeated
+    # 1_073_741_824 B = 1 GiB exactly, chosen so format_size's repeated
     # /1024 division lands on a clean "1.0 GB" instead of a rounding-prone
     # value (e.g. 1_000_000_000 B formats as "953.7 MB", not "1000.0 MB").
     assert "ollama:z" in result.stdout and "1.0 GB" in result.stdout

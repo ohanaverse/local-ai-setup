@@ -15,6 +15,7 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from ..formatting import format_size
 from ..litellm import (
     default_litellm_config_path,
     is_effectively_exposed,
@@ -132,18 +133,6 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         # column until the next disk reload. Mirrors _derive_native.
         native=is_native_provider(provider),
     )
-
-
-def _human_size(n) -> str:
-    if n is None:
-        return "—"
-    if n < 1024:
-        return f"{n} B"
-    for unit in ("KB", "MB", "GB", "TB"):
-        n /= 1024
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-    return f"{n:.1f} PB"
 
 
 def _format_price(value: float | None) -> str:
@@ -389,7 +378,7 @@ class ModelScreen(Screen[None]):
             )
             for m in models:
                 ready = self._is_ready(m.id)
-                size_str = _human_size(self.state.get(m.id).size_bytes) if ready else "—"
+                size_str = format_size(self.state.get(m.id).size_bytes) if ready else "—"
                 if m.id in self.queued_deletes:
                     status = "[red]✗[/red]"
                 elif self.app.downloads.is_downloading(m.id):  # type: ignore[attr-defined]

@@ -10,6 +10,7 @@ import typer
 from . import providers  # noqa: F401
 from .benchmark.cli import benchmark_app
 from .config import default_config_path
+from .formatting import format_size
 from .litellm import (
     ExposeError,
     LiteLLMConfigError,
@@ -260,19 +261,6 @@ def refresh_prices() -> None:
     typer.echo(f"Refreshed prices for {result.updated} model(s).")
 
 
-def _format_size(n: int | None) -> str:
-    if n is None:
-        return "—"
-    value = float(n)
-    if value < 1024:
-        return f"{int(value)} B"
-    for unit in ("KB", "MB", "GB", "TB"):
-        value /= 1024
-        if value < 1024:
-            return f"{value:.1f} {unit}"
-    return f"{value:.1f} PB"
-
-
 def _echo_inventory_caveats(inventory: LocalModelInventory) -> None:
     """Name the providers the inventory could not ask.
 
@@ -322,7 +310,7 @@ def start(
             for entry in inventory.downloaded:
                 marker = "*" if entry.running else " "
                 suffix = " (running)" if entry.running else ""
-                typer.echo(f"{marker} {entry.model_id}\t{_format_size(entry.size_bytes)}{suffix}")
+                typer.echo(f"{marker} {entry.model_id}\t{format_size(entry.size_bytes)}{suffix}")
             typer.echo()
         if inventory.not_downloaded:
             typer.echo("Registered, not downloaded:")
@@ -332,7 +320,7 @@ def start(
         if inventory.discovered:
             typer.echo("Discovered (not in registry.toml — `modelman start <name>` to add):")
             for disc in inventory.discovered:
-                typer.echo(f"  {disc.provider_id}:{disc.variant_id}\t{_format_size(disc.size_bytes)}")
+                typer.echo(f"  {disc.provider_id}:{disc.variant_id}\t{format_size(disc.size_bytes)}")
             typer.echo()
         _echo_inventory_caveats(inventory)
         typer.echo("Run `modelman start <model_id>` to start one.")
