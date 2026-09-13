@@ -88,6 +88,9 @@ def _files_in_hf_cache(repo: str, files: list[str]) -> bool:
 
 class LlamaCppProvider(Provider):
     name = "llamacpp"
+    # Retired (issue #33) — excluded from `modelman start`'s discovery flow
+    # even though the provider class (and its list_local()) is kept.
+    supports_discovery = False
 
     def __init__(self, options: dict[str, Any]) -> None:
         super().__init__(options)

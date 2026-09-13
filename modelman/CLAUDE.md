@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` lists local models with expose on, indicating which one is running).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
 
 ## Monorepo context
 
@@ -42,7 +42,7 @@ For day-to-day development you can still run focused subsets:
 - `uv run pytest tests/test_queue.py -q` — queue apply logic
 - `uv run pytest -k "not screen" -q` — skip the slow Textual screen tests
 
-The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~1030 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
+The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~1113 tests) runs in ~2 min on this host. Numbers drift — re-measure before trusting them.
 
 ## Architecture
 
@@ -167,9 +167,9 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 
 ### Provider plugin system
 
-- `src/modelman/providers/base.py` defines the `Provider` abstract base class and the `VariantSpec` / `LocalModel` TypedDicts. `VariantSpec` is `total=False` with a freeform `model_info: dict[str, Any] | None` for LiteLLM-style capability keys. `Provider` requires `name`, `is_downloaded`, `download`, `list_local`, and `size_of(variant) -> int | None` (default returns `None`). Optional: `path_of(variant)` (default `None`) and `resolve_local(variants)` (batch presence/path/size, default `None` = unsupported — callers fall back to the per-variant methods; ollama implements it with one `ollama list`).
+- `src/modelman/providers/base.py` defines the `Provider` abstract base class and the `VariantSpec` / `LocalModel` TypedDicts. `VariantSpec` is `total=False` with a freeform `model_info: dict[str, Any] | None` for LiteLLM-style capability keys. `Provider` requires `name`, `is_downloaded`, `download`, `list_local`, and `size_of(variant) -> int | None` (default returns `None`). Optional: `path_of(variant)` (default `None`) and `resolve_local(variants)` (batch presence/path/size, default `None` = unsupported — callers fall back to the per-variant methods; ollama implements it with one `ollama list`). Two capability class-attributes gate behavior elsewhere without hardcoding provider ids: `manages_own_cache` (default `False`; `True` means the provider's own CLI populates its cache and `download()` always raises — `ModelScreen._provider_can_download()` reads this) and `supports_discovery` (default `True`; `False` for `MLXLMServerProvider` — a target+draft pairing, not a single discoverable artifact — and the retired `LlamaCppProvider` — `local_control.py`'s `_provider_local_models()` reads this instead of a hardcoded provider-id set).
 - `src/modelman/providers/registry.py` — `ProviderRegistry.register(cls)` / `.get(name, config)`.
-- Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`, `mtplx.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
+- Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`, `mtplx.py`, `mlx_lm_server.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
 - `src/modelman/providers/__init__.py` imports every provider module solely to trigger registration. Code that needs providers should import from `modelman.providers` rather than a single submodule.
 - `src/modelman/providers/_progress.py` — shared progress-callback helpers (`llamacpp.py`/`omlx.py`/`ollama.py` all use it) plus `DownloadCancelled`, raised by the HF `ProgressTqdm` bar when its `should_cancel` callable returns True. `PendingChanges.apply()` (`queue.py`) catches `DownloadCancelled` around the download step — this is what makes `StatusScreen`'s Cancel button actually interrupt an in-flight HuggingFace download instead of waiting for it to finish.
 - `src/modelman/providers/mtplx.py` — MTPLX is discovery-only: it finds models MTPLX has already cached under `~/.mtplx/models` (dir names `<org>--<model>`, mapped back to the registry's `org/model` repo id by `_dir_name`/`_repo_id`) and its `download()` always raises `NotImplementedError` — MTPLX manages its own cache via the `mtplx` CLI, modelman never drives a download for it. The live server's start/stop/warmup lives separately in `src/modelman/providers/lifecycle.py`, not in the provider class: `mtplx serve` runs as a plain backgrounded subprocess (never a LaunchAgent, one model per process like `mlx_lm_server`) tracked by a pidfile at `/tmp/local-ai-setup-mtplx.pid`, serving on port 8003; `bin/llm-isolate-provider`'s `mtplx` branch shells out to `python3 -m modelman.providers.lifecycle isolate mtplx` to drive it.
@@ -289,6 +289,26 @@ id in `modelman.toml`'s `[local].running_model` table
 (`wt/internal/config/modelman.go`, `wt/internal/localgate`) to filter its
 model picker to cloud models plus this one verified-running local model —
 see `wt/CLAUDE.md`'s "Local-model gate" section.
+
+`modelman start`'s no-arg listing and its discovered-model auto-register
+path (`_provider_local_models` in `local_control.py`, gated on each
+provider's `Provider.supports_discovery` class attribute — `False` for
+mlx_lm_server's target+draft pairing and retired llamacpp) ask the local
+providers live rather than trusting only `modelman.toml`'s cached `ready`
+flag. Two different questions, two different mechanisms: "is this
+*registered* model on disk?" goes through the provider's own
+`resolve_local()`/`is_downloaded()`/`size_of()` (`_registered_presence`),
+which derive the artifact path the same way `download()` does, while
+"what's on disk that ISN'T registered?" goes through `list_local()`
+(`_provider_local_models`). Never join the two on an exact
+`variant_id == model_name`: omlx's `list_local()` reports the model
+directory's basename while its `ModelEntry.model_name` holds the full HF
+repo id — `_name_matches` (`_registered_under_name`, and the native-name
+match in `_resolve_or_register`) is what bridges the two spellings, and an
+exact comparison there both hid every registered omlx model and
+duplicate-registered it. See
+`../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`
+(monorepo-root docs).
 
 ## Foreign agent configs
 
