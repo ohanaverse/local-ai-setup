@@ -439,6 +439,9 @@ def test_list_local_exposed_models_empty_when_none_exposed():
 
 
 def test_list_local_exposed_models_sorted_by_id():
+    # The listing must be deterministically ordered (by model_id) regardless
+    # of registry/state insertion order, so the CLI output is stable across
+    # runs and doesn't depend on dict/list iteration order.
     registry = _listing_registry()
     registry.models.append(
         ModelEntry(id="ollama/aaa-model", family="qwen3.8", provider_id="ollama", model_name="aaa-model")

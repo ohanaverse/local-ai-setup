@@ -90,6 +90,9 @@ def test_start_command_no_args_lists_exposed_local_models(tmp_path, monkeypatch)
 
 
 def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
+    # The no-args listing must distinguish "exposed" from "currently running" -
+    # a user picking a model to start needs to see which one is already up
+    # (marked "(running)") rather than treating every exposed model as idle.
     registry_path = tmp_path / "registry.toml"
     registry_path.write_text(
         '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
@@ -111,6 +114,9 @@ def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
 
 
 def test_start_command_no_args_no_exposed_models(tmp_path, monkeypatch):
+    # With an empty registry there is nothing to list - the command must
+    # still exit cleanly with a clear "nothing exposed" message instead of
+    # crashing or printing a blank/misleading list.
     registry_path = tmp_path / "registry.toml"
     registry_path.write_text("")
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
