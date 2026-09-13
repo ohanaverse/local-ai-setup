@@ -31,8 +31,13 @@ HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtpl
 # mutually-exclusive local-path Input for user-produced artifacts. MTPLX is
 # deliberately excluded: it discovers models in its own ~/.mtplx/models cache and
 # never accepts a user-supplied local_path, so showing the field would suggest
-# an unsupported workflow.
-LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx")
+# an unsupported workflow. omlx is likewise excluded: its "Local path" field
+# read as "which cache am I pointing at" rather than its actual meaning
+# ("register a directory this dialog didn't produce, instead of an HF repo"),
+# so it's a manual registry.toml edit now (see bin/mlx-quantize's printed next
+# step) rather than a dialog field. The omlx provider's local_path support
+# (providers/omlx.py) is untouched — only this dialog's Input is gone.
+LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp",)
 
 
 def default_form_kind(provider: str) -> str:

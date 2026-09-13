@@ -1760,7 +1760,9 @@ async def test_local_only_kind_shows_local_path_field_alongside_model():
     for the local-only kind, alongside the existing repo Input — it's an
     explicit second field, not a heuristic on the single Model input."""
     form = ModelForm(
-        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+        providers=["llamacpp"],
+        default_provider="llamacpp",
+        provider_kinds={"llamacpp": "local-only"},
     )
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -1789,12 +1791,36 @@ async def test_mtplx_local_only_kind_hides_local_path_field():
 
 
 @pytest.mark.asyncio
+async def test_omlx_local_only_kind_hides_local_path_field():
+    """omlx registers models by HF repo id only now — its "Local path"
+    Input was removed because it read as a cache-location choice rather
+    than its actual meaning (register a directory this dialog didn't
+    produce). A user-produced quantized directory is still supported by
+    the omlx provider itself, just via a manual registry.toml edit
+    (bin/mlx-quantize prints the exact snippet), not this dialog field."""
+    form = ModelForm(
+        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#model", Input).display
+        assert not app.screen.query_one("#local-path", Input).display
+
+
+@pytest.mark.asyncio
 async def test_submit_local_only_with_local_path_builds_spec_without_repo():
     """Filling only the local-path field (leaving the repo Input blank)
     must produce a spec with local_path set and repo/files unset — this
-    is the path a registered mlx_lm.convert/dwq output takes."""
+    is the path a registered mlx_lm.convert/dwq output takes. llamacpp
+    is the last local-only provider that still offers this dialog field
+    (omlx's was removed; see test_omlx_local_only_kind_hides_local_path_field)."""
     form = ModelForm(
-        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+        providers=["llamacpp"],
+        default_provider="llamacpp",
+        provider_kinds={"llamacpp": "local-only"},
     )
     dismissed: list = []
     app = ModelmanApp()
@@ -1811,7 +1837,7 @@ async def test_submit_local_only_with_local_path_builds_spec_without_repo():
     assert spec["repo"] is None
     assert spec["files"] is None
     assert spec["name"] == "my-quant"
-    assert spec["id"] == "omlx/my-quant"
+    assert spec["id"] == "llamacpp/my-quant"
 
 
 @pytest.mark.asyncio
@@ -1854,7 +1880,9 @@ async def test_submit_local_only_both_repo_and_local_path_shows_error():
     """Setting both the repo Input and the local-path Input is ambiguous —
     the form must reject it inline rather than silently picking one."""
     form = ModelForm(
-        providers=["omlx"], default_provider="omlx", provider_kinds={"omlx": "local-only"}
+        providers=["llamacpp"],
+        default_provider="llamacpp",
+        provider_kinds={"llamacpp": "local-only"},
     )
     dismissed: list = []
     app = ModelmanApp()
@@ -1874,16 +1902,19 @@ async def test_submit_local_only_both_repo_and_local_path_shows_error():
 async def test_edit_local_only_prefills_local_path_field_from_variant():
     """Editing a local-path-sourced entry must prefill the local-path
     Input (and leave the repo Input blank) so the dialog reflects what's
-    actually stored, matching how repo-sourced entries prefill #model."""
+    actually stored, matching how repo-sourced entries prefill #model.
+    llamacpp is the last local-only provider with this dialog field."""
     variant: VariantSpec = {
-        "id": "omlx/my-quant",
-        "provider": "omlx",
+        "id": "llamacpp/my-quant",
+        "provider": "llamacpp",
         "name": "my-quant",
         "local_path": "/data/models/my-quant",
         "repo": None,
         "files": None,
     }
-    form = ModelForm(providers=["omlx"], variant=variant, provider_kinds={"omlx": "local-only"})
+    form = ModelForm(
+        providers=["llamacpp"], variant=variant, provider_kinds={"llamacpp": "local-only"}
+    )
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
