@@ -170,7 +170,6 @@ def test_apply_deletes_before_ready_loop(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -208,7 +207,6 @@ def test_apply_collects_failures(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -236,7 +234,6 @@ def test_apply_empty_is_noop(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},
@@ -265,7 +262,6 @@ def test_apply_save_fail_includes_reason_in_event(tmp_path):
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="f",
             registry_path=reg_path,
             state_path=state_path,
             providers=providers,
@@ -292,7 +288,6 @@ def test_apply_delete_fail_includes_reason_in_event(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -315,7 +310,6 @@ def test_apply_removes_deleted_models_from_registry_on_disk(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -341,7 +335,6 @@ def test_apply_clear_state_for_deleted_model(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -365,7 +358,6 @@ def test_apply_ready_loop_skips_deleted_ids(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -392,7 +384,6 @@ def test_apply_ready_loop_skips_deleted_ids_redownload(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -422,7 +413,6 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -468,7 +458,6 @@ def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     pending = PendingChanges(
         registry=registry,
         state=state,
-        family="f",
         registry_path=registry_path,
         state_path=state_path,
         providers={"ollama": MagicMock()},
@@ -507,7 +496,6 @@ def test_apply_delete_not_downloaded_skips_provider_call(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
@@ -544,7 +532,6 @@ def test_apply_delete_is_downloaded_exception_attempts_delete(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
@@ -583,7 +570,6 @@ def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
@@ -624,7 +610,6 @@ def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
     pending = PendingChanges(
         registry=registry,
         state=state,
-        family="f",
         registry_path=registry_path,
         state_path=state_path,
         providers={"ollama": MagicMock()},
@@ -687,7 +672,6 @@ def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
     pending = PendingChanges(
         registry=registry,
         state=state,
-        family="f",
         registry_path=registry_path,
         state_path=state_path,
         providers={},
@@ -736,7 +720,6 @@ def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
     pending = PendingChanges(
         registry=registry,
         state=state,
-        family="f",
         registry_path=registry_path,
         state_path=state_path,
         providers={},
@@ -764,7 +747,6 @@ def test_apply_asserts_ready_twin_keys_agree(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -782,7 +764,6 @@ def test_apply_asserts_delete_twin_keys_agree(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -819,7 +800,6 @@ def test_apply_runs_expose_changes(tmp_path):
     pending = PendingChanges(
         registry=registry,
         state=state,
-        family="f",
         registry_path=registry_path,
         state_path=state_path,
         providers={},
@@ -847,7 +827,6 @@ def test_apply_cascade_ready_before_exposing(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -996,7 +975,6 @@ def test_apply_writes_queued_move_to_registry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="gemma4:26b-mlx",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1032,7 +1010,6 @@ def test_apply_move_for_deleted_model_is_dropped(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="gemma4:26b-mlx",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={"ollama": provider},
@@ -1059,7 +1036,6 @@ def test_apply_move_only_queue_emits_apply_done(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=_make_state(),
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1081,7 +1057,6 @@ def test_apply_move_for_unknown_model_records_failure(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=_make_state(),
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1108,7 +1083,6 @@ def test_apply_cancelled_before_moves_skips_them(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=_make_state(),
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1137,7 +1111,6 @@ def test_apply_move_emptying_family_creates_family_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="gemma4:26b-mlx",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1165,7 +1138,6 @@ def test_apply_delete_emptying_family_creates_family_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="solo",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={"ollama": provider},
@@ -1192,7 +1164,6 @@ def test_apply_move_does_not_create_entry_when_family_survives(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1217,7 +1188,6 @@ def test_apply_move_emptying_family_does_not_duplicate_existing_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1245,7 +1215,6 @@ def test_apply_promotes_legacy_display_into_existing_entry_without_display(tmp_p
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1269,7 +1238,6 @@ def test_apply_cancelled_persists_no_family_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="a",
         registry_path=reg_path,
         state_path=tmp_path / "modelman.toml",
         providers={},
@@ -1294,7 +1262,6 @@ def test_apply_ready_false_reconcilable_clears_without_removing_registry_entry(t
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -1335,7 +1302,6 @@ def test_apply_ready_true_flag_only_sets_flag_no_provider_call(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},  # no Provider instance for "claude" — flag-only
@@ -1373,7 +1339,6 @@ def test_apply_delete_flag_only_native_model_removes_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},  # no Provider instance for "claude"
@@ -1407,7 +1372,6 @@ def test_apply_ready_false_flag_only_clears_flag_and_cascades_unexpose(tmp_path)
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},
@@ -1447,7 +1411,6 @@ def test_apply_ready_off_flag_only_removes_recorded_artifact(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},  # no Provider class registered for 'mlx' → flag-only
@@ -1497,7 +1460,6 @@ def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},  # no Provider class registered for 'mlx' → flag-only
@@ -1673,7 +1635,6 @@ def test_apply_empty_queue_emits_apply_done(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={},
@@ -1724,7 +1685,6 @@ def test_apply_delete_skips_artifact_shared_with_other_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"omlx": omlx},
@@ -1787,7 +1747,6 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"omlx": omlx},
@@ -1831,7 +1790,6 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers=providers,
@@ -1863,7 +1821,6 @@ def test_apply_no_longer_downloads_ready_on_entries(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=_make_state(),
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
@@ -1899,7 +1856,6 @@ def test_apply_ready_on_manages_own_cache_provider_flips_flag(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"mtplx": provider},
@@ -1929,7 +1885,6 @@ def test_apply_ready_off_still_clears_artifact(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
@@ -1966,7 +1921,6 @@ def test_apply_final_save_merges_onto_fresh_disk_state_not_a_stale_snapshot(tmp_
     pending = PendingChanges(
         registry=reg,
         state=stale_state,
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},

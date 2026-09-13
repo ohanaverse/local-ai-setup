@@ -122,8 +122,8 @@ This file is optional — a fresh install starts with an empty store.
 ### CLI
 
 ```bash
-modelman                        # open the TUI (family list)
-modelman download <family>      # open the TUI at a family's model screen
+modelman                        # open the TUI (model list)
+modelman download <family>      # open the TUI, cursor scrolled to that family
 modelman sync                   # reconcile configured models against providers
 modelman expose <model-id>      # expose a model through LiteLLM
 modelman unexpose <model-id>    # remove a model's LiteLLM exposure
@@ -132,43 +132,34 @@ modelman migrate                # one-time import of legacy config (see below)
 
 ### TUI
 
-The TUI has three screens:
+The TUI has two screens:
 
-- **Family screen** — table of families with columns: family · display ·
-  variants · downloaded · size. Keys: `a` add, `e` edit display name,
-  `d` delete (blocked if anything is downloaded), `enter` open, `q` quit.
-  Reconcile runs automatically on mount and on returning from a model
-  screen — there is no manual reconcile key. While the background size
-  refresh runs, the table is briefly disabled and a
-  "Refreshing sizes…" indicator is shown — actions (`a`, `e`, `d`,
-  `enter`) are no-ops during that window so the user can't click
-  a row whose contents are about to mutate. The cursor survives the
-  refresh: returning from a model screen leaves you on the same family.
-  The `DOWNLOADED` column counts only local models (or legacy entries
-  with no explicit `location`) that reconcile verified on disk; `cloud`
-  entries are excluded from the count and from the `SIZE` total.
-- **Model screen** — single table scoped to one family (columns:
-  family · provider · model · loc · status ✓/○/↓/↑/✗/→ · exposed · cost ·
-  subscription · size). LOC is an icon (↗ cloud / ▤ local / `—` when unknown) and
-  EXPOSED shows `Y`/`–`; COST shows input/cache/output prices per million
-  tokens, or `—` when unset; SUB shows the subscription price (`$x/mo` or
-  `$x/yr`) or `—`. The row's on-disk path appears in a details panel below the table
-  (`path: —` when unknown). Rows are sorted by provider then model name.
-  Keys: `a` add model, `e` edit (id/provider fixed; location editable to
-  correct mistakes; changing family queues a move), `d` queue delete
-  (works on any model — apply skips the on-disk removal if the artifact
-  is already gone, but still cleans registry/state), `r` toggle ready
-  (queues download/pull for reconcilable providers, or a flag flip for
-  cloud/native providers; a no-op with a notification if the model is a
-  local artifact that's already on disk — reconcile is the only writer of
-  ready=False for those, so delete the file instead), `x` toggle exposed
-  (cascades a ready=True queue first if the model isn't ready yet),
-  `enter` edit, `escape` back / apply queue. Reconcile runs automatically
-  on mount and resume — there is no manual reconcile key. The cursor
-  survives every reload — reconciling or toggling a row leaves you on
-  that row. Provider and family dropdowns list options alphabetically;
-  the family Select keeps the caller's order when the current family is
-  already in the list.
+- **Model screen** — the app's only/root screen: a single table of every
+  model across every family, sorted family · location (local before
+  cloud) · provider · model name (columns: family · provider · model ·
+  loc · status ✓/○/↓/↑/✗/→ · exposed · cost · subscription · size). LOC is
+  an icon (↗ cloud / ▤ local / `—` when unknown) and EXPOSED shows
+  `Y`/`–`; COST shows input/cache/output prices per million tokens, or
+  `—` when unset; SUB shows the subscription price (`$x/mo` or `$x/yr`)
+  or `—`. The row's on-disk path appears in a details panel below the
+  table (`path: —` when unknown), and a LiteLLM on/off status line sits
+  below the pending-changes bar. Keys: `a` add model (family Select
+  offers every known family plus a "+ New family…" option that reveals a
+  text field for a brand-new one), `e` edit (id/provider/location/family
+  all fixed — re-homing a model isn't exposed from this dialog), `d`
+  queue delete (works on any model — apply skips the on-disk removal if
+  the artifact is already gone, but still cleans registry/state), `r`
+  toggle ready (queues download/pull for reconcilable providers, or a
+  flag flip for cloud/native providers; a no-op with a notification if
+  the model is a local artifact that's already on disk — reconcile is
+  the only writer of ready=False for those, so delete the file instead),
+  `x` toggle exposed (cascades a ready=True queue first if the model
+  isn't ready yet), `l` toggle LiteLLM routing on/off, `enter` edit,
+  `escape` shows the apply/discard/cancel dialog if anything is queued,
+  otherwise quits the app. Reconcile runs automatically on mount — there
+  is no manual reconcile key. The cursor survives every reload —
+  reconciling or toggling a row leaves you on that row. Provider and
+  family dropdowns list options alphabetically.
 
   Add/Edit dialogs include a cost section with two independent
   checkboxes: per-token pricing (input, cache, and output price per
@@ -184,8 +175,8 @@ The TUI has three screens:
   huggingface_hub tqdm bars (per-file bytes/rate) appear as each line is
   emitted. `Escape` mid-run pops a Cancel-or-Wait dialog: `Cancel` kills any
   running subprocess (Ollama) and stops the queue; `Wait` keeps waiting.
-  Once the run completes (or is cancelled), `Escape` returns to the family
-  screen.
+  Once the run completes (or is cancelled), `Escape` returns to the model
+  screen underneath, already showing the post-apply state.
 
 All dialogs share a layout convention: the cancel/default button is
 rightmost, the primary action is to its left, and pressing `Escape`
@@ -296,9 +287,9 @@ make clean       # remove caches
 
 ## Architecture
 
-- `src/modelman/app.py` — `ModelmanApp` (Textual `App`), launches into `FamilyScreen`.
-- `src/modelman/screens/__init__.py` — `reload_preserving_cursor` helper used by both list screens so `DataTable.clear()` doesn't reset the cursor to row 0.
-- `src/modelman/screens/` — `families.py` (family list, locks interactions while reconciling), `models.py` (single-table model view, cursor-preserving reload, alphabetical dropdowns, delete-any-model), `forms.py` (modals on a shared `ModelmanModal` base with consistent button order, Escape-to-cancel, and safe-default focus on destructive dialogs), `status.py` (apply progress).
+- `src/modelman/app.py` — `ModelmanApp` (Textual `App`), launches directly into `ModelScreen` (its only screen — there's no separate family list).
+- `src/modelman/screens/__init__.py` — `reload_preserving_cursor` helper used by `ModelScreen` so `DataTable.clear()` doesn't reset the cursor to row 0.
+- `src/modelman/screens/` — `models.py` (single table of every model across every family, sorted family/location/provider/name, cursor-preserving reload, alphabetical dropdowns, delete-any-model), `forms.py` (modals on a shared `ModelmanModal` base with consistent button order, Escape-to-cancel, and safe-default focus on destructive dialogs — `ModelForm`'s add-mode family Select includes a "+ New family…" option), `status.py` (apply progress).
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
 - `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup, lifecycle events, and the cascade-unexpose still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.

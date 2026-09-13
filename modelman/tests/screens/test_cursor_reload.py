@@ -1,8 +1,7 @@
 """Tests for the shared reload_preserving_cursor helper.
 
-The helper is used by both FamilyScreen.reload and ModelScreen._load_models
-to clear+repopulate their DataTables without resetting the cursor to row 0
-every refresh.
+The helper is used by ModelScreen._load_models to clear+repopulate its
+DataTable without resetting the cursor to row 0 every refresh.
 """
 
 import pytest

@@ -229,19 +229,6 @@ def base_origin(url: str | None) -> str | None:
     return trimmed
 
 
-def family_display_name(registry: Registry, state: StateStore, family: str) -> str | None:
-    """Registry entry display_name, else legacy state display_name, else
-    None. Callers decide the fallback (table column: ""; edit prefill:
-    the family name)."""
-    entry = registry.family(family)
-    if entry is not None and entry.display_name:
-        return entry.display_name
-    legacy = state.families.get(family)
-    if legacy is not None and legacy.display_name:
-        return legacy.display_name
-    return None
-
-
 def provider_config(entry: ProviderEntry) -> dict[str, Any]:
     """Build the config dict `ProviderRegistry.get()` expects from a
     registry ProviderEntry. Only `model_dir` is read by any provider today
@@ -320,8 +307,14 @@ def sync_agent_providers(registry: Registry, wt_config_path: Path | None = None)
     path = wt_config_path if wt_config_path is not None else _default_wt_config_path()
     if not path.exists():
         return []
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        # Malformed or unreadable wt config (partial edit, crash mid-write):
+        # tolerate it like the missing-file case above, per this
+        # function's own contract.
+        return []
     existing = {p.id for p in registry.providers}
     added: list[str] = []
     agents = raw.get("agents", [])

@@ -140,7 +140,6 @@ def _remove_local_artifact(state: StateStore, variant: VariantSpec) -> None:
 class PendingChanges:
     registry: Registry
     state: StateStore
-    family: str
     registry_path: Path
     state_path: Path
     providers: dict[str, object]

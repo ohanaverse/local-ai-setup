@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 from textual.widgets import Button, Checkbox, DataTable, Input
 
@@ -51,28 +49,14 @@ def _seed_registry_and_state(
 
 
 @pytest.mark.asyncio
-async def test_app_launches_into_family_screen():
+async def test_app_launches_into_model_screen():
+    """ModelScreen is the app's only/root screen — FamilyScreen was
+    removed (family-list/rename/delete UI dropped)."""
+    from modelman.screens.models import ModelScreen
+
     app = ModelmanApp()
     async with app.run_test():
-        from modelman.screens.families import FamilyScreen
-
-        assert isinstance(app.screen, FamilyScreen)
-
-
-@pytest.mark.asyncio
-async def test_q_exits_app_from_family_screen():
-    """No registry.toml/modelman.toml fixture needed: FamilyScreen
-    tolerates a missing registry (falls back to an empty Registry, see
-    families.py::_load_from_disk), and this test only exercises quit."""
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("q")
-        await pilot.pause()
-        # After action_quit, the app should no longer be running.
-        assert not app.is_running
+        assert isinstance(app.screen, ModelScreen)
 
 
 @pytest.mark.asyncio
@@ -114,9 +98,9 @@ async def test_direct_download_syncs_agent_providers(tmp_path, monkeypatch):
         # Native provider synced from wt config should be
         # present in the in-memory registry passed to ModelScreen.
         assert app.screen.registry.provider("claude").auth.type == "native"
-        # And it should be in the available-providers list used for the
-        # provider pane / add-model form.
-        assert "claude" in app.screen.available_providers
+        # And it should be in the provider list used for the add-model
+        # form's provider dropdown.
+        assert "claude" in app.screen._provider_list()
 
 
 @pytest.mark.asyncio
@@ -151,253 +135,6 @@ async def test_app_with_initial_family_launches_into_model_screen(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
-    a = ModelEntry(id="ollama/o35", family="ornith", provider_id="ollama", model_name="o:35b")
-    _seed_registry_and_state(
-        tmp_path, monkeypatch, models=[a], downloaded={"ollama/o35": str(tmp_path / "downloaded-a")}
-    )
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        table = app.screen.query_one("DataTable")
-        assert table.row_count == 1
-
-
-@pytest.mark.asyncio
-async def test_add_family_registers_registry_entry(tmp_path, monkeypatch):
-    """Adding a family with no models yet must still make it appear in
-    the family table by recording a first-class [[families]] entry in
-    registry.toml (the legacy state.families entry is no longer created)."""
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("a")
-        for ch in "mamba":
-            await pilot.press(ch)
-        await pilot.press("enter")
-        await pilot.pause()
-        table = app.screen.query_one("DataTable")
-        assert table.row_count == 1
-
-    from modelman.registry import load_registry
-    from modelman.state import load_state
-
-    assert load_registry(reg_path).family("mamba") is not None
-    assert "mamba" not in load_state(state_path).families
-
-
-@pytest.mark.asyncio
-async def test_delete_family_when_empty(tmp_path, monkeypatch):
-    from modelman.state import FamilyState, StateStore, load_state, save_state
-
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
-    store = StateStore(families={"mamba": FamilyState()})
-    save_state(store, state_path)
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        await pilot.press("y")
-        await pilot.pause()
-
-    assert "mamba" not in load_state(state_path).families
-
-
-@pytest.mark.asyncio
-async def test_delete_family_removes_registry_entry(tmp_path, monkeypatch):
-    """Deleting an emptied family must remove its first-class
-    [[families]] entry from registry.toml, not just the state entry."""
-    from modelman.registry import FamilyEntry, load_registry, save_registry
-
-    reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch)
-    # Seed a first-class entry (the emptied-by-move residue) with no models.
-    reg = load_registry(reg_path)
-    reg.families.append(FamilyEntry(name="mamba"))
-    save_registry(reg, reg_path)
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        await pilot.press("y")
-        await pilot.pause()
-
-    assert load_registry(reg_path).family("mamba") is None
-
-
-@pytest.mark.asyncio
-async def test_delete_family_blocked_when_downloaded(tmp_path, monkeypatch):
-    a = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="o:35b")
-    _reg_path, state_path = _seed_registry_and_state(
-        tmp_path, monkeypatch, models=[a], downloaded={"ollama/a": str(tmp_path / "downloaded")}
-    )
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        await pilot.press("n")
-        await pilot.pause()
-
-    from modelman.registry import load_registry
-
-    assert "ollama/a" in [m.id for m in load_registry(_reg_path).models]
-
-
-@pytest.mark.asyncio
-async def test_delete_family_blocked_when_variants_present_even_without_downloads(
-    tmp_path,
-    monkeypatch,
-):
-    """A family with model definitions but no completed downloads
-    still has work-in-progress that the user might care about: at
-    minimum, the model spec (provider / repo / files / model name)
-    would be lost on delete. The check protects against any models,
-    queued or downloaded, requiring explicit confirmation either way."""
-    q4 = ModelEntry(id="ollama/q4", family="ornith", provider_id="ollama", model_name="ornith:q4")
-    q6 = ModelEntry(id="ollama/q6", family="ornith", provider_id="ollama", model_name="ornith:q6")
-    reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[q4, q6])
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        # ConfirmModal opens with the variants warning. Say No.
-        await pilot.press("n")
-        await pilot.pause()
-
-    from modelman.registry import load_registry
-
-    on_disk = load_registry(reg_path)
-    assert len(on_disk.models_by_family("ornith")) == 2
-
-
-@pytest.mark.asyncio
-async def test_delete_family_blocked_with_undownloaded_models_no_override(tmp_path, monkeypatch):
-    """A family with model definitions but nothing downloaded must be
-    blocked outright now — no confirm-anyway override exists any more."""
-    q4 = ModelEntry(id="ollama/q4", family="ornith", provider_id="ollama", model_name="ornith:q4")
-    reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[q4])
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        # There is no confirm dialog to answer any more — pressing y must
-        # do nothing, since the block is informational-only.
-        await pilot.press("y")
-        await pilot.pause()
-
-    from modelman.registry import load_registry
-
-    assert len(load_registry(reg_path).models_by_family("ornith")) == 1
-
-
-@pytest.mark.asyncio
-async def test_delete_family_cancel_keeps_empty_family(
-    tmp_path,
-    monkeypatch,
-):
-    """A truly empty family can be deleted, but only after explicit
-    Yes. No must always be a no-op regardless of state.
-
-    Pins down a previously-confusing UX bug where the 'No' button
-    seemed to wipe the family anyway: it didn't actually wipe, but
-    it looked like it did because the prompt text didn't explain
-    why the family was empty (the user had previously deleted its
-    models through the ModelScreen)."""
-    from modelman.state import FamilyState, StateStore, load_state, save_state
-
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
-    save_state(StateStore(families={"ornith": FamilyState()}), state_path)
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        # Decide No.
-        await pilot.press("n")
-        await pilot.pause()
-
-    assert "ornith" in load_state(state_path).families, (
-        "Selecting 'No' on the empty-family delete prompt must "
-        "preserve the family; only 'Yes' deletes."
-    )
-
-
-@pytest.mark.asyncio
-async def test_delete_family_cancel_keyword_preserves_file(
-    tmp_path,
-    monkeypatch,
-):
-    """Same as above but using Escape (dismiss with False) instead of
-    the focused No button; both paths must preserve the family."""
-    from modelman.state import FamilyState, StateStore, load_state, save_state
-
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
-    save_state(StateStore(families={"ornith": FamilyState()}), state_path)
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("d")
-        await pilot.pause()
-        # Use the binding-style keypress (not click).
-        await pilot.press("escape")
-        await pilot.pause()
-
-    assert "ornith" in load_state(state_path).families, (
-        "Escape on the delete-family confirm modal must dismiss with False and preserve the family."
-    )
-
-
-@pytest.mark.asyncio
-async def test_enter_opens_model_screen(tmp_path, monkeypatch):
-    from modelman.state import FamilyState, StateStore, save_state
-
-    _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
-    save_state(StateStore(families={"ornith": FamilyState()}), state_path)
-
-    from modelman.app import ModelmanApp
-    from modelman.screens.models import ModelScreen
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ModelScreen)
-
-
-@pytest.mark.asyncio
 async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
     """Pressing `x` on a not-ready row queues the expose and cascades a
     background download (mapped provider, Task 13) — the ready-on part
@@ -411,8 +148,6 @@ async def test_toggle_ready_queues_variant(tmp_path, monkeypatch):
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         started = []
         monkeypatch.setattr(
@@ -462,8 +197,6 @@ async def test_status_shows_four_states(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause()  # let reconcile settle
-        await pilot.press("enter")
-        await pilot.pause()
 
         # Initial: dl ✓, missing ○
         mt = app.screen.query_one("#model-table", DataTable)
@@ -531,7 +264,6 @@ async def test_delete_action_queues_even_when_not_downloaded(tmp_path, monkeypat
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
@@ -564,7 +296,6 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch, stub_
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
@@ -820,6 +551,161 @@ async def test_apply_preserves_other_models_state_rows(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_table_repaints_after_returning_from_apply(tmp_path, monkeypatch):
+    """_run_apply (models.py) mutates self.registry/self.state in place but
+    never touches the DataTable widget itself — only reload() repopulates
+    it. Once StatusScreen is dismissed and control returns to ModelScreen,
+    the table must show the post-apply row set immediately, not the stale
+    pre-apply rows left over from before Escape was pressed."""
+    from textual.widgets import DataTable
+
+    from modelman.screens.status import StatusScreen
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    q8 = ModelEntry(id="ollama/q8", family="ornith", provider_id="ollama", model_name="ornith:8b")
+    _reg_path, _state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[o35, q8],
+        downloaded={"ollama/o35": "/fake/o35", "ollama/q8": "/fake/q8"},
+    )
+
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.path_of.side_effect = lambda v: f"/fake/{v['id']}"
+    stub.artifact_paths.side_effect = lambda v: frozenset([stub.path_of(v)])
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        assert mt.row_count == 2
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")  # queue delete of o35
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        for _ in range(50):
+            await pilot.pause()
+            if isinstance(app.screen, StatusScreen) and app.screen.done:
+                break
+
+        await pilot.press("escape")  # back to ModelScreen
+        await pilot.pause()
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        row_ids = {str(k.value) for k in mt.rows}
+        assert row_ids == {"ollama/q8"}, f"table still shows stale rows: {row_ids}"
+
+
+@pytest.mark.asyncio
+async def test_discard_after_apply_does_not_resurrect_earlier_applied_delete(
+    tmp_path, monkeypatch
+):
+    """A Discard must only undo changes queued since the last apply, not
+    resurrect a delete from an earlier apply in the same session.
+
+    ModelScreen is now the app's single long-lived root screen (it's never
+    recreated per family the way the old FamilyScreen->ModelScreen flow
+    was), so its discard-snapshot has to be retaken after every apply run —
+    otherwise a later Discard rolls all the way back to the snapshot taken
+    at app launch, silently undoing every apply since, even ones already
+    saved to disk. Regression test for that scenario: apply a delete of
+    o35, return to the model list, queue an unrelated delete of q8, then
+    discard — o35 must stay deleted and q8's queued delete must be the
+    only thing discard undoes."""
+    from unittest.mock import MagicMock
+
+    from textual.widgets import DataTable
+
+    from modelman.screens.status import StatusScreen
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    q8 = ModelEntry(id="ollama/q8", family="ornith", provider_id="ollama", model_name="ornith:8b")
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[o35, q8],
+        downloaded={"ollama/o35": "/fake/o35", "ollama/q8": "/fake/q8"},
+    )
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.path_of.side_effect = lambda v: f"/fake/{v['id']}"
+    stub.artifact_paths.side_effect = lambda v: frozenset([stub.path_of(v)])
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    from modelman.app import ModelmanApp
+    from modelman.registry import load_registry
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let reconcile settle
+
+        # Apply #1: delete o35 (sorts first: "ornith:35b" < "ornith:8b").
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        for _ in range(50):
+            await pilot.pause()
+            if isinstance(app.screen, StatusScreen) and app.screen.done:
+                break
+
+        # Confirm the delete landed before doing anything else.
+        assert "ollama/o35" not in [m.id for m in load_registry(reg_path).models]
+
+        # Back to ModelScreen — this is what must retake the snapshot.
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Queue an unrelated delete of q8, then discard it.
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.cursor_coordinate = (0, 0)
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "discard":
+                btn.press()
+                break
+        await pilot.pause()
+
+    reloaded = [m.id for m in load_registry(reg_path).models]
+    assert "ollama/o35" not in reloaded  # the earlier apply must stay applied
+    assert "ollama/q8" in reloaded  # the discarded queue-only delete must not land
+
+
+@pytest.mark.asyncio
 async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
     """Escape with a queued change shows the confirm dialog; Apply runs
     PendingChanges and persists the flip. Uses a cloud-provider model
@@ -856,7 +742,6 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.press("r")  # queue a ready flip (flag-only provider)
         await pilot.pause()
@@ -883,56 +768,17 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_family_screen_reconciles_size_from_provider(tmp_path, monkeypatch):
-    """A family with no downloaded entry in modelman.toml should still
-    show a non-zero size on the family screen if the provider reports
-    the model is on disk."""
-    from unittest.mock import MagicMock
-
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
-    )
-    # No downloaded entry in state, but the model is actually on disk
-    # per the (stubbed) provider.
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
-
-    from modelman.providers import registry
-
-    stub = MagicMock()
-    stub.name = "ollama"
-    stub.size_of.return_value = 22 * 1024**3
-    stub.is_downloaded.return_value = True
-    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Let the reconcile worker finish.
-        await pilot.pause()
-        await pilot.pause()
-        table = app.screen.query_one("DataTable")
-        row = table.get_row_at(0)
-        # Family, Display, Variants, Downloaded, Size
-        assert row[3] == "1"  # downloaded count reflects reality
-        assert row[4] == "22.0 GB"
-
-
-@pytest.mark.asyncio
 async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
     o35 = ModelEntry(
         id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
     )
     _reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
 
-
     from modelman.app import ModelmanApp
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         # 'x' on a mapped-provider model cascades a background download
         # (Task 13) — simulate DownloadManager registering it so discard
@@ -964,10 +810,11 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
                 btn.press()
                 break
         await pilot.pause()
-        # We should be back on the family screen.
-        from modelman.screens.families import FamilyScreen
+        # ModelScreen is the app's only screen — discard restores the
+        # snapshot and reloads in place rather than popping anywhere.
+        from modelman.screens.models import ModelScreen
 
-        assert isinstance(app.screen, FamilyScreen)
+        assert isinstance(app.screen, ModelScreen)
 
     from modelman.state import load_state
 
@@ -975,105 +822,6 @@ async def test_discard_pending_exits_without_applying(tmp_path, monkeypatch):
     assert not load_state(state_path).get("ollama/o35").ready
     # Discard-cancels-cascade: the cascaded download was cancelled.
     assert cancelled == ["ollama/o35"]
-
-
-@pytest.mark.asyncio
-async def test_family_screen_reconciles_on_resume_after_apply(tmp_path, monkeypatch):
-    """After popping back from StatusScreen (apply completed), the
-    FamilyScreen should re-reconcile so the SIZE and DOWNLOADED columns
-    reflect the new on-disk state. Without this, deleting a model left
-    the family row showing the pre-delete size until the user pressed 'r'.
-    """
-    from unittest.mock import MagicMock
-
-    # Pre-condition: both models on disk per state.
-    o35 = ModelEntry(
-        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
-    )
-    o70 = ModelEntry(
-        id="ollama/o70", family="ornith", provider_id="ollama", model_name="ornith:70b"
-    )
-    reg_path, state_path = _seed_registry_and_state(
-        tmp_path,
-        monkeypatch,
-        models=[o35, o70],
-        downloaded={"ollama/o35": "/tmp/ollama/ornith:35b", "ollama/o70": "/tmp/ollama/ornith:70b"},
-    )
-
-    # Initial stub: both models present, both at their original sizes.
-    from modelman.providers import registry
-
-    stub = MagicMock()
-    stub.name = "ollama"
-
-    def fake_size_of(variant):
-        if variant["id"] == "ollama/o35":
-            return 22 * 1024**3
-        if variant["id"] == "ollama/o70":
-            return 44 * 1024**3
-        return None
-
-    stub.size_of.side_effect = fake_size_of
-    stub.is_downloaded.side_effect = lambda v: v["id"] in {"ollama/o35", "ollama/o70"}
-    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    from modelman.app import ModelmanApp
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        # Wait for the initial reconcile to complete on mount.
-        for _ in range(15):
-            await pilot.pause()
-            table = app.screen.query_one("DataTable")
-            if table.get_row_at(0)[4] != "—":
-                break
-        table = app.screen.query_one("DataTable")
-        assert table.get_row_at(0)[4] == "66.0 GB"  # 22 + 44
-
-        # Now simulate: o35 was deleted on disk. Update the registry to
-        # match (mirrors what PendingChanges.apply() does on delete —
-        # remove the ModelEntry and its state), and stub size_of to
-        # return None for o35.
-        from modelman.registry import load_registry, save_registry
-        from modelman.state import load_state, save_state
-
-        reg = load_registry(reg_path)
-        reg.models = [m for m in reg.models if m.id != "ollama/o35"]
-        save_registry(reg, reg_path)
-        state = load_state(state_path)
-        state.models.pop("ollama/o35", None)
-        save_state(state, state_path)
-
-        def post_delete_size(variant):
-            return 44 * 1024**3 if variant["id"] == "ollama/o70" else None
-
-        stub.size_of.side_effect = post_delete_size
-        stub.is_downloaded.side_effect = lambda v: v["id"] == "ollama/o70"
-
-        # Push and pop a dummy screen to fire on_screen_resume on
-        # FamilyScreen (mirrors what popping from StatusScreen does).
-        from textual.screen import Screen
-        from textual.widgets import Static
-
-        class _Interstitial(Screen):
-            def compose(self):
-                yield Static("interstitial")
-
-        app.push_screen(_Interstitial())
-        await pilot.pause()
-        app.pop_screen()
-        # Reconcile is a worker; let it finish.
-        for _ in range(40):
-            await pilot.pause()
-            table = app.screen.query_one("DataTable")
-            if table.get_row_at(0)[3] == "1":
-                break
-
-        row = app.screen.query_one("DataTable").get_row_at(0)
-        # downloaded count: 1 (o35 deleted, o70 still present)
-        assert row[3] == "1"
-        # size: only o70's 44 GB
-        assert row[4] == "44.0 GB"
 
 
 @pytest.mark.asyncio
@@ -1113,9 +861,6 @@ async def test_enter_on_model_row_opens_edit_dialog(tmp_path, monkeypatch):
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Drill into the family.
-        await pilot.press("enter")
-        await pilot.pause()
         # The single model table has focus on mount; the first model
         # row is already highlighted. Press Enter to open the edit
         # dialog for o35.
@@ -1148,8 +893,12 @@ def _make_screen(
     """Build a ModelScreen with registry.toml + modelman.toml in tmp_path
     and seed registry with the given ModelEntries. `families` seeds
     StateStore.families (explicitly created, possibly empty families);
-    `family_entries` seeds first-class Registry.families entries.
+    `family_entries` seeds first-class Registry.families entries. `family`
+    is unused by ModelScreen itself (it isn't family-scoped) but is kept
+    here since several callers pass it purely to label their seeded
+    ModelEntry — see each call site's own `family=` on the entry.
     Returns (ms, registry_path, state_path)."""
+    del family
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     reg = Registry(
@@ -1171,10 +920,8 @@ def _make_screen(
     ms = ModelScreen(
         registry=reg,
         state=StateStore(families={f: FamilyState() for f in families}),
-        family=family,
         registry_path=reg_path,
         state_path=state_path,
-        available_providers=["ollama", "llamacpp", "omlx"],
     )
     return ms, reg_path, state_path
 
@@ -1185,8 +932,8 @@ async def test_model_screen_add_form_offers_all_providers_for_empty_family(
     monkeypatch,
 ):
     """The AddModel form's provider Label must reflect the full
-    configured-provider list when the user presses 'a' from an empty
-    family's model screen."""
+    configured-provider list when the user presses 'a' with an empty
+    registry (no models yet to derive providers from)."""
     from modelman.app import ModelmanApp
     from modelman.screens.forms import ModelForm
 
@@ -1209,10 +956,8 @@ async def test_model_screen_add_form_offers_all_providers_for_empty_family(
     ms = ModelScreen(
         registry=reg,
         state=StateStore(),
-        family="x",
         registry_path=reg_path,
         state_path=state_path,
-        available_providers=["ollama", "llamacpp", "omlx"],
     )
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -1253,7 +998,6 @@ async def test_model_screen_is_single_table_sorted_by_provider_then_name(tmp_pat
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
 
         tables = app.screen.query("DataTable")
@@ -1298,6 +1042,12 @@ async def test_model_screen_add_appends_model_entry_to_registry(
         provider_sel = app.screen.query_one("#provider-select", Select)
         provider_sel.value = "ollama"
         await pilot.pause()
+        # No models (so no cursor context) and no known families: the Add
+        # dialog's family Select defaults to "+ New family...", so a real
+        # name must be typed before the form will submit.
+        app.screen.query_one("#new-family-input", Input).focus()
+        for ch in "ornith":
+            await pilot.press(ch)
         app.screen.query_one("#model", Input).focus()
         for ch in "ornith:8b":
             await pilot.press(ch)
@@ -1307,7 +1057,7 @@ async def test_model_screen_add_appends_model_entry_to_registry(
     ids = [m.id for m in ms.registry.models]
     assert "ollama/ornith:8b" in ids
     added = next(m for m in ms.registry.models if m.id == "ollama/ornith:8b")
-    assert added.family == ms.family
+    assert added.family == "ornith"
     assert added.provider_id == "ollama"
     assert added.model_name == "ornith:8b"
     assert added.fetch is None
@@ -1648,10 +1398,8 @@ def test_run_apply_does_not_swallow_provider_instantiation_errors(tmp_path, monk
     ms = ModelScreen(
         registry=load_registry(reg_path),
         state=StateStore(),
-        family="ornith",
         registry_path=reg_path,
         state_path=state_path,
-        available_providers=["ollama"],
     )
     ms.queued_ready["ollama/o35"] = True
 
@@ -1754,10 +1502,8 @@ async def test_x_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
     ms = ModelScreen(
         registry=load_registry(),
         state=load_state(),
-        family="f",
         registry_path=reg_path,
         state_path=state_path,
-        available_providers=["ollama"],
     )
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -1925,11 +1671,12 @@ async def test_edit_model_cost_change_persists_to_registry_on_back(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
-    """End-to-end user journey: family screen -> open family -> edit a
-    model's cost -> escape back -> reopen the family. The SUB column must
-    show the new value, not the pre-edit one."""
-    reg_path, _state_path = _seed_registry_and_state(
+async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
+    """End-to-end user journey: open the model list -> edit a model's
+    cost -> the edit is visible immediately (no navigation needed, since
+    ModelScreen is the only screen) and survives a fresh app relaunch
+    (proving it was actually saved to disk, not just held in memory)."""
+    _reg_path, _state_path = _seed_registry_and_state(
         tmp_path,
         monkeypatch,
         models=(
@@ -1942,7 +1689,6 @@ async def test_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
             ),
         ),
     )
-    del reg_path
 
     # Stub the provider so reconcile is fast and deterministic (this test
     # previously relied on the real ollama provider, which made it
@@ -1958,21 +1704,12 @@ async def test_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
     from modelman.app import ModelmanApp
-    from modelman.screens.families import FamilyScreen
     from modelman.screens.forms import ModelForm
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert isinstance(app.screen, FamilyScreen)
-        fs = app.screen
-        await _wait_reconcile_done(fs)
-        await pilot.press("enter")  # open the family
-        await pilot.pause()
-        ms = app.screen
-        assert ms.family == "gemma4:26b-mlx"
-
-        mt = ms.query_one("#model-table", DataTable)
+        mt = app.screen.query_one("#model-table", DataTable)
         mt.focus()
         mt.cursor_coordinate = (0, 0)
         await pilot.press("e")
@@ -1984,30 +1721,22 @@ async def test_edit_survives_family_screen_round_trip(tmp_path, monkeypatch):
         await pilot.pause()
         app.screen.query_one("#subscription-price", Input).value = "20"
         await _submit(app, pilot)
-
-        await pilot.press("escape")  # back to the family screen
         await pilot.pause()
-        assert isinstance(app.screen, FamilyScreen)
-        await _wait_reconcile_done(app.screen)
 
-        await pilot.press("enter")  # reopen the family
-        await pilot.pause()
+        # Visible immediately in the same (only) screen's table.
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
-        assert rows, "family should still list its model"
-        # SUB column renders the subscription price the edit added.
         assert rows[0][7] == "$20.00/mo"
 
-
-async def _wait_reconcile_done(screen) -> None:
-    """Yield until the screen's background reconcile worker has cleared
-    its lock (the family table is disabled and blocks `enter` until then)."""
-    for _ in range(200):
-        if not screen._reconciling:
-            return
-        # Yield to the event loop so the worker's call_from_thread
-        # callback (which clears _reconciling) can run.
-        await asyncio.sleep(0)
+    # And it was actually persisted, not just held in this session's
+    # in-memory registry: a fresh app relaunch sees it too.
+    app2 = ModelmanApp()
+    async with app2.run_test() as pilot:
+        await pilot.pause()
+        mt = app2.screen.query_one("#model-table", DataTable)
+        rows = [mt.get_row_at(i) for i in range(mt.row_count)]
+        assert rows, "model must still be listed after relaunch"
+        assert rows[0][7] == "$20.00/mo"
 
 
 def test_families_list_includes_state_only_families(tmp_path, monkeypatch):
@@ -2113,8 +1842,9 @@ async def test_exit_dialog_lists_move_and_apply_persists_it(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_apply_move_emptying_family_keeps_it_visible(tmp_path, monkeypatch):
     """After an apply that moves the last model out of a family, the
-    emptied family must still appear on the FamilyScreen (0 variants)
-    because apply recorded a first-class [[families]] entry."""
+    emptied family must still be selectable (a first-class [[families]]
+    entry survives) even though it's no longer visible in the model list
+    itself — there's no separate family-list screen to show it on."""
     entry = ModelEntry(
         id="ollama/gemma4:26b-mlx",
         family="gemma4:26b-mlx",
@@ -2124,14 +1854,12 @@ async def test_apply_move_emptying_family_keeps_it_visible(tmp_path, monkeypatch
     ms, reg_path, _state = _make_screen(
         tmp_path,
         monkeypatch,
-        family="gemma4:26b-mlx",
         entries=[entry],
         families=["gemma4"],
     )
 
     from modelman.app import ModelmanApp
     from modelman.registry import load_registry
-    from modelman.screens.families import FamilyScreen
     from modelman.screens.status import StatusScreen
 
     app = ModelmanApp()
@@ -2153,14 +1881,11 @@ async def test_apply_move_emptying_family_keeps_it_visible(tmp_path, monkeypatch
             cur = app.screen
             if isinstance(cur, StatusScreen) and cur.done:
                 break
-        # Pop back to FamilyScreen and confirm the emptied family lingers.
-        await pilot.press("escape")
+        await pilot.press("escape")  # back to the model screen (apply done)
         await pilot.pause()
-        assert isinstance(app.screen, FamilyScreen)
-        table = app.screen.query_one(DataTable)
-        rows = {r[0]: r for r in [table.get_row_at(i) for i in range(table.row_count)]}
-        assert "gemma4:26b-mlx" in rows
-        assert rows["gemma4:26b-mlx"][2] == "0"  # VARIANTS column
+        # The moved model no longer shows under its old family, even
+        # though that family name is still selectable (asserted below).
+        assert not any(m.family == "gemma4:26b-mlx" for m in ms.registry.models)
 
     reloaded = load_registry(reg_path)
     assert reloaded.family("gemma4:26b-mlx") is not None
@@ -2260,8 +1985,9 @@ async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
-    """A model added into a *different* family this session isn't caught
-    by the family-scoped restore filter; discard must remove it."""
+    """A model added into a *different* family this session must still be
+    removed by discard — the snapshot restore spans the whole registry,
+    not just one family, so there's no scoping gap for it to slip through."""
     entry = ModelEntry(
         id="ollama/keep",
         family="ornith",
@@ -2307,7 +2033,7 @@ async def test_discard_removes_out_of_family_added_model(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_app_mounts_without_live_daemon_or_proxy_restart():
     """With the hermetic autouse fixtures active, a bare ModelmanApp can
-    mount, run reconcile, and render the family table without touching
+    mount, run reconcile, and render the model table without touching
     the live ollama daemon or restarting the LiteLLM proxy.
 
     Regression guard for the two interference issues: without the
@@ -2322,7 +2048,7 @@ async def test_app_mounts_without_live_daemon_or_proxy_restart():
         await pilot.pause()
         await pilot.pause()  # let the reconcile worker settle
 
-        table = app.screen.query_one("#family-table", DataTable)
+        table = app.screen.query_one("#model-table", DataTable)
         assert table.row_count >= 0
 
 
@@ -2359,7 +2085,6 @@ async def test_ctrl_q_on_model_screen_confirms_pending_queue_instead_of_dropping
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # open ModelScreen
         await pilot.pause()
         await pilot.press("d")  # queue a delete; no download involved
         await pilot.pause()

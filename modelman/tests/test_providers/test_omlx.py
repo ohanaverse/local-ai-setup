@@ -337,9 +337,8 @@ def test_download_local_path_missing_raises(tmp_path):
 
 def test_size_of_local_path_sums_dir(tmp_path):
     # size_of() must walk the user-produced directory recursively and sum
-    # file sizes (not the directory entry itself) — the TUI SIZE column and
-    # FamilyScreen totals are fed by this, and a None here hides real
-    # disk usage.
+    # file sizes (not the directory entry itself) — the TUI SIZE column is
+    # fed by this, and a None here hides real disk usage.
     local_dir = tmp_path / "my-model"
     local_dir.mkdir()
     (local_dir / "a.safetensors").write_bytes(b"a" * 50)

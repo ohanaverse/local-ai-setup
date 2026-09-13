@@ -1,5 +1,5 @@
 """DownloadScreen — live view of DownloadManager's in-flight and
-finished downloads, opened with 'g' from FamilyScreen and ModelScreen."""
+finished downloads, opened with 'g' from ModelScreen."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header
 
-from . import reload_preserving_cursor
+from . import reload_preserving_cursor, row_key_at
 
 
 class DownloadScreen(Screen[None]):
@@ -54,10 +54,9 @@ class DownloadScreen(Screen[None]):
 
     def action_cancel_selected(self) -> None:
         table = self.query_one("#downloads-table", DataTable)
-        if table.row_count == 0:
+        model_id = row_key_at(table, table.cursor_row)
+        if model_id is None:
             return
-        row_key = list(table.rows.keys())[table.cursor_row]
-        model_id = str(row_key.value)
         state = next(  # type: ignore[attr-defined]
             (s for s in self.app.downloads.states() if s.model_id == model_id),  # type: ignore[attr-defined]
             None,

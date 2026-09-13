@@ -20,6 +20,17 @@ from ..registry import (
 from ..state import StateStore
 
 
+def row_key_at(table: DataTable, row: int) -> str | None:
+    """Row key (as a str) at `row` in `table`, or None when out of range
+    (empty table, or a stale row index during a reload race). Shared by
+    every screen that derives an id from "the row under the cursor" so a
+    future change to how row keys map to ids only needs to change here.
+    """
+    if row < 0 or row >= table.row_count:
+        return None
+    return str(list(table.rows.keys())[row].value)
+
+
 def reload_preserving_cursor(table: DataTable, repopulate: Callable[[], None]) -> None:
     """Clear and repopulate `table` without resetting the cursor to row 0.
 
@@ -60,8 +71,8 @@ def reconcile_model_state(
     marked ready here — only disk_path/size_bytes are opportunistically
     updated when the provider reports them.
 
-    Shared by FamilyScreen and ModelScreen's background reconcile workers
-    so the write semantics can't drift between the two screens.
+    Used by ModelScreen's background reconcile worker so the write
+    semantics live in one place.
 
     Per provider, `resolve_local()` — the batch presence/path/size check —
     is tried first: providers that implement it (ollama's single `ollama

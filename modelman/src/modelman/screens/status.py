@@ -37,17 +37,16 @@ class StatusScreen(Screen[None]):
     skips remaining steps, no save) or keeps waiting.
 
     Once the worker signals `apply:done` or `apply:cancelled`, the
-    footer binding switches to "Back" and the user can pop to
-    FamilyScreen.
+    footer binding switches to "Back" and the user returns to the
+    (single) model list screen underneath.
     """
 
     BINDINGS = [
         ("escape", "back", "Back"),
     ]
 
-    def __init__(self, family: str, run_apply: RunApply) -> None:
+    def __init__(self, run_apply: RunApply) -> None:
         super().__init__()
-        self.family = family
         self._run_apply = run_apply
         self.done = False
         self.cancelled = False
@@ -68,7 +67,7 @@ class StatusScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = f"Applying changes \u2014 {self.family}"
+        self.title = "Applying changes"
         self._worker = self.run_worker(self._run, exclusive=True, thread=True)
 
     def _run(self) -> None:
@@ -77,7 +76,7 @@ class StatusScreen(Screen[None]):
         Runs on a background thread; calls back into the UI via
         `app.call_from_thread` to update the RichLog.
         """
-        self._emit(f"Applying changes for family '{self.family}'\n")
+        self._emit("Applying changes\n")
         try:
             self._run_apply(self._emit_threaded, self._emit_threaded, self._register_pending)
         except Exception as exc:  # noqa: BLE001
@@ -294,7 +293,11 @@ class StatusScreen(Screen[None]):
     def action_back(self) -> None:
         # Only allow going back once the apply has finished or been cancelled.
         if self.done:
-            self.app.pop_screen()
+            # dismiss() (not app.pop_screen() directly) so ModelScreen's
+            # push_screen callback fires and it can retake its discard
+            # snapshot from the post-apply state — see
+            # ModelScreen._push_status_screen.
+            self.dismiss()
             return
         # Still running: ask whether to cancel or wait.
         from .forms import CancelApplyDialog
