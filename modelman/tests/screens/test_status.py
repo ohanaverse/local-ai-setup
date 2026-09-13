@@ -96,7 +96,6 @@ async def test_pending_changes_cancel_stops_loop(tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="ornith",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": provider},
@@ -124,7 +123,6 @@ async def test_pending_changes_fires_lifecycle_events(app_with_apply, tmp_path):
     pending = PendingChanges(
         registry=reg,
         state=state,
-        family="ornith",
         registry_path=reg_path,
         state_path=state_path,
         providers={"ollama": p},
@@ -184,7 +182,6 @@ async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="ornith",
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
@@ -200,7 +197,7 @@ async def test_status_screen_esc_opens_cancel_dialog_and_cancel_stops(
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         await pilot.pause()
         for _ in range(30):
@@ -260,7 +257,6 @@ async def test_status_screen_cancel_writes_immediate_feedback(tmp_path, monkeypa
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="ornith",
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
@@ -276,7 +272,7 @@ async def test_status_screen_cancel_writes_immediate_feedback(tmp_path, monkeypa
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         for _ in range(30):
             await pilot.pause()
@@ -317,7 +313,6 @@ async def test_status_screen_renders_provider_progress(app_with_apply, tmp_path)
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="ornith",
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
@@ -329,7 +324,7 @@ async def test_status_screen_renders_provider_progress(app_with_apply, tmp_path)
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         for _ in range(20):
             await pilot.pause()
@@ -356,7 +351,6 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="ornith",
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": p},
@@ -369,7 +363,7 @@ async def test_status_screen_runs_apply_in_background(app_with_apply, tmp_path):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         await pilot.pause()
         for _ in range(20):
@@ -414,7 +408,6 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="ornith",
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
@@ -428,7 +421,7 @@ async def test_status_screen_renders_failure_reason(app_with_apply, tmp_path):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         for _ in range(20):
             await pilot.pause()
@@ -453,7 +446,7 @@ async def test_status_screen_renders_move_events():
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="gemma4:26b-mlx", run_apply=lambda *_: None)
+        screen = StatusScreen(run_apply=lambda *_: None)
         app.push_screen(screen)
         await pilot.pause()
         screen._handle_event("move:start|ollama/m1|gemma4:26b-mlx|gemma4")
@@ -490,7 +483,6 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
         pending = PendingChanges(
             registry=reg,
             state=state,
-            family="ornith",
             registry_path=reg_path,
             state_path=state_path,
             providers={"ollama": provider},
@@ -504,7 +496,7 @@ async def test_status_screen_shows_failure_summary(app_with_apply, tmp_path):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="ornith", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         for _ in range(20):
             await pilot.pause()
@@ -535,7 +527,7 @@ async def test_status_screen_count_and_list_stay_in_sync_on_empty_detail():
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="g", run_apply=lambda *_: None)
+        screen = StatusScreen(run_apply=lambda *_: None)
         app.push_screen(screen)
         await pilot.pause()
         # Synthesize two 3-part failure events: move:fail + delete:fail,
@@ -579,7 +571,7 @@ async def test_status_screen_unexpected_error_still_renders_done_footer():
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="g", run_apply=run_apply)
+        screen = StatusScreen(run_apply=run_apply)
         app.push_screen(screen)
         # Wait for the worker to finish; the error path emits a
         # synthetic apply:done, so screen.done should flip to True.
@@ -615,7 +607,7 @@ async def test_status_screen_truncates_very_long_failure_detail():
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = StatusScreen(family="g", run_apply=lambda *_: None)
+        screen = StatusScreen(run_apply=lambda *_: None)
         app.push_screen(screen)
         await pilot.pause()
         long_detail = "x" * 500
