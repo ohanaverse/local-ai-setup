@@ -684,6 +684,15 @@ def start_local_model(
         env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
 
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+    # Deliberately re-read rather than reusing `state.local.running_model`
+    # from the load at the top of this function: _resolve_or_register()
+    # above can call _register_discovered_model(), which does a real
+    # LiteLLM config write (expose_model) that can take a non-trivial
+    # amount of wall-clock time — long enough for a concurrent `modelman
+    # start`/`stop` to change the marker in the meantime. Using the stale
+    # in-memory `state` here would risk basing the idempotency check below,
+    # and the stale-marker clearing in the except branches further down, on
+    # an out-of-date value.
     current = load_state(state_path).local.running_model
     if current == resolved_id:
         if _probe_running(model.provider_id, model.model_name, probe_origin):
