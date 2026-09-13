@@ -33,6 +33,7 @@ from ..registry import (
     ModelEntry,
     Registry,
     _cost_from_dict,
+    is_local_location,
     is_native_provider,
     known_families,
     model_entry_to_variant,
@@ -202,6 +203,11 @@ def _state_kwargs(s: ModelState) -> dict:
 
 
 class ModelScreen(Screen[None]):
+    """The app's single root screen: every model, across every family,
+    sorted (family, location, provider, model name). Family-level
+    filtering was removed along with FamilyScreen — see
+    docs/superpowers/specs (family-screen removal design)."""
+
     BINDINGS = [
         ("escape", "back", "Back"),
         ("a", "add_model", "Add"),
@@ -209,6 +215,7 @@ class ModelScreen(Screen[None]):
         ("e", "edit_model", "Edit"),
         Binding("enter", "select_row", "Edit", priority=True),
         ("g", "open_downloads", "Downloads"),
+        ("l", "toggle_litellm", "LiteLLM"),
         ("r", "toggle_ready", "Toggle ready"),
         ("x", "toggle_expose", "Toggle exposed"),
     ]
@@ -217,40 +224,21 @@ class ModelScreen(Screen[None]):
         self,
         registry: Registry,
         state: StateStore,
-        family: str,
         registry_path: Path,
         state_path: Path,
-        available_providers: list[str] | None = None,
+        scroll_to_family: str | None = None,
     ) -> None:
         super().__init__()
         self.registry = registry
         self.state = state
-        self.family = family
         self.registry_path = registry_path
         self.state_path = state_path
-        # The list of providers configured in ~/.config/local-ai/config.yaml.
-        # The provider-table on the left always shows every entry here, even
-        # when the family has no models at all — otherwise an empty family
-        # would show no providers and the user would have nowhere to click
-        # 'a' to add the first one. Order is preserved as given (config
-        # insertion order) and falls back to a stable default only if no
-        # list was provided, so the cursor lands on the user's "first
-        # choice" rather than alphabetical.
-        if available_providers is not None:
-            self.available_providers: list[str] = list(available_providers)
-        else:
-            # Default provider order for the Add dialog; DEFAULT_PROVIDER_IDS
-            # keeps this in lockstep with the reconcilable provider set.
-            self.available_providers = list(DEFAULT_PROVIDER_IDS)
-        # Default selection: ollama if configured, otherwise the first
-        # configured provider. This keeps the cursor on the most
-        # common starting point for empty families.
-        # Default selection: ollama if configured, otherwise the first
-        # configured provider. This keeps the cursor on the most
-        # common starting point for empty families.
+        # One-time cursor placement after the first reload (e.g. `modelman
+        # download <family>`): scroll to that family's first row instead of
+        # filtering the list to it. Consumed once in on_mount().
+        self._scroll_to_family = scroll_to_family
         # Provider of the last model added or edited this session; used to
-        # default the Add dialog's provider dropdown now that there's no
-        # provider pane to inherit a selection from.
+        # default the Add dialog's provider dropdown.
         self._last_provider_used: str | None = None
         # queued_ready / queued_deletes map model_id -> target state.
         # queued_ready values are bools: True to ready, False to clear.
@@ -269,20 +257,21 @@ class ModelScreen(Screen[None]):
         self._ready_cascade_for_expose: set[str] = set()
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
-        # stays visible in this family's table with a → glyph.
+        # stays visible in the table with a → glyph.
         self.queued_moves: dict[str, str] = {}
         # Ids of models created this session via the add dialog. Used by
-        # _restore_snapshot: a model added into a *different* family
-        # isn't caught by the family-scoped restore filter.
+        # the discard flow to cancel/clear any background download for a
+        # model that won't survive the snapshot restore (see
+        # _on_exit_confirm's discard branch).
         self._added_ids: set[str] = set()
         # Snapshot for discard: restore if the user exits without applying.
+        # Spans the whole registry now — this screen isn't scoped to one
+        # family, so there's no other family's data to preserve alongside it.
         self._snapshot_models: list[ModelEntry] = [
-            ModelEntry(**_entry_kwargs(m)) for m in registry.models if m.family == family
+            ModelEntry(**_entry_kwargs(m)) for m in registry.models
         ]
         self._snapshot_state_entries: dict[str, ModelState] = {
-            mid: ModelState(**_state_kwargs(s))
-            for mid, s in state.models.items()
-            if any(m.id == mid and m.family == family for m in registry.models)
+            mid: ModelState(**_state_kwargs(s)) for mid, s in state.models.items()
         }
 
     def compose(self) -> ComposeResult:
@@ -290,6 +279,7 @@ class ModelScreen(Screen[None]):
         yield DataTable(id="model-table", cursor_type="row")
         yield Static("path: —", id="details-panel")
         yield Static("Pending: ready 0 · delete 0", id="pending-bar")
+        yield Static("", id="litellm-status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -316,10 +306,38 @@ class ModelScreen(Screen[None]):
         )
         self.reload()
         self._refresh_pending_bar()
+        self._update_litellm_status()
         mt.focus()
+        if self._scroll_to_family is not None:
+            self._scroll_cursor_to_family(self._scroll_to_family)
+            self._scroll_to_family = None
         self.run_worker(self._run_reconcile, exclusive=True, thread=True)
         self._last_poll_had_active = False
         self.set_interval(1.0, self._poll_downloads)
+
+    def _scroll_cursor_to_family(self, family: str) -> None:
+        """One-time cursor placement for `modelman download <family>`:
+        move to that family's first row instead of filtering the list."""
+        mt = self.query_one("#model-table", DataTable)
+        for i, m in enumerate(self._sorted_models()):
+            if m.family == family:
+                mt.move_cursor(row=i)
+                return
+
+    def _sorted_models(self) -> list[ModelEntry]:
+        """Every model, sorted (family, location, provider, model name) —
+        local models before cloud within each family/provider group.
+        Shared by _load_models and _scroll_cursor_to_family so the two
+        can't drift apart."""
+        return sorted(
+            self.registry.models,
+            key=lambda m: (
+                m.family,
+                0 if is_local_location(m.location) else 1,
+                m.provider_id,
+                m.model_name,
+            ),
+        )
 
     def _run_reconcile(self) -> None:
         """Ask each provider whether its models are on disk; write the
@@ -331,14 +349,39 @@ class ModelScreen(Screen[None]):
         when the provider reports them; their ready flag is driven by
         the ready-toggle's apply-time download/pull instead.
 
-        Delegates to the shared reconcile_model_state (screens/__init__.py)
-        so the write semantics can't drift from FamilyScreen's version.
+        Delegates to the shared reconcile_model_state (screens/__init__.py).
         """
-        reconcile_model_state(
-            self.registry.models_by_family(self.family), self.registry, self.state
-        )
+        reconcile_model_state(self.registry.models, self.registry, self.state)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
+
+    def _update_litellm_status(self) -> None:
+        """Render the [litellm] routing mode in the screen's status area.
+
+        Purely display: never starts, stops, or restarts the proxy — the
+        toggle only flips modelman.toml's [litellm].enabled. Moved here
+        from the removed FamilyScreen, which was the app's home screen
+        before this one took over that role.
+        """
+        mode = "on" if self.state.litellm.enabled else "off"
+        url_display = (
+            f" ({self.state.litellm.url})" if mode == "on" and self.state.litellm.url else ""
+        )
+        self.query_one("#litellm-status", Static).update(
+            f"LiteLLM: {mode}{url_display}  [l] toggle"
+        )
+
+    def action_toggle_litellm(self) -> None:
+        """Flip [litellm].enabled on `l`. Routing policy only — the proxy
+        process is never touched. locked_state() re-reads the on-disk
+        state so the flip applies on top of the latest file. Only the
+        `litellm` table is resynced back onto self.state (not a full
+        reload) so this doesn't clobber in-session model/queue state
+        this screen has already reconciled or the user has queued."""
+        with locked_state(self.state_path) as disk_state:
+            disk_state.litellm.enabled = not disk_state.litellm.enabled
+        self.state.litellm = load_state(self.state_path).litellm
+        self._update_litellm_status()
 
     def _poll_downloads(self) -> None:
         """Reload state from disk while any download is active (or just
@@ -372,11 +415,7 @@ class ModelScreen(Screen[None]):
 
         def _repopulate() -> None:
             mt.clear()
-            models = sorted(
-                self.registry.models_by_family(self.family),
-                key=lambda m: (m.provider_id, m.model_name),
-            )
-            for m in models:
+            for m in self._sorted_models():
                 ready = self._is_ready(m.id)
                 size_str = format_size(self.state.get(m.id).size_bytes) if ready else "—"
                 if m.id in self.queued_deletes:
@@ -670,15 +709,13 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
 
     def _provider_list(self) -> list[str]:
-        # Use the full configured-provider list, not just the providers
-        # currently used by models in the family, so the user can add
-        # the first model for a fresh family via the 'a' dialog.
-        # The list is sorted alphabetically so the Add dialog's
-        # provider Select and any code that iterates providers sees
-        # a stable, predictable order.
-        if self.available_providers:
-            return sorted(self.available_providers)
-        return sorted({m.provider_id for m in self.registry.models_by_family(self.family)})
+        # Every provider configured in registry.toml, not just the ones
+        # currently backing a model, so the Add dialog can always offer a
+        # fresh choice. Sorted alphabetically for a stable, predictable
+        # Select order. Falls back to the reconcilable-provider defaults
+        # only when the registry has no provider entries at all.
+        ids = sorted(p.id for p in self.registry.providers)
+        return ids or sorted(DEFAULT_PROVIDER_IDS)
 
     def _provider_kinds(self) -> dict[str, str]:
         """Map each registered provider id to the ModelForm 'kind' that
@@ -702,6 +739,18 @@ class ModelScreen(Screen[None]):
         legacy state.families keys, sorted."""
         return known_families(self.registry, self.state)
 
+    def _current_family(self) -> str | None:
+        """The family of the model under the cursor, or None (empty table,
+        or nothing to key off of). Used to default the Add dialog's family
+        Select to "whatever I'm looking at" now that there's no
+        family-scoped screen to inherit it from."""
+        mt = self.query_one("#model-table", DataTable)
+        if mt.row_count == 0 or mt.cursor_row < 0 or mt.cursor_row >= mt.row_count:
+            return None
+        mid = str(list(mt.rows.keys())[mt.cursor_row].value)
+        entry = next((m for m in self.registry.models if m.id == mid), None)
+        return entry.family if entry is not None else None
+
     def action_add_model(self) -> None:
         from .forms import ModelForm
 
@@ -717,7 +766,7 @@ class ModelScreen(Screen[None]):
                 providers=providers,
                 default_provider=default_provider,
                 families=self._families_list(),
-                family=self.family,
+                family=self._current_family(),
                 provider_kinds=self._provider_kinds(),
             ),
             self._on_add_model,
@@ -805,7 +854,7 @@ class ModelScreen(Screen[None]):
                 providers=self._provider_list(),
                 variant=spec,
                 families=self._families_list(),
-                family=self.queued_moves.get(mid, self.family),
+                family=self.queued_moves.get(mid, entry.family),
                 provider_kinds=self._provider_kinds(),
                 pricing_updated_at=entry.pricing_updated_at,
             ),
@@ -849,7 +898,9 @@ class ModelScreen(Screen[None]):
         old_entry = next((m for m in self.registry.models if m.id == updated["id"]), None)
         if old_entry is None:
             return
-        new_entry = _variant_to_model_entry(updated, family=self.family, registry=self.registry)
+        new_entry = _variant_to_model_entry(
+            updated, family=old_entry.family, registry=self.registry
+        )
         if _cost_changed(old_entry.cost, new_entry.cost):
             new_entry.pricing_updated_at = _now_iso()
         else:
@@ -860,15 +911,13 @@ class ModelScreen(Screen[None]):
                 break
         # Persist the edit's registry metadata (location, model name,
         # fetch split, …) immediately: unlike every other mutating
-        # action here, a same-family edit queues nothing, so the
-        # escape-apply path is never reached and PendingChanges' final
-        # save_registry() would never run. FamilyScreen's on_screen_resume
-        # reloads the registry from disk, which would silently drop the
-        # edit before the user ever reopened this screen. Family changes
-        # from the dialog stay queued as moves and are applied (and saved)
-        # at apply time, as before.
+        # action here, an edit that doesn't move families queues nothing,
+        # so the escape-apply path is never reached and PendingChanges'
+        # final save_registry() would never run. Family changes from the
+        # dialog stay queued as moves and are applied (and saved) at
+        # apply time, as before.
         save_registry(self.registry, self.registry_path)
-        if result.family != self.family:
+        if result.family != old_entry.family:
             self.queued_moves[updated["id"]] = result.family
         else:
             self.queued_moves.pop(updated["id"], None)
@@ -887,7 +936,10 @@ class ModelScreen(Screen[None]):
 
     def action_back(self) -> None:
         if not self.has_pending_changes():
-            self.app.pop_screen()
+            # This screen is the app's root now — nothing to pop back to,
+            # so Escape with no pending changes quits (same guard ctrl+q
+            # already goes through: downloads-active check, etc.).
+            self.app.request_quit()  # type: ignore[attr-defined]
             return
         from .forms import ConfirmExitDialog
 
@@ -940,10 +992,10 @@ class ModelScreen(Screen[None]):
             for mid in to_clear:
                 self.app.downloads.clear_state(mid)  # type: ignore[attr-defined]
             self._restore_snapshot()
-            # Same-family edits save registry immediately on _on_edit_model.
-            # Restoring the in-memory snapshot is not enough: FamilyScreen
-            # reloads from disk on resume, so we must also write the restored
-            # registry back to disk to undo any edits the user discarded.
+            # In-place edits save the registry to disk immediately
+            # (_on_edit_model) — restoring the in-memory snapshot alone
+            # would leave a discarded edit persisted on disk, so write the
+            # restored registry back out too.
             save_registry(self.registry, self.registry_path)
             # A download that finished mid-session persisted ready=True to
             # disk (DownloadManager._run's locked_state write) for a model
@@ -962,7 +1014,10 @@ class ModelScreen(Screen[None]):
             self.queued_exposes.clear()
             self._ready_cascade_for_expose.clear()
             self._added_ids.clear()
-            self.app.pop_screen()
+            # This screen is the app's root now — nothing to pop back to.
+            # Re-render in place instead.
+            self.reload()
+            self._refresh_pending_bar()
             return
         # "cancel" or None: stay on the model screen, queue preserved.
         return
@@ -970,13 +1025,14 @@ class ModelScreen(Screen[None]):
     def _push_status_screen(self) -> None:
         """Hand off the apply run to StatusScreen for live progress.
 
-        ModelScreen pops itself; StatusScreen then runs apply() on a
-        worker thread and pops back to FamilyScreen when done.
+        This screen stays underneath (not popped): _run_apply mutates
+        self.registry/self.state in place and clears the queues as it
+        goes, so by the time StatusScreen pops itself on completion, this
+        screen is already showing the post-apply state.
         """
         from .status import StatusScreen
 
-        self.app.pop_screen()
-        self.app.push_screen(StatusScreen(family=self.family, run_apply=self._run_apply))
+        self.app.push_screen(StatusScreen(run_apply=self._run_apply))
 
     def _register_deferred_expose(self, model_id: str, litellm_path: Path) -> None:
         """Defer a queued expose against a still-downloading model: it
@@ -1082,7 +1138,6 @@ class ModelScreen(Screen[None]):
         pending = PendingChanges(
             registry=self.registry,
             state=self.state,
-            family=self.family,
             registry_path=self.registry_path,
             state_path=self.state_path,
             providers=providers,
@@ -1108,27 +1163,18 @@ class ModelScreen(Screen[None]):
         """Restore the in-memory registry/state to the snapshot taken on
         mount, dropping any queued mutations.
 
-        Restore is keyed by model id, not family: models with queued
-        (unapplied) moves still belong to this family in the registry
-        (edits always write back with family=self.family; only
-        queued_moves tracks the pending target), so every live model
-        with family == self.family is already in restore_ids via
-        _snapshot_models or _added_ids. _added_ids covers the remaining
-        gap: a model added into a *different* family this session, which
-        the id check alone would otherwise let survive discard.
+        The snapshot spans the whole registry (this screen isn't scoped to
+        one family), so restore is a straight replace rather than a
+        per-family merge.
         """
-        restore_ids = {m.id for m in self._snapshot_models} | self._added_ids
-        keep = [m for m in self.registry.models if m.id not in restore_ids]
-        self.registry.models = keep + self._snapshot_models
+        self.registry.models = list(self._snapshot_models)
         # Replace state entries that were in the snapshot.
         for mid in self._snapshot_state_entries:
             self.state.set(mid, self._snapshot_state_entries[mid])
         # Defensive: drop state entries that somehow leaked in during this
-        # session but weren't in the snapshot, scoped to this family. (No
-        # session path writes state.models outside apply(), so this is a
-        # no-op under normal discard flows.)
+        # session but weren't in the snapshot. (No session path writes
+        # state.models outside apply(), so this is a no-op under normal
+        # discard flows.)
         for mid in list(self.state.models):
-            if mid not in self._snapshot_state_entries and any(
-                m.id == mid and m.family == self.family for m in self.registry.models
-            ):
+            if mid not in self._snapshot_state_entries:
                 self.state.models.pop(mid, None)

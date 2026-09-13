@@ -27,18 +27,17 @@ from modelman.state import ModelState, StateStore, load_state, save_state
 
 
 async def _open_model_screen(pilot):
-    """Press enter on the family screen and wait until the ModelScreen is
-    actually mounted before returning, so a subsequent keypress reliably
-    targets a model row. Without this, a keypress can land while the
-    family screen is still active (empty queue) under full-suite timing."""
+    """Wait until ModelScreen is mounted before returning, so a subsequent
+    keypress reliably targets a model row. ModelmanApp now boots directly
+    into ModelScreen (FamilyScreen was removed), so this just waits out
+    the initial mount instead of pressing enter to navigate into it."""
     from modelman.screens.models import ModelScreen
 
-    await pilot.press("enter")
     for _ in range(200):
         await pilot.pause()
         if isinstance(pilot.app.screen, ModelScreen):
             return
-    raise AssertionError("ModelScreen never mounted after enter")
+    raise AssertionError("ModelScreen never mounted")
 
 
 def _seed_registry_and_state(tmp_path, monkeypatch, *, models=()):
@@ -343,7 +342,6 @@ async def test_d_on_cloud_model_queues_delete(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # open the only family's ModelScreen
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
@@ -366,7 +364,6 @@ async def test_d_on_local_not_downloaded_still_queues_delete(tmp_path, monkeypat
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
@@ -388,7 +385,6 @@ async def test_d_on_downloaded_local_model_still_queues(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
@@ -478,7 +474,6 @@ async def test_pulled_cloud_ollama_model_reconcile_leaves_ready_alone(tmp_path, 
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.pause()  # let the reconcile worker settle
 
@@ -519,7 +514,6 @@ async def test_not_ready_model_does_not_show_stale_disk_path(tmp_path, monkeypat
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.pause()
 
@@ -604,17 +598,16 @@ async def test_provider_list_sorted(tmp_path, monkeypatch):
     ms = ModelScreen(
         registry=reg,
         state=StateStore(),
-        family="ornith",
         registry_path=reg_path,
         state_path=state_path,
-        available_providers=["omlx", "ollama", "llamacpp"],
     )
     assert ms._provider_list() == ["llamacpp", "ollama", "omlx"]
 
 
 def test_model_screen_bindings_use_new_key_mapping():
-    """r = toggle ready, x = toggle exposed, no manual reconcile binding
-    (reconcile is automatic on mount/resume)."""
+    """r = toggle ready, x = toggle exposed, l = toggle LiteLLM routing
+    (moved here from the removed FamilyScreen), no manual reconcile
+    binding (reconcile is automatic on mount/resume)."""
     from modelman.screens.models import ModelScreen
 
     binding_map = {
@@ -623,7 +616,7 @@ def test_model_screen_bindings_use_new_key_mapping():
     }
     assert binding_map["r"] == "toggle_ready"
     assert binding_map["x"] == "toggle_expose"
-    assert "l" not in binding_map
+    assert binding_map["l"] == "toggle_litellm"
     assert not any(action == "reconcile" for action in binding_map.values())
     assert not hasattr(ModelScreen, "action_reconcile")
 
@@ -665,7 +658,6 @@ async def test_delete_any_model_even_not_ready(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
@@ -708,7 +700,6 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # open the only family's ModelScreen
         await pilot.pause()
         await pilot.pause()  # let the reconcile worker settle
 
@@ -838,7 +829,6 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")
         await pilot.pause()
         await pilot.pause()  # let the reconcile worker settle
 
@@ -903,7 +893,6 @@ async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path,
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # open the only family's ModelScreen
         await pilot.pause()
 
         mt = app.screen.query_one("#model-table", DataTable)
@@ -969,7 +958,6 @@ async def test_details_panel_updates_on_cursor_move(tmp_path, monkeypatch):
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # open the only family's ModelScreen
         await pilot.pause()
         await pilot.pause()  # let the reconcile worker settle
 
@@ -1015,7 +1003,6 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # open ModelScreen
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
@@ -1212,11 +1199,14 @@ async def test_download_finishing_after_screen_popped_does_not_crash(tmp_path, m
         popped_screen = app.screen
         assert popped_screen.queued_ready == {}
 
-        await pilot.press("escape")  # empty queue -> pops immediately
+        # ModelScreen is the app's only screen now — Escape with an empty
+        # queue quits the app rather than revealing another screen
+        # underneath, so there's no live navigation path left that detaches
+        # this screen mid-session. Simulate the detachment directly instead
+        # (mirroring what a real detach — the app exiting mid-callback —
+        # would leave query_one() to contend with).
+        await popped_screen.remove()
         await pilot.pause()
-        from modelman.screens.families import FamilyScreen
-
-        assert isinstance(app.screen, FamilyScreen)
 
         # Simulate the download's on_complete callback (and the 1s poll)
         # firing against the now-detached screen instance.
@@ -2727,7 +2717,6 @@ def test_provider_can_download_treats_mtplx_as_flag_only():
     screen = ModelScreen(
         registry=registry,
         state=StateStore(),
-        family="f",
         registry_path=Path("/tmp/registry.toml"),
         state_path=Path("/tmp/modelman.toml"),
     )

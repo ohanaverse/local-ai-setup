@@ -8,26 +8,17 @@ from typing import Any
 from textual.app import App
 
 from .downloads import DownloadManager
-from .registry import load_registry, sync_agent_providers
-from .screens.families import FamilyScreen
+from .registry import (
+    Registry,
+    RegistryError,
+    _default_registry_path,
+    load_registry,
+    sync_agent_providers,
+)
 from .screens.forms import QuitBlockedModal
 from .screens.models import ModelScreen
 from .settings import Settings, load_settings, save_settings
-from .state import load_state
-
-
-def _configured_providers() -> list[str]:
-    """Read provider names from registry.toml; on any failure return [].
-
-    Kept here (rather than in registry.py) so `app.py` doesn't grow a
-    hard dependency on a modelman-side parser for legacy config.yaml.
-    """
-    try:
-        registry = load_registry()
-        sync_agent_providers(registry)
-        return [p.id for p in registry.providers]
-    except Exception:
-        return []
+from .state import _default_state_path, load_state
 
 
 class ModelmanApp(App[None]):
@@ -56,30 +47,22 @@ class ModelmanApp(App[None]):
             self.theme = settings.theme
 
     def on_mount(self) -> None:
-        configured = _configured_providers()
-        self.push_screen(FamilyScreen())
-        if self._initial_family is not None:
-            try:
-                registry = load_registry()
-                sync_agent_providers(registry)
-            except Exception:
-                registry = None
-            if registry is None:
-                self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
-                return
-            from .registry import _default_registry_path
-            from .state import _default_state_path
-
-            self.push_screen(
-                ModelScreen(
-                    registry=registry,
-                    state=load_state(),
-                    family=self._initial_family,
-                    registry_path=_default_registry_path(),
-                    state_path=_default_state_path(),
-                    available_providers=configured,
-                )
+        try:
+            registry = load_registry()
+        except RegistryError:
+            # No registry.toml yet (fresh install): an empty Registry still
+            # gives the user an Add dialog to create the first model.
+            registry = Registry()
+        sync_agent_providers(registry)
+        self.push_screen(
+            ModelScreen(
+                registry=registry,
+                state=load_state(),
+                registry_path=_default_registry_path(),
+                state_path=_default_state_path(),
+                scroll_to_family=self._initial_family,
             )
+        )
         self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
 
     def _run_price_refresh(self) -> None:
@@ -168,8 +151,10 @@ class ModelmanApp(App[None]):
 
     def request_quit(self) -> None:
         """The single quit entry point every binding routes through
-        (ctrl+q's default action_quit, and FamilyScreen's 'q' — Task 9).
-        Blocks quitting while a download is active instead of exiting
+        (ctrl+q's default action_quit, and ModelScreen's Escape when it
+        has no pending changes — it's the app's root screen now, so
+        Escape-with-nothing-queued means quit). Blocks quitting while a
+        download is active instead of exiting
         out from under it, and — if the top screen is a ModelScreen with
         an unapplied queue (delete/ready/move/expose) — routes through
         its own action_back() so ctrl+q gets the same apply/discard/
@@ -197,8 +182,7 @@ class ModelmanApp(App[None]):
         """Override Textual's default (self.exit()) to route through the
         download quit guard. This also fixes a pre-existing quirk where
         ctrl+q quit immediately from any screen, bypassing ModelScreen's
-        apply-on-exit confirm — it's now gated by request_quit() the same
-        way FamilyScreen's 'q' binding is."""
+        apply-on-exit confirm — it's now gated by request_quit()."""
         self.request_quit()
 
     def watch_theme(self, old_theme: str | None, new_theme: str) -> None:

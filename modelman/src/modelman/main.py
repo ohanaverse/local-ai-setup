@@ -95,7 +95,8 @@ def litellm_set(
 
 
 def run_tui(family: str | None) -> None:
-    """Launch the Textual TUI, optionally starting at a family's model screen."""
+    """Launch the Textual TUI, optionally scrolling the model list's cursor
+    to the given family's first row on open."""
     # Imported lazily so non-TUI subcommands (expose, sync, benchmark,
     # usage, migrate) don't pay the Textual import cost at CLI startup.
     from .app import ModelmanApp
@@ -114,7 +115,7 @@ def _main(ctx: typer.Context) -> None:
 def download(
     family: str = typer.Argument(..., help="Family name (filename under families dir)"),
 ):
-    """Open the TUI at a family's model screen (queued downloads on exit)."""
+    """Open the TUI's model list scrolled to a family (queued downloads on exit)."""
     run_tui(family)
 
 
