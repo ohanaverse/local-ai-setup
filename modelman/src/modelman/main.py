@@ -17,7 +17,12 @@ from .litellm import (
     expose_model,
     unexpose_model,
 )
-from .local_control import LocalControlError, start_local_model, stop_local_model
+from .local_control import (
+    LocalControlError,
+    list_local_exposed_models,
+    start_local_model,
+    stop_local_model,
+)
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
 from .migrate import migrate_wt_gateway_to_litellm
@@ -255,12 +260,32 @@ def refresh_prices() -> None:
 
 @app.command()
 def start(
-    model_id: str = typer.Argument(..., help="Registry model id to run locally (<provider>/<name>)"),
+    model_id: str | None = typer.Argument(
+        None,
+        help="Registry model id to run locally (<provider>/<name>). "
+        "Omit to list local models with expose on.",
+    ),
 ) -> None:
     """Stop any running local model and start model_id, recording it as
     the single local model wt's picker may offer. Idempotent when
-    model_id's marker still matches a probe of the running process."""
+    model_id's marker still matches a probe of the running process.
+    Omit model_id to list local models with expose on, indicating which
+    (if any) is currently running."""
     registry = load_registry()
+    if model_id is None:
+        state = load_state()
+        statuses = list_local_exposed_models(registry, state)
+        if not statuses:
+            typer.echo("No local models are exposed. Use `modelman expose <model_id>` to enable one.")
+            return
+        typer.echo("Local models available to start:")
+        for status in statuses:
+            marker = "*" if status.running else " "
+            suffix = " (running)" if status.running else ""
+            typer.echo(f"{marker} {status.model_id}{suffix}")
+        typer.echo()
+        typer.echo("Run `modelman start <model_id>` to start one.")
+        return
     try:
         # start_local_model owns the marker read/write (short locked_state
         # transactions around it); the stop-all/warmup subprocesses must run

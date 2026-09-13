@@ -66,3 +66,62 @@ def test_stop_command_noop_message_when_nothing_running(tmp_path, monkeypatch):
     result = runner.invoke(app, ["stop"])
     assert result.exit_code == 0
     assert "No local model is running" in result.stdout
+
+
+def test_start_command_no_args_lists_exposed_local_models(tmp_path, monkeypatch):
+    # `modelman start` with no model_id must not require one - it should
+    # list local models with expose on instead of failing argument parsing.
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nexposed = true\n')
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    with patch("modelman.local_control._probe_running", return_value=False):
+        result = runner.invoke(app, ["start"])
+    assert result.exit_code == 0, result.stdout
+    assert "ollama/x" in result.stdout
+    assert "Run `modelman start <model_id>` to start one." in result.stdout
+
+
+def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
+    # The no-args listing must distinguish "exposed" from "currently running" -
+    # a user picking a model to start needs to see which one is already up
+    # (marked "(running)") rather than treating every exposed model as idle.
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text(
+        '[local]\nrunning_model = "ollama/x"\n\n'
+        '[model_state."ollama/x"]\nready = true\nexposed = true\n'
+    )
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    with patch("modelman.local_control._probe_running", return_value=True):
+        result = runner.invoke(app, ["start"])
+    assert result.exit_code == 0, result.stdout
+    assert "ollama/x (running)" in result.stdout
+
+
+def test_start_command_no_args_no_exposed_models(tmp_path, monkeypatch):
+    # With an empty registry there is nothing to list - the command must
+    # still exit cleanly with a clear "nothing exposed" message instead of
+    # crashing or printing a blank/misleading list.
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text("")
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+
+    result = runner.invoke(app, ["start"])
+    assert result.exit_code == 0
+    assert "No local models are exposed." in result.stdout
