@@ -218,6 +218,17 @@ def _provider_entry(registry: Registry, provider_id: str) -> ProviderEntry | Non
     return next((p for p in registry.providers if p.id == provider_id), None)
 
 
+def _provider_by_id(registry: Registry) -> dict[str, ProviderEntry]:
+    """provider_id -> ProviderEntry for every registry.toml provider row.
+
+    Built once and reused by callers that would otherwise call
+    _provider_entry() (an O(n_providers) linear scan) once per model in a
+    loop over registry.models — that pattern is O(n_models * n_providers)
+    for no reason, since registry.providers never changes mid-call.
+    """
+    return {p.id: p for p in registry.providers}
+
+
 def _provider_instance(registry: Registry, provider_id: str) -> Provider | None:
     """A live Provider for `provider_id`, or None when it cannot be built (no
     registry.toml row, nothing registered under that id — e.g. a hand-edited
@@ -377,20 +388,32 @@ def _registered_under_name(registry: Registry, provider_id: str, variant_id: str
     )
 
 
-def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
-    """Unregistered on-disk artifacts, across every in-scope provider, whose
-    native name matches `name` (leniently, per _name_matches: a user may type
-    either the on-disk basename the listing shows or the full repo id)."""
-    local_map, _unqueryable = _provider_local_models(registry)
+def _discovered_models(
+    registry: Registry, local_map: dict[tuple[str, str], LocalModel]
+) -> list[DiscoveredModel]:
+    """Every entry in `local_map` (a _provider_local_models() result) with no
+    matching registry.toml entry, as DiscoveredModel. Shared by
+    _find_discovered() (name-filtered, for resolving a single `start <name>`)
+    and inventory_local_models() (unfiltered, for the no-arg listing) so the
+    "already registered?" construction/filter logic can't drift between the
+    two callers.
+    """
     return [
         DiscoveredModel(
             provider_id=provider_id, variant_id=variant_id,
             path=local_model["path"], size_bytes=local_model.get("size_bytes"),
         )
-        for (provider_id, variant_id), local_model in local_map.items()
-        if _name_matches(variant_id, name)
-        and not _registered_under_name(registry, provider_id, variant_id)
+        for (provider_id, variant_id), local_model in sorted(local_map.items())
+        if not _registered_under_name(registry, provider_id, variant_id)
     ]
+
+
+def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
+    """Unregistered on-disk artifacts, across every in-scope provider, whose
+    native name matches `name` (leniently, per _name_matches: a user may type
+    either the on-disk basename the listing shows or the full repo id)."""
+    local_map, _unqueryable = _provider_local_models(registry)
+    return [d for d in _discovered_models(registry, local_map) if _name_matches(d.variant_id, name)]
 
 
 def _register_discovered_model(
@@ -501,11 +524,12 @@ def _resolve_or_register(
     # id, "mlx-community/Qwen3.8-27B-4bit"). An exact comparison missed that
     # model and fell through to the register-a-discovered-model step below,
     # duplicating an already-registered, already-exposed artifact.
+    providers_by_id = _provider_by_id(registry)
     native_matches = [
         m
         for m in registry.models
         if _name_matches(m.model_name, model_id)
-        and model_has_local_artifact(m, _provider_entry(registry, m.provider_id))
+        and model_has_local_artifact(m, providers_by_id.get(m.provider_id))
     ]
     if len(native_matches) == 1:
         return native_matches[0], []
@@ -551,11 +575,12 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
     """
     local_map, discovery_unqueryable = _provider_local_models(registry)
     running_marker = state.local.running_model
+    providers_by_id = _provider_by_id(registry)
 
     local_models = [
         model
         for model in registry.models
-        if model_has_local_artifact(model, _provider_entry(registry, model.provider_id))
+        if model_has_local_artifact(model, providers_by_id.get(model.provider_id))
     ]
     presence = _registered_presence(registry, local_models)
 
@@ -567,7 +592,7 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             continue
         running = False
         if model.id == running_marker:
-            provider = _provider_entry(registry, model.provider_id)
+            provider = providers_by_id.get(model.provider_id)
             probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
             running = _probe_running(model.provider_id, model.model_name, probe_origin)
         # A provider that can't size an artifact it confirms is present (no
@@ -578,16 +603,7 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             size = state.get(model.id).size_bytes
         downloaded.append(InventoryEntry(model_id=model.id, running=running, size_bytes=size))
 
-    discovered = [
-        DiscoveredModel(
-            provider_id=provider_id,
-            variant_id=variant_id,
-            path=local_model["path"],
-            size_bytes=local_model.get("size_bytes"),
-        )
-        for (provider_id, variant_id), local_model in sorted(local_map.items())
-        if not _registered_under_name(registry, provider_id, variant_id)
-    ]
+    discovered = _discovered_models(registry, local_map)
     return LocalModelInventory(
         downloaded=downloaded,
         not_downloaded=not_downloaded,
