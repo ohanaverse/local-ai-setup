@@ -5,16 +5,18 @@ stale-marker recovery, and marker mutation — not bin/llm-isolate-provider
 itself (see tests/benchmark/test_isolation.py for that)."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
+    DiscoveredModel,
+    InventoryEntry,
     LocalControlError,
     LocalModelStatus,
     _name_matches,
-    list_local_exposed_models,
+    inventory_local_models,
     start_local_model,
     stop_local_model,
 )
@@ -359,8 +361,8 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
 
 
 def _listing_registry() -> Registry:
-    """Two local models (one exposed+ready, one not exposed) plus one
-    exposed cloud model, for list_local_exposed_models tests."""
+    """Local models covering all three inventory buckets, plus one exposed
+    cloud model, for inventory_local_models tests."""
     return Registry(
         providers=[
             ProviderEntry(id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")),
@@ -382,6 +384,12 @@ def _listing_registry() -> Registry:
                 model_name="unexposed-model",
             ),
             ModelEntry(
+                id="ollama/missing-model",
+                family="qwen3.8",
+                provider_id="ollama",
+                model_name="missing-model",
+            ),
+            ModelEntry(
                 id="openrouter/z-ai/glm-5.3-flash",
                 family="glm",
                 provider_id="openrouter",
@@ -401,52 +409,106 @@ def _listing_state(running_model: str | None = None) -> StateStore:
     return store
 
 
-def test_list_local_exposed_models_filters_to_local_and_exposed():
-    # Only a local model that is both ready and exposed belongs in the
-    # list `modelman start` (no args) prints — the unexposed local model
-    # and the exposed *cloud* model must both be excluded, since neither
-    # is something `modelman start` can run locally.
-    statuses = list_local_exposed_models(_listing_registry(), _listing_state())
-    assert [s.model_id for s in statuses] == ["ollama/exposed-model"]
-    assert statuses[0].running is False
+def _patch_provider_local_models(mapping: dict[str, list[dict]]):
+    """Patch ProviderRegistry so _provider_local_models(registry) sees
+    `mapping` (provider_id -> list of LocalModel dicts) without shelling
+    out to any real provider CLI or scanning a real directory."""
+
+    def get_class(name):
+        return object if name in mapping else None
+
+    def get(name, config):
+        stub = MagicMock()
+        stub.list_local.return_value = mapping.get(name, [])
+        return stub
+
+    return patch.multiple(
+        "modelman.local_control.ProviderRegistry",
+        get_class=MagicMock(side_effect=get_class),
+        get=MagicMock(side_effect=get),
+    )
 
 
-def test_list_local_exposed_models_marks_running_when_probe_confirms():
-    # The marker alone isn't proof of "running" (see start_local_model's
-    # own idempotency check) - the listed model must be probed too.
-    state = _listing_state(running_model="ollama/exposed-model")
-    with patch("modelman.local_control._probe_running", return_value=True) as mock_probe:
-        statuses = list_local_exposed_models(_listing_registry(), state)
-    mock_probe.assert_called_once()
-    assert statuses == [LocalModelStatus(model_id="ollama/exposed-model", running=True)]
-
-
-def test_list_local_exposed_models_marker_probe_fails_shows_not_running():
-    # A marker naming a dead process must not be trusted, but listing is
-    # read-only - it must not clear the stale marker (that stays
-    # start_local_model's job, run only when the user actually starts one).
-    state = _listing_state(running_model="ollama/exposed-model")
-    with patch("modelman.local_control._probe_running", return_value=False):
-        statuses = list_local_exposed_models(_listing_registry(), state)
-    assert statuses[0].running is False
-    assert state.local.running_model == "ollama/exposed-model"
-
-
-def test_list_local_exposed_models_empty_when_none_exposed():
+def test_inventory_downloaded_bucket_includes_size_and_running_marker():
     registry = _listing_registry()
-    state = StateStore()  # nothing exposed
-    assert list_local_exposed_models(registry, state) == []
+    state = _listing_state(running_model="ollama/exposed-model")
+    mapping = {
+        "ollama": [
+            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 4_900_000_000},
+        ]
+    }
+    with _patch_provider_local_models(mapping), patch(
+        "modelman.local_control._probe_running", return_value=True
+    ):
+        inventory = inventory_local_models(registry, state)
+    assert inventory.downloaded == [
+        InventoryEntry(model_id="ollama/exposed-model", running=True, size_bytes=4_900_000_000)
+    ]
 
 
-def test_list_local_exposed_models_sorted_by_id():
-    # The listing must be deterministically ordered (by model_id) regardless
-    # of registry/state insertion order, so the CLI output is stable across
-    # runs and doesn't depend on dict/list iteration order.
+def test_inventory_not_downloaded_bucket_lists_registered_missing_artifacts():
     registry = _listing_registry()
-    registry.models.append(
-        ModelEntry(id="ollama/aaa-model", family="qwen3.8", provider_id="ollama", model_name="aaa-model")
+    state = _listing_state()
+    with _patch_provider_local_models({"ollama": []}):
+        inventory = inventory_local_models(registry, state)
+    assert inventory.not_downloaded == [
+        "ollama/exposed-model",
+        "ollama/missing-model",
+        "ollama/unexposed-model",
+    ]
+
+
+def test_inventory_discovered_bucket_excludes_already_registered():
+    registry = _listing_registry()
+    state = _listing_state()
+    mapping = {
+        "ollama": [
+            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
+            {"variant_id": "brand-new-model", "path": "ollama:brand-new-model", "size_bytes": 2_000_000_000},
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        inventory = inventory_local_models(registry, state)
+    assert inventory.discovered == [
+        DiscoveredModel(
+            provider_id="ollama", variant_id="brand-new-model",
+            path="ollama:brand-new-model", size_bytes=2_000_000_000,
+        )
+    ]
+
+
+def test_inventory_tolerates_a_provider_list_local_failure():
+    # A down ollama daemon or a provider whose list_local() raises must not
+    # blank out the whole inventory — it just contributes nothing.
+    registry = _listing_registry()
+    state = _listing_state()
+
+    def get(name, config):
+        stub = MagicMock()
+        stub.list_local.side_effect = RuntimeError("daemon unreachable")
+        return stub
+
+    with patch.multiple(
+        "modelman.local_control.ProviderRegistry",
+        get_class=MagicMock(return_value=object),
+        get=MagicMock(side_effect=get),
+    ):
+        inventory = inventory_local_models(registry, state)
+    assert inventory.discovered == []
+    assert inventory.not_downloaded == [
+        "ollama/exposed-model", "ollama/missing-model", "ollama/unexposed-model"
+    ]
+
+
+def test_inventory_skips_providers_with_no_registered_class():
+    # A registry.toml entry for a provider id nothing registers under
+    # ProviderRegistry (e.g. a hand-edited "omlx-6bit" row today) must be
+    # skipped, not raise KeyError.
+    registry = _listing_registry()
+    registry.providers.append(
+        ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none"))
     )
     state = _listing_state()
-    state.set("ollama/aaa-model", ModelState(ready=True, exposed=True))
-    statuses = list_local_exposed_models(registry, state)
-    assert [s.model_id for s in statuses] == ["ollama/aaa-model", "ollama/exposed-model"]
+    with _patch_provider_local_models({"ollama": []}):
+        inventory = inventory_local_models(registry, state)
+    assert inventory.discovered == []

@@ -25,9 +25,12 @@ the short transactions stay correct.
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+# Import the providers package to ensure ProviderRegistry is populated —
+# mirrors sync.py's identical defensive import.
+from . import providers  # noqa: F401
 from .benchmark.errors import BenchmarkError
 from .benchmark.isolation import (
     SUPPORTED_PROVIDER_IDS,
@@ -35,12 +38,22 @@ from .benchmark.isolation import (
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
 )
-from .litellm import is_effectively_exposed
+from .litellm import ExposeError, default_litellm_config_path, expose_model, is_effectively_exposed
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
 from .providers.mtplx import MTPLX_BASE
-from .registry import Registry, base_origin, model_has_local_artifact
-from .state import StateStore, load_state, locked_state
+from .providers.registry import ProviderRegistry
+from .registry import (
+    LOCATION_LOCAL,
+    ModelEntry,
+    Registry,
+    base_origin,
+    known_families,
+    locked_registry,
+    model_has_local_artifact,
+    provider_config,
+)
+from .state import ModelState, StateStore, load_state, locked_state
 
 # Probe endpoint fallbacks for providers whose registry entry lacks an
 # auth.base_url (mirroring _DEFAULT_PROVIDER_TEMPLATES in registry.py).
@@ -55,6 +68,13 @@ _DEFAULT_BASE_ORIGIN = {
 # Subprocess seam so tests can keep the probe hermetic (conftest patches
 # it); production calls subprocess.run directly.
 _default_runner = subprocess.run
+
+# Providers modelman can both list a live on-disk catalog for and start via
+# bin/llm-isolate-provider. mlx_lm_server is a target+draft pairing chosen at
+# start time (not a single downloaded artifact) and llamacpp is retired —
+# neither maps onto "discover one artifact, register it" (see the design's
+# Non-goals).
+DISCOVERY_PROVIDER_IDS: frozenset[str] = frozenset({"ollama", "omlx", "omlx-6bit", "mtplx"})
 
 
 class LocalControlError(Exception):
@@ -78,6 +98,31 @@ class StopResult:
 class LocalModelStatus:
     model_id: str
     running: bool
+
+
+@dataclass
+class DiscoveredModel:
+    """An artifact a provider reports on disk with no matching registry.toml
+    entry (no ModelEntry sharing its (provider_id, model_name))."""
+
+    provider_id: str
+    variant_id: str
+    path: str
+    size_bytes: int | None
+
+
+@dataclass
+class InventoryEntry:
+    model_id: str
+    running: bool
+    size_bytes: int | None
+
+
+@dataclass
+class LocalModelInventory:
+    downloaded: list[InventoryEntry]
+    not_downloaded: list[str]
+    discovered: list[DiscoveredModel]
 
 
 def _ollama_loaded_names() -> list[str]:
@@ -152,33 +197,87 @@ def _clear_stale_marker(expected: tuple[str, ...], state_path: Path | None) -> N
         pass  # the LocalControlError about the failed start is the user's answer
 
 
-def list_local_exposed_models(registry: Registry, state: StateStore) -> list[LocalModelStatus]:
-    """Local models with the expose flag effectively on, sorted by id.
+def _provider_local_models(registry: Registry) -> dict[tuple[str, str], dict]:
+    """(provider_id, variant_id) -> LocalModel for every artifact every
+    in-scope, registered, live provider currently reports on disk.
 
-    `modelman start` (no model_id) prints this list. Read-only: unlike
-    start_local_model's own idempotency check, a marker that fails its
-    probe is reported as not-running but never cleared here — that
-    mutation stays start_local_model's job, run only when the user
-    actually starts a model.
+    Tolerant by design: a provider id with no registered Provider class
+    (e.g. a hand-edited "omlx-6bit" registry.toml row today — see
+    DISCOVERY_PROVIDER_IDS's docstring) or whose list_local() raises
+    contributes nothing rather than failing the whole call — this backs
+    both the `start` listing and the start-by-native-name fallback, and
+    neither should go blind because one provider is unreachable.
     """
-    candidates = []
-    for model in registry.models:
-        provider = next((p for p in registry.providers if p.id == model.provider_id), None)
-        if not model_has_local_artifact(model, provider):
+    found: dict[tuple[str, str], dict] = {}
+    for entry in registry.providers:
+        if entry.id not in DISCOVERY_PROVIDER_IDS:
             continue
-        if not is_effectively_exposed(model, state, registry):
+        if ProviderRegistry.get_class(entry.id) is None:
             continue
-        candidates.append((model, provider))
+        provider = ProviderRegistry.get(entry.id, provider_config(entry))
+        try:
+            local_models = provider.list_local()
+        except Exception:
+            local_models = []
+        for local_model in local_models:
+            found[(entry.id, local_model["variant_id"])] = local_model
+    return found
 
+
+def _registered_pairs(registry: Registry) -> set[tuple[str, str]]:
+    return {(m.provider_id, m.model_name) for m in registry.models}
+
+
+def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelInventory:
+    """Live, three-way view of local models: registered models split into
+    downloaded/not-downloaded by cross-referencing each in-scope provider's
+    list_local() against registry.toml, plus on-disk artifacts with no
+    registry.toml entry at all ("discovered").
+
+    `modelman start` (no model_id) prints this. Unlike the exposed-only
+    listing this replaces, `downloaded`/`not_downloaded` include every
+    local-artifact registered model regardless of its exposed flag — this
+    is a full local inventory, not just "what can I start right now".
+    """
+    local_map = _provider_local_models(registry)
+    registered_pairs = _registered_pairs(registry)
     running_marker = state.local.running_model
-    statuses = []
-    for model, provider in sorted(candidates, key=lambda pair: pair[0].id):
+
+    local_models = [
+        model
+        for model in registry.models
+        if model_has_local_artifact(
+            model, next((p for p in registry.providers if p.id == model.provider_id), None)
+        )
+    ]
+
+    downloaded: list[InventoryEntry] = []
+    not_downloaded: list[str] = []
+    for model in sorted(local_models, key=lambda m: m.id):
+        hit = local_map.get((model.provider_id, model.model_name))
+        if hit is None:
+            not_downloaded.append(model.id)
+            continue
         running = False
         if model.id == running_marker:
+            provider = next((p for p in registry.providers if p.id == model.provider_id), None)
             probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
             running = _probe_running(model.provider_id, model.model_name, probe_origin)
-        statuses.append(LocalModelStatus(model_id=model.id, running=running))
-    return statuses
+        downloaded.append(
+            InventoryEntry(model_id=model.id, running=running, size_bytes=hit.get("size_bytes"))
+        )
+
+    discovered = [
+        DiscoveredModel(
+            provider_id=provider_id,
+            variant_id=variant_id,
+            path=local_model["path"],
+            size_bytes=local_model.get("size_bytes"),
+        )
+        for (provider_id, variant_id), local_model in sorted(local_map.items())
+        if (provider_id, variant_id) not in registered_pairs
+    ]
+    return LocalModelInventory(downloaded=downloaded, not_downloaded=not_downloaded, discovered=discovered)
 
 
 def start_local_model(
