@@ -320,8 +320,14 @@ def sync_agent_providers(registry: Registry, wt_config_path: Path | None = None)
     path = wt_config_path if wt_config_path is not None else _default_wt_config_path()
     if not path.exists():
         return []
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        # Malformed or unreadable wt config (partial edit, crash mid-write):
+        # tolerate it like the missing-file case above, per this
+        # function's own contract.
+        return []
     existing = {p.id for p in registry.providers}
     added: list[str] = []
     agents = raw.get("agents", [])

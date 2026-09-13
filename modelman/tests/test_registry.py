@@ -583,6 +583,18 @@ def test_sync_agent_providers_missing_config_is_a_noop(tmp_path):
     assert registry.providers == []
 
 
+def test_sync_agent_providers_tolerates_malformed_toml(tmp_path):
+    """A syntactically invalid config.toml (partial edit, crash mid-write)
+    must not raise: this is called unconditionally from ModelmanApp.on_mount,
+    so an uncaught TOMLDecodeError here would crash the TUI at startup
+    instead of degrading gracefully like the missing-file case above."""
+    wt_config = tmp_path / "config.toml"
+    wt_config.write_text("agents = [{name = \n")
+    registry = Registry()
+    assert sync_agent_providers(registry, wt_config_path=wt_config) == []
+    assert registry.providers == []
+
+
 def test_default_wt_config_path_honors_override(monkeypatch):
     monkeypatch.setenv("MODELMAN_WT_DIR", "/custom/wt")
     assert _default_wt_config_path() == Path("/custom/wt/config.toml")
