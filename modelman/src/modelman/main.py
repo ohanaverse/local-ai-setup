@@ -242,6 +242,49 @@ def unexpose(
         typer.echo(f"warning: {warning}", err=True)
 
 
+@app.command("delete-family")
+def delete_family(
+    name: str = typer.Argument(..., help="Family name to delete"),
+) -> None:
+    """Remove an empty family's lingering [[families]] registry entry.
+
+    queue.py's apply() deliberately leaves a family entry behind once its
+    last model is deleted or moved out ("stickiness" — see queue.py), and
+    nothing removes it automatically. This is the only remaining way to
+    clear one now that FamilyScreen (the old family-list screen, which
+    used to offer family deletion) is gone. Refuses if the family still
+    has models — move or delete them first.
+    """
+    registry = load_registry()
+    models = registry.models_by_family(name)
+    if models:
+        typer.echo(
+            f"error: family '{name}' has {len(models)} model(s); "
+            "move or delete them before deleting the family",
+            err=True,
+        )
+        raise typer.Exit(1)
+    entry = registry.family(name)
+    state = load_state()
+    had_legacy = name in state.families
+    if entry is None and not had_legacy:
+        typer.echo(f"error: no family entry named '{name}'", err=True)
+        raise typer.Exit(1)
+    if entry is not None:
+        registry.families.remove(entry)
+        try:
+            save_registry(registry)
+        except OSError as exc:
+            typer.echo(f"error: failed to save registry: {exc}", err=True)
+            raise typer.Exit(1) from exc
+    if had_legacy:
+        # Merge-only write (see expose/unexpose above): don't overwrite
+        # modelman.toml wholesale from a snapshot that may be stale by now.
+        with locked_state() as fresh:
+            fresh.forget_family(name)
+    typer.echo(f"Deleted family '{name}'.")
+
+
 @app.command()
 def refresh_prices() -> None:
     """Refresh per-token pricing for cloud models from OpenRouter."""
