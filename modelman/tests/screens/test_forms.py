@@ -860,8 +860,10 @@ async def test_modelform_family_select_is_sorted_and_does_not_prepend():
 
 @pytest.mark.asyncio
 async def test_modelform_family_select_defaults_when_no_families_passed():
-    """Legacy direct callers (tests) pass nothing: the selector shows
-    exactly one entry. The TUI always passes real values."""
+    """Legacy direct callers (tests) pass nothing: the selector shows two
+    entries (the "unknown" placeholder plus "+ New family..."), defaulting
+    to "unknown" since `families=None` is indistinguishable here from a
+    caller that just didn't care. The TUI always passes real values."""
     form = ModelForm(providers=["ollama"])
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -870,6 +872,28 @@ async def test_modelform_family_select_defaults_when_no_families_passed():
         await pilot.pause()
         sel = app.screen.query_one("#family-select", Select)
         assert [str(value) for _, value in sel._options] == ["unknown", NEW_FAMILY_VALUE]
+        assert sel.value == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_modelform_family_select_defaults_to_new_family_on_empty_registry():
+    """ModelScreen.action_add_model on a fresh install (empty registry)
+    passes families=[] and family=None explicitly. Unlike the "callers
+    passed nothing" case above, this is a real signal that no family
+    exists yet, so the Select must default to "+ New family..." — not the
+    "unknown" placeholder, which used to get saved onto real models when
+    left untouched (see issue found in code review of the FamilyScreen
+    removal)."""
+    form = ModelForm(providers=["ollama"], families=[], family=None)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        assert [str(value) for _, value in sel._options] == ["unknown", NEW_FAMILY_VALUE]
+        assert sel.value == NEW_FAMILY_VALUE
+        assert app.screen.query_one("#new-family-input", Input).display is True
 
 
 @pytest.mark.asyncio

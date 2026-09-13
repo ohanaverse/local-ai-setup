@@ -440,6 +440,16 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         )
         if self._family is not None and self._family not in self._families:
             self._families.insert(0, self._family)
+        # True only when the caller explicitly passed an empty families
+        # list and no family (e.g. ModelScreen.action_add_model on a fresh
+        # install with an empty registry): in add mode the Select should
+        # then default to "+ New family..." rather than the "unknown"
+        # placeholder, since there's no real family to land on. Distinct
+        # from `families=None` (the parameter's default) — legacy direct
+        # callers (mostly tests) that omit `families` entirely keep the
+        # old "unknown" default so their focus/submit expectations are
+        # undisturbed.
+        self._no_real_families = families is not None and not families and family is None
         self._pricing_updated_at = pricing_updated_at
 
     def compose(self) -> ComposeResult:
@@ -523,7 +533,12 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             family_options = [(f, f) for f in self._families]
             if not editing:
                 family_options.append((NEW_FAMILY_LABEL, NEW_FAMILY_VALUE))
-            initial_family = self._family if self._family in self._families else self._families[0]
+            if not editing and self._no_real_families:
+                initial_family = NEW_FAMILY_VALUE
+            else:
+                initial_family = (
+                    self._family if self._family in self._families else self._families[0]
+                )
             yield Select(
                 options=family_options,
                 value=initial_family,
@@ -741,7 +756,13 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         # mode (so the user can pick a provider immediately); in edit
         # mode provider/model/location are all disabled, so drop the
         # cursor on the first editable pricing control instead.
-        if self._variant is None:
+        new_family_selected = (
+            self._variant is None
+            and self.query_one("#family-select", Select).value == NEW_FAMILY_VALUE
+        )
+        if new_family_selected:
+            self.query_one("#new-family-input", Input).focus()
+        elif self._variant is None:
             self.query_one("#provider-select", Select).focus()
         else:
             self.query_one("#per-token-checkbox", Checkbox).focus()
@@ -760,9 +781,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             kind == "local-only" and self._supports_local_path(self._initial_provider)
         )
         self._set_dual_model_visibility(kind == "dual-model")
-        # New-family input starts hidden — nothing selects the sentinel value
-        # until the user picks it from the family Select.
-        self._set_new_family_visibility(False)
+        # New-family input starts hidden, unless the Select's own initial
+        # value is already the sentinel (a fresh install with no real
+        # families defaults there — see _no_real_families in __init__).
+        self._set_new_family_visibility(new_family_selected)
 
     def _set_new_family_visibility(self, show: bool) -> None:
         """Show/hide the "New family name" label + Input (add mode only)."""
@@ -1050,7 +1072,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         family = self._resolve_family()
         if family is None:
             return
-        self.dismiss(ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at))
+        self.dismiss(
+            ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at)
+        )
 
     def _submit_dual_model(self, provider: str) -> None:
         """Handle Save for the "dual-model" kind (mlx_lm_server target+draft
@@ -1115,7 +1139,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         family = self._resolve_family()
         if family is None:
             return
-        self.dismiss(ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at))
+        self.dismiss(
+            ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at)
+        )
 
 
 class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):

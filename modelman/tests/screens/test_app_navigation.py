@@ -887,6 +887,12 @@ async def test_model_screen_add_appends_model_entry_to_registry(
         provider_sel = app.screen.query_one("#provider-select", Select)
         provider_sel.value = "ollama"
         await pilot.pause()
+        # No models (so no cursor context) and no known families: the Add
+        # dialog's family Select defaults to "+ New family...", so a real
+        # name must be typed before the form will submit.
+        app.screen.query_one("#new-family-input", Input).focus()
+        for ch in "ornith":
+            await pilot.press(ch)
         app.screen.query_one("#model", Input).focus()
         for ch in "ornith:8b":
             await pilot.press(ch)
@@ -896,9 +902,7 @@ async def test_model_screen_add_appends_model_entry_to_registry(
     ids = [m.id for m in ms.registry.models]
     assert "ollama/ornith:8b" in ids
     added = next(m for m in ms.registry.models if m.id == "ollama/ornith:8b")
-    # No models (so no cursor context) and no known families: the Add
-    # dialog's family Select falls back to its lone "unknown" entry.
-    assert added.family == "unknown"
+    assert added.family == "ornith"
     assert added.provider_id == "ollama"
     assert added.model_name == "ornith:8b"
     assert added.fetch is None
