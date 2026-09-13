@@ -12,6 +12,7 @@ import pytest
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     DiscoveredModel,
+    DiscoveredModelNeedsFamily,
     InventoryEntry,
     LocalControlError,
     LocalModelStatus,
@@ -20,7 +21,14 @@ from modelman.local_control import (
     start_local_model,
     stop_local_model,
 )
-from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
+from modelman.registry import (
+    AuthConfig,
+    ModelEntry,
+    ProviderEntry,
+    Registry,
+    load_registry,
+    save_registry,
+)
 from modelman.state import ModelState, StateStore, load_state, save_state
 
 
@@ -358,6 +366,114 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
     )
     assert result.direct_url == "http://localhost:8003/v1/chat/completions"
     assert load_state(state_path).local.running_model == "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+
+
+def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
+    registry = _registry()
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]}
+    with _patch_provider_local_models(mapping):
+        with pytest.raises(DiscoveredModelNeedsFamily) as excinfo:
+            start_local_model(registry, "llama3.2:3b", registry_path=registry_path)
+    assert excinfo.value.provider_id == "ollama"
+    assert excinfo.value.variant_id == "llama3.2:3b"
+    # No side effects: nothing is written and nothing is started when the
+    # call can't proceed without a family.
+    assert load_registry(registry_path).models == registry.models
+
+
+def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_path):
+    registry = _registry()
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+    litellm_path = tmp_path / "config.yaml"
+    litellm_path.write_text("model_list: []\n")
+    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]}
+
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control.stop_all_local_providers") as mock_stop,
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="ollama", model="llama3.2:3b",
+            direct_url="http://localhost:11434/v1/chat/completions", ok=True, error=None,
+        )
+        result = start_local_model(
+            registry, "llama3.2:3b", state_path,
+            family="discovered", registry_path=registry_path, litellm_path=litellm_path,
+        )
+
+    mock_stop.assert_called_once()
+    assert result.already_running is False
+    assert result.model_id == "ollama/llama3.2:3b"
+
+    on_disk = load_registry(registry_path)
+    entry = on_disk.model("ollama/llama3.2:3b")
+    assert entry.family == "discovered"
+    assert entry.provider_id == "ollama"
+    assert entry.model_name == "llama3.2:3b"
+    assert entry.source == "discovered"
+    assert entry.location == "local"
+    # The in-memory registry the caller passed in must reflect the write too
+    # (start_local_model keeps using it for the rest of this call, and a CLI
+    # process only has this one in-memory copy for the whole invocation).
+    assert registry.model("ollama/llama3.2:3b") == entry
+
+    state_on_disk = load_state(state_path)
+    model_state = state_on_disk.get("ollama/llama3.2:3b")
+    assert model_state.ready is True
+    assert model_state.exposed is True
+    assert model_state.size_bytes == 2_000_000_000
+    assert load_state(state_path).local.running_model == "ollama/llama3.2:3b"
+
+
+def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    mapping = {
+        "ollama": [{"variant_id": "shared-name", "path": "ollama:shared-name", "size_bytes": None}],
+        "mtplx": [{"variant_id": "shared-name", "path": "/mtplx/shared-name", "size_bytes": None}],
+    }
+    with _patch_provider_local_models(mapping):
+        with pytest.raises(LocalControlError, match="multiple providers"):
+            start_local_model(registry, "shared-name", registry_path=registry_path)
+
+
+def test_start_native_name_resolves_existing_registered_model_without_reregistering(tmp_path):
+    # A model already registered (auto or curated) under its native
+    # provider-side name must resolve idempotently by that name too - a
+    # user who auto-registered "llama3.2:3b" and starts it again by the
+    # same bare name must not see "unknown model" just because the id it
+    # was registered under is "ollama/llama3.2:3b", not the bare name.
+    registry = _registry()
+    registry.models.append(
+        ModelEntry(
+            id="ollama/llama3.2:3b", family="discovered", provider_id="ollama",
+            model_name="llama3.2:3b", location="local", source="discovered",
+        )
+    )
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="ollama", model="llama3.2:3b",
+            direct_url="http://localhost:11434/v1/chat/completions", ok=True, error=None,
+        )
+        result = start_local_model(registry, "llama3.2:3b", state_path, registry_path=registry_path)
+    assert result.model_id == "ollama/llama3.2:3b"
+    mock_isolate.assert_called_once_with("ollama", env={"LLM_ISOLATE_OLLAMA_MODEL": "llama3.2:3b"})
 
 
 def _listing_registry() -> Registry:

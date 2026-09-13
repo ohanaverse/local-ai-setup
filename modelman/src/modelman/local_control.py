@@ -81,11 +81,28 @@ class LocalControlError(Exception):
     """Raised for user-facing `modelman start`/`modelman stop` failures."""
 
 
+class DiscoveredModelNeedsFamily(LocalControlError):
+    """Raised by start_local_model() when `model_id` matches an on-disk,
+    unregistered artifact but no `family` was supplied. The CLI catches
+    this, prompts the user, and retries with `family` set — nothing is
+    written to registry.toml/modelman.toml/LiteLLM before this is raised.
+    """
+
+    def __init__(self, provider_id: str, variant_id: str, suggested_families: list[str]):
+        self.provider_id = provider_id
+        self.variant_id = variant_id
+        self.suggested_families = suggested_families
+        super().__init__(
+            f"{provider_id}/{variant_id} is on disk but not registered — a family is required"
+        )
+
+
 @dataclass
 class StartResult:
     model_id: str
     already_running: bool
     direct_url: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -228,6 +245,118 @@ def _registered_pairs(registry: Registry) -> set[tuple[str, str]]:
     return {(m.provider_id, m.model_name) for m in registry.models}
 
 
+def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
+    """Unregistered on-disk artifacts, across every in-scope provider,
+    whose native name is exactly `name`."""
+    local_map = _provider_local_models(registry)
+    registered_pairs = _registered_pairs(registry)
+    return [
+        DiscoveredModel(
+            provider_id=provider_id, variant_id=variant_id,
+            path=local_model["path"], size_bytes=local_model.get("size_bytes"),
+        )
+        for (provider_id, variant_id), local_model in local_map.items()
+        if variant_id == name and (provider_id, variant_id) not in registered_pairs
+    ]
+
+
+def _register_discovered_model(
+    registry: Registry,
+    state: StateStore,
+    match: DiscoveredModel,
+    family: str,
+    registry_path: Path | None,
+    state_path: Path | None,
+    litellm_path: Path | None,
+) -> tuple[ModelEntry, list[str]]:
+    """Write a new registry.toml entry for `match`, mark it ready+exposed
+    in modelman.toml, and add its LiteLLM model_list row. Mutates `registry`
+    and `state` in place (the caller's in-memory copies) so the rest of
+    start_local_model's flow sees the new model immediately.
+    """
+    model_id = f"{match.provider_id}/{match.variant_id.replace('/', '--')}"
+    entry = ModelEntry(
+        id=model_id,
+        family=family,
+        provider_id=match.provider_id,
+        model_name=match.variant_id,
+        location=LOCATION_LOCAL,
+        source="discovered",
+    )
+    with locked_registry(registry_path) as fresh:
+        fresh.models.append(entry)
+    registry.models.append(entry)
+
+    model_state = ModelState(ready=True, disk_path=match.path, size_bytes=match.size_bytes)
+    with locked_state(state_path) as fresh_state:
+        fresh_state.set(model_id, model_state)
+    state.set(model_id, model_state)
+
+    try:
+        warnings = expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
+    except ExposeError as exc:
+        raise LocalControlError(f"discovered model {model_id} could not be exposed: {exc}") from exc
+    # expose_model() mutates state.models[model_id] in place (sets exposed)
+    # but never persists it - merge just this one key back, mirroring
+    # main.py's `expose` command.
+    with locked_state(state_path) as fresh_state:
+        fresh_state.models[model_id] = state.models[model_id]
+    return entry, warnings
+
+
+def _resolve_or_register(
+    registry: Registry,
+    state: StateStore,
+    model_id: str,
+    family: str | None,
+    registry_path: Path | None,
+    state_path: Path | None,
+    litellm_path: Path | None,
+) -> tuple[ModelEntry, list[str]]:
+    """Resolve `model_id` to a ModelEntry, trying — in order — a registry
+    id, an existing model's native provider-side name (so a discovered
+    model that was auto-registered under `<provider>/<name>` still
+    resolves when the user re-types its bare native name), and finally an
+    on-disk-but-unregistered artifact (which requires `family` and
+    registers it). Raises LocalControlError('unknown model: ...') if none
+    match, or DiscoveredModelNeedsFamily if the third case needs a family.
+    """
+    try:
+        return registry.model(model_id), []
+    except KeyError:
+        pass
+
+    native_matches = [
+        m
+        for m in registry.models
+        if m.model_name == model_id
+        and model_has_local_artifact(
+            m, next((p for p in registry.providers if p.id == m.provider_id), None)
+        )
+    ]
+    if len(native_matches) == 1:
+        return native_matches[0], []
+    if len(native_matches) > 1:
+        ids = ", ".join(sorted(m.id for m in native_matches))
+        raise LocalControlError(f"{model_id!r} matches multiple registered models ({ids}) — use the full model id")
+
+    discovered = _find_discovered(registry, model_id)
+    if not discovered:
+        raise LocalControlError(f"unknown model: {model_id}")
+    if len(discovered) > 1:
+        providers = ", ".join(sorted(m.provider_id for m in discovered))
+        raise LocalControlError(
+            f"{model_id!r} matches on-disk models from multiple providers ({providers}) — "
+            "register one manually to disambiguate"
+        )
+    if family is None:
+        match = discovered[0]
+        raise DiscoveredModelNeedsFamily(match.provider_id, match.variant_id, known_families(registry, state))
+    return _register_discovered_model(
+        registry, state, discovered[0], family, registry_path, state_path, litellm_path
+    )
+
+
 def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelInventory:
     """Live, three-way view of local models: registered models split into
     downloaded/not-downloaded by cross-referencing each in-scope provider's
@@ -281,10 +410,22 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
 
 
 def start_local_model(
-    registry: Registry, model_id: str, state_path: Path | None = None
+    registry: Registry,
+    model_id: str,
+    state_path: Path | None = None,
+    *,
+    family: str | None = None,
+    registry_path: Path | None = None,
+    litellm_path: Path | None = None,
 ) -> StartResult:
     """Stop whatever local model is running (if any) and start model_id,
     recording it as the new `[local].running_model` marker.
+
+    `model_id` may be a registry id, an existing model's native
+    provider-side name, or (with `family` set) the native name of an
+    on-disk artifact with no registry.toml entry yet — see
+    _resolve_or_register. Raises DiscoveredModelNeedsFamily when the third
+    case needs a family the caller hasn't supplied yet.
 
     Raises LocalControlError when model_id is unknown, not a local model,
     its provider cannot be isolated by bin/llm-isolate-provider, or the
@@ -297,14 +438,15 @@ def start_local_model(
     dead marker is cleared and the full start runs. A false probe negative
     only costs a stop+reload of an already-serving model.
     """
-    try:
-        model = registry.model(model_id)
-    except KeyError as exc:
-        raise LocalControlError(f"unknown model: {model_id}") from exc
+    state = load_state(state_path)
+    model, registration_warnings = _resolve_or_register(
+        registry, state, model_id, family, registry_path, state_path, litellm_path
+    )
+    resolved_id = model.id
 
     provider = next((p for p in registry.providers if p.id == model.provider_id), None)
     if not model_has_local_artifact(model, provider):
-        raise LocalControlError(f"{model_id} is a cloud model — modelman start only runs local models")
+        raise LocalControlError(f"{resolved_id} is a cloud model — modelman start only runs local models")
 
     if model.provider_id not in SUPPORTED_PROVIDER_IDS:
         raise LocalControlError(
@@ -340,13 +482,13 @@ def start_local_model(
 
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
     current = load_state(state_path).local.running_model
-    if current == model_id:
+    if current == resolved_id:
         if _probe_running(model.provider_id, model.model_name, probe_origin):
-            return StartResult(model_id=model_id, already_running=True)
+            return StartResult(model_id=resolved_id, already_running=True, warnings=registration_warnings)
         # Marker names this model but nothing is serving it — clear the dead
         # marker before the restart so a mid-flight wt launch doesn't gate
         # on a model that just failed its probe.
-        _clear_stale_marker((model_id,), state_path)
+        _clear_stale_marker((resolved_id,), state_path)
 
     try:
         stop_all_local_providers()
@@ -358,23 +500,28 @@ def start_local_model(
     try:
         result = isolate_provider(model.provider_id, *extra_args, env=env)
     except BenchmarkError as exc:
-        _clear_stale_marker((current or "", model_id), state_path)
+        _clear_stale_marker((current or "", resolved_id), state_path)
         raise LocalControlError(
-            f"failed to start {model_id}: {exc} — cleared the stale "
+            f"failed to start {resolved_id}: {exc} — cleared the stale "
             "[local].running_model marker (the previously running model was "
             "already stopped)"
         ) from exc
     if not result.ok:
-        _clear_stale_marker((current or "", model_id), state_path)
+        _clear_stale_marker((current or "", resolved_id), state_path)
         raise LocalControlError(
-            f"failed to start {model_id}: {result.error or 'unknown error'} — "
+            f"failed to start {resolved_id}: {result.error or 'unknown error'} — "
             "cleared the stale [local].running_model marker (the previously "
             "running model was already stopped)"
         )
 
     with locked_state(state_path) as fresh:
-        fresh.local.running_model = model_id
-    return StartResult(model_id=model_id, already_running=False, direct_url=result.direct_url or None)
+        fresh.local.running_model = resolved_id
+    return StartResult(
+        model_id=resolved_id,
+        already_running=False,
+        direct_url=result.direct_url or None,
+        warnings=registration_warnings,
+    )
 
 
 def stop_local_model(state_path: Path | None = None) -> StopResult:
