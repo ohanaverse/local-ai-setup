@@ -2698,6 +2698,32 @@ def test_cost_changed_none_to_some_is_a_change():
     assert _cost_changed(None, None) is False
 
 
+@pytest.mark.asyncio
+async def test_add_dialog_defaults_to_queued_move_over_registry_family(tmp_path, monkeypatch):
+    # Regression for a review finding: _current_family() (which defaults the
+    # Add dialog's family Select) read entry.family directly, unlike the
+    # edit dialog's own default (action_edit_model) which already prefers
+    # a queued-but-unapplied move. With a move queued for the row under the
+    # cursor, pressing 'a' must default to the queued family, not the
+    # model's still-on-disk one, or the two dialogs disagree about "what
+    # family am I looking at".
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        app.screen.registry.families.append(FamilyEntry(name="gemma4"))
+        app.screen.queued_moves["ollama/x"] = "gemma4"
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        family_sel = app.screen.query_one("#family-select", Select)
+        assert family_sel.value == "gemma4"
+
+
 def test_provider_can_download_treats_mtplx_as_flag_only():
     """MTPLX has a registered Provider class, but modelman never runs a
     download for it — the TUI ready toggle must be flag-only, not routed

@@ -757,9 +757,13 @@ class ModelScreen(Screen[None]):
         """The family of the model under the cursor, or None (empty table,
         or nothing to key off of). Used to default the Add dialog's family
         Select to "whatever I'm looking at" now that there's no
-        family-scoped screen to inherit it from."""
+        family-scoped screen to inherit it from. Prefers a queued-but-
+        unapplied move over the registry's family, matching the edit
+        dialog's default (action_edit_model)."""
         entry = self._current_entry()
-        return entry.family if entry is not None else None
+        if entry is None:
+            return None
+        return self.queued_moves.get(entry.id, entry.family)
 
     def action_add_model(self) -> None:
         from .forms import ModelForm
