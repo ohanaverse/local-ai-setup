@@ -12,12 +12,14 @@ import pytest
 from modelman.benchmark.isolation import IsolateResult
 from modelman.local_control import (
     LocalControlError,
+    LocalModelStatus,
     _name_matches,
+    list_local_exposed_models,
     start_local_model,
     stop_local_model,
 )
 from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-from modelman.state import StateStore, load_state, save_state
+from modelman.state import ModelState, StateStore, load_state, save_state
 
 
 def _registry() -> Registry:
@@ -354,3 +356,94 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
     )
     assert result.direct_url == "http://localhost:8003/v1/chat/completions"
     assert load_state(state_path).local.running_model == "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+
+
+def _listing_registry() -> Registry:
+    """Two local models (one exposed+ready, one not exposed) plus one
+    exposed cloud model, for list_local_exposed_models tests."""
+    return Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")),
+            ProviderEntry(
+                id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+            ),
+        ],
+        models=[
+            ModelEntry(
+                id="ollama/exposed-model",
+                family="qwen3.8",
+                provider_id="ollama",
+                model_name="exposed-model",
+            ),
+            ModelEntry(
+                id="ollama/unexposed-model",
+                family="qwen3.8",
+                provider_id="ollama",
+                model_name="unexposed-model",
+            ),
+            ModelEntry(
+                id="openrouter/z-ai/glm-5.3-flash",
+                family="glm",
+                provider_id="openrouter",
+                model_name="z-ai/glm-5.3-flash",
+                location="cloud",
+            ),
+        ],
+    )
+
+
+def _listing_state(running_model: str | None = None) -> StateStore:
+    store = StateStore()
+    store.local.running_model = running_model
+    store.set("ollama/exposed-model", ModelState(ready=True, exposed=True))
+    store.set("ollama/unexposed-model", ModelState(ready=True, exposed=False))
+    store.set("openrouter/z-ai/glm-5.3-flash", ModelState(ready=False, exposed=True))
+    return store
+
+
+def test_list_local_exposed_models_filters_to_local_and_exposed():
+    # Only a local model that is both ready and exposed belongs in the
+    # list `modelman start` (no args) prints — the unexposed local model
+    # and the exposed *cloud* model must both be excluded, since neither
+    # is something `modelman start` can run locally.
+    statuses = list_local_exposed_models(_listing_registry(), _listing_state())
+    assert [s.model_id for s in statuses] == ["ollama/exposed-model"]
+    assert statuses[0].running is False
+
+
+def test_list_local_exposed_models_marks_running_when_probe_confirms():
+    # The marker alone isn't proof of "running" (see start_local_model's
+    # own idempotency check) - the listed model must be probed too.
+    state = _listing_state(running_model="ollama/exposed-model")
+    with patch("modelman.local_control._probe_running", return_value=True) as mock_probe:
+        statuses = list_local_exposed_models(_listing_registry(), state)
+    mock_probe.assert_called_once()
+    assert statuses == [LocalModelStatus(model_id="ollama/exposed-model", running=True)]
+
+
+def test_list_local_exposed_models_marker_probe_fails_shows_not_running():
+    # A marker naming a dead process must not be trusted, but listing is
+    # read-only - it must not clear the stale marker (that stays
+    # start_local_model's job, run only when the user actually starts one).
+    state = _listing_state(running_model="ollama/exposed-model")
+    with patch("modelman.local_control._probe_running", return_value=False):
+        statuses = list_local_exposed_models(_listing_registry(), state)
+    assert statuses[0].running is False
+    assert state.local.running_model == "ollama/exposed-model"
+
+
+def test_list_local_exposed_models_empty_when_none_exposed():
+    registry = _listing_registry()
+    state = StateStore()  # nothing exposed
+    assert list_local_exposed_models(registry, state) == []
+
+
+def test_list_local_exposed_models_sorted_by_id():
+    registry = _listing_registry()
+    registry.models.append(
+        ModelEntry(id="ollama/aaa-model", family="qwen3.8", provider_id="ollama", model_name="aaa-model")
+    )
+    state = _listing_state()
+    state.set("ollama/aaa-model", ModelState(ready=True, exposed=True))
+    statuses = list_local_exposed_models(registry, state)
+    assert [s.model_id for s in statuses] == ["ollama/aaa-model", "ollama/exposed-model"]

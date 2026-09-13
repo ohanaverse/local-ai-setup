@@ -35,11 +35,12 @@ from .benchmark.isolation import (
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
 )
+from .litellm import is_effectively_exposed
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
 from .providers.mtplx import MTPLX_BASE
 from .registry import Registry, base_origin, model_has_local_artifact
-from .state import load_state, locked_state
+from .state import StateStore, load_state, locked_state
 
 # Probe endpoint fallbacks for providers whose registry entry lacks an
 # auth.base_url (mirroring _DEFAULT_PROVIDER_TEMPLATES in registry.py).
@@ -71,6 +72,12 @@ class StartResult:
 class StopResult:
     # The marker that was cleared, or None if nothing was running.
     stopped_model_id: str | None
+
+
+@dataclass
+class LocalModelStatus:
+    model_id: str
+    running: bool
 
 
 def _ollama_loaded_names() -> list[str]:
@@ -143,6 +150,35 @@ def _clear_stale_marker(expected: tuple[str, ...], state_path: Path | None) -> N
                 fresh.local.running_model = None
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
+
+
+def list_local_exposed_models(registry: Registry, state: StateStore) -> list[LocalModelStatus]:
+    """Local models with the expose flag effectively on, sorted by id.
+
+    `modelman start` (no model_id) prints this list. Read-only: unlike
+    start_local_model's own idempotency check, a marker that fails its
+    probe is reported as not-running but never cleared here — that
+    mutation stays start_local_model's job, run only when the user
+    actually starts a model.
+    """
+    candidates = []
+    for model in registry.models:
+        provider = next((p for p in registry.providers if p.id == model.provider_id), None)
+        if not model_has_local_artifact(model, provider):
+            continue
+        if not is_effectively_exposed(model, state, registry):
+            continue
+        candidates.append((model, provider))
+
+    running_marker = state.local.running_model
+    statuses = []
+    for model, provider in sorted(candidates, key=lambda pair: pair[0].id):
+        running = False
+        if model.id == running_marker:
+            probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+            running = _probe_running(model.provider_id, model.model_name, probe_origin)
+        statuses.append(LocalModelStatus(model_id=model.id, running=running))
+    return statuses
 
 
 def start_local_model(
