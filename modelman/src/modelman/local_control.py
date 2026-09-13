@@ -38,9 +38,10 @@ from .benchmark.isolation import (
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
 )
-from .litellm import ExposeError, default_litellm_config_path, expose_model, is_effectively_exposed
+from .litellm import ExposeError, default_litellm_config_path, expose_model
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
+from .providers.base import LocalModel
 from .providers.mtplx import MTPLX_BASE
 from .providers.registry import ProviderRegistry
 from .registry import (
@@ -109,12 +110,6 @@ class StartResult:
 class StopResult:
     # The marker that was cleared, or None if nothing was running.
     stopped_model_id: str | None
-
-
-@dataclass
-class LocalModelStatus:
-    model_id: str
-    running: bool
 
 
 @dataclass
@@ -214,7 +209,7 @@ def _clear_stale_marker(expected: tuple[str, ...], state_path: Path | None) -> N
         pass  # the LocalControlError about the failed start is the user's answer
 
 
-def _provider_local_models(registry: Registry) -> dict[tuple[str, str], dict]:
+def _provider_local_models(registry: Registry) -> dict[tuple[str, str], LocalModel]:
     """(provider_id, variant_id) -> LocalModel for every artifact every
     in-scope, registered, live provider currently reports on disk.
 
@@ -225,7 +220,7 @@ def _provider_local_models(registry: Registry) -> dict[tuple[str, str], dict]:
     both the `start` listing and the start-by-native-name fallback, and
     neither should go blind because one provider is unreachable.
     """
-    found: dict[tuple[str, str], dict] = {}
+    found: dict[tuple[str, str], LocalModel] = {}
     for entry in registry.providers:
         if entry.id not in DISCOVERY_PROVIDER_IDS:
             continue

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` lists local models with expose on, indicating which one is running).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (download/delete/expose), and apply them on exit. CLI subcommands: `download` (TUI at a family), `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered, each cross-referenced against every in-scope provider's `Provider.list_local()` rather than trusting only cached state; `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
 
 ## Monorepo context
 
@@ -289,6 +289,13 @@ id in `modelman.toml`'s `[local].running_model` table
 (`wt/internal/config/modelman.go`, `wt/internal/localgate`) to filter its
 model picker to cloud models plus this one verified-running local model —
 see `wt/CLAUDE.md`'s "Local-model gate" section.
+
+`modelman start`'s no-arg listing and its discovered-model auto-register
+path (`DISCOVERY_PROVIDER_IDS` in `local_control.py`) query each
+in-scope local provider's `list_local()` live rather than trusting only
+`modelman.toml`'s cached `ready` flag — see
+`../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`
+(monorepo-root docs).
 
 ## Foreign agent configs
 

@@ -15,7 +15,6 @@ from modelman.local_control import (
     DiscoveredModelNeedsFamily,
     InventoryEntry,
     LocalControlError,
-    LocalModelStatus,
     _name_matches,
     inventory_local_models,
     start_local_model,
@@ -373,9 +372,8 @@ def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
     mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]}
-    with _patch_provider_local_models(mapping):
-        with pytest.raises(DiscoveredModelNeedsFamily) as excinfo:
-            start_local_model(registry, "llama3.2:3b", registry_path=registry_path)
+    with _patch_provider_local_models(mapping), pytest.raises(DiscoveredModelNeedsFamily) as excinfo:
+        start_local_model(registry, "llama3.2:3b", registry_path=registry_path)
     assert excinfo.value.provider_id == "ollama"
     assert excinfo.value.variant_id == "llama3.2:3b"
     # No side effects: nothing is written and nothing is started when the
@@ -441,9 +439,8 @@ def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
         "ollama": [{"variant_id": "shared-name", "path": "ollama:shared-name", "size_bytes": None}],
         "mtplx": [{"variant_id": "shared-name", "path": "/mtplx/shared-name", "size_bytes": None}],
     }
-    with _patch_provider_local_models(mapping):
-        with pytest.raises(LocalControlError, match="multiple providers"):
-            start_local_model(registry, "shared-name", registry_path=registry_path)
+    with _patch_provider_local_models(mapping), pytest.raises(LocalControlError, match="multiple providers"):
+        start_local_model(registry, "shared-name", registry_path=registry_path)
 
 
 def test_start_native_name_resolves_existing_registered_model_without_reregistering(tmp_path):
