@@ -72,5 +72,7 @@ done
 
 echo
 echo "Output written to: $out_dir"
-echo "Next: register it in modelman — TUI → Add model → provider 'omlx' →"
-echo "local-path field → paste '$out_dir' (or its absolute path)."
+echo "Next: register it in modelman by hand-editing registry.toml (the TUI's"
+echo "omlx dialog has no local-path field — add an [[models]] entry with"
+echo "provider_id = \"omlx\" and a [models.fetch] local_path = \"$out_dir\""
+echo "(absolute path). See docs/guides/10-mlx-lm-quantization.md."

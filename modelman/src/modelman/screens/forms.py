@@ -31,8 +31,13 @@ HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtpl
 # mutually-exclusive local-path Input for user-produced artifacts. MTPLX is
 # deliberately excluded: it discovers models in its own ~/.mtplx/models cache and
 # never accepts a user-supplied local_path, so showing the field would suggest
-# an unsupported workflow.
-LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx")
+# an unsupported workflow. omlx is likewise excluded: its "Local path" field
+# read as "which cache am I pointing at" rather than its actual meaning
+# ("register a directory this dialog didn't produce, instead of an HF repo"),
+# so it's a manual registry.toml edit now (see bin/mlx-quantize's printed next
+# step) rather than a dialog field. The omlx provider's local_path support
+# (providers/omlx.py) is untouched — only this dialog's Input is gone.
+LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp",)
 
 
 def default_form_kind(provider: str) -> str:
@@ -766,6 +771,18 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         the model string is `repo` plus `/file` if a single filename is
         stored. For ollama it's just the tag. For native providers it's
         the model name. For openrouter it's the plain model string.
+
+        Falls back to `name` when an HF provider's entry has neither
+        repo nor local_path data at all (fetch is None) — e.g. a
+        discovery-created mtplx entry never round-tripped through this
+        dialog's _submit(). Every VariantSpec has `name` populated
+        unconditionally, unlike repo/files. A local_path-sourced entry
+        (repo unset but local_path set) is left blank only when the
+        provider's local-only form still shows the mutually-exclusive
+        local-path Input to prefill it (see LOCAL_PATH_PROVIDERS) —
+        otherwise (e.g. omlx, whose dialog field was removed) that
+        Input isn't shown either, so falling back to `name` keeps some
+        identifier visible instead of leaving the dialog blank.
         """
         provider = v.get("provider")
         if provider == "ollama" or provider not in HF_REPO_PROVIDERS:
@@ -774,7 +791,11 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         files = v.get("files") or []
         if files:
             return f"{repo}/{files[0]}"
-        return repo
+        if repo:
+            return repo
+        if v.get("local_path") and ModelForm._supports_local_path(provider):
+            return repo
+        return v.get("name") or ""
 
     @staticmethod
     def _reconstruct_local_path(v: VariantSpec) -> str:

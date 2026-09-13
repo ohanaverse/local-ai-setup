@@ -6,7 +6,7 @@ This guide, like [09-agent-benchmarks](09-agent-benchmarks.md), embeds no `expos
 
 Two independent features, both built on the same `mlx_lm.*` tooling bundled inside the omlx Homebrew keg:
 
-- **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; modelman registers the output directory as a `local_path` on the `omlx` provider. modelman deliberately never runs these tools itself — it's register-only.
+- **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; you register the output directory as a `local_path` on the `omlx` provider by hand-editing `registry.toml` (the TUI's omlx dialog has no local-path field — see Step 2). modelman deliberately never runs these tools itself — it's register-only.
 - **`mlx_lm_server` speculative decoding** — a target model + a same-tokenizer draft model served together via `mlx_lm.server --draft-model`, isolated and exposed through LiteLLM like any other local provider, with **zero `wt` code changes** (`wt`'s Go decoder already ignores fields it doesn't know about).
 
 ## Prerequisites
@@ -21,8 +21,9 @@ Two independent features, both built on the same `mlx_lm.*` tooling bundled insi
 # from: /Users/keith/github/ohanaverse/local-ai-setup
 bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/some-model-4bit
 # → Output written to: /tmp/some-model-4bit
-#   Next: register it in modelman — TUI → Add model → provider 'omlx' →
-#   local-path field → paste '/tmp/some-model-4bit' (or its absolute path).
+#   Next: register it in modelman by hand-editing registry.toml — add an
+#   [[models]] entry with provider_id = "omlx" and a [models.fetch]
+#   local_path = "/tmp/some-model-4bit" (absolute path).
 
 bin/llm-isolate-provider mlx_lm_server org/target-repo org/draft-repo
 # → {"provider":"mlx_lm_server","model":"org/target-repo (+draft org/draft-repo)",
@@ -47,7 +48,21 @@ bin/mlx-quantize dwq --model <hf-repo-or-local-path> [--mlx-path <out-dir>]
 
 ### 2. Register a local-path model (feature 1)
 
-TUI → Add model → provider `omlx` → local-path field → paste the output directory from Step 1 (or any mlx-lm directory you already produced). `modelman expose` it, and it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
+The omlx dialog's "Add model" field only takes an HF repo id — there is no local-path Input for a plain (non-dual-model) omlx entry, since that field read as a cache-location choice rather than its actual meaning. Register a `local_path`-sourced omlx model by hand-editing `registry.toml` instead:
+
+```toml
+[[models]]
+id = "omlx/<name>"            # e.g. "omlx/some-model-4bit"
+family = "<existing-family>"
+provider_id = "omlx"
+model_name = "<name>"         # basename you'll recognize in the TUI's model list
+location = "local"
+
+[models.fetch]
+local_path = "/tmp/some-model-4bit"   # absolute path to Step 1's output directory
+```
+
+Then `modelman sync` (or just reopen the TUI) to pick up the new entry, `modelman expose <id>` it, and it's usable through `wt` and `modelman benchmark` exactly like any other omlx model.
 
 ### 3. Register a target+draft pairing (feature 2)
 

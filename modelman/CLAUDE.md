@@ -280,7 +280,8 @@ Shared helpers for this live in `registry.py`: `LOCATION_LOCAL`, `LOCATION_CLOUD
 `modelman start <model_id>` / `modelman stop` are the only sanctioned way
 to start or stop a local model for normal (non-benchmark) usage — see
 `src/modelman/local_control.py` and
-`docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md`.
+`../docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md`
+(monorepo-root docs, not modelman's own `docs/superpowers/`).
 Both delegate the actual process isolation to `bin/llm-isolate-provider`
 (the same helper `modelman benchmark` uses) and record the running model's
 id in `modelman.toml`'s `[local].running_model` table
