@@ -39,6 +39,14 @@ HF_REPO_PROVIDERS: tuple[str, ...] = ("llamacpp", "omlx", "mlx_lm_server", "mtpl
 # (providers/omlx.py) is untouched — only this dialog's Input is gone.
 LOCAL_PATH_PROVIDERS: tuple[str, ...] = ("llamacpp",)
 
+# Sentinel Select value for "type a new family name instead of picking an
+# existing one" (add mode only — edit mode keeps family display-only/locked,
+# per issue #52's identity-field immutability). Distinct from its on-screen
+# label so a real family literally named "+ New family…" could never collide
+# with it.
+NEW_FAMILY_VALUE = "__new_family__"
+NEW_FAMILY_LABEL = "+ New family…"
+
 
 def default_form_kind(provider: str) -> str:
     """Default ModelForm 'kind' for a provider id when the caller's
@@ -325,111 +333,6 @@ class ModelmanModal(ModalScreen[T]):
         calls this after mounting deferred buttons."""
 
 
-class AddFamilyModal(ModelmanModal[tuple[str, str] | None]):
-    """Prompt for a family name and optional display name.
-
-    Returns `(family, display_name)` on Create — display_name falls
-    back to family when left blank. FamilyScreen owns the StateStore
-    mutation + save after this dismisses; the modal itself performs
-    no disk I/O (mirrors ModelForm dismissing `ModelFormResult(spec,
-    family)` for ModelScreen to apply to the Registry — while this
-    modal itself returns its plain `(family, display_name)` tuple).
-    """
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label("Family name (required):")
-            yield Input(id="family-name", placeholder="e.g. ornith-1.5")
-            yield Label("Display name (optional):")
-            yield Input(id="display-name", placeholder="e.g. Ornith 1.5")
-            yield self._button_row(
-                [
-                    Button("Cancel", id="cancel", variant="default"),
-                    Button("Create", id="create", variant="primary"),
-                ]
-            )
-
-    def _modal_on_mount(self) -> None:
-        # Drop the cursor in the required field so the user can type
-        # without an extra Tab press.
-        self.query_one("#family-name", Input).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(None)
-            return
-        self._submit()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._submit()
-
-    def _submit(self) -> None:
-        name = self.query_one("#family-name", Input).value.strip()
-        display = self.query_one("#display-name", Input).value.strip()
-        if not name:
-            return
-        self.dismiss((name, display or name))
-
-
-class EditFamilyModal(ModelmanModal[str | None]):
-    """Edit the display_name of an existing family.
-
-    The family slug is intentionally NOT editable here — changing it
-    would orphan cross-references from models keyed by family. The
-    slug is shown read-only so the user knows which family they're
-    editing.
-
-    Returns the new display_name on Save (falls back to the family
-    slug if blanked, matching AddFamilyModal); None on Cancel.
-    FamilyScreen owns the StateStore mutation + save.
-    """
-
-    def __init__(self, family: str, display_name: str) -> None:
-        super().__init__()
-        self._family = family
-        self._display_name = display_name
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label("Family (cannot be changed):")
-            yield Input(
-                value=self._family,
-                id="family-name",
-                disabled=True,
-                placeholder="e.g. ornith-1.5",
-            )
-            yield Label("Display name (optional):")
-            yield Input(
-                value=self._display_name,
-                id="display-name",
-                placeholder="e.g. Ornith 1.5",
-            )
-            yield self._button_row(
-                [
-                    Button("Cancel", id="cancel", variant="default"),
-                    Button("Save", id="save", variant="primary"),
-                ]
-            )
-
-    def _modal_on_mount(self) -> None:
-        # Drop the cursor in the editable field so the user can edit
-        # the display name without an extra Tab press.
-        self.query_one("#display-name", Input).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(None)
-            return
-        self._submit()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._submit()
-
-    def _submit(self) -> None:
-        display = self.query_one("#display-name", Input).value.strip()
-        self.dismiss(display or self._family)
-
-
 class ConfirmModal(ModelmanModal[bool]):
     """Generic yes/no confirmation. Default is No."""
 
@@ -611,15 +514,27 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
 
         with Vertical():
             yield Label("Family:")
-            # Display-only: the family is owned by the screen the dialog
-            # was opened from; changing it here would silently re-home
-            # the model across cross-referenced keys.
+            # Add mode: the user may pick any known family or type a new one
+            # (the NEW_FAMILY_VALUE sentinel reveals #new-family-input below).
+            # Edit mode keeps this display-only/disabled — provider, model,
+            # location, and family are all immutable once a model is added
+            # (issue #52); re-homing an existing model to another family is
+            # not exposed here.
+            family_options = [(f, f) for f in self._families]
+            if not editing:
+                family_options.append((NEW_FAMILY_LABEL, NEW_FAMILY_VALUE))
+            initial_family = self._family if self._family in self._families else self._families[0]
             yield Select(
-                options=[(f, f) for f in self._families],
-                value=(self._family if self._family in self._families else self._families[0]),
+                options=family_options,
+                value=initial_family,
                 allow_blank=False,
-                disabled=True,
+                disabled=editing,
                 id="family-select",
+            )
+            yield Label("New family name:", classes="pricing-label", id="new-family-label")
+            yield Input(
+                placeholder="e.g. ornith-1.5",
+                id="new-family-input",
             )
             yield Label("Provider:")
             yield Select(
@@ -845,6 +760,17 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             kind == "local-only" and self._supports_local_path(self._initial_provider)
         )
         self._set_dual_model_visibility(kind == "dual-model")
+        # New-family input starts hidden — nothing selects the sentinel value
+        # until the user picks it from the family Select.
+        self._set_new_family_visibility(False)
+
+    def _set_new_family_visibility(self, show: bool) -> None:
+        """Show/hide the "New family name" label + Input (add mode only)."""
+        try:
+            self.query_one("#new-family-label", Label).display = show
+            self.query_one("#new-family-input", Input).display = show
+        except NoMatches:
+            return
 
     @staticmethod
     def _supports_local_path(provider: str) -> bool:
@@ -925,7 +851,15 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         """In add mode, changing the provider must re-lock location and
         update the model input placeholder to match the new provider's
-        expected format (native vs HF vs ollama vs cloud-only vs dual-model)."""
+        expected format (native vs HF vs ollama vs cloud-only vs dual-model).
+        Also handles the family Select's "+ New family…" sentinel, which
+        reveals a text Input for the new name."""
+        if event.select.id == "family-select":
+            show = event.value == NEW_FAMILY_VALUE
+            self._set_new_family_visibility(show)
+            if show:
+                self.query_one("#new-family-input", Input).focus()
+            return
         if event.select.id != "provider-select":
             return
         # Edit mode: provider is locked (disabled Select), but Textual may
@@ -983,6 +917,20 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
     def _default_kind(self, provider: str) -> str:
         """Fallback kind when the caller didn't supply provider_kinds."""
         return default_form_kind(provider)
+
+    def _resolve_family(self) -> str | None:
+        """Read the family Select, resolving the NEW_FAMILY_VALUE sentinel
+        to the typed name in #new-family-input. Returns None (having
+        already called _show_error) when the sentinel is selected but the
+        input is blank."""
+        family = str(self.query_one("#family-select", Select).value)
+        if family != NEW_FAMILY_VALUE:
+            return family
+        new_family = self.query_one("#new-family-input", Input).value.strip()
+        if not new_family:
+            self._show_error("new family name is required")
+            return None
+        return new_family
 
     def _parse_cost_from_fields(self) -> Cost | None:
         """Build the combined per-token/subscription Cost from the pricing
@@ -1099,7 +1047,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             spec["model_info"] = auto_detect_model_info(name)
         else:
             spec["model_info"] = (self._variant or {}).get("model_info")
-        family = str(self.query_one("#family-select", Select).value)
+        family = self._resolve_family()
+        if family is None:
+            return
         self.dismiss(ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at))
 
     def _submit_dual_model(self, provider: str) -> None:
@@ -1162,7 +1112,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             "quantization": quantization,
             "model_info": (self._variant or {}).get("model_info"),
         }
-        family = str(self.query_one("#family-select", Select).value)
+        family = self._resolve_family()
+        if family is None:
+            return
         self.dismiss(ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at))
 
 

@@ -24,6 +24,7 @@ from modelman.registry import (
     save_registry,
 )
 from modelman.screens.forms import (
+    NEW_FAMILY_VALUE,
     ModelForm,
     ModelFormResult,
     _price_str,
@@ -798,11 +799,13 @@ async def test_modelform_shows_family_select_with_all_families():
         assert str(sel.value) == "gemma4:26b-mlx"
         # Select._options stores (label, value) tuples (SelectOption is
         # that tuple type in Textual 8.2.8); private but stable and far
-        # simpler than driving ArrowDown.
+        # simpler than driving ArrowDown. Add mode appends the "new
+        # family" sentinel after the caller's families.
         assert [str(value) for _, value in sel._options] == [
             "deepseek-v4",
             "gemma4",
             "gemma4:26b-mlx",
+            NEW_FAMILY_VALUE,
         ]
 
 
@@ -822,7 +825,11 @@ async def test_modelform_prepends_current_family_when_missing():
         app.push_screen(form)
         await pilot.pause()
         sel = app.screen.query_one("#family-select", Select)
-        assert [str(value) for _, value in sel._options] == ["gemma4:26b-mlx", "gemma4"]
+        assert [str(value) for _, value in sel._options] == [
+            "gemma4:26b-mlx",
+            "gemma4",
+            NEW_FAMILY_VALUE,
+        ]
         assert str(sel.value) == "gemma4:26b-mlx"
 
 
@@ -846,6 +853,7 @@ async def test_modelform_family_select_is_sorted_and_does_not_prepend():
             "deepseek-v4",
             "gemma4",
             "gemma4:26b-mlx",
+            NEW_FAMILY_VALUE,
         ]
         assert str(sel.value) == "gemma4:26b-mlx"
 
@@ -861,7 +869,7 @@ async def test_modelform_family_select_defaults_when_no_families_passed():
         app.push_screen(form)
         await pilot.pause()
         sel = app.screen.query_one("#family-select", Select)
-        assert [str(value) for _, value in sel._options] == ["unknown"]
+        assert [str(value) for _, value in sel._options] == ["unknown", NEW_FAMILY_VALUE]
 
 
 @pytest.mark.asyncio
@@ -922,6 +930,88 @@ async def test_submit_returns_family_switched_in_the_select(stub_ollama_caps):
     result = dismissed[0]
     assert isinstance(result, ModelFormResult)
     assert result.family == "gemma4"
+
+
+@pytest.mark.asyncio
+async def test_modelform_new_family_sentinel_reveals_input(stub_ollama_caps):
+    """Picking "+ New family…" must reveal the new-family text Input —
+    otherwise the user has no way to type the name it implies they can."""
+    form = ModelForm(providers=["ollama"], families=["gemma4"], family="gemma4")
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        assert app.screen.query_one("#new-family-input", Input).display is False
+        sel = app.screen.query_one("#family-select", Select)
+        sel.value = NEW_FAMILY_VALUE
+        await pilot.pause()
+        assert app.screen.query_one("#new-family-input", Input).display is True
+
+
+@pytest.mark.asyncio
+async def test_submit_with_new_family_sentinel_uses_typed_name(stub_ollama_caps):
+    """The whole point of the sentinel: submitting with it selected must
+    resolve to whatever the user typed, not the sentinel value itself."""
+    form = ModelForm(providers=["ollama"], families=["gemma4"], family="gemma4")
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#family-select", Select).value = NEW_FAMILY_VALUE
+        await pilot.pause()
+        app.screen.query_one("#new-family-input", Input).value = "ornith-1.5"
+        _fill_model(app, "ornith-1.5:35b")
+        await _submit(app, pilot)
+        await pilot.pause()
+
+    result = dismissed[0]
+    assert isinstance(result, ModelFormResult)
+    assert result.family == "ornith-1.5"
+
+
+@pytest.mark.asyncio
+async def test_submit_with_new_family_sentinel_blank_shows_error(stub_ollama_caps):
+    """A blank new-family name must not silently submit as the literal
+    sentinel string — the dialog stays open with an error instead."""
+    form = ModelForm(providers=["ollama"], families=["gemma4"], family="gemma4")
+    dismissed: list = []
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, dismissed.append)
+        await pilot.pause()
+        app.screen.query_one("#family-select", Select).value = NEW_FAMILY_VALUE
+        await pilot.pause()
+        _fill_model(app, "ornith-1.5:35b")
+        await _submit(app, pilot)
+        await pilot.pause()
+        assert _rendered_error(app) == "new family name is required"
+
+    assert dismissed == []
+
+
+@pytest.mark.asyncio
+async def test_modelform_edit_mode_has_no_new_family_sentinel():
+    """Edit mode's family Select stays display-only with no sentinel —
+    re-homing an existing model isn't exposed from this dialog."""
+    variant: VariantSpec = {"id": "ollama/a", "provider": "ollama", "name": "a"}
+    form = ModelForm(
+        providers=["ollama"],
+        variant=variant,
+        families=["gemma4"],
+        family="gemma4",
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        sel = app.screen.query_one("#family-select", Select)
+        assert sel.disabled
+        assert [str(value) for _, value in sel._options] == ["gemma4"]
 
 
 @pytest.mark.asyncio
@@ -1140,32 +1230,6 @@ def _focused_id(app: ModelmanApp) -> str | None:
 
 
 @pytest.mark.asyncio
-async def test_add_family_modal_buttons_and_focus():
-    from modelman.screens.forms import AddFamilyModal
-
-    modal = AddFamilyModal()
-    async with ModelmanApp().run_test() as pilot:
-        await pilot.pause()
-        pilot.app.push_screen(modal)
-        await pilot.pause()
-        assert _button_ids(pilot.app) == ["cancel", "create"]
-        assert _focused_id(pilot.app) == "family-name"
-
-
-@pytest.mark.asyncio
-async def test_edit_family_modal_buttons_and_focus():
-    from modelman.screens.forms import EditFamilyModal
-
-    modal = EditFamilyModal(family="ornith", display_name="Ornith")
-    async with ModelmanApp().run_test() as pilot:
-        await pilot.pause()
-        pilot.app.push_screen(modal)
-        await pilot.pause()
-        assert _button_ids(pilot.app) == ["cancel", "save"]
-        assert _focused_id(pilot.app) == "display-name"
-
-
-@pytest.mark.asyncio
 async def test_modelform_buttons_and_focus():
     form = ModelForm(providers=["ollama"])
     async with ModelmanApp().run_test() as pilot:
@@ -1344,24 +1408,6 @@ def test_parse_subscription_fields_bad_period_raises():
 def test_parse_subscription_fields_negative_price_raises():
     with pytest.raises(ValueError, match="subscription_price"):
         parse_subscription_fields(price="-5", period="month")
-
-
-@pytest.mark.asyncio
-async def test_edit_family_modal_escape_from_disabled_input_dismisses():
-    """Escape must cancel even when the read-only family-name Input is focused."""
-    from modelman.screens.forms import EditFamilyModal
-
-    modal = EditFamilyModal(family="ornith", display_name="Ornith")
-    dismissed: list = []
-    async with ModelmanApp().run_test() as pilot:
-        await pilot.pause()
-        pilot.app.push_screen(modal, dismissed.append)
-        await pilot.pause()
-        modal.query_one("#family-name").focus()
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-    assert dismissed == [None]
 
 
 # ---------------------------------------------------------------------------
