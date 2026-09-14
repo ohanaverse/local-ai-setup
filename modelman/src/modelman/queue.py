@@ -292,6 +292,36 @@ class PendingChanges:
         self._touched_model_ids.add(model_id)
         emit(done_tag)
 
+    def _persist(self, emit: EventFn) -> None:
+        """Save registry.toml and merge this run's touched state rows onto
+        a freshly-loaded modelman.toml. Called once at the normal end of
+        apply(), and again (best-effort) from the exception safety net
+        below if a BaseException propagates out of apply() early — so an
+        already-completed delete or move from this same batch is not lost
+        just because a later step raised or was interrupted.
+        """
+        emit("save:start")
+        try:
+            save_registry(self.registry, self.registry_path)
+            with locked_state(self.state_path) as fresh_state:
+                for mid in self._touched_model_ids:
+                    if mid in self.state.models:
+                        fresh_state.set(mid, self.state.get(mid))
+                    else:
+                        # The deletes loop removed this id from self.state —
+                        # "touching" it means removal, so mirror that on the
+                        # fresh store. Writing self.state.get(mid) here would
+                        # insert a default (ready=False) entry and resurrect
+                        # the row this apply just deleted.
+                        fresh_state.models.pop(mid, None)
+                for family in self._forgotten_families:
+                    fresh_state.forget_family(family)
+            emit("save:done")
+        except Exception as exc:  # noqa: BLE001
+            reason = _reason(exc)
+            self.failures.append(f"save: {exc}")
+            emit(f"save:fail|{reason}")
+
     def cancel(self) -> None:
         """Request cancellation of an in-progress apply().
 
@@ -350,281 +380,274 @@ class PendingChanges:
             emit("apply:done")
             return
 
-        # ids removed by this apply — moves referencing them are moot
-        deleted_ids: set[str] = set()
-        # Families whose membership changed this apply (a model deleted or
-        # moved out). After all membership changes, any of these that now
-        # has zero models lingers as a first-class [[families]] entry so it
-        # stays visible until explicitly deleted (stickiness).
-        recorded_families: set[str] = set()
-        for model_id, variant in self.deletes:
-            if aborted():
-                return
-            assert variant["id"] == model_id, (
-                f"variant id {variant['id']!r} != queued model_id {model_id!r}"
-            )
-            label = _label(variant)
-            provider_id = variant["provider"]
-            provider = self.providers.get(provider_id)
-            emit(f"delete:start|{model_id}|{label}")
-            if provider is not None and self._remove_artifact_if_present(
-                model_id, variant, label, provider, "delete", emit
-            ):
-                continue
-            # Either:
-            # - flag-only provider (native/unmapped): no on-disk artifact,
-            # - or reconcilable provider with no artifact: nothing to delete.
-            # In both cases we still need to remove the registry/state rows.
-            # Record the model's family before removing the entry, so a
-            # family emptied by this delete lingers (stickiness). A failed
-            # delete records nothing — the model stays.
-            with contextlib.suppress(KeyError):
-                recorded_families.add(self.registry.model(model_id).family)
-            # Remove from in-memory registry.
-            self.registry.models = [m for m in self.registry.models if m.id != model_id]
-            # If the model was exposed through LiteLLM, queue an unexpose
-            # so config.yaml doesn't keep routing to a model whose file
-            # is gone. Any queued expose toggle for the same id is moot
-            # now that the model is being removed.
-            was_exposed = self.state.get(model_id).exposed
-            self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
-            if was_exposed:
-                self.exposes.append((model_id, False))
-            # Clear any state entry so modelman.toml doesn't carry a
-            # stale downloaded=True after the user removed the file.
-            self.state.models.pop(model_id, None)
-            self._touched_model_ids.add(model_id)
-            emit(f"delete:done|{model_id}|{label}")
-            deleted_ids.add(model_id)
-
-        for model_id, new_family in self.moves:
-            if aborted():
-                return
-            try:
-                entry = self.registry.model(model_id)
-            except KeyError:
-                if model_id in deleted_ids:
-                    # Deleted earlier in this apply; its move is moot.
-                    continue
-                self.failures.append(f"move {model_id}: Unknown model: {model_id}")
-                emit(f"move:fail|{model_id}|{model_id}|Unknown model")
-                continue
-            move_label = _sanitize(entry.model_name)
-            move_family = _sanitize(new_family)
-            emit(f"move:start|{model_id}|{move_label}|{move_family}")
-            # Record the source family before reassignment (stickiness).
-            recorded_families.add(entry.family)
-            entry.family = new_family
-            emit(f"move:done|{model_id}|{move_label}|{move_family}")
-
-        # Stickiness: a family that had models and now has none (emptied by
-        # a delete or move in this apply) lingers as a first-class
-        # [[families]] entry so it stays visible until explicitly deleted.
-        # Runs after all membership changes (deletes + moves) so a family
-        # that gained a model in the same apply is not touched.
-        for f in recorded_families:
-            if self.registry.models_by_family(f):
-                continue
-            family_entry = self.registry.family(f)
-            legacy = self.state.families.get(f)
-            if family_entry is None:
-                self.registry.families.append(
-                    FamilyEntry(name=f, display_name=legacy.display_name if legacy else None)
-                )
-            elif family_entry.display_name is None and legacy is not None and legacy.display_name:
-                family_entry.display_name = legacy.display_name
-            self.state.forget_family(f)
-            self._forgotten_families.add(f)
-
-        # Ids queued for deletion in this apply, whether or not the delete
-        # succeeded. The ready loop must not touch any of them: a successful
-        # delete already removed the rows, and a failed one has already
-        # surfaced its failure — re-running _delete would only duplicate it.
-        attempted_deletes = {mid for mid, _ in self.deletes}
-        for model_id, variant, target in self.ready:
-            if aborted():
-                return
-            if model_id in attempted_deletes:
-                # Queued for deletion in this same apply (succeeded or
-                # failed); the ready toggle is moot either way.
-                continue
-            assert variant["id"] == model_id, (
-                f"variant id {variant['id']!r} != queued model_id {model_id!r}"
-            )
-            label = _label(variant)
-            provider_id = variant["provider"]
-            provider = self.providers.get(provider_id)
-            # A provider that manages its own cache (MTPLX via the mtplx
-            # CLI) has no download for apply() to drive — its ready-on is
-            # a queued flag flip (the user cached the weights themselves),
-            # mirroring the screen's _provider_can_download rule. mtplx is
-            # the first provider that is BOTH Provider-mapped and
-            # flag-only: without this carve-out the assert below fires and
-            # aborts the whole apply. Class-level lookup via
-            # ProviderRegistry, not instance getattr — test mocks
-            # auto-create any attribute touched on an instance, which
-            # would misroute every mocked provider.
-            provider_cls = ProviderRegistry.get_class(provider_id)
-            manages_own_cache = bool(
-                provider_cls is not None and provider_cls.manages_own_cache
-            )
-            if provider is None or (manages_own_cache and target):
-                # Flag-only flip (native/unmapped provider, or a
-                # manages_own_cache ready-on): no provider call exists for
-                # the ready-on itself — but a provider-is-None ready-off
-                # still means "remove the artifact",
-                # so drop the file recorded in state.disk_path, mirroring
-                # what a mapped provider's delete() would do.
-                emit(f"ready:start|{model_id}|{label}")
-                if not target:
-                    try:
-                        _remove_local_artifact(self.state, variant)
-                    except Exception as exc:  # noqa: BLE001
-                        reason = _reason(exc)
-                        self.failures.append(f"clear {model_id}: {reason}")
-                        emit(f"delete:fail|{model_id}|{label}|{reason}")
-                self._finish_ready(
-                    emit,
-                    model_id,
-                    ready=target,
-                    keep_existing_path=target,
-                    done_tag=f"ready:done|{model_id}|{label}",
-                )
-            elif target:
-                # provider present, not manages_own_cache, target=True:
-                # a real download/pull. Restored from before DownloadManager
-                # existed — the TUI now queues every ready-on instead of
-                # backgrounding real ones, so apply() owns them again.
-                emit(f"download:start|{model_id}|{label}")
-                try:
-                    local_path = self._download(variant, on_progress)
-                except DownloadCancelled:
-                    self._cleanup_partial_download(provider, variant)
-                    emit(f"download:cancelled|{model_id}|{label}")
-                    emit("apply:cancelled")
+        try:
+            # ids removed by this apply — moves referencing them are moot
+            deleted_ids: set[str] = set()
+            # Families whose membership changed this apply (a model deleted or
+            # moved out). After all membership changes, any of these that now
+            # has zero models lingers as a first-class [[families]] entry so it
+            # stays visible until explicitly deleted (stickiness).
+            recorded_families: set[str] = set()
+            for model_id, variant in self.deletes:
+                if aborted():
                     return
-                except Exception as exc:  # noqa: BLE001
-                    self._cleanup_partial_download(provider, variant)
-                    reason = _reason(exc)
-                    self.failures.append(f"download {model_id}: {exc}")
-                    emit(f"download:fail|{model_id}|{label}|{reason}")
-                    continue
-                except BaseException:
-                    # KeyboardInterrupt (Ctrl+C during the post-exit
-                    # runner) unwinds straight through here — clean up
-                    # the partial artifact before propagating so the
-                    # caller's cancellation handling still runs (and the
-                    # next reconcile doesn't promote a truncated
-                    # download to ready=True).
-                    self._cleanup_partial_download(provider, variant)
-                    raise
-                size_bytes = self._size_of(local_path)
-                if size_bytes is None:
-                    try:
-                        size_bytes = provider.size_of(variant)  # type: ignore[attr-defined]
-                    except Exception:  # noqa: BLE001
-                        size_bytes = None
-                suffix = f"|{human_bytes(size_bytes)}" if size_bytes is not None else ""
-                self._finish_ready(
-                    emit,
-                    model_id,
-                    ready=True,
-                    disk_path=local_path,
-                    size_bytes=size_bytes,
-                    done_tag=f"download:done|{model_id}|{label}{suffix}",
+                assert variant["id"] == model_id, (
+                    f"variant id {variant['id']!r} != queued model_id {model_id!r}"
                 )
-            else:
-                # provider present, target False: clear.
+                label = _label(variant)
+                provider_id = variant["provider"]
+                provider = self.providers.get(provider_id)
                 emit(f"delete:start|{model_id}|{label}")
-                # Mirror the deletes loop's guard: a stale-ready model whose
-                # artifact is already gone must clear cleanly, not fail and
-                # strand state.ready=True with the unexpose cascade skipped.
-                if self._remove_artifact_if_present(
-                    model_id, variant, label, provider, "clear", emit
+                if provider is not None and self._remove_artifact_if_present(
+                    model_id, variant, label, provider, "delete", emit
                 ):
                     continue
-                self._finish_ready(
-                    emit,
-                    model_id,
-                    ready=False,
-                    done_tag=f"delete:done|{model_id}|{label}",
-                )
-            # Cascade: turning ready off (either branch) drops the model's
-            # exposure — mirrors the full-delete step's was_exposed rule.
-            # Flag-only providers have no LiteLLM config row, so just flip
-            # the state flag directly instead of routing through the
-            # config writer.
-            if not target and self.state.get(model_id).exposed:
+                # Either:
+                # - flag-only provider (native/unmapped): no on-disk artifact,
+                # - or reconcilable provider with no artifact: nothing to delete.
+                # In both cases we still need to remove the registry/state rows.
+                # Record the model's family before removing the entry, so a
+                # family emptied by this delete lingers (stickiness). A failed
+                # delete records nothing — the model stays.
+                with contextlib.suppress(KeyError):
+                    recorded_families.add(self.registry.model(model_id).family)
+                # Remove from in-memory registry.
+                self.registry.models = [m for m in self.registry.models if m.id != model_id]
+                # If the model was exposed through LiteLLM, queue an unexpose
+                # so config.yaml doesn't keep routing to a model whose file
+                # is gone. Any queued expose toggle for the same id is moot
+                # now that the model is being removed.
+                was_exposed = self.state.get(model_id).exposed
                 self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
-                if provider is None:
-                    self.state.set(
-                        model_id, replace(self.state.get(model_id), exposed=False)
-                    )
-                    self._touched_model_ids.add(model_id)
-                else:
+                if was_exposed:
                     self.exposes.append((model_id, False))
+                # Clear any state entry so modelman.toml doesn't carry a
+                # stale downloaded=True after the user removed the file.
+                self.state.models.pop(model_id, None)
+                self._touched_model_ids.add(model_id)
+                emit(f"delete:done|{model_id}|{label}")
+                deleted_ids.add(model_id)
 
-        if aborted():
-            return
+            for model_id, new_family in self.moves:
+                if aborted():
+                    return
+                try:
+                    entry = self.registry.model(model_id)
+                except KeyError:
+                    if model_id in deleted_ids:
+                        # Deleted earlier in this apply; its move is moot.
+                        continue
+                    self.failures.append(f"move {model_id}: Unknown model: {model_id}")
+                    emit(f"move:fail|{model_id}|{model_id}|Unknown model")
+                    continue
+                move_label = _sanitize(entry.model_name)
+                move_family = _sanitize(new_family)
+                emit(f"move:start|{model_id}|{move_label}|{move_family}")
+                # Record the source family before reassignment (stickiness).
+                recorded_families.add(entry.family)
+                entry.family = new_family
+                emit(f"move:done|{model_id}|{move_label}|{move_family}")
 
-        if self.exposes:
-            # One config load + one atomic save for the whole queue:
-            # per-model expose_model calls would reparse and re-rename
-            # config.yaml once per model, and a crash between them would
-            # leave it half-updated.
-            for model_id, exposed in self.exposes:
-                verb = "expose" if exposed else "unexpose"
-                emit(f"{verb}:start|{model_id}|{model_id}")
-            try:
-                outcomes, warnings = apply_expose_queue(
-                    self.registry, self.state, self.exposes, self.litellm_path
+            # Stickiness: a family that had models and now has none (emptied by
+            # a delete or move in this apply) lingers as a first-class
+            # [[families]] entry so it stays visible until explicitly deleted.
+            # Runs after all membership changes (deletes + moves) so a family
+            # that gained a model in the same apply is not touched.
+            for f in recorded_families:
+                if self.registry.models_by_family(f):
+                    continue
+                family_entry = self.registry.family(f)
+                legacy = self.state.families.get(f)
+                if family_entry is None:
+                    self.registry.families.append(
+                        FamilyEntry(name=f, display_name=legacy.display_name if legacy else None)
+                    )
+                elif family_entry.display_name is None and legacy is not None and legacy.display_name:
+                    family_entry.display_name = legacy.display_name
+                self.state.forget_family(f)
+                self._forgotten_families.add(f)
+
+            # Ids queued for deletion in this apply, whether or not the delete
+            # succeeded. The ready loop must not touch any of them: a successful
+            # delete already removed the rows, and a failed one has already
+            # surfaced its failure — re-running _delete would only duplicate it.
+            attempted_deletes = {mid for mid, _ in self.deletes}
+            for model_id, variant, target in self.ready:
+                if aborted():
+                    return
+                if model_id in attempted_deletes:
+                    # Queued for deletion in this same apply (succeeded or
+                    # failed); the ready toggle is moot either way.
+                    continue
+                assert variant["id"] == model_id, (
+                    f"variant id {variant['id']!r} != queued model_id {model_id!r}"
                 )
-            except Exception as exc:  # noqa: BLE001
-                # Config-level failure (missing/unwritable config.yaml):
-                # nothing in the queue applied.
-                reason = _reason(exc)
-                self.failures.append(f"expose batch: {exc}")
+                label = _label(variant)
+                provider_id = variant["provider"]
+                provider = self.providers.get(provider_id)
+                # A provider that manages its own cache (MTPLX via the mtplx
+                # CLI) has no download for apply() to drive — its ready-on is
+                # a queued flag flip (the user cached the weights themselves),
+                # mirroring the screen's _provider_can_download rule. mtplx is
+                # the first provider that is BOTH Provider-mapped and
+                # flag-only: without this carve-out the assert below fires and
+                # aborts the whole apply. Class-level lookup via
+                # ProviderRegistry, not instance getattr — test mocks
+                # auto-create any attribute touched on an instance, which
+                # would misroute every mocked provider.
+                provider_cls = ProviderRegistry.get_class(provider_id)
+                manages_own_cache = bool(
+                    provider_cls is not None and provider_cls.manages_own_cache
+                )
+                if provider is None or (manages_own_cache and target):
+                    # Flag-only flip (native/unmapped provider, or a
+                    # manages_own_cache ready-on): no provider call exists for
+                    # the ready-on itself — but a provider-is-None ready-off
+                    # still means "remove the artifact",
+                    # so drop the file recorded in state.disk_path, mirroring
+                    # what a mapped provider's delete() would do.
+                    emit(f"ready:start|{model_id}|{label}")
+                    if not target:
+                        try:
+                            _remove_local_artifact(self.state, variant)
+                        except Exception as exc:  # noqa: BLE001
+                            reason = _reason(exc)
+                            self.failures.append(f"clear {model_id}: {reason}")
+                            emit(f"delete:fail|{model_id}|{label}|{reason}")
+                    self._finish_ready(
+                        emit,
+                        model_id,
+                        ready=target,
+                        keep_existing_path=target,
+                        done_tag=f"ready:done|{model_id}|{label}",
+                    )
+                elif target:
+                    # provider present, not manages_own_cache, target=True:
+                    # a real download/pull. Restored from before DownloadManager
+                    # existed — the TUI now queues every ready-on instead of
+                    # backgrounding real ones, so apply() owns them again.
+                    emit(f"download:start|{model_id}|{label}")
+                    try:
+                        local_path = self._download(variant, on_progress)
+                    except DownloadCancelled:
+                        self._cleanup_partial_download(provider, variant)
+                        emit(f"download:cancelled|{model_id}|{label}")
+                        emit("apply:cancelled")
+                        return
+                    except Exception as exc:  # noqa: BLE001
+                        self._cleanup_partial_download(provider, variant)
+                        reason = _reason(exc)
+                        self.failures.append(f"download {model_id}: {exc}")
+                        emit(f"download:fail|{model_id}|{label}|{reason}")
+                        continue
+                    except BaseException:
+                        # KeyboardInterrupt (Ctrl+C during the post-exit
+                        # runner) unwinds straight through here — clean up
+                        # the partial artifact before propagating so the
+                        # caller's cancellation handling still runs (and the
+                        # next reconcile doesn't promote a truncated
+                        # download to ready=True).
+                        self._cleanup_partial_download(provider, variant)
+                        raise
+                    size_bytes = self._size_of(local_path)
+                    if size_bytes is None:
+                        try:
+                            size_bytes = provider.size_of(variant)  # type: ignore[attr-defined]
+                        except Exception:  # noqa: BLE001
+                            size_bytes = None
+                    suffix = f"|{human_bytes(size_bytes)}" if size_bytes is not None else ""
+                    self._finish_ready(
+                        emit,
+                        model_id,
+                        ready=True,
+                        disk_path=local_path,
+                        size_bytes=size_bytes,
+                        done_tag=f"download:done|{model_id}|{label}{suffix}",
+                    )
+                else:
+                    # provider present, target False: clear.
+                    emit(f"delete:start|{model_id}|{label}")
+                    # Mirror the deletes loop's guard: a stale-ready model whose
+                    # artifact is already gone must clear cleanly, not fail and
+                    # strand state.ready=True with the unexpose cascade skipped.
+                    if self._remove_artifact_if_present(
+                        model_id, variant, label, provider, "clear", emit
+                    ):
+                        continue
+                    self._finish_ready(
+                        emit,
+                        model_id,
+                        ready=False,
+                        done_tag=f"delete:done|{model_id}|{label}",
+                    )
+                # Cascade: turning ready off (either branch) drops the model's
+                # exposure — mirrors the full-delete step's was_exposed rule.
+                # Flag-only providers have no LiteLLM config row, so just flip
+                # the state flag directly instead of routing through the
+                # config writer.
+                if not target and self.state.get(model_id).exposed:
+                    self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
+                    if provider is None:
+                        self.state.set(
+                            model_id, replace(self.state.get(model_id), exposed=False)
+                        )
+                        self._touched_model_ids.add(model_id)
+                    else:
+                        self.exposes.append((model_id, False))
+
+            if aborted():
+                return
+
+            if self.exposes:
+                # One config load + one atomic save for the whole queue:
+                # per-model expose_model calls would reparse and re-rename
+                # config.yaml once per model, and a crash between them would
+                # leave it half-updated.
                 for model_id, exposed in self.exposes:
                     verb = "expose" if exposed else "unexpose"
-                    emit(f"{verb}:fail|{model_id}|{model_id}|{reason}")
-            else:
-                for model_id, exposed, error in outcomes:
-                    verb = "expose" if exposed else "unexpose"
-                    if error is None:
-                        emit(f"{verb}:done|{model_id}|{model_id}")
-                    else:
-                        self.failures.append(f"{verb} {model_id}: {error}")
-                        emit(f"{verb}:fail|{model_id}|{model_id}|{error}")
-                # Proxy-restart notices (command unset or failed) are
-                # non-fatal; surface them through the event channel so the
-                # TUI renders them on the UI thread rather than a worker
-                # thread writing to stderr.
-                for warning in warnings:
-                    emit(f"expose:warning|{_sanitize(warning)}")
-                self._touched_model_ids.update(mid for mid, _ in self.exposes)
+                    emit(f"{verb}:start|{model_id}|{model_id}")
+                try:
+                    outcomes, warnings = apply_expose_queue(
+                        self.registry, self.state, self.exposes, self.litellm_path
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Config-level failure (missing/unwritable config.yaml):
+                    # nothing in the queue applied.
+                    reason = _reason(exc)
+                    self.failures.append(f"expose batch: {exc}")
+                    for model_id, exposed in self.exposes:
+                        verb = "expose" if exposed else "unexpose"
+                        emit(f"{verb}:fail|{model_id}|{model_id}|{reason}")
+                else:
+                    for model_id, exposed, error in outcomes:
+                        verb = "expose" if exposed else "unexpose"
+                        if error is None:
+                            emit(f"{verb}:done|{model_id}|{model_id}")
+                        else:
+                            self.failures.append(f"{verb} {model_id}: {error}")
+                            emit(f"{verb}:fail|{model_id}|{model_id}|{error}")
+                    # Proxy-restart notices (command unset or failed) are
+                    # non-fatal; surface them through the event channel so the
+                    # TUI renders them on the UI thread rather than a worker
+                    # thread writing to stderr.
+                    for warning in warnings:
+                        emit(f"expose:warning|{_sanitize(warning)}")
+                    self._touched_model_ids.update(mid for mid, _ in self.exposes)
+        except BaseException:
+            # A real exception (including a genuine Ctrl+C KeyboardInterrupt
+            # raised inside a blocking provider call, see the download
+            # branch's own except BaseException above) propagating out of
+            # the loops above must not discard already-completed
+            # irreversible steps (deletes, moves) from this same apply()
+            # call. This does NOT apply to the aborted()/self.cancelled
+            # early-return path above (a plain `return`, not an exception)
+            # — that path's "nothing saved" semantics are intentional and
+            # tested (see docs/superpowers/specs/2026-09-13-downloads-on-
+            # exit-design.md and the cancellation tests in this file).
+            self._persist(emit)
+            raise
 
-        emit("save:start")
-        try:
-            save_registry(self.registry, self.registry_path)
-            with locked_state(self.state_path) as fresh_state:
-                for mid in self._touched_model_ids:
-                    if mid in self.state.models:
-                        fresh_state.set(mid, self.state.get(mid))
-                    else:
-                        # The deletes loop removed this id from self.state —
-                        # "touching" it means removal, so mirror that on the
-                        # fresh store. Writing self.state.get(mid) here would
-                        # insert a default (ready=False) entry and resurrect
-                        # the row this apply just deleted.
-                        fresh_state.models.pop(mid, None)
-                for family in self._forgotten_families:
-                    fresh_state.forget_family(family)
-            emit("save:done")
-        except Exception as exc:  # noqa: BLE001
-            reason = _reason(exc)
-            self.failures.append(f"save: {exc}")
-            emit(f"save:fail|{reason}")
-
+        self._persist(emit)
         emit("apply:done")
 
     def _delete(self, variant: VariantSpec) -> None:

@@ -128,9 +128,11 @@ def test_run_queued_ops_keyboard_interrupt_prints_cancelled_summary(tmp_path, mo
     assert failed is True
     out = capsys.readouterr().out
     assert "Cancelled: 1 steps completed, 1 remaining skipped." in out
-    # Cancel semantics: nothing saved for this run.
+    # "a"'s completed download is now persisted even though "b" was
+    # interrupted mid-download — only work that never finished (or never
+    # started) is lost. See queue.py's PendingChanges._persist safety net.
     state = load_state(state_path)
-    assert state.get("ollama/a").ready is False
+    assert state.get("ollama/a").ready is True
 
 
 def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatch, capsys):

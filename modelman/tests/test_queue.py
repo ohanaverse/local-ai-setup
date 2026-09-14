@@ -2202,3 +2202,42 @@ def test_apply_cancelled_mid_ready_loop_skips_remaining_and_does_not_save(tmp_pa
     provider.download.assert_called_once()  # b's download never started
     assert events[-1] == "apply:cancelled"
     assert not state_path.exists()  # cancel semantics: nothing persisted
+
+
+def test_apply_persists_prior_deletes_when_download_raises_keyboardinterrupt(tmp_path):
+    """A real Ctrl+C landing inside provider.download() (KeyboardInterrupt
+    raised from the blocking call, not a pre-set cancelled flag) must not
+    discard an already-completed delete from earlier in the same apply()
+    call — the on-disk artifact is already gone and the registry row
+    already dropped in memory; losing the save leaves registry.toml
+    listing a model whose weights no longer exist, with nothing to ever
+    repair it. This is distinct from (and must not change) the existing
+    flag-based cancellation semantics, which intentionally save nothing —
+    see test_apply_cancelled_mid_ready_loop_skips_remaining_and_does_not_save."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="ollama/a", family="f", provider="ollama", name="a:7b"),
+        _entry(id="ollama/b", family="f", provider="ollama", name="b:7b"),
+    )
+    state_path = tmp_path / "modelman.toml"
+    state = _make_state()
+    provider = MagicMock()
+    provider.is_downloaded.return_value = True
+    provider.artifact_paths.return_value = None
+    provider.download.side_effect = KeyboardInterrupt()
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        deletes=[("ollama/a", _variant(id="ollama/a", provider="ollama", name="a:7b"))],
+        ready=[("ollama/b", _variant(id="ollama/b", provider="ollama", name="b:7b"), True)],
+    )
+    with pytest.raises(KeyboardInterrupt):
+        pending.apply()
+
+    provider.delete.assert_called_once()  # the delete really ran
+    reloaded = load_registry(reg_path)
+    assert all(m.id != "ollama/a" for m in reloaded.models)  # and is persisted
