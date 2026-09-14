@@ -65,6 +65,53 @@ print(json.dumps({"model": m, "messages": [{"role": "user", "content": "hi"}], "
 PYEOF
 }
 
+# Poll until `ollama ps` lists no loaded models (model unload ≈ GPU/RAM freed).
+wait_for_ollama_unloaded() {
+    local tries="${1:-5}"
+    local i
+    for ((i = 0; i < tries; i++)); do
+        if [ -z "$(ollama ps 2>/dev/null | tail -n +2)" ]; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+# Each of the three functions below stops one provider and waits (bounded)
+# for it to actually let go, echoing a short warning message on stdout if the
+# wait timed out (empty stdout means it stopped cleanly). Shared by
+# stop_all_local() (backgrounded, "skip everyone but the target") and the
+# `stop <provider>` case below (single provider, no backgrounding) so the
+# stop-and-wait body for each provider exists in exactly one place.
+stop_ollama_and_wait() {
+    # Stop every model ollama actually has loaded, not a baked-in default:
+    # `modelman start`/`modelman stop` may have loaded any model, and
+    # stopping $OLLAMA_MODEL while another one holds the GPU would leave two
+    # models resident (the exact condition this isolation exists to
+    # prevent). `ollama ps` lists loaded models only; a down daemon lists
+    # nothing, which is already "stopped".
+    while IFS= read -r loaded; do
+        [ -n "$loaded" ] || continue
+        silence_stdout ollama stop "$loaded" || true
+    done < <(ollama ps 2>/dev/null | tail -n +2 | awk 'NF {print $1}')
+    # `ollama stop` unloads the model but keeps the daemon (port 11434) up,
+    # so poll `ollama ps` for an empty model list, not the port.
+    wait_for_ollama_unloaded 5 || echo "ollama still has models loaded"
+}
+
+stop_omlx_and_wait() {
+    silence_stdout omlx stop || true
+    wait_for_port_closed http://localhost:8000/v1/models 5 \
+        || echo "omlx still listening on port 8000"
+}
+
+stop_mlx_lm_server_and_wait() {
+    mlx_lm_server_stop
+    wait_for_port_closed http://localhost:8001/v1/models 5 \
+        || echo "mlx_lm_server still listening on port 8001"
+}
+
 # Stop every provider except the one being isolated so the target has the
 # GPU/RAM to itself. Skipping the target avoids an unload+reload cycle.
 # After each stop, poll (bounded) until the provider actually lets go instead
@@ -82,29 +129,17 @@ stop_all_local() {
 
     if [ "$keep" != "ollama" ]; then
         (
-            # Stop every model ollama actually has loaded, not a baked-in
-            # default: `modelman start`/`modelman stop` may have loaded any
-            # model, and stopping $OLLAMA_MODEL while another one holds the
-            # GPU would leave two models resident (the exact condition this
-            # isolation exists to prevent). `ollama ps` lists loaded models
-            # only; a down daemon lists nothing, which is already "stopped".
-            while IFS= read -r loaded; do
-                [ -n "$loaded" ] || continue
-                silence_stdout ollama stop "$loaded" || true
-            done < <(ollama ps 2>/dev/null | tail -n +2 | awk 'NF {print $1}')
-            # `ollama stop` unloads the model but keeps the daemon (port
-            # 11434) up, so poll `ollama ps` for an empty model list, not
-            # the port.
-            wait_for_ollama_unloaded 5 \
-                || echo "warning: ollama still has models loaded" >&2
+            warning=$(stop_ollama_and_wait)
+            [ -n "$warning" ] && echo "warning: $warning" >&2
+            true  # a clean stop (empty $warning) must not fail this subshell
         ) &
         pids+=("$!")
     fi
     if [ "$keep" != "omlx" ]; then
         (
-            silence_stdout omlx stop || true
-            wait_for_port_closed http://localhost:8000/v1/models 5 \
-                || echo "warning: omlx still listening on port 8000" >&2
+            warning=$(stop_omlx_and_wait)
+            [ -n "$warning" ] && echo "warning: $warning" >&2
+            true  # a clean stop (empty $warning) must not fail this subshell
         ) &
         pids+=("$!")
     fi
@@ -118,9 +153,9 @@ stop_all_local() {
     fi
     if [ "$keep" != "mlx_lm_server" ]; then
         (
-            mlx_lm_server_stop
-            wait_for_port_closed http://localhost:8001/v1/models 5 \
-                || echo "warning: mlx_lm_server still listening on port 8001" >&2
+            warning=$(stop_mlx_lm_server_and_wait)
+            [ -n "$warning" ] && echo "warning: $warning" >&2
+            true  # a clean stop (empty $warning) must not fail this subshell
         ) &
         pids+=("$!")
     fi
@@ -133,19 +168,6 @@ stop_all_local() {
     for pid in "${pids[@]}"; do
         wait "$pid"
     done
-}
-
-# Poll until `ollama ps` lists no loaded models (model unload ≈ GPU/RAM freed).
-wait_for_ollama_unloaded() {
-    local tries="${1:-5}"
-    local i
-    for ((i = 0; i < tries; i++)); do
-        if [ -z "$(ollama ps 2>/dev/null | tail -n +2)" ]; then
-            return 0
-        fi
-        sleep 0.2
-    done
-    return 1
 }
 
 # Warm up a model on a running server, retrying until it answers or we give up.
@@ -270,38 +292,35 @@ PYEOF
         # the primitive the new same-provider-only local-model lifecycle
         # (modelman/src/modelman/local_control.py) needs to replace a
         # single-port provider's occupant without touching siblings.
-        # Reuses the exact stop bodies stop_all_local's per-provider
-        # branches already run, just without the "skip the target"
+        # Calls the same stop-and-wait helpers stop_all_local's
+        # per-provider branches use, just without the "skip the target"
         # exemption and without backgrounding (one provider, no need for
-        # parallel wait).
+        # parallel wait) — and, unlike stop_all_local (which only warns),
+        # a timed-out wait here is reported as a real failure: a caller
+        # replacing a single-port provider's occupant needs to know
+        # whether the port actually closed before starting the next model
+        # on it, not just a warning line it never sees (stderr isn't part
+        # of the JSON contract callers parse).
         TARGET="$2"
+        WARNING=""
         case "$TARGET" in
-            ollama)
-                while IFS= read -r loaded; do
-                    [ -n "$loaded" ] || continue
-                    silence_stdout ollama stop "$loaded" || true
-                done < <(ollama ps 2>/dev/null | tail -n +2 | awk 'NF {print $1}')
-                wait_for_ollama_unloaded 5 \
-                    || echo "warning: ollama still has models loaded" >&2
-                ;;
-            omlx|omlx-6bit)
-                silence_stdout omlx stop || true
-                wait_for_port_closed http://localhost:8000/v1/models 5 \
-                    || echo "warning: omlx still listening on port 8000" >&2
-                ;;
-            mlx_lm_server)
-                mlx_lm_server_stop
-                wait_for_port_closed http://localhost:8001/v1/models 5 \
-                    || echo "warning: mlx_lm_server still listening on port 8001" >&2
-                ;;
-            mtplx)
-                mtplx_stop
-                ;;
+            ollama) WARNING=$(stop_ollama_and_wait) ;;
+            omlx|omlx-6bit) WARNING=$(stop_omlx_and_wait) ;;
+            mlx_lm_server) WARNING=$(stop_mlx_lm_server_and_wait) ;;
+            mtplx) mtplx_stop ;;
             *)
                 echo "unknown provider: $TARGET" >&2
                 exit 1
                 ;;
         esac
+        if [ -n "$WARNING" ]; then
+            echo "warning: $WARNING" >&2
+            python3 - "$WARNING" <<'PYEOF'
+import json, sys
+print(json.dumps({"provider": None, "model": None, "direct_url": None, "ok": False, "error": sys.argv[1]}))
+PYEOF
+            exit 1
+        fi
         python3 - <<'PYEOF'
 import json
 print(json.dumps({"provider": None, "model": None, "direct_url": None, "ok": True, "error": None}))
