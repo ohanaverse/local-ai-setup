@@ -2,18 +2,21 @@
 
 Providers expose an `on_progress` callable that streams human-readable
 lines describing what the underlying tool (ollama, huggingface_hub, ...)
-is doing. The StatusScreen consumes these and writes them into a RichLog.
-
-`on_progress` may be invoked from any thread; the StatusScreen is
-responsible for marshalling to the UI thread.
+is doing. main.py's run_queued_ops() forwards this straight to
+typer.echo, now that apply() runs in the plain foreground CLI process
+after the TUI has exited rather than inside a Textual UI thread — no
+thread-marshalling is needed.
 
 For HuggingFace downloads, `snapshot_download` runs synchronously and
 does not natively support cancellation. To make it interruptible, the
 `ProgressTqdm` bar accepts an optional `should_cancel` callable; if it
 returns True on any `display()` update, the bar raises
 `DownloadCancelled`, which bubbles out of `snapshot_download` and out
-of the apply loop. This is what makes the StatusScreen's Cancel button
-actually stop a HF download instead of waiting for it to finish.
+of the apply loop. Nothing currently wires a `should_cancel` callback
+into `provider.download()` — a Ctrl+C during `run_queued_ops()` now
+interrupts an in-flight HuggingFace download via a raw
+`KeyboardInterrupt` instead (see modelman/CLAUDE.md's "Downloads
+(queued, applied on exit)" section).
 """
 
 from __future__ import annotations
@@ -64,8 +67,8 @@ HF_DOWNLOAD_LOCK = threading.Lock()
 class ProgressTqdm(_tqdm):
     """tqdm subclass that fires a callback on each display update.
 
-    Used to stream huggingface_hub snapshot_download progress into the
-    StatusScreen log. Multiple bars may run in parallel; the callback
+    Used to stream huggingface_hub snapshot_download progress via the
+    on_progress callback. Multiple bars may run in parallel; the callback
     fires for each one independently. If `should_cancel` is provided and
     ever returns True, the bar raises `DownloadCancelled` to abort the
     download immediately (snapshot_download propagates the exception).

@@ -85,8 +85,10 @@ The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`
   `Ctrl+C` during `run_queued_ops()` raises `KeyboardInterrupt` in the
   foreground process; the runner catches it, calls `pending.cancel()`
   (reusing the existing `cancelled`/`aborted()` gate), and reports how
-  many steps completed vs. were skipped. Nothing is saved for an
-  interrupted run.
+  many steps completed vs. were skipped. `PendingChanges.apply()`'s
+  exception safety net persists any step (a delete, a move, a completed
+  download) that fully finished before the interrupt landed — only the
+  interrupted step itself, and anything not yet started, is lost.
 
 ### Adding a new TUI screen
 

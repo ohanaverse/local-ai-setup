@@ -31,10 +31,11 @@ if TYPE_CHECKING:
     from .state import StateStore
 
 
-# Event tags fired via the optional on_event callback during apply(). The
-# StatusScreen consumes these to render live progress. Format is unchanged
-# from the legacy FamilyManifest-based implementation so StatusScreen can
-# keep consuming pipe-delimited tags without modification:
+# Event tags fired via the optional on_event callback during apply().
+# main.py's print_event() renders these as plain terminal lines now that
+# apply() runs after the TUI has exited (StatusScreen, the old in-TUI
+# renderer, is gone). Format is unchanged from the legacy
+# FamilyManifest-based implementation:
 #   "verb:status|vid|label" for per-item events,
 #   "verb:status" for global events (save:*, apply:*),
 #   "verb:status|vid|label|reason" for per-item failures,
@@ -46,7 +47,7 @@ def _sanitize(text: str) -> str:
     """Strip the event-tag delimiter from user- or exception-controlled text.
 
     Tags are pipe-delimited ("verb:status|field|field"); a literal '|'
-    in a field would shift the split in StatusScreen._handle_event and
+    in a field would shift the split in main.py's print_event() and
     corrupt the fields after it.
     """
     return text.replace("|", "/")
@@ -178,8 +179,9 @@ class PendingChanges:
     cancelled: bool = False
     # Populated during apply(); used only by the final save to merge this
     # run's changes onto a freshly-loaded on-disk StateStore instead of
-    # overwriting the whole file from this object's (possibly stale
-    # relative to a concurrent DownloadManager write) in-memory snapshot.
+    # overwriting the whole file from this object's in-memory snapshot,
+    # which may be stale relative to modelman.toml if another modelman
+    # process wrote to it concurrently.
     _touched_model_ids: set[str] = field(default_factory=set)
     _forgotten_families: set[str] = field(default_factory=set)
 
@@ -370,13 +372,13 @@ class PendingChanges:
             return False
 
         if not self.ready and not self.deletes and not self.exposes and not self.moves:
-            # Empty-queue fast path. Today's only call site is the TUI's
-            # `_apply_queued`, which always has at least one queued item
-            # (the TUI only opens the apply confirm dialog with a non-empty
-            # queue). A future programmatic caller would see "All operations
-            # completed successfully" on the status screen — fine for the
-            # current contract, but if you reach this branch from elsewhere
-            # consider whether the user is misled by zero attempted work.
+            # Empty-queue fast path. Today's only call site is main.py's
+            # run_queued_ops, which always has at least one queued item
+            # (the TUI only returns a QueuedOps via Apply when the queue is
+            # non-empty). A future programmatic caller would see nothing
+            # printed beyond "apply:done" — fine for the current contract,
+            # but if you reach this branch from elsewhere consider whether
+            # the user is misled by zero attempted work.
             emit("apply:done")
             return
 

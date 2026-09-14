@@ -258,12 +258,12 @@ class ModelScreen(Screen[None]):
         # Snapshot for discard: restore if the user exits without applying.
         # Spans the whole registry now — this screen isn't scoped to one
         # family, so there's no other family's data to preserve alongside it.
-        # Retaken after every apply run (see _on_status_screen_dismissed):
-        # this screen is the app's single long-lived root now (never
-        # recreated per family), so without retaking it a Discard many
-        # applies later would roll all the way back to the state at app
-        # launch — silently resurrecting earlier applies that already
-        # succeeded and were saved to disk.
+        # Taken once, here, at construction. This screen is the app's
+        # single long-lived root and exits (with an Apply/Discard/None
+        # QueuedOps) rather than resuming — apply() itself only ever runs
+        # after the TUI process has already exited (see main.py's
+        # run_queued_ops) — so there is no later point in this screen's
+        # life where the baseline needs retaking.
         self._snapshot_models: list[ModelEntry] = []
         self._snapshot_state_entries: dict[str, ModelState] = {}
         self._retake_snapshot()
@@ -541,11 +541,10 @@ class ModelScreen(Screen[None]):
             # Exposing requires ready — the same gate _validated_entry
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite
-            # their request; otherwise cascade the download in: a mapped
-            # provider's ready-on starts the real download immediately
-            # (DownloadManager), a flag-only provider's is queued (apply
-            # runs the ready loop before the expose loop, so the order
-            # works).
+            # their request; otherwise cascade a ready=True queue in for
+            # either a mapped or flag-only provider — nothing runs until
+            # Apply, at which point apply() runs the ready loop before the
+            # expose loop, so the order works.
             if mid in self.queued_ready:
                 self.app.notify(
                     "Model is queued to be made not ready — cancel that before exposing"
@@ -826,13 +825,12 @@ class ModelScreen(Screen[None]):
         return
 
     def _retake_snapshot(self) -> None:
-        """(Re)capture the discard baseline from the current registry/state.
+        """Capture the discard baseline from the current registry/state.
 
-        Called from __init__ (the initial baseline) and again whenever
-        control returns from a StatusScreen apply run (see
-        _on_status_screen_dismissed), so a later Discard only undoes
-        changes queued since that point — never an earlier apply that
-        already succeeded and was saved to disk.
+        Called once, from __init__. There is no later retake: this
+        screen exits (via Apply/Discard) rather than resuming, and
+        apply() itself only ever runs after the TUI process has exited
+        (see main.py's run_queued_ops).
         """
         self._snapshot_models = [ModelEntry(**_entry_kwargs(m)) for m in self.registry.models]
         self._snapshot_state_entries = {

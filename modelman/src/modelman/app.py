@@ -156,10 +156,10 @@ class ModelmanApp(App[QueuedOps | None]):
         self.exit()
 
     async def action_quit(self) -> None:
-        """Override Textual's default (self.exit()) to route through the
-        download quit guard. This also fixes a pre-existing quirk where
-        ctrl+q quit immediately from any screen, bypassing ModelScreen's
-        apply-on-exit confirm — it's now gated by request_quit()."""
+        """Override Textual's default (self.exit()) to route through
+        request_quit(), so ctrl+q shows ModelScreen's apply/discard/cancel
+        confirm dialog when a queue is pending, instead of quitting
+        immediately from any screen (a pre-existing quirk this fixes)."""
         self.request_quit()
 
     def watch_theme(self, old_theme: str | None, new_theme: str) -> None:
