@@ -148,7 +148,8 @@ class LlamaCppProvider(Provider):
                 path = snapshot_download(**kwargs)
                 return str(Path(path) / primary)
             except BaseException:
-                # See OMLXProvider.download's identical hardening.
+                # See OMLXProvider.download's identical hardening and its
+                # comment on this flip's real, narrow reach.
                 self._cancel_requested = True
                 raise
             finally:

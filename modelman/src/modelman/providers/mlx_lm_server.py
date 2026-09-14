@@ -146,6 +146,11 @@ class MLXLMServerProvider(Provider):
                         kwargs["tqdm_class"] = ProgressTqdm
                     snapshot_download(**kwargs)
                     return target
+                except BaseException:
+                    # See OMLXProvider.download's identical hardening and
+                    # its comment on this flip's real, narrow reach.
+                    self._cancel_requested = True
+                    raise
                 finally:
                     ProgressTqdm.clear_active_context()
         raise ValueError(

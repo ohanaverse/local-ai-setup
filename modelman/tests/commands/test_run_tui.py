@@ -145,8 +145,9 @@ def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatc
     entry = ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="openrouter/x")
     reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry], providers=("ollama", "openrouter"))
 
-    # Don't patch ProviderRegistry.get for openrouter—let it raise KeyError
-    # to simulate a flag-only provider with no backing Provider class.
+    # Don't patch ProviderRegistry.get_class for openrouter—get_class
+    # returns None (no backing Provider class), which short-circuits before
+    # .get() is ever called, simulating a flag-only provider.
     failed = run_queued_ops(QueuedOps(ready={"openrouter/x": True}))
 
     assert failed is False
@@ -399,7 +400,11 @@ def test_print_event_recognizes_every_tag_queue_emits(capsys):
     for suffix in dynamic_suffixes:
         verbs.add(f"expose:{suffix}")
         verbs.add(f"unexpose:{suffix}")
-    assert verbs, "expected to find at least one emit() call in queue.py"
+    assert len(verbs) >= 24, (
+        f"expected at least 24 distinct verbs (today's real count); found "
+        f"{len(verbs)}: {sorted(verbs)} — did queue.py's emit() call sites "
+        "move behind a helper this regex can no longer see?"
+    )
 
     for verb in sorted(verbs):
         print_event(f"{verb}|a|b|c")

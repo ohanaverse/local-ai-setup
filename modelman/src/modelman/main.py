@@ -217,7 +217,12 @@ def run_queued_ops(queued: QueuedOps) -> bool:
             # with a real error (bad config, a broken constructor) must not
             # crash the whole run, and must not be silently treated as
             # flag-only either — that would flip ready=True without ever
-            # downloading anything.
+            # downloading anything. A delete against this provider still
+            # falls through to the flag-only path in queue.py (provider is
+            # None there too) and cleans up the registry/state rows without
+            # removing the on-disk artifact — the same degraded-but-safe
+            # behavior a genuinely flag-only provider already gets, not an
+            # oversight.
             unavailable_providers[provider_id] = str(exc)
 
     provider_ready_failures: list[tuple[str, str]] = []

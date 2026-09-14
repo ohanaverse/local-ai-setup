@@ -535,14 +535,29 @@ class PendingChanges:
                     except DownloadCancelled:
                         self._cleanup_partial_download(provider, variant)
                         emit(f"download:cancelled|{model_id}|{label}")
-                        emit("apply:cancelled")
-                        # A plain `return`, like aborted()'s early-return
-                        # paths above, does NOT reach the `except
-                        # BaseException: self._persist(emit); raise` safety
-                        # net around this whole loop — persist explicitly so
-                        # an already-completed delete/move earlier in this
-                        # same apply() call is not silently dropped.
+                        # Persist before the terminal apply:cancelled event,
+                        # matching every other exit path's ordering (the
+                        # end-of-apply() `_persist(emit); emit("apply:done")`
+                        # below, and the `except BaseException` safety net's
+                        # `_persist(emit); raise`). A plain `return`, unlike
+                        # those paths, does NOT reach that safety net on its
+                        # own — persisted explicitly here so an already-
+                        # completed delete/move earlier in this same apply()
+                        # call is not silently dropped.
+                        #
+                        # Currently unreachable from main.py's run_queued_ops:
+                        # the only caller of PendingChanges.cancel() (which
+                        # sets a provider's _cancel_requested flag) is
+                        # run_queued_ops's `except KeyboardInterrupt` handler,
+                        # which only runs after apply() has already unwound —
+                        # a real Ctrl+C interrupts via a raw KeyboardInterrupt
+                        # instead (see _progress.py's module docstring). If a
+                        # future caller does reach this path, note it returns
+                        # normally with no failures recorded — unlike a
+                        # KeyboardInterrupt, it produces no "Cancelled: N
+                        # steps completed..." summary in run_queued_ops.
                         self._persist(emit)
+                        emit("apply:cancelled")
                         return
                     except Exception as exc:  # noqa: BLE001
                         self._cleanup_partial_download(provider, variant)

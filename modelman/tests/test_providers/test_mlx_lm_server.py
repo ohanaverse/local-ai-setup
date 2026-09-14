@@ -581,3 +581,32 @@ def test_cleanup_partial_download_missing_dirs_is_noop(provider):
         "draft_repo": "org/never-started-draft",
     }
     provider.cleanup_partial_download(variant)  # must not raise
+
+
+# --- download: Ctrl+C hardening (mirrors omlx/llamacpp) ---
+
+
+def test_download_flips_cancel_flag_when_target_side_interrupted(provider):
+    """A real Ctrl+C (or any other exception) unwinding through
+    snapshot_download for the target side must flip _cancel_requested
+    immediately, so any HF worker thread still mid-download picks up the
+    cancellation on its next progress update instead of only learning
+    about it after apply() has already fully unwound (see queue.py's
+    DownloadCancelled handling). Regression for a review finding: this
+    provider has the same should_cancel wiring as omlx/llamacpp but was
+    missed by that task's Ctrl+C hardening."""
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "mlx_lm_server",
+        "name": "x-mlx",
+        "repo": "foo/target",
+        "draft_repo": "foo/draft",
+    }
+    with (
+        patch(
+            "modelman.providers.mlx_lm_server.snapshot_download", side_effect=KeyboardInterrupt
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        provider.download(variant)
+    assert provider._cancel_requested is True

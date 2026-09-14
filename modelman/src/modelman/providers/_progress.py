@@ -12,17 +12,22 @@ does not natively support cancellation. To make it interruptible, the
 `ProgressTqdm` bar accepts an optional `should_cancel` callable; if it
 returns True on any `display()` update, the bar raises
 `DownloadCancelled`, which bubbles out of `snapshot_download` and out
-of the apply loop. `OMLXProvider.download()`/`LlamaCppProvider.download()`
-wire this to their own `_cancel_requested` flag, flipped by
-`cancel_current()` (called from `PendingChanges.cancel()`) and also by
-their own `download()` when a `BaseException` — a real Ctrl+C included —
-unwinds through the `snapshot_download` call, so any HF worker thread
-still mid-download picks up the cancellation on its next progress
-update rather than only learning about it after `apply()` has already
-fully unwound. This narrows, but does not eliminate, the window where a
-straggling worker thread writes into the target directory after the
-caller's cleanup has already run (see
-`PendingChanges._cleanup_partial_download` in queue.py).
+of the apply loop. `OMLXProvider`, `LlamaCppProvider`, and
+`MLXLMServerProvider`'s `download()` methods all wire this to their own
+`_cancel_requested` flag, flipped by `cancel_current()` (called from
+`PendingChanges.cancel()`, typically from another thread while this
+download's context is still active) and also, best-effort, by their own
+`download()` when a `BaseException` — a real Ctrl+C included — unwinds
+through the `snapshot_download` call. That second flip mostly does NOT
+extend `should_cancel`'s real reach, though: `download()`'s `finally`
+clears the class-level active context on its way out, so a straggling
+worker thread only picks up the flip if its own `display()` call lands
+in the brief window before that clear runs — the mechanism that
+actually protects an in-flight download is a concurrent
+`cancel_current()` call arriving while the context is still set; the
+flip-on-interrupt is belt-and-braces alongside that, not a substitute
+for it. See `PendingChanges._cleanup_partial_download` in queue.py for
+the on-disk cleanup this races against.
 """
 
 from __future__ import annotations
