@@ -128,6 +128,8 @@ def print_event(tag: str) -> None:
         typer.echo(f"Marking {parts[2]} ready...")
     elif verb == "ready:done":
         typer.echo(f"  done: {parts[2]} ready")
+    elif verb == "ready:fail":
+        typer.echo(f"  FAILED: ready {parts[2]}: {parts[3]}")
     elif verb == "move:start":
         typer.echo(f"Moving {parts[2]} -> {parts[3]}...")
     elif verb == "move:done":
@@ -211,13 +213,6 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         exposes=list(queued.exposes.items()),
         litellm_path=default_litellm_config_path(),
     )
-    # A model id queued while the TUI was open but missing from a
-    # freshly-loaded registry (deleted out-of-band, or a hand-edited
-    # registry.toml) must not take down the whole run — every other op
-    # (deletes/moves/exposes) already degrades to a per-item failure on
-    # a missing id; ready needs the same treatment, recorded here since
-    # its lookup happens before PendingChanges even exists.
-    pending.failures.extend(f"ready {mid}: Unknown model: {mid}" for mid in missing_ready)
     total = (
         len(pending.ready)
         + len(missing_ready)
@@ -240,6 +235,17 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         print_event(tag)
         if tag.split("|", 1)[0] in done_verbs:
             completed += 1
+
+    # A model id queued while the TUI was open but missing from a
+    # freshly-loaded registry (deleted out-of-band, or a hand-edited
+    # registry.toml) must not take down the whole run — every other op
+    # (deletes/moves/exposes) already degrades to a per-item failure on
+    # a missing id with a live event, via queue.py's own emit() calls;
+    # ready needs the same treatment, done here since its lookup happens
+    # before PendingChanges even exists.
+    for mid in missing_ready:
+        pending.failures.append(f"ready {mid}: Unknown model: {mid}")
+        on_event(f"ready:fail|{mid}|{mid}|Unknown model")
 
     try:
         pending.apply(on_event=on_event, on_progress=typer.echo)

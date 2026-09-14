@@ -186,6 +186,22 @@ def test_run_queued_ops_missing_ready_model_id_does_not_crash_whole_run(tmp_path
     assert "ollama/real" not in state.models
 
 
+def test_run_queued_ops_missing_ready_model_id_prints_live_failure(tmp_path, monkeypatch, capsys):
+    # A missing ready id must surface through the same live on_event
+    # channel as every other queued-op failure type — deletes/moves/
+    # exposes already do via queue.py's own emit() calls (see the moves
+    # loop's identical KeyError case). Regression: the ready lookup
+    # happens before PendingChanges even exists, so it was appending
+    # straight to pending.failures with no live print, unlike every
+    # other op type.
+    reg_path, state_path = _seed(tmp_path, monkeypatch)
+    failed = run_queued_ops(QueuedOps(ready={"ollama/missing": True}))
+
+    assert failed is True
+    out = capsys.readouterr().out
+    assert "FAILED: ready ollama/missing: Unknown model" in out
+
+
 def test_print_event_formats_download_lifecycle(capsys):
     # print_event() must render queue.py's lifecycle tags as single human-readable
     # lines that replace StatusScreen's RichLog now that apply() runs in a plain terminal.
