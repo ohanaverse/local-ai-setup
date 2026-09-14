@@ -816,26 +816,17 @@ def start_local_model(
         # RUNNING column, `modelman start`'s other-running warning) until some
         # later probe happened to self-heal it.
         occupant = same_provider_occupant(registry, fresh_state, resolved_id, model.provider_id)
-        if occupant is not None:
-            if model.provider_id in _OMLX_PROVIDER_IDS:
-                try:
-                    stop_provider(model.provider_id)
-                except BenchmarkError as exc:
-                    raise LocalControlError(
-                        f"failed to stop {occupant} before starting {resolved_id}: {exc}"
-                    ) from exc
-            # The occupant's process is gone by now regardless of provider:
-            # omlx/omlx-6bit via the stop_provider() call just above,
-            # mlx_lm_server and mtplx via their own start path
-            # (isolate_provider(..., solo=True) → providers/lifecycle.py's
-            # isolate()) unconditionally stopping the prior occupant before
-            # spawning a new one. Clearing the flag is therefore
-            # unconditional — mlx_lm_server's own probe only checks "is
-            # *anything* serving on port 8001" (not name-checked), so it
-            # can never self-heal a stale mlx_lm_server flag on its own
-            # once a DIFFERENT pairing is serving that port, and mtplx's
-            # name-checked probe self-heals only on some later read, which
-            # is too late for the warning/indicator this start emits now.
+        if occupant is not None and model.provider_id in _OMLX_PROVIDER_IDS:
+            # omlx/omlx-6bit: stop_provider() tears down the occupant's
+            # process itself, right here — clear its flag as soon as that's
+            # confirmed, same as before. A failure leaves the occupant's
+            # flag untouched (it raises before reaching the clear).
+            try:
+                stop_provider(model.provider_id)
+            except BenchmarkError as exc:
+                raise LocalControlError(
+                    f"failed to stop {occupant} before starting {resolved_id}: {exc}"
+                ) from exc
             _clear_stale_running_flag(occupant, state_path)
 
         try:
@@ -847,6 +838,24 @@ def start_local_model(
             _clear_stale_running_flag(resolved_id, state_path)
             raise LocalControlError(f"failed to start {resolved_id}: {result.error or 'unknown error'}")
         direct_url = result.direct_url or None
+
+        if occupant is not None and model.provider_id not in _OMLX_PROVIDER_IDS:
+            # mtplx and mlx_lm_server tear down their own prior occupant
+            # INSIDE the isolate_provider(..., solo=True) call just above
+            # (providers/lifecycle.py's isolate()), not before it — so the
+            # occupant's flag can only be cleared here, once that call has
+            # actually succeeded. Clearing it earlier (before
+            # isolate_provider() even ran) would mark the occupant stopped
+            # on the mere promise of a teardown that hadn't been attempted
+            # yet: if isolate_provider() then failed, the occupant could
+            # still be running while reading as stopped everywhere.
+            # mlx_lm_server's own probe only checks "is *anything* serving
+            # on port 8001" (not name-checked), so it can never self-heal a
+            # stale mlx_lm_server flag once a DIFFERENT pairing takes the
+            # port, and mtplx's name-checked probe self-heals only on some
+            # later read — too late for the warning/indicator this start
+            # emits now.
+            _clear_stale_running_flag(occupant, state_path)
 
     try:
         with locked_state(state_path) as fresh:

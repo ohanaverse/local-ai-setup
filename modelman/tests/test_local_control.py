@@ -490,6 +490,92 @@ def test_start_replaces_mtplx_occupant_and_clears_its_flag(tmp_path):
     assert state.get("mtplx/org/model-a").running is False  # occupant flag cleared
 
 
+def test_start_isolate_failure_leaves_mtplx_occupant_flagged(tmp_path):
+    # Regression test for the finding fixed in review: mtplx tears down its
+    # predecessor INSIDE isolate_provider(..., solo=True), not before it —
+    # so unlike omlx (which has its own confirmed stop_provider() call
+    # first), the occupant's flag must only be cleared AFTER isolate_provider()
+    # actually succeeds. If isolate fails, the occupant may still be
+    # running (its teardown may itself be what failed), so its flag must
+    # survive — clearing it early would falsely report it stopped.
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    for suffix in ("a", "b"):
+        registry.models.append(
+            ModelEntry(
+                id=f"mtplx/org/model-{suffix}",
+                family=f"mtplx-{suffix}",
+                provider_id="mtplx",
+                model_name=f"org/model-{suffix}",
+            )
+        )
+    state_path = _state_path(tmp_path, {"mtplx/org/model-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop_one,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="mtplx", model="", direct_url="", ok=False, error="serve died"
+        )
+        with pytest.raises(LocalControlError, match="serve died"):
+            start_local_model(registry, "mtplx/org/model-b", state_path)
+    mock_stop_one.assert_not_called()
+    state = load_state(state_path)
+    assert state.get("mtplx/org/model-a").running is True  # occupant survives
+    assert state.get("mtplx/org/model-b").running is False
+
+
+def test_start_isolate_failure_leaves_mlx_lm_server_occupant_flagged(tmp_path):
+    # Same regression as the mtplx case above, for mlx_lm_server: its
+    # predecessor teardown also happens inside isolate_provider(solo=True),
+    # so a failed isolate must leave the occupant's flag untouched rather
+    # than clearing it on the unconfirmed assumption that teardown ran.
+    from modelman.registry import DraftSpec
+
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none"))
+    )
+    registry.models.append(
+        ModelEntry(
+            id="mlx_lm_server/pairing-a",
+            family="pair-a",
+            provider_id="mlx_lm_server",
+            model_name="pairing-a",
+            fetch=Fetch(repo="org/target-a"),
+            draft=DraftSpec(repo="org/draft-a"),
+        )
+    )
+    registry.models.append(
+        ModelEntry(
+            id="mlx_lm_server/pairing-b",
+            family="pair-b",
+            provider_id="mlx_lm_server",
+            model_name="pairing-b",
+            fetch=Fetch(repo="org/target-b"),
+            draft=DraftSpec(repo="org/draft-b"),
+        )
+    )
+    state_path = _state_path(tmp_path, {"mlx_lm_server/pairing-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop_one,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="mlx_lm_server", model="", direct_url="", ok=False, error="port still answering"
+        )
+        with pytest.raises(LocalControlError, match="port still answering"):
+            start_local_model(registry, "mlx_lm_server/pairing-b", state_path)
+    mock_stop_one.assert_not_called()
+    state = load_state(state_path)
+    assert state.get("mlx_lm_server/pairing-a").running is True  # occupant survives
+    assert state.get("mlx_lm_server/pairing-b").running is False
+
+
 def test_start_ollama_is_flag_only(tmp_path):
     # Ollama never gets a process call on start - lazy-loads on first
     # request. Only the flag flips.
