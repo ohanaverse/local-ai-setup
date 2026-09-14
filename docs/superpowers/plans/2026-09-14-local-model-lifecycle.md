@@ -150,6 +150,26 @@ Update the file's header comment (the `# Usage:` block near the top) to document
 #   Never passed by modelman benchmark, which still needs full exclusivity.
 ```
 
+**Critical: forward `--solo` into the mtplx branch's inner Python call.** mtplx is the one provider whose isolation is a SECOND, separate subprocess hop (this bash script's `mtplx)` case shells out again to `python3 -m modelman.providers.lifecycle isolate mtplx <model>`) — the top-level `SOLO` variable this step adds is invisible to that inner call unless explicitly forwarded. Without this, Task 3's same-provider-only start path would silently fall back to full exclusivity for mtplx only, defeating cross-provider concurrency exactly for that provider. In the existing `mtplx)` case branch, change both invocation lines from:
+
+```bash
+            "$MTPLX_PY" -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"}
+        else
+            PYTHONPATH="$MTPLX_ROOT/modelman/src${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"}
+```
+
+to:
+
+```bash
+            "$MTPLX_PY" -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"} ${SOLO:+--solo}
+        else
+            PYTHONPATH="$MTPLX_ROOT/modelman/src${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 -m modelman.providers.lifecycle isolate mtplx ${2:+"$2"} ${SOLO:+--solo}
+```
+
+(`${SOLO:+--solo}` expands to `--solo` when `SOLO` is set, nothing otherwise — matches the `${2:+"$2"}` pattern already used on the line above it. Step 7 below's `_main` argv parsing already accepts `--solo` in any trailing position, so appending it after `$2` is fine even when `$2` is empty.)
+
 - [ ] **Step 2: `bash -n` and shellcheck the edited script**
 
 Run: `bash -n bin/llm-isolate-provider && shellcheck --severity=error bin/llm-isolate-provider`
@@ -886,23 +906,20 @@ def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
 
 (Add `from dataclasses import replace` to the imports if not already present — check first; `ModelState` construction elsewhere in this file may already import it.)
 
-Add a helper that finds another model currently flagged running on the same provider:
+Add a helper that finds another model currently flagged running on the same provider. It takes the caller's already-computed set of that provider's registry ids (never re-derives "which provider" from string-splitting a model id, since a model name may itself contain a "/") — and it must check every id in that set, not return on the first running model found overall, or a same-provider occupant enumerated after an unrelated running model on a DIFFERENT provider would never be found:
 
 ```python
-def _same_provider_occupant(state: StateStore, provider_id: str, exclude_model_id: str) -> str | None:
-    """The id of another model on `provider_id` currently flagged
-    running, or None. Single-port providers (omlx, mtplx, mlx_lm_server)
-    can only ever serve one model — this finds the one that needs
-    replacing before starting a different model on the same provider."""
-    for model_id, model_state in state.models.items():
-        if model_id != exclude_model_id and model_state.running:
-            # provider_id is embedded in the id's prefix by convention
-            # (<provider_id>/<name>), but comparing against the actual
-            # registry entry (not string-splitting the id) is the
-            # correct source of truth when a model name itself contains
-            # a "/". Callers pass a pre-filtered id set instead — see
-            # start_local_model, which only calls this with ids already
-            # known to belong to `provider_id`.
+def _same_provider_occupant(
+    state: StateStore, provider_model_ids: set[str], exclude_model_id: str
+) -> str | None:
+    """The id of another model belonging to the same provider
+    (provider_model_ids — every registry id on that provider) currently
+    flagged running, or None. Single-port providers (omlx, mtplx,
+    mlx_lm_server) can only ever serve one model — this finds the one
+    that needs replacing before starting a different model on the same
+    provider."""
+    for model_id in provider_model_ids:
+        if model_id != exclude_model_id and state.models.get(model_id, ModelState()).running:
             return model_id
     return None
 ```
@@ -1014,17 +1031,10 @@ def start_local_model(
         # Flag-only: no process action, ollama lazy-loads on request.
         direct_url = None
     else:
-        occupant = _same_provider_occupant(
-            fresh_state,
-            model.provider_id,
-            exclude_model_id=resolved_id,
-        ) if model.provider_id != "mtplx" else None  # mtplx's own isolate() handles its occupant internally
-        # Only consider an occupant that is actually THIS provider's model
-        # (the state dict has no provider field, so filter by prefix match
-        # against every model this provider owns in the registry).
         provider_model_ids = {m.id for m in registry.models if m.provider_id == model.provider_id}
-        if occupant is not None and occupant not in provider_model_ids:
-            occupant = None
+        occupant = None
+        if model.provider_id != "mtplx":  # mtplx's own isolate() handles its occupant internally
+            occupant = _same_provider_occupant(fresh_state, provider_model_ids, exclude_model_id=resolved_id)
         if occupant is not None and model.provider_id in ("omlx", "omlx-6bit"):
             try:
                 stop_provider(model.provider_id)
@@ -1633,7 +1643,7 @@ with an assertion against the new per-model field (the fixture, updated in Task 
 
 Update the function's signature-matching call site: `models, litellm, localRunning, err := loadModelmanState()` becomes `models, litellm, err := loadModelmanState()` (the function no longer returns a third string — see Step 3).
 
-Add tests to `wt/internal/config/modelman_test.go` (open it first to match its existing table/fixture style) for a model_state entry with no `running` key (defaults false) and one with `running = true`.
+`wt/internal/config/modelman_test.go` has four existing calls that destructure `loadModelmanState()`'s old 4-value return (`exposed, litellm, _, err := loadModelmanState()` and similar, at minimum around lines 41, 66, 88, 113 as of this plan's writing — re-grep to confirm before editing, since line numbers drift): update every one of them to the new 3-value return (drop the `_`/`localRunning` positional value — e.g. `exposed, litellm, _, err := loadModelmanState()` becomes `exposed, litellm, err := loadModelmanState()`). Then add a new test to the same file (open it first to match its existing table/fixture style) for a model_state entry with no `running` key (defaults false) and one with `running = true`.
 
 - [ ] **Step 2: Run to verify failure**
 
