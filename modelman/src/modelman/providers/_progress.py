@@ -12,11 +12,17 @@ does not natively support cancellation. To make it interruptible, the
 `ProgressTqdm` bar accepts an optional `should_cancel` callable; if it
 returns True on any `display()` update, the bar raises
 `DownloadCancelled`, which bubbles out of `snapshot_download` and out
-of the apply loop. Nothing currently wires a `should_cancel` callback
-into `provider.download()` — a Ctrl+C during `run_queued_ops()` now
-interrupts an in-flight HuggingFace download via a raw
-`KeyboardInterrupt` instead (see modelman/CLAUDE.md's "Downloads
-(queued, applied on exit)" section).
+of the apply loop. `OMLXProvider.download()`/`LlamaCppProvider.download()`
+wire this to their own `_cancel_requested` flag, flipped by
+`cancel_current()` (called from `PendingChanges.cancel()`) and also by
+their own `download()` when a `BaseException` — a real Ctrl+C included —
+unwinds through the `snapshot_download` call, so any HF worker thread
+still mid-download picks up the cancellation on its next progress
+update rather than only learning about it after `apply()` has already
+fully unwound. This narrows, but does not eliminate, the window where a
+straggling worker thread writes into the target directory after the
+caller's cleanup has already run (see
+`PendingChanges._cleanup_partial_download` in queue.py).
 """
 
 from __future__ import annotations

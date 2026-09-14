@@ -147,6 +147,10 @@ class LlamaCppProvider(Provider):
                     kwargs["tqdm_class"] = ProgressTqdm
                 path = snapshot_download(**kwargs)
                 return str(Path(path) / primary)
+            except BaseException:
+                # See OMLXProvider.download's identical hardening.
+                self._cancel_requested = True
+                raise
             finally:
                 ProgressTqdm.clear_active_context()
 

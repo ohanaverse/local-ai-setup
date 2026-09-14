@@ -94,6 +94,19 @@ class OMLXProvider(Provider):
                     kwargs["tqdm_class"] = ProgressTqdm
                 snapshot_download(**kwargs)
                 return str(target)
+            except BaseException:
+                # A real Ctrl+C (or any other interrupt) unwinding through
+                # this call flips the cancellation flag immediately, so any
+                # HF worker thread still mid-download sees should_cancel
+                # return True on its next progress update and raises
+                # DownloadCancelled itself (see ProgressTqdm.display())
+                # instead of only being told to cancel via
+                # PendingChanges.cancel() after apply() has already fully
+                # unwound. Narrows, but does not eliminate, the window
+                # where a straggling worker thread writes into `target`
+                # after the caller's cleanup has already run.
+                self._cancel_requested = True
+                raise
             finally:
                 ProgressTqdm.clear_active_context()
 
