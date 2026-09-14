@@ -277,16 +277,6 @@ class ModelScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        # Captured once while mounted: `self.app` (Screen.app) resolves via
-        # a contextvar that isn't set on a background thread, falling back
-        # to walking self._parent up to the App — a walk that raises
-        # NoActiveAppError once this screen is off the main thread.
-        # _run_apply and the deferred-expose closure it registers both run
-        # later, on StatusScreen's worker thread, so they must use this
-        # reference instead of `self.app` (this screen itself stays on the
-        # stack underneath StatusScreen — see _push_status_screen — but the
-        # contextvar hazard is independent of that and applies regardless).
-        self._app_ref = self.app
         mt = self.query_one("#model-table", DataTable)
         mt.add_columns(
             "FAMILY",
@@ -656,10 +646,12 @@ class ModelScreen(Screen[None]):
             entry.pricing_updated_at = _now_iso()
         self.registry.models.append(entry)
         self._added_ids.add(variant["id"])
-        # Persist immediately (mirrors _on_edit_model): a real-download
-        # ready-on bypasses the apply-on-exit queue entirely via
-        # _start_download, so there's no later save point that would
-        # otherwise persist this entry.
+        # Persist immediately (mirrors _on_edit_model): the post-exit
+        # runner (main.py's run_queued_ops) looks up this model by id
+        # against a freshly-loaded-from-disk registry, so an added
+        # model that wasn't persisted yet would be treated as an
+        # unknown/missing id at apply time — persisting now avoids that
+        # entirely, rather than relying on it degrading gracefully.
         save_registry(self.registry, self.registry_path)
         self.queued_ready[variant["id"]] = True
         self._last_provider_used = variant["provider"]

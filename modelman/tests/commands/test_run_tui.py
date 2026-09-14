@@ -13,7 +13,14 @@ from typer.testing import CliRunner
 
 from modelman.main import app, print_error_summary, print_event, run_queued_ops
 from modelman.queue import QueuedOps
-from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry, save_registry
+from modelman.registry import (
+    AuthConfig,
+    ModelEntry,
+    ProviderEntry,
+    Registry,
+    model_entry_to_variant,
+    save_registry,
+)
 from modelman.state import StateStore, load_state, save_state
 
 
@@ -144,6 +151,37 @@ def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatc
     # No download message should appear (flag-only provider doesn't download)
     assert "Downloading" not in out
     assert "Marked openrouter/x ready" in out or "done:" in out
+
+
+def test_run_queued_ops_missing_ready_model_id_does_not_crash_whole_run(tmp_path, monkeypatch, capsys):
+    # A ready-on queued for a model id that's absent from a freshly-loaded
+    # registry (e.g. deleted out-of-band, or a hand-edited registry.toml,
+    # between the TUI queuing it and the post-exit runner loading fresh
+    # state) must not raise an unhandled KeyError and take down the whole
+    # run. It should degrade to a per-item recorded failure, exactly like
+    # a missing id already does for deletes/moves/exposes, and every other
+    # queued op in the same run must still complete.
+    real_entry = ModelEntry(id="ollama/real", family="f", provider_id="ollama", model_name="real:7b")
+    reg_path, state_path = _seed(tmp_path, monkeypatch, models=[real_entry])
+    real_variant = model_entry_to_variant(real_entry)
+
+    fake_provider = MagicMock()
+    with patch("modelman.main.ProviderRegistry.get", return_value=fake_provider):
+        failed = run_queued_ops(
+            QueuedOps(
+                ready={"ollama/missing": True},
+                deletes={"ollama/real": real_variant},
+            )
+        )
+
+    assert failed is True
+    out = capsys.readouterr().out
+    assert "ready ollama/missing: Unknown model: ollama/missing" in out
+    # The queued delete for the real model still ran to completion despite
+    # the bad ready id.
+    fake_provider.delete.assert_called_once()
+    state = load_state(state_path)
+    assert "ollama/real" not in state.models
 
 
 def test_print_event_formats_download_lifecycle(capsys):

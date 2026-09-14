@@ -242,6 +242,20 @@ class PendingChanges:
             return True
         return False
 
+    def _cleanup_partial_download(self, provider: object, variant: VariantSpec) -> None:
+        """Best-effort removal of a cancelled/failed download's partial
+        artifact, so the next reconcile doesn't silently promote it to
+        ready=True. Mirrors the pre-existing DownloadManager._finish
+        cleanup path: skips removal when another registry entry's
+        artifact overlaps this variant's (the same guard
+        find_shared_artifact_owner already provides elsewhere in this
+        class), so a cancelled/failed download can't rmtree an artifact
+        another entry still owns.
+        """
+        with contextlib.suppress(Exception):
+            if find_shared_artifact_owner(self.registry, provider, variant) is None:
+                provider.cleanup_partial_download(variant)  # type: ignore[attr-defined]
+
     def cancel(self) -> None:
         """Request cancellation of an in-progress apply().
 
@@ -455,14 +469,25 @@ class PendingChanges:
                 try:
                     local_path = self._download(variant, on_progress)
                 except DownloadCancelled:
+                    self._cleanup_partial_download(provider, variant)
                     emit(f"download:cancelled|{model_id}|{label}")
                     emit("apply:cancelled")
                     return
                 except Exception as exc:  # noqa: BLE001
+                    self._cleanup_partial_download(provider, variant)
                     reason = _reason(exc)
                     self.failures.append(f"download {model_id}: {exc}")
                     emit(f"download:fail|{model_id}|{label}|{reason}")
                     continue
+                except BaseException:
+                    # KeyboardInterrupt (Ctrl+C during the post-exit
+                    # runner) unwinds straight through here — clean up
+                    # the partial artifact before propagating so the
+                    # caller's cancellation handling still runs (and the
+                    # next reconcile doesn't promote a truncated
+                    # download to ready=True).
+                    self._cleanup_partial_download(provider, variant)
+                    raise
                 size_bytes = self._size_of(local_path)
                 if size_bytes is None:
                     try:

@@ -813,9 +813,10 @@ async def test_model_screen_add_appends_model_entry_to_registry(
     assert added.provider_id == "ollama"
     assert added.model_name == "ornith:8b"
     assert added.fetch is None
-    # The add persists immediately now (mirrors edits): the real-provider
-    # ready-on bypasses the apply-on-exit queue entirely, so there's no
-    # later save point that would otherwise persist the entry.
+    # The add persists immediately now (mirrors edits): the post-exit
+    # runner looks up queued model ids against a freshly-loaded-from-disk
+    # registry, so an unpersisted add would be treated as unknown at
+    # apply time — persisting now avoids that entirely.
     reloaded = load_registry(reg_path)
     assert "ollama/ornith:8b" in [m.id for m in reloaded.models]
 
@@ -1678,8 +1679,9 @@ async def test_app_mounts_without_live_daemon_or_proxy_restart():
 
 @pytest.mark.asyncio
 async def test_ctrl_q_exits_immediately_with_no_active_downloads(tmp_path, monkeypatch):
-    # The quit guard's no-op path: with an empty queue, ctrl+q must exit
-    # the app directly, exactly like the pre-guard behavior.
+    # ctrl+q with an empty queue exits the app directly (no confirmation
+    # dialog, nothing to guard against — there's no more background
+    # download to block on).
     _seed_registry_and_state(tmp_path, monkeypatch)
     app = ModelmanApp()
     async with app.run_test() as pilot:

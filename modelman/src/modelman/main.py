@@ -177,7 +177,13 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     """
     registry = load_registry()
     state = load_state()
-    ready_specs = {mid: model_entry_to_variant(registry.model(mid)) for mid in queued.ready}
+    ready_specs = {}
+    missing_ready = []
+    for mid in queued.ready:
+        try:
+            ready_specs[mid] = model_entry_to_variant(registry.model(mid))
+        except KeyError:
+            missing_ready.append(mid)
 
     provider_instances: dict[str, object] = {}
     for spec in list(ready_specs.values()) + list(queued.deletes.values()):
@@ -195,13 +201,30 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         registry_path=_default_registry_path(),
         state_path=_default_state_path(),
         providers=provider_instances,
-        ready=[(mid, ready_specs[mid], target) for mid, target in queued.ready.items()],
+        ready=[
+            (mid, ready_specs[mid], target)
+            for mid, target in queued.ready.items()
+            if mid in ready_specs
+        ],
         deletes=list(queued.deletes.items()),
         moves=list(queued.moves.items()),
         exposes=list(queued.exposes.items()),
         litellm_path=default_litellm_config_path(),
     )
-    total = len(pending.ready) + len(pending.deletes) + len(pending.moves) + len(pending.exposes)
+    # A model id queued while the TUI was open but missing from a
+    # freshly-loaded registry (deleted out-of-band, or a hand-edited
+    # registry.toml) must not take down the whole run — every other op
+    # (deletes/moves/exposes) already degrades to a per-item failure on
+    # a missing id; ready needs the same treatment, recorded here since
+    # its lookup happens before PendingChanges even exists.
+    pending.failures.extend(f"ready {mid}: Unknown model: {mid}" for mid in missing_ready)
+    total = (
+        len(pending.ready)
+        + len(missing_ready)
+        + len(pending.deletes)
+        + len(pending.moves)
+        + len(pending.exposes)
+    )
     completed = 0
     done_verbs = {
         "delete:done",
