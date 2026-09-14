@@ -29,6 +29,7 @@ from .local_control import (
 from .manifest import get_family_dir
 from .migrate import migrate as run_migration
 from .migrate import migrate_wt_gateway_to_litellm
+from .providers.base import VariantSpec
 from .providers.registry import ProviderRegistry
 from .queue import PendingChanges, QueuedOps
 from .registry import (
@@ -192,14 +193,45 @@ def run_queued_ops(queued: QueuedOps) -> bool:
             ready_specs[mid] = model_entry_to_variant(model_entry)
 
     provider_instances: dict[str, object] = {}
-    for spec in list(ready_specs.values()) + list(queued.deletes.values()):
+    unavailable_providers: dict[str, str] = {}
+    provider_ids = {
+        spec["provider"] for spec in list(ready_specs.values()) + list(queued.deletes.values())
+    }
+    for provider_id in provider_ids:
         try:
-            entry = registry.provider(spec["provider"])
-            provider_instances[spec["provider"]] = ProviderRegistry.get(spec["provider"], provider_config(entry))
+            entry = registry.provider(provider_id)
         except KeyError:
             # Not in the registry or not mapped to a Provider class:
             # PendingChanges treats this as flag-only (native/unmapped).
             continue
+        try:
+            provider_instances[provider_id] = ProviderRegistry.get(
+                provider_id, provider_config(entry)
+            )
+        except KeyError:
+            # Not mapped to a Provider class: treat as flag-only.
+            continue
+        except Exception as exc:  # noqa: BLE001
+            # A provider that fails to instantiate with a real error (bad
+            # config, a broken constructor) must not crash the whole run.
+            # A ready-on against it is recorded as its own failure below
+            # (never silently treated as flag-only — that would flip
+            # ready=True without ever downloading anything); a delete
+            # against it still cleans up the registry/state rows, the same
+            # degraded-but-safe behavior a flag-only provider already gets.
+            unavailable_providers[provider_id] = str(exc)
+
+    provider_ready_failures: list[tuple[str, str]] = []
+    ready_items: list[tuple[str, VariantSpec, bool]] = []
+    for mid, target in queued.ready.items():
+        spec = ready_specs.get(mid)
+        if spec is None:
+            continue  # already recorded in missing_ready
+        reason = unavailable_providers.get(spec["provider"])
+        if reason is not None:
+            provider_ready_failures.append((mid, reason))
+        else:
+            ready_items.append((mid, spec, target))
 
     pending = PendingChanges(
         registry=registry,
@@ -207,11 +239,7 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         registry_path=_default_registry_path(),
         state_path=_default_state_path(),
         providers=provider_instances,
-        ready=[
-            (mid, ready_specs[mid], target)
-            for mid, target in queued.ready.items()
-            if mid in ready_specs
-        ],
+        ready=ready_items,
         deletes=list(queued.deletes.items()),
         moves=list(queued.moves.items()),
         exposes=list(queued.exposes.items()),
@@ -220,11 +248,20 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     total = (
         len(pending.ready)
         + len(missing_ready)
+        + len(provider_ready_failures)
         + len(pending.deletes)
         + len(pending.moves)
         + len(pending.exposes)
     )
     completed = 0
+    # Ids already counted in the `exposes` term above. apply() can append
+    # cascaded unexposes to PendingChanges.exposes mid-run (deleting, or
+    # clearing the ready flag of, a model that's exposed but has no
+    # explicit expose/unexpose queued — see queue.py's deletes loop and
+    # ready loop) — each cascade must grow `total` too, the first time its
+    # start tag is seen, or the "N of M" summary and the Ctrl+C remaining
+    # count both undercount real work.
+    counted_expose_ids = set(queued.exposes)
     done_verbs = {
         "delete:done",
         "download:done",
@@ -235,9 +272,14 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     }
 
     def on_event(tag: str) -> None:
-        nonlocal completed
+        nonlocal completed, total
+        parts = tag.split("|")
+        verb = parts[0]
+        if verb in ("expose:start", "unexpose:start") and parts[1] not in counted_expose_ids:
+            total += 1
+            counted_expose_ids.add(parts[1])
         print_event(tag)
-        if tag.split("|", 1)[0] in done_verbs:
+        if verb in done_verbs:
             completed += 1
 
     # A model id queued while the TUI was open but missing from a
@@ -250,6 +292,9 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     for mid in missing_ready:
         pending.failures.append(f"ready {mid}: Unknown model: {mid}")
         on_event(f"ready:fail|{mid}|{mid}|Unknown model")
+    for mid, reason in provider_ready_failures:
+        pending.failures.append(f"ready {mid}: provider unavailable: {reason}")
+        on_event(f"ready:fail|{mid}|{mid}|provider unavailable: {reason}")
 
     try:
         pending.apply(on_event=on_event, on_progress=typer.echo)
@@ -259,6 +304,15 @@ def run_queued_ops(queued: QueuedOps) -> bool:
             f"\nCancelled: {completed} steps completed, {total - completed} remaining skipped."
         )
         return True
+    except Exception as exc:  # noqa: BLE001
+        # apply() normally captures per-step failures itself; an exception
+        # reaching all the way out here is a genuine bug, not a per-item
+        # failure — its own exception safety net (_persist) has already
+        # saved whatever completed before this point. Report it like any
+        # other failure instead of crashing with a raw traceback (mirrors
+        # the deleted StatusScreen's equivalent except Exception).
+        pending.failures.append(f"unexpected error: {exc}")
+        return print_error_summary(pending.failures, total)
 
     return print_error_summary(pending.failures, total)
 
