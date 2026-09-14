@@ -123,6 +123,36 @@ def test_cancel_current_terminates_running_proc():
     )  # not auto-cleared; cleared by _tracked_popen_runner
 
 
+def test_tracked_popen_runner_terminates_proc_on_keyboard_interrupt():
+    """A real Ctrl+C during `ollama pull` raises KeyboardInterrupt from
+    inside proc.wait(); the runner must terminate the child immediately
+    right there, instead of relying on a later cancel_current() call —
+    which races against _current_proc already being cleared to None by
+    this same function's finally block during the same unwind, before
+    main.py's except KeyboardInterrupt handler (which calls cancel())
+    ever runs. Regression for a review finding: cancel_current() was a
+    guaranteed no-op on the real interrupt path."""
+    from unittest.mock import MagicMock, patch
+
+    from modelman.providers.ollama import OllamaProvider, _tracked_popen_runner
+
+    fake_proc = MagicMock()
+    fake_proc.wait.side_effect = KeyboardInterrupt()
+    fake_proc.poll.return_value = None
+    fake_proc.stdout = None
+    fake_proc.terminate = MagicMock()
+
+    p = OllamaProvider({})
+    with (
+        patch("modelman.providers.ollama.subprocess.Popen", return_value=fake_proc),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _tracked_popen_runner(p, ["ollama", "pull", "x"])
+
+    fake_proc.terminate.assert_called_once()
+    assert p._current_proc is None
+
+
 def test_resolve_local_batches_variants_with_one_list(mock_runner):
     """resolve_local answers presence/path/size for the whole batch from ONE
     `ollama list` call — that single-subprocess property is why

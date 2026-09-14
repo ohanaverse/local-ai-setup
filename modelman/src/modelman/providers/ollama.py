@@ -33,6 +33,34 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text).strip()
 
 
+def _terminate_with_escalation(proc: subprocess.Popen) -> None:
+    """Send SIGTERM, escalating to SIGKILL on a daemon watchdog thread if
+    the process is still alive after ~1s. No-op if already exited.
+    Shared by cancel_current() (external cancellation) and
+    _tracked_popen_runner's own interrupt handling (a real Ctrl+C
+    raising KeyboardInterrupt inside proc.wait(), which must terminate
+    the child immediately rather than rely on a cancel_current() call
+    arriving after this process's finally has already cleared the
+    tracked reference).
+    """
+    if proc.poll() is not None:
+        return
+    with contextlib.suppress(Exception):
+        proc.terminate()
+
+    def _watchdog() -> None:
+        import time as _time
+
+        for _ in range(10):  # up to ~1s in 100ms ticks
+            _time.sleep(0.1)
+            if proc.poll() is not None:
+                return
+        with contextlib.suppress(Exception):
+            proc.kill()
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+
 def _tracked_popen_runner(
     provider: OllamaProvider,
     args: list[str],
@@ -73,6 +101,9 @@ def _tracked_popen_runner(
 
     try:
         proc.wait()
+    except BaseException:
+        _terminate_with_escalation(proc)
+        raise
     finally:
         if reader_thread is not None:
             reader_thread.join(timeout=1.0)
@@ -121,31 +152,16 @@ class OllamaProvider(Provider):
     def cancel_current(self) -> None:
         """Terminate the active subprocess, escalating to SIGKILL if needed.
 
-        Called by the apply-queue cancellation flow when the user
-        presses Cancel mid-download. Safe to call from any thread.
-        Spawns a watchdog thread that escalates to `kill()` if the
-        proc hasn't exited within ~1s of SIGTERM. The watchdog is a
-        daemon so it never blocks process exit.
+        Called by the apply-queue cancellation flow. Safe to call from
+        any thread. In practice this is now mostly a no-op safety net on
+        the real Ctrl+C path — _tracked_popen_runner terminates the
+        child itself the moment KeyboardInterrupt lands inside
+        proc.wait(), before this method could ever see a live proc.
         """
         proc = self._current_proc
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
-        with contextlib.suppress(Exception):
-            proc.terminate()
-
-        # Watchdog: if SIGTERM doesn't take effect within a short window,
-        # escalate to SIGKILL so the user actually sees the download stop.
-        def _watchdog() -> None:
-            import time as _time
-
-            for _ in range(10):  # up to ~1s in 100ms ticks
-                _time.sleep(0.1)
-                if proc.poll() is not None:
-                    return
-            with contextlib.suppress(Exception):
-                proc.kill()
-
-        threading.Thread(target=_watchdog, daemon=True).start()
+        _terminate_with_escalation(proc)
 
     def is_downloaded(self, variant: VariantSpec, runner: _Runner | None = None) -> bool:
         r = (runner or _default_runner)(
