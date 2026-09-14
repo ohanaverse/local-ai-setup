@@ -74,7 +74,8 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 
 // TestModelItemLinePricingAfterUsageCounts verifies that per-token
 // pricing is appended to the compact model line right after the 1d/7d/30d
-// usage counts, formatted as "$0.1000 0.0500 0.2000".
+// usage counts, formatted as " 0.1000  0.0500  0.2000" (matching
+// modelman's COST column formatting).
 func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	in := 0.10
@@ -110,14 +111,14 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	}
 
 	pricedLine := items[0].Title()
-	for _, want := range []string{"0/0/0", "$0.1000 0.0500 0.2000"} {
+	for _, want := range []string{"0/0/0", " 0.1000  0.0500  0.2000"} {
 		if !strings.Contains(pricedLine, want) {
 			t.Errorf("priced line %q missing %q", pricedLine, want)
 		}
 	}
 
 	countsIdx := strings.Index(pricedLine, "0/0/0")
-	ptIdx := strings.Index(pricedLine, "$0.1000 0.0500 0.2000")
+	ptIdx := strings.Index(pricedLine, " 0.1000  0.0500  0.2000")
 	if countsIdx == -1 || ptIdx == -1 {
 		t.Errorf("expected segments missing from %q", pricedLine)
 	}
@@ -131,15 +132,17 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	if unpricedCountsIdx == -1 || unpricedDashIdx == -1 || unpricedDashIdx < unpricedCountsIdx {
 		t.Errorf("unpriced line %q missing pricing markers after usage counts", unpricedLine)
 	}
-	if strings.Contains(unpricedLine, "$") {
-		t.Errorf("unpriced line %q unexpectedly contains price", unpricedLine)
+	if strings.Contains(unpricedLine, "0.1000") {
+		t.Errorf("unpriced line %q unexpectedly contains a price", unpricedLine)
 	}
 }
 
 // TestModelItemLinePartialPerTokenPricing verifies that when a model has
 // input and output per-token prices but no cache price, the per-token
-// segment renders with a single leading "$" and "-0000" for the missing
-// cache slot: "$0.5000 -0000 1.0000".
+// segment renders a 7-dash placeholder for the missing cache slot:
+// " 0.5000 -------  1.0000" (matching modelman's COST column formatting;
+// the extra space before "1.0000" is the leading-space padding of its
+// single-digit integer part).
 func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	in := 0.50
@@ -162,8 +165,8 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
 	line := items[0].Title()
-	if !strings.Contains(line, "$0.5000 -0000 1.0000") {
-		t.Errorf("partial pricing line %q missing expected $0.5000 -0000 1.0000", line)
+	if !strings.Contains(line, " 0.5000 -------  1.0000") {
+		t.Errorf("partial pricing line %q missing expected  0.5000 -------  1.0000", line)
 	}
 }
 

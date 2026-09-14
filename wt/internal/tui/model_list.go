@@ -104,23 +104,29 @@ func (m modelItem) Title() string {
 // the interface while rendering nothing.
 func (m modelItem) Description() string { return "" }
 
-// formatPerToken returns per-token costs as "$0.1234 0.2345 0.3456".
-// Each value has exactly 4 decimal places; missing values render as "-0000".
-// When all three prices are absent it returns a hyphen.
+// formatPerToken returns per-token costs as three space-delimited values,
+// e.g. " 0.1234  0.2345  0.3456", matching modelman's COST column
+// (_format_per_token in modelman/src/modelman/screens/models.py). Each price
+// is right-aligned to a 2-digit (leading-space-padded) integer part plus 4
+// decimal places, so prices over $10/million don't break column alignment.
+// A missing individual price renders as a 7-dash placeholder ("-------"),
+// matching that width. When all three prices are absent it returns a
+// hyphen.
 func formatPerToken(cost config.ModelCost) string {
-	format4dec := func(p *float64) string {
+	const missing = "-------"
+	format7dec := func(p *float64) string {
 		if p == nil {
-			return "-0000"
+			return missing
 		}
-		return fmt.Sprintf("%.4f", *p)
+		return fmt.Sprintf("%7.4f", *p)
 	}
-	in := format4dec(cost.InputPricePerMillion)
-	cache := format4dec(cost.CachePricePerMillion)
-	out := format4dec(cost.OutputPricePerMillion)
-	if in == "-0000" && cache == "-0000" && out == "-0000" {
+	in := format7dec(cost.InputPricePerMillion)
+	cache := format7dec(cost.CachePricePerMillion)
+	out := format7dec(cost.OutputPricePerMillion)
+	if in == missing && cache == missing && out == missing {
 		return "-"
 	}
-	return fmt.Sprintf("$%s %s %s", in, cache, out)
+	return fmt.Sprintf("%s %s %s", in, cache, out)
 }
 
 // sortModelsByUsage sorts models in place (stable) descending by family
