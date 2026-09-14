@@ -2037,6 +2037,9 @@ def test_apply_ready_on_download_failure_does_not_stop_other_steps(tmp_path):
     provider.is_downloaded.return_value = True
     provider.delete.return_value = None
     provider.download.side_effect = RuntimeError("connection refused")
+    # Configure artifact_paths to return None so find_shared_artifact_owner() doesn't
+    # see a false conflict: each variant has distinct paths (or no paths)
+    provider.artifact_paths.return_value = None
 
     pending = PendingChanges(
         registry=reg,
@@ -2050,11 +2053,9 @@ def test_apply_ready_on_download_failure_does_not_stop_other_steps(tmp_path):
     pending.apply()
 
     assert "download ollama/x: connection refused" in pending.failures
-    # The deletion loop ran despite the download failure, removing ollama/y from registry
+    provider.delete.assert_called_once()
     reloaded = load_registry(reg_path)
     assert all(m.id != "ollama/y" for m in reloaded.models)
-    # provider.delete was called for the deletion (either via _remove_artifact_if_present or another path)
-    assert provider.delete.called or provider.is_downloaded.called
 
 
 def test_apply_cancelled_mid_ready_loop_skips_remaining_and_does_not_save(tmp_path):
