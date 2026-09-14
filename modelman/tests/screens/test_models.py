@@ -2111,6 +2111,60 @@ async def test_action_toggle_running_starts_a_stopped_ready_model(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_action_toggle_running_accepts_non_local_model_on_local_provider(tmp_path, monkeypatch):
+    # Regression test for a review finding: action_toggle_running's local-
+    # model gate computed `entry.location or provider.location` (a truthy-OR
+    # of raw strings, checked with a single is_local_location() call) while
+    # the row-render check a few lines up ORs two independent
+    # is_local_location() calls. They disagreed for a model with a truthy
+    # non-local `location` (e.g. "cloud") whose provider is local: the row
+    # rendered it as local/startable, but 's' rejected it with "Only local
+    # models can be started/stopped" because the raw truthy-OR picked
+    # entry.location and never looked at the provider's location at all.
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud"
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = {}
+    notified = []
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        started["id"] = model_id
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        app.screen.notify = lambda msg, *a, **k: notified.append(msg)
+        await pilot.press("s")
+        for _ in range(200):
+            await pilot.pause()
+            if started.get("id") == "ollama/a":
+                break
+    assert started["id"] == "ollama/a"
+    assert not any("Only local models" in m for m in notified)
+
+
+@pytest.mark.asyncio
 async def test_action_toggle_running_shows_confirm_dialog_when_others_running(tmp_path, monkeypatch):
     # Starting a model while a different local model is already running must
     # not silently start a second one — the architecture note in the design

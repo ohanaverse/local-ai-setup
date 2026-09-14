@@ -557,10 +557,10 @@ class ModelScreen(Screen[None]):
         entry = self._current_entry()
         if entry is None:
             return
-        if not is_local_location(
-            entry.location
-            or next((p.location for p in self.registry.providers if p.id == entry.provider_id), None)
-        ):
+        provider_location = next(
+            (p.location for p in self.registry.providers if p.id == entry.provider_id), None
+        )
+        if not (is_local_location(entry.location) or is_local_location(provider_location)):
             self.app.notify("Only local models can be started/stopped")
             return
         if not self._is_ready(entry.id):
