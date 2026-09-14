@@ -1863,6 +1863,47 @@ async def test_discard_drops_cascaded_ready_on_and_expose(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_apply_exits_with_queued_ops(tmp_path, monkeypatch):
+    # The Apply button on ConfirmExitDialog is the only thing that hands
+    # the queue off to main.py's post-exit runner (via
+    # ModelmanApp.return_value) — apply() itself doesn't run inside the
+    # TUI anymore, so this just confirms _on_exit_confirm's apply branch
+    # exits carrying the right QueuedOps rather than silently dropping
+    # the queue or crashing (regression history: this branch used to hit
+    # a NoActiveAppError when apply ran inside the TUI on a worker
+    # thread — see the removed StatusScreen-era tests — so it's worth a
+    # minimal check that it still works now that apply runs post-exit).
+    from modelman.queue import QueuedOps
+
+    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.press("x")  # cascades queued_ready=True + queued_exposes=True
+        await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/x": True}
+        assert app.screen.queued_exposes == {"ollama/x": True}
+
+        await pilot.press("escape")
+        await pilot.pause()
+        for btn in app.screen.query(Button):
+            if btn.id == "apply":
+                btn.press()
+                break
+        await pilot.pause()
+
+    assert app.return_value == QueuedOps(
+        ready={"ollama/x": True},
+        deletes={},
+        moves={},
+        exposes={"ollama/x": True},
+    )
+
+
+@pytest.mark.asyncio
 async def test_discard_persists_state_cleanup_for_session_added_model(
     tmp_path, monkeypatch, stub_ollama_caps
 ):
