@@ -1356,7 +1356,7 @@ async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
         # Visible immediately in the same (only) screen's table.
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
-        assert rows[0][6] == "20.0000 ------ ------"
+        assert rows[0][6] == "20.0000 ------- -------"
 
     # And it was actually persisted, not just held in this session's
     # in-memory registry: a fresh app relaunch sees it too.
@@ -1366,7 +1366,7 @@ async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
         mt = app2.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
         assert rows, "model must still be listed after relaunch"
-        assert rows[0][6] == "20.0000 ------ ------"
+        assert rows[0][6] == "20.0000 ------- -------"
 
 
 def test_families_list_includes_state_only_families(tmp_path, monkeypatch):

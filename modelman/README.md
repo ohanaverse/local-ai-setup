@@ -139,8 +139,10 @@ The TUI has a single screen:
   loc · status ✓/○/↓/↑/✗/→ · exposed · cost · size). LOC is an icon
   (↗ cloud / ▤ local / `—` when unknown) and EXPOSED shows `Y`/`–`; COST
   renders per-token input/cache/output prices per million tokens as
-  three space-delimited 4-decimal values (a missing individual price
-  shows as `------`; no pricing at all shows a single `-`). There is no
+  three space-delimited values, each a leading-space-padded 2-digit
+  integer part and 4 decimal places (e.g. ` 2.0000`, `12.5000`) so prices
+  over $10/million stay aligned; a missing individual price shows as
+  `-------`; no pricing at all shows a single `-`. There is no
   SUB (subscription) column, though subscription pricing can still be
   set via the Add/Edit dialogs. The row's on-disk path appears in a
   details panel below the table (`path: —` when unknown), and a LiteLLM

@@ -227,21 +227,33 @@ def test_format_location_unexpected_value():
 
 
 def test_format_per_token_all_fields():
-    """Three prices render as space-delimited values with 4 decimal places,
-    in input/cache/output order, with no dollar sign or thousands rounding."""
+    """Three prices render as space-delimited values with a leading-space-
+    padded 2-digit integer part and 4 decimal places, in input/cache/output
+    order, with no dollar sign or thousands rounding."""
     c = Cost(
         input_price_per_million=2.0,
         cache_price_per_million=1.0,
         output_price_per_million=3.0,
     )
-    assert _format_per_token(c) == "2.0000 1.0000 3.0000"
+    assert _format_per_token(c) == " 2.0000  1.0000  3.0000"
+
+
+def test_format_per_token_double_digit():
+    """A price of $10/million or more (e.g. $12.50) still lines up with
+    single-digit prices since both use a 2-digit integer part."""
+    c = Cost(
+        input_price_per_million=12.5,
+        cache_price_per_million=1.0,
+        output_price_per_million=3.0,
+    )
+    assert _format_per_token(c) == "12.5000  1.0000  3.0000"
 
 
 def test_format_per_token_partial():
-    """A missing individual price renders as a 6-dash placeholder so the
-    column stays visually aligned with the 6-character '0.0000' width."""
+    """A missing individual price renders as a 7-dash placeholder so the
+    column stays visually aligned with the 7-character ' 0.0000' width."""
     c = Cost(input_price_per_million=2.0, output_price_per_million=3.0)
-    assert _format_per_token(c) == "2.0000 ------ 3.0000"
+    assert _format_per_token(c) == " 2.0000 -------  3.0000"
 
 
 def test_format_per_token_none():
@@ -880,7 +892,7 @@ async def test_model_screen_renders_per_token_pricing(tmp_path, monkeypatch):
         per_token_row = next(r for r in rows if "per-token" in r)
         subscription_row = next(r for r in rows if "subscription" in r)
 
-        assert per_token_row[6] == "1.0000 0.5000 2.0000"
+        assert per_token_row[6] == " 1.0000  0.5000  2.0000"
         assert subscription_row[6] == "-"
 
 

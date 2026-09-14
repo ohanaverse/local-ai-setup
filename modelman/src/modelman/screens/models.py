@@ -134,10 +134,11 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
 
 def _format_per_token(cost: Cost | None) -> str:
     """COST column: input/cache/output per-million-token prices as three
-    space-delimited values with 4 decimal places each. A missing individual
-    price renders as a 6-dash placeholder ('------'), matching the width of
-    a formatted '0.0000' value so the column stays aligned. No cost data at
-    all still collapses to a single '-'."""
+    space-delimited values, each a 2-digit (leading-space-padded) integer
+    part and 4 decimal places (e.g. ' 2.0000', '12.5000') so prices over
+    $10/million don't break column alignment. A missing individual price
+    renders as a 7-dash placeholder ('-------'), matching that width. No
+    cost data at all still collapses to a single '-'."""
     if cost is None:
         return "-"
     prices = (
@@ -147,7 +148,7 @@ def _format_per_token(cost: Cost | None) -> str:
     )
     if all(p is None for p in prices):
         return "-"
-    return " ".join("------" if p is None else f"{p:.4f}" for p in prices)
+    return " ".join("-------" if p is None else f"{p:7.4f}" for p in prices)
 
 
 def _format_location(location: str | None) -> str:
