@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The project uses `uv` for packaging and dependency management. Python 3.13 is required (`requires-python = "==3.13.*"`).
 
 - **Install dependencies:** `make install` (runs `uv sync`)
-- **Run the CLI during development:** `uv run modelman` (TUI) or `uv run modelman download <family>`
+- **Run the CLI during development:** `uv run modelman` (TUI)
 - **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`, `uv run modelman start <model_id>`, `uv run modelman stop` (issue #65 — see `local_control.py` below)
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
@@ -48,99 +48,45 @@ The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`
 
 ### Entry point
 
-- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `download <family>` (opens the TUI's model list scrolled to that family's first row), `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list), `delete-family <name>` (removes an empty family's lingering `[[families]]` entry left behind by queue.py's stickiness — the only remaining way to do so now that FamilyScreen is gone; refuses if the family still has models), `start <model_id>` / `stop` (issue #65 local-model lifecycle — see `local_control.py` below). Three sub-Typer apps are also mounted: `app.add_typer(benchmark_app, name="benchmark")`, `app.add_typer(usage_app, name="usage")`, and `app.add_typer(litellm_app, name="litellm")`.
+- `src/modelman/main.py` defines the Typer `app`. A single `@app.callback(invoke_without_command=True)` opens the TUI when no subcommand is given; subcommands: `migrate` (one-shot legacy import), `sync` (reconcile state against providers), `expose <model_id>` / `unexpose <model_id>` (LiteLLM model_list), `delete-family <name>` (removes an empty family's lingering `[[families]]` entry left behind by queue.py's stickiness — the only remaining way to do so now that FamilyScreen is gone; refuses if the family still has models), `start <model_id>` / `stop` (issue #65 local-model lifecycle — see `local_control.py` below). Three sub-Typer apps are also mounted: `app.add_typer(benchmark_app, name="benchmark")`, `app.add_typer(usage_app, name="usage")`, and `app.add_typer(litellm_app, name="litellm")`.
 - `main.py::litellm_app` (mounted as `modelman litellm`) — the LiteLLM routing on/off switch wt consumes: `status` / `on` / `off` / `set --url --api-key`. Routing-policy only: mutates just modelman.toml's `[litellm]` table through `locked_state()` and never starts, stops, or restarts the proxy (proxy lifecycle stays with `restart_litellm_proxy`/`MODELMAN_LITELLM_RESTART_CMD` after config writes). `status` redacts the key to `***<last4>`. wt reads the table read-only (`finalizeCfg`/`loadModelmanState` in `wt/internal/config`).
 
 ### Textual TUI
 
-- `src/modelman/app.py` — `ModelmanApp(App[None])`. `on_mount` builds one registry-backed `ModelScreen` and pushes it as the app's only screen (FamilyScreen was removed — family list/rename/delete UI no longer exists). When constructed with `family=` (from `modelman download <family>`), the cursor scrolls to that family's first row after the initial load instead of opening a separate filtered screen.
+- `src/modelman/app.py` — `ModelmanApp(App[QueuedOps | None])`. `on_mount` builds one registry-backed `ModelScreen` and pushes it as the app's only screen (FamilyScreen was removed — family list/rename/delete UI no longer exists).
 - `src/modelman/screens/__init__.py` — `reload_preserving_cursor(table, repopulate)` helper: snapshots the row key under the cursor before `DataTable.clear()` (which resets to row 0) and restores the cursor onto that key after repopulate. `ModelScreen._load_models()` routes through it. `reconcile_model_state(models, registry, state)` is the reconcile write-path `ModelScreen`'s background worker delegates to (see below) — per provider it tries `resolve_local()` (the batch presence/path/size check; ollama implements it with one `ollama list` for the whole batch) and falls back to the per-model path (`is_downloaded()`/`size_of()` per model, `list_local()` at most once per provider and only when at least one model in the batch is ready). A misaligned/failed batch result degrades to the per-model path rather than dropping variants. No hard-coded provider-id checks — batch support is a provider capability.
 - `src/modelman/screens/models.py` — `ModelScreen`: the app's single root screen. One DataTable (family · provider · model · loc · status · exposed · cost · subscription · size) — sorted `(family, location, provider, model name)`, local before cloud within each family/provider group — plus a details panel Static below the table showing the row's on-disk path (`path: —` when unknown), a pending-changes bar, and a LiteLLM on/off status line (`l` toggles `[litellm].enabled`; routing policy only, never touches the proxy process). LOC is an icon (↗ cloud / ▤ local / `—` when unknown) and EXPOSED renders `Y`/`–`; there is no PATH column. **EXPOSED is the AND of the (queued-or-persisted) exposure flag and the *projected* ready value** — the same gate `_validated_entry` applies at apply time, so the column shows the post-apply state: a flagged but not-ready model renders `–`, but the user's `x` press on it cascades a `ready=True` queue (see below), so the column flips to `Y` at queue time, before apply runs. **Cloud models are exempt from the readiness gate** — via `is_cloud_effective(model)` in `litellm.py` (`openrouter` provider policy, or any model with `location = "cloud"`) used by both the TUI column and `_validated_entry` — so a flagged cloud row always renders `Y`. **Native-provider rows are exempt from the entire predicate** — `is_effectively_exposed` returns `Y` unconditionally for `model.native` (provider `auth.type = "native"`; see the exposure predicate under state.py) — but unlike the cloud exemption this is display-only: `_validated_entry` still rejects native rows at apply time ("no LiteLLM mapping"), by design. STATUS renders queued ops as glyphs with priority `✗ delete > ↓ download > → move > ✓ ready > ○`. Holds `queued_ready` / `queued_deletes` / `queued_moves` / `queued_exposes` dicts. Actions: `a` add model (family Select offers every known family plus a "+ New family…" sentinel that reveals a text input — see `forms.py` below), `e` edit (id/provider/location/family all immutable — issue #52; family re-homing isn't exposed from this dialog), `d` queue delete (works on any model — the old not-ready gate is gone; apply skips the on-disk removal if `provider.is_downloaded()` reports False), `r` toggle ready — a true file-presence toggle: ready-off queues the artifact removal (provider `delete()`, or the `state.disk_path` file for flag-only providers) and apply() re-derives the unexpose from the persisted exposure flag; ready-on queues a download/pull or flag flip, `x` toggle exposed (cascades a ready=True queue first if the model isn't ready yet — the cascaded queue is what flips the EXPOSED column to `Y`, since the column gates on `_projected_ready`, not the persisted flag), `escape` shows the apply/discard/cancel dialog if anything is queued, otherwise quits the app (this is the root screen — there's nothing to pop back to). The expose-depends-on-ready invariant is enforced in one place — `_enforce_expose_ready_rule`, run at every queue mutation: a queued `expose=True` is dropped (with a notification) whenever the *projected* ready value (`queued_ready` target, else persisted) is False, and `x` on a model queued to be made not-ready refuses rather than overwrites. Cloud rows are exempt (matching `_validated_entry`). Only the expose→ready cascade direction carries a provenance marker (`_ready_cascade_for_expose`): an `x`-cascaded download is cancelled when its expose is cancelled. The screen never queues unexpose cascades itself — `apply()` re-derives them. `_provider_list()` derives from `registry.providers` (sorted) so the Add dialog's provider dropdown is alphabetical and needs no value threaded down from elsewhere.
-- `ModelScreen` runs a background worker (`_run_reconcile`, `thread=True`) on mount over every model in the registry — there is no manual reconcile binding; it runs automatically, and there is no resume-triggered reconcile (apply mutates `registry`/`state` in place, so the screen is already current when a covering screen like `StatusScreen` or `DownloadScreen` pops). It delegates its actual state-write logic to the shared `reconcile_model_state()` (`screens/__init__.py`, see above) rather than duplicating it. For a local-artifact model (per `registry.model_has_local_artifact` — driven by `ModelEntry.location`/`ProviderEntry.location`, not a hard-coded provider list), it writes `state.ready`/`disk_path`/`size_bytes` directly from what the provider reports; for a cloud-located or cloud-provider model, `ready` is left alone (only `disk_path`/`size_bytes` are opportunistically updated) since reconcile cannot verify a remote model against a local filesystem. A known `state.disk_path` is preserved unless reconcile observes a fresh one.
-- `src/modelman/screens/status.py` — `StatusScreen`: live progress log of the apply-queue run. Pushed on top of `ModelScreen` (not popped — see below) when the user confirms applying pending changes.
-- `src/modelman/screens/forms.py` — modal screens: `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with provider Select, family Select, model input, location Select, and a cost section with two independent Checkbox controls — per-token pricing (input/cache/output price per million tokens) and subscription pricing (price + `month`/`year` period) — so either, both, or no pricing can be set; `parse_cost_fields()` and `parse_subscription_fields()` parse the cost fields alongside `parse_model()`; see "ModelForm parsing rules" below), `ConfirmExitDialog` (shows pending set, applies on confirm), `CancelApplyDialog` (Escape during an in-progress apply on `StatusScreen`; offers cancel-or-wait). The family Select is disabled/display-only in edit mode (issue #52); in add mode it's enabled and carries a `NEW_FAMILY_VALUE` sentinel option (label `"+ New family…"`) that reveals a `#new-family-input` text field — `_resolve_family()` resolves the sentinel to that typed name (blank shows an error) so a brand-new family needs no separate creation step. All modals inherit from a shared `ModelmanModal` base that enforces the dialog conventions: buttons composed left-to-right (cancel/default rightmost, primary left of it), priority-bound `escape` action that cancels even from inside an `Input`, and a `_focus_button(id)` helper for the safe-default focus on destructive prompts.
+- `ModelScreen` runs a background worker (`_run_reconcile`, `thread=True`) on mount over every model in the registry — there is no manual reconcile binding; it runs automatically, and there is no resume-triggered reconcile (queued changes are only ever applied after the TUI has exited — see "Downloads (queued, applied on exit)" below — so there is no covering screen whose pop would need to trigger one). It delegates its actual state-write logic to the shared `reconcile_model_state()` (`screens/__init__.py`, see above) rather than duplicating it. For a local-artifact model (per `registry.model_has_local_artifact` — driven by `ModelEntry.location`/`ProviderEntry.location`, not a hard-coded provider list), it writes `state.ready`/`disk_path`/`size_bytes` directly from what the provider reports; for a cloud-located or cloud-provider model, `ready` is left alone (only `disk_path`/`size_bytes` are opportunistically updated) since reconcile cannot verify a remote model against a local filesystem. A known `state.disk_path` is preserved unless reconcile observes a fresh one.
+- `src/modelman/screens/forms.py` — modal screens: `ConfirmModal` (y/n with keybindings), `ModelForm` (add/edit with provider Select, family Select, model input, location Select, and a cost section with two independent Checkbox controls — per-token pricing (input/cache/output price per million tokens) and subscription pricing (price + `month`/`year` period) — so either, both, or no pricing can be set; `parse_cost_fields()` and `parse_subscription_fields()` parse the cost fields alongside `parse_model()`; see "ModelForm parsing rules" below), `ConfirmExitDialog` (shows the pending queue; `Apply`/`Discard` both exit the app, `Cancel` stays in the TUI). The family Select is disabled/display-only in edit mode (issue #52); in add mode it's enabled and carries a `NEW_FAMILY_VALUE` sentinel option (label `"+ New family…"`) that reveals a `#new-family-input` text field — `_resolve_family()` resolves the sentinel to that typed name (blank shows an error) so a brand-new family needs no separate creation step. All modals inherit from a shared `ModelmanModal` base that enforces the dialog conventions: buttons composed left-to-right (cancel/default rightmost, primary left of it), priority-bound `escape` action that cancels even from inside an `Input`, and a `_focus_button(id)` helper for the safe-default focus on destructive prompts.
 
 ### Pending changes queue
 
-- `src/modelman/queue.py` — `PendingChanges(registry, state, registry_path, state_path, providers, downloads, deletes, moves, exposes, litellm_path, failures, cancelled)`. `apply()` runs deletes first (so downloads free up disk), then moves (pure registry metadata: `ModelEntry.family = new_family`; a move for a model deleted in the same apply is dropped), then downloads (each calls `provider.download(variant)` → `state.set(id, replace(state.get(id), ready=True, disk_path=local_path))`), then exposes (each writes a LiteLLM `model_list` entry), then a single `save_registry()` + `save_state()`. The delete step checks `provider.is_downloaded(variant)` before artifact removal: if the artifact is absent, the provider's `delete()` is skipped but the lifecycle events, registry/state cleanup, and cascade-unexpose still run; if `is_downloaded()` raises, the artifact delete is attempted conservatively and real failures surface. The deletes loop and the ready-off loop both check `registry.find_shared_artifact_owner()` before artifact removal: when another registry entry's `path_of()` resolves to the same on-disk target (omlx dirs are keyed on the repo basename, so colliding repos share one), the file is kept and the reason surfaced, while registry/state cleanup still runs. `DownloadManager`'s cancel/fail cleanup path (`downloads.py`) runs the same check via the registry snapshot passed to `start()`, so a cancelled/failed background download can't rmtree an artifact another registry entry still owns either. The ready-off loop also guards removal with `provider.is_downloaded()` like the deletes loop, skips any id queued for deletion (succeeded or failed), and flag-only providers remove the artifact recorded in `state.disk_path` on ready-off via `_remove_local_artifact`. Failures are captured per-step, processing continues.
+- `src/modelman/queue.py` — `PendingChanges(registry, state, registry_path, state_path, providers, downloads, deletes, moves, exposes, litellm_path, failures, cancelled)`. `apply()` runs deletes first (so downloads free up disk), then moves (pure registry metadata: `ModelEntry.family = new_family`; a move for a model deleted in the same apply is dropped), then downloads (each calls `provider.download(variant)` → `state.set(id, replace(state.get(id), ready=True, disk_path=local_path))`), then exposes (each writes a LiteLLM `model_list` entry), then a single `save_registry()` + `save_state()`. The delete step checks `provider.is_downloaded(variant)` before artifact removal: if the artifact is absent, the provider's `delete()` is skipped but the lifecycle events, registry/state cleanup, and cascade-unexpose still run; if `is_downloaded()` raises, the artifact delete is attempted conservatively and real failures surface. The deletes loop and the ready-off loop both check `registry.find_shared_artifact_owner()` before artifact removal: when another registry entry's `path_of()` resolves to the same on-disk target (omlx dirs are keyed on the repo basename, so colliding repos share one), the file is kept and the reason surfaced, while registry/state cleanup still runs. The ready-off loop also guards removal with `provider.is_downloaded()` like the deletes loop, skips any id queued for deletion (succeeded or failed), and flag-only providers remove the artifact recorded in `state.disk_path` on ready-off via `_remove_local_artifact`. Failures are captured per-step, processing continues.
 
-### Downloads (async, background)
+### Downloads (queued, applied on exit)
 
-- `src/modelman/downloads.py` — `DownloadManager` (owned by
-  `ModelmanApp`, `self.app.downloads`). A ready-on/down- request for a
-  model whose provider has a real `Provider` class (per
-  `ProviderRegistry.available()` — the `_provider_can_download`
-  helper; this includes ollama *cloud* models, whose ready-on is a real
-  `ollama pull` even though there is no local artifact) never goes
-  through `PendingChanges`/apply-on-exit: `ModelScreen` ('r'/'x'/add)
-  routes it directly to `DownloadManager.start()` (passing `registry=
-  self.registry` so cancel/fail cleanup can run the shared-artifact
-  check above), which runs it on its own daemon thread against a fresh
-  provider instance (isolating per-download cancellation state),
-  persists success to `modelman.toml` via `state.locked_state()` (a
-  locked read-modify-write — see below), and marks the model locked
-  (`d`/`e` refuse, STATUS shows ⏳) until it finishes. Deletes, moves,
-  and (mostly) exposes stay in the existing apply-on-exit queue; a
-  flag-only provider's (native/unmapped, no `Provider` class) ready-on
-  also stays queued, since there's no real download to background.
-  `DownloadScreen` (`screens/downloads.py`, opened with `g`) shows live
-  progress; the app-level quit guard (`ModelmanApp.request_quit()`,
-  wired to `ctrl+q` and `ModelScreen`'s Escape when its queue is empty)
-  blocks exiting while any download is active, and — if the top screen
-  is a `ModelScreen` with
-  an unapplied queue (`has_pending_changes()`) — routes through its
-  `action_back()` instead of dropping the queue, the same confirm
-  Escape would give.
-- `state.locked_state()` (`state.py`) — the only safe way to write
-  `modelman.toml` once more than one thing can write it concurrently
-  (a `DownloadManager` completion on a background thread, alongside
-  `PendingChanges.apply()`'s own save for an unrelated model): acquires
-  a process lock, loads fresh, yields the `StateStore` to mutate, saves
-  on exit. `PendingChanges.apply()`'s final save uses it too, merging
-  only the model ids/families this run actually touched onto a
-  freshly-loaded copy rather than overwriting the whole file from its
-  own (possibly stale) in-memory snapshot.
-- `registry.locked_registry()` (`registry.py`) — the registry.toml
-  analogue of `locked_state()`: `save_registry()` now holds a process
-  lock, and `locked_registry()` is the locked read-modify-write
-  context manager. Don't call `save_registry()` from inside it (the
-  lock isn't reentrant → deadlock); mutate the yielded `Registry` and
-  let the context manager persist it. The startup price-refresh worker
-  fetches over the network *before* locking, then applies+saves under
-  `locked_registry()` so a slow API call never blocks a main-thread save.
-- A queued expose (`x`) against a model that's still downloading is
-  allowed and queues normally; at apply time, if the model is still
-  downloading, `ModelScreen._run_apply` pulls it out of
-  `PendingChanges.exposes` and registers it as a
-  `DownloadManager.register_post_download()` action instead — it runs
-  automatically on that download's success (never on cancel/fail). A
-  model whose download finished in the gap between the user's last
-  screen refresh and this apply (`is_downloading()` already False, but
-  `self.state` hasn't reloaded from disk) has its state row refreshed
-  from disk before the ready gate is checked, rather than being routed
-  into `immediate_exposes` and rejected as "not ready".
-- **`self.app` is unsafe inside `_run_apply` and the deferred-expose
-  closure it registers**: both run on `StatusScreen`'s worker thread,
-  and `Screen.app` resolves via a contextvar that isn't set on a
-  background thread, falling back to walking `self._parent` up to the
-  App — a walk that raises `NoActiveAppError` once a screen is popped
-  and accessed off the main thread. `_push_status_screen` no longer
-  pops `ModelScreen` (it stays underneath `StatusScreen`, already
-  updated in place once apply finishes), but the worker-thread/
-  contextvar hazard is independent of that and remains real — this
-  used to crash every real expose-on-apply silently (caught by
-  `StatusScreen._run`'s except-clause, logged as "Unexpected error
-  during apply") until a test asserted on the *content* of an apply
-  rather than just its absence of a crash. `ModelScreen.on_mount()`
-  captures `self._app_ref = self.app` for exactly this reason; use
-  `self._app_ref`, never `self.app`, in any code reachable from
-  `_run_apply`.
-- `providers/_progress.py`'s `HF_DOWNLOAD_LOCK` serializes oMLX/llamacpp
-  downloads' use of `ProgressTqdm`'s class-level active-context slot:
-  `contextvars` was considered and rejected — `snapshot_download()` runs
-  its own internal `ThreadPoolExecutor`, whose workers never see a
-  `ContextVar` set by the caller, which would have silently broken
-  progress and cancellation, not just fixed the parallel-download case.
+- Every TUI action — including a real download/pull against a
+  reconcilable provider (ollama/omlx/llamacpp) — just populates
+  `ModelScreen`'s `queued_ready`/`queued_deletes`/`queued_moves`/
+  `queued_exposes` dicts. Nothing runs during the TUI session; there is
+  no background download manager, no live progress screen, and no quit
+  guard, because nothing is ever mid-flight while the TUI is open.
+- `Escape`/`ctrl+q` with a pending queue shows `ConfirmExitDialog`;
+  `Apply` exits the app carrying a `queue.py::QueuedOps` (the app's
+  `App[QueuedOps | None]` return value), `Discard` restores the
+  pre-session snapshot and exits with `None`, `Cancel` stays in the TUI.
+  `main.py::run_tui()` runs `run_queued_ops()` against fresh on-disk
+  state after the TUI process's `run()` call returns — see "Entry point"
+  above.
+- `PendingChanges.apply()` (`queue.py`) owns real downloads again: a
+  ready-on against a mapped, non-`manages_own_cache` provider calls
+  `provider.download(variant, on_progress=...)` directly, sequentially,
+  the same way it did before an async `DownloadManager` briefly existed.
+  `Ctrl+C` during `run_queued_ops()` raises `KeyboardInterrupt` in the
+  foreground process; the runner catches it, calls `pending.cancel()`
+  (reusing the existing `cancelled`/`aborted()` gate), and reports how
+  many steps completed vs. were skipped. Nothing is saved for an
+  interrupted run.
 
 ### Adding a new TUI screen
 
@@ -148,7 +94,7 @@ See the `adding-a-tui-screen` skill.
 
 ### Thread-safety pattern for worker threads
 
-When a screen's worker runs after the screen is popped (e.g., `StatusScreen._run_apply`):
+When a screen's worker runs on a background thread (e.g., `ModelScreen._run_reconcile`):
 
 ```python
 on_mount: self._app_ref = self.app  # Capture on main thread
@@ -175,7 +121,7 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 - `src/modelman/providers/registry.py` — `ProviderRegistry.register(cls)` / `.get(name, config)`.
 - Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`, `mtplx.py`, `mlx_lm_server.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
 - `src/modelman/providers/__init__.py` imports every provider module solely to trigger registration. Code that needs providers should import from `modelman.providers` rather than a single submodule.
-- `src/modelman/providers/_progress.py` — shared progress-callback helpers (`llamacpp.py`/`omlx.py`/`ollama.py` all use it) plus `DownloadCancelled`, raised by the HF `ProgressTqdm` bar when its `should_cancel` callable returns True. `PendingChanges.apply()` (`queue.py`) catches `DownloadCancelled` around the download step — this is what makes `StatusScreen`'s Cancel button actually interrupt an in-flight HuggingFace download instead of waiting for it to finish.
+- `src/modelman/providers/_progress.py` — shared progress-callback helpers (`llamacpp.py`/`omlx.py`/`ollama.py` all use it) plus `DownloadCancelled`, raised by the HF `ProgressTqdm` bar when its `should_cancel` callable returns True. `PendingChanges.apply()` (`queue.py`) still catches `DownloadCancelled` around the download step, but nothing currently wires a `should_cancel` callback into `provider.download()` — a `Ctrl+C` during `run_queued_ops()` now interrupts an in-flight HuggingFace download via a raw `KeyboardInterrupt` instead (see "Downloads (queued, applied on exit)" above).
 - `src/modelman/providers/mtplx.py` — MTPLX is discovery-only: it finds models MTPLX has already cached under `~/.mtplx/models` (dir names `<org>--<model>`, mapped back to the registry's `org/model` repo id by `_dir_name`/`_repo_id`) and its `download()` always raises `NotImplementedError` — MTPLX manages its own cache via the `mtplx` CLI, modelman never drives a download for it. The live server's start/stop/warmup lives separately in `src/modelman/providers/lifecycle.py`, not in the provider class: `mtplx serve` runs as a plain backgrounded subprocess (never a LaunchAgent, one model per process like `mlx_lm_server`) tracked by a pidfile at `/tmp/local-ai-setup-mtplx.pid`, serving on port 8003; `bin/llm-isolate-provider`'s `mtplx` branch shells out to `python3 -m modelman.providers.lifecycle isolate mtplx` to drive it.
 
 ### Ollama capability detection
