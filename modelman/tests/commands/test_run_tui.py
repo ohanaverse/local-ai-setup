@@ -45,6 +45,8 @@ def test_no_args_invokes_run_tui():
 
 
 def test_download_command_is_gone():
+    # The `download <family>` command has been removed now that the TUI
+    # queues all changes for post-exit apply instead of scroll-to-startup.
     runner = CliRunner()
     result = runner.invoke(app, ["download", "ornith"])
     assert result.exit_code != 0
@@ -87,6 +89,8 @@ def test_run_queued_ops_downloads_a_queued_ready_on(tmp_path, monkeypatch, capsy
 
 
 def test_run_queued_ops_reports_failures_and_returns_true(tmp_path, monkeypatch, capsys):
+    # When a queued operation fails (e.g., download error), run_queued_ops
+    # must report the failure, print an error summary, and return True for exit code 1.
     entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
     reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry])
     fake_provider = MagicMock()
@@ -102,6 +106,9 @@ def test_run_queued_ops_reports_failures_and_returns_true(tmp_path, monkeypatch,
 
 
 def test_run_queued_ops_keyboard_interrupt_prints_cancelled_summary(tmp_path, monkeypatch, capsys):
+    # Ctrl+C during a real multi-item apply must cancel cleanly and report
+    # how many operations finished vs. were skipped—there's no TUI Cancel button
+    # now that apply() runs after the TUI exits, so this is the only way to stop.
     entry_a = ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a:7b")
     entry_b = ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b:7b")
     reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry_a, entry_b])
@@ -120,6 +127,8 @@ def test_run_queued_ops_keyboard_interrupt_prints_cancelled_summary(tmp_path, mo
 
 
 def test_print_event_formats_download_lifecycle(capsys):
+    # print_event() must render queue.py's lifecycle tags as single human-readable
+    # lines that replace StatusScreen's RichLog now that apply() runs in a plain terminal.
     print_event("download:start|ollama/x|x:7b")
     print_event("download:done|ollama/x|x:7b|21.7 GB")
     out = capsys.readouterr().out
@@ -128,5 +137,7 @@ def test_print_event_formats_download_lifecycle(capsys):
 
 
 def test_print_error_summary_prints_nothing_on_clean_run(capsys):
+    # A clean run with no failures must print nothing and return False so
+    # the TUI exits cleanly with code 0, not leaving confusing output on success.
     assert print_error_summary([], total=3) is False
     assert capsys.readouterr().out == ""
