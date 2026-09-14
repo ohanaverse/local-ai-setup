@@ -300,7 +300,7 @@ async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monke
         mt = app.screen.query_one("#model-table", DataTable)
         row = mt.get_row_at(0)
         assert row[4] == "[green]✓[/green]"  # status
-        assert row[7] == "22.0 GB"  # size (col 7 after COST; SUB column removed)
+        assert row[8] == "22.0 GB"  # size (col 8 after RUNNING was inserted before COST)
 
 
 @pytest.mark.asyncio
@@ -1147,8 +1147,8 @@ async def test_x_key_queues_expose_and_column_renders(tmp_path, monkeypatch):
         assert "ollama/a" in ms.queued_exposes
         assert ms.queued_exposes["ollama/a"] is True
         # EXPOSED column exists (FAMILY, PROVIDER, MODEL, LOC, STATUS,
-        # EXPOSED, COST, SIZE).
-        assert len(mt.columns) == 8
+        # EXPOSED, RUNNING, COST, SIZE).
+        assert len(mt.columns) == 9
         # pending bar reflects the queued expose
         bar = ms.query_one("#pending-bar")
         assert "expose 1" in bar.content
@@ -1356,7 +1356,7 @@ async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
         # Visible immediately in the same (only) screen's table.
         mt = app.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
-        assert rows[0][6] == "20.0000 ------- -------"
+        assert rows[0][7] == "20.0000 ------- -------"
 
     # And it was actually persisted, not just held in this session's
     # in-memory registry: a fresh app relaunch sees it too.
@@ -1366,7 +1366,7 @@ async def test_edit_survives_app_relaunch(tmp_path, monkeypatch):
         mt = app2.screen.query_one("#model-table", DataTable)
         rows = [mt.get_row_at(i) for i in range(mt.row_count)]
         assert rows, "model must still be listed after relaunch"
-        assert rows[0][6] == "20.0000 ------- -------"
+        assert rows[0][7] == "20.0000 ------- -------"
 
 
 def test_families_list_includes_state_only_families(tmp_path, monkeypatch):
