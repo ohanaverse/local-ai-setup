@@ -280,11 +280,17 @@ def _delegate_stop_all() -> LifecycleResult:
     return LifecycleResult("stop-all", "", "", True, None)
 
 
-def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str, ...] = ()) -> LifecycleResult:
-    """Stop every other local provider and start the requested one."""
+def isolate(
+    provider_id: str, model: str | None = None, *, extra_args: tuple[str, ...] = (), solo: bool = False
+) -> LifecycleResult:
+    """Stop every other local provider and start the requested one —
+    unless solo=True, in which case only THIS provider's own occupant (if
+    serving a different model) is stopped, and every sibling provider is
+    left alone. solo is used by modelman's same-provider-only local-model
+    lifecycle (local_control.py); never passed by modelman benchmark."""
     if provider_id != "mtplx":
         # Transition: delegate non-mtplx providers to the bash helper.
-        return _delegate_isolate(provider_id, model, extra_args)
+        return _delegate_isolate(provider_id, model, extra_args, solo=solo)
     started = False
     try:
         resolved = _resolve_mtplx_model(model)
@@ -295,7 +301,8 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
             # respawn + multi-minute reload. mtplx is
             # single-model-per-process, so only the SAME model is
             # keepable — a different model takes the full restart below.
-            _stop_others(keep="mtplx")
+            if not solo:
+                _stop_others(keep="mtplx")
             # From here, `started` means "a live mtplx process exists that
             # this call is responsible for tearing down on failure" — not
             # literally "this call spawned it". A wedged server (answers
@@ -307,7 +314,10 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
             started = True
             _warmup(resolved)
         else:
-            _stop_others()
+            if solo:
+                _stop_mtplx()
+            else:
+                _stop_others()
             proc = _start_mtplx_serve(resolved)
             started = True
             _wait_for_model(resolved, proc)
@@ -327,7 +337,9 @@ def isolate(provider_id: str, model: str | None = None, *, extra_args: tuple[str
     return LifecycleResult("mtplx", resolved, MTPLX_DIRECT_URL, True, None)
 
 
-def _delegate_isolate(provider_id: str, model: str | None, extra_args: tuple[str, ...]) -> LifecycleResult:
+def _delegate_isolate(
+    provider_id: str, model: str | None, extra_args: tuple[str, ...], *, solo: bool = False
+) -> LifecycleResult:
     helper = shutil.which("llm-isolate-provider")
     if helper is None:
         return LifecycleResult(provider_id, model or "", "", False, "isolation helper not found on PATH")
@@ -337,7 +349,8 @@ def _delegate_isolate(provider_id: str, model: str | None, extra_args: tuple[str
         # MTPLX receives the model as a positional arg; mlx_lm_server receives
         # target/draft as positional args — both are forwarded via extra_args.
         env = {**os.environ, _ENV_VAR_BY_PROVIDER[provider_id]: model}
-    result = subprocess.run([helper, provider_id, *extra_args], capture_output=True, text=True, check=False, env=env)
+    argv = [helper, *(["--solo"] if solo else []), provider_id, *extra_args]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
     if result.returncode != 0:
         return LifecycleResult(provider_id, model or "", "", False, result.stderr.strip() or result.stdout.strip())
     try:
@@ -381,9 +394,12 @@ def _main(argv: list[str]) -> int:
     try:
         if cmd == "isolate":
             provider = argv[1] if len(argv) > 1 else ""
-            model = argv[2] if len(argv) > 2 else None
-            extra_args = tuple(argv[3:])
-            result = isolate(provider, model, extra_args=extra_args)
+            rest = argv[2:]
+            solo = "--solo" in rest
+            rest = [a for a in rest if a != "--solo"]
+            model = rest[0] if rest else None
+            extra_args = tuple(rest[1:])
+            result = isolate(provider, model, extra_args=extra_args, solo=solo)
         elif cmd == "stop":
             provider = argv[1] if len(argv) > 1 else ""
             result = stop(provider)

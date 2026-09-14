@@ -1,3 +1,5 @@
+import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from modelman.benchmark import isolation
@@ -6,6 +8,7 @@ from modelman.benchmark.isolation import (
     isolate_provider,
     restore_providers,
     stop_all_local_providers,
+    stop_provider,
 )
 
 
@@ -143,6 +146,71 @@ def test_stop_all_local_providers_failure_raises():
             raise AssertionError("expected BenchmarkError")
         except BenchmarkError as exc:
             assert "stop failed" in str(exc)
+
+
+def test_isolate_provider_solo_prepends_flag(monkeypatch):
+    """solo=True must prepend --solo to the helper's argv, immediately
+    after the executable path and before the provider id — this is what
+    lets modelman's same-provider-only local-model lifecycle start one
+    provider without the helper tearing down every other local provider
+    first. Without this the new same-provider-only start path would
+    silently fall back to full exclusivity."""
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"provider": "omlx", "model": "x", "direct_url": "u", "ok": True, "error": None}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("modelman.benchmark.isolation.subprocess.run", fake_run)
+    monkeypatch.setattr("modelman.benchmark.isolation.shutil.which", lambda name: f"/fake/{name}")
+    isolate_provider("omlx", solo=True)
+    assert calls[0][1] == "--solo"
+    assert calls[0][2] == "omlx"
+
+
+def test_isolate_provider_default_omits_flag(monkeypatch):
+    """The default (solo unset) must omit --solo entirely, not just leave
+    it False in the argv — every EXISTING caller (modelman benchmark
+    isolation) must keep seeing the exact same argv it always has, since
+    it never passes solo and still needs full exclusivity."""
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"provider": "omlx", "model": "x", "direct_url": "u", "ok": True, "error": None}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("modelman.benchmark.isolation.subprocess.run", fake_run)
+    monkeypatch.setattr("modelman.benchmark.isolation.shutil.which", lambda name: f"/fake/{name}")
+    isolate_provider("omlx")
+    assert "--solo" not in calls[0]
+
+
+def test_stop_provider_success(monkeypatch):
+    """stop_provider() must call the helper's `stop <provider>` verb (not
+    `stop-all`) so exactly one provider is torn down, leaving every other
+    local provider running — the primitive the same-provider-only
+    lifecycle needs to replace a single-port provider's occupant."""
+
+    def fake_run(argv, **kwargs):
+        assert argv[-2:] == ["stop", "omlx"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"provider": None, "model": None, "direct_url": None, "ok": True, "error": None}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("modelman.benchmark.isolation.subprocess.run", fake_run)
+    monkeypatch.setattr("modelman.benchmark.isolation.shutil.which", lambda name: f"/fake/{name}")
+    result = stop_provider("omlx")
+    assert result.ok is True
 
 
 def test_isolate_provider_passes_env_override():

@@ -86,7 +86,9 @@ def _helper_path(name: str) -> str:
     return path
 
 
-def isolate_provider(provider_id: str, *extra_args: str, env: dict[str, str] | None = None) -> IsolateResult:
+def isolate_provider(
+    provider_id: str, *extra_args: str, env: dict[str, str] | None = None, solo: bool = False
+) -> IsolateResult:
     """Delegate service isolation to the local-ai-setup helper.
 
     `extra_args` is forwarded verbatim, after `provider_id`, to the shell
@@ -101,12 +103,19 @@ def isolate_provider(provider_id: str, *extra_args: str, env: dict[str, str] | N
     (LLM_ISOLATE_OLLAMA_MODEL etc., see that script's header). Omitted
     entirely from the subprocess.run() call when None, so existing callers
     that never pass env see no change in behavior.
+
+    `solo=True` prepends `--solo` to the helper's argv, which skips
+    stopping every OTHER local provider before starting `provider_id` —
+    used by modelman's same-provider-only local-model lifecycle
+    (local_control.py). Never passed by modelman benchmark, which still
+    needs full exclusivity for clean measurement.
     """
     helper = _helper_path("llm-isolate-provider")
     run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "check": False}
     if env is not None:
         run_kwargs["env"] = {**os.environ, **env}
-    result = subprocess.run([helper, provider_id, *extra_args], **run_kwargs)
+    argv = [helper, *(["--solo"] if solo else []), provider_id, *extra_args]
+    result = subprocess.run(argv, **run_kwargs)
     if result.returncode != 0:
         raise BenchmarkError(
             f"isolation failed for {provider_id}: {result.stderr.strip() or result.stdout.strip()}"
@@ -146,6 +155,35 @@ def stop_all_local_providers() -> IsolateResult:
         raise BenchmarkError(f"isolation helper returned invalid JSON for stop-all: {exc}") from exc
     return IsolateResult(
         provider=data.get("provider") or "stop-all",
+        model=data.get("model") or "",
+        direct_url=data.get("direct_url") or "",
+        ok=data.get("ok", False),
+        error=data.get("error"),
+    )
+
+
+def stop_provider(provider_id: str) -> IsolateResult:
+    """Stop exactly one local provider via the isolation helper's `stop`
+    mode, leaving every other local provider running. Used by the
+    same-provider-only local-model lifecycle to replace a single-port
+    provider's (omlx/omlx-6bit) occupant before starting a different
+    model on it — mlx_lm_server and mtplx never need this (mlx_lm_server
+    self-replaces inside its own start function; mtplx's replace logic
+    lives in providers/lifecycle.py's isolate())."""
+    helper = _helper_path("llm-isolate-provider")
+    result = subprocess.run(
+        [helper, "stop", provider_id], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise BenchmarkError(
+            f"stop failed for {provider_id}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise BenchmarkError(f"isolation helper returned invalid JSON for stop {provider_id}: {exc}") from exc
+    return IsolateResult(
+        provider=data.get("provider") or provider_id,
         model=data.get("model") or "",
         direct_url=data.get("direct_url") or "",
         ok=data.get("ok", False),
