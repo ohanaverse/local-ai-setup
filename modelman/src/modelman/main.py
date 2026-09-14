@@ -55,6 +55,20 @@ litellm_app = typer.Typer(
 app.add_typer(litellm_app, name="litellm")
 
 
+def _warn_if_litellm_incomplete(state, consequence: str) -> None:
+    """Emit the shared 'url/api_key not set' warning if either is missing.
+
+    `on` and `off` differ only in how they describe the consequence — this
+    keeps the incomplete-config check itself in one place.
+    """
+    if not state.litellm.url or not state.litellm.api_key:
+        typer.echo(
+            f"warning: litellm.url or litellm.api_key is not set — "
+            f"{consequence}; run 'modelman litellm set --url ... --api-key ...'",
+            err=True,
+        )
+
+
 @litellm_app.command("status")
 def litellm_status():
     """Show the current [litellm] routing state. Does not touch the proxy."""
@@ -71,14 +85,8 @@ def litellm_on():
     """Route non-native models through LiteLLM. Does not start the proxy."""
     with locked_state() as state:
         state.litellm.enabled = True
-        incomplete = not state.litellm.url or not state.litellm.api_key
     typer.echo("litellm: on")
-    if incomplete:
-        typer.echo(
-            "warning: litellm.url or litellm.api_key is not set — "
-            "wt will fail at launch time; run 'modelman litellm set --url ... --api-key ...'",
-            err=True,
-        )
+    _warn_if_litellm_incomplete(state, "wt will fail at launch time")
 
 
 @litellm_app.command("off")
@@ -87,6 +95,11 @@ def litellm_off():
     with locked_state() as state:
         state.litellm.enabled = False
     typer.echo("litellm: off")
+    _warn_if_litellm_incomplete(
+        state,
+        "agent/model pairs with no direct protocol overlap (e.g. claude+openrouter) "
+        "still route through litellm regardless of this setting and will fail to launch",
+    )
 
 
 @litellm_app.command("set")

@@ -412,3 +412,51 @@ func TestBuildModelItemsMarksOnlyDeviatingRows(t *testing.T) {
 		t.Error("codex+openrouter has no direct path and should be marked")
 	}
 }
+
+// TestBuildModelItemsLitellmRequiredLabel: claude only speaks anthropic, so
+// claude+openrouter forces a litellm route. When modelman.toml's [litellm]
+// url/api_key are unset (directOnlyTestConfig leaves them zero-valued), the
+// row must say "(litellm required)" — not the generic "(unavailable)" —
+// because the fix is specifically "configure litellm", distinct from a
+// genuinely broken pairing.
+func TestBuildModelItemsLitellmRequiredLabel(t *testing.T) {
+	cfg := directOnlyTestConfig()
+	items := buildModelItems(cfg, "claude", []config.Model{openrouterTestModel}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].exception; got != "(litellm required)" {
+		t.Errorf("exception = %q, want %q", got, "(litellm required)")
+	}
+}
+
+// TestBuildModelItemsUnavailableLabelForUnknownProvider: a route failure
+// unrelated to litellm configuration (here, an unknown provider id) must
+// keep the generic "(unavailable)" label — only the litellm-unconfigured
+// case gets the more specific message.
+func TestBuildModelItemsUnavailableLabelForUnknownProvider(t *testing.T) {
+	cfg := directOnlyTestConfig()
+	m := config.Model{ID: "ghost/x", ModelName: "x", ProviderID: "ghost"}
+	items := buildModelItems(cfg, "claude", []config.Model{m}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].exception; got != "(unavailable)" {
+		t.Errorf("exception = %q, want %q", got, "(unavailable)")
+	}
+}
+
+// TestBuildModelItemsViaProxyLabelUnaffected: once litellm is properly
+// configured, a forced pairing keeps the existing "(via proxy)" label — the
+// new litellm-required label must only apply to the unconfigured case.
+func TestBuildModelItemsViaProxyLabelUnaffected(t *testing.T) {
+	cfg := directOnlyTestConfig()
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	items := buildModelItems(cfg, "claude", []config.Model{openrouterTestModel}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].exception; got != "(via proxy)" {
+		t.Errorf("exception = %q, want %q", got, "(via proxy)")
+	}
+}

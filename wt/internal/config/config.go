@@ -63,6 +63,15 @@ func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
 // ── Provider ──────────────────────────────────────────────
 
+// ErrLitellmUnconfigured wraps a ResolveRoute failure caused specifically by
+// litellm routing being required (forced by a protocol mismatch, or chosen
+// via the on/off toggle) while modelman.toml's [litellm] url/api_key are
+// unset. Callers (the model picker) use errors.Is against this sentinel to
+// show a more specific "litellm required" label instead of a generic
+// "unavailable" one, which would also cover unrelated failures like an
+// unknown provider or a direct-mode provider missing auth.base_url.
+var ErrLitellmUnconfigured = errors.New("litellm routing required but not configured")
+
 // Route is everything a driver needs to dial one model for one launch,
 // resolved once by ResolveRoute so drivers stop knowing about specific
 // providers (e.g. ollama) or transports.
@@ -133,12 +142,14 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 		if c.LitellmBaseURL() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no URL is configured — "+
-					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on'")
+					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on': %w",
+				ErrLitellmUnconfigured)
 		}
 		if c.LitellmAPIKey() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no API key is configured — "+
-					"run 'modelman litellm set --url ... --api-key ...'")
+					"run 'modelman litellm set --url ... --api-key ...': %w",
+				ErrLitellmUnconfigured)
 		}
 		return Route{
 			BaseOrigin: c.LitellmBaseURL(),

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -777,6 +778,9 @@ func TestResolveRouteLitellmMissingAPIKeyErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for litellm routing with a URL but no API key")
 	}
+	if !errors.Is(err, ErrLitellmUnconfigured) {
+		t.Errorf("err = %v, want it to wrap ErrLitellmUnconfigured", err)
+	}
 }
 
 // TestResolveRouteMissingBaseURLErrors ensures a provider with no
@@ -791,6 +795,9 @@ func TestResolveRouteMissingBaseURLErrors(t *testing.T) {
 	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
 	if err == nil {
 		t.Fatal("expected an error for a provider with no base_url in direct mode")
+	}
+	if errors.Is(err, ErrLitellmUnconfigured) {
+		t.Errorf("err = %v, a missing direct auth.base_url must not wrap ErrLitellmUnconfigured", err)
 	}
 }
 
@@ -811,6 +818,9 @@ func TestClaudeForcesLitellmForOpenRouter(t *testing.T) {
 	if err == nil {
 		// forced litellm requires a configured gateway URL
 		t.Fatalf("ResolveRoute: expected error when forced litellm has no URL, got nil")
+	}
+	if !errors.Is(err, ErrLitellmUnconfigured) {
+		t.Errorf("err = %v, want it to wrap ErrLitellmUnconfigured", err)
 	}
 
 	cfg.litellm = LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
