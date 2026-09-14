@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -250,11 +249,6 @@ class ModelScreen(Screen[None]):
         # time; the in-memory family is untouched until then so the row
         # stays visible in the table with a → glyph.
         self.queued_moves: dict[str, str] = {}
-        # Ids of models created this session via the add dialog. Used by
-        # the discard flow to cancel/clear any background download for a
-        # model that won't survive the snapshot restore (see
-        # _on_exit_confirm's discard branch).
-        self._added_ids: set[str] = set()
         # Snapshot for discard: restore if the user exits without applying.
         # Spans the whole registry now — this screen isn't scoped to one
         # family, so there's no other family's data to preserve alongside it.
@@ -361,10 +355,10 @@ class ModelScreen(Screen[None]):
         try:
             mt = self.query_one("#model-table", DataTable)
         except NoMatches:
-            # Screen already popped — e.g. a background download's
-            # on_complete callback (_on_download_finished) or the 1s
-            # _poll_downloads timer fired after Escape closed this screen
-            # while an untracked download was still in flight.
+            # _run_reconcile's background worker defers back to this via
+            # self.app.call_from_thread(self.reload) — if the app has
+            # already begun exiting (Apply/Discard) by the time that
+            # deferred call runs, the table may be torn down already.
             return
 
         def _repopulate() -> None:
@@ -644,7 +638,6 @@ class ModelScreen(Screen[None]):
         if entry.cost is not None:
             entry.pricing_updated_at = _now_iso()
         self.registry.models.append(entry)
-        self._added_ids.add(variant["id"])
         # Persist immediately (mirrors _on_edit_model): the post-exit
         # runner (main.py's run_queued_ops) looks up this model by id
         # against a freshly-loaded-from-disk registry, so an added
@@ -805,20 +798,11 @@ class ModelScreen(Screen[None]):
             # would leave a discarded edit persisted on disk, so write the
             # restored registry back out too.
             save_registry(self.registry, self.registry_path)
-            # A session-added model never independently persists to
-            # modelman.toml before apply() runs (nothing writes state in
-            # the background anymore) — this merge is defensive
-            # insurance, not a load-bearing path.
-            with contextlib.suppress(Exception), locked_state(self.state_path) as disk_state:
-                for mid in self._added_ids:
-                    if mid not in self._snapshot_state_entries:
-                        disk_state.models.pop(mid, None)
             self.queued_ready.clear()
             self.queued_deletes.clear()
             self.queued_moves.clear()
             self.queued_exposes.clear()
             self._ready_cascade_for_expose.clear()
-            self._added_ids.clear()
             self.app.exit(None)
             return
         # "cancel" or None: stay on the model screen, queue preserved.

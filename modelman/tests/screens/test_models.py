@@ -1929,7 +1929,6 @@ async def test_discard_persists_state_cleanup_for_session_added_model(
         await pilot.pause()
 
         added_id = "ollama/dangling:7b"
-        assert added_id in app.screen._added_ids
         assert app.screen.queued_ready == {added_id: True}
         # Immediately persisted to the registry, ahead of any apply.
         assert any(m.id == added_id for m in load_registry(reg_path).models)

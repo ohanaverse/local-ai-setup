@@ -1604,7 +1604,6 @@ async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
     assert ms.registry.models[0].family == "ornith"
     assert ms.queued_moves == {}
     assert ms.queued_ready == {}
-    assert ms._added_ids == set()
     # State must not have gained any session entries.
     assert dict(ms.state.models) == {}
 
