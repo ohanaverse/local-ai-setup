@@ -1,10 +1,13 @@
-// Package localgate probes whether modelman's marked "currently running"
-// local model (issue #65's one-local-model-at-a-time policy) is actually
-// serving right now. The marker itself — [local].running_model in
-// ~/.config/local-ai/modelman.toml — is read via internal/config
-// (Config.LocalRunningModel); this package only does the runtime
-// availability probe, mirroring internal/ollamacheck's role for the
-// pre-existing ollama-only availability check.
+// Package localgate probes which of modelman's per-model "running"-flagged
+// local models (the 2026-09-14 multi-model local lifecycle design,
+// superseding issue #65's one-local-model-at-a-time marker) are actually
+// serving right now. The flags themselves — modelman.toml's per-model
+// `running` entries — are read via internal/config
+// (Config.RunningLocalModelIDs, UNVERIFIED); this package does the runtime
+// availability probe for each one, mirroring internal/ollamacheck's role
+// for the pre-existing ollama-only availability check, and exposes the
+// shared Apply policy so the multiple launch paths (non-TUI, TUI) agree on
+// what "eligible" means.
 package localgate
 
 import (
@@ -15,7 +18,6 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 )
 
 // probeTimeout bounds each HTTP availability probe.
@@ -103,20 +105,30 @@ func fetchModelIDs(url string) []string {
 }
 
 // Available reports whether the local model m is actually serving right
-// now. The probe is name-checked against the marker's model — not just
-// provider liveness: an ollama marker naming a merely-downloaded (never
-// loaded) model must read as "not running" (ollama ps, not ollama list),
-// and oMLX's 4-bit and 6-bit variants share port 8000, so a bare 2xx
-// would verify either as the other.
+// now. The probe is name-checked against the flagged model — not just
+// provider liveness: oMLX's 4-bit and 6-bit variants share port 8000, so a
+// bare 2xx would verify either as the other.
 //
-// Unknown/unsupported providers return false — a marker naming a provider
-// this probe doesn't know about fails closed as "not running" rather
-// than reporting stale state as healthy.
+// Unknown/unsupported providers return false — a flagged id naming a
+// provider this probe doesn't know about fails closed as "not running"
+// rather than reporting stale state as healthy.
 func Available(m config.Model) bool {
 	switch m.ProviderID {
 	case "ollama":
-		loaded, err := ollamacheck.Loaded(m.ModelName)
-		return err == nil && loaded
+		// ollama is deliberately exempt from live verification. `modelman
+		// start` for an ollama model is flag-only — no warmup call, since
+		// ollama lazy-loads on first request — so nothing ever loads the
+		// model at start time. ollamacheck.Loaded is backed by `ollama ps`
+		// (the currently-*loaded* set), which would read the model as not
+		// running on the very first probe after `modelman start`, silently
+		// self-clearing the flag and permanently defeating "starting an
+		// ollama model makes it appear in the picker." There is no live
+		// "is this specific model loaded" signal that corresponds to what
+		// the running flag means for ollama (the daemon serves whatever is
+		// requested regardless of what's currently loaded), so the flag is
+		// trusted as-is with no probe here — mirrors the same fix applied
+		// to modelman's own _probe_running for this one provider.
+		return true
 	case "omlx", "omlx-6bit":
 		for _, served := range fetchModelIDs(omlxModelsURL) {
 			if nameMatches(served, m.ModelName) {
@@ -160,74 +172,74 @@ func (e *NotRunningError) Error() string {
 	)
 }
 
-// Resolve reads cfg's [local].running_model marker (via
-// Config.LocalRunningModel) and verifies it with Available. It returns
-// ("", nil) when no marker is set — every local model should be filtered
-// out of the picker (Config.FilterToRunningLocal handles that); (id, nil)
-// when the marker is set and verified available; or ("", *NotRunningError)
-// when the marker is set but the probe fails — a stale marker (the model
-// was stopped or crashed outside modelman) that callers should treat as
-// fatal rather than launching.
-//
-// A marker naming a model absent from the catalog (a registry data gap)
-// also fails closed: wt cannot name-checked-probe a model it cannot
-// identify, and presenting an unverifiable id as "verified running" is
-// the failure mode this probe exists to prevent.
-func Resolve(cfg *config.Config) (string, error) {
-	marker := cfg.LocalRunningModel()
-	if marker == "" {
-		return "", nil
+// ResolveAll returns every local model id modelman's per-model running
+// flag names (Config.RunningLocalModelIDs) that ALSO passes a live
+// availability probe right now. A flagged-but-dead id is simply excluded
+// — never an error — since one drifted model must not block a launch
+// that doesn't need it. A flagged id absent from cfg.Models (a registry
+// data gap) is excluded the same way: an unidentifiable model can't be
+// name-checked-probed.
+func ResolveAll(cfg *config.Config) []string {
+	flagged := cfg.RunningLocalModelIDs()
+	verified := make([]string, 0, len(flagged))
+	for _, id := range flagged {
+		idx := config.IndexModelByID(cfg.Models, id)
+		if idx < 0 {
+			continue
+		}
+		if Available(cfg.Models[idx]) {
+			verified = append(verified, id)
+		}
 	}
-	idx := config.IndexModelByID(cfg.Models, marker)
-	if idx < 0 {
-		return "", &NotRunningError{ModelID: marker}
-	}
-	if !Available(cfg.Models[idx]) {
-		return "", &NotRunningError{ModelID: marker}
-	}
-	return marker, nil
+	return verified
 }
 
-// Result is Apply's outcome: the verified running local model id, the
+// Result is Apply's outcome: the verified-running local model ids, the
 // eligible list after the gate's filter, and — when pinned (-M) named an
-// otherwise-eligible local model that isn't the running one — the
+// otherwise-eligible local model that isn't in the verified set — the
 // pinned-local rejection. Callers map PinnedRejected to their own UX (the
 // non-TUI path treats it as fatal; the TUI routes back to the agent
 // picker with the message as status).
 type Result struct {
-	RunningLocal   string
-	Eligible       []config.Model
-	PinnedRejected error
+	VerifiedRunning []string
+	Eligible        []config.Model
+	PinnedRejected  error
 }
 
-// Apply is the one-local-model-at-a-time gate policy (issue #65) in one
-// place, shared by cmd/wt/resolve.go (non-TUI launch) and internal/tui's
-// enterModelPhase so the two launch paths can never diverge: resolve the
-// marker, reject a pinned local model that isn't the running one, then
-// narrow models to cloud-plus-the-one-running-local. error is fatal (a
-// stale marker blocks every launch through the caller, not just ones that
-// would have picked a local model, until `modelman start`/`modelman stop`
-// repairs it). pinned is the -M flag value ("" = not pinned).
-func Apply(cfg *config.Config, models []config.Model, pinned string) (Result, error) {
-	runningLocal, err := Resolve(cfg)
-	if err != nil {
-		return Result{}, err
-	}
-	res := Result{RunningLocal: runningLocal, Eligible: models}
+// Apply is the multi-model local-running gate policy (2026-09-14 design)
+// in one place, shared by cmd/wt/resolve.go (non-TUI launch) and
+// internal/tui's enterModelPhase so the two launch paths can never
+// diverge: verify every flagged local model, reject a pinned local model
+// that isn't among the verified ones, then narrow models to
+// cloud-plus-every-verified-running-local. Never returns a fatal error —
+// a flagged-but-unverified model is silently excluded (see
+// TestApplyNeverErrorsOnDriftedFlag); PinnedRejected is the only rejection
+// a caller must still handle. pinned is the -M flag value ("" = not
+// pinned).
+func Apply(cfg *config.Config, models []config.Model, pinned string) Result {
+	verified := ResolveAll(cfg)
+	res := Result{VerifiedRunning: verified, Eligible: models}
 	if !cfg.LocalGateActive() {
-		return res, nil
+		return res
 	}
 	if pinned != "" {
 		if idx := config.IndexModelByID(models, pinned); idx >= 0 {
 			pm := models[idx]
+			isVerified := false
+			for _, id := range verified {
+				if id == pm.ID {
+					isVerified = true
+					break
+				}
+			}
 			// Fail closed on an unresolvable location (a registry data
 			// gap): treat the model as local, so a pin it names is
 			// rejected rather than silently allowed.
-			if loc, lerr := cfg.ResolveLocation(pm); (lerr != nil || loc == config.LocationLocal) && pm.ID != runningLocal {
+			if loc, lerr := cfg.ResolveLocation(pm); (lerr != nil || loc == config.LocationLocal) && !isVerified {
 				res.PinnedRejected = &NotRunningError{ModelID: pm.ID}
 			}
 		}
 	}
-	res.Eligible = cfg.FilterToRunningLocal(models, runningLocal)
-	return res, nil
+	res.Eligible = cfg.FilterToRunningLocal(models, verified)
+	return res
 }

@@ -2,10 +2,10 @@ package localgate
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
-	"path/filepath"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -130,24 +130,23 @@ func TestAvailableMtplxNameChecked(t *testing.T) {
 	}
 }
 
-// TestAvailableOllamaRequiresLoadedModel mirrors ollamacheck's fake-binary
-// fixture and asserts the ollama probe is name-checked against `ollama ps`
-// — the models actually loaded — not `ollama list`'s downloaded-but-idle
-// catalog, which would verify a stale marker forever.
-func TestAvailableOllamaRequiresLoadedModel(t *testing.T) {
-	tmpDir := t.TempDir()
-	fakeOllama := filepath.Join(tmpDir, "ollama")
-	script := "#!/bin/sh\necho \"NAME    ID    SIZE    PROCESSOR    UNTIL\"\necho \"qwen3.8:27b-mlx   abc   5.0 GB   100% GPU   4 minutes from now\"\n"
-	if err := exec.Command("sh", "-c", "cat > "+fakeOllama+" <<'EOF'\n"+script+"EOF\nchmod +x "+fakeOllama).Run(); err != nil {
-		t.Fatalf("creating fake ollama: %v", err)
-	}
-	t.Setenv("PATH", tmpDir)
-
+// TestAvailableOllamaExemptFromLiveVerification asserts the deliberate
+// ollama exemption: `modelman start` for an ollama model is flag-only (no
+// warmup call — ollama lazy-loads on first request), so nothing ever loads
+// the model at start time. If Available() verified ollama the same way as
+// the other providers (via ollamacheck.Loaded / `ollama ps`, the
+// currently-*loaded* set), the very first probe after `modelman start`
+// would read the model as not running and silently self-clear the flag —
+// permanently defeating "starting an ollama model makes it appear in the
+// picker." There is no live "is this specific model loaded" signal that
+// corresponds to what the running flag means for ollama, so Available()
+// must trust the flag unconditionally for this provider. This test proves
+// that by clearing PATH entirely (ollama unreachable, nothing loaded, not
+// even installed) and confirming Available still reports true.
+func TestAvailableOllamaExemptFromLiveVerification(t *testing.T) {
+	t.Setenv("PATH", "")
 	if !Available(config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}) {
-		t.Error("expected the loaded model to be available")
-	}
-	if Available(config.Model{ID: "ollama/missing-model", ModelName: "missing-model", ProviderID: "ollama"}) {
-		t.Error("expected a not-loaded model to be unavailable")
+		t.Error("expected an ollama model to be available even with ollama unreachable/nothing loaded — the flag is trusted unconditionally for this provider")
 	}
 }
 
@@ -162,55 +161,59 @@ func TestNotRunningErrorMessage(t *testing.T) {
 	}
 }
 
-// TestResolveNoMarker asserts the no-marker case is not an error —
-// cloud-only filtering is FilterToRunningLocal's job, not a gate failure.
-func TestResolveNoMarker(t *testing.T) {
+// TestResolveAllNoFlaggedModels asserts the no-flags case returns an empty
+// slice, never an error — cloud-only filtering is FilterToRunningLocal's
+// job, not a gate failure.
+func TestResolveAllNoFlaggedModels(t *testing.T) {
 	cfg := &config.Config{}
-	id, err := Resolve(cfg)
-	if err != nil || id != "" {
-		t.Errorf("Resolve() = (%q, %v), want (\"\", nil)", id, err)
+	got := ResolveAll(cfg)
+	if len(got) != 0 {
+		t.Errorf("ResolveAll() = %v, want empty", got)
 	}
 }
 
-// TestResolveMarkerVerified covers the healthy path: marker set, catalog
-// contains the model, and its probe answers. Uses the omlx seam since a
-// hand-built cfg can't shell a fake ollama into PATH for a catalog model.
-func TestResolveMarkerVerified(t *testing.T) {
-	srv := httptest.NewServer(modelsHandler("Ornith-1.5-35B-A3B-MLX-4bit"))
-	defer srv.Close()
-	defer SetOmlxProbeURLForTest(srv.URL)()
+// TestResolveAllReturnsEveryVerifiedRunningModel checks that ResolveAll
+// probes every flagged model independently and returns only the ones
+// that actually answer - the foundation of multi-model concurrency: one
+// drifted flag must not hide a model that's genuinely still serving.
+func TestResolveAllReturnsEveryVerifiedRunningModel(t *testing.T) {
+	omlxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"model-a"}]}`)
+	}))
+	defer omlxSrv.Close()
+	defer SetOmlxProbeURLForTest(omlxSrv.URL)()
 
 	cfg := &config.Config{
 		Models: []config.Model{
-			{ID: "omlx/Ornith-1.5-35B-A3B-MLX-4bit", ModelName: "Ornith-1.5-35B-A3B-MLX-4bit", ProviderID: "omlx"},
+			{ID: "omlx/model-a", ProviderID: "omlx", ModelName: "model-a", Location: config.LocationLocal},
+			{ID: "omlx/model-b", ProviderID: "omlx", ModelName: "model-b", Location: config.LocationLocal},
 		},
 	}
-	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
-	id, err := Resolve(cfg)
-	if err != nil || id != "omlx/Ornith-1.5-35B-A3B-MLX-4bit" {
-		t.Errorf("Resolve() = (%q, %v), want the marker id, nil", id, err)
+	cfg.SetLocalRunningForTest("omlx/model-a", "omlx/model-b")
+
+	got := ResolveAll(cfg)
+	if len(got) != 1 || got[0] != "omlx/model-a" {
+		t.Errorf("ResolveAll() = %v, want [omlx/model-a] (model-b flagged but not verified)", got)
 	}
 }
 
-// TestResolveMarkerNotInCatalogFailsClosed asserts a marker naming a model
-// missing from the registry catalog (a data gap) is treated as stale, not
-// as verified-running — an unverifiable id must never pass as healthy.
-func TestResolveMarkerNotInCatalogFailsClosed(t *testing.T) {
+// TestResolveAllNotInCatalogExcluded asserts a flagged id missing from the
+// registry catalog (a data gap) is silently excluded from the verified
+// set, not an error — an unverifiable id must never pass as healthy.
+func TestResolveAllNotInCatalogExcluded(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.SetLocalRunningForTest("omlx/ghost-model")
-	id, err := Resolve(cfg)
-	if id != "" {
-		t.Errorf("Resolve() id = %q, want \"\"", id)
-	}
-	if _, ok := err.(*NotRunningError); !ok {
-		t.Fatalf("err = %v (%T), want *NotRunningError", err, err)
+	got := ResolveAll(cfg)
+	if len(got) != 0 {
+		t.Errorf("ResolveAll() = %v, want empty (model absent from catalog)", got)
 	}
 }
 
-// TestResolveMarkerStale asserts a marker whose probe fails (stopped or
-// crashed outside modelman) resolves to ("", *NotRunningError) so callers
-// treat it as fatal rather than launching.
-func TestResolveMarkerStale(t *testing.T) {
+// TestResolveAllStaleFlagExcluded asserts a flagged id whose probe fails
+// (stopped or crashed outside modelman) is excluded from the verified set,
+// not an error — ResolveAll never errors; a caller learns about a drifted
+// flag only by the id's absence from the returned slice.
+func TestResolveAllStaleFlagExcluded(t *testing.T) {
 	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")()
 
 	cfg := &config.Config{
@@ -219,16 +222,9 @@ func TestResolveMarkerStale(t *testing.T) {
 		},
 	}
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
-	id, err := Resolve(cfg)
-	if id != "" {
-		t.Errorf("Resolve() id = %q, want \"\"", id)
-	}
-	nre, ok := err.(*NotRunningError)
-	if !ok {
-		t.Fatalf("err = %v (%T), want *NotRunningError", err, err)
-	}
-	if nre.ModelID != "omlx/qwen3.8" {
-		t.Errorf("NotRunningError.ModelID = %q, want omlx/qwen3.8", nre.ModelID)
+	got := ResolveAll(cfg)
+	if len(got) != 0 {
+		t.Errorf("ResolveAll() = %v, want empty (stale flag)", got)
 	}
 }
 
@@ -251,10 +247,7 @@ func TestApplyInactiveGateIsNoop(t *testing.T) {
 	models := []config.Model{
 		{ID: "omlx/qwen3.8", ProviderID: "omlx"},
 	}
-	res, err := Apply(cfg, models, "")
-	if err != nil {
-		t.Fatalf("Apply() err = %v, want nil", err)
-	}
+	res := Apply(cfg, models, "")
 	if len(res.Eligible) != 1 || res.Eligible[0].ID != "omlx/qwen3.8" {
 		t.Errorf("Eligible = %v, want the input unchanged", idsOf(res.Eligible))
 	}
@@ -276,12 +269,9 @@ func TestApplyFiltersToRunningLocal(t *testing.T) {
 		},
 	}
 	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
-	res, err := Apply(cfg, cfg.Models, "")
-	if err != nil {
-		t.Fatalf("Apply() err = %v, want nil", err)
-	}
-	if res.RunningLocal != "omlx/Ornith-1.5-35B-A3B-MLX-4bit" {
-		t.Errorf("RunningLocal = %q", res.RunningLocal)
+	res := Apply(cfg, cfg.Models, "")
+	if len(res.VerifiedRunning) != 1 || res.VerifiedRunning[0] != "omlx/Ornith-1.5-35B-A3B-MLX-4bit" {
+		t.Errorf("VerifiedRunning = %v", res.VerifiedRunning)
 	}
 	got := idsOf(res.Eligible)
 	if len(got) != 2 || got[0] != "claude/opus" || got[1] != "omlx/Ornith-1.5-35B-A3B-MLX-4bit" {
@@ -306,10 +296,7 @@ func TestApplyPinnedLocalRejected(t *testing.T) {
 		},
 	}
 	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
-	res, err := Apply(cfg, cfg.Models, "omlx/other")
-	if err != nil {
-		t.Fatalf("Apply() err = %v, want nil (rejection is Result-level, not fatal)", err)
-	}
+	res := Apply(cfg, cfg.Models, "omlx/other")
 	nre, ok := res.PinnedRejected.(*NotRunningError)
 	if !ok {
 		t.Fatalf("PinnedRejected = %v (%T), want *NotRunningError", res.PinnedRejected, res.PinnedRejected)
@@ -337,10 +324,7 @@ func TestApplyPinnedRunningLocalAccepted(t *testing.T) {
 		},
 	}
 	cfg.SetLocalRunningForTest("omlx/Ornith-1.5-35B-A3B-MLX-4bit")
-	res, err := Apply(cfg, cfg.Models, "omlx/Ornith-1.5-35B-A3B-MLX-4bit")
-	if err != nil {
-		t.Fatalf("Apply() err = %v, want nil", err)
-	}
+	res := Apply(cfg, cfg.Models, "omlx/Ornith-1.5-35B-A3B-MLX-4bit")
 	if res.PinnedRejected != nil {
 		t.Errorf("PinnedRejected = %v, want nil for the running model", res.PinnedRejected)
 	}
@@ -358,10 +342,7 @@ func TestApplyPinnedUnresolvableLocationRejected(t *testing.T) {
 		},
 	}
 	cfg.SetLocalRunningForTest("")
-	res, err := Apply(cfg, cfg.Models, "ghost/x")
-	if err != nil {
-		t.Fatalf("Apply() err = %v, want nil", err)
-	}
+	res := Apply(cfg, cfg.Models, "ghost/x")
 	nre, ok := res.PinnedRejected.(*NotRunningError)
 	if !ok {
 		t.Fatalf("PinnedRejected = %v (%T), want *NotRunningError", res.PinnedRejected, res.PinnedRejected)
@@ -371,23 +352,38 @@ func TestApplyPinnedUnresolvableLocationRejected(t *testing.T) {
 	}
 }
 
-// TestApplyStaleMarkerFatal asserts the fatal path survives Apply: a
-// marker whose probe fails returns an error (not a Result), so callers
-// block every launch until `modelman start`/`modelman stop` repairs it.
-func TestApplyStaleMarkerFatal(t *testing.T) {
-	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")()
-
-	cfg := &config.Config{
-		Models: []config.Model{
-			{ID: "omlx/qwen3.8", ModelName: "qwen3.8", ProviderID: "omlx", Location: config.LocationLocal},
-		},
-	}
+// TestApplyNeverErrorsOnDriftedFlag checks the deliberate relaxation from
+// issue #65: a flagged-but-unverified local model is silently excluded
+// from the eligible list, never a fatal error for the whole launch. This
+// replaces the old single-marker "stale marker is fatal" behavior — with
+// multiple models, one drifting out must not block a launch that doesn't
+// need it.
+func TestApplyNeverErrorsOnDriftedFlag(t *testing.T) {
+	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
+	cfg := &config.Config{}
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
-	res, err := Apply(cfg, cfg.Models, "")
-	if err == nil {
-		t.Fatalf("Apply() err = nil, want *NotRunningError; Result = %+v", res)
+	models := []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", Location: config.LocationLocal}}
+	result := Apply(cfg, models, "")
+	if result.PinnedRejected != nil {
+		t.Errorf("PinnedRejected = %v, want nil (no pin was set)", result.PinnedRejected)
 	}
-	if _, ok := err.(*NotRunningError); !ok {
-		t.Fatalf("err = %v (%T), want *NotRunningError", err, err)
+	if len(result.Eligible) != 0 {
+		t.Errorf("Eligible = %v, want empty (the only local model failed its probe)", result.Eligible)
+	}
+}
+
+// TestApplyPinnedRejectedStillFatalForThatLaunch checks the one surviving
+// failure mode: a -M pin naming a specific local model that fails its
+// probe is still rejected, even though a non-pinned launch would just
+// silently drop it - an explicit request can't be silently substituted.
+func TestApplyPinnedRejectedStillFatalForThatLaunch(t *testing.T) {
+	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")()
+	cfg := &config.Config{}
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+	models := []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", Location: config.LocationLocal}}
+	result := Apply(cfg, models, "omlx/qwen3.8")
+	var notRunning *NotRunningError
+	if !errors.As(result.PinnedRejected, &notRunning) {
+		t.Fatalf("PinnedRejected = %v, want *NotRunningError", result.PinnedRejected)
 	}
 }
