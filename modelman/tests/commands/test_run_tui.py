@@ -126,6 +126,26 @@ def test_run_queued_ops_keyboard_interrupt_prints_cancelled_summary(tmp_path, mo
     assert state.get("ollama/a").ready is False
 
 
+def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatch, capsys):
+    # A model under a flag-only provider (no Provider class, like openrouter
+    # or native) queued for ready-on must not crash when apply() runs—it should
+    # skip the provider instance lookup and apply the flag changes cleanly.
+    entry = ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="openrouter/x")
+    reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry], providers=("ollama", "openrouter"))
+
+    # Don't patch ProviderRegistry.get for openrouter—let it raise KeyError
+    # to simulate a flag-only provider with no backing Provider class.
+    failed = run_queued_ops(QueuedOps(ready={"openrouter/x": True}))
+
+    assert failed is False
+    state = load_state(state_path)
+    assert state.get("openrouter/x").ready is True
+    out = capsys.readouterr().out
+    # No download message should appear (flag-only provider doesn't download)
+    assert "Downloading" not in out
+    assert "Marked openrouter/x ready" in out or "done:" in out
+
+
 def test_print_event_formats_download_lifecycle(capsys):
     # print_event() must render queue.py's lifecycle tags as single human-readable
     # lines that replace StatusScreen's RichLog now that apply() runs in a plain terminal.

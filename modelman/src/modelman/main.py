@@ -183,11 +183,11 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     for spec in list(ready_specs.values()) + list(queued.deletes.values()):
         try:
             entry = registry.provider(spec["provider"])
+            provider_instances[spec["provider"]] = ProviderRegistry.get(spec["provider"], provider_config(entry))
         except KeyError:
             # Not in the registry or not mapped to a Provider class:
             # PendingChanges treats this as flag-only (native/unmapped).
             continue
-        provider_instances[spec["provider"]] = ProviderRegistry.get(spec["provider"], provider_config(entry))
 
     pending = PendingChanges(
         registry=registry,
