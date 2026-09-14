@@ -161,10 +161,14 @@ func TestResolveModelVerifiedMarkerAllowsLocalModel(t *testing.T) {
 	}
 }
 
-// TestResolveModelStaleMarkerErrors asserts the "exit with a message" half:
-// a marker set but not verified is a fatal error for every launch through
-// this agent, not just ones that would have used a local model.
-func TestResolveModelStaleMarkerErrors(t *testing.T) {
+// TestResolveModelDriftedMarkerDoesNotBlockUnrelatedLaunch asserts the
+// 2026-09-14 multi-model relaxation: a flagged-but-unverified local model
+// no longer blocks every launch through the agent (the old single-marker
+// "stale marker is fatal" behavior) — it is simply excluded from
+// consideration. Here the flagged model (omlx/qwen3.8) isn't even in this
+// agent's eligible list, so resolveModel must resolve normally instead of
+// erroring.
+func TestResolveModelDriftedMarkerDoesNotBlockUnrelatedLaunch(t *testing.T) {
 	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
 
 	cfg := &config.Config{
@@ -175,13 +179,12 @@ func TestResolveModelStaleMarkerErrors(t *testing.T) {
 	cfg.ExposeAllForTest()
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 
-	_, _, err := resolveModel("claude", cfg, "", "", "")
-	var notRunning *localgate.NotRunningError
-	if !errors.As(err, &notRunning) {
-		t.Fatalf("err = %v, want *localgate.NotRunningError", err)
+	m, _, err := resolveModel("claude", cfg, "", "", "")
+	if err != nil {
+		t.Fatalf("resolveModel() error = %v, want nil (a drifted flag for an unrelated model must not block this launch)", err)
 	}
-	if notRunning.ModelID != "omlx/qwen3.8" {
-		t.Errorf("NotRunningError.ModelID = %q, want omlx/qwen3.8", notRunning.ModelID)
+	if m.ID != "claude/opus" {
+		t.Errorf("resolveModel() model = %q, want claude/opus", m.ID)
 	}
 }
 

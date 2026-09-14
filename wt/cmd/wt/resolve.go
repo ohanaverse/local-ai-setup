@@ -41,20 +41,12 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	}
 	preGateCount := len(eligible)
 
-	// One-local-model-at-a-time gate (issue #65) — the policy lives in
-	// localgate.Apply, shared with the TUI's enterModelPhase. gateErr is
-	// non-nil only when a marker IS set but fails its availability probe
-	// (a stale marker) — that blocks every launch through this agent, not
-	// just ones that would have picked a local model, until the operator
-	// repairs it via `modelman start`/`modelman stop`.
-	gate, gateErr := localgate.Apply(cfg, eligible, pinned)
-	if gateErr != nil {
-		return config.Model{}, eligible, gateErr
-	}
-	// A pinned local model that IS otherwise eligible (right agent/tags/
-	// family) but isn't the currently-running one gets the specific
-	// "start it in modelman" message instead of the generic "not in the
-	// eligible list" error resolveModelFromEligible would produce below.
+	// Local-model running gate (2026-09-14 design) — the policy lives in
+	// localgate.Apply, shared with the TUI's enterModelPhase. Apply never
+	// returns a fatal error now: a flagged-but-unverified local model is
+	// silently excluded, and only a -M pin naming a specific unverified
+	// local model is rejected (gate.PinnedRejected).
+	gate := localgate.Apply(cfg, eligible, pinned)
 	if gate.PinnedRejected != nil {
 		return config.Model{}, gate.Eligible, gate.PinnedRejected
 	}

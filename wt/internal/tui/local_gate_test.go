@@ -79,15 +79,31 @@ func TestEnterModelPhaseVerifiedMarkerShowsLocalModel(t *testing.T) {
 	}
 }
 
-// TestEnterModelPhaseStaleMarkerQuits asserts the "exit with a message"
-// half of the gate: a marker that fails its availability probe quits the
-// whole TUI program (via tea.Quit + fatalErr, which Run() surfaces as its
-// returned error) rather than silently falling back to cloud-only or
-// showing the stale model.
-func TestEnterModelPhaseStaleMarkerQuits(t *testing.T) {
+// TestEnterModelPhaseDriftedMarkerDropsOnlyThatModel asserts the
+// 2026-09-14 multi-model relaxation: a marker that fails its availability
+// probe no longer quits the whole TUI program (the old single-marker
+// "stale marker is fatal" behavior) — the flagged-but-unverified local
+// model is simply excluded from the picker, while other eligible cloud
+// models still appear normally alongside each other.
+func TestEnterModelPhaseDriftedMarkerDropsOnlyThatModel(t *testing.T) {
 	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
 
-	cfg := gateTestConfig()
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
+			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Family: "sonnet", Tags: []string{"code"}},
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude", "omlx"}},
+		},
+	}
+	cfg.ExposeAllForTest()
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
@@ -95,15 +111,23 @@ func TestEnterModelPhaseStaleMarkerQuits(t *testing.T) {
 
 	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
 
-	if got.fatalErr == nil {
-		t.Fatal("expected fatalErr to be set")
+	if got.fatalErr != nil {
+		t.Fatalf("fatalErr = %v, want nil (a drifted flag must not quit the program)", got.fatalErr)
 	}
-	var notRunning *localgate.NotRunningError
-	if !errorsAsNotRunning(got.fatalErr, &notRunning) {
-		t.Fatalf("fatalErr = %v, want *localgate.NotRunningError", got.fatalErr)
+	if cmd != nil {
+		t.Fatalf("cmd = %v, want nil (no tea.Quit)", cmd)
 	}
-	if cmd == nil {
-		t.Fatal("expected a non-nil tea.Cmd (tea.Quit)")
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", got.phase)
+	}
+	items := got.models.Items()
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2 (both cloud models; the unverified local model is excluded)", len(items))
+	}
+	for _, it := range items {
+		if it.(*modelItem).model.ID == "omlx/qwen3.8" {
+			t.Errorf("unverified local model omlx/qwen3.8 appeared in the picker")
+		}
 	}
 }
 
@@ -126,16 +150,6 @@ func TestEnterModelPhasePinnedStaleLocalModelRejected(t *testing.T) {
 	if !strings.Contains(got.status, "modelman start") {
 		t.Errorf("status = %q, want it to mention `modelman start`", got.status)
 	}
-}
-
-// errorsAsNotRunning is a tiny local errors.As wrapper so the test above
-// reads plainly; avoids importing "errors" just for one call site.
-func errorsAsNotRunning(err error, target **localgate.NotRunningError) bool {
-	nre, ok := err.(*localgate.NotRunningError)
-	if ok {
-		*target = nre
-	}
-	return ok
 }
 
 // TestEnterModelPhaseGateEmptiedRoutesBack asserts finding #6's TUI half:

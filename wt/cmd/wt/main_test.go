@@ -435,10 +435,11 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		t.Fatalf("write registry: %v", err)
 	}
 	// Expose the ollama model through the LiteLLM gateway so the
-	// auto-launch short-circuit sees it as eligible, and mark it as the
-	// running local model (issue #65) so the gate keeps it in the list.
+	// auto-launch short-circuit sees it as eligible, and mark it as
+	// running (2026-09-14 multi-model design's per-model `running` flag)
+	// so the gate keeps it in the list.
 	if err := os.WriteFile(filepath.Join(regDir, "modelman.toml"),
-		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\n\n[local]\nrunning_model = \"ollama/gemma4:9b\"\n"),
+		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\nrunning = true\n"),
 		0o644); err != nil {
 		t.Fatalf("write modelman state: %v", err)
 	}
@@ -704,15 +705,15 @@ func TestRunLaunchPath(t *testing.T) {
 	}
 }
 
-// TestRunLaunchPathExitsOnStaleLocalMarker asserts that a stale
-// [local].running_model marker is fatal even on the "no agent pinned"
-// fast path, which otherwise swallows resolveModelForLaunch's error and
-// falls through to the TUI (resolveModelForLaunch's error is deliberately
-// treated as "not resolved, show the picker" for the ordinary ambiguous-
-// eligible-list case — a stale marker must NOT take that path, or the gate
-// would silently degrade into "just open the TUI" instead of the design's
-// required hard exit).
-func TestRunLaunchPathExitsOnStaleLocalMarker(t *testing.T) {
+// TestResolveModelForLaunchDriftedMarkerResolvesNormally asserts the
+// 2026-09-14 multi-model relaxation on the "no agent pinned" fast path
+// (runLaunchPath's resolveModelForLaunch call): a flagged-but-unverified
+// local model that isn't part of the agent's eligible list must not stop
+// resolveModelForLaunch from resolving the launch normally. This replaces
+// the old "any stale marker is fatal for every launch through the agent"
+// behavior — with multiple models, one drifted flag must not block a
+// launch that doesn't need it.
+func TestResolveModelForLaunchDriftedMarkerResolvesNormally(t *testing.T) {
 	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")()
 
 	cfg := &config.Config{
@@ -723,10 +724,12 @@ func TestRunLaunchPathExitsOnStaleLocalMarker(t *testing.T) {
 	cfg.ExposeAllForTest()
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 
-	_, _, eligible, err := resolveModelForLaunch("claude", cfg, "", "", "")
-	var notRunning *localgate.NotRunningError
-	if !errors.As(err, &notRunning) {
-		t.Fatalf("resolveModelForLaunch error = %v, want *localgate.NotRunningError", err)
+	resolved, m, eligible, err := resolveModelForLaunch("claude", cfg, "", "", "")
+	if err != nil {
+		t.Fatalf("resolveModelForLaunch error = %v, want nil", err)
+	}
+	if !resolved || m.ID != "claude/opus" {
+		t.Errorf("resolveModelForLaunch() = (resolved=%v, m=%v), want (true, claude/opus)", resolved, m)
 	}
 	_ = eligible
 }
