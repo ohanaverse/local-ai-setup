@@ -53,7 +53,7 @@ def test_start_command_success_writes_marker(tmp_path, monkeypatch):
         )
         result = runner.invoke(app, ["start", "ollama/x"])
     assert result.exit_code == 0, result.stdout
-    assert load_state(path=state_path).local.running_model == "ollama/x"
+    assert load_state(path=state_path).get("ollama/x").running is True
 
 
 def test_start_command_unknown_model_exits_nonzero(tmp_path, monkeypatch):
@@ -68,20 +68,27 @@ def test_start_command_unknown_model_exits_nonzero(tmp_path, monkeypatch):
 
 
 def test_stop_command_clears_marker(tmp_path, monkeypatch):
+    # `modelman stop --all` must clear the running flag `start` set - the
+    # counterpart to test_start_command_success_writes_marker's marker
+    # write. (Bare `stop` used to do this implicitly; that behavior moved
+    # to the explicit --all flag - see test_stop_command_bare_errors.)
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text('[local]\nrunning_model = "ollama/x"\n')
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nrunning = true\n')
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
     with patch("modelman.local_control.stop_all_local_providers") as mock_stop:
-        result = runner.invoke(app, ["stop"])
+        result = runner.invoke(app, ["stop", "--all"])
     assert result.exit_code == 0, result.stdout
     mock_stop.assert_called_once()
-    assert load_state(path=state_path).local.running_model is None
+    assert load_state(path=state_path).get("ollama/x").running is False
 
 
 def test_stop_command_noop_message_when_nothing_running(tmp_path, monkeypatch):
+    # `modelman stop --all` against an empty state must report a clean
+    # no-op rather than erroring - "nothing is running" is a normal state,
+    # not a failure.
     monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
-    result = runner.invoke(app, ["stop"])
+    result = runner.invoke(app, ["stop", "--all"])
     assert result.exit_code == 0
     assert "No local model is running" in result.stdout
 
@@ -128,8 +135,7 @@ def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
     )
     state_path = tmp_path / "modelman.toml"
     state_path.write_text(
-        '[local]\nrunning_model = "ollama/x"\n\n'
-        '[model_state."ollama/x"]\nready = true\nexposed = true\n'
+        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
     )
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
@@ -250,7 +256,7 @@ def test_start_command_discovers_and_prompts_for_family(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     assert "isn't registered yet" in result.stdout
     assert "Started llama3.2:3b" in result.stdout or "Started ollama/llama3.2:3b" in result.stdout
-    assert load_state(path=state_path).local.running_model == "ollama/llama3.2:3b"
+    assert load_state(path=state_path).get("ollama/llama3.2:3b").running is True
 
 
 def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
@@ -293,7 +299,77 @@ def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     assert "cannot be empty" in result.output
-    assert load_state(path=state_path).local.running_model == "ollama/llama3.2:3b"
+    assert load_state(path=state_path).get("ollama/llama3.2:3b").running is True
+
+
+def test_start_command_warns_but_proceeds_when_others_running(tmp_path, monkeypatch):
+    # `modelman start` must not block on other local models already running
+    # (cross-provider concurrency is intentionally unrestricted per Task 3) -
+    # it should start the requested model and print an advisory warning
+    # naming what else is up, rather than refusing or silently ignoring it.
+    registry_path = tmp_path / "registry.toml"
+    registry_path.write_text(
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\nlocation = "local"\n'
+        'auth = { type = "none" }\n\n'
+        '[[models]]\nid = "ollama/x"\nfamily = "x"\nprovider_id = "ollama"\nmodel_name = "x"\n\n'
+        '[[models]]\nid = "ollama/y"\nfamily = "y"\nprovider_id = "ollama"\nmodel_name = "y"\n'
+    )
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text('[model_state."ollama/y"]\nready = true\nrunning = true\n')
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    result = runner.invoke(app, ["start", "ollama/x"])
+    assert result.exit_code == 0, result.stdout
+    assert "ollama/y" in result.output  # warning names the other running model
+    assert load_state(path=state_path).get("ollama/x").running is True
+
+
+def test_stop_command_with_id_stops_one(tmp_path, monkeypatch):
+    # `modelman stop <id>` must stop only the named model, leaving any other
+    # running local model (and its flag) untouched - this is the targeted
+    # form that replaces the old bare-stops-everything behavior.
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text(
+        '[model_state."ollama/x"]\nready = true\nrunning = true\n\n'
+        '[model_state."ollama/y"]\nready = true\nrunning = true\n'
+    )
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    with patch("modelman.local_control._stop_ollama_model") as mock_stop:
+        result = runner.invoke(app, ["stop", "ollama/x"])
+    assert result.exit_code == 0, result.stdout
+    mock_stop.assert_called_once_with("x")
+    state = load_state(path=state_path)
+    assert state.get("ollama/x").running is False
+    assert state.get("ollama/y").running is True
+
+
+def test_stop_command_all_stops_everything(tmp_path, monkeypatch):
+    # `modelman stop --all` must stop every running local model and clear
+    # every flag - the explicit replacement for what bare `stop` used to do
+    # implicitly.
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text(
+        '[model_state."ollama/x"]\nready = true\nrunning = true\n\n'
+        '[model_state."ollama/y"]\nready = true\nrunning = true\n'
+    )
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    with patch("modelman.local_control.stop_all_local_providers"):
+        result = runner.invoke(app, ["stop", "--all"])
+    assert result.exit_code == 0, result.stdout
+    state = load_state(path=state_path)
+    assert state.get("ollama/x").running is False
+    assert state.get("ollama/y").running is False
+
+
+def test_stop_command_bare_errors(tmp_path, monkeypatch):
+    # Bare `modelman stop` (no id, no --all) is now a usage error rather than
+    # a silent stop-everything - this guards against accidentally taking down
+    # every local model when the caller meant to stop just one.
+    monkeypatch.setenv("MODELMAN_STATE", str(tmp_path / "modelman.toml"))
+    result = runner.invoke(app, ["stop"])
+    assert result.exit_code == 1
+    assert "model id" in result.output.lower() or "--all" in result.output
 
 
 def test_start_command_no_args_warns_when_a_provider_cannot_be_queried(tmp_path, monkeypatch):
