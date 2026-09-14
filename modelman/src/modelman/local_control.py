@@ -1,32 +1,37 @@
-"""modelman-owned local-model lifecycle control (issue #65 — one local
-model at a time). See docs/superpowers/specs/2026-09-10-one-local-model-
-at-a-time-design.md.
+"""modelman-owned local-model lifecycle control (issue #65; same-provider-
+only concurrency since 2026-09-14). See
+docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md.
 
 `modelman start`/`modelman stop` (main.py) are the only place a local
 model's process is started or stopped for normal (non-benchmark) usage.
 Both delegate the actual stop/start to bin/llm-isolate-provider via
 modelman.benchmark.isolation — the same subprocess contract `modelman
-benchmark` uses — and record which model is running in modelman.toml's
-`[local].running_model` (state.py's LocalState), the marker wt's model
-picker reads read-only to filter its catalog to this one local model plus
-cloud models.
+benchmark` uses — and record which models are running via a per-model
+`running: bool` flag on modelman.toml's ModelState (state.py), which wt's
+model picker reads read-only to filter its catalog to running local
+models plus cloud models. Cross-provider concurrency is unrestricted —
+multiple local models on DIFFERENT providers may run at once. Single-port
+providers (omlx, mtplx, mlx_lm_server) can still only ever serve one
+model each, so starting a different model on the SAME provider replaces
+that provider's occupant first.
 
-State ownership: these functions own the marker's read/write lifecycle
-entirely — they read it with load_state() and write it with short
-locked_state() transactions (state.py), while the stop-all/isolate/warmup
-subprocesses run OUTSIDE any lock. `locked_state` is an atomic
-read-modify-write of the whole file, and holding it across a warmup that
-can block for minutes would (a) leave wt reading a stale marker for that
-whole window and (b) serialize any future in-process caller behind a
-minutes-long hold. The marker writes are the only mutations made here, so
-the short transactions stay correct.
+State ownership: these functions own each model's `running` flag
+read/write lifecycle entirely — they read it with load_state() and write
+it with short locked_state() transactions (state.py), while the
+stop/isolate/warmup subprocesses run OUTSIDE any lock. `locked_state` is
+an atomic read-modify-write of the whole file, and holding it across a
+warmup that can block for minutes would (a) leave wt reading stale flags
+for that whole window and (b) serialize any future in-process caller
+behind a minutes-long hold. The flag writes are the only mutations made
+here, so the short transactions stay correct.
 """
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # Import the providers package to ensure ProviderRegistry is populated —
@@ -38,6 +43,7 @@ from .benchmark.isolation import (
     isolate_provider,
     mlx_lm_server_pairing_args,
     stop_all_local_providers,
+    stop_provider,
 )
 from .litellm import ExposeError, default_litellm_config_path, expose_model
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
@@ -102,6 +108,7 @@ class StartResult:
     already_running: bool
     direct_url: str | None = None
     warnings: list[str] = field(default_factory=list)
+    other_running: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -198,19 +205,41 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     return any(_name_matches(served, model_name) for served in ids)
 
 
-def _clear_stale_marker(expected: tuple[str, ...], state_path: Path | None) -> None:
-    """Best-effort: clear [local].running_model when it still names one of
-    `expected` — models stop-all has torn down or failed to start, so any
-    remaining marker naming them is stale (wt's gate treats a marker whose
-    probe fails as fatal for every launch; clearing it degrades to
-    cloud-only instead). A marker naming something else means a concurrent
-    writer moved on; leave it alone."""
+def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
+    """Best-effort: clear ONE model's running flag when it's still True —
+    used when a probe finds it not actually serving (stale flag), or after
+    a failed start/stop for that specific model. Never touches any other
+    model's flag."""
     try:
         with locked_state(state_path) as fresh:
-            if fresh.local.running_model in expected:
-                fresh.local.running_model = None
+            existing = fresh.models.get(model_id)
+            if existing is not None and existing.running:
+                fresh.models[model_id] = replace(existing, running=False)
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
+
+
+def _same_provider_occupant(
+    state: StateStore, provider_model_ids: set[str], exclude_model_id: str
+) -> str | None:
+    """The id of another model belonging to the same provider
+    (provider_model_ids — every registry id on that provider) currently
+    flagged running, or None. Single-port providers (omlx, mtplx,
+    mlx_lm_server) can only ever serve one model — this finds the one
+    that needs replacing before starting a different model on the same
+    provider."""
+    for model_id in provider_model_ids:
+        if model_id != exclude_model_id and state.models.get(model_id, ModelState()).running:
+            return model_id
+    return None
+
+
+def _stop_ollama_model(model_name: str, runner=_default_runner) -> None:
+    """Stop exactly one loaded ollama model (`ollama stop <name>`),
+    tolerating any failure (model already unloaded, daemon down) the same
+    way the bash helper's stop-all path does."""
+    with contextlib.suppress(OSError):
+        runner(["ollama", "stop", model_name], capture_output=True, text=True, check=False)
 
 
 def _provider_entry(registry: Registry, provider_id: str) -> ProviderEntry | None:
@@ -574,7 +603,6 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
     is a full local inventory, not just "what can I start right now".
     """
     local_map, discovery_unqueryable = _provider_local_models(registry)
-    running_marker = state.local.running_model
     providers_by_id = _provider_by_id(registry)
 
     local_models = [
@@ -591,7 +619,7 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
             not_downloaded.append(model.id)
             continue
         running = False
-        if model.id == running_marker:
+        if state.get(model.id).running:
             provider = providers_by_id.get(model.provider_id)
             probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
             running = _probe_running(model.provider_id, model.model_name, probe_origin)
@@ -612,6 +640,29 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
     )
 
 
+def running_model_ids(registry: Registry, state: StateStore, state_path: Path | None = None) -> list[str]:
+    """Every local model flagged running AND confirmed by a live probe —
+    the same self-healing rule every other consumer (the TUI indicator,
+    wt's picker) applies. A flagged-but-dead entry is opportunistically
+    cleared. Sorted for stable display."""
+    providers_by_id = _provider_by_id(registry)
+    models_by_id = {m.id: m for m in registry.models}
+    verified: list[str] = []
+    for model_id, model_state in state.models.items():
+        if not model_state.running:
+            continue
+        model = models_by_id.get(model_id)
+        if model is None:
+            continue
+        provider = providers_by_id.get(model.provider_id)
+        probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+        if _probe_running(model.provider_id, model.model_name, probe_origin):
+            verified.append(model_id)
+        else:
+            _clear_stale_running_flag(model_id, state_path)
+    return sorted(verified)
+
+
 def start_local_model(
     registry: Registry,
     model_id: str,
@@ -621,25 +672,29 @@ def start_local_model(
     registry_path: Path | None = None,
     litellm_path: Path | None = None,
 ) -> StartResult:
-    """Stop whatever local model is running (if any) and start model_id,
-    recording it as the new `[local].running_model` marker.
+    """Start model_id as a running local model, alongside any other local
+    models already running (cross-provider concurrency is unrestricted —
+    see docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md).
+    If model_id's OWN provider is already running a DIFFERENT model (a
+    single-port provider: omlx, mtplx, mlx_lm_server), that occupant is
+    stopped first — those providers can only ever serve one model.
+    Ollama never gets a process call: the flag flips, and ollama lazy-
+    loads on first request.
 
-    `model_id` may be a registry id, an existing model's native
+    model_id may be a registry id, an existing model's native
     provider-side name, or (with `family` set) the native name of an
     on-disk artifact with no registry.toml entry yet — see
     _resolve_or_register. Raises DiscoveredModelNeedsFamily when the third
     case needs a family the caller hasn't supplied yet.
 
     Raises LocalControlError when model_id is unknown, not a local model,
-    its provider cannot be isolated by bin/llm-isolate-provider, or the
-    mlx_lm_server pairing can't be resolved.
+    its provider cannot be isolated, or an mlx_lm_server pairing can't be
+    resolved.
 
-    Idempotent: when model_id is already the running marker, the marked
-    model is PROBED before trusting the marker — `modelman start` is the
-    recovery command wt's own "not running" message prescribes, so it must
-    not no-op on a marker whose process died (crash, reboot, omlx stop). A
-    dead marker is cleared and the full start runs. A false probe negative
-    only costs a stop+reload of an already-serving model.
+    Idempotent: when model_id is already flagged running, it is PROBED
+    before trusting the flag. A dead flag is cleared and a full start
+    runs — modelman start is the recovery command wt's own "not running"
+    message prescribes, and must not no-op on a flag whose process died.
     """
     state = load_state(state_path)
     model, registration_warnings = _resolve_or_register(
@@ -657,9 +712,6 @@ def start_local_model(
             f"(supported: {sorted(SUPPORTED_PROVIDER_IDS)})"
         )
 
-    # Resolve the isolate arguments BEFORE any teardown so a broken mlx_lm_server
-    # pairing fails fast — stopping the running model first would tear down a
-    # healthy model and then leave the GPU empty when this raises.
     extra_args: tuple[str, ...] = ()
     env: dict[str, str] | None = None
     if model.provider_id == "mlx_lm_server":
@@ -675,88 +727,115 @@ def start_local_model(
             raise LocalControlError(str(exc)) from exc
         extra_args = (target, draft)
     elif model.provider_id == "mtplx":
-        # MTPLX is single-model-per-process and has no baked-in default in the
-        # bash helper. Pass the requested repo id as a positional arg so the
-        # lifecycle module starts exactly this model; no env override is used.
         extra_args = (model.model_name,)
-        env = None
-    else:
+    elif model.provider_id != "ollama":
         env = {_ENV_VAR_BY_PROVIDER[model.provider_id]: model.model_name}
 
     probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
-    # Deliberately re-read rather than reusing `state.local.running_model`
-    # from the load at the top of this function: _resolve_or_register()
-    # above can call _register_discovered_model(), which does a real
-    # LiteLLM config write (expose_model) that can take a non-trivial
-    # amount of wall-clock time — long enough for a concurrent `modelman
-    # start`/`stop` to change the marker in the meantime. Using the stale
-    # in-memory `state` here would risk basing the idempotency check below,
-    # and the stale-marker clearing in the except branches further down, on
-    # an out-of-date value.
-    current = load_state(state_path).local.running_model
-    if current == resolved_id:
+
+    # Re-read rather than reusing the state loaded above: _resolve_or_register()
+    # may have done a real LiteLLM config write that takes non-trivial wall
+    # time, long enough for a concurrent start/stop to change flags meanwhile.
+    fresh_state = load_state(state_path)
+    other_running = sorted(
+        mid for mid, s in fresh_state.models.items() if mid != resolved_id and s.running
+    )
+
+    already = fresh_state.get(resolved_id).running
+    if already:
         if _probe_running(model.provider_id, model.model_name, probe_origin):
-            return StartResult(model_id=resolved_id, already_running=True, warnings=registration_warnings)
-        # Marker names this model but nothing is serving it — clear the dead
-        # marker before the restart so a mid-flight wt launch doesn't gate
-        # on a model that just failed its probe.
-        _clear_stale_marker((resolved_id,), state_path)
+            return StartResult(
+                model_id=resolved_id, already_running=True,
+                warnings=registration_warnings, other_running=other_running,
+            )
+        _clear_stale_running_flag(resolved_id, state_path)
 
-    try:
-        stop_all_local_providers()
-    except BenchmarkError as exc:
-        # Teardown failed: the previously marked model (if any) may still be
-        # serving, so its marker is still true — leave it untouched.
-        raise LocalControlError(f"failed to stop the currently-running local model: {exc}") from exc
+    if model.provider_id == "ollama":
+        # Flag-only: no process action, ollama lazy-loads on request.
+        direct_url = None
+    else:
+        provider_model_ids = {m.id for m in registry.models if m.provider_id == model.provider_id}
+        occupant = None
+        if model.provider_id != "mtplx":  # mtplx's own isolate() handles its occupant internally
+            occupant = _same_provider_occupant(fresh_state, provider_model_ids, exclude_model_id=resolved_id)
+        if occupant is not None and model.provider_id in ("omlx", "omlx-6bit"):
+            try:
+                stop_provider(model.provider_id)
+            except BenchmarkError as exc:
+                raise LocalControlError(f"failed to stop {occupant} before starting {resolved_id}: {exc}") from exc
+            _clear_stale_running_flag(occupant, state_path)
 
-    try:
-        result = isolate_provider(model.provider_id, *extra_args, env=env)
-    except BenchmarkError as exc:
-        _clear_stale_marker((current or "", resolved_id), state_path)
-        raise LocalControlError(
-            f"failed to start {resolved_id}: {exc} — cleared the stale "
-            "[local].running_model marker (the previously running model was "
-            "already stopped)"
-        ) from exc
-    if not result.ok:
-        _clear_stale_marker((current or "", resolved_id), state_path)
-        raise LocalControlError(
-            f"failed to start {resolved_id}: {result.error or 'unknown error'} — "
-            "cleared the stale [local].running_model marker (the previously "
-            "running model was already stopped)"
-        )
+        try:
+            result = isolate_provider(model.provider_id, *extra_args, env=env, solo=True)
+        except BenchmarkError as exc:
+            _clear_stale_running_flag(resolved_id, state_path)
+            raise LocalControlError(f"failed to start {resolved_id}: {exc}") from exc
+        if not result.ok:
+            _clear_stale_running_flag(resolved_id, state_path)
+            raise LocalControlError(f"failed to start {resolved_id}: {result.error or 'unknown error'}")
+        direct_url = result.direct_url or None
 
     try:
         with locked_state(state_path) as fresh:
-            fresh.local.running_model = resolved_id
+            existing = fresh.models.get(resolved_id, ModelState())
+            fresh.models[resolved_id] = replace(existing, running=True)
     except OSError as exc:
         raise LocalControlError(
-            f"{resolved_id} started successfully but the [local].running_model "
-            f"marker could not be persisted: {exc} — wt's picker will not see it "
-            "as running until `modelman start` succeeds"
+            f"{resolved_id} started successfully but its running flag could not be "
+            f"persisted: {exc} — wt's picker will not see it as running until this succeeds"
         ) from exc
     return StartResult(
-        model_id=resolved_id,
-        already_running=False,
-        direct_url=result.direct_url or None,
-        warnings=registration_warnings,
+        model_id=resolved_id, already_running=False, direct_url=direct_url,
+        warnings=registration_warnings, other_running=other_running,
     )
 
 
-def stop_local_model(state_path: Path | None = None) -> StopResult:
-    """Stop the currently-running local model (if any) and clear the
-    marker. No-op when nothing is running."""
-    running = load_state(state_path).local.running_model
-    if not running:
+def stop_local_model(model_id: str, state_path: Path | None = None) -> StopResult:
+    """Stop exactly one running local model and clear its flag. No-op
+    when it isn't running. Raises LocalControlError for an unknown
+    provider id embedded in model_id's prefix."""
+    state = load_state(state_path)
+    current = state.get(model_id)
+    if not current.running:
         return StopResult(stopped_model_id=None)
+
+    provider_id = model_id.split("/", 1)[0]
+    if provider_id == "ollama":
+        model_name = model_id.split("/", 1)[1]
+        _stop_ollama_model(model_name)
+    elif provider_id == "mtplx":
+        from .providers.lifecycle import stop as lifecycle_stop
+
+        result = lifecycle_stop("mtplx")
+        if not result.ok:
+            raise LocalControlError(f"failed to stop {model_id}: {result.error}")
+    else:
+        try:
+            stop_provider(provider_id)
+        except BenchmarkError as exc:
+            raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
+
+    with locked_state(state_path) as fresh:
+        existing = fresh.models.get(model_id)
+        if existing is not None and existing.running:
+            fresh.models[model_id] = replace(existing, running=False)
+    return StopResult(stopped_model_id=model_id)
+
+
+def stop_all_local_models(state_path: Path | None = None) -> list[str]:
+    """Stop every currently-running local model and clear all their
+    flags. Returns the sorted list of model ids that were stopped."""
+    state = load_state(state_path)
+    running_ids = sorted(mid for mid, s in state.models.items() if s.running)
+    if not running_ids:
+        return []
     try:
         stop_all_local_providers()
     except BenchmarkError as exc:
-        # The model may still be serving — its marker stays true.
-        raise LocalControlError(f"failed to stop {running}: {exc}") from exc
+        raise LocalControlError(f"failed to stop local models: {exc}") from exc
     with locked_state(state_path) as fresh:
-        # Only clear OUR marker: a concurrent `modelman start` that finished
-        # between stop-all and this write has already named a new model.
-        if fresh.local.running_model == running:
-            fresh.local.running_model = None
-    return StopResult(stopped_model_id=running)
+        for mid in running_ids:
+            existing = fresh.models.get(mid)
+            if existing is not None and existing.running:
+                fresh.models[mid] = replace(existing, running=False)
+    return running_ids
