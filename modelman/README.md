@@ -123,7 +123,6 @@ This file is optional — a fresh install starts with an empty store.
 
 ```bash
 modelman                        # open the TUI (model list)
-modelman download <family>      # open the TUI, cursor scrolled to that family
 modelman sync                   # reconcile configured models against providers
 modelman expose <model-id>      # expose a model through LiteLLM
 modelman unexpose <model-id>    # remove a model's LiteLLM exposure
@@ -132,7 +131,7 @@ modelman migrate                # one-time import of legacy config (see below)
 
 ### TUI
 
-The TUI has two screens:
+The TUI has a single screen:
 
 - **Model screen** — the app's only/root screen: a single table of every
   model across every family, sorted family · location (local before
@@ -168,29 +167,30 @@ The TUI has two screens:
   one per-token price is required when per-token pricing is enabled;
   both price and period are required when subscription pricing is
   enabled.
-- **Status screen** — when you apply on exit, the model screen hands off to
-  a status screen that streams per-item progress (`Deleting …`,
-  `Downloaded …`, `Saving …`) into a scrollable log. Provider progress is
-  forwarded live: Ollama's pull output (stripped of ANSI escapes) and
-  huggingface_hub tqdm bars (per-file bytes/rate) appear as each line is
-  emitted. `Escape` mid-run pops a Cancel-or-Wait dialog: `Cancel` kills any
-  running subprocess (Ollama) and stops the queue; `Wait` keeps waiting.
-  Once the run completes (or is cancelled), `Escape` returns to the model
-  screen underneath, already showing the post-apply state.
+
+All model changes (adds, edits, deletes, ready toggles, exposure toggles,
+moves) are queued in memory — nothing downloads or writes to disk while
+the TUI is open (add/edit are the one exception: registry.toml is
+persisted immediately, so a discarded session doesn't lose a
+concurrently-typed edit). `Escape`/`Ctrl+Q` with a pending queue shows a
+confirmation dialog listing the pending set; `Apply` or `Discard` both
+exit the app. On Apply, `main.py` runs the queue in the plain terminal
+after the TUI closes: **deletes, then moves, then ready changes
+(downloads/clears/flag flips), then exposure changes**, printing
+provider progress and a thin lifecycle line per operation to stdout,
+then writes `registry.toml` + `modelman.toml` once. A failed operation
+is reported in an error summary at the end and the process exits
+non-zero; `Ctrl+C` mid-run cancels the remaining queue (already-applied
+steps are not undone, nothing is saved for the interrupted run). A
+delete for a not-on-disk model is legal: the on-disk removal is
+skipped, but the registry/state cleanup, lifecycle events, and any
+cascade-unexpose still run.
 
 All dialogs share a layout convention: the cancel/default button is
 rightmost, the primary action is to its left, and pressing `Escape`
 cancels (this works even when an Input is focused). Destructive prompts
-(`ConfirmModal`, `ConfirmExitDialog`, `CancelApplyDialog`) focus the
-safe button on open so a reflexive `Enter` is never destructive.
-
-All model changes (adds, edits, deletes, ready toggles, exposure toggles,
-moves) are queued in memory. On exit, a confirmation dialog shows the
-pending set; confirming runs **deletes, then moves, then ready changes
-(downloads/clears/flag flips), then exposure changes**, and writes
-`registry.toml` + `modelman.toml` once. A delete for a not-on-disk model
-is legal: the on-disk removal is skipped, but the registry/state
-cleanup, lifecycle events, and any cascade-unexpose still run.
+(`ConfirmModal`, `ConfirmExitDialog`) focus the safe button on open so a
+reflexive `Enter` is never destructive.
 
 ### Expose models through LiteLLM
 
@@ -203,10 +203,11 @@ modelman expose <model-id>    # add the model_list entry
 modelman unexpose <model-id>  # remove it
 ```
 
-In the TUI, press `x` on a model row to queue an exposure toggle; it applies
-on exit alongside downloads/deletes (a not-ready model is downloaded/pulled
-first). The EXPOSED column shows `Y` when
-exposed (or queued to expose) and `–` otherwise.
+In the TUI, press `x` on a model row to queue an exposure toggle; it
+applies after you exit via Apply, alongside every other queued change (a
+not-ready model is downloaded/pulled first, in the terminal, once the
+TUI has closed). The EXPOSED column shows `Y` when exposed (or queued
+to expose) and `–` otherwise.
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
 (override with `MODELMAN_LITELLM_CONFIG`). Writes are read-modify-write with
@@ -289,7 +290,7 @@ make clean       # remove caches
 
 - `src/modelman/app.py` — `ModelmanApp` (Textual `App`), launches directly into `ModelScreen` (its only screen — there's no separate family list).
 - `src/modelman/screens/__init__.py` — `reload_preserving_cursor` helper used by `ModelScreen` so `DataTable.clear()` doesn't reset the cursor to row 0.
-- `src/modelman/screens/` — `models.py` (single table of every model across every family, sorted family/location/provider/name, cursor-preserving reload, alphabetical dropdowns, delete-any-model), `forms.py` (modals on a shared `ModelmanModal` base with consistent button order, Escape-to-cancel, and safe-default focus on destructive dialogs — `ModelForm`'s add-mode family Select includes a "+ New family…" option), `status.py` (apply progress).
+- `src/modelman/screens/` — `models.py` (single table of every model across every family, sorted family/location/provider/name, cursor-preserving reload, alphabetical dropdowns, delete-any-model), `forms.py` (modals on a shared `ModelmanModal` base with consistent button order, Escape-to-cancel, and safe-default focus on destructive dialogs — `ModelForm`'s add-mode family Select includes a "+ New family…" option).
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
 - `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup, lifecycle events, and the cascade-unexpose still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.

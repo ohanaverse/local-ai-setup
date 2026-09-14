@@ -168,6 +168,27 @@ def test_cancel_current_resets_on_next_download(provider):
         assert provider._cancel_requested is False
 
 
+def test_download_flips_cancel_flag_when_interrupted(provider):
+    """A real Ctrl+C (or any other exception) unwinding through
+    snapshot_download must flip _cancel_requested immediately, so any HF
+    worker thread still mid-download picks up the cancellation on its
+    next progress update instead of only learning about it after
+    apply() has already fully unwound (see queue.py's DownloadCancelled
+    handling). Regression for a review finding: this provider never
+    mirrored ollama.py's immediate-interrupt hardening."""
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "omlx",
+        "name": "x-mlx",
+        "repo": "foo/bar",
+    }
+    with patch("modelman.providers.omlx.snapshot_download", side_effect=KeyboardInterrupt), pytest.raises(
+        KeyboardInterrupt
+    ):
+        provider.download(variant)
+    assert provider._cancel_requested is True
+
+
 def test_path_of_returns_model_dir(tmp_path):
     md = tmp_path / "models"
     target = md / "Ornith-1.5"

@@ -169,6 +169,23 @@ def test_cancel_current_resets_on_next_download(provider):
         assert provider._cancel_requested is False
 
 
+def test_download_flips_cancel_flag_when_interrupted(provider):
+    """See OMLXProvider's identical test — llamacpp shares the same
+    snapshot_download-based download path and the same gap."""
+    variant: VariantSpec = {
+        "id": "q4",
+        "provider": "llamacpp",
+        "name": "x-gguf",
+        "repo": "foo/bar",
+        "files": ["model.gguf"],
+    }
+    with patch("modelman.providers.llamacpp.snapshot_download", side_effect=KeyboardInterrupt), pytest.raises(
+        KeyboardInterrupt
+    ):
+        provider.download(variant)
+    assert provider._cancel_requested is True
+
+
 def test_path_of_returns_primary_file_path(tmp_path, monkeypatch):
     hf = tmp_path / "hf"
     snap = hf / "hub" / "models--ornith--test" / "snapshots" / "rev1"

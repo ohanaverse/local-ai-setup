@@ -94,6 +94,24 @@ class OMLXProvider(Provider):
                     kwargs["tqdm_class"] = ProgressTqdm
                 snapshot_download(**kwargs)
                 return str(target)
+            except BaseException:
+                # Flips the cancellation flag immediately on a real Ctrl+C
+                # (or any other interrupt) unwinding through this call.
+                # This mostly does NOT extend should_cancel's actual reach:
+                # the `finally` below clears the class-level active context
+                # on the way out, and display() only ever reads
+                # should_cancel from that same class-level slot (HF's
+                # tqdm_class gets no per-instance kwargs — see
+                # ProgressTqdm's docstring) — so a straggling worker thread
+                # only sees this flip if its display() call lands in the
+                # brief window before clear_active_context() runs. The
+                # mechanism that actually protects a concurrent download is
+                # a separate cancel_current() call landing while this
+                # download's context is still set (e.g. from another
+                # thread, mid-download) — this flip is belt-and-braces for
+                # that path, not a guarantee for the real-interrupt case.
+                self._cancel_requested = True
+                raise
             finally:
                 ProgressTqdm.clear_active_context()
 

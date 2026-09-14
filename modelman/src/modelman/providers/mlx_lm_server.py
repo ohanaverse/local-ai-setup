@@ -146,6 +146,11 @@ class MLXLMServerProvider(Provider):
                         kwargs["tqdm_class"] = ProgressTqdm
                     snapshot_download(**kwargs)
                     return target
+                except BaseException:
+                    # See OMLXProvider.download's identical hardening and
+                    # its comment on this flip's real, narrow reach.
+                    self._cancel_requested = True
+                    raise
                 finally:
                     ProgressTqdm.clear_active_context()
         raise ValueError(
@@ -230,9 +235,9 @@ class MLXLMServerProvider(Provider):
         Unlike path_of() — which is display-only and requires the directory
         to exist — this method returns the paths the variant is configured
         to use (local_path or repo-derived, per side), so shared-artifact
-        detection works even before download. Callers in queue.py and
-        downloads.py treat a path conflict as "another entry owns this
-        artifact" regardless of whether it's on disk yet.
+        detection works even before download. Callers in queue.py treat a
+        path conflict as "another entry owns this artifact" regardless of
+        whether it's on disk yet.
         """
         paths: list[str] = []
         # Target side: local_path takes precedence; otherwise repo-derived dir.

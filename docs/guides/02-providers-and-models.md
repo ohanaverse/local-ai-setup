@@ -39,13 +39,13 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_L
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman                                # full TUI: browse families → add/edit/delete → queue changes → confirm on exit
+uv run modelman                                # full TUI: browse the model table → add/edit/delete → queue changes → confirm on exit
 uv run modelman sync                           # reconcile downloaded/disk_path/size_bytes in modelman.toml against providers; never adds models
 uv run modelman expose ollama/gpt-oss:20b      # non-interactive: writes a model_list entry + sets exposed = true
 uv run modelman unexpose ollama/gpt-oss:20b    # removes the entry and clears the flag
 ```
 
-Scope split (verified via `uv run modelman --help` and the TUI key lists below): **TUI-only** = adding/editing/deleting providers and models (writes `registry.toml`), display-name edits, and downloads with live progress (`download` opens the TUI at a model screen). **CLI** = `expose`/`unexpose`, `sync`, `migrate`, `benchmark`, `usage`; bare `modelman` and `modelman download <family>` open the TUI.
+Scope split (verified via `uv run modelman --help` and the TUI key lists below): **TUI-only** = adding/editing/deleting providers and models (writes `registry.toml`), display-name edits, and queuing ready-on/off (downloaded/applied only after you exit via Apply — see modelman/CLAUDE.md's "Downloads (queued, applied on exit)"). **CLI** = `expose`/`unexpose`, `sync`, `migrate`, `benchmark`, `usage`; bare `modelman` opens the TUI.
 
 ## Steps
 
@@ -58,13 +58,13 @@ Scope split (verified via `uv run modelman --help` and the TUI key lists below):
 uv run modelman
 ```
 
-Three screens (README, verbatim):
+One screen (README, verbatim):
 
-- **Family screen** — table of families with columns: family · display · variants · downloaded · size. Keys: `a` add, `e` edit display name, `d` delete (blocked if anything is downloaded), `enter` open, `q` quit. Reconcile runs automatically on mount/resume — no manual key. The `downloaded` column counts only local models; cloud entries are excluded from both the count and the `size` column.
-- **Model screen** — single table scoped to one family (columns: family · provider · model · loc · status · exposed · cost · sub · size), with a details panel below showing the row's on-disk path. Keys: `a` add model, `e` edit (id/provider fixed; location editable to correct mistakes), `d` queue delete (any model — apply skips on-disk removal if the artifact is already gone), `r` toggle ready (queues download/pull; a no-op with a notification for a local-artifact model already on disk — delete the file instead), `x` toggle exposed (cascades a ready toggle first if needed), `enter` edit, `escape` back / apply queue.
-- **Status screen** — when you apply on exit, the model screen hands off to a status screen that streams per-item progress (`Deleting …`, `Downloaded …`, `Saving …`) into a scrollable log. `Escape` mid-run pops a Cancel-or-Wait dialog: `Cancel` kills any running subprocess (Ollama) and stops the queue; `Wait` keeps waiting. Once the run completes (or is cancelled), `Escape` returns to the family screen.
+- **Model screen** — the app's only/root screen: a single table of every model across every family (columns: family · provider · model · loc · status · exposed · cost · sub · size), with a details panel below showing the row's on-disk path. Keys: `a` add model, `e` edit (id/provider fixed; location editable to correct mistakes), `d` queue delete (any model — apply skips on-disk removal if the artifact is already gone), `r` toggle ready (queues a download/pull for reconcilable providers, or a flag flip for cloud/native providers; a no-op with a notification for a local-artifact model already on disk — delete the file instead), `x` toggle exposed (cascades a ready toggle first if needed), `l` toggle LiteLLM routing on/off, `enter` edit, `escape` shows the apply/discard/cancel dialog if anything is queued, otherwise quits the app. Reconcile runs automatically on mount — no manual key.
 
-The model screen derives its provider pane from each family model-variant's `provider_id` field in `registry.toml`; the add flow raises `KeyError` on a provider id that has no `[[providers]]` entry (`src/modelman/screens/models.py:40-43`). Keep provider entries ahead of model entries.
+All model changes (adds, edits, deletes, ready toggles, exposure toggles, moves) are queued in memory — nothing downloads or writes to disk while the TUI is open. `Escape`/`Ctrl+Q` with a pending queue shows a confirmation dialog; `Apply` or `Discard` both exit the app. On `Apply`, `main.py` runs the queue in the plain terminal after the TUI closes — deletes, then moves, then ready changes (downloads/clears/flag flips), then exposure changes — printing provider progress and a lifecycle line per operation to stdout, then writes `registry.toml` + `modelman.toml` once.
+
+The model screen derives its provider pane from each model's `provider_id` field in `registry.toml`; the add flow raises `KeyError` on a provider id that has no `[[providers]]` entry (`src/modelman/screens/models.py:91`). Keep provider entries ahead of model entries.
 
 ### 2. Add a cloud provider (OpenRouter)
 
@@ -106,7 +106,7 @@ Then register models under it with the same `[[models]]` shape as Step 3 (`provi
 
 ### 3. Add a local model (Ollama)
 
-In the TUI: family screen `a` to add, or open a family (`enter`) and press `a` on the model screen — then edit (`enter`/`e`) to fill the fields. The add/edit dialog includes optional **Per-token pricing** and **Subscription pricing** sections; check each section to reveal its labeled fields (Input / Cache / Output, each priced per million tokens, for per-token; Amount / Period for subscription) and fill them in. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
+In the TUI: press `a` on the model screen to add — then edit (`enter`/`e`) to fill the fields. The add/edit dialog includes optional **Per-token pricing** and **Subscription pricing** sections; check each section to reveal its labeled fields (Input / Cache / Output, each priced per million tokens, for per-token; Amount / Period for subscription) and fill them in. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
 
 Resulting `registry.toml` entry — real, as written on disk here (`~/.config/local-ai/registry.toml`, verified on this machine):
 
@@ -142,35 +142,18 @@ The add dialog collects exactly these fields (`provider`, `name`, `repo`, `files
 
 ### 5. Downloads
 
-Downloads are **queued in the TUI and applied on exit** — nothing is written until you confirm the pending set on exit; confirming then runs **deletes first, then downloads, then exposure changes**, and writes `registry.toml` + `modelman.toml` once (README, verbatim).
+Downloads are **queued in the TUI and applied on exit** — nothing is written until you confirm the pending set on exit; confirming then runs **deletes, then moves, then ready changes (downloads/clears/flag flips), then exposure changes**, and writes `registry.toml` + `modelman.toml` once (README, verbatim).
 
-Non-interactive entry point — `download` opens the TUI directly at that family's model screen (help text captured live):
-
-```bash
-# from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman download --help
-```
-
-```text
- Usage: modelman download [OPTIONS] {family}
-
- Open the TUI at a family's model screen (queued downloads on exit).
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    family      <str>  Family name (filename under families dir) [required] │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-(Options box with --help elided.)
-
-<!-- UNVERIFIED — interactive launch not driven from this session; run it and confirm downloads queue, then apply on exit. -->
+There is no non-interactive `download` subcommand — `modelman download <family>` was retired along with the old family/model/status three-screen TUI. To queue a download, open the plain TUI and press `r` on the model's row:
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman download ornith-1.5:35b
+uv run modelman
 ```
 
-(Family id comes from the `family` field of the model rows in `registry.toml` — here `ornith-1.5:35b`, verified on disk.)
+<!-- UNVERIFIED — interactive launch not driven from this session; run it, press `r` on the target model row to queue ready-on, and confirm the download queues, then apply on exit. -->
+
+Press `r` on the row you want (model id comes from the `family`/`provider`/`model_name` fields of the model rows in `registry.toml` — e.g. `ornith-1.5:35b`, verified on disk); `escape` shows the apply/discard/cancel dialog, and the queued download runs in the plain terminal once you choose `Apply`.
 
 ### 6. Reconcile: `sync`
 
@@ -284,7 +267,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 - **`registry.toml` is canonical + read-only to wt.** Model visibility for agents changes HERE — edit `~/.config/local-ai/registry.toml`, not wt's config. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `exposed` — legacy `downloaded`/`litellm_exposed` keys are still read as fallbacks; `[families]` display names); never treat it as the model catalog.
 - **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`.
 - **`sync` semantics as observed:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), `:cloud` rows land `ready = false`, unconfigured models ignored, no models added, `exposed` preserved. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
-- **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:40-43`).
+- **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:91`).
 - **TUI changes apply on exit only.** Adds/edits/deletes/downloads/exposure toggles sit in an in-memory queue until you confirm the pending set; deletes run before downloads, downloads before exposure changes, then one write of both files.
 - **Secrets:** `secret_ref` is copied verbatim into the LiteLLM entry's `api_key`. The live `config.yaml` currently holds literal `sk-or-v1-…` keys — redact before pasting config anywhere.
 

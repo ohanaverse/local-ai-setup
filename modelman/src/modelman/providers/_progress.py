@@ -2,18 +2,32 @@
 
 Providers expose an `on_progress` callable that streams human-readable
 lines describing what the underlying tool (ollama, huggingface_hub, ...)
-is doing. The StatusScreen consumes these and writes them into a RichLog.
-
-`on_progress` may be invoked from any thread; the StatusScreen is
-responsible for marshalling to the UI thread.
+is doing. main.py's run_queued_ops() forwards this straight to
+typer.echo, now that apply() runs in the plain foreground CLI process
+after the TUI has exited rather than inside a Textual UI thread — no
+thread-marshalling is needed.
 
 For HuggingFace downloads, `snapshot_download` runs synchronously and
 does not natively support cancellation. To make it interruptible, the
 `ProgressTqdm` bar accepts an optional `should_cancel` callable; if it
 returns True on any `display()` update, the bar raises
 `DownloadCancelled`, which bubbles out of `snapshot_download` and out
-of the apply loop. This is what makes the StatusScreen's Cancel button
-actually stop a HF download instead of waiting for it to finish.
+of the apply loop. `OMLXProvider`, `LlamaCppProvider`, and
+`MLXLMServerProvider`'s `download()` methods all wire this to their own
+`_cancel_requested` flag, flipped by `cancel_current()` (called from
+`PendingChanges.cancel()`, typically from another thread while this
+download's context is still active) and also, best-effort, by their own
+`download()` when a `BaseException` — a real Ctrl+C included — unwinds
+through the `snapshot_download` call. That second flip mostly does NOT
+extend `should_cancel`'s real reach, though: `download()`'s `finally`
+clears the class-level active context on its way out, so a straggling
+worker thread only picks up the flip if its own `display()` call lands
+in the brief window before that clear runs — the mechanism that
+actually protects an in-flight download is a concurrent
+`cancel_current()` call arriving while the context is still set; the
+flip-on-interrupt is belt-and-braces alongside that, not a substitute
+for it. See `PendingChanges._cleanup_partial_download` in queue.py for
+the on-disk cleanup this races against.
 """
 
 from __future__ import annotations
@@ -64,8 +78,8 @@ HF_DOWNLOAD_LOCK = threading.Lock()
 class ProgressTqdm(_tqdm):
     """tqdm subclass that fires a callback on each display update.
 
-    Used to stream huggingface_hub snapshot_download progress into the
-    StatusScreen log. Multiple bars may run in parallel; the callback
+    Used to stream huggingface_hub snapshot_download progress via the
+    on_progress callback. Multiple bars may run in parallel; the callback
     fires for each one independently. If `should_cancel` is provided and
     ever returns True, the bar raises `DownloadCancelled` to abort the
     download immediately (snapshot_download propagates the exception).

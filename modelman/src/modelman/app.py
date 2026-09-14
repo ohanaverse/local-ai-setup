@@ -7,7 +7,7 @@ from typing import Any
 
 from textual.app import App
 
-from .downloads import DownloadManager
+from .queue import QueuedOps
 from .registry import (
     Registry,
     RegistryError,
@@ -15,22 +15,16 @@ from .registry import (
     load_registry,
     sync_agent_providers,
 )
-from .screens.forms import QuitBlockedModal
 from .screens.models import ModelScreen
 from .settings import Settings, load_settings, save_settings
 from .state import _default_state_path, load_state
 
 
-class ModelmanApp(App[None]):
+class ModelmanApp(App[QueuedOps | None]):
     TITLE = "modelman"
 
-    def __init__(self, family: str | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._initial_family = family
-        # One DownloadManager for the app's lifetime, created before any
-        # screen mounts so every screen can reference self.app.downloads
-        # the instant it might need it (quit guard, glyph, routing).
-        self.downloads = DownloadManager(self)
         # Set by the startup price-refresh worker when it skips or fails; read
         # by ModelScreen.action_back to decide whether to show a stale-pricing
         # reminder in the exit confirmation dialog.
@@ -60,7 +54,6 @@ class ModelmanApp(App[None]):
                 state=load_state(),
                 registry_path=_default_registry_path(),
                 state_path=_default_state_path(),
-                scroll_to_family=self._initial_family,
             )
         )
         self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
@@ -150,39 +143,23 @@ class ModelmanApp(App[None]):
         self.call_from_thread(self.notify, f"Token prices refreshed for {result.updated} model(s)")
 
     def request_quit(self) -> None:
-        """The single quit entry point every binding routes through
-        (ctrl+q's default action_quit, and ModelScreen's Escape when it
-        has no pending changes — it's the app's root screen now, so
-        Escape-with-nothing-queued means quit). Blocks quitting while a
-        download is active instead of exiting
-        out from under it, and — if the top screen is a ModelScreen with
-        an unapplied queue (delete/ready/move/expose) — routes through
-        its own action_back() so ctrl+q gets the same apply/discard/
-        cancel confirmation Escape would give, instead of silently
-        dropping the queue."""
-        if self.downloads.has_active():
-
-            def _on_choice(review: bool | None) -> None:
-                if review:
-                    from .screens.downloads import DownloadScreen
-
-                    self.push_screen(DownloadScreen())
-
-            self.push_screen(QuitBlockedModal(), _on_choice)
-            return
-
+        """ctrl+q's entry point: delegate to the top ModelScreen's Escape
+        handling (the apply/discard/cancel confirmation dialog when a
+        queue is pending, or an immediate exit when it's empty) instead
+        of quitting out from under an unapplied queue. Falls through to
+        a direct exit when the top screen isn't a ModelScreen (e.g. a
+        modal is open)."""
         top = self.screen
-        if isinstance(top, ModelScreen) and top.has_pending_changes():
+        if isinstance(top, ModelScreen):
             top.action_back()
             return
-
         self.exit()
 
     async def action_quit(self) -> None:
-        """Override Textual's default (self.exit()) to route through the
-        download quit guard. This also fixes a pre-existing quirk where
-        ctrl+q quit immediately from any screen, bypassing ModelScreen's
-        apply-on-exit confirm — it's now gated by request_quit()."""
+        """Override Textual's default (self.exit()) to route through
+        request_quit(), so ctrl+q shows ModelScreen's apply/discard/cancel
+        confirm dialog when a queue is pending, instead of quitting
+        immediately from any screen (a pre-existing quirk this fixes)."""
         self.request_quit()
 
     def watch_theme(self, old_theme: str | None, new_theme: str) -> None:
