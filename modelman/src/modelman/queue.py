@@ -256,6 +256,42 @@ class PendingChanges:
             if find_shared_artifact_owner(self.registry, provider, variant) is None:
                 provider.cleanup_partial_download(variant)  # type: ignore[attr-defined]
 
+    def _finish_ready(
+        self,
+        emit: EventFn,
+        model_id: str,
+        *,
+        ready: bool,
+        disk_path: str | None = None,
+        size_bytes: int | None = None,
+        keep_existing_path: bool = False,
+        done_tag: str,
+    ) -> None:
+        """Persist a ready-loop item's final state.ready/disk_path/size_bytes,
+        mark it touched for the final save, and emit its pre-built :done tag.
+
+        Shared by all three ready-loop branches (flag-only flip, real
+        download, clear) so a change to this sequence — a new field, a
+        changed emit shape — needs one edit instead of three separately
+        drifting copies. `keep_existing_path=True` is for the flag-only
+        ready-ON flip, which must not clobber a disk_path/size_bytes it
+        never itself set.
+        """
+        if keep_existing_path:
+            self.state.set(model_id, replace(self.state.get(model_id), ready=ready))
+        else:
+            self.state.set(
+                model_id,
+                replace(
+                    self.state.get(model_id),
+                    ready=ready,
+                    disk_path=disk_path,
+                    size_bytes=size_bytes,
+                ),
+            )
+        self._touched_model_ids.add(model_id)
+        emit(done_tag)
+
     def cancel(self) -> None:
         """Request cancellation of an in-progress apply().
 
@@ -447,19 +483,13 @@ class PendingChanges:
                         reason = _reason(exc)
                         self.failures.append(f"clear {model_id}: {reason}")
                         emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    self.state.set(
-                        model_id,
-                        replace(
-                            self.state.get(model_id),
-                            ready=target,
-                            disk_path=None,
-                            size_bytes=None,
-                        ),
-                    )
-                else:
-                    self.state.set(model_id, replace(self.state.get(model_id), ready=target))
-                self._touched_model_ids.add(model_id)
-                emit(f"ready:done|{model_id}|{label}")
+                self._finish_ready(
+                    emit,
+                    model_id,
+                    ready=target,
+                    keep_existing_path=target,
+                    done_tag=f"ready:done|{model_id}|{label}",
+                )
             elif target:
                 # provider present, not manages_own_cache, target=True:
                 # a real download/pull. Restored from before DownloadManager
@@ -494,20 +524,15 @@ class PendingChanges:
                         size_bytes = provider.size_of(variant)  # type: ignore[attr-defined]
                     except Exception:  # noqa: BLE001
                         size_bytes = None
-                self.state.set(
+                suffix = f"|{human_bytes(size_bytes)}" if size_bytes is not None else ""
+                self._finish_ready(
+                    emit,
                     model_id,
-                    replace(
-                        self.state.get(model_id),
-                        ready=True,
-                        disk_path=local_path,
-                        size_bytes=size_bytes,
-                    ),
+                    ready=True,
+                    disk_path=local_path,
+                    size_bytes=size_bytes,
+                    done_tag=f"download:done|{model_id}|{label}{suffix}",
                 )
-                self._touched_model_ids.add(model_id)
-                if size_bytes:
-                    emit(f"download:done|{model_id}|{label}|{human_bytes(size_bytes)}")
-                else:
-                    emit(f"download:done|{model_id}|{label}")
             else:
                 # provider present, target False: clear.
                 emit(f"delete:start|{model_id}|{label}")
@@ -518,17 +543,12 @@ class PendingChanges:
                     model_id, variant, label, provider, "clear", emit
                 ):
                     continue
-                self.state.set(
+                self._finish_ready(
+                    emit,
                     model_id,
-                    replace(
-                        self.state.get(model_id),
-                        ready=False,
-                        disk_path=None,
-                        size_bytes=None,
-                    ),
+                    ready=False,
+                    done_tag=f"delete:done|{model_id}|{label}",
                 )
-                self._touched_model_ids.add(model_id)
-                emit(f"delete:done|{model_id}|{label}")
             # Cascade: turning ready off (either branch) drops the model's
             # exposure — mirrors the full-delete step's was_exposed rule.
             # Flag-only providers have no LiteLLM config row, so just flip

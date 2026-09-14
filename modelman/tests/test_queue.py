@@ -2023,6 +2023,36 @@ def test_apply_ready_on_forwards_progress_lines(tmp_path):
     assert lines == ["pulling manifest", "verifying sha256"]
 
 
+def test_apply_ready_on_download_zero_byte_size_still_shown(tmp_path):
+    """size_of() legitimately returning 0 (a truncated/corrupt artifact
+    that still 'completed') must still show in the done event as '0 B',
+    not be treated as size-unknown and silently dropped. Regression:
+    `if size_bytes:` is a falsy-zero check that behaved identically for
+    0 and None, unlike the `is None` check used for the same value two
+    lines above it."""
+    reg, reg_path = _registry_with(
+        tmp_path, _entry(id="ollama/x", family="f", provider="ollama", name="x:7b")
+    )
+    state_path = tmp_path / "modelman.toml"
+    state = _make_state()
+    provider = MagicMock()
+    provider.download.return_value = "ollama:x:7b"  # not a real file -> _size_of() returns None
+    provider.size_of.return_value = 0  # provider fallback reports a real, legitimate 0
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        ready=[("ollama/x", _variant(id="ollama/x", provider="ollama", name="x:7b"), True)],
+    )
+    events: list[str] = []
+    pending.apply(on_event=events.append)
+
+    assert "download:done|ollama/x|x:7b|0 B" in events
+
+
 def test_apply_ready_on_download_falls_back_when_provider_lacks_on_progress_param(tmp_path):
     """A provider whose download() has no on_progress parameter at all
     (a minimal/legacy Provider implementation) must still complete via
