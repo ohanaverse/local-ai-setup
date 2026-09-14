@@ -212,6 +212,28 @@ def test_print_event_formats_download_lifecycle(capsys):
     assert "done: downloaded x:7b (21.7 GB)" in out
 
 
+def test_print_event_warns_on_unrecognized_tag(capsys):
+    # A future or misspelled event verb must not be silently dropped —
+    # regression for a review finding where the if/elif chain had no
+    # trailing else, so a new lifecycle tag would print nothing at all
+    # and no test or runtime check would catch the gap.
+    print_event("mystery:verb|x|y")
+    err = capsys.readouterr().err
+    assert "mystery:verb" in err
+
+
+def test_print_event_stays_silent_for_known_no_op_tags(capsys):
+    # apply:done / apply:cancelled / save:start are intentionally silent
+    # (run_queued_ops prints its own summary for these) and must not be
+    # flagged as unrecognized by the new catch-all branch.
+    print_event("apply:done")
+    print_event("apply:cancelled")
+    print_event("save:start")
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == ""
+
+
 def test_print_error_summary_prints_nothing_on_clean_run(capsys):
     # A clean run with no failures must print nothing and return False so
     # the TUI exits cleanly with code 0, not leaving confusing output on success.

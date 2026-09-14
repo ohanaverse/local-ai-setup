@@ -151,8 +151,10 @@ def print_event(tag: str) -> None:
         typer.echo("Saved.")
     elif verb == "save:fail":
         typer.echo(f"  FAILED: save: {parts[1]}")
-    # apply:done / apply:cancelled / save:start: no line — run_queued_ops
-    # prints its own summary once apply() returns.
+    elif verb in ("apply:done", "apply:cancelled", "save:start"):
+        pass  # run_queued_ops prints its own summary once apply() returns.
+    else:
+        typer.echo(f"  (unhandled event: {tag})", err=True)
 
 
 def print_error_summary(failures: list[str], total: int) -> bool:
