@@ -136,18 +136,21 @@ The TUI has a single screen:
 - **Model screen** — the app's only/root screen: a single table of every
   model across every family, sorted family · location (local before
   cloud) · provider · model name (columns: family · provider · model ·
-  loc · status ✓/○/↓/↑/✗/→ · exposed · cost · subscription · size). LOC is
-  an icon (↗ cloud / ▤ local / `—` when unknown) and EXPOSED shows
-  `Y`/`–`; COST shows input/cache/output prices per million tokens, or
-  `—` when unset; SUB shows the subscription price (`$x/mo` or `$x/yr`)
-  or `—`. The row's on-disk path appears in a details panel below the
-  table (`path: —` when unknown), and a LiteLLM on/off status line sits
-  below the pending-changes bar. Keys: `a` add model (family Select
-  offers every known family plus a "+ New family…" option that reveals a
-  text field for a brand-new one), `e` edit (id/provider/location/family
-  all fixed — re-homing a model isn't exposed from this dialog), `d`
-  queue delete (works on any model — apply skips the on-disk removal if
-  the artifact is already gone, but still cleans registry/state), `r`
+  loc · status ✓/○/↓/↑/✗/→ · exposed · cost · size). LOC is an icon
+  (↗ cloud / ▤ local / `—` when unknown) and EXPOSED shows `Y`/`–`; COST
+  renders per-token input/cache/output prices per million tokens as
+  three space-delimited 4-decimal values (a missing individual price
+  shows as `------`; no pricing at all shows a single `-`). There is no
+  SUB (subscription) column, though subscription pricing can still be
+  set via the Add/Edit dialogs. The row's on-disk path appears in a
+  details panel below the table (`path: —` when unknown), and a LiteLLM
+  on/off status line sits below the pending-changes bar. Keys: `a` add
+  model (family Select offers every known family plus a "+ New family…"
+  option that reveals a text field for a brand-new one), `e` edit
+  (id/provider/location/family all fixed — re-homing a model isn't
+  exposed from this dialog), `d` queue delete (works on any model —
+  apply skips the on-disk removal if the artifact is already gone, but
+  still cleans registry/state), `r`
   toggle ready (queues download/pull for reconcilable providers, or a
   flag flip for cloud/native providers; a no-op with a notification if
   the model is a local artifact that's already on disk — reconcile is
