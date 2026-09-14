@@ -360,9 +360,18 @@ func TestApplyPinnedUnresolvableLocationRejected(t *testing.T) {
 // need it.
 func TestApplyNeverErrorsOnDriftedFlag(t *testing.T) {
 	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
-	cfg := &config.Config{}
+	// cfg.Models must be populated with the flagged model so ResolveAll's
+	// idx lookup succeeds and Available() is genuinely invoked (and fails
+	// against the unreachable probe URL above) — an empty cfg.Models would
+	// exclude the id at the earlier catalog-gap check instead, never
+	// reaching the probe this test is meant to exercise.
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Location: config.LocationLocal},
+		},
+	}
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
-	models := []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", Location: config.LocationLocal}}
+	models := []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Location: config.LocationLocal}}
 	result := Apply(cfg, models, "")
 	if result.PinnedRejected != nil {
 		t.Errorf("PinnedRejected = %v, want nil (no pin was set)", result.PinnedRejected)
@@ -378,12 +387,67 @@ func TestApplyNeverErrorsOnDriftedFlag(t *testing.T) {
 // silently drop it - an explicit request can't be silently substituted.
 func TestApplyPinnedRejectedStillFatalForThatLaunch(t *testing.T) {
 	defer SetOmlxProbeURLForTest("http://127.0.0.1:1")()
-	cfg := &config.Config{}
+	// cfg.Models must be populated (same reasoning as
+	// TestApplyNeverErrorsOnDriftedFlag above) so the pin is rejected
+	// because Available() genuinely fails against the unreachable probe,
+	// not because of the catalog-gap shortcut.
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Location: config.LocationLocal},
+		},
+	}
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
-	models := []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", Location: config.LocationLocal}}
+	models := []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Location: config.LocationLocal}}
 	result := Apply(cfg, models, "omlx/qwen3.8")
 	var notRunning *NotRunningError
 	if !errors.As(result.PinnedRejected, &notRunning) {
 		t.Fatalf("PinnedRejected = %v, want *NotRunningError", result.PinnedRejected)
+	}
+}
+
+// TestApplyKeepsEveryVerifiedLocalDropsOnlyTheDrifted checks the headline
+// multi-model behavior at the Apply level (not just ResolveAll): two
+// flagged local models that both pass their live probe survive together
+// in Eligible alongside a cloud model, while a third flagged local model
+// whose probe genuinely fails (the omlx server here simply never lists
+// its id) is excluded. This is the exact scenario the whole plan exists to
+// introduce — a regression back to single-model semantics, or a shortcut
+// that never really reaches Available(), would sail through without this.
+func TestApplyKeepsEveryVerifiedLocalDropsOnlyTheDrifted(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("model-a", "model-b")) // model-c deliberately absent
+	defer srv.Close()
+	defer SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", Location: config.LocationCloud},
+			{ID: "omlx/model-a", ModelName: "model-a", ProviderID: "omlx", Location: config.LocationLocal},
+			{ID: "omlx/model-b", ModelName: "model-b", ProviderID: "omlx", Location: config.LocationLocal},
+			{ID: "omlx/model-c", ModelName: "model-c", ProviderID: "omlx", Location: config.LocationLocal},
+		},
+	}
+	cfg.SetLocalRunningForTest("omlx/model-a", "omlx/model-b", "omlx/model-c")
+
+	result := Apply(cfg, cfg.Models, "")
+
+	wantVerified := []string{"omlx/model-a", "omlx/model-b"}
+	if len(result.VerifiedRunning) != len(wantVerified) {
+		t.Fatalf("VerifiedRunning = %v, want %v", result.VerifiedRunning, wantVerified)
+	}
+	for i, id := range wantVerified {
+		if result.VerifiedRunning[i] != id {
+			t.Errorf("VerifiedRunning = %v, want %v", result.VerifiedRunning, wantVerified)
+		}
+	}
+
+	got := idsOf(result.Eligible)
+	want := []string{"claude/opus", "omlx/model-a", "omlx/model-b"}
+	if len(got) != len(want) {
+		t.Fatalf("Eligible = %v, want %v (cloud + both verified locals, drifted model-c dropped)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Eligible = %v, want %v", got, want)
+		}
 	}
 }
