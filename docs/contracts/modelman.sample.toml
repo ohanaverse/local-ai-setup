@@ -1,6 +1,7 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (exposed and ready flags, to filter the model picker).
+# read-only (exposed and ready flags, plus each local model's per-model
+# `running` flag, to filter the model picker).
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)

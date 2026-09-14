@@ -2154,3 +2154,115 @@ async def test_action_toggle_running_shows_confirm_dialog_when_others_running(tm
         await pilot.press("s")
         await pilot.pause()
         assert isinstance(app.screen, ConfirmModal)
+
+
+@pytest.mark.asyncio
+async def test_start_toggle_preserves_in_session_reconciled_state(tmp_path, monkeypatch):
+    # After a start/stop toggle the worker must merge ONLY the `running`
+    # flag back from disk. It used to do a full `self.state = load_state(...)`,
+    # which threw away everything the on-mount reconcile worker had written
+    # into memory (ready/disk_path/size_bytes are not persisted until the
+    # pending-changes queue is applied on exit), so one 's' press silently
+    # reverted the READY/SIZE/path columns to the last-saved modelman.toml —
+    # and reconcile, being an on_mount-only worker, never ran again to fix it.
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    # On disk: no path/size at all — a full reload would surface exactly this.
+    save_state(StateStore(models={"ollama/a": ModelState(ready=True)}), state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    def fake_start(registry, model_id, path=None, **kwargs):
+        # Real start_local_model persists the running flag; mimic just that.
+        disk = load_state(path)
+        existing = disk.get(model_id)
+        disk.set(
+            model_id,
+            ModelState(
+                ready=existing.ready,
+                disk_path=existing.disk_path,
+                size_bytes=existing.size_bytes,
+                exposed=existing.exposed,
+                running=True,
+            ),
+        )
+        save_state(disk, path)
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle before seeding over it
+        screen = app.screen
+        # Stand in for what the reconcile worker leaves in memory only.
+        screen.state.models["ollama/a"] = ModelState(
+            ready=True, disk_path="/reconciled/path", size_bytes=4242, running=False
+        )
+        await pilot.press("s")
+        for _ in range(200):
+            await pilot.pause()
+            if screen.state.models["ollama/a"].running:
+                break
+        in_memory = screen.state.models["ollama/a"]
+    assert in_memory.running is True  # the one field that must come from disk
+    assert in_memory.disk_path == "/reconciled/path"  # …and these must survive
+    assert in_memory.size_bytes == 4242
+    assert in_memory.ready is True
+
+
+@pytest.mark.asyncio
+async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp_path, monkeypatch):
+    # Design §4: when the model being started will REPLACE a same-provider
+    # occupant (omlx/mtplx/mlx_lm_server serve one model per process), the
+    # confirm dialog must say so explicitly by name, not just report "N
+    # other local models running" — the replacement is silent in the
+    # implementation, so the dialog is the only place the user learns that
+    # pressing Yes also kills the other model.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
+
+    target = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local")
+    occupant = ModelEntry(id="omlx/b", family="ornith", provider_id="omlx", model_name="b", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[target, occupant])
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    state.set("omlx/b", ModelState(ready=True, running=True))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    # Keep the reconcile worker's running-flag self-heal from clearing the
+    # occupant's flag (no real omlx server answers a probe in tests) — the
+    # dialog under test only appears when something is verified running.
+    monkeypatch.setattr(
+        "modelman.screens.models.running_model_ids",
+        lambda registry, state, state_path=None: [m for m, s in state.models.items() if s.running],
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")  # cursor is on omlx/a (sorted before omlx/b)
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        message = app.screen._message
+    assert "Starting this will also stop omlx/b, since omlx can only serve one model at a time." in message

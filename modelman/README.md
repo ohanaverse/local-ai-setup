@@ -103,6 +103,7 @@ ready = true
 disk_path = "ollama:ornith:35b"
 size_bytes = 123456789
 litellm_exposed = false
+running = false
 ```
 
 `ready` is the provider-agnostic readiness flag. For reconcilable providers
@@ -110,6 +111,15 @@ litellm_exposed = false
 For flag-only providers (OpenRouter, native agents like `claude`) it means
 "the user has marked this model as available"; there is nothing to download
 or delete on disk.
+
+`running` (local models only; defaults to `false` when absent) records that
+`modelman start` — or the TUI's `s` keybinding — started this model and has
+not stopped it. It is a hint, not ground truth: modelman and `wt` both
+confirm it with a live probe of the provider before treating the model as
+running, and a flag whose probe fails is treated as stopped (and
+opportunistically cleared). Several local models may be `running = true` at
+once; single-model-per-process providers (oMLX, MTPLX, mlx_lm_server) still
+replace their own occupant when a different model on that provider starts.
 
 Family display names now live in `registry.toml`'s `[[families]]` section.
 The legacy `[families.*]` table here is still loaded as a read-side

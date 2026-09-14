@@ -63,26 +63,3 @@ func parseOllamaNames(output string) []string {
 	}
 	return names
 }
-
-// Loaded checks whether modelName appears in `ollama ps` output — the
-// models ollama has actually LOADED into GPU/RAM, not `ollama list`'s
-// downloaded-but-idle catalog. Consumed by internal/localgate's
-// availability probe, where a downloaded-but-idle model must read as "not
-// running". Returns false with a nil error when ollama is not installed
-// or the daemon is down (no ps output = nothing loaded); returns an error
-// when `ollama ps` fails for another reason.
-func Loaded(modelName string) (bool, error) {
-	if _, err := exec.LookPath("ollama"); err != nil {
-		return false, nil // ollama not installed — nothing is loaded
-	}
-	out, err := exec.Command("ollama", "ps").Output()
-	if err != nil {
-		return false, fmt.Errorf("ollama ps: %w", err)
-	}
-	for _, name := range parseOllamaNames(string(out)) {
-		if name == modelName {
-			return true, nil
-		}
-	}
-	return false, nil
-}

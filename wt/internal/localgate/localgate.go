@@ -118,8 +118,8 @@ func Available(m config.Model) bool {
 		// ollama is deliberately exempt from live verification. `modelman
 		// start` for an ollama model is flag-only — no warmup call, since
 		// ollama lazy-loads on first request — so nothing ever loads the
-		// model at start time. ollamacheck.Loaded is backed by `ollama ps`
-		// (the currently-*loaded* set), which would read the model as not
+		// model at start time. The only signal available, `ollama ps`
+		// (the currently-*loaded* set), would read the model as not
 		// running on the very first probe after `modelman start`, silently
 		// self-clearing the flag and permanently defeating "starting an
 		// ollama model makes it appear in the picker." There is no live

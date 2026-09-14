@@ -448,6 +448,48 @@ def test_start_replaces_mlx_lm_server_occupant_and_clears_its_flag(tmp_path):
     assert state.get("mlx_lm_server/pairing-a").running is False  # occupant flag cleared
 
 
+def test_start_replaces_mtplx_occupant_and_clears_its_flag(tmp_path):
+    # Regression test for the final-review finding: the occupant LOOKUP was
+    # skipped entirely for mtplx (on the grounds that its own isolate()
+    # replaces the PROCESS internally), so the replaced occupant's `running`
+    # flag was never cleared here. Nothing in mtplx's process path writes
+    # modelman.toml, so until some later probe self-healed it the TUI's
+    # RUNNING column showed two mtplx models running at once and `modelman
+    # start`'s other-running warning named an already-dead model. The
+    # process stop must still stay mtplx-internal (no stop_provider() call).
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    for suffix in ("a", "b"):
+        registry.models.append(
+            ModelEntry(
+                id=f"mtplx/org/model-{suffix}",
+                family=f"mtplx-{suffix}",
+                provider_id="mtplx",
+                model_name=f"org/model-{suffix}",
+            )
+        )
+    state_path = _state_path(tmp_path, {"mtplx/org/model-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop_one,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="mtplx", model="org/model-b",
+            direct_url="http://localhost:8003/v1/chat/completions", ok=True, error=None,
+        )
+        start_local_model(registry, "mtplx/org/model-b", state_path)
+    # mtplx tears down its predecessor inside isolate_provider(..., solo=True)
+    # → providers/lifecycle.py's isolate(); local_control must not duplicate
+    # that with a stop_provider() call.
+    mock_stop_one.assert_not_called()
+    state = load_state(state_path)
+    assert state.get("mtplx/org/model-b").running is True
+    assert state.get("mtplx/org/model-a").running is False  # occupant flag cleared
+
+
 def test_start_ollama_is_flag_only(tmp_path):
     # Ollama never gets a process call on start - lazy-loads on first
     # request. Only the flag flips.

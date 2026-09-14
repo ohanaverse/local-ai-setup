@@ -253,6 +253,30 @@ def _same_provider_occupant(
     return None
 
 
+def same_provider_occupant(
+    registry: Registry, state: StateStore, model_id: str, provider_id: str
+) -> str | None:
+    """The id of another model currently flagged running on the same
+    single-port occupancy domain as `model_id`, or None.
+
+    The shared answer to "will starting this model silently replace
+    something?" — used by start_local_model() to decide whose flag to
+    clear, and by the TUI's `s` confirm dialog to warn the user BEFORE
+    the replacement happens (design §2/§4). Always None for ollama: the
+    daemon is multi-tenant, so many ollama models may run at once and
+    nothing is replaced. omlx/omlx-6bit are ONE domain (_OMLX_PROVIDER_IDS
+    — they share port 8000), so the occupant may be registered under the
+    other spelling.
+    """
+    if provider_id == "ollama":
+        return None
+    if provider_id in _OMLX_PROVIDER_IDS:
+        domain = {m.id for m in registry.models if m.provider_id in _OMLX_PROVIDER_IDS}
+    else:
+        domain = {m.id for m in registry.models if m.provider_id == provider_id}
+    return _same_provider_occupant(state, domain, exclude_model_id=model_id)
+
+
 def _stop_ollama_model(model_name: str, runner: _Runner | None = None) -> None:
     """Stop exactly one loaded ollama model (`ollama stop <name>`),
     tolerating any failure (model already unloaded, daemon down) the same
@@ -784,17 +808,14 @@ def start_local_model(
         # Flag-only: no process action, ollama lazy-loads on request.
         direct_url = None
     else:
-        if model.provider_id in _OMLX_PROVIDER_IDS:
-            # omlx/omlx-6bit share one port/process — the occupancy domain
-            # is both provider ids, not just the one being started.
-            provider_model_ids = {
-                m.id for m in registry.models if m.provider_id in _OMLX_PROVIDER_IDS
-            }
-        else:
-            provider_model_ids = {m.id for m in registry.models if m.provider_id == model.provider_id}
-        occupant = None
-        if model.provider_id != "mtplx":  # mtplx's own isolate() handles its occupant internally
-            occupant = _same_provider_occupant(fresh_state, provider_model_ids, exclude_model_id=resolved_id)
+        # The occupant LOOKUP runs for every single-port provider, mtplx
+        # included: mtplx's own isolate() stops its predecessor's PROCESS
+        # internally, but nothing there touches modelman.toml, so this
+        # function still owns clearing the replaced occupant's FLAG. Skipping
+        # the lookup left two mtplx models both reading as running (the TUI's
+        # RUNNING column, `modelman start`'s other-running warning) until some
+        # later probe happened to self-heal it.
+        occupant = same_provider_occupant(registry, fresh_state, resolved_id, model.provider_id)
         if occupant is not None:
             if model.provider_id in _OMLX_PROVIDER_IDS:
                 try:
@@ -805,13 +826,16 @@ def start_local_model(
                     ) from exc
             # The occupant's process is gone by now regardless of provider:
             # omlx/omlx-6bit via the stop_provider() call just above,
-            # mlx_lm_server via its own start function unconditionally
-            # stopping the prior pairing before spawning a new one (bash
-            # helper). Clearing the flag must NOT be gated to the omlx
-            # branch alone — mlx_lm_server's own probe only checks "is
+            # mlx_lm_server and mtplx via their own start path
+            # (isolate_provider(..., solo=True) → providers/lifecycle.py's
+            # isolate()) unconditionally stopping the prior occupant before
+            # spawning a new one. Clearing the flag is therefore
+            # unconditional — mlx_lm_server's own probe only checks "is
             # *anything* serving on port 8001" (not name-checked), so it
             # can never self-heal a stale mlx_lm_server flag on its own
-            # once a DIFFERENT pairing is serving that port.
+            # once a DIFFERENT pairing is serving that port, and mtplx's
+            # name-checked probe self-heals only on some later read, which
+            # is too late for the warning/indicator this start emits now.
             _clear_stale_running_flag(occupant, state_path)
 
         try:

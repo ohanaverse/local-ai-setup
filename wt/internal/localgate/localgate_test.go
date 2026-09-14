@@ -134,7 +134,7 @@ func TestAvailableMtplxNameChecked(t *testing.T) {
 // ollama exemption: `modelman start` for an ollama model is flag-only (no
 // warmup call — ollama lazy-loads on first request), so nothing ever loads
 // the model at start time. If Available() verified ollama the same way as
-// the other providers (via ollamacheck.Loaded / `ollama ps`, the
+// the other providers (via `ollama ps`, the
 // currently-*loaded* set), the very first probe after `modelman start`
 // would read the model as not running and silently self-clear the flag —
 // permanently defeating "starting an ollama model makes it appear in the
