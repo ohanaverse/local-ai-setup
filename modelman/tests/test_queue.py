@@ -1761,6 +1761,95 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     assert any(m.id == "omlx/a" for m in reg.models)
 
 
+def test_cleanup_partial_download_skips_when_artifact_shared_with_other_entry(tmp_path):
+    """_cleanup_partial_download (run after a cancelled/failed download,
+    see apply()'s DownloadCancelled/BaseException handlers) must not
+    remove a partial artifact when another registry entry's on-disk path
+    overlaps (omlx keys storage on the repo basename, so two different
+    repos can collide) — that would destroy the other entry's
+    already-completed weights. Regression test restoring coverage lost
+    when the DownloadManager-era test_downloads.py
+    (test_cancel_cleanup_skips_rmtree_when_artifact_is_shared) was
+    deleted without an equivalent for this queue.py method."""
+    reg_path = tmp_path / "registry.toml"
+    a = ModelEntry(
+        id="omlx/a",
+        family="f",
+        provider_id="omlx",
+        model_name="a",
+        fetch=Fetch(repo="org1/qwen", files=None, quantizations=None),
+    )
+    b = ModelEntry(
+        id="omlx/b",
+        family="f",
+        provider_id="omlx",
+        model_name="b",
+        fetch=Fetch(repo="org2/qwen", files=None, quantizations=None),
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a, b],
+    )
+    save_registry(reg, reg_path)
+
+    omlx = MagicMock()
+    omlx.name = "omlx"
+    # Both entries resolve to the same on-disk target — the collision
+    # find_shared_artifact_owner is meant to detect.
+    omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.artifact_paths.side_effect = lambda v: frozenset([omlx.path_of(v)])
+
+    pending = PendingChanges(
+        registry=reg,
+        state=_make_state(),
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={"omlx": omlx},
+    )
+    pending._cleanup_partial_download(
+        omlx, _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen")
+    )
+
+    omlx.cleanup_partial_download.assert_not_called()
+
+
+def test_cleanup_partial_download_runs_when_no_shared_owner(tmp_path):
+    """The common case: no conflicting registry entry, so a cancelled or
+    failed download's partial artifact is actually cleaned up. Paired
+    with the skip test above so the guard's both branches are covered."""
+    reg_path = tmp_path / "registry.toml"
+    a = ModelEntry(
+        id="omlx/a",
+        family="f",
+        provider_id="omlx",
+        model_name="a",
+        fetch=Fetch(repo="org1/qwen", files=None, quantizations=None),
+    )
+    reg = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"))],
+        models=[a],
+    )
+    save_registry(reg, reg_path)
+
+    omlx = MagicMock()
+    omlx.name = "omlx"
+    omlx.path_of.return_value = str(tmp_path / "omlx-models" / "qwen")
+    omlx.artifact_paths.side_effect = lambda v: frozenset([omlx.path_of(v)])
+
+    pending = PendingChanges(
+        registry=reg,
+        state=_make_state(),
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={"omlx": omlx},
+    )
+    pending._cleanup_partial_download(
+        omlx, _variant(id="omlx/a", provider="omlx", name="a", repo="org1/qwen")
+    )
+
+    omlx.cleanup_partial_download.assert_called_once()
+
+
 def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_path):
     """Ready-off on a stale-ready model (artifact removed outside modelman,
     reconcile hasn't run since) must clear cleanly, not fail. Regression:
