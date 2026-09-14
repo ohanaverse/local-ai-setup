@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from modelman.providers._progress import DownloadCancelled
 from modelman.queue import PendingChanges
 from modelman.registry import (
     AuthConfig,
@@ -1091,6 +1092,48 @@ def test_apply_cancelled_before_moves_skips_them(tmp_path):
     assert not any(e.startswith("move:") for e in events)
     # Cancel semantics: nothing persisted.
     assert load_registry(reg_path).model("m1").family == "a"
+
+
+def test_apply_download_cancelled_persists_earlier_completed_delete(tmp_path):
+    """A DownloadCancelled raised partway through the ready loop must not
+    discard an already-completed delete from earlier in the same apply()
+    call — the same "already-completed steps survive" invariant the
+    BaseException safety net gives every other unwind path. Regression:
+    the DownloadCancelled branch did a plain `return` without persisting,
+    silently dropping the delete's already-applied registry change."""
+    reg, reg_path = _registry_with(
+        tmp_path,
+        _entry(id="a", family="f", provider="ollama", name="a"),
+        _entry(id="b", family="f", provider="ollama", name="b"),
+    )
+    state = _make_state()
+    ollama = MagicMock()
+    ollama.name = "ollama"
+    ollama.delete.return_value = None
+    ollama.is_downloaded.return_value = True
+    # Distinct artifact paths per model so find_shared_artifact_owner
+    # (called by the delete step) doesn't see a-and-b as colliding —
+    # a bare MagicMock's artifact_paths would otherwise return the same
+    # mocked value for both.
+    ollama.artifact_paths.side_effect = lambda v: frozenset([v["id"]])
+    ollama.download.side_effect = DownloadCancelled("b")
+
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=tmp_path / "modelman.toml",
+        providers={"ollama": ollama},
+        deletes=[("a", _variant(id="a", provider="ollama", name="a"))],
+        ready=[("b", _variant(id="b", provider="ollama", name="b"), True)],
+    )
+    events: list[str] = []
+    pending.apply(on_event=events.append)
+
+    assert "download:cancelled|b|b" in events
+    assert "apply:cancelled" in events
+    reloaded = load_registry(reg_path)
+    assert not any(m.id == "a" for m in reloaded.models)
 
 
 def test_apply_move_emptying_family_creates_family_entry(tmp_path):

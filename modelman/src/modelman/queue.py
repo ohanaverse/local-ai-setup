@@ -536,6 +536,13 @@ class PendingChanges:
                         self._cleanup_partial_download(provider, variant)
                         emit(f"download:cancelled|{model_id}|{label}")
                         emit("apply:cancelled")
+                        # A plain `return`, like aborted()'s early-return
+                        # paths above, does NOT reach the `except
+                        # BaseException: self._persist(emit); raise` safety
+                        # net around this whole loop — persist explicitly so
+                        # an already-completed delete/move earlier in this
+                        # same apply() call is not silently dropped.
+                        self._persist(emit)
                         return
                     except Exception as exc:  # noqa: BLE001
                         self._cleanup_partial_download(provider, variant)
