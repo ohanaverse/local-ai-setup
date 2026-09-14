@@ -132,27 +132,12 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
     )
 
 
-def _format_price(value: float | None) -> str:
-    """Format a single price with a dollar sign.
-
-    Always shows at least two decimal places. Fractional cents are
-    preserved, and trailing zeros beyond two decimals are stripped.
-    """
-    if value is None:
-        return "-"
-    s = f"{value:.10f}".rstrip("0").rstrip(".")
-    if "." not in s:
-        s += ".00"
-    else:
-        integer_part, decimal_part = s.split(".")
-        if len(decimal_part) < 2:
-            decimal_part = decimal_part.ljust(2, "0")
-        s = f"{integer_part}.{decimal_part}"
-    return f"${s}"
-
-
 def _format_per_token(cost: Cost | None) -> str:
-    """COST column: input/cache/output per-million-token prices."""
+    """COST column: input/cache/output per-million-token prices as three
+    space-delimited values with 4 decimal places each. A missing individual
+    price renders as a 6-dash placeholder ('------'), matching the width of
+    a formatted '0.0000' value so the column stays aligned. No cost data at
+    all still collapses to a single '-'."""
     if cost is None:
         return "-"
     prices = (
@@ -162,15 +147,7 @@ def _format_per_token(cost: Cost | None) -> str:
     )
     if all(p is None for p in prices):
         return "-"
-    return f"${'/'.join(_format_price(p).lstrip('$') for p in prices)}"
-
-
-def _format_subscription(cost: Cost | None) -> str:
-    """SUB column: subscription price abbreviated as mo/yr."""
-    if cost is None or cost.subscription_price is None:
-        return "-"
-    suffix = "mo" if cost.subscription_period == "month" else "yr"
-    return f"{_format_price(cost.subscription_price)}/{suffix}"
+    return " ".join("------" if p is None else f"{p:.4f}" for p in prices)
 
 
 def _format_location(location: str | None) -> str:
@@ -280,7 +257,6 @@ class ModelScreen(Screen[None]):
             "STATUS",
             "EXPOSED",
             "COST",
-            "SUB",
             "SIZE",
         )
         self.reload()
@@ -408,7 +384,6 @@ class ModelScreen(Screen[None]):
                     status,
                     exposed_str,
                     _format_per_token(m.cost),
-                    _format_subscription(m.cost),
                     size_str,
                     key=m.id,
                 )

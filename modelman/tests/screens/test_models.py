@@ -19,8 +19,6 @@ from modelman.screens.models import (
     _cost_changed,
     _format_location,
     _format_per_token,
-    _format_price,
-    _format_subscription,
     _variant_to_model_entry,
 )
 from modelman.state import ModelState, StateStore, load_state, save_state
@@ -224,64 +222,33 @@ def test_format_location_unexpected_value():
 
 
 # ---------------------------------------------------------------------------
-# Cost / subscription formatters (COST and SUB table columns)
+# Cost formatter (COST table column)
 # ---------------------------------------------------------------------------
 
 
-def test_format_price_none():
-    assert _format_price(None) == "-"
-
-
-def test_format_price_whole():
-    assert _format_price(2.0) == "$2.00"
-
-
-def test_format_price_fraction():
-    assert _format_price(2.5) == "$2.50"
-
-
-def test_format_price_fractional_cents():
-    """Prices below a cent are preserved, not rounded to two decimals."""
-    assert _format_price(0.0025) == "$0.0025"
-
-
-def test_format_price_strips_trailing_zeros_beyond_two_decimals():
-    assert _format_price(1.2300) == "$1.23"
-    assert _format_price(1.200) == "$1.20"
-
-
 def test_format_per_token_all_fields():
+    """Three prices render as space-delimited values with 4 decimal places,
+    in input/cache/output order, with no dollar sign or thousands rounding."""
     c = Cost(
         input_price_per_million=2.0,
         cache_price_per_million=1.0,
         output_price_per_million=3.0,
     )
-    assert _format_per_token(c) == "$2.00/1.00/3.00"
+    assert _format_per_token(c) == "2.0000 1.0000 3.0000"
 
 
 def test_format_per_token_partial():
+    """A missing individual price renders as a 6-dash placeholder so the
+    column stays visually aligned with the 6-character '0.0000' width."""
     c = Cost(input_price_per_million=2.0, output_price_per_million=3.0)
-    assert _format_per_token(c) == "$2.00/-/3.00"
+    assert _format_per_token(c) == "2.0000 ------ 3.0000"
 
 
 def test_format_per_token_none():
+    """No cost data at all (None, or a Cost with every price unset) still
+    collapses to a single dash rather than three dash placeholders."""
     assert _format_per_token(None) == "-"
     assert _format_per_token(Cost()) == "-"
-
-
-def test_format_subscription_month():
-    c = Cost(subscription_price=20.0, subscription_period="month")
-    assert _format_subscription(c) == "$20.00/mo"
-
-
-def test_format_subscription_year():
-    c = Cost(subscription_price=200.0, subscription_period="year")
-    assert _format_subscription(c) == "$200.00/yr"
-
-
-def test_format_subscription_none():
-    assert _format_subscription(None) == "-"
-    assert _format_subscription(Cost()) == "-"
 
 
 # ---------------------------------------------------------------------------
@@ -665,14 +632,14 @@ async def test_delete_any_model_even_not_ready(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Table layout: 9 columns (COST + SUB) + details panel with the disk path
+# Table layout: 8 columns (COST, no SUB) + details panel with the disk path
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
-    """Table shows FAMILY/PROVIDER/MODEL/LOC/STATUS/EXPOSED/COST/SUB/SIZE
-    (no PATH column) and a details-panel Static exists below."""
+    """Table shows FAMILY/PROVIDER/MODEL/LOC/STATUS/EXPOSED/COST/SIZE
+    (no PATH column, no SUB column) and a details-panel Static exists below."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -713,17 +680,16 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
             "STATUS",
             "EXPOSED",
             "COST",
-            "SUB",
             "SIZE",
         ]
         assert "PATH" not in labels
+        assert "SUB" not in labels
 
         details = app.screen.query_one("#details-panel", Static)
         assert "/tmp/ornith" in str(details.render())
 
         row0 = [str(c) for c in mt.get_row_at(0)]
         assert "▤" in row0  # local icon
-        assert "$20.00/mo" in row0  # SUB column
         assert "-" in row0  # COST column (no per-token prices)
         assert "Y" not in row0 and "–" in row0  # exposed off renders as "–"
 
@@ -852,9 +818,11 @@ async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path, monkeypatch):
-    """The COST column renders per-token prices and the SUB column renders
-    subscription prices using the new flat Cost fields."""
+async def test_model_screen_renders_per_token_pricing(tmp_path, monkeypatch):
+    """The COST column renders per-token prices as space-delimited 4-decimal
+    values; a model with only subscription pricing (no longer shown in any
+    column since SUB was removed) shows '-' since it carries no per-token
+    data."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -905,7 +873,6 @@ async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path,
             "STATUS",
             "EXPOSED",
             "COST",
-            "SUB",
             "SIZE",
         ]
 
@@ -913,10 +880,8 @@ async def test_model_screen_renders_per_token_and_subscription_pricing(tmp_path,
         per_token_row = next(r for r in rows if "per-token" in r)
         subscription_row = next(r for r in rows if "subscription" in r)
 
-        assert per_token_row[6] == "$1.00/0.50/2.00"
-        assert per_token_row[7] == "-"
+        assert per_token_row[6] == "1.0000 0.5000 2.0000"
         assert subscription_row[6] == "-"
-        assert subscription_row[7] == "$20.00/mo"
 
 
 @pytest.mark.asyncio
