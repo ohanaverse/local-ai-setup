@@ -522,8 +522,8 @@ def find_shared_artifact_owner(
     provider has no artifact_paths or the paths can't be resolved —
     callers treat that as "no conflict" and proceed with the normal delete.
 
-    Shared by queue.py's delete/ready-off steps and DownloadManager's
-    cancelled-download cleanup (downloads.py) — both remove an on-disk
+    Shared by queue.py's delete/ready-off steps and its cancelled-download
+    cleanup (_cleanup_partial_download) — all three remove an on-disk
     artifact and must not do so when another registry entry still owns it.
     """
     artifact_paths = getattr(provider, "artifact_paths", None)

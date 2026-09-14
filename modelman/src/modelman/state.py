@@ -193,11 +193,11 @@ def locked_state(path: Path | None = None) -> Generator[StateStore]:
 
     save_state() alone is a whole-file overwrite of whatever StateStore
     it's given, with no merge — safe only when a single writer holds the
-    only in-memory copy. Once DownloadManager can write modelman.toml
-    from a background thread on download completion while
-    PendingChanges.apply() can independently save its own (possibly
-    already-stale) snapshot for an unrelated model, two such writers can
-    silently stomp each other's changes. This acquires a process-wide
+    only in-memory copy. Two different `modelman` invocations — say
+    `modelman start` running in one terminal while a TUI apply() finishes
+    in another — can each load a stale on-disk snapshot and each
+    independently call save_state(), silently stomping each other's
+    changes. This acquires a process-wide
     lock, loads the current on-disk StateStore, yields it for the caller
     to mutate in place, and saves it back before releasing the lock —
     every writer's mutation is always applied on top of the latest

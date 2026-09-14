@@ -133,6 +133,9 @@ def test_run_queued_ops_keyboard_interrupt_prints_cancelled_summary(tmp_path, mo
     # started) is lost. See queue.py's PendingChanges._persist safety net.
     state = load_state(state_path)
     assert state.get("ollama/a").ready is True
+    # The interrupted item itself must NOT be persisted as ready — only
+    # fully-completed steps survive the safety net, not the in-flight one.
+    assert state.get("ollama/b").ready is False
 
 
 def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatch, capsys):

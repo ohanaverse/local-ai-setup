@@ -230,9 +230,9 @@ class MLXLMServerProvider(Provider):
         Unlike path_of() — which is display-only and requires the directory
         to exist — this method returns the paths the variant is configured
         to use (local_path or repo-derived, per side), so shared-artifact
-        detection works even before download. Callers in queue.py and
-        downloads.py treat a path conflict as "another entry owns this
-        artifact" regardless of whether it's on disk yet.
+        detection works even before download. Callers in queue.py treat a
+        path conflict as "another entry owns this artifact" regardless of
+        whether it's on disk yet.
         """
         paths: list[str] = []
         # Target side: local_path takes precedence; otherwise repo-derived dir.

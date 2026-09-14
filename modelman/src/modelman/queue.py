@@ -177,8 +177,9 @@ class PendingChanges:
     litellm_path: Path = field(default_factory=Path)
     failures: list[str] = field(default_factory=list)
     cancelled: bool = False
-    # Populated during apply(); used only by the final save to merge this
-    # run's changes onto a freshly-loaded on-disk StateStore instead of
+    # Populated during apply(); used by _persist() (called at the normal
+    # end of apply(), and again from its exception safety net) to merge
+    # this run's changes onto a freshly-loaded on-disk StateStore instead of
     # overwriting the whole file from this object's in-memory snapshot,
     # which may be stale relative to modelman.toml if another modelman
     # process wrote to it concurrently.
@@ -270,7 +271,7 @@ class PendingChanges:
         done_tag: str,
     ) -> None:
         """Persist a ready-loop item's final state.ready/disk_path/size_bytes,
-        mark it touched for the final save, and emit its pre-built :done tag.
+        mark it touched for _persist(), and emit its pre-built :done tag.
 
         Shared by all three ready-loop branches (flag-only flip, real
         download, clear) so a change to this sequence — a new field, a
@@ -302,8 +303,8 @@ class PendingChanges:
         already-completed delete or move from this same batch is not lost
         just because a later step raised or was interrupted.
         """
-        emit("save:start")
         try:
+            emit("save:start")
             save_registry(self.registry, self.registry_path)
             with locked_state(self.state_path) as fresh_state:
                 for mid in self._touched_model_ids:
@@ -490,7 +491,7 @@ class PendingChanges:
                 # A provider that manages its own cache (MTPLX via the mtplx
                 # CLI) has no download for apply() to drive — its ready-on is
                 # a queued flag flip (the user cached the weights themselves),
-                # mirroring the screen's _provider_can_download rule. mtplx is
+                # per manages_own_cache below. mtplx is
                 # the first provider that is BOTH Provider-mapped and
                 # flag-only: without this carve-out the assert below fires and
                 # aborts the whole apply. Class-level lookup via
@@ -645,7 +646,7 @@ class PendingChanges:
             # early-return path above (a plain `return`, not an exception)
             # — that path's "nothing saved" semantics are intentional and
             # tested (see docs/superpowers/specs/2026-09-13-downloads-on-
-            # exit-design.md and the cancellation tests in this file).
+            # exit-design.md and the cancellation tests in tests/test_queue.py).
             self._persist(emit)
             raise
 

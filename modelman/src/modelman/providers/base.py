@@ -56,8 +56,9 @@ class Provider(ABC):
     # modelman's control (its own CLI populates the cache; modelman only
     # discovers what's already there — see download()'s NotImplementedError
     # on such providers). A ready-on for one of these is a flag flip, never
-    # a real DownloadManager download; ModelScreen._provider_can_download()
-    # reads this instead of hardcoding provider ids.
+    # a real download; PendingChanges.apply() (queue.py) reads this via
+    # ProviderRegistry.get_class(...).manages_own_cache instead of
+    # hardcoding provider ids.
     manages_own_cache: bool = False
 
     # True for a provider whose list_local() enumerates individually
@@ -136,7 +137,8 @@ class Provider(ABC):
     def cleanup_partial_download(self, variant: VariantSpec) -> None:
         """Remove any on-disk remnants of a cancelled or failed download.
 
-        Called by DownloadManager after a download is cancelled or fails.
+        Called by PendingChanges._cleanup_partial_download (queue.py)
+        after a download is cancelled or fails.
         Default is a no-op: providers whose download mechanism has no
         partial-artifact cleanup to do (Ollama's `pull` is resumable and
         reconciles its own state on the next attempt) don't need to
