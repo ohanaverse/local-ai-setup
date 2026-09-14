@@ -48,7 +48,7 @@ from .benchmark.isolation import (
 from .litellm import ExposeError, default_litellm_config_path, expose_model
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
-from .providers.base import LocalModel, Provider
+from .providers.base import LocalModel, Provider, _Runner
 from .providers.mtplx import MTPLX_BASE
 from .providers.registry import ProviderRegistry
 from .registry import (
@@ -76,6 +76,14 @@ _DEFAULT_BASE_ORIGIN = {
     "mlx_lm_server": "http://localhost:8001",
     "mtplx": MTPLX_BASE,
 }
+
+# omlx and omlx-6bit are two registry provider ids but ONE physical
+# process/port (8000) — a single-port occupancy domain. A model flagged
+# running under either spelling occupies the same server as one flagged
+# under the other, so same-provider-occupant detection (and the
+# stop_provider() call that replaces it) must treat them as one group,
+# never as two independent providers.
+_OMLX_PROVIDER_IDS: frozenset[str] = frozenset({"omlx", "omlx-6bit"})
 
 # Subprocess seam so tests can keep the probe hermetic (conftest patches
 # it); production calls subprocess.run directly.
@@ -186,9 +194,20 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     stop+reload; a false "yes" would make `modelman start` a no-op exactly
     when it's needed (the marker's process died; see the idempotency note
     in start_local_model).
+
+    Ollama is EXEMPT from live verification and always reads as running:
+    `modelman start` for ollama is deliberately flag-only (no warmup call
+    — ollama lazy-loads on first request), so `ollama ps` (which lists
+    only currently-LOADED models) would read the freshly-flagged model as
+    not-running the moment anything probes it before its first real
+    request — permanently self-clearing a flag that was never wrong. There
+    is no live "is this specific model loaded" signal that corresponds to
+    what the running flag means for ollama (the daemon serves whatever's
+    requested, flag or no flag), so the flag is trusted as-is once set,
+    with no probe-based self-healing for this one provider.
     """
     if provider_id == "ollama":
-        return any(_name_matches(n, model_name) for n in _ollama_loaded_names())
+        return True
     base = base_origin_url or _DEFAULT_BASE_ORIGIN.get(provider_id)
     if not base:
         return False
@@ -234,12 +253,23 @@ def _same_provider_occupant(
     return None
 
 
-def _stop_ollama_model(model_name: str, runner=_default_runner) -> None:
+def _stop_ollama_model(model_name: str, runner: _Runner | None = None) -> None:
     """Stop exactly one loaded ollama model (`ollama stop <name>`),
     tolerating any failure (model already unloaded, daemon down) the same
-    way the bash helper's stop-all path does."""
+    way the bash helper's stop-all path does.
+
+    `runner` is late-bound (looked up at call time via `runner or
+    _default_runner`), matching every other injectable seam in this
+    codebase (e.g. this module's own `_ollama_loaded_names`,
+    `providers/ollama.py`'s methods) — an early-bound default parameter
+    would capture `_default_runner` at import time, so a test's
+    `monkeypatch.setattr("modelman.local_control._default_runner", ...)`
+    could never reach it.
+    """
     with contextlib.suppress(OSError):
-        runner(["ollama", "stop", model_name], capture_output=True, text=True, check=False)
+        (runner or _default_runner)(
+            ["ollama", "stop", model_name], capture_output=True, text=True, check=False
+        )
 
 
 def _provider_entry(registry: Registry, provider_id: str) -> ProviderEntry | None:
@@ -754,15 +784,34 @@ def start_local_model(
         # Flag-only: no process action, ollama lazy-loads on request.
         direct_url = None
     else:
-        provider_model_ids = {m.id for m in registry.models if m.provider_id == model.provider_id}
+        if model.provider_id in _OMLX_PROVIDER_IDS:
+            # omlx/omlx-6bit share one port/process — the occupancy domain
+            # is both provider ids, not just the one being started.
+            provider_model_ids = {
+                m.id for m in registry.models if m.provider_id in _OMLX_PROVIDER_IDS
+            }
+        else:
+            provider_model_ids = {m.id for m in registry.models if m.provider_id == model.provider_id}
         occupant = None
         if model.provider_id != "mtplx":  # mtplx's own isolate() handles its occupant internally
             occupant = _same_provider_occupant(fresh_state, provider_model_ids, exclude_model_id=resolved_id)
-        if occupant is not None and model.provider_id in ("omlx", "omlx-6bit"):
-            try:
-                stop_provider(model.provider_id)
-            except BenchmarkError as exc:
-                raise LocalControlError(f"failed to stop {occupant} before starting {resolved_id}: {exc}") from exc
+        if occupant is not None:
+            if model.provider_id in _OMLX_PROVIDER_IDS:
+                try:
+                    stop_provider(model.provider_id)
+                except BenchmarkError as exc:
+                    raise LocalControlError(
+                        f"failed to stop {occupant} before starting {resolved_id}: {exc}"
+                    ) from exc
+            # The occupant's process is gone by now regardless of provider:
+            # omlx/omlx-6bit via the stop_provider() call just above,
+            # mlx_lm_server via its own start function unconditionally
+            # stopping the prior pairing before spawning a new one (bash
+            # helper). Clearing the flag must NOT be gated to the omlx
+            # branch alone — mlx_lm_server's own probe only checks "is
+            # *anything* serving on port 8001" (not name-checked), so it
+            # can never self-heal a stale mlx_lm_server flag on its own
+            # once a DIFFERENT pairing is serving that port.
             _clear_stale_running_flag(occupant, state_path)
 
         try:

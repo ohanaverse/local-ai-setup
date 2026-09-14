@@ -17,6 +17,7 @@ from modelman.local_control import (
     InventoryEntry,
     LocalControlError,
     _name_matches,
+    _probe_running,
     inventory_local_models,
     running_model_ids,
     start_local_model,
@@ -324,6 +325,129 @@ def test_start_replaces_same_provider_occupant(tmp_path):
     assert state.get("omlx/model-a").running is False
 
 
+def test_start_replaces_same_provider_occupant_with_unrelated_provider_also_running(tmp_path):
+    # Regression test for the exact bug the plan's preflight review caught
+    # in _same_provider_occupant: an EARLIER implementation returned the
+    # first running model found overall (scanning all of state.models) and
+    # only afterward filtered by "is this id a member of provider_model_ids"
+    # — so with an ollama model ALSO flagged running, dict iteration order
+    # could hand that buggy version ollama's id first, its post-hoc filter
+    # would reject it (not an omlx id) and stop there, silently returning
+    # None instead of continuing on to find the real omlx occupant. The
+    # correct implementation iterates provider_model_ids itself, so it can
+    # never be distracted by an unrelated provider's running flag —
+    # regardless of insertion/iteration order.
+    state_path = _state_path(
+        tmp_path, {"ollama/qwen3.8:27b-mlx": True, "omlx/model-a": True}
+    )
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop_one,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="model-b", direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True, error=None,
+        )
+        start_local_model(_registry(), "omlx/model-b", state_path)
+    mock_stop_one.assert_called_once_with("omlx")
+    state = load_state(state_path)
+    assert state.get("omlx/model-b").running is True
+    assert state.get("omlx/model-a").running is False  # the real occupant, cleared
+    assert state.get("ollama/qwen3.8:27b-mlx").running is True  # unrelated, untouched
+
+
+def test_start_replaces_omlx_6bit_occupant_when_starting_plain_omlx(tmp_path):
+    # omlx and omlx-6bit are two registry provider ids sharing ONE physical
+    # port/process (8000): starting a plain-omlx model while an omlx-6bit
+    # model is flagged running must still find and replace that occupant —
+    # treating the two provider ids as independent occupancy domains would
+    # leave the 6-bit model's flag permanently stale (nothing else would
+    # ever displace it to trigger a probe-based self-heal).
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none"))
+    )
+    registry.models.append(
+        ModelEntry(
+            id="omlx-6bit/model-c",
+            family="model-c",
+            provider_id="omlx-6bit",
+            model_name="model-c",
+            fetch=Fetch(repo="org/model-c"),
+        )
+    )
+    state_path = _state_path(tmp_path, {"omlx-6bit/model-c": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop_one,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="omlx", model="model-a", direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True, error=None,
+        )
+        start_local_model(registry, "omlx/model-a", state_path)
+    mock_stop_one.assert_called_once_with("omlx")
+    state = load_state(state_path)
+    assert state.get("omlx/model-a").running is True
+    assert state.get("omlx-6bit/model-c").running is False  # cross-spelling occupant, cleared
+
+
+def test_start_replaces_mlx_lm_server_occupant_and_clears_its_flag(tmp_path):
+    # Regression test for the bug found in review: the occupant flag-clear
+    # was previously nested INSIDE the omlx-only stop_provider() gate, so
+    # an mlx_lm_server occupant (which self-replaces its process inside its
+    # own start function, never via stop_provider()) was found but its
+    # flag was never cleared — a permanently-stale "running" flag, since
+    # mlx_lm_server's own probe only checks "is *anything* serving on port
+    # 8001" and can't self-heal once a DIFFERENT pairing takes over the
+    # port.
+    from modelman.registry import DraftSpec
+
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none"))
+    )
+    registry.models.append(
+        ModelEntry(
+            id="mlx_lm_server/pairing-a",
+            family="pair-a",
+            provider_id="mlx_lm_server",
+            model_name="pairing-a",
+            fetch=Fetch(repo="org/target-a"),
+            draft=DraftSpec(repo="org/draft-a"),
+        )
+    )
+    registry.models.append(
+        ModelEntry(
+            id="mlx_lm_server/pairing-b",
+            family="pair-b",
+            provider_id="mlx_lm_server",
+            model_name="pairing-b",
+            fetch=Fetch(repo="org/target-b"),
+            draft=DraftSpec(repo="org/draft-b"),
+        )
+    )
+    state_path = _state_path(tmp_path, {"mlx_lm_server/pairing-a": True})
+    with (
+        patch("modelman.local_control._probe_running", return_value=False),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+        patch("modelman.local_control.stop_provider") as mock_stop_one,
+    ):
+        mock_isolate.return_value = IsolateResult(
+            provider="mlx_lm_server", model="org/target-b",
+            direct_url="http://localhost:8001/v1/chat/completions", ok=True, error=None,
+        )
+        start_local_model(registry, "mlx_lm_server/pairing-b", state_path)
+    # mlx_lm_server self-replaces its occupant inside its own start
+    # function — local_control must never call stop_provider() for it.
+    mock_stop_one.assert_not_called()
+    state = load_state(state_path)
+    assert state.get("mlx_lm_server/pairing-b").running is True
+    assert state.get("mlx_lm_server/pairing-a").running is False  # occupant flag cleared
+
+
 def test_start_ollama_is_flag_only(tmp_path):
     # Ollama never gets a process call on start - lazy-loads on first
     # request. Only the flag flips.
@@ -363,6 +487,54 @@ def test_stop_local_model_noop_when_not_running(tmp_path):
         result = stop_local_model("ollama/qwen3.8:27b-mlx", state_path)
     mock_stop_ollama.assert_not_called()
     assert result.stopped_model_id is None
+
+
+def test_stop_local_model_mtplx_stops_via_lifecycle_and_clears_flag(tmp_path):
+    # mtplx's stop goes through providers.lifecycle.stop("mtplx") (its
+    # process is a plain backgrounded subprocess, not something
+    # stop_provider()'s bash helper drives) — on success the model's flag
+    # is cleared like any other provider's stop.
+    from modelman.local_process import ProcessResult
+
+    registry = _registry()
+    registry.providers.append(
+        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none"))
+    )
+    registry.models.append(
+        ModelEntry(
+            id="mtplx/org/model",
+            family="mtplx-family",
+            provider_id="mtplx",
+            model_name="org/model",
+        )
+    )
+    state_path = _state_path(tmp_path, {"mtplx/org/model": True})
+    with patch("modelman.providers.lifecycle.stop") as mock_lifecycle_stop:
+        mock_lifecycle_stop.return_value = ProcessResult(
+            provider="mtplx", model="", direct_url="", ok=True, error=None
+        )
+        result = stop_local_model("mtplx/org/model", state_path)
+    mock_lifecycle_stop.assert_called_once_with("mtplx")
+    assert result.stopped_model_id == "mtplx/org/model"
+    assert load_state(state_path).get("mtplx/org/model").running is False
+
+
+def test_stop_local_model_mtplx_failure_raises_local_control_error(tmp_path):
+    # A failed mtplx stop (process wouldn't die, binary missing) must
+    # surface as a clean LocalControlError, not silently clear the flag —
+    # the model may still actually be serving.
+    from modelman.local_process import ProcessResult
+
+    state_path = _state_path(tmp_path, {"mtplx/org/model": True})
+    with patch("modelman.providers.lifecycle.stop") as mock_lifecycle_stop:
+        mock_lifecycle_stop.return_value = ProcessResult(
+            provider="mtplx", model="", direct_url="", ok=False, error="mtplx stop failed"
+        )
+        with pytest.raises(LocalControlError, match="mtplx stop failed"):
+            stop_local_model("mtplx/org/model", state_path)
+    mock_lifecycle_stop.assert_called_once_with("mtplx")
+    # Failure: the model may still be serving, so its flag stays true.
+    assert load_state(state_path).get("mtplx/org/model").running is True
 
 
 def test_stop_all_local_models_stops_every_running_one(tmp_path):
@@ -464,6 +636,19 @@ def test_name_matches_lenient_prefix_strict_variant_tail():
     assert _name_matches("repo", "org/repo")
     assert not _name_matches("ornith-1.5-35b-a3b-mlx-4bit", "ornith-1.5-35b-a3b-mlx-6bit")
     assert not _name_matches("other-model", "qwen3.8:27b-mlx")
+
+
+def test_probe_running_ollama_is_exempt_from_live_verification():
+    # Ollama's start is deliberately flag-only (no warmup — it lazy-loads
+    # on first request), so `ollama ps` (which lists only currently-LOADED
+    # models) would read a freshly-flagged-but-never-requested model as
+    # not-running the moment anything probes it, permanently self-clearing
+    # a flag that was never wrong. Ollama must always probe as running,
+    # regardless of what `ollama ps` (_ollama_loaded_names) reports.
+    with patch("modelman.local_control._ollama_loaded_names", return_value=[]):
+        assert _probe_running("ollama", "anything", None) is True
+    with patch("modelman.local_control._ollama_loaded_names", side_effect=RuntimeError("boom")):
+        assert _probe_running("ollama", "anything", None) is True
 
 
 def test_start_mtplx_isolates_without_env_var(tmp_path):
