@@ -315,7 +315,14 @@ def isolate(
             _warmup(resolved)
         else:
             if solo:
-                _stop_mtplx()
+                stop_result = _stop_mtplx()
+                if not stop_result.ok:
+                    # Surface the real cause here rather than falling
+                    # through to _start_mtplx_serve()'s _wait_for_port_closed
+                    # poll, which would fail ~10s later with a generic
+                    # "port still answering" message that hides why the
+                    # port never closed.
+                    raise LifecycleError(stop_result.error or "mtplx stop failed")
             else:
                 _stop_others()
             proc = _start_mtplx_serve(resolved)

@@ -618,6 +618,30 @@ def test_isolate_solo_different_model_stops_only_mtplx():
     assert result.ok is True
 
 
+def test_isolate_solo_surfaces_stop_mtplx_failure_instead_of_starting(tmp_path):
+    """Regression test for a review finding: solo=True's `_stop_mtplx()`
+    call discarded its LifecycleResult, so a failed stop (unlike the
+    non-solo `_stop_others()` path, which raises on failure) silently fell
+    through to `_start_mtplx_serve()`. That call's `_wait_for_port_closed`
+    poll would then fail ~10s later with a generic "port still answering"
+    message that hides the real stop failure. isolate() must raise the
+    stop's own error immediately and never attempt to start a new server
+    on top of a port that failed to close."""
+    with (
+        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
+        patch("modelman.providers.lifecycle._serving_model", return_value=False),
+        patch(
+            "modelman.providers.lifecycle._stop_mtplx",
+            return_value=LifecycleResult("mtplx", "", "", False, "mtplx binary not found on PATH"),
+        ),
+        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start_serve,
+    ):
+        result = isolate("mtplx", "org/new", solo=True)
+    mock_start_serve.assert_not_called()
+    assert result.ok is False
+    assert result.error == "mtplx binary not found on PATH"
+
+
 def test_isolate_non_solo_different_model_stops_everyone():
     """The default (solo unset) must keep today's full-exclusivity
     behavior unchanged: a different-model isolate stops every OTHER local
