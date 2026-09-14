@@ -106,7 +106,7 @@ Then register models under it with the same `[[models]]` shape as Step 3 (`provi
 
 ### 3. Add a local model (Ollama)
 
-In the TUI: family screen `a` to add, or open a family (`enter`) and press `a` on the model screen — then edit (`enter`/`e`) to fill the fields. The add/edit dialog includes optional **Per-token pricing** and **Subscription pricing** sections; check each section to reveal its labeled fields (Input / Cache / Output, each priced per million tokens, for per-token; Amount / Period for subscription) and fill them in. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
+In the TUI: press `a` on the model screen to add — then edit (`enter`/`e`) to fill the fields. The add/edit dialog includes optional **Per-token pricing** and **Subscription pricing** sections; check each section to reveal its labeled fields (Input / Cache / Output, each priced per million tokens, for per-token; Amount / Period for subscription) and fill them in. For Ollama models, `model_info` is auto-populated on add by running `ollama show <name>` and translating known capabilities (e.g. `tools` → `supports_function_calling: true`) — no manual capability wiring needed.
 
 Resulting `registry.toml` entry — real, as written on disk here (`~/.config/local-ai/registry.toml`, verified on this machine):
 
@@ -267,7 +267,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 - **`registry.toml` is canonical + read-only to wt.** Model visibility for agents changes HERE — edit `~/.config/local-ai/registry.toml`, not wt's config. `modelman.toml` is per-machine state (`[model_state]` blocks: `ready`, `disk_path`, `size_bytes`, `exposed` — legacy `downloaded`/`litellm_exposed` keys are still read as fallbacks; `[families]` display names); never treat it as the model catalog.
 - **Run modelman from the `modelman/` directory.** modelman is not installed as a global `uv tool`. Always run it from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`.
 - **`sync` semantics as observed:** reconcile only (`ollama`/`omlx`; llamacpp retired 2026-09-07), `:cloud` rows land `ready = false`, unconfigured models ignored, no models added, `exposed` preserved. If a run prints `Added provider entries: …`, it repaired `registry.toml`.
-- **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:40-43`).
+- **Providers before models.** The model screen resolves each variant's `provider_id` against `[[providers]]`; a model referencing a missing provider breaks the add flow with `KeyError` (`src/modelman/screens/models.py:91`).
 - **TUI changes apply on exit only.** Adds/edits/deletes/downloads/exposure toggles sit in an in-memory queue until you confirm the pending set; deletes run before downloads, downloads before exposure changes, then one write of both files.
 - **Secrets:** `secret_ref` is copied verbatim into the LiteLLM entry's `api_key`. The live `config.yaml` currently holds literal `sk-or-v1-…` keys — redact before pasting config anywhere.
 
