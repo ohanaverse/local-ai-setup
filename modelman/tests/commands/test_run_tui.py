@@ -378,11 +378,15 @@ def test_print_event_recognizes_every_tag_queue_emits(capsys):
     source of truth for the lifecycle-tag vocabulary; print_event's
     dispatch and run_queued_ops's done_verbs set both hard-code that same
     vocabulary independently, with nothing enforcing agreement. This
-    enumerates every verb queue.py actually emits (grepped from its
-    `emit(f"...")`/`emit("...")` call sites) and asserts print_event
-    handles each without falling into the "(unhandled event: ...)"
-    catch-all — a future verb added to queue.py but missed here, or in
-    print_event, now fails a test instead of only a runtime stderr line."""
+    enumerates every verb queue.py actually emits — via three patterns,
+    since queue.py builds tags three different ways: a literal passed
+    straight to emit(), a literal built as _finish_ready's `done_tag=`
+    keyword argument (emit() itself just does `emit(done_tag)` on a
+    variable), and a dynamic "expose"/"unexpose" prefix interpolated as
+    f"{verb}:..." — and asserts print_event handles each without falling
+    into the "(unhandled event: ...)" catch-all. A future verb added to
+    queue.py but missed here, or in print_event, now fails a test instead
+    of only a runtime stderr line."""
     import re
     from pathlib import Path
 
@@ -390,6 +394,11 @@ def test_print_event_recognizes_every_tag_queue_emits(capsys):
 
     source = Path(queue_module.__file__).read_text()
     verbs = set(re.findall(r'emit\(f?"([a-z]+:[a-z]+)', source))
+    verbs |= set(re.findall(r'done_tag=f"([a-z]+:[a-z]+)', source))
+    dynamic_suffixes = set(re.findall(r'f"\{verb\}:([a-z]+)', source))
+    for suffix in dynamic_suffixes:
+        verbs.add(f"expose:{suffix}")
+        verbs.add(f"unexpose:{suffix}")
     assert verbs, "expected to find at least one emit() call in queue.py"
 
     for verb in sorted(verbs):
