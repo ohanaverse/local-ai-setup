@@ -201,24 +201,23 @@ def run_queued_ops(queued: QueuedOps) -> bool:
         try:
             entry = registry.provider(provider_id)
         except KeyError:
-            # Not in the registry or not mapped to a Provider class:
-            # PendingChanges treats this as flag-only (native/unmapped).
+            # Not in the registry at all: PendingChanges treats this as
+            # flag-only (native/unmapped).
+            continue
+        if ProviderRegistry.get_class(provider_id) is None:
+            # In the registry, but no Provider class registered for it
+            # (e.g. openrouter): also flag-only, same as above.
             continue
         try:
             provider_instances[provider_id] = ProviderRegistry.get(
                 provider_id, provider_config(entry)
             )
-        except KeyError:
-            # Not mapped to a Provider class: treat as flag-only.
-            continue
         except Exception as exc:  # noqa: BLE001
-            # A provider that fails to instantiate with a real error (bad
-            # config, a broken constructor) must not crash the whole run.
-            # A ready-on against it is recorded as its own failure below
-            # (never silently treated as flag-only — that would flip
-            # ready=True without ever downloading anything); a delete
-            # against it still cleans up the registry/state rows, the same
-            # degraded-but-safe behavior a flag-only provider already gets.
+            # A provider WITH a registered class that fails to instantiate
+            # with a real error (bad config, a broken constructor) must not
+            # crash the whole run, and must not be silently treated as
+            # flag-only either — that would flip ready=True without ever
+            # downloading anything.
             unavailable_providers[provider_id] = str(exc)
 
     provider_ready_failures: list[tuple[str, str]] = []

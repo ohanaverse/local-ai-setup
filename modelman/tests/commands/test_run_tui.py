@@ -305,6 +305,35 @@ def test_run_queued_ops_builds_one_provider_instance_per_provider_id(
     assert get_mock.call_count == 1
 
 
+def test_run_queued_ops_provider_constructor_keyerror_is_not_flag_only(
+    tmp_path, monkeypatch, capsys
+):
+    """A provider WITH a registered class whose constructor raises
+    KeyError (e.g. a required config key is missing) must be treated as
+    a real instantiation failure, not silently folded into the
+    flag-only path the way an unmapped provider (like openrouter) is —
+    that would flip ready=True without ever downloading anything.
+    Regression for a review finding: a blanket `except KeyError`
+    around the whole ProviderRegistry.get() call can't tell these two
+    cases apart; ProviderRegistry.get_class(provider_id) is None can."""
+    entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
+    reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry])
+    with patch(
+        "modelman.main.ProviderRegistry.get_class",
+        return_value=object,  # any non-None value: "a class IS registered"
+    ), patch(
+        "modelman.main.ProviderRegistry.get",
+        side_effect=KeyError("required_field"),
+    ):
+        failed = run_queued_ops(QueuedOps(ready={"ollama/x": True}))
+
+    assert failed is True
+    out = capsys.readouterr().out
+    assert "provider unavailable:" in out
+    state = load_state(state_path)
+    assert state.get("ollama/x").ready is False
+
+
 def test_print_event_formats_download_lifecycle(capsys):
     # print_event() must render queue.py's lifecycle tags as single human-readable
     # lines that replace StatusScreen's RichLog now that apply() runs in a plain terminal.
