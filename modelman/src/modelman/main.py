@@ -179,13 +179,15 @@ def run_queued_ops(queued: QueuedOps) -> bool:
     """
     registry = load_registry()
     state = load_state()
+    models_by_id = {m.id: m for m in registry.models}
     ready_specs = {}
     missing_ready = []
     for mid in queued.ready:
-        try:
-            ready_specs[mid] = model_entry_to_variant(registry.model(mid))
-        except KeyError:
+        model_entry = models_by_id.get(mid)
+        if model_entry is None:
             missing_ready.append(mid)
+        else:
+            ready_specs[mid] = model_entry_to_variant(model_entry)
 
     provider_instances: dict[str, object] = {}
     for spec in list(ready_specs.values()) + list(queued.deletes.values()):
