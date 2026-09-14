@@ -27,6 +27,28 @@ def test_litellm_off_sets_enabled_false(tmp_path, monkeypatch):
     assert load_state(path=state_path).litellm.enabled is False
 
 
+def test_litellm_off_warns_when_unconfigured(tmp_path, monkeypatch):
+    # Turning litellm off must not imply "litellm no longer matters" — a
+    # protocol-forced pairing (e.g. claude+openrouter) routes through it
+    # regardless of this toggle, so an unconfigured url/api_key is still a
+    # real problem. `on` already warned about this; `off` silently didn't,
+    # which is exactly how this state went unnoticed.
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    result = runner.invoke(app, ["litellm", "off"])
+    assert result.exit_code == 0
+    assert "litellm.url or litellm.api_key is not set" in result.output
+
+
+def test_litellm_off_no_warning_when_configured(tmp_path, monkeypatch):
+    state_path = tmp_path / "modelman.toml"
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+    runner.invoke(app, ["litellm", "set", "--url", "http://localhost:4000", "--api-key", "sk-test"])
+    result = runner.invoke(app, ["litellm", "off"])
+    assert result.exit_code == 0
+    assert "warning" not in result.output
+
+
 def test_litellm_set_writes_url_and_key(tmp_path, monkeypatch):
     state_path = tmp_path / "modelman.toml"
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,8 +41,9 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // rather than baked into .line, so FilterValue (fuzzy matching) and every
 // .line consumer see the unprefixed format. exception, when non-empty,
 // appends a per-row deviation note in Title() (e.g. "(via proxy)" for a
-// row protocol negotiation forces through LiteLLM, "(unavailable)" for a
-// row whose route cannot resolve at all).
+// row protocol negotiation forces through LiteLLM, "(litellm required)" for
+// a row that needs litellm but modelman.toml's [litellm] url/api_key aren't
+// configured, "(unavailable)" for any other route resolution failure).
 type modelItem struct {
 	model     config.Model
 	line      string
@@ -172,8 +174,12 @@ func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[stri
 // ref column; it is queried over the same full-catalog IDs as the usage
 // counts, in the same pass. cfg and agent drive the per-row exception
 // marker: a row whose agent×provider protocol intersection is empty is
-// forced through LiteLLM ("(via proxy)"), and a row whose route cannot
-// resolve at all is marked "(unavailable)" — both resolved with the same
+// forced through LiteLLM ("(via proxy)"); a row whose route fails to
+// resolve specifically because litellm is needed (forced or chosen) but
+// modelman.toml's [litellm] url/api_key aren't configured is marked
+// "(litellm required)" (config.ErrLitellmUnconfigured); any other route
+// resolution failure (unknown provider, direct-mode provider with no
+// auth.base_url) is marked "(unavailable)" — all resolved with the same
 // ResolveRoute call BuildLaunchCmd uses, so the picker never disagrees
 // with what a launch would actually do. A nil cfg skips resolution
 // (exception stays empty), which keeps picker-only tests cheap.
@@ -260,6 +266,8 @@ func buildModelItems(cfg *config.Config, agent string, models []config.Model, fa
 		if cfg != nil {
 			route, err := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
 			switch {
+			case errors.Is(err, config.ErrLitellmUnconfigured):
+				item.exception = "(litellm required)"
 			case err != nil:
 				item.exception = "(unavailable)"
 			case route.Forced:

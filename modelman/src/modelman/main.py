@@ -86,7 +86,16 @@ def litellm_off():
     """Dial providers directly where possible. Does not stop the proxy."""
     with locked_state() as state:
         state.litellm.enabled = False
+        incomplete = not state.litellm.url or not state.litellm.api_key
     typer.echo("litellm: off")
+    if incomplete:
+        typer.echo(
+            "warning: litellm.url or litellm.api_key is not set — "
+            "agent/model pairs with no direct protocol overlap (e.g. claude+openrouter) "
+            "still route through litellm regardless of this setting and will fail to "
+            "launch; run 'modelman litellm set --url ... --api-key ...'",
+            err=True,
+        )
 
 
 @litellm_app.command("set")
