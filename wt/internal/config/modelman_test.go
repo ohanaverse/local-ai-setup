@@ -38,7 +38,7 @@ func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	exposed, litellm, _, err := loadModelmanState()
+	exposed, litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v, want nil", err)
 	}
@@ -63,7 +63,7 @@ func TestLoadModelmanStateHonorsXDG(t *testing.T) {
 exposed = true
 `)
 
-	exposed, _, _, err := loadModelmanState()
+	exposed, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestLoadModelmanStateMalformedTOMLError(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `this is not toml {{{`)
 
-	_, _, _, err := loadModelmanState()
+	_, _, err := loadModelmanState()
 	if err == nil {
 		t.Fatal("expected error for malformed modelman.toml, got nil")
 	}
@@ -110,7 +110,7 @@ litellm_exposed = true
 downloaded = true
 `)
 
-	exposed, _, _, err := loadModelmanState()
+	exposed, _, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
@@ -123,6 +123,38 @@ downloaded = true
 	}
 	if !st.Ready {
 		t.Errorf("exposed[legacy-local].Ready = false, want true (via downloaded fallback)")
+	}
+}
+
+// TestLoadModelmanStateReadsRunningFlag asserts that loadModelmanState
+// decodes each model_state entry's per-model `running` flag (the 2026-09-14
+// multi-model local lifecycle design): a missing key defaults to false, and
+// `running = true` decodes to Running = true. A regression here would break
+// FilterToRunningLocal's ability to keep a launchable local model.
+func TestLoadModelmanStateReadsRunningFlag(t *testing.T) {
+	dir := t.TempDir()
+	writeModelmanState(t, dir, `
+[model_state]
+
+[model_state."ollama/no-running-key"]
+exposed = true
+ready = true
+
+[model_state."ollama/running-true"]
+exposed = true
+ready = true
+running = true
+`)
+
+	exposed, _, err := loadModelmanState()
+	if err != nil {
+		t.Fatalf("loadModelmanState() error = %v", err)
+	}
+	if got := exposed["ollama/no-running-key"].Running; got {
+		t.Errorf("exposed[ollama/no-running-key].Running = %v, want false (default)", got)
+	}
+	if got := exposed["ollama/running-true"].Running; !got {
+		t.Errorf("exposed[ollama/running-true].Running = %v, want true", got)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -295,14 +296,15 @@ type Config struct {
 	Agents     []Agent         `toml:"agents"`
 	litellm    LitellmState   `toml:"-"` // from modelman.toml
 	exposed    map[string]ExposureEntry `toml:"-"` // from modelman.toml
-	// localRunning is the raw [local].running_model marker from
-	// modelman.toml; localGateActive is true only for a Config built by
-	// Load() (see finalizeCfg) — a hand-built Config{} literal (nearly
-	// every pre-issue-#65 test) leaves it false, so the gate this field
-	// pair drives is a no-op for those tests unless they explicitly opt
-	// in via SetLocalRunningForTest.
-	localRunning    string `toml:"-"`
-	localGateActive bool   `toml:"-"`
+	// runningLocal is the set of local model ids modelman's per-model
+	// `running` flag names (UNVERIFIED — internal/localgate probes each
+	// one before trusting it). localGateActive is true only for a Config
+	// built by Load() (see finalizeCfg) — a hand-built Config{} literal
+	// (nearly every pre-issue-#65 test) leaves it false, so the gate this
+	// field pair drives is a no-op for those tests unless they explicitly
+	// opt in via SetLocalRunningForTest.
+	runningLocal    map[string]bool `toml:"-"`
+	localGateActive bool            `toml:"-"`
 }
 
 // Dir returns the base config directory (~/.config/agent-wt, or
@@ -393,13 +395,18 @@ func Load() (*Config, error) {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	exposed, litellm, localRunning, err := loadModelmanState()
+	exposed, litellm, err := loadModelmanState()
 	if err != nil {
 		return nil, err
 	}
 	cfg.exposed = exposed
 	cfg.litellm = litellm
-	cfg.localRunning = localRunning
+	cfg.runningLocal = make(map[string]bool)
+	for id, entry := range exposed {
+		if entry.Running {
+			cfg.runningLocal[id] = true
+		}
+	}
 	cfg.localGateActive = true
 	return cfg, nil
 }
@@ -562,24 +569,25 @@ func (c *Config) IsExposed(m Model) bool {
 }
 
 // FilterToRunningLocal narrows models to those launchable under the
-// one-local-model-at-a-time policy (issue #65): cloud and native models
-// pass through unchanged; a local model is kept only when its id equals
-// runningLocalID. A model whose location cannot be resolved (a registry
-// data gap) is dropped — the gate must fail closed, or such a model would
-// stay launchable while no local model is running, violating the "no
-// marker → cloud only, by construction" invariant. (Production Load()
-// configs have resolvable locations — validate() enforces it — so this
-// only bites hand-built test configs and registry data gaps.) A no-op
-// (models returned unchanged) when the gate is not active
-// (LocalGateActive) — every pre-issue-#65 test that builds a Config{}
-// literal directly is unaffected.
-func (c *Config) FilterToRunningLocal(models []Model, runningLocalID string) []Model {
+// multi-model local lifecycle (2026-09-14 design): cloud and native
+// models pass through unchanged; a local model is kept only when its id
+// is in verifiedRunningIDs — the set internal/localgate has already
+// live-probed, not the raw persisted flag. A model whose location cannot
+// be resolved (a registry data gap) is dropped — the gate must fail
+// closed. A no-op (models returned unchanged) when the gate is not
+// active (LocalGateActive) — every pre-issue-#65 test that builds a
+// Config{} literal directly is unaffected.
+func (c *Config) FilterToRunningLocal(models []Model, verifiedRunningIDs []string) []Model {
 	if !c.localGateActive {
 		return models
 	}
+	running := make(map[string]bool, len(verifiedRunningIDs))
+	for _, id := range verifiedRunningIDs {
+		running[id] = true
+	}
 	out := make([]Model, 0, len(models))
 	for _, m := range models {
-		if loc, err := c.ResolveLocation(m); err != nil || (loc == LocationLocal && m.ID != runningLocalID) {
+		if loc, err := c.ResolveLocation(m); err != nil || (loc == LocationLocal && !running[m.ID]) {
 			continue
 		}
 		out = append(out, m)
@@ -605,15 +613,21 @@ func (c *Config) ExposeAllForTest() {
 	}
 }
 
-// LocalRunningModel returns the raw `[local].running_model` marker from
-// modelman.toml — the registry id of the local model `modelman start` last
-// started, or "" if none (see docs/superpowers/specs/2026-09-10-one-local-
-// model-at-a-time-design.md). This is the unverified marker; a caller that
-// needs to know whether the marked model is actually serving right now
-// should probe it (internal/localgate.Resolve).
-func (c *Config) LocalRunningModel() string { return c.localRunning }
+// RunningLocalModelIDs returns the UNVERIFIED set of local model ids
+// modelman's per-model `running` flag names — the registry ids
+// `modelman start` has flagged and `modelman stop` hasn't cleared. A
+// caller that needs to know whether any of them is actually serving
+// right now should probe them (internal/localgate.ResolveAll).
+func (c *Config) RunningLocalModelIDs() []string {
+	ids := make([]string, 0, len(c.runningLocal))
+	for id := range c.runningLocal {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
 
-// LocalGateActive reports whether the one-local-model-at-a-time gate
+// LocalGateActive reports whether the local-model running gate
 // (FilterToRunningLocal, and the -M pin checks in cmd/wt/resolve.go and
 // internal/tui) is live for this Config. True only for a Config built by
 // Load() (production). A hand-built Config{} literal — the shape nearly
@@ -621,14 +635,19 @@ func (c *Config) LocalRunningModel() string { return c.localRunning }
 // no-op for those tests unless they call SetLocalRunningForTest.
 func (c *Config) LocalGateActive() bool { return c.localGateActive }
 
-// SetLocalRunningForTest activates the one-local-model-at-a-time gate (as
-// Load() would) and sets the running-model marker, as if finalizeCfg had
-// read it from modelman.toml. runningModelID == "" simulates "gate active,
-// no local model marked running" (every local model gets filtered out by
-// FilterToRunningLocal). Tests only.
-func (c *Config) SetLocalRunningForTest(runningModelID string) {
+// SetLocalRunningForTest activates the local-model running gate (as
+// Load() would) and sets the (unverified) running-model id set, as if
+// finalizeCfg had read modelman.toml's per-model running flags. No
+// arguments (or only empty strings) simulates "gate active, nothing
+// running". Tests only.
+func (c *Config) SetLocalRunningForTest(runningModelIDs ...string) {
 	c.localGateActive = true
-	c.localRunning = runningModelID
+	c.runningLocal = make(map[string]bool)
+	for _, id := range runningModelIDs {
+		if id != "" {
+			c.runningLocal[id] = true
+		}
+	}
 }
 
 // ProviderByID returns the provider with the given id, or nil if not found.

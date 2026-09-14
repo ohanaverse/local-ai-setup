@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -979,8 +980,8 @@ func TestLocalGateActiveDefaultsFalse(t *testing.T) {
 	if cfg.LocalGateActive() {
 		t.Error("LocalGateActive() = true for a hand-built Config, want false")
 	}
-	if cfg.LocalRunningModel() != "" {
-		t.Errorf("LocalRunningModel() = %q, want empty", cfg.LocalRunningModel())
+	if len(cfg.RunningLocalModelIDs()) != 0 {
+		t.Errorf("RunningLocalModelIDs() = %v, want empty", cfg.RunningLocalModelIDs())
 	}
 }
 
@@ -993,8 +994,8 @@ func TestSetLocalRunningForTestActivatesGate(t *testing.T) {
 	if !cfg.LocalGateActive() {
 		t.Error("LocalGateActive() = false after SetLocalRunningForTest, want true")
 	}
-	if cfg.LocalRunningModel() != "ollama/x" {
-		t.Errorf("LocalRunningModel() = %q, want ollama/x", cfg.LocalRunningModel())
+	if !slices.Contains(cfg.RunningLocalModelIDs(), "ollama/x") {
+		t.Errorf("RunningLocalModelIDs() = %v, want it to contain ollama/x", cfg.RunningLocalModelIDs())
 	}
 }
 
@@ -1019,7 +1020,7 @@ func TestFilterToRunningLocalInactiveGateIsNoop(t *testing.T) {
 		{ID: "ollama/a", ProviderID: "ollama"},
 		{ID: "omlx/b", ProviderID: "omlx"},
 	}
-	got := cfg.FilterToRunningLocal(models, "")
+	got := cfg.FilterToRunningLocal(models, nil)
 	if len(got) != 3 {
 		t.Fatalf("got %d models, want 3 (gate inactive = no filtering)", len(got))
 	}
@@ -1035,7 +1036,7 @@ func TestFilterToRunningLocalNoMarkerDropsAllLocal(t *testing.T) {
 		{ID: "ollama/a", ProviderID: "ollama"},
 		{ID: "omlx/b", ProviderID: "omlx"},
 	}
-	got := cfg.FilterToRunningLocal(models, "")
+	got := cfg.FilterToRunningLocal(models, nil)
 	if len(got) != 1 || got[0].ID != "claude/opus" {
 		t.Fatalf("got %v, want only claude/opus", got)
 	}
@@ -1052,7 +1053,7 @@ func TestFilterToRunningLocalKeepsOnlyTheRunningOne(t *testing.T) {
 		{ID: "ollama/a", ProviderID: "ollama"},
 		{ID: "omlx/b", ProviderID: "omlx"},
 	}
-	got := cfg.FilterToRunningLocal(models, "ollama/a")
+	got := cfg.FilterToRunningLocal(models, []string{"ollama/a"})
 	ids := map[string]bool{}
 	for _, m := range got {
 		ids[m.ID] = true
@@ -1075,7 +1076,7 @@ func TestFilterToRunningLocalUnresolvableLocationDropped(t *testing.T) {
 		{ID: "claude/opus", ProviderID: "claude"},
 		{ID: "ghost/x", ProviderID: "ghost"}, // provider absent from cfg
 	}
-	got := cfg.FilterToRunningLocal(models, "")
+	got := cfg.FilterToRunningLocal(models, nil)
 	if len(got) != 1 || got[0].ID != "claude/opus" {
 		t.Fatalf("got %v, want only claude/opus", got)
 	}
