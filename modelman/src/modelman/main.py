@@ -24,6 +24,7 @@ from .local_control import (
     LocalModelInventory,
     inventory_local_models,
     start_local_model,
+    stop_all_local_models,
     stop_local_model,
 )
 from .manifest import get_family_dir
@@ -636,21 +637,54 @@ def start(
         typer.echo(f"{result.model_id} is already running.")
     else:
         typer.echo(f"Started {result.model_id}.")
+    if result.other_running:
+        typer.echo(
+            f"warning: {len(result.other_running)} other local model(s) already running: "
+            f"{', '.join(result.other_running)}",
+            err=True,
+        )
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
 
 
 @app.command()
-def stop() -> None:
-    """Stop the currently-running local model and clear the marker.
-    No-op when nothing is running."""
+def stop(
+    model_id: str | None = typer.Argument(None, help="Registry model id to stop."),
+    all_: bool = typer.Option(False, "--all", help="Stop every currently-running local model."),
+) -> None:
+    """Stop one running local model (by id), or every one of them with
+    --all. Bare `modelman stop` with neither is a usage error."""
+    if model_id is None and not all_:
+        typer.echo("error: pass a model id, or --all to stop every running local model", err=True)
+        raise typer.Exit(1)
+    if model_id is not None and all_:
+        typer.echo("error: pass either a model id or --all, not both", err=True)
+        raise typer.Exit(1)
+
+    if all_:
+        try:
+            stopped = stop_all_local_models()
+        except LocalControlError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if not stopped:
+            typer.echo("No local model is running.")
+        else:
+            typer.echo(f"Stopped {len(stopped)} model(s): {', '.join(stopped)}.")
+        return
+
+    # Reached only when model_id is not None: the two checks above rule out
+    # both (None, not all_) and (not None, all_), and the `all_` branch just
+    # returned — so the sole remaining case is (not None, not all_). Spelled
+    # out for mypy, which can't infer that from the two independent ifs.
+    assert model_id is not None
     try:
-        result = stop_local_model()
+        result = stop_local_model(model_id)
     except LocalControlError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     if result.stopped_model_id is None:
-        typer.echo("No local model is running.")
+        typer.echo(f"{model_id} is not running.")
     else:
         typer.echo(f"Stopped {result.stopped_model_id}.")
 

@@ -10,7 +10,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -126,16 +125,6 @@ func runLaunchPath(
 
 	if needsModelPicker(agent, pinned) {
 		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
-		// A stale/mismatched local-model marker (issue #65) is fatal
-		// regardless of whether a TTY is available for the picker —
-		// resolveModelForLaunch normally treats any resolveModel error as
-		// "not resolved, fall through to the picker" (the ordinary
-		// ambiguous-eligible-list case), but that fallback would silently
-		// open the TUI instead of the hard exit the design requires here.
-		var notRunning *localgate.NotRunningError
-		if errors.As(err, &notRunning) {
-			return err
-		}
 		if err == nil && resolved {
 			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible)
 		}

@@ -156,7 +156,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/initseed/` | `--init` seeding |
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
-| `internal/localgate/` | one-local-model-at-a-time gate (issue #65): name-checked availability probe + shared Apply policy |
+| `internal/localgate/` | multi-model local-running gate (2026-09-14 design): probes every flagged model (except ollama, which trusts the flag) + shared Apply policy |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
 | `docs/superpowers/` | specs + plans |
@@ -228,48 +228,59 @@ This ensures wt's model picker never offers a model the TUI would show as `–` 
 > needs a matching `agy` provider or `Load`/`Validate` fails with
 > `unknown provider "agy"`.
 
-## Local-model gate (issue #65)
+## Local-model gate (multi-model design, 2026-09-14)
 
-wt offers at most one local model at a time, mirroring modelman's own
-process-isolation constraint (Apple Silicon GPU/RAM is shared). The gate
-policy lives in ONE place — `internal/localgate.Apply` — shared by
-`cmd/wt/resolve.go`'s `resolveModel` (non-TUI) and `internal/tui`'s
-`enterModelPhase` (TUI), so the two launch paths cannot diverge. Apply
-reads modelman-owned `modelman.toml`'s `[local].running_model` marker
-(`internal/config`'s `Config.LocalRunningModel()`/`LocalGateActive()`),
-verifies it with `internal/localgate.Resolve`'s NAME-CHECKED probe (ollama
-via `ollamacheck.Loaded` — `ollama ps`, the loaded set, not `ollama list`'s
-downloaded-but-idle catalog; omlx/omlx-6bit via a name-checked
-`/v1/models` — 4-bit and 6-bit variants share port 8000 and differ exactly
-in the variant tail; mlx_lm_server via a non-empty `/v1/models`, exact
-names unreconstructable since one process serves one target+draft pairing),
-rejects a `-M` pin naming a local model that isn't the verified one, and
-narrows the list with `Config.FilterToRunningLocal`, which fails closed on
-unresolvable locations (a registry data gap drops the model rather than
-keeping a possibly-local one). Callers map the outcome to their own UX:
+wt offers cloud models plus every LOCAL model that is both flagged
+`running` in modelman-owned `modelman.toml` and confirmed by a live
+probe right now — replacing issue #65's single-marker,
+one-model-at-a-time gate. The gate policy lives in ONE place —
+`internal/localgate.Apply` — shared by `cmd/wt/resolve.go`'s
+`resolveModel` (non-TUI) and `internal/tui`'s `enterModelPhase` (TUI), so
+the two launch paths cannot diverge. Apply reads modelman-owned
+`modelman.toml`'s per-model `running` flags (`internal/config`'s
+`Config.RunningLocalModelIDs()`/`LocalGateActive()`), verifies each one
+with `internal/localgate.ResolveAll`'s probes — ollama is exempt from live
+verification (the flag is trusted unconditionally since `modelman start` for
+ollama is flag-only with no warmup, and an `ollama ps` check would read the
+model as not-loaded on the very first probe after start, self-clearing the
+flag); omlx/omlx-6bit via a name-checked `/v1/models` — 4-bit and 6-bit
+variants share port 8000 and differ exactly in the variant tail; mlx_lm_server
+via a non-empty `/v1/models`, exact names unreconstructable since one process
+serves one target+draft pairing; mtplx via a name-checked `/v1/models` on port
+8003 — then rejects a
+`-M` pin naming a local model that isn't among the verified set, and
+narrows the list with `Config.FilterToRunningLocal`, which fails closed
+on unresolvable locations (a registry data gap drops the model rather
+than keeping a possibly-local one). Callers map the outcome to their own
+UX:
 
-- No marker → cloud models only.
-- Verified marker → cloud models plus the one running local model.
-- Stale marker (set but probe fails) → `*NotRunningError` is fatal for
-  every launch through the caller: wt exits (non-TUI) or quits the whole
-  program (TUI, via `model.fatalErr`) with the fix: `modelman start <id>`.
-- Pinned local model that isn't the verified one → the same
-  `modelman start` message (non-TUI fatal; TUI routes back to the agent
-  picker with the message as status, clearing the bad pin).
+- No flags set → cloud models only.
+- One or more verified flags → cloud models plus every verified-running
+  local model.
+- A flagged-but-unverified model (crashed, stopped outside modelman, a
+  benchmark run tore it down) → silently excluded from the eligible
+  list — never fatal, since one drifted model must not block a launch
+  that doesn't need it.
+- Pinned local model that isn't among the verified set → `*NotRunningError`
+  is fatal for THAT launch (non-TUI fatal; TUI routes back to the agent
+  picker with the message as status, clearing the bad pin) — the one
+  surviving fatal case, since a pin is an explicit request that can't be
+  silently substituted.
 - Gate empties a non-empty eligible list (every eligible model was local,
-  nothing running) → a gate-specific error ("all of agent X's eligible
-  models are local and no local model is running — start one with
-  `modelman start <id>`"), not the generic "no models match" wording; the
-  TUI likewise routes back to the agent picker instead of showing a silent
-  empty model list.
+  none verified running) → a gate-specific error ("all of agent X's
+  eligible models are local and no local model is running — start one
+  with `modelman start <id>`"), not the generic "no models match"
+  wording; the TUI likewise routes back to the agent picker instead of
+  showing a silent empty model list.
 
 `LocalGateActive()` is true only for a `Config` built by `Load()`
 (production); a hand-built `Config{}` literal — the shape nearly every
-pre-issue-#65 test uses — defaults to false, making the gate a no-op there
-unless a test opts in via `SetLocalRunningForTest`.
+pre-issue-#65 test uses — defaults to false, making the gate a no-op
+there unless a test opts in via `SetLocalRunningForTest`.
 
-Start/stop the local model itself with modelman: `modelman start
-<provider>/<name>` / `modelman stop` (see `modelman/CLAUDE.md`).
+Start/stop local models with modelman: `modelman start <provider>/<name>`
+/ `modelman stop <provider>/<name>` / `modelman stop --all`, or the TUI's
+`s` keybinding (see `modelman/CLAUDE.md`).
 
 ## Config (themes)
 

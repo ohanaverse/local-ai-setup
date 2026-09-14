@@ -691,6 +691,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
             "LOC",
             "STATUS",
             "EXPOSED",
+            "RUNNING",
             "COST",
             "SIZE",
         ]
@@ -884,6 +885,7 @@ async def test_model_screen_renders_per_token_pricing(tmp_path, monkeypatch):
             "LOC",
             "STATUS",
             "EXPOSED",
+            "RUNNING",
             "COST",
             "SIZE",
         ]
@@ -892,8 +894,8 @@ async def test_model_screen_renders_per_token_pricing(tmp_path, monkeypatch):
         per_token_row = next(r for r in rows if "per-token" in r)
         subscription_row = next(r for r in rows if "subscription" in r)
 
-        assert per_token_row[6] == " 1.0000  0.5000  2.0000"
-        assert subscription_row[6] == "-"
+        assert per_token_row[7] == " 1.0000  0.5000  2.0000"
+        assert subscription_row[7] == "-"
 
 
 @pytest.mark.asyncio
@@ -2036,3 +2038,285 @@ async def test_add_dialog_defaults_to_queued_move_over_registry_family(tmp_path,
 
         family_sel = app.screen.query_one("#family-select", Select)
         assert family_sel.value == "gemma4"
+
+
+# ---------------------------------------------------------------------------
+# RUNNING column and 's' keybinding (local-model start/stop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_running_column_shows_dash_when_not_running(tmp_path, monkeypatch):
+    # RUNNING column must default to "-" for a local model that has never
+    # been started, so the operator can tell at a glance what's live.
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        mt = app.screen.query_one("#model-table", DataTable)
+        row = [str(c) for c in mt.get_row_at(0)]
+        assert row[6] == "-"
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_starts_a_stopped_ready_model(tmp_path, monkeypatch):
+    # 's' on a ready-but-stopped local model must call start_local_model on a
+    # background thread (not block the UI) and pass the model's id through.
+    # This pins the happy path of the new toggle action before the confirm-
+    # dialog and stop paths are exercised separately.
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    # Stub the provider so the background reconcile worker (which runs on
+    # mount and re-derives state.ready from a live is_downloaded() probe)
+    # confirms the seeded ready=True instead of flipping it back to False —
+    # action_toggle_running gates on ready, so the toggle must survive
+    # reconcile the same way the ready/expose toggle tests above do.
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = {}
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        started["id"] = model_id
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")
+        for _ in range(200):
+            await pilot.pause()
+            if started.get("id") == "ollama/a":
+                break
+    assert started["id"] == "ollama/a"
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_accepts_non_local_model_on_local_provider(tmp_path, monkeypatch):
+    # Regression test for a review finding: action_toggle_running's local-
+    # model gate computed `entry.location or provider.location` (a truthy-OR
+    # of raw strings, checked with a single is_local_location() call) while
+    # the row-render check a few lines up ORs two independent
+    # is_local_location() calls. They disagreed for a model with a truthy
+    # non-local `location` (e.g. "cloud") whose provider is local: the row
+    # rendered it as local/startable, but 's' rejected it with "Only local
+    # models can be started/stopped" because the raw truthy-OR picked
+    # entry.location and never looked at the provider's location at all.
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="cloud"
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = {}
+    notified = []
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        started["id"] = model_id
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        app.screen.notify = lambda msg, *a, **k: notified.append(msg)
+        await pilot.press("s")
+        for _ in range(200):
+            await pilot.pause()
+            if started.get("id") == "ollama/a":
+                break
+    assert started["id"] == "ollama/a"
+    assert not any("Only local models" in m for m in notified)
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_shows_confirm_dialog_when_others_running(tmp_path, monkeypatch):
+    # Starting a model while a different local model is already running must
+    # not silently start a second one — the architecture note in the design
+    # calls out that unlike ready/expose, start has an immediate side effect,
+    # so the user gets a confirm dialog naming the other running model(s)
+    # before anything happens.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    # "other" must also be a registered model, not just a state entry: the
+    # reconcile worker's running-flag self-heal (Step 3a) only verifies ids
+    # it can resolve back to a registry.models entry — an orphaned state-only
+    # "running" flag would otherwise get cleared before 's' is pressed,
+    # emptying `others` and skipping the confirm dialog entirely.
+    other = ModelEntry(
+        id="ollama/other", family="ornith", provider_id="ollama", model_name="other", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model, other])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False))
+    state.set("ollama/other", ModelState(ready=True, running=True))
+    save_state(state, state_path)
+
+    # See the stub note in test_action_toggle_running_starts_a_stopped_ready_model:
+    # reconcile must confirm ready=True (not flip it back to False) for the
+    # toggle's ready gate to let 's' reach the confirm-dialog branch.
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+
+
+@pytest.mark.asyncio
+async def test_start_toggle_preserves_in_session_reconciled_state(tmp_path, monkeypatch):
+    # After a start/stop toggle the worker must merge ONLY the `running`
+    # flag back from disk. It used to do a full `self.state = load_state(...)`,
+    # which threw away everything the on-mount reconcile worker had written
+    # into memory (ready/disk_path/size_bytes are not persisted until the
+    # pending-changes queue is applied on exit), so one 's' press silently
+    # reverted the READY/SIZE/path columns to the last-saved modelman.toml —
+    # and reconcile, being an on_mount-only worker, never ran again to fix it.
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    # On disk: no path/size at all — a full reload would surface exactly this.
+    save_state(StateStore(models={"ollama/a": ModelState(ready=True)}), state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    def fake_start(registry, model_id, path=None, **kwargs):
+        # Real start_local_model persists the running flag; mimic just that.
+        disk = load_state(path)
+        existing = disk.get(model_id)
+        disk.set(
+            model_id,
+            ModelState(
+                ready=existing.ready,
+                disk_path=existing.disk_path,
+                size_bytes=existing.size_bytes,
+                exposed=existing.exposed,
+                running=True,
+            ),
+        )
+        save_state(disk, path)
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle before seeding over it
+        screen = app.screen
+        # Stand in for what the reconcile worker leaves in memory only.
+        screen.state.models["ollama/a"] = ModelState(
+            ready=True, disk_path="/reconciled/path", size_bytes=4242, running=False
+        )
+        await pilot.press("s")
+        for _ in range(200):
+            await pilot.pause()
+            if screen.state.models["ollama/a"].running:
+                break
+        in_memory = screen.state.models["ollama/a"]
+    assert in_memory.running is True  # the one field that must come from disk
+    assert in_memory.disk_path == "/reconciled/path"  # …and these must survive
+    assert in_memory.size_bytes == 4242
+    assert in_memory.ready is True
+
+
+@pytest.mark.asyncio
+async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp_path, monkeypatch):
+    # Design §4: when the model being started will REPLACE a same-provider
+    # occupant (omlx/mtplx/mlx_lm_server serve one model per process), the
+    # confirm dialog must say so explicitly by name, not just report "N
+    # other local models running" — the replacement is silent in the
+    # implementation, so the dialog is the only place the user learns that
+    # pressing Yes also kills the other model.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
+
+    target = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local")
+    occupant = ModelEntry(id="omlx/b", family="ornith", provider_id="omlx", model_name="b", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[target, occupant])
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    state.set("omlx/b", ModelState(ready=True, running=True))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    # Keep the reconcile worker's running-flag self-heal from clearing the
+    # occupant's flag (no real omlx server answers a probe in tests) — the
+    # dialog under test only appears when something is verified running.
+    monkeypatch.setattr(
+        "modelman.screens.models.running_model_ids",
+        lambda registry, state, state_path=None: [m for m, s in state.models.items() if s.running],
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")  # cursor is on omlx/a (sorted before omlx/b)
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        message = app.screen._message
+    assert "Starting this will also stop omlx/b, since omlx can only serve one model at a time." in message

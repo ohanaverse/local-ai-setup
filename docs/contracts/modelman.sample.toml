@@ -1,6 +1,7 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (exposed and ready flags, to filter the model picker).
+# read-only (exposed and ready flags, plus each local model's per-model
+# `running` flag, to filter the model picker).
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)
@@ -13,6 +14,12 @@
 # Exposure rule (both tools): native OR (exposed AND (ready OR cloud location)).
 # - Local model with exposed=true, ready=false → NOT exposed
 # - Cloud model with exposed=true (no ready key) → exposed
+#
+# Local-model running state (multi-model local lifecycle design,
+# 2026-09-14): each model_state entry carries its own `running` flag,
+# verified live by both readers before being trusted — see
+# docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md.
+# The single [local].running_model marker (issue #65) is retired.
 
 # Global "token pricing last refreshed" date (YYYY-MM-DD), written by
 # `modelman refresh-prices` (set_price_refresh_last_run in state.py).
@@ -26,16 +33,12 @@ enabled = true
 url = "http://localhost:4000"
 api_key = "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
 
-# Single local model wt's picker may currently offer (issue #65). Absent
-# or empty = no local model is running; wt shows cloud models only.
-[local]
-running_model = "ollama/contract-fixture:local"
-
 [model_state."ollama/contract-fixture:local"]
 ready = true
 disk_path = "ollama:contract-fixture:local"
 size_bytes = 2147483648
 exposed = false
+running = true
 
 [model_state."ollama/contract-fixture:subscription"]
 ready = true

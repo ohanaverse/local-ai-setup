@@ -39,13 +39,16 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	models, litellm, localRunning, err := loadModelmanState()
+	models, litellm, err := loadModelmanState()
 	if err != nil {
 		t.Fatalf("loadModelmanState() error: %v", err)
 	}
 
-	if localRunning != "ollama/contract-fixture:local" {
-		t.Errorf("localRunning = %q, want %q", localRunning, "ollama/contract-fixture:local")
+	if !models["ollama/contract-fixture:local"].Running {
+		t.Error("expected ollama/contract-fixture:local to have running=true")
+	}
+	if models["ollama/contract-fixture:subscription"].Running {
+		t.Error("expected ollama/contract-fixture:subscription to have running=false (default)")
 	}
 
 	if !models["ollama/contract-fixture:subscription"].Exposed {

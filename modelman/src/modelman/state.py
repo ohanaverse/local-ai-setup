@@ -1,9 +1,11 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
-Owner: modelman (the only writer). wt reads this file read-only — just the
+Owner: modelman (the only writer). wt reads this file read-only — the
 `exposed` flags, to filter its model picker to models actually served
-through LiteLLM (see wt/internal/config/modelman.go; the shared contract
-fixture is docs/contracts/modelman.sample.toml). See registry.py for the
+through LiteLLM, plus each local model's `running` flag, which it
+verifies with its own live probe before offering that model (see
+wt/internal/config/modelman.go and wt/internal/localgate; the shared
+contract fixture is docs/contracts/modelman.sample.toml). See registry.py for the
 canonical, shared model/provider/family definitions this state is keyed
 against, and
 `docs/superpowers/specs/2026-08-27-shared-model-registry-design.md` for the
@@ -65,21 +67,12 @@ class LitellmState:
 
 
 @dataclass
-class LocalState:
-    # Registry model id (`<provider_id>/<model_name>`) of the local model
-    # `modelman start` last started, or None if `modelman stop` was last
-    # run (or neither has ever run). wt reads this read-only to filter its
-    # model picker to this one local model plus cloud models — see
-    # docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md.
-    running_model: str | None = None
-
-
-@dataclass
 class ModelState:
     ready: bool = False
     disk_path: str | None = None
     size_bytes: int | None = None
     exposed: bool = False  # was litellm_exposed
+    running: bool = False
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -94,7 +87,6 @@ class StateStore:
     models: dict[str, ModelState] = field(default_factory=dict)
     families: dict[str, FamilyState] = field(default_factory=dict)
     litellm: LitellmState = field(default_factory=LitellmState)
-    local: LocalState = field(default_factory=LocalState)
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def get(self, model_id: str) -> ModelState:
@@ -122,9 +114,18 @@ def load_state(path: Path | None = None) -> StateStore:
             disk_path=entry.get("disk_path"),
             size_bytes=entry.get("size_bytes"),
             exposed=entry.get("exposed", entry.get("litellm_exposed", False)),
+            running=entry.get("running", False),
             extra=unknown_keys(
                 entry,
-                {"ready", "downloaded", "disk_path", "size_bytes", "exposed", "litellm_exposed"},
+                {
+                    "ready",
+                    "downloaded",
+                    "disk_path",
+                    "size_bytes",
+                    "exposed",
+                    "litellm_exposed",
+                    "running",
+                },
             ),
         )
         for model_id, entry in raw.get("model_state", {}).items()
@@ -142,13 +143,10 @@ def load_state(path: Path | None = None) -> StateStore:
         url=litellm_raw.get("url"),
         api_key=litellm_raw.get("api_key"),
     )
-    local_raw = raw.get("local", {})
-    local = LocalState(running_model=local_raw.get("running_model"))
     return StateStore(
         models=models,
         families=families,
         litellm=litellm,
-        local=local,
         extra=unknown_keys(raw, {"model_state", "families", "litellm", "local"}),
     )
 
@@ -164,6 +162,7 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
                     "disk_path": s.disk_path,
                     "size_bytes": s.size_bytes,
                     "exposed": s.exposed,
+                    "running": s.running,
                 }
             )
             for model_id, s in store.models.items()
@@ -179,7 +178,6 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
                 "api_key": store.litellm.api_key,
             }
         ),
-        "local": drop_none({"running_model": store.local.running_model}),
     }
     atomic_write_toml({**store.extra, **payload}, state_path)
 

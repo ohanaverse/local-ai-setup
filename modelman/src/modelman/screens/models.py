@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,13 @@ from ..litellm import (
     is_effectively_exposed,
     passes_ready_gate,
     provider_policy,
+)
+from ..local_control import (
+    LocalControlError,
+    running_model_ids,
+    same_provider_occupant,
+    start_local_model,
+    stop_local_model,
 )
 from ..queue import QueuedOps
 from ..registry import (
@@ -38,7 +46,7 @@ from ..registry import (
 )
 from ..state import ModelState, StateStore, load_state, locked_state
 from . import reconcile_model_state, reload_preserving_cursor, row_key_at
-from .forms import default_form_kind
+from .forms import ConfirmModal, default_form_kind
 
 if TYPE_CHECKING:
     from ..providers.base import VariantSpec
@@ -191,6 +199,7 @@ class ModelScreen(Screen[None]):
         ("l", "toggle_litellm", "LiteLLM"),
         ("r", "toggle_ready", "Toggle ready"),
         ("x", "toggle_expose", "Toggle exposed"),
+        ("s", "toggle_running", "Start/stop"),
     ]
 
     def __init__(
@@ -257,6 +266,7 @@ class ModelScreen(Screen[None]):
             "LOC",
             "STATUS",
             "EXPOSED",
+            "RUNNING",
             "COST",
             "SIZE",
         )
@@ -294,6 +304,16 @@ class ModelScreen(Screen[None]):
         Delegates to the shared reconcile_model_state (screens/__init__.py).
         """
         reconcile_model_state(self.registry.models, self.registry, self.state)
+        # Self-heal the running flag the same way ready/disk_path already
+        # are: a model flagged running whose process actually died (crash,
+        # manual kill outside modelman) must not keep showing RUNNING=●
+        # forever. running_model_ids() re-probes every flagged model and
+        # clears any stale flag as a side effect; anything it doesn't
+        # return is not verified running, so it gets cleared here too.
+        verified = set(running_model_ids(self.registry, self.state, self.state_path))
+        for model_id, model_state in list(self.state.models.items()):
+            if model_state.running and model_id not in verified:
+                self.state.models[model_id] = replace(model_state, running=False)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
@@ -377,6 +397,12 @@ class ModelScreen(Screen[None]):
                     )
                     else "–"
                 )
+                is_local = is_local_location(m.location) or is_local_location(
+                    self.registry.provider(m.provider_id).location
+                    if any(p.id == m.provider_id for p in self.registry.providers)
+                    else None
+                )
+                running_str = "●" if (is_local and self.state.get(m.id).running) else "-"
                 mt.add_row(
                     m.family,
                     m.provider_id,
@@ -384,6 +410,7 @@ class ModelScreen(Screen[None]):
                     _format_location(m.location),
                     status,
                     exposed_str,
+                    running_str,
                     _format_per_token(m.cost),
                     size_str,
                     key=m.id,
@@ -525,6 +552,100 @@ class ModelScreen(Screen[None]):
         self.queued_exposes[mid] = target
         self._refresh_pending_bar()
         self.reload()
+
+    def action_toggle_running(self) -> None:
+        entry = self._current_entry()
+        if entry is None:
+            return
+        provider_location = next(
+            (p.location for p in self.registry.providers if p.id == entry.provider_id), None
+        )
+        if not (is_local_location(entry.location) or is_local_location(provider_location)):
+            self.app.notify("Only local models can be started/stopped")
+            return
+        if not self._is_ready(entry.id):
+            self.app.notify("Model is not ready — mark it ready first")
+            return
+        mid = entry.id
+        currently_running = self.state.get(mid).running
+
+        if currently_running:
+            self.app.notify(f"Stopping {mid}…")
+            self.run_worker(lambda: self._do_stop(mid), thread=True, exclusive=False)
+            return
+
+        others = [m for m in self.state.models if m != mid and self.state.models[m].running]
+        if others:
+            # Design §4: a same-provider replacement is never a silent
+            # surprise. omlx/mtplx/mlx_lm_server can only serve one model
+            # per process, so starting this one stops that provider's
+            # current occupant — name it explicitly, on top of the generic
+            # "N others running" advisory (which also covers unrelated
+            # providers, where nothing is replaced).
+            occupant = same_provider_occupant(self.registry, self.state, mid, entry.provider_id)
+            replacement_note = (
+                f"\nStarting this will also stop {occupant}, since {entry.provider_id} "
+                "can only serve one model at a time."
+                if occupant is not None
+                else ""
+            )
+            message = (
+                f"{len(others)} other local model(s) already running: {', '.join(sorted(others))}."
+                f"{replacement_note}\n"
+                f"Start {mid} anyway?"
+            )
+            self.app.push_screen(ConfirmModal(message), lambda ok: self._on_start_confirmed(mid, ok))
+        else:
+            self._on_start_confirmed(mid, True)
+
+    def _on_start_confirmed(self, model_id: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self.app.notify(f"Starting {model_id}…")
+        self.run_worker(lambda: self._do_start(model_id), thread=True, exclusive=False)
+
+    def _resync_running_flags(self) -> None:
+        """Merge just the `running` flags from disk back onto self.state.
+
+        local_control owns those flags and writes them to modelman.toml
+        from these workers, so they have to be re-read — but a full
+        `self.state = load_state(...)` would clobber everything the
+        on-mount reconcile worker put in memory (`ready`/`disk_path`/
+        `size_bytes`, none of which is persisted until the pending-changes
+        queue is applied on exit), silently reverting the READY/SIZE/path
+        columns after the first `s` press. Same reasoning — and same
+        targeted-resync shape — as action_toggle_litellm's `[litellm]`
+        merge.
+        """
+        fresh = load_state(self.state_path)
+        for model_id, fresh_state in fresh.models.items():
+            current = self.state.models.get(model_id)
+            if current is None:
+                self.state.models[model_id] = fresh_state
+            else:
+                self.state.models[model_id] = replace(current, running=fresh_state.running)
+
+    def _do_start(self, model_id: str) -> None:
+        try:
+            result = start_local_model(self.registry, model_id, self.state_path)
+        except LocalControlError as exc:
+            self.app.call_from_thread(self.app.notify, f"Failed to start {model_id}: {exc}", severity="error")
+            return
+        self._resync_running_flags()
+        message = f"{model_id} is already running." if result.already_running else f"Started {model_id}."
+        self.app.call_from_thread(self.app.notify, message)
+        self.app.call_from_thread(self.reload)
+
+    def _do_stop(self, model_id: str) -> None:
+        try:
+            result = stop_local_model(model_id, self.state_path)
+        except LocalControlError as exc:
+            self.app.call_from_thread(self.app.notify, f"Failed to stop {model_id}: {exc}", severity="error")
+            return
+        self._resync_running_flags()
+        message = f"Stopped {model_id}." if result.stopped_model_id else f"{model_id} was not running."
+        self.app.call_from_thread(self.app.notify, message)
+        self.app.call_from_thread(self.reload)
 
     def _provider_list(self) -> list[str]:
         # Every provider configured in registry.toml, not just the ones

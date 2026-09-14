@@ -102,12 +102,13 @@ type model struct {
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
 
-	// fatalErr (issue #65) is set by enterModelPhase when modelman's
-	// [local].running_model marker is stale — the probe in
-	// internal/localgate failed. Paired with a tea.Quit return so the
-	// whole program exits; Run() below surfaces it as the function's
-	// returned error, matching the non-TUI path's exit-with-message
-	// behavior (cmd/wt/main.go's runLaunchPath).
+	// fatalErr, when set, is paired with a tea.Quit return so the whole
+	// program exits; Run() below surfaces it as the function's returned
+	// error, matching the non-TUI path's exit-with-message behavior
+	// (cmd/wt/main.go's runLaunchPath). As of the 2026-09-14 multi-model
+	// local gate redesign, localgate.Apply never returns a fatal error
+	// (see enterModelPhase), so nothing currently sets this field — it
+	// remains wired into Run() for any future genuinely-fatal condition.
 	fatalErr error
 }
 
@@ -694,16 +695,13 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	// One-local-model-at-a-time gate (issue #65) — the policy lives in
-	// localgate.Apply, shared with cmd/wt/resolve.go's resolveModel. A
-	// stale marker (set but not verified available) quits the whole
-	// program with a message; a clean/empty marker narrows models to
-	// cloud-only, or cloud plus the one verified-running local model.
-	gate, gateErr := localgate.Apply(m.cfg, models, m.pinnedModel)
-	if gateErr != nil {
-		m.fatalErr = gateErr
-		return m, tea.Quit
-	}
+	// Local-model running gate (2026-09-14 design) — the policy lives in
+	// localgate.Apply, shared with cmd/wt/resolve.go's resolveModel. Apply
+	// never returns a fatal error now — a flagged-but-unverified local
+	// model is silently excluded from the eligible list rather than
+	// quitting the whole program; only a -M pin naming an unverified
+	// local model routes back to the agent picker with a message.
+	gate := localgate.Apply(m.cfg, models, m.pinnedModel)
 	models = gate.Eligible
 
 	// Route back to the agent picker when the model list can't be shown:

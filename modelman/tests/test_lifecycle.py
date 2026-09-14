@@ -597,6 +597,71 @@ def test_isolate_mtplx_different_model_restarts():
     assert result.ok is True
 
 
+def test_isolate_solo_different_model_stops_only_mtplx():
+    """solo=True on a different-model isolate must stop only mtplx's own
+    occupant (_stop_mtplx), never the sibling providers via _stop_others —
+    this is the same-provider-only local-model lifecycle's whole point:
+    starting mtplx must not tear down an unrelated ollama/omlx instance
+    running alongside it."""
+    with (
+        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
+        patch("modelman.providers.lifecycle._serving_model", return_value=False),
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_stop_mtplx,
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle._start_mtplx_serve"),
+        patch("modelman.providers.lifecycle._wait_for_model"),
+        patch("modelman.providers.lifecycle._warmup"),
+    ):
+        result = isolate("mtplx", "org/new", solo=True)
+    mock_stop_mtplx.assert_called_once()
+    mock_stop_others.assert_not_called()
+    assert result.ok is True
+
+
+def test_isolate_solo_surfaces_stop_mtplx_failure_instead_of_starting(tmp_path):
+    """Regression test for a review finding: solo=True's `_stop_mtplx()`
+    call discarded its LifecycleResult, so a failed stop (unlike the
+    non-solo `_stop_others()` path, which raises on failure) silently fell
+    through to `_start_mtplx_serve()`. That call's `_wait_for_port_closed`
+    poll would then fail ~10s later with a generic "port still answering"
+    message that hides the real stop failure. isolate() must raise the
+    stop's own error immediately and never attempt to start a new server
+    on top of a port that failed to close."""
+    with (
+        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
+        patch("modelman.providers.lifecycle._serving_model", return_value=False),
+        patch(
+            "modelman.providers.lifecycle._stop_mtplx",
+            return_value=LifecycleResult("mtplx", "", "", False, "mtplx binary not found on PATH"),
+        ),
+        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start_serve,
+    ):
+        result = isolate("mtplx", "org/new", solo=True)
+    mock_start_serve.assert_not_called()
+    assert result.ok is False
+    assert result.error == "mtplx binary not found on PATH"
+
+
+def test_isolate_non_solo_different_model_stops_everyone():
+    """The default (solo unset) must keep today's full-exclusivity
+    behavior unchanged: a different-model isolate stops every OTHER local
+    provider via _stop_others, not just mtplx's own occupant — this is
+    what modelman benchmark still needs for clean measurement."""
+    with (
+        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
+        patch("modelman.providers.lifecycle._serving_model", return_value=False),
+        patch("modelman.providers.lifecycle._stop_mtplx") as mock_stop_mtplx,
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle._start_mtplx_serve"),
+        patch("modelman.providers.lifecycle._wait_for_model"),
+        patch("modelman.providers.lifecycle._warmup"),
+    ):
+        result = isolate("mtplx", "org/new")
+    mock_stop_others.assert_called_once_with()
+    mock_stop_mtplx.assert_not_called()
+    assert result.ok is True
+
+
 def test_isolate_mtplx_ambiguous_registry_refuses_instead_of_guessing():
     """With no explicit model and more than one mtplx entry, isolate()
     must refuse, not silently serve the first registry match.

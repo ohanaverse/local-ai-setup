@@ -10,7 +10,6 @@ from pathlib import Path
 
 from modelman.state import (
     FamilyState,
-    LocalState,
     ModelState,
     StateStore,
     _default_state_path,
@@ -268,36 +267,35 @@ def test_price_refresh_last_run_deletion(tmp_path):
     assert "price_refresh_last_run" not in path.read_text()
 
 
-def test_load_state_reads_local_running_model(tmp_path):
-    # modelman.toml's [local].running_model marks the single local model
-    # wt's picker may currently offer (issue #65). A missing table must
-    # default to None, not raise, since a fresh install has nothing running.
-    path = tmp_path / "modelman.toml"
-    path.write_text('[local]\nrunning_model = "ollama/qwen3.8:27b-mlx"\n')
-    store = load_state(path)
-    assert store.local.running_model == "ollama/qwen3.8:27b-mlx"
+def test_model_state_running_defaults_false():
+    store = StateStore()
+    assert store.get("ollama/x").running is False
 
 
-def test_load_state_missing_local_table_defaults_to_none(tmp_path):
-    store = load_state(tmp_path / "nonexistent.toml")
-    assert store.local == LocalState()
-    assert store.local.running_model is None
-
-
-def test_save_state_round_trips_local_running_model(tmp_path):
+def test_running_round_trips_through_save_and_load(tmp_path):
     path = tmp_path / "modelman.toml"
     store = StateStore()
-    store.local.running_model = "omlx/qwen3.8"
+    store.set("ollama/x", ModelState(ready=True, running=True))
     save_state(store, path)
     reloaded = load_state(path)
-    assert reloaded.local.running_model == "omlx/qwen3.8"
+    assert reloaded.get("ollama/x").running is True
+    assert reloaded.get("ollama/x").ready is True
 
 
-def test_save_state_writes_none_running_model_as_absent(tmp_path):
-    # "absent/empty = none running" per the design doc — a cleared marker
-    # must not round-trip as the literal string "None" or similar.
+def test_stale_local_table_is_dropped_on_load_and_save(tmp_path):
+    # Pre-upgrade files may still carry [local].running_model - it must be
+    # silently discarded, not preserved as inert extra data, so an old
+    # marker never round-trips back into a fresh file.
     path = tmp_path / "modelman.toml"
-    store = StateStore()
+    path.write_text(
+        '[local]\nrunning_model = "ollama/x"\n\n[model_state."ollama/x"]\nready = true\n'
+    )
+    store = load_state(path)
+    assert not hasattr(store, "local")
     save_state(store, path)
-    raw = path.read_text()
-    assert "running_model" not in raw
+    assert "[local]" not in path.read_text()
+
+
+def test_state_store_has_no_local_attribute():
+    store = StateStore()
+    assert not hasattr(store, "local")

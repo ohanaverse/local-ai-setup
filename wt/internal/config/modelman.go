@@ -18,10 +18,16 @@ type LitellmState struct {
 }
 
 // ExposureEntry is the decoded-in-memory representation of a single model
-// state entry for wt's exposure predicate.
+// state entry for wt's exposure predicate and the local-running gate.
 type ExposureEntry struct {
 	Exposed bool
 	Ready   bool
+	// Running is modelman's per-model "I started this and haven't stopped
+	// it" flag (2026-09-14 multi-model local lifecycle design). It is a
+	// HINT, never ground truth by itself — internal/localgate verifies it
+	// with a live probe before trusting it. Meaningless for cloud models
+	// (modelman never sets it there).
+	Running bool
 }
 
 // modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
@@ -44,39 +50,36 @@ type modelmanState struct {
 		LitellmExposed bool `toml:"litellm_exposed"` // back-compat read
 		Ready          bool `toml:"ready"`
 		Downloaded     bool `toml:"downloaded"`
+		Running        bool `toml:"running"`
 	} `toml:"model_state"`
 	Litellm LitellmState `toml:"litellm"`
-	// Local mirrors modelman's [local] table (issue #65): the single
-	// local model `modelman start` last started, or empty if none/
-	// `modelman stop` was last run. wt reads it read-only to filter its
-	// model picker — see internal/localgate and Config.FilterToRunningLocal.
-	Local struct {
-		RunningModel string `toml:"running_model"`
-	} `toml:"local"`
 }
 
-// loadModelmanState reads modelman.toml and returns the exposure map, the
-// [litellm] routing state, and the [local].running_model marker. A missing
-// file returns empty values (every non-native model is unexposed; LiteLLM
-// routing defaults to off; no local model is marked running).
-func loadModelmanState() (map[string]ExposureEntry, LitellmState, string, error) {
+// loadModelmanState reads modelman.toml and returns the exposure map (now
+// carrying each model's Running flag) and the [litellm] routing state. A
+// missing file returns empty values.
+func loadModelmanState() (map[string]ExposureEntry, LitellmState, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]ExposureEntry{}, LitellmState{}, "", nil
+		return map[string]ExposureEntry{}, LitellmState{}, nil
 	}
 	if err != nil {
-		return nil, LitellmState{}, "", fmt.Errorf("read modelman.toml: %w", err)
+		return nil, LitellmState{}, fmt.Errorf("read modelman.toml: %w", err)
 	}
 	var s modelmanState
 	if err := toml.Unmarshal(data, &s); err != nil {
-		return nil, LitellmState{}, "", fmt.Errorf("parse modelman.toml: %w", err)
+		return nil, LitellmState{}, fmt.Errorf("parse modelman.toml: %w", err)
 	}
 	out := make(map[string]ExposureEntry, len(s.ModelState))
 	for id, st := range s.ModelState {
-		out[id] = ExposureEntry{Exposed: st.Exposed || st.LitellmExposed, Ready: st.Ready || st.Downloaded}
+		out[id] = ExposureEntry{
+			Exposed: st.Exposed || st.LitellmExposed,
+			Ready:   st.Ready || st.Downloaded,
+			Running: st.Running,
+		}
 	}
-	return out, s.Litellm, s.Local.RunningModel, nil
+	return out, s.Litellm, nil
 }
 
 // PriceRefreshLastRun returns modelman's global token-pricing refresh
