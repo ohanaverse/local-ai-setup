@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (ready/delete/move/expose), and apply them on exit. CLI subcommands: `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — the single local model wt's picker may offer; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (ready/delete/move/expose), and apply them on exit. CLI subcommands: `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — a local model wt's picker may offer alongside any other currently-running local model; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
 
 ## Monorepo context
 
@@ -225,20 +225,28 @@ See `README.md` for the exact TOML schemas for `registry.toml` and `modelman.tom
 
 Shared helpers for this live in `registry.py`: `LOCATION_LOCAL`, `LOCATION_CLOUD`, and `is_local_location()`.
 
-### Local-model lifecycle (issue #65)
+### Local-model lifecycle (multi-model design, 2026-09-14)
 
-`modelman start <model_id>` / `modelman stop` are the only sanctioned way
-to start or stop a local model for normal (non-benchmark) usage — see
+`modelman start <model_id>` / `modelman stop <model_id>` / `modelman stop
+--all`, and the modelman TUI's `s` keybinding, are the sanctioned ways to
+start or stop a local model for normal (non-benchmark) usage — see
 `src/modelman/local_control.py` and
-`../docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md`
-(monorepo-root docs, not modelman's own `docs/superpowers/`).
-Both delegate the actual process isolation to `bin/llm-isolate-provider`
-(the same helper `modelman benchmark` uses) and record the running model's
-id in `modelman.toml`'s `[local].running_model` table
-(`src/modelman/state.py`'s `LocalState`). wt reads that marker read-only
-(`wt/internal/config/modelman.go`, `wt/internal/localgate`) to filter its
-model picker to cloud models plus this one verified-running local model —
-see `wt/CLAUDE.md`'s "Local-model gate" section.
+`../docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md`
+(monorepo-root docs; supersedes the retired single-marker design in
+`../docs/superpowers/specs/2026-09-10-one-local-model-at-a-time-design.md`).
+Multiple local models may run concurrently, subject to real per-provider
+process limits: ollama is multi-tenant (many models may be flagged
+running at once); omlx, mtplx, and mlx_lm_server are single-model-per-
+process, so starting a different model on one of them replaces whatever
+it was already running. Each model's `running` flag lives in
+`modelman.toml`'s per-model `[model_state."<id>"]` block (`src/modelman/
+state.py`'s `ModelState.running`) — a HINT, never trusted by itself: every
+reader (the TUI's RUNNING column, `modelman start`'s other-running
+warning, wt's picker) verifies it with a live probe first. wt reads the
+flags read-only (`wt/internal/config/modelman.go`,
+`wt/internal/localgate`) to filter its model picker to cloud models plus
+every verified-running local model — see `wt/CLAUDE.md`'s "Local-model
+gate" section.
 
 `modelman start`'s no-arg listing and its discovered-model auto-register
 path (`_provider_local_models` in `local_control.py`, gated on each
