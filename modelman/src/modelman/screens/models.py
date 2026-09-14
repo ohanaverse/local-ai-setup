@@ -822,6 +822,12 @@ class ModelScreen(Screen[None]):
                 for mid in self._added_ids:
                     if mid not in self._snapshot_state_entries:
                         disk_state.models.pop(mid, None)
+            self.queued_ready.clear()
+            self.queued_deletes.clear()
+            self.queued_moves.clear()
+            self.queued_exposes.clear()
+            self._ready_cascade_for_expose.clear()
+            self._added_ids.clear()
             self.app.exit(None)
             return
         # "cancel" or None: stay on the model screen, queue preserved.
