@@ -551,7 +551,7 @@ async def test_model_screen_cursor_restored_after_reload(tmp_path, monkeypatch):
     stub.is_downloaded.return_value = False
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
-    app = ModelmanApp(family="ornith")
+    app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         mt = app.screen.query_one("#model-table", DataTable)
@@ -1027,9 +1027,7 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
         )
 
         # Queue another action so the exit dialog offers Discard. ('d'
-        # queues a delete; 'r' now routes a mapped provider's ready-on
-        # through DownloadManager instead of the queue, so it wouldn't
-        # queue anything.)
+        # queues a delete.)
         await pilot.press("d")
         await pilot.pause()
         assert app.screen.queued_deletes
@@ -1107,115 +1105,6 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_r_on_not_ready_local_artifact_model_routes_to_download_manager(
-    tmp_path, monkeypatch
-):
-    """r on a not-ready local-artifact model starts the download
-    immediately through DownloadManager (Task 12) instead of queueing
-    it for apply-on-exit: PendingChanges.apply() no longer downloads
-    (plan item #4), so the queue would hit its ready-on assert."""
-    from unittest.mock import MagicMock
-
-    from modelman.providers import registry as prov_registry
-
-    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
-    reg_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    reg = Registry(
-        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
-        families=[FamilyEntry(name="ornith")],
-        models=[model],
-    )
-    save_registry(reg, reg_path)
-    save_state(StateStore(), state_path)
-    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
-    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-
-    stub = MagicMock()
-    stub.name = "omlx"
-    stub.is_downloaded.return_value = False
-    stub.size_of.return_value = None
-    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
-        await pilot.press("r")
-        await pilot.pause()
-
-        from modelman.screens.models import ModelScreen
-
-        assert isinstance(app.screen, ModelScreen)
-        assert started == ["omlx/a"]
-        assert app.screen.queued_ready == {}
-
-
-@pytest.mark.asyncio
-async def test_download_finishing_after_screen_popped_does_not_crash(tmp_path, monkeypatch):
-    """Regression for a review finding: a download started directly via
-    'r' (bypassing the apply-on-exit queue) leaves queued_ready empty, so
-    a subsequent Escape pops the screen immediately with no confirm
-    dialog while the download is still in flight. The later on_complete
-    callback (or the 1s _poll_downloads timer) then calls self.reload()
-    / self._refresh_pending_bar() against the now-unmounted screen —
-    query_one() must not raise NoMatches uncaught in that case."""
-    from unittest.mock import MagicMock
-
-    from modelman.providers import registry as prov_registry
-
-    model = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a")
-    reg_path = tmp_path / "registry.toml"
-    state_path = tmp_path / "modelman.toml"
-    reg = Registry(
-        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
-        families=[FamilyEntry(name="ornith")],
-        models=[model],
-    )
-    save_registry(reg, reg_path)
-    save_state(StateStore(), state_path)
-    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
-    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
-
-    stub = MagicMock()
-    stub.name = "omlx"
-    stub.is_downloaded.return_value = False
-    stub.size_of.return_value = None
-    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
-        await pilot.press("r")  # starts a real download; queues nothing
-        await pilot.pause()
-        popped_screen = app.screen
-        assert popped_screen.queued_ready == {}
-
-        # ModelScreen is the app's only screen now — Escape with an empty
-        # queue quits the app rather than revealing another screen
-        # underneath, so there's no live navigation path left that detaches
-        # this screen mid-session. Simulate the detachment directly instead
-        # (mirroring what a real detach — the app exiting mid-callback —
-        # would leave query_one() to contend with).
-        await popped_screen.remove()
-        await pilot.pause()
-
-        # Simulate the download's on_complete callback (and the 1s poll)
-        # firing against the now-detached screen instance.
-        popped_screen._on_download_finished("omlx/a")
-        popped_screen.reload()
-        popped_screen._refresh_pending_bar()
-
-
-@pytest.mark.asyncio
 async def test_r_on_ready_local_artifact_model_queues_delete(tmp_path, monkeypatch):
     """r on an already-ready local-artifact model now queues ready=False
     (file deletion), per the ready-toggle-delete design: 'r' is a true
@@ -1262,74 +1151,6 @@ async def test_r_on_ready_local_artifact_model_queues_delete(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_r_on_not_ready_cloud_model_routes_to_download_manager(tmp_path, monkeypatch):
-    """r on a not-ready non-local-artifact (ollama-cloud) model still
-    runs the real `ollama pull` (that's what registers the cloud tag)
-    — now in the background via DownloadManager instead of queued for
-    apply-on-exit, where apply()'s ready-on assert would reject it."""
-    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
-    stub.is_downloaded.return_value = False
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
-        await pilot.press("r")
-        await pilot.pause()
-
-        from modelman.screens.models import ModelScreen
-
-        assert isinstance(app.screen, ModelScreen)
-        assert started == ["ollama/glm-5.2:cloud"]
-        assert app.screen.queued_ready == {}
-
-
-@pytest.mark.asyncio
-async def test_r_twice_cancels_started_download_with_notification(tmp_path, monkeypatch):
-    """Pressing r twice in a row on a not-ready mapped-provider model
-    starts the download, then the second press cancels it (three-way
-    'r': not-ready → start, downloading → cancel). The old queued-flip
-    cancel behavior only applied to flag-only providers."""
-    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
-    stub.is_downloaded.return_value = False
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-
-        from modelman.downloads import DownloadState
-
-        # Simulate DownloadManager.start() registering the download.
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
-                {
-                    mid: DownloadState(
-                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
-                    )
-                }
-            ),
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
-        await pilot.press("r")
-        await pilot.pause()
-        await pilot.press("r")
-        await pilot.pause()
-
-        assert cancelled == ["ollama/glm-5.2:cloud"]
-        assert app.screen.queued_ready == {}
-
-
-@pytest.mark.asyncio
 async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypatch):
     """x on a not-ready *local* model must queue BOTH ready=True and
     exposed=True — the cascade that replaces the old 'must be ready
@@ -1343,23 +1164,14 @@ async def test_x_on_not_ready_model_cascades_ready_and_expose(tmp_path, monkeypa
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        # 'x' on a mapped-provider model starts the download immediately
-        # (Task 13) instead of queueing ready=True for apply-on-exit.
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
-        started = []
         await pilot.press("x")
         await pilot.pause()
 
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert started == ["ollama/glm-5.2:cloud"]
         assert app.screen.queued_exposes == {"ollama/glm-5.2:cloud": True}
-        assert app.screen.queued_ready == {}
+        assert app.screen.queued_ready == {"ollama/glm-5.2:cloud": True}
 
 
 @pytest.mark.asyncio
@@ -1380,24 +1192,6 @@ async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatc
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        # 'x' on a mapped-provider model starts the download immediately
-        # (Task 13); simulate DownloadManager registering it so 'r' sees
-        # an in-flight download to cancel.
-        from modelman.downloads import DownloadState
-
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
-                {
-                    mid: DownloadState(
-                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
-                    )
-                }
-            ),
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
         await pilot.press("x")
         await pilot.pause()
         await pilot.press("r")
@@ -1406,7 +1200,6 @@ async def test_r_cancel_after_x_cascade_also_cancels_expose(tmp_path, monkeypatc
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert cancelled == ["ollama/glm-5.2:cloud"]
         assert app.screen.queued_ready == {}
         assert app.screen.queued_exposes == {}
 
@@ -1428,24 +1221,9 @@ async def test_x_cancel_after_x_cascade_also_cancels_ready(tmp_path, monkeypatch
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        # 'x' starts the download (mapped provider, Task 13); the second
-        # 'x' must cancel it and drop the queued expose — the download
-        # was only running to serve the expose.
-        from modelman.downloads import DownloadState
-
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
-                {
-                    mid: DownloadState(
-                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
-                    )
-                }
-            ),
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
+        # The first 'x' cascades a queued ready=True in to serve the
+        # expose; the second 'x' must cancel both halves of the round
+        # trip — the ready-on was only queued to serve the expose.
         await pilot.press("x")
         await pilot.pause()
         await pilot.press("x")
@@ -1454,7 +1232,6 @@ async def test_x_cancel_after_x_cascade_also_cancels_ready(tmp_path, monkeypatch
         from modelman.screens.models import ModelScreen
 
         assert isinstance(app.screen, ModelScreen)
-        assert cancelled == ["ollama/glm-5.2:cloud"]
         assert app.screen.queued_exposes == {}
         assert app.screen.queued_ready == {}
 
@@ -1810,12 +1587,16 @@ async def test_r_then_x_refuses_expose_when_ready_off_queued(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypatch):
     """'r' → 'x' → 'r' on a not-ready, not-exposed local model must end with
-    an empty queue. Regression: the third 'r' cancelled the ready flip but
-    left the expose queued (it was never cascade-marked because 'r' had
-    already queued ready=True), and apply() always failed with 'model is
-    not ready'."""
-    # (Identical seeding block, except ModelState(ready=False,
-    #  exposed=False).)
+    an empty queue. Trace: 'r' queues ready=True (a direct press, not an
+    x-cascade, so it's not marked in _ready_cascade_for_expose); 'x' sees
+    the projected ready is already True via the queued entry, so it queues
+    the expose without cascading anything new; the second 'r' is a
+    repeated-keypress cancel of the ready flip (target == persisted ==
+    False) that pops queued_ready — since the model was never cascade-
+    marked, _enforce_expose_ready_rule is what catches the now-stranded
+    queued_exposes entry (projected ready has fallen back to the persisted
+    False) and drops it with a notification. apply() would otherwise fail
+    with 'model is not ready'."""
     from unittest.mock import MagicMock
 
     from modelman.providers import registry as prov_registry
@@ -1849,29 +1630,20 @@ async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypa
         await _open_model_screen(pilot)
         await pilot.pause()
 
-        from modelman.downloads import DownloadState
+        notifications = []
+        monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notifications.append(msg))
 
-        # 'r' on a mapped-provider model starts a download instead of
-        # queueing a flip; simulate DownloadManager registering it so the
-        # following presses see a live download.
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: app.downloads._states.update(
-                {
-                    mid: DownloadState(
-                        model_id=mid, variant_id=mid, provider="ollama", status="downloading"
-                    )
-                }
-            ),
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
         await pilot.press("r")
         await pilot.pause()
+        assert app.screen.queued_ready == {"ollama/a": True}
+        assert "ollama/a" not in app.screen._ready_cascade_for_expose
+
         await pilot.press("x")
         await pilot.pause()
         assert app.screen.queued_exposes == {"ollama/a": True}
+        assert app.screen.queued_ready == {"ollama/a": True}
+        assert "ollama/a" not in app.screen._ready_cascade_for_expose
+
         await pilot.press("r")
         await pilot.pause()
 
@@ -1880,6 +1652,7 @@ async def test_r_x_r_on_not_ready_model_drops_stranded_expose(tmp_path, monkeypa
         assert isinstance(app.screen, ModelScreen)
         assert app.screen.queued_ready == {}  # ready flip cancelled
         assert app.screen.queued_exposes == {}  # stranded expose dropped
+        assert any("will not be ready" in n for n in notifications)
 
 
 @pytest.mark.asyncio
@@ -1940,158 +1713,6 @@ async def test_exposed_column_gates_on_projected_ready(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_status_shows_downloading_glyph(tmp_path, monkeypatch):
-    # A model with an active DownloadManager entry must show the ⏳
-    # glyph in the STATUS column — the user's cue that the row is
-    # locked and work is in flight, not queued for apply-on-exit.
-    from modelman.downloads import DownloadState
-
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        app.screen.reload()
-        await pilot.pause()
-
-        table = app.screen.query_one(DataTable)
-        row = table.get_row_at(0)
-        assert "⏳" in str(row[4])  # STATUS column
-
-
-@pytest.mark.asyncio
-async def test_delete_blocked_while_downloading(tmp_path, monkeypatch):
-    # 'd' on a downloading model must be refused (the weights are being
-    # written right now) — nothing may be queued for it.
-    from modelman.downloads import DownloadState
-
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        await pilot.press("d")
-        await pilot.pause()
-
-        assert app.screen.queued_deletes == {}
-
-
-@pytest.mark.asyncio
-async def test_edit_blocked_while_downloading(tmp_path, monkeypatch):
-    # 'e' on a downloading model must refuse — an edit that changes the
-    # variant mid-download would race the in-flight write.
-    from modelman.downloads import DownloadState
-
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        await pilot.press("e")
-        await pilot.pause()
-
-        from modelman.screens.forms import ModelForm
-
-        assert not isinstance(app.screen, ModelForm)
-
-
-@pytest.mark.asyncio
-async def test_poll_refreshes_state_after_download_completes(tmp_path, monkeypatch):
-    # Simulates DownloadManager writing modelman.toml directly (as it
-    # does on completion) while ModelScreen is open and watching — the
-    # screen's own in-memory StateStore must pick this up without the
-    # user navigating away and back. Seeded as downloading first (the
-    # poll only reloads while a download is active or just finished),
-    # then the completion write lands, then the next tick picks it up.
-    from modelman.downloads import DownloadState
-    from modelman.state import ModelState, locked_state
-
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        assert app.screen._is_ready("ollama/x") is False
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        await pilot.pause(1.1)  # first tick: marks "download was active"
-
-        with locked_state(state_path) as state:
-            state.set("ollama/x", ModelState(ready=True, disk_path="/models/x"))
-
-        await pilot.pause(1.1)  # next tick: reload now that a download is active
-        assert app.screen._is_ready("ollama/x") is True
-
-
-@pytest.mark.asyncio
-async def test_r_on_downloading_model_cancels(tmp_path, monkeypatch):
-    # Three-way 'r' branch 1: pressing r on a model that's actively
-    # downloading cancels that download (not a toggle of the ready flag).
-    from modelman.downloads import DownloadState
-
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
-        await pilot.press("r")
-        await pilot.pause()
-
-        assert cancelled == ["ollama/x"]
-
-
-@pytest.mark.asyncio
-async def test_r_on_real_provider_ready_on_starts_download_not_queue(tmp_path, monkeypatch):
-    # Three-way 'r' branch 2: a ready-on against a mapped provider
-    # (which runs a real download/pull) must start immediately in the
-    # background, never queue for apply-on-exit.
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
-        await pilot.press("r")
-        await pilot.pause()
-
-        assert started == ["ollama/x"]
-        assert app.screen.queued_ready == {}  # not queued — routed to DownloadManager
-
-
-@pytest.mark.asyncio
 async def test_r_ready_off_still_queues_as_before(tmp_path, monkeypatch):
     # Three-way 'r' branch 3 (ready side): 'r' on a ready model still
     # queues a ready-off clear for apply-on-exit, unchanged. The provider
@@ -2128,11 +1749,13 @@ async def test_r_ready_off_still_queues_as_before(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_r_flag_only_provider_still_queues_not_downloads(tmp_path, monkeypatch):
-    # Three-way 'r' branch 2 exception: a provider with no real download
-    # mechanism (native/unmapped — no Provider class) must keep the
-    # pre-existing queued flag-flip behavior, not route through
-    # DownloadManager.
+async def test_r_flag_only_provider_queues_ready_flip(tmp_path, monkeypatch):
+    # A flag-only provider's (native/unmapped — no Provider class) ready-on
+    # queues a plain flag flip, same as every other provider now that
+    # every ready-on is queued for apply-on-exit; this is the flag-only
+    # representative case, paired with the mapped-provider case covered by
+    # test_add_model_saves_registry_immediately_and_queues_ready_on and
+    # test_x_cascade_on_real_provider_starts_download.
     reg_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     save_registry(
@@ -2160,50 +1783,16 @@ async def test_r_flag_only_provider_still_queues_not_downloads(tmp_path, monkeyp
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
         await pilot.press("r")
         await pilot.pause()
 
-        assert started == []
         assert app.screen.queued_ready == {"claude-agent/x": True}
 
 
 @pytest.mark.asyncio
-async def test_r_on_cloud_model_of_mapped_provider_starts_download(tmp_path, monkeypatch):
-    # An ollama-cloud model's ready-on IS a real pull (that's what
-    # registers the cloud tag with ollama), so it must route through
-    # DownloadManager too — keeping it queued would hit apply()'s
-    # ready-on assert and silently break the pull.
-    stub = _seed_cloud_family(tmp_path, monkeypatch, location="cloud")
-    stub.is_downloaded.return_value = False
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
-        await pilot.press("r")
-        await pilot.pause()
-
-        assert started == ["ollama/glm-5.2:cloud"]
-        assert app.screen.queued_ready == {}
-
-
-@pytest.mark.asyncio
 async def test_x_cascade_on_real_provider_starts_download(tmp_path, monkeypatch):
-    # 'x' on a not-ready mapped-provider model cascades its ready-on —
-    # and that cascade must now start the real download immediately
-    # (DownloadManager), not queue it for apply-on-exit.
+    # 'x' on a not-ready mapped-provider model cascades a queued
+    # ready=True in to serve the expose (apply() owns the real download).
     entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
     _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
 
@@ -2211,26 +1800,19 @@ async def test_x_cascade_on_real_provider_starts_download(tmp_path, monkeypatch)
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
         await pilot.press("x")
         await pilot.pause()
 
-        assert started == ["ollama/x"]
-        assert app.screen.queued_ready == {}  # not queued
+        assert app.screen.queued_ready == {"ollama/x": True}
         assert app.screen.queued_exposes == {"ollama/x": True}
         assert "ollama/x" in app.screen._ready_cascade_for_expose
 
 
 @pytest.mark.asyncio
 async def test_x_twice_on_cascaded_download_cancels_it(tmp_path, monkeypatch):
-    # Second 'x' on an expose-cascaded model cancels the in-flight
-    # download and drops the queued expose — the cascade was only
-    # running to serve the expose.
+    # Second 'x' on an expose-cascaded model cancels the queued ready-on
+    # and drops the queued expose — the ready cascade was only queued to
+    # serve the expose.
     entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
     _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
 
@@ -2238,75 +1820,62 @@ async def test_x_twice_on_cascaded_download_cancels_it(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         await pilot.press("x")
         await pilot.pause()
-        # Simulate the download DownloadManager.start() would report active.
-        from modelman.downloads import DownloadState
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
         await pilot.press("x")
         await pilot.pause()
 
-        assert cancelled == ["ollama/x"]
         assert app.screen.queued_exposes == {}
+        assert app.screen.queued_ready == {}
         assert "ollama/x" not in app.screen._ready_cascade_for_expose
 
 
 @pytest.mark.asyncio
-async def test_discard_cancels_cascaded_download(tmp_path, monkeypatch):
-    # Discard (exit without applying) must cancel any download that was
-    # only running because an expose cascaded it in — otherwise a
-    # discarded session would leave weights downloading in the
-    # background for a change the user walked away from.
+async def test_discard_drops_cascaded_ready_on_and_expose(tmp_path, monkeypatch):
+    # Discard (exit without applying) must drop any queued ready-on that
+    # was only queued because an expose cascaded it in — otherwise a
+    # discarded session's cascade could linger. These were only ever
+    # in-memory queue entries, never persisted, so discarding must leave
+    # no trace of either in the registry or state files on disk.
     entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         await pilot.press("x")
         await pilot.pause()
-        from modelman.downloads import DownloadState
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        cancelled = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: cancelled.append(mid))
+        assert app.screen.queued_ready == {"ollama/x": True}
+        assert app.screen.queued_exposes == {"ollama/x": True}
 
         await pilot.press("escape")
         await pilot.pause()
         await pilot.press("d")  # ConfirmExitDialog's "discard" binding
         await pilot.pause()
 
-        assert cancelled == ["ollama/x"]
+    assert app.return_value is None
+    reg_after = load_registry(reg_path)
+    assert reg_after.model("ollama/x").id == "ollama/x"
+    state_after = load_state(state_path)
+    assert state_after.get("ollama/x").ready is False
+    assert state_after.get("ollama/x").exposed is False
 
 
 @pytest.mark.asyncio
 async def test_discard_persists_state_cleanup_for_session_added_model(
     tmp_path, monkeypatch, stub_ollama_caps
 ):
-    # Regression for a review finding: a download that finished mid-session
-    # persists ready=True to modelman.toml (DownloadManager._run's
-    # locked_state write) — but the discard branch only restored the
-    # in-memory state and saved the registry, never the state file. The
-    # dangling ready=True row for a model_id the discard just removed from
-    # the registry survived on disk until a manual sync. Discard must
-    # persist the state cleanup too.
+    # Adding a model this session queues ready=True and saves the registry
+    # immediately (nothing writes modelman.toml in the background anymore —
+    # apply() is the only thing that would). Discarding afterward must leave
+    # no trace of the added model in either file on disk.
     reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
 
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
         await pilot.press("a")
         await pilot.pause()
         provider_sel = app.screen.query_one("#provider-select", Select)
@@ -2320,112 +1889,36 @@ async def test_discard_persists_state_cleanup_for_session_added_model(
 
         added_id = "ollama/dangling:7b"
         assert added_id in app.screen._added_ids
+        assert app.screen.queued_ready == {added_id: True}
+        # Immediately persisted to the registry, ahead of any apply.
+        assert any(m.id == added_id for m in load_registry(reg_path).models)
 
-        # Simulate the download having completed mid-session: its persist
-        # wrote the ready row to disk while the ModelScreen held the queue.
-        from modelman.state import locked_state as _locked_state
-
-        with _locked_state(state_path) as st:
-            st.set(added_id, ModelState(ready=True, disk_path="/models/dangling:7b"))
-        assert load_state(state_path).get(added_id).ready is True
-
-        # Discard needs a pending queue op to reach ConfirmExitDialog.
-        await pilot.press("x")
-        await pilot.pause()
+        # Escape opens ConfirmExitDialog (the add already queued ready=True);
+        # 'd' chooses Discard.
         await pilot.press("escape")
         await pilot.pause()
         await pilot.press("d")  # ConfirmExitDialog's "discard" binding
         await pilot.pause()
 
-        # The dangling ready row must be gone from DISK, not just memory.
-        after = load_state(state_path)
-        assert after.get(added_id).ready is False
-        assert added_id not in after.models
+    # Neither file shows any trace of the added model after discard.
+    reg_after = load_registry(reg_path)
+    assert not any(m.id == added_id for m in reg_after.models)
+    state_after = load_state(state_path)
+    assert added_id not in state_after.models
 
 
 @pytest.mark.asyncio
-async def test_discard_clears_state_of_cascaded_download_for_preexisting_model(
-    tmp_path, monkeypatch
-):
-    # Regression for a review finding: the discard branch's clear_state loop
-    # built its id set AFTER the cancel loop, which drains
-    # _ready_cascade_for_expose — so a cascaded download for a PRE-EXISTING
-    # model (not in _added_ids) was cancelled but never clear_state'd, and
-    # its cancelled row stayed in the DownloadScreen after discard. The set
-    # must be snapshotted before the cancels.
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        monkeypatch.setattr(app.downloads, "start", lambda *a, **k: None)
-        await pilot.press("x")  # cascades a ready-on for the pre-existing model
-        await pilot.pause()
-        from modelman.downloads import DownloadState
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        cleared = []
-        monkeypatch.setattr(app.downloads, "cancel", lambda mid: None)
-        monkeypatch.setattr(app.downloads, "clear_state", lambda mid: cleared.append(mid))
-
-        await pilot.press("escape")
-        await pilot.pause()
-        await pilot.press("d")  # ConfirmExitDialog's "discard" binding
-        await pilot.pause()
-
-        assert "ollama/x" in cleared
-
-
-@pytest.mark.asyncio
-async def test_x_on_already_downloading_unrelated_model_just_queues(tmp_path, monkeypatch):
-    # 'x' on a model that's already downloading for reasons other than
-    # this expose (e.g. the user pressed 'r' first) must NOT be treated
-    # as a cascade — it's allowed and simply queues+waits (deferred at
-    # apply time, Task 15), with no _ready_cascade_for_expose entry (a
-    # discard here must not cancel a download the user started on
-    # purpose via 'r').
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        from modelman.downloads import DownloadState
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        await pilot.press("x")
-        await pilot.pause()
-
-        assert app.screen.queued_exposes == {"ollama/x": True}
-        assert "ollama/x" not in app.screen._ready_cascade_for_expose
-
-
-@pytest.mark.asyncio
-async def test_add_model_saves_registry_immediately_and_starts_download(
+async def test_add_model_saves_registry_immediately_and_queues_ready_on(
     tmp_path, monkeypatch, stub_ollama_caps
 ):
     # A model added through the dialog is persisted immediately (like an
-    # edit already was) and its real-provider ready-on starts the
-    # download right away — there is no later apply() that would save the
-    # entry or run the download.
+    # edit already was) and its ready-on is queued for apply-on-exit —
+    # every provider's ready-on queues now, mapped or flag-only alike.
     reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await _open_model_screen(pilot)
-        started = []
-        monkeypatch.setattr(
-            app.downloads,
-            "start",
-            lambda mid, variant, cfg, on_complete=None, registry=None: started.append(mid),
-        )
         await pilot.press("a")
         await pilot.pause()
         from textual.widgets import Input, Select
@@ -2439,209 +1932,13 @@ async def test_add_model_saves_registry_immediately_and_starts_download(
         await pilot.press("enter")
         await pilot.pause()
 
-        assert started == ["ollama/newmodel:7b"]
-        assert app.screen.queued_ready == {}
+        assert app.screen.queued_ready == {"ollama/newmodel:7b": True}
         # Immediately persisted — a fresh load must see it without apply.
         reloaded = load_registry(reg_path)
         assert any(m.id == "ollama/newmodel:7b" for m in reloaded.models)
 
 
-@pytest.mark.asyncio
-async def test_expose_against_downloading_model_is_deferred_not_applied_now(tmp_path, monkeypatch):
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        from modelman.downloads import DownloadState
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="downloading"
-        )
-        app.screen.queued_exposes["ollama/x"] = True
-
-        registered = []
-        monkeypatch.setattr(
-            app.downloads, "register_post_download", lambda mid, action: registered.append(mid)
-        )
-
-        # Queue an unrelated delete so apply() has something to do and
-        # exercise _run_apply directly (bypassing the full exit-confirm UI
-        # flow, which this test doesn't need).
-        from modelman.registry import model_entry_to_variant
-
-        app.screen.queued_deletes["ollama/x"] = model_entry_to_variant(entry)
-        events = []
-        pending_holder = []
-        app.screen._run_apply(events.append, lambda line: None, pending_holder.append)
-
-        assert registered == ["ollama/x"]
-        assert pending_holder[0].exposes == []  # deferred, not passed to PendingChanges
-
-
-@pytest.mark.asyncio
-async def test_run_apply_refreshes_stale_state_for_a_just_finished_download(tmp_path, monkeypatch):
-    """Regression for a review finding: is_downloading() flips False the
-    instant DownloadManager marks a download 'done', before this screen's
-    on_complete callback reloads self.state from disk. If Apply runs in
-    that window, self.state can still show ready=False even though disk
-    (modelman.toml) already has ready=True — the old code routed the
-    queued expose straight to `immediate_exposes` and let the ready gate
-    reject it as 'not ready', even though the download had just
-    succeeded. _run_apply must refresh this model's row from disk before
-    deciding immediate vs. deferred."""
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-    litellm_path = tmp_path / "litellm" / "config.yaml"
-    from modelman.litellm import save_litellm_config
-
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
-
-    # Disk already reflects the finished download...
-    disk_state = StateStore()
-    disk_state.set("ollama/x", ModelState(ready=True, disk_path="/models/x"))
-    save_state(disk_state, state_path)
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        # ...but this screen's in-memory self.state was loaded before that
-        # write landed, so it's still stale.
-        app.screen.state = StateStore()
-        app.screen.state.set("ollama/x", ModelState(ready=False))
-
-        from modelman.downloads import DownloadState
-
-        app.downloads._states["ollama/x"] = DownloadState(
-            model_id="ollama/x", variant_id="ollama/x", provider="ollama", status="done"
-        )
-        app.screen.queued_exposes["ollama/x"] = True
-
-        registered = []
-        monkeypatch.setattr(
-            app.downloads, "register_post_download", lambda mid, action: registered.append(mid)
-        )
-
-        events = []
-        pending_holder = []
-        app.screen._run_apply(events.append, lambda line: None, pending_holder.append)
-
-    assert registered == []  # not deferred — status is "done", not "downloading"
-    assert pending_holder[0].exposes == [("ollama/x", True)]
-    assert load_state(state_path).get("ollama/x").exposed is True
-
-
-@pytest.mark.asyncio
-async def test_full_apply_flow_with_a_queued_expose_does_not_crash(tmp_path, monkeypatch):
-    """Regression for a bug found while verifying the review's race-window
-    finding: _run_apply's exposes-loop check used self.app, but by the
-    time StatusScreen's worker thread calls _run_apply, ModelScreen has
-    already been popped (_push_status_screen pops before pushing
-    StatusScreen) — Screen.app raises NoActiveAppError once popped and
-    off the main thread. StatusScreen's except-clause caught this and
-    logged 'Unexpected error during apply', silently dropping every
-    queued expose in the real Escape -> Apply flow (masked by the one
-    existing test whose assertions happened to match the crash's
-    side effects). _run_apply must use a reference captured before the
-    pop (self._app_ref), not self.app."""
-    from textual.widgets import Button, RichLog
-
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-    store = StateStore()
-    store.set("ollama/x", ModelState(ready=True, disk_path="/models/x"))
-    save_state(store, state_path)
-    litellm_path = tmp_path / "litellm" / "config.yaml"
-    from modelman.litellm import save_litellm_config
-
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
-
-    from unittest.mock import MagicMock
-
-    from modelman.providers import registry as prov_registry
-
-    stub = MagicMock()
-    stub.name = "ollama"
-    stub.is_downloaded.return_value = True
-    stub.size_of.return_value = 22 * 1024**3
-    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.pause()  # let the on-mount reconcile settle
-        await _open_model_screen(pilot)
-        app.screen.queued_exposes["ollama/x"] = True
-        await pilot.press("escape")
-        await pilot.pause()
-        for btn in app.screen.query(Button):
-            if btn.id == "apply":
-                btn.press()
-                break
-        from modelman.screens.status import StatusScreen
-
-        for _ in range(50):
-            await pilot.pause()
-            cur = app.screen
-            if isinstance(cur, StatusScreen) and cur.done:
-                break
-        log_text = "\n".join(str(line) for line in app.screen.query_one(RichLog).lines)
-
-    assert "Unexpected error" not in log_text, log_text
-    assert load_state(state_path).get("ollama/x").exposed is True
-
-
-@pytest.mark.asyncio
-async def test_deferred_expose_failure_notifies_the_user(tmp_path, monkeypatch):
-    """Regression for a review finding: _apply_deferred_expose discarded
-    apply_expose_queue's (outcomes, warnings) return value, so a deferred
-    expose that fails once the download completes (e.g. the model was
-    removed from the registry in the meantime) was silently dropped with
-    no failure surfaced to the user."""
-    entry = ModelEntry(id="ollama/x", family="ornith", provider_id="ollama", model_name="x:7b")
-    reg_path, _state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
-    litellm_path = tmp_path / "litellm" / "config.yaml"
-    from modelman.litellm import save_litellm_config
-
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
-
-    app = ModelmanApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await _open_model_screen(pilot)
-        # call_from_thread here just calls inline — the real app marshals
-        # this to the UI thread from DownloadManager's background thread.
-        monkeypatch.setattr(app, "call_from_thread", lambda func, *a: func(*a))
-        notified = []
-        monkeypatch.setattr(app, "notify", lambda msg, **k: notified.append(msg))
-
-        captured_actions = []
-        monkeypatch.setattr(
-            app.downloads,
-            "register_post_download",
-            lambda mid, action: captured_actions.append(action),
-        )
-        app.screen._register_deferred_expose("ollama/x", litellm_path)
-
-        # The model was removed from the registry before the deferred
-        # action ran (e.g. a Discard after the download started), so
-        # apply_expose_queue reports a per-item failure instead of raising.
-        reg = load_registry(reg_path)
-        reg.models = []
-        save_registry(reg, reg_path)
-
-        captured_actions[0]()
-
-    assert any("ollama/x" in n for n in notified), notified
-
-
 # --- pricing_updated_at preservation / refresh ---------------------------
-
 
 
 def test_variant_to_model_entry_preserves_quantization():
@@ -2722,30 +2019,3 @@ async def test_add_dialog_defaults_to_queued_move_over_registry_family(tmp_path,
 
         family_sel = app.screen.query_one("#family-select", Select)
         assert family_sel.value == "gemma4"
-
-
-def test_provider_can_download_treats_mtplx_as_flag_only():
-    """MTPLX has a registered Provider class, but modelman never runs a
-    download for it — the TUI ready toggle must be flag-only, not routed
-    through DownloadManager."""
-    from pathlib import Path
-
-    from modelman.providers.registry import ProviderRegistry
-    from modelman.screens.models import ModelScreen
-
-    assert "mtplx" in ProviderRegistry.available()
-    registry = Registry(
-        providers=[
-            ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none")),
-            ProviderEntry(id="mtplx", name="MTPLX", auth=AuthConfig(type="none")),
-        ]
-    )
-    screen = ModelScreen(
-        registry=registry,
-        state=StateStore(),
-        registry_path=Path("/tmp/registry.toml"),
-        state_path=Path("/tmp/modelman.toml"),
-    )
-    assert screen._provider_can_download("ollama") is True
-    assert screen._provider_can_download("mtplx") is False
-    assert screen._provider_can_download("unknown") is False
