@@ -41,6 +41,9 @@ def test_litellm_off_warns_when_unconfigured(tmp_path, monkeypatch):
 
 
 def test_litellm_off_no_warning_when_configured(tmp_path, monkeypatch):
+    # Counterpart to test_litellm_off_warns_when_unconfigured: once url/api_key
+    # are set, `off` must not print a false-positive warning — a regression
+    # here would train users to ignore the warning entirely.
     state_path = tmp_path / "modelman.toml"
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     runner.invoke(app, ["litellm", "set", "--url", "http://localhost:4000", "--api-key", "sk-test"])
