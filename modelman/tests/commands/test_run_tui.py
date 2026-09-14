@@ -371,3 +371,28 @@ def test_print_error_summary_prints_nothing_on_clean_run(capsys):
     # the TUI exits cleanly with code 0, not leaving confusing output on success.
     assert print_error_summary([], total=3) is False
     assert capsys.readouterr().out == ""
+
+
+def test_print_event_recognizes_every_tag_queue_emits(capsys):
+    """queue.py's module docstring and its emit() call sites are the
+    source of truth for the lifecycle-tag vocabulary; print_event's
+    dispatch and run_queued_ops's done_verbs set both hard-code that same
+    vocabulary independently, with nothing enforcing agreement. This
+    enumerates every verb queue.py actually emits (grepped from its
+    `emit(f"...")`/`emit("...")` call sites) and asserts print_event
+    handles each without falling into the "(unhandled event: ...)"
+    catch-all — a future verb added to queue.py but missed here, or in
+    print_event, now fails a test instead of only a runtime stderr line."""
+    import re
+    from pathlib import Path
+
+    import modelman.queue as queue_module
+
+    source = Path(queue_module.__file__).read_text()
+    verbs = set(re.findall(r'emit\(f?"([a-z]+:[a-z]+)', source))
+    assert verbs, "expected to find at least one emit() call in queue.py"
+
+    for verb in sorted(verbs):
+        print_event(f"{verb}|a|b|c")
+    err = capsys.readouterr().err
+    assert "unhandled event" not in err, err
