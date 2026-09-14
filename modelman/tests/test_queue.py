@@ -2023,6 +2023,81 @@ def test_apply_ready_on_forwards_progress_lines(tmp_path):
     assert lines == ["pulling manifest", "verifying sha256"]
 
 
+def test_apply_ready_on_download_falls_back_when_provider_lacks_on_progress_param(tmp_path):
+    """A provider whose download() has no on_progress parameter at all
+    (a minimal/legacy Provider implementation) must still complete via
+    the args-only fallback — the case the except TypeError branch exists
+    for. Regression guard for the fix in test below: this fallback must
+    keep working after narrowing the except to only this case."""
+    reg, reg_path = _registry_with(
+        tmp_path, _entry(id="ollama/x", family="f", provider="ollama", name="x:7b")
+    )
+    state_path = tmp_path / "modelman.toml"
+    state = _make_state()
+
+    class _NoProgressProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def download(self, variant):
+            self.calls += 1
+            return "ollama:x:7b"
+
+        def size_of(self, variant):
+            return None
+
+    provider = _NoProgressProvider()
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        ready=[("ollama/x", _variant(id="ollama/x", provider="ollama", name="x:7b"), True)],
+    )
+    pending.apply(on_progress=lambda line: None)
+
+    assert provider.calls == 1
+    assert state.get("ollama/x").ready is True
+    assert pending.failures == []
+
+
+def test_apply_ready_on_download_propagates_typeerror_from_inside_provider(tmp_path):
+    """A TypeError raised from inside provider.download() itself (not a
+    signature mismatch on the on_progress parameter) must be recorded as
+    a real failure, not silently retried without on_progress. Regression
+    for a review finding: the old `except TypeError: retry without
+    on_progress` fallback caught ANY TypeError from anywhere in the
+    download call tree, masking real bugs and doubling download work."""
+    reg, reg_path = _registry_with(
+        tmp_path, _entry(id="ollama/x", family="f", provider="ollama", name="x:7b")
+    )
+    state_path = tmp_path / "modelman.toml"
+    state = _make_state()
+
+    class _BuggyProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def download(self, variant, on_progress=None):
+            self.calls += 1
+            raise TypeError("boom: unrelated bug inside download")
+
+    provider = _BuggyProvider()
+    pending = PendingChanges(
+        registry=reg,
+        state=state,
+        registry_path=reg_path,
+        state_path=state_path,
+        providers={"ollama": provider},
+        ready=[("ollama/x", _variant(id="ollama/x", provider="ollama", name="x:7b"), True)],
+    )
+    pending.apply()
+
+    assert provider.calls == 1  # not silently retried
+    assert any("download ollama/x: boom" in f for f in pending.failures)
+
+
 def test_apply_ready_on_download_failure_does_not_stop_other_steps(tmp_path):
     """A download failure records into self.failures and the run
     continues with the remaining deletes/moves/exposes."""

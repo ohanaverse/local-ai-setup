@@ -619,7 +619,16 @@ class PendingChanges:
         provider = self.providers[variant["provider"]]
         try:
             return provider.download(variant, on_progress=on_progress)  # type: ignore[attr-defined]
-        except TypeError:
+        except TypeError as exc:
+            # Only treat this as "provider.download() has no on_progress
+            # parameter" when the TypeError was raised at the call site
+            # itself (no further frames — the callee's body never started
+            # executing). A TypeError raised from inside a provider's real
+            # download logic has at least one additional frame and must
+            # propagate as a real failure instead of triggering a silent,
+            # work-doubling retry.
+            if exc.__traceback__ is not None and exc.__traceback__.tb_next is not None:
+                raise
             return provider.download(variant)  # type: ignore[attr-defined]
 
     @staticmethod
