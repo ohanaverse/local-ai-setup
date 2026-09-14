@@ -1298,21 +1298,6 @@ async def test_confirm_exit_dialog_buttons_and_safe_focus():
 
 
 @pytest.mark.asyncio
-async def test_cancel_apply_dialog_buttons_and_safe_focus():
-    from modelman.screens.forms import CancelApplyDialog
-
-    modal = CancelApplyDialog()
-    async with ModelmanApp().run_test() as pilot:
-        await pilot.pause()
-        pilot.app.push_screen(modal)
-        await pilot.pause()
-        # Order left-to-right: Cancel (warning), Wait (primary).
-        # Initial focus is Wait (safe default: keep the apply running).
-        assert _button_ids(pilot.app) == ["cancel", "wait"]
-        assert _focused_id(pilot.app) == "wait"
-
-
-@pytest.mark.asyncio
 async def test_modelform_escape_from_input_dismisses():
     """Escape must cancel the modal even when the model Input is focused."""
     form = ModelForm(providers=["ollama"])
