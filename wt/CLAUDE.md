@@ -156,7 +156,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/initseed/` | `--init` seeding |
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
-| `internal/localgate/` | one-local-model-at-a-time gate (issue #65): name-checked availability probe + shared Apply policy |
+| `internal/localgate/` | multi-model local-running gate (2026-09-14 design): probes every flagged model (except ollama, which trusts the flag) + shared Apply policy |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
 | `docs/superpowers/` | specs + plans |
@@ -239,13 +239,15 @@ one-model-at-a-time gate. The gate policy lives in ONE place —
 the two launch paths cannot diverge. Apply reads modelman-owned
 `modelman.toml`'s per-model `running` flags (`internal/config`'s
 `Config.RunningLocalModelIDs()`/`LocalGateActive()`), verifies each one
-with `internal/localgate.ResolveAll`'s NAME-CHECKED probe (ollama via
-`ollamacheck.Loaded` — `ollama ps`, the loaded set, not `ollama list`'s
-downloaded-but-idle catalog; omlx/omlx-6bit via a name-checked
-`/v1/models` — 4-bit and 6-bit variants share port 8000 and differ
-exactly in the variant tail; mlx_lm_server via a non-empty `/v1/models`,
-exact names unreconstructable since one process serves one target+draft
-pairing; mtplx via a name-checked `/v1/models` on port 8003), rejects a
+with `internal/localgate.ResolveAll`'s probes — ollama is exempt from live
+verification (the flag is trusted unconditionally since `modelman start` for
+ollama is flag-only with no warmup, and an `ollama ps` check would read the
+model as not-loaded on the very first probe after start, self-clearing the
+flag); omlx/omlx-6bit via a name-checked `/v1/models` — 4-bit and 6-bit
+variants share port 8000 and differ exactly in the variant tail; mlx_lm_server
+via a non-empty `/v1/models`, exact names unreconstructable since one process
+serves one target+draft pairing; mtplx via a name-checked `/v1/models` on port
+8003 — then rejects a
 `-M` pin naming a local model that isn't among the verified set, and
 narrows the list with `Config.FilterToRunningLocal`, which fails closed
 on unresolvable locations (a registry data gap drops the model rather
