@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .litellm import apply_expose_queue
+from .providers._progress import DownloadCancelled, human_bytes
 from .providers.registry import ProviderRegistry
 from .registry import (
     FamilyEntry,
@@ -134,6 +135,20 @@ def _remove_local_artifact(state: StateStore, variant: VariantSpec) -> None:
         p.unlink()
     elif p.is_dir() and not os.listdir(p):
         shutil.rmtree(p)
+
+
+@dataclass
+class QueuedOps:
+    """Everything the TUI queued, carried out on Apply as the app's exit
+    value (see ModelmanApp/ModelScreen). No registry/state objects cross
+    the TUI/terminal boundary — just this plain data; main.py's
+    run_queued_ops() rebuilds a PendingChanges from fresh on-disk state.
+    """
+
+    ready: dict[str, bool] = field(default_factory=dict)
+    deletes: dict[str, VariantSpec] = field(default_factory=dict)
+    moves: dict[str, str] = field(default_factory=dict)
+    exposes: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -403,15 +418,6 @@ class PendingChanges:
             manages_own_cache = bool(
                 provider_cls is not None and provider_cls.manages_own_cache
             )
-            # Real downloads no longer run inside apply() — the caller
-            # (ModelScreen) must route a ready-on against a real provider
-            # through DownloadManager.start() instead of queuing it here.
-            # A target=True entry reaching this point with a downloadable
-            # provider present is a caller bug, not a runtime condition.
-            assert not (provider is not None and not manages_own_cache and target), (
-                f"ready-on for {model_id!r} must go through DownloadManager, "
-                "not PendingChanges.apply()"
-            )
             if provider is None or (manages_own_cache and target):
                 # Flag-only flip (native/unmapped provider, or a
                 # manages_own_cache ready-on): no provider call exists for
@@ -424,21 +430,9 @@ class PendingChanges:
                     try:
                         _remove_local_artifact(self.state, variant)
                     except Exception as exc:  # noqa: BLE001
-                        # The artifact couldn't be removed (read-only volume,
-                        # unreadable directory). Record the failure and still
-                        # fall through to the state clear + unexpose cascade
-                        # — like the mapped branch, the artifact stays but
-                        # state stays consistent. This must never propagate:
-                        # deletes/moves already ran destructively and the
-                        # final save hasn't happened yet, so an abort here
-                        # would resurrect a registry pointing at deleted
-                        # files.
                         reason = _reason(exc)
                         self.failures.append(f"clear {model_id}: {reason}")
                         emit(f"delete:fail|{model_id}|{label}|{reason}")
-                    # Wipe the cached path/size like the reconcilable clear
-                    # below, so modelman.toml doesn't keep pointing at a
-                    # file that was just removed.
                     self.state.set(
                         model_id,
                         replace(
@@ -452,8 +446,45 @@ class PendingChanges:
                     self.state.set(model_id, replace(self.state.get(model_id), ready=target))
                 self._touched_model_ids.add(model_id)
                 emit(f"ready:done|{model_id}|{label}")
+            elif target:
+                # provider present, not manages_own_cache, target=True:
+                # a real download/pull. Restored from before DownloadManager
+                # existed — the TUI now queues every ready-on instead of
+                # backgrounding real ones, so apply() owns them again.
+                emit(f"download:start|{model_id}|{label}")
+                try:
+                    local_path = self._download(variant, on_progress)
+                except DownloadCancelled:
+                    emit(f"download:cancelled|{model_id}|{label}")
+                    emit("apply:cancelled")
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    reason = _reason(exc)
+                    self.failures.append(f"download {model_id}: {exc}")
+                    emit(f"download:fail|{model_id}|{label}|{reason}")
+                    continue
+                size_bytes = self._size_of(local_path)
+                if size_bytes is None:
+                    try:
+                        size_bytes = provider.size_of(variant)
+                    except Exception:  # noqa: BLE001
+                        size_bytes = None
+                self.state.set(
+                    model_id,
+                    replace(
+                        self.state.get(model_id),
+                        ready=True,
+                        disk_path=local_path,
+                        size_bytes=size_bytes,
+                    ),
+                )
+                self._touched_model_ids.add(model_id)
+                if size_bytes:
+                    emit(f"download:done|{model_id}|{label}|{human_bytes(size_bytes)}")
+                else:
+                    emit(f"download:done|{model_id}|{label}")
             else:
-                # provider present, target must be False (asserted above): clear.
+                # provider present, target False: clear.
                 emit(f"delete:start|{model_id}|{label}")
                 # Mirror the deletes loop's guard: a stale-ready model whose
                 # artifact is already gone must clear cleanly, not fail and
@@ -462,12 +493,6 @@ class PendingChanges:
                     model_id, variant, label, provider, "clear", emit
                 ):
                     continue
-                # (state clear + cascade code below, unchanged — runs whether
-                # the artifact was removed, shared-kept, or already absent)
-                # Unlike the full-delete step above, the ModelEntry stays in
-                # the registry — only its ready state and on-disk artifact
-                # are cleared. Wipe the cached path/size so modelman.toml
-                # doesn't keep pointing at a file that was just removed.
                 self.state.set(
                     model_id,
                     replace(
@@ -564,3 +589,20 @@ class PendingChanges:
             return
         # Fallback: providers without delete() just remove the recorded file.
         _remove_local_artifact(self.state, variant)
+
+    def _download(self, variant: VariantSpec, on_progress: EventFn | None = None) -> str:
+        provider = self.providers[variant["provider"]]
+        try:
+            return provider.download(variant, on_progress=on_progress)  # type: ignore[attr-defined]
+        except TypeError:
+            return provider.download(variant)  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _size_of(local_path: str) -> int | None:
+        # TypeError/ValueError alongside OSError: a non-path object (e.g. a
+        # test stub's return value) must not crash apply().
+        try:
+            p = Path(local_path)
+            return p.stat().st_size if p.is_file() else None
+        except (OSError, TypeError, ValueError):
+            return None
