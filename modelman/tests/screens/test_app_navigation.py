@@ -487,24 +487,12 @@ async def test_apply_preserves_other_models_state_rows(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch):
     """Escape with a queued change shows the confirm dialog; Apply exits
-    the app with a QueuedOps. Uses a cloud-provider model (no on-disk
-    artifact) for the ready-on to exercise the flag-only flip path
-    through main.run_queued_ops.
-
-    KNOWN BUG (pinned, not fixed here — see the report for this task):
-    main.run_queued_ops's provider_instances loop calls
-    ProviderRegistry.get(spec["provider"], ...) *outside* the
-    try/except KeyError guard around registry.provider(spec["provider"]).
-    The pre-redesign ModelScreen._run_apply this replaced wrapped BOTH
-    calls in the same try/except (treating a provider that's registered
-    in registry.toml but has no backing Provider class — e.g. openrouter,
-    or a native agent — as flag-only). run_queued_ops dropped that: it
-    crashes with an unhandled KeyError instead. Once fixed, this test
-    should press "y", assert app.return_value is a QueuedOps, call
-    run_queued_ops(queued), assert failed is False, and assert the ready
-    flag flipped on disk — mirroring
-    test_run_queued_ops_downloads_a_queued_ready_on in
-    tests/commands/test_run_tui.py for a mapped provider."""
+    the app with a QueuedOps, and running it against fresh on-disk state
+    (main.run_queued_ops, the same call run_tui() makes) persists the
+    flip. Uses a cloud-provider model (no on-disk artifact, no backing
+    Provider class) for the ready-on so this exercises the flag-only
+    flip path end to end, from TUI keypress through to the on-disk
+    state file."""
 
     or35 = ModelEntry(
         id="openrouter/o35",
@@ -512,7 +500,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
         provider_id="openrouter",
         model_name="anthropic/claude-opus",
     )
-    _reg_path, _state_path = _seed_registry_and_state(
+    _reg_path, state_path = _seed_registry_and_state(
         tmp_path,
         monkeypatch,
         models=[or35],
@@ -547,9 +535,12 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
         queued = app.return_value
 
     # App has exited; apply the queue the same way main.py's run_tui() does.
-    # See the KNOWN BUG note in the docstring above.
-    with pytest.raises(KeyError, match="Unknown provider: openrouter"):
-        run_queued_ops(queued)
+    failed = run_queued_ops(queued)
+    assert failed is False
+
+    from modelman.state import load_state
+
+    assert load_state(state_path).get("openrouter/o35").ready is True
 
 
 @pytest.mark.asyncio
@@ -929,14 +920,7 @@ async def test_model_screen_discard_restores_fetch_dataclass(tmp_path, monkeypat
     assert isinstance(restored.fetch, Fetch)
     assert restored.fetch.repo == "ornith-ai/Ornith-1.5-35B-GGUF"
     assert restored.fetch.quantizations == ["Q4_K_M"]
-    # KNOWN BUG (pinned, not fixed here — see the report for this task):
-    # ModelScreen._on_exit_confirm's discard branch no longer clears
-    # queued_ready/queued_deletes/queued_moves/queued_exposes the way the
-    # pre-redesign version did (four explicit .clear() calls). Since the
-    # app exits right after discard now, this has no real behavior impact
-    # — nothing reads these dicts again — but the in-memory queue is NOT
-    # actually empty post-discard the way it used to be.
-    assert ms.queued_ready == {"llamacpp/ornith-q4": True}
+    assert ms.queued_ready == {}
 
 
 @pytest.mark.asyncio
@@ -1617,17 +1601,9 @@ async def test_discard_combined_move_add_and_download(tmp_path, monkeypatch):
 
     assert [m.id for m in ms.registry.models] == ["ollama/mover"]
     assert ms.registry.models[0].family == "ornith"
-    # KNOWN BUG (pinned, not fixed here — see the report for this task):
-    # ModelScreen._on_exit_confirm's discard branch no longer clears
-    # queued_ready/queued_deletes/queued_moves/queued_exposes (or
-    # _added_ids) the way the pre-redesign version did (four explicit
-    # .clear() calls). Since the app exits right after discard now, this
-    # has no real behavior impact — nothing reads these again — but the
-    # in-memory queue is NOT actually empty post-discard the way it used
-    # to be.
-    assert ms.queued_moves == {"ollama/mover": "mamba"}
-    assert ms.queued_ready == {"ollama/newcomer": True}
-    assert ms._added_ids == {"ollama/newcomer"}
+    assert ms.queued_moves == {}
+    assert ms.queued_ready == {}
+    assert ms._added_ids == set()
     # State must not have gained any session entries.
     assert dict(ms.state.models) == {}
 
