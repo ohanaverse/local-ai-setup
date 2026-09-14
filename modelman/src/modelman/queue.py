@@ -466,7 +466,7 @@ class PendingChanges:
                 size_bytes = self._size_of(local_path)
                 if size_bytes is None:
                     try:
-                        size_bytes = provider.size_of(variant)
+                        size_bytes = provider.size_of(variant)  # type: ignore[attr-defined]
                     except Exception:  # noqa: BLE001
                         size_bytes = None
                 self.state.set(
