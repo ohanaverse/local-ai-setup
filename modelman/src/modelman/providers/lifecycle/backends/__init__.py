@@ -8,5 +8,7 @@ nothing in the live isolate/stop/stop_all code paths reads this yet.
 from __future__ import annotations
 
 from .base import Backend
+from .ollama import OLLAMA
 
 BACKENDS: dict[str, Backend] = {}
+BACKENDS[OLLAMA.id] = OLLAMA
