@@ -178,7 +178,11 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
             # MTPLX (and others) may serialize with spaces between keys and
             # values (e.g. `"object": "chat.completion"`); tolerate
             # arbitrary whitespace around the colon rather than requiring
-            # compact JSON.
+            # compact JSON. Deliberately a regex, not a literal
+            # '"object":"chat.completion"' substring check: a literal
+            # compact-string check would reject that spaced form and
+            # regress today's proven "matches spaced json" behavior — do
+            # not "simplify" this back to a literal `in` check.
             if re.search(r'"object"\s*:\s*"chat\.completion"', body):
                 return
         except OSError:

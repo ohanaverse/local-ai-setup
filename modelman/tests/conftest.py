@@ -109,6 +109,16 @@ def _never_touch_live_providers(monkeypatch):
     on top of them. probe/launchd/pidproc already exist after this task,
     so their patches are hermetic now; the rest target modules a later
     task creates."""
+    # Like `subprocess` above, `urllib.request` and `os` are each one
+    # shared module object — this patches urlopen/kill globally for the
+    # whole interpreter, not just calls made from probe.py/pidproc.py.
+    # Harmless today (probe.py is the only urlopen call site besides
+    # local_process.py, which shares its fate intentionally, and
+    # pidproc.py is the only os.kill call site in this codebase — grepped
+    # to confirm), but a future module that calls the real urlopen/kill
+    # directly would be silently neutered here too; if that ever bites,
+    # give it the same real-delegating wrapper `_fake_launchctl_run` uses
+    # above instead of widening this comment.
     monkeypatch.setattr(
         "modelman.providers.lifecycle.probe.urllib.request.urlopen",
         MagicMock(side_effect=urllib.error.URLError("hermetic test")),
