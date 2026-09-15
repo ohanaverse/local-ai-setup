@@ -491,6 +491,109 @@ async def test_submit_hf_repo_only_produces_correct_spec():
 
 
 @pytest.mark.asyncio
+async def test_modelform_discovered_mode_locks_provider_and_model():
+    # Discovered-registration mode: Provider and Model must display and
+    # lock to exactly what the provider's own filesystem scan reported
+    # (the DiscoveredModel), not be left free-text like a normal add —
+    # the user is confirming an on-disk artifact's identity, not typing one.
+    from modelman.local_control import DiscoveredModel
+
+    discovered = DiscoveredModel(
+        provider_id="omlx",
+        variant_id="Qwen3.8-27B-4bit",
+        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        size_bytes=123,
+    )
+    form = ModelForm(
+        providers=["omlx", "ollama"],
+        discovered=discovered,
+        families=["qwen3.8"],
+        family=None,
+        provider_kinds={"omlx": "local-only", "ollama": "ollama"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        model_input = app.screen.query_one("#model", Input)
+        assert provider_sel.value == "omlx"
+        assert provider_sel.disabled is True
+        assert model_input.value == "Qwen3.8-27B-4bit"
+        assert model_input.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_modelform_discovered_mode_submits_without_parse_model():
+    # The regression this guards: omlx's discovered variant_id has no
+    # '/' (a bare directory basename), which parse_model() rejects for
+    # omlx outright ("model must be 'org/repo'"). Registering a
+    # discovered model must never route that value through parse_model().
+    from modelman.local_control import DiscoveredModel
+
+    discovered = DiscoveredModel(
+        provider_id="omlx",
+        variant_id="Qwen3.8-27B-4bit",
+        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        size_bytes=123,
+    )
+    form = ModelForm(
+        providers=["omlx"],
+        discovered=discovered,
+        families=["qwen3.8"],
+        family="qwen3.8",
+        provider_kinds={"omlx": "local-only"},
+    )
+    dismissed: list = []
+
+    def _capture(result):
+        dismissed.append(result)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, _capture)
+        await pilot.pause()
+        await _submit(app, pilot)
+        await pilot.pause()
+
+    assert dismissed, "form did not dismiss"
+    result = dismissed[0]
+    assert result is not None
+    assert result.spec["id"] == "omlx/Qwen3.8-27B-4bit"
+    assert result.spec["provider"] == "omlx"
+    assert result.spec["name"] == "Qwen3.8-27B-4bit"
+    assert result.spec["repo"] == "Qwen3.8-27B-4bit"
+    assert result.spec["location"] == "local"
+    assert result.family == "qwen3.8"
+    assert result.source == "discovered"
+
+
+@pytest.mark.asyncio
+async def test_modelform_normal_add_still_defaults_source_curated():
+    # Every existing add/edit path must keep producing "curated" — only
+    # the new discovered path should ever produce "discovered".
+    form = ModelForm(providers=["ollama"], variant=None, default_provider="ollama")
+    dismissed: list = []
+
+    def _capture(result):
+        dismissed.append(result)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form, _capture)
+        await pilot.pause()
+        _fill_model(app, "ornith-1.5:35b")
+        await pilot.pause()
+        await _submit(app, pilot)
+        await pilot.pause()
+
+    assert dismissed[0].source == "curated"
+
+
+@pytest.mark.asyncio
 async def test_submit_hf_repo_and_file_produces_correct_spec():
     form = ModelForm(
         providers=["llamacpp"],
