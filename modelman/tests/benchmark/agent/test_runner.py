@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 import modelman.benchmark.isolation as isolation_module
-from modelman.providers import lifecycle
 from modelman.benchmark.agent import pidriver as pidriver_module
 from modelman.benchmark.agent.pidriver import PiRunResult
 from modelman.benchmark.agent.runner import run_suite
 from modelman.benchmark.agent.suite import JudgeConfig, load_suite
 from modelman.benchmark.errors import BenchmarkError
+from modelman.providers import lifecycle
 from modelman.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Registry
 
 MINI_DRIFT = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
