@@ -8,14 +8,14 @@ class parameterized by constructor args (id/env var/default model/restore
 action), with two module-level instances below rather than two subclasses,
 since the behavior is otherwise identical.
 
-Both instances set `occupancy_key = "omlx"` (not their own `id`) so a later
-orchestration task can treat them as one shared occupant when deduplicating
-stop-all/restore fan-out — see the class docstring and module-level
-instances below.
+Both instances set `occupancy_key = "omlx"` (not their own `id`) so
+`orchestrate.py` treats them as one shared occupant when deduplicating
+stop-all/restore fan-out (`_distinct_backends`) — see the class docstring
+and module-level instances below.
 
-Not wired into any live isolate/stop path yet — this module is
-independently testable and registered in `backends.BACKENDS`, but nothing
-reads that registry today.
+Live: registered in `backends.BACKENDS`, which `orchestrate.py` reads to
+drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
+`modelman provider ...`, `modelman benchmark`, and `local_control.py`.
 """
 
 from __future__ import annotations

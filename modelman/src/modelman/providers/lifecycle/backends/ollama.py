@@ -2,9 +2,9 @@
 arm, `start_ollama()`, `stop_ollama_and_wait()`, and
 `wait_for_ollama_unloaded()`.
 
-Not wired into any live isolate/stop path yet — this module is
-independently testable and registered in `backends.BACKENDS`, but nothing
-reads that registry today.
+Live: registered in `backends.BACKENDS`, which `orchestrate.py` reads to
+drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
+`modelman provider ...`, `modelman benchmark`, and `local_control.py`.
 """
 
 from __future__ import annotations
