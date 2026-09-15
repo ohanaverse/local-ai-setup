@@ -453,7 +453,7 @@ class ModelScreen(Screen[None]):
                     "–",
                     "-",
                     "-",
-                    format_size(d.size_bytes) if d.size_bytes else "—",
+                    format_size(d.size_bytes) if d.size_bytes is not None else "—",
                     key=row_key,
                 )
 
@@ -835,10 +835,24 @@ class ModelScreen(Screen[None]):
         # provider.download() at apply time, and for omlx that would
         # try to fetch discovered.variant_id (a bare directory
         # basename) as an HF repo id, which HF rejects outright.
-        self.state.set(
-            entry.id,
-            ModelState(ready=True, disk_path=discovered.path, size_bytes=discovered.size_bytes),
+        #
+        # This must be persisted to disk here, not just in memory: unlike
+        # every other queued mutation on this screen, apply() never sees
+        # this in-memory `self.state` — run_queued_ops() (main.py) always
+        # rebuilds `state` fresh from modelman.toml after the TUI process
+        # exits. A queued expose evaluates `_projected_ready` against this
+        # in-memory copy, so it would wrongly read "ready" for the rest of
+        # THIS session, but apply() would see the on-disk state (still not
+        # ready) and reject the expose with "model is not ready". Mirrors
+        # the CLI's equivalent path (local_control.py's
+        # _register_discovered_model), which writes through locked_state
+        # for the same reason.
+        model_state = ModelState(
+            ready=True, disk_path=discovered.path, size_bytes=discovered.size_bytes
         )
+        with locked_state(self.state_path) as fresh_state:
+            fresh_state.set(entry.id, model_state)
+        self.state.set(entry.id, model_state)
         self.discovered = [d for d in self.discovered if d is not discovered]
         self.reload()
         self._refresh_pending_bar()
@@ -1037,9 +1051,17 @@ class ModelScreen(Screen[None]):
         for mid in self._snapshot_state_entries:
             self.state.set(mid, self._snapshot_state_entries[mid])
         # Defensive: drop state entries that somehow leaked in during this
-        # session but weren't in the snapshot. (No session path writes
-        # state.models outside apply(), so this is a no-op under normal
-        # discard flows.)
+        # session but weren't in the snapshot. The one exception to "no
+        # session path writes state.models outside apply()" is
+        # _on_register_discovered, which persists a freshly-registered
+        # model's ready state mid-session — but discard is still correct
+        # for it: the registry entry it added is rolled back by the
+        # `self.registry.models = list(self._snapshot_models)` line above
+        # (and re-saved to disk right after this method returns), so the
+        # orphaned state row here keys a model id no longer in the
+        # registry. Nothing reads state.models keys independently of
+        # registry.models, so the orphan is inert — dropping it here is
+        # just tidiness, not a correctness requirement.
         for mid in list(self.state.models):
             if mid not in self._snapshot_state_entries:
                 self.state.models.pop(mid, None)

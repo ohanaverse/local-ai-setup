@@ -1119,6 +1119,7 @@ async def test_discovered_model_renders_as_synthetic_row(tmp_path, monkeypatch):
         last_row = [str(c) for c in mt.get_row_at(mt.row_count - 1)]
         assert last_row[1] == "mtplx"
         assert last_row[2] == "Youssofal/Qwen3.8-27B-MTPLX"
+        assert last_row[4] == "[cyan]+[/cyan]"
 
         # Cursor on the discovered row must show its on-disk path.
         mt.move_cursor(row=mt.row_count - 1)
@@ -2076,6 +2077,73 @@ async def test_register_discovered_model_writes_ready_state_without_queuing_down
     assert entry.source == "discovered"
     assert entry.fetch is not None
     assert entry.fetch.repo == "Qwen3.8-27B-4bit"
+
+
+@pytest.mark.asyncio
+async def test_register_discovered_model_persists_ready_state_to_disk(tmp_path, monkeypatch):
+    """Regression test for the final whole-branch review's load-bearing
+    finding: _on_register_discovered used to write the new model's
+    ready=True state into self.state only (in-memory), never through
+    locked_state to modelman.toml. run_queued_ops() (main.py) always
+    reloads state fresh from disk after the TUI exits, so that in-memory
+    write was invisible to apply() — exposing a model right after
+    registering it (x, then Apply) failed with "model is not ready"
+    every time, and it never self-corrected. This test proves the state
+    round-trips through disk by reading it back with a completely fresh
+    load_state(state_path) call, not through app.screen.state, which
+    would pass even with the old in-memory-only bug."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.screens import models as models_module
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"), location="local")
+        ],
+        families=[FamilyEntry(name="qwen3.8")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    discovered = DiscoveredModel(
+        provider_id="omlx",
+        variant_id="Qwen3.8-27B-4bit",
+        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        size_bytes=19_530_941_006,
+    )
+    monkeypatch.setattr(
+        models_module, "discover_unregistered_models", lambda registry: [discovered]
+    )
+
+    app = ModelmanApp()
+    entry_id = "omlx/Qwen3.8-27B-4bit"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        app.screen.query_one("#save", Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    # The critical assertion: a *fresh* load from disk, not app.screen.state,
+    # must show the model as ready. This is what run_queued_ops() sees.
+    on_disk_state = load_state(state_path)
+    model_state = on_disk_state.get(entry_id)
+    assert model_state.ready is True
+    assert model_state.disk_path == "/Users/keith/.omlx/models/Qwen3.8-27B-4bit"
+    assert model_state.size_bytes == 19_530_941_006
 
 
 # --- pricing_updated_at preservation / refresh ---------------------------
