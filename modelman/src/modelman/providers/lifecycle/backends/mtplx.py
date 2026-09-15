@@ -103,7 +103,7 @@ class MtplxBackend(Backend):
         # teardown should have already achieved) kept as a safety net: the
         # bash stop-all's own port-closed poll only retries 5 times before
         # warning-and-continuing, rather than blocking until closed.
-        probe.wait_for_port_closed(self.health_url)
+        probe.wait_for_port_closed(self.health_url, timeout=10.0)
         self._proc = _PROC.spawn(
             [
                 bin_path,

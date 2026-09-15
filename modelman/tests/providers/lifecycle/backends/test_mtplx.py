@@ -192,7 +192,7 @@ def test_start_waits_for_port_closed_then_spawns_with_pinned_model_id():
     ):
         mock_proc.spawn.return_value = proc
         MTPLX.start(plan)
-    mock_wait_closed.assert_called_once_with(MTPLX.health_url)
+    mock_wait_closed.assert_called_once_with(MTPLX.health_url, timeout=10.0)
     mock_spawn = mock_proc.spawn
     mock_spawn.assert_called_once()
     argv = mock_spawn.call_args.args[0]
