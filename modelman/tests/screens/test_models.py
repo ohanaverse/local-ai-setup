@@ -87,6 +87,19 @@ def test_variant_to_model_entry_derives_native_from_provider_auth():
     assert local_entry.native is False
 
 
+def test_variant_to_model_entry_accepts_explicit_source():
+    """Callers editing an existing entry must be able to pass its current
+    `source` through explicitly, since VariantSpec never carries the field
+    itself (model_entry_to_variant doesn't emit it) — this is what lets
+    _on_edit_model preserve a "discovered" entry's provenance."""
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+    )
+    variant = {"id": "ollama/x", "provider": "ollama", "name": "x"}
+    entry = _variant_to_model_entry(variant, family="x", registry=registry, source="discovered")
+    assert entry.source == "discovered"
+
+
 def test_variant_to_model_entry_passes_through_cost():
     """The adapter must carry cost from the dialog result into the registry
     ModelEntry, accepting either a Cost object or a plain dict."""
@@ -1024,6 +1037,59 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_edit_model_preserves_discovered_source(tmp_path, monkeypatch):
+    """Regression: editing a model registered via the discovered-artifact
+    flow (source="discovered") must not silently reclassify it back to
+    "curated" — _on_edit_model previously called _variant_to_model_entry
+    without passing the entry's existing source through, so the very
+    first edit after registering a discovered model erased the
+    provenance this feature exists to track."""
+    from unittest.mock import MagicMock
+
+    from modelman.app import ModelmanApp
+    from modelman.providers import registry as prov_registry
+
+    entry = ModelEntry(
+        id="ollama/glm-5.3:cloud",
+        family="glm",
+        provider_id="ollama",
+        model_name="glm-5.3:cloud",
+        location="cloud",
+        source="discovered",
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+
+        # Edit the model (any save-triggering change) and confirm the
+        # persisted entry keeps its discovered provenance.
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        app.screen.query_one("#save", Button).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    reg_after_edit = load_registry(reg_path)
+    assert reg_after_edit.model("ollama/glm-5.3:cloud").source == "discovered"
+
+
+@pytest.mark.asyncio
 async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path, monkeypatch):
     """Regression for the reported bug: an omlx model whose files are on
     disk but whose modelman.toml still says ready=False must reconcile
@@ -1081,6 +1147,52 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
         assert app.screen.state.get("omlx/ornith-1.5").size_bytes == 19530941006
         # No overlay attribute survives the rewrite.
         assert not hasattr(app.screen, "reconciled")
+
+
+@pytest.mark.asyncio
+async def test_discovered_model_renders_as_synthetic_row(tmp_path, monkeypatch):
+    """An on-disk artifact with no registry.toml entry (e.g. an mtplx
+    model pulled outside modelman) must show up in the models screen so
+    the user can see and register it, instead of being silently
+    invisible — this is the bug the feature exists to fix."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.screens import models as models_module
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        models_module,
+        "discover_unregistered_models",
+        lambda registry, local_map=None: [
+            DiscoveredModel(
+                provider_id="mtplx",
+                variant_id="Youssofal/Qwen3.8-27B-MTPLX",
+                path="/Users/keith/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX",
+                size_bytes=5_000_000_000,
+            )
+        ],
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+
+        row_key = "discovered:mtplx:Youssofal/Qwen3.8-27B-MTPLX"
+        assert row_key in app.screen._discovered_by_key
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        last_row = [str(c) for c in mt.get_row_at(mt.row_count - 1)]
+        assert last_row[1] == "mtplx"
+        assert last_row[2] == "Youssofal/Qwen3.8-27B-MTPLX"
+        assert last_row[4] == "[cyan]+[/cyan]"
+
+        # Cursor on the discovered row must show its on-disk path.
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        details = app.screen.query_one("#details-panel", Static)
+        assert "Youssofal--Qwen3.8-27B-MTPLX" in str(details.render())
+        assert "unregistered" in str(details.render())
 
 
 @pytest.mark.asyncio
@@ -1955,6 +2067,149 @@ async def test_add_model_saves_registry_immediately_and_queues_ready_on(
         # Immediately persisted — a fresh load must see it without apply.
         reloaded = load_registry(reg_path)
         assert any(m.id == "ollama/newmodel:7b" for m in reloaded.models)
+
+
+@pytest.mark.asyncio
+async def test_register_discovered_model_writes_ready_state_without_queuing_download(
+    tmp_path, monkeypatch
+):
+    """Registering a discovered omlx model (bare directory basename, no
+    HF org segment) must not queue a ready-on: apply() would call
+    provider.download() with that basename as an HF repo id, which HF
+    rejects outright — and the artifact needs no download at all, since
+    it's already on disk. This is the regression the design doc calls
+    out explicitly."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.registry import load_registry
+    from modelman.screens import models as models_module
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"), location="local")
+        ],
+        families=[FamilyEntry(name="qwen3.8")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    discovered = DiscoveredModel(
+        provider_id="omlx",
+        variant_id="Qwen3.8-27B-4bit",
+        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        size_bytes=19_530_941_006,
+    )
+    monkeypatch.setattr(
+        models_module, "discover_unregistered_models", lambda registry, local_map=None: [discovered]
+    )
+
+    app = ModelmanApp()
+    entry_id = "omlx/Qwen3.8-27B-4bit"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        model_input = app.screen.query_one("#model", Input)
+        assert provider_sel.value == "omlx"
+        assert model_input.value == "Qwen3.8-27B-4bit"
+
+        app.screen.query_one("#save", Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert entry_id not in app.screen.queued_ready
+        model_state = app.screen.state.get(entry_id)
+        assert model_state.ready is True
+        assert model_state.disk_path == "/Users/keith/.omlx/models/Qwen3.8-27B-4bit"
+        assert model_state.size_bytes == 19_530_941_006
+        assert app.screen._discovered_by_key == {}
+
+    reloaded = load_registry(reg_path)
+    entry = next(m for m in reloaded.models if m.provider_id == "omlx")
+    assert entry.id == entry_id
+    assert entry.source == "discovered"
+    assert entry.fetch is not None
+    assert entry.fetch.repo == "Qwen3.8-27B-4bit"
+
+
+@pytest.mark.asyncio
+async def test_register_discovered_model_persists_ready_state_to_disk(tmp_path, monkeypatch):
+    """Regression test for the final whole-branch review's load-bearing
+    finding: _on_register_discovered used to write the new model's
+    ready=True state into self.state only (in-memory), never through
+    locked_state to modelman.toml. run_queued_ops() (main.py) always
+    reloads state fresh from disk after the TUI exits, so that in-memory
+    write was invisible to apply() — exposing a model right after
+    registering it (x, then Apply) failed with "model is not ready"
+    every time, and it never self-corrected. This test proves the state
+    round-trips through disk by reading it back with a completely fresh
+    load_state(state_path) call, not through app.screen.state, which
+    would pass even with the old in-memory-only bug."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.screens import models as models_module
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"), location="local")
+        ],
+        families=[FamilyEntry(name="qwen3.8")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    discovered = DiscoveredModel(
+        provider_id="omlx",
+        variant_id="Qwen3.8-27B-4bit",
+        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        size_bytes=19_530_941_006,
+    )
+    monkeypatch.setattr(
+        models_module, "discover_unregistered_models", lambda registry, local_map=None: [discovered]
+    )
+
+    app = ModelmanApp()
+    entry_id = "omlx/Qwen3.8-27B-4bit"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        app.screen.query_one("#save", Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    # The critical assertion: a *fresh* load from disk, not app.screen.state,
+    # must show the model as ready. This is what run_queued_ops() sees.
+    on_disk_state = load_state(state_path)
+    model_state = on_disk_state.get(entry_id)
+    assert model_state.ready is True
+    assert model_state.disk_path == "/Users/keith/.omlx/models/Qwen3.8-27B-4bit"
+    assert model_state.size_bytes == 19_530_941_006
 
 
 # --- pricing_updated_at preservation / refresh ---------------------------

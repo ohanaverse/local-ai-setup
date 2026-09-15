@@ -18,6 +18,7 @@ from modelman.local_control import (
     LocalControlError,
     _name_matches,
     _probe_running,
+    discover_unregistered_models,
     inventory_local_models,
     running_model_ids,
     start_local_model,
@@ -1158,6 +1159,47 @@ def test_inventory_discovered_bucket_excludes_already_registered():
             path="ollama:brand-new-model", size_bytes=2_000_000_000,
         )
     ]
+
+
+def test_discover_unregistered_models_excludes_already_registered():
+    # Mirrors inventory_local_models's discovered bucket, but through the
+    # standalone entry point the TUI calls (it doesn't need the registered-
+    # presence half of a full inventory, only the discovery half).
+    registry = _listing_registry()
+    mapping = {
+        "ollama": [
+            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
+            {
+                "variant_id": "brand-new-model",
+                "path": "ollama:brand-new-model",
+                "size_bytes": 2_000_000_000,
+            },
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        discovered = discover_unregistered_models(registry)
+    assert discovered == [
+        DiscoveredModel(
+            provider_id="ollama",
+            variant_id="brand-new-model",
+            path="ollama:brand-new-model",
+            size_bytes=2_000_000_000,
+        )
+    ]
+
+
+def test_discover_unregistered_models_empty_when_nothing_new():
+    # Every provider-reported artifact already has a registry.toml entry —
+    # nothing should be offered for registration.
+    registry = _listing_registry()
+    mapping = {
+        "ollama": [
+            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
+        ]
+    }
+    with _patch_provider_local_models(mapping):
+        discovered = discover_unregistered_models(registry)
+    assert discovered == []
 
 
 def test_inventory_tolerates_a_provider_list_local_failure():

@@ -22,6 +22,8 @@ from ..litellm import (
 )
 from ..local_control import (
     LocalControlError,
+    _provider_local_models,
+    discover_unregistered_models,
     running_model_ids,
     same_provider_occupant,
     start_local_model,
@@ -49,6 +51,7 @@ from . import reconcile_model_state, reload_preserving_cursor, row_key_at
 from .forms import ConfirmModal, default_form_kind
 
 if TYPE_CHECKING:
+    from ..local_control import DiscoveredModel
     from ..providers.base import VariantSpec
 
 
@@ -79,7 +82,9 @@ def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
     )
 
 
-def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -> ModelEntry:
+def _variant_to_model_entry(
+    variant: dict, *, family: str, registry: Registry, source: str | None = "curated"
+) -> ModelEntry:
     """Convert a ModelForm VariantSpec-shaped dict to a ModelEntry.
 
     The dialog still emits the legacy TypedDict shape (provider, name,
@@ -90,7 +95,10 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
     Edit mode preserves `variant["id"]` (the immutable key the user
     sees in the picker); add mode derives the same `provider/name`
     shape ModelForm produced. We don't need a separate "id derivation"
-    step — the form already gave us one.
+    step — the form already gave us one. `source` defaults to
+    "curated" (every normal add/edit); the discovered-registration flow
+    passes "discovered" explicitly so provenance survives into
+    registry.toml, matching the CLI's own auto-register convention.
     """
     provider_id = variant["provider"]
     # Sanity: provider must exist in the registry. Defends against a
@@ -127,7 +135,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         provider_id=provider_id,
         model_name=name,
         location=variant.get("location"),
-        source="curated",
+        source=source,
         cost=cost,
         model_info=model_info,
         fetch=fetch,
@@ -232,6 +240,15 @@ class ModelScreen(Screen[None]):
         # (via 'r', or already present before the cascade) is never marked
         # here, so undoing it never touches an independently-queued expose.
         self._ready_cascade_for_expose: set[str] = set()
+        # On-disk artifacts an in-scope local provider reports with no
+        # matching registry.toml entry (populated by the on-mount
+        # discovery worker — see _run_reconcile). Rendered as extra
+        # synthetic rows in the table; _discovered_by_key is rebuilt
+        # from scratch on every _repopulate() call, keyed by a synthetic
+        # row key ("discovered:<provider>:<variant>"), never a real
+        # ModelEntry id.
+        self.discovered: list[DiscoveredModel] = []
+        self._discovered_by_key: dict[str, DiscoveredModel] = {}
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
         # stays visible in the table with a → glyph.
@@ -302,8 +319,20 @@ class ModelScreen(Screen[None]):
         the ready-toggle's apply-time download/pull instead.
 
         Delegates to the shared reconcile_model_state (screens/__init__.py).
+
+        Also asks each in-scope local provider what's on disk that has
+        no registry.toml entry at all (discover_unregistered_models,
+        local_control.py) and stores the result on self.discovered —
+        the same background worker, not a second one, since both calls
+        are read-only provider queries with no reason to run
+        concurrently. The on-disk enumeration itself
+        (_provider_local_models) is fetched once here and handed to both
+        reconcile_model_state() and discover_unregistered_models(), so
+        each in-scope provider's list_local() runs once per mount rather
+        than once per call.
         """
-        reconcile_model_state(self.registry.models, self.registry, self.state)
+        local_map, _unqueryable = _provider_local_models(self.registry)
+        reconcile_model_state(self.registry.models, self.registry, self.state, local_map)
         # Self-heal the running flag the same way ready/disk_path already
         # are: a model flagged running whose process actually died (crash,
         # manual kill outside modelman) must not keep showing RUNNING=●
@@ -314,6 +343,7 @@ class ModelScreen(Screen[None]):
         for model_id, model_state in list(self.state.models.items()):
             if model_state.running and model_id not in verified:
                 self.state.models[model_id] = replace(model_state, running=False)
+        self.discovered = discover_unregistered_models(self.registry, local_map)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
@@ -414,6 +444,23 @@ class ModelScreen(Screen[None]):
                     _format_per_token(m.cost),
                     size_str,
                     key=m.id,
+                )
+
+            self._discovered_by_key = {}
+            for d in sorted(self.discovered, key=lambda d: (d.provider_id, d.variant_id)):
+                row_key = f"discovered:{d.provider_id}:{d.variant_id}"
+                self._discovered_by_key[row_key] = d
+                mt.add_row(
+                    "—",
+                    d.provider_id,
+                    d.variant_id,
+                    _format_location(LOCATION_LOCAL),
+                    "[cyan]+[/cyan]",
+                    "–",
+                    "-",
+                    "-",
+                    format_size(d.size_bytes) if d.size_bytes is not None else "—",
+                    key=row_key,
                 )
 
         reload_preserving_cursor(mt, _repopulate)
@@ -691,6 +738,14 @@ class ModelScreen(Screen[None]):
             return None
         return next((m for m in self.registry.models if m.id == mid), None)
 
+    def _current_discovered(self) -> DiscoveredModel | None:
+        """DiscoveredModel under the cursor, or None (cursor is on a real
+        model row, or the table is empty)."""
+        mid = self._current_model_id()
+        if mid is None:
+            return None
+        return self._discovered_by_key.get(mid)
+
     def _current_family(self) -> str | None:
         """The family of the model under the cursor, or None (empty table,
         or nothing to key off of). Used to default the Add dialog's family
@@ -702,6 +757,31 @@ class ModelScreen(Screen[None]):
         if entry is None:
             return None
         return self.queued_moves.get(entry.id, entry.family)
+
+    def _append_new_model_entry(
+        self, variant: VariantSpec, family: str, source: str
+    ) -> ModelEntry | None:
+        """Build and persist a ModelEntry for a freshly submitted add or
+        discovered-registration dialog result. Returns None (after
+        notifying) on an id collision. Shared by _on_add_model and
+        _on_register_discovered so the collision guard and the
+        immediate save_registry() can't drift between the two — every
+        add path persists the registry entry right away (the post-exit
+        runner looks up models by id against a freshly-loaded-from-disk
+        registry).
+        """
+        if any(m.id == variant["id"] for m in self.registry.models):
+            self.app.notify("Model ID already exists")
+            return None
+        entry = _variant_to_model_entry(
+            dict(variant), family=family, registry=self.registry, source=source
+        )
+        if entry.cost is not None:
+            entry.pricing_updated_at = _now_iso()
+        self.registry.models.append(entry)
+        save_registry(self.registry, self.registry_path)
+        self._last_provider_used = variant["provider"]
+        return entry
 
     def action_add_model(self) -> None:
         from .forms import ModelForm
@@ -727,23 +807,59 @@ class ModelScreen(Screen[None]):
     def _on_add_model(self, result) -> None:
         if result is None:
             return
-        variant = result.spec
-        if any(m.id == variant["id"] for m in self.registry.models):
-            self.app.notify("Model ID already exists")
+        entry = self._append_new_model_entry(result.spec, result.family, result.source)
+        if entry is None:
             return
-        entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
-        if entry.cost is not None:
-            entry.pricing_updated_at = _now_iso()
-        self.registry.models.append(entry)
-        # Persist immediately (mirrors _on_edit_model): the post-exit
-        # runner (main.py's run_queued_ops) looks up this model by id
-        # against a freshly-loaded-from-disk registry, so an added
-        # model that wasn't persisted yet would be treated as an
-        # unknown/missing id at apply time — persisting now avoids that
-        # entirely, rather than relying on it degrading gracefully.
-        save_registry(self.registry, self.registry_path)
-        self.queued_ready[variant["id"]] = True
-        self._last_provider_used = variant["provider"]
+        self.queued_ready[entry.id] = True
+        self.reload()
+        self._refresh_pending_bar()
+
+    def _open_register_dialog(self, discovered: DiscoveredModel) -> None:
+        from .forms import ModelForm
+
+        self.app.push_screen(
+            ModelForm(
+                providers=self._provider_list(),
+                discovered=discovered,
+                families=self._families_list(),
+                family=None,
+                provider_kinds=self._provider_kinds(),
+            ),
+            lambda result: self._on_register_discovered(result, discovered),
+        )
+
+    def _on_register_discovered(self, result, discovered: DiscoveredModel) -> None:
+        if result is None:
+            return
+        entry = self._append_new_model_entry(result.spec, result.family, result.source)
+        if entry is None:
+            return
+        # Already on disk — the artifact came from the provider's own
+        # filesystem scan, so record it as ready directly (mirroring
+        # what the reconcile worker already does for known models)
+        # instead of queuing a ready-on: a queued ready-on would call
+        # provider.download() at apply time, and for omlx that would
+        # try to fetch discovered.variant_id (a bare directory
+        # basename) as an HF repo id, which HF rejects outright.
+        #
+        # This must be persisted to disk here, not just in memory: unlike
+        # every other queued mutation on this screen, apply() never sees
+        # this in-memory `self.state` — run_queued_ops() (main.py) always
+        # rebuilds `state` fresh from modelman.toml after the TUI process
+        # exits. A queued expose evaluates `_projected_ready` against this
+        # in-memory copy, so it would wrongly read "ready" for the rest of
+        # THIS session, but apply() would see the on-disk state (still not
+        # ready) and reject the expose with "model is not ready". Mirrors
+        # the CLI's equivalent path (local_control.py's
+        # _register_discovered_model), which writes through locked_state
+        # for the same reason.
+        model_state = ModelState(
+            ready=True, disk_path=discovered.path, size_bytes=discovered.size_bytes
+        )
+        with locked_state(self.state_path) as fresh_state:
+            fresh_state.set(entry.id, model_state)
+        self.state.set(entry.id, model_state)
+        self.discovered = [d for d in self.discovered if d is not discovered]
         self.reload()
         self._refresh_pending_bar()
 
@@ -766,6 +882,10 @@ class ModelScreen(Screen[None]):
         self.reload()
 
     def action_edit_model(self) -> None:
+        discovered = self._current_discovered()
+        if discovered is not None:
+            self._open_register_dialog(discovered)
+            return
         entry = self._current_entry()
         if entry is None:
             return
@@ -795,7 +915,9 @@ class ModelScreen(Screen[None]):
     def _refresh_details_panel(self, cursor_row: int) -> None:
         """Show the on-disk path of the row under the cursor, from
         state.disk_path; renders an em dash when the model isn't ready
-        or its path is unknown.
+        or its path is unknown. A discovered (unregistered) row shows
+        its provider-reported path directly, tagged "(unregistered)" —
+        it has no state.disk_path yet since it isn't in the registry.
         """
         try:
             details = self.query_one("#details-panel", Static)
@@ -805,6 +927,10 @@ class ModelScreen(Screen[None]):
         mid = row_key_at(mt, cursor_row)
         if mid is None:
             details.update("path: —")
+            return
+        discovered = self._discovered_by_key.get(mid)
+        if discovered is not None:
+            details.update(Text(f"path: {discovered.path} (unregistered)"))
             return
         path = self.state.get(mid).disk_path if self._is_ready(mid) else None
         details.update(Text(f"path: {path or '—'}"))
@@ -822,7 +948,7 @@ class ModelScreen(Screen[None]):
         if old_entry is None:
             return
         new_entry = _variant_to_model_entry(
-            updated, family=old_entry.family, registry=self.registry
+            updated, family=old_entry.family, registry=self.registry, source=old_entry.source
         )
         if _cost_changed(old_entry.cost, new_entry.cost):
             new_entry.pricing_updated_at = _now_iso()
@@ -931,9 +1057,17 @@ class ModelScreen(Screen[None]):
         for mid in self._snapshot_state_entries:
             self.state.set(mid, self._snapshot_state_entries[mid])
         # Defensive: drop state entries that somehow leaked in during this
-        # session but weren't in the snapshot. (No session path writes
-        # state.models outside apply(), so this is a no-op under normal
-        # discard flows.)
+        # session but weren't in the snapshot. The one exception to "no
+        # session path writes state.models outside apply()" is
+        # _on_register_discovered, which persists a freshly-registered
+        # model's ready state mid-session — but discard is still correct
+        # for it: the registry entry it added is rolled back by the
+        # `self.registry.models = list(self._snapshot_models)` line above
+        # (and re-saved to disk right after this method returns), so the
+        # orphaned state row here keys a model id no longer in the
+        # registry. Nothing reads state.models keys independently of
+        # registry.models, so the orphan is inert — dropping it here is
+        # just tidiness, not a correctness requirement.
         for mid in list(self.state.models):
             if mid not in self._snapshot_state_entries:
                 self.state.models.pop(mid, None)
