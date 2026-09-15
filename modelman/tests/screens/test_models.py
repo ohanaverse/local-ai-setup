@@ -1084,6 +1084,51 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_discovered_model_renders_as_synthetic_row(tmp_path, monkeypatch):
+    """An on-disk artifact with no registry.toml entry (e.g. an mtplx
+    model pulled outside modelman) must show up in the models screen so
+    the user can see and register it, instead of being silently
+    invisible — this is the bug the feature exists to fix."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.screens import models as models_module
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        models_module,
+        "discover_unregistered_models",
+        lambda registry: [
+            DiscoveredModel(
+                provider_id="mtplx",
+                variant_id="Youssofal/Qwen3.8-27B-MTPLX",
+                path="/Users/keith/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX",
+                size_bytes=5_000_000_000,
+            )
+        ],
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+
+        row_key = "discovered:mtplx:Youssofal/Qwen3.8-27B-MTPLX"
+        assert row_key in app.screen._discovered_by_key
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        last_row = [str(c) for c in mt.get_row_at(mt.row_count - 1)]
+        assert last_row[1] == "mtplx"
+        assert last_row[2] == "Youssofal/Qwen3.8-27B-MTPLX"
+
+        # Cursor on the discovered row must show its on-disk path.
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        details = app.screen.query_one("#details-panel", Static)
+        assert "Youssofal--Qwen3.8-27B-MTPLX" in str(details.render())
+        assert "unregistered" in str(details.render())
+
+
+@pytest.mark.asyncio
 async def test_r_on_ready_local_artifact_model_queues_delete(tmp_path, monkeypatch):
     """r on an already-ready local-artifact model now queues ready=False
     (file deletion), per the ready-toggle-delete design: 'r' is a true

@@ -22,6 +22,7 @@ from ..litellm import (
 )
 from ..local_control import (
     LocalControlError,
+    discover_unregistered_models,
     running_model_ids,
     same_provider_occupant,
     start_local_model,
@@ -49,6 +50,7 @@ from . import reconcile_model_state, reload_preserving_cursor, row_key_at
 from .forms import ConfirmModal, default_form_kind
 
 if TYPE_CHECKING:
+    from ..local_control import DiscoveredModel
     from ..providers.base import VariantSpec
 
 
@@ -232,6 +234,15 @@ class ModelScreen(Screen[None]):
         # (via 'r', or already present before the cascade) is never marked
         # here, so undoing it never touches an independently-queued expose.
         self._ready_cascade_for_expose: set[str] = set()
+        # On-disk artifacts an in-scope local provider reports with no
+        # matching registry.toml entry (populated by the on-mount
+        # discovery worker — see _run_reconcile). Rendered as extra
+        # synthetic rows in the table; _discovered_by_key is rebuilt
+        # from scratch on every _repopulate() call, keyed by a synthetic
+        # row key ("discovered:<provider>:<variant>"), never a real
+        # ModelEntry id.
+        self.discovered: list[DiscoveredModel] = []
+        self._discovered_by_key: dict[str, DiscoveredModel] = {}
         # model_id -> target family. Applied to the registry at apply()
         # time; the in-memory family is untouched until then so the row
         # stays visible in the table with a → glyph.
@@ -302,6 +313,13 @@ class ModelScreen(Screen[None]):
         the ready-toggle's apply-time download/pull instead.
 
         Delegates to the shared reconcile_model_state (screens/__init__.py).
+
+        Also asks each in-scope local provider what's on disk that has
+        no registry.toml entry at all (discover_unregistered_models,
+        local_control.py) and stores the result on self.discovered —
+        the same background worker, not a second one, since both calls
+        are read-only provider queries with no reason to run
+        concurrently.
         """
         reconcile_model_state(self.registry.models, self.registry, self.state)
         # Self-heal the running flag the same way ready/disk_path already
@@ -314,6 +332,7 @@ class ModelScreen(Screen[None]):
         for model_id, model_state in list(self.state.models.items()):
             if model_state.running and model_id not in verified:
                 self.state.models[model_id] = replace(model_state, running=False)
+        self.discovered = discover_unregistered_models(self.registry)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
@@ -414,6 +433,23 @@ class ModelScreen(Screen[None]):
                     _format_per_token(m.cost),
                     size_str,
                     key=m.id,
+                )
+
+            self._discovered_by_key = {}
+            for d in sorted(self.discovered, key=lambda d: (d.provider_id, d.variant_id)):
+                row_key = f"discovered:{d.provider_id}:{d.variant_id}"
+                self._discovered_by_key[row_key] = d
+                mt.add_row(
+                    "—",
+                    d.provider_id,
+                    d.variant_id,
+                    _format_location(LOCATION_LOCAL),
+                    "[cyan]+[/cyan]",
+                    "–",
+                    "-",
+                    "-",
+                    format_size(d.size_bytes) if d.size_bytes else "—",
+                    key=row_key,
                 )
 
         reload_preserving_cursor(mt, _repopulate)
@@ -795,7 +831,9 @@ class ModelScreen(Screen[None]):
     def _refresh_details_panel(self, cursor_row: int) -> None:
         """Show the on-disk path of the row under the cursor, from
         state.disk_path; renders an em dash when the model isn't ready
-        or its path is unknown.
+        or its path is unknown. A discovered (unregistered) row shows
+        its provider-reported path directly, tagged "(unregistered)" —
+        it has no state.disk_path yet since it isn't in the registry.
         """
         try:
             details = self.query_one("#details-panel", Static)
@@ -805,6 +843,10 @@ class ModelScreen(Screen[None]):
         mid = row_key_at(mt, cursor_row)
         if mid is None:
             details.update("path: —")
+            return
+        discovered = self._discovered_by_key.get(mid)
+        if discovered is not None:
+            details.update(Text(f"path: {discovered.path} (unregistered)"))
             return
         path = self.state.get(mid).disk_path if self._is_ready(mid) else None
         details.update(Text(f"path: {path or '—'}"))
