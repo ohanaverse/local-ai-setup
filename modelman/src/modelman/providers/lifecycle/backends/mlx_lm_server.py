@@ -11,12 +11,12 @@ subprocess/pidfile/probe calls) — bash's start path has a real bug where
 `stop_all_local mlx_lm_server` (tearing down every OTHER local provider)
 runs BEFORE validating that target+draft were supplied, so an invalid
 invocation still tears everything else down before failing. Keeping
-`resolve()` pure and side-effect-free is what lets a later orchestration
-task (Task 6) call it before any teardown, structurally closing that bug.
+`resolve()` pure and side-effect-free is what lets `orchestrate.isolate()`
+call it before any teardown, structurally closing that bug.
 
-Not wired into any live isolate/stop path yet — this module is
-independently testable and registered in `backends.BACKENDS`, but nothing
-reads that registry today.
+Live: registered in `backends.BACKENDS`, which `orchestrate.py` reads to
+drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
+`modelman provider ...`, `modelman benchmark`, and `local_control.py`.
 """
 
 from __future__ import annotations
@@ -78,8 +78,10 @@ class MlxLmServerBackend(Backend):
         draft = positional_draft or os.environ.get(DRAFT_ENV_VAR, "")
         if not target or not draft:
             raise LifecycleError(
-                "mlx_lm_server requires target+draft: pass as positional "
-                "args or set LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL"
+                "mlx_lm_server requires target+draft: run `modelman provider "
+                "isolate mlx_lm_server <target> --draft <draft>`, or set "
+                "LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL "
+                "(in-process callers forward the pair as extra_args=(target, draft))"
             )
 
         bin_path = binaries.resolve_mlx_lm_bin("server")

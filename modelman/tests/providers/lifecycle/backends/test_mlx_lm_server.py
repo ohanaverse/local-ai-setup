@@ -99,9 +99,15 @@ def test_resolve_validates_target_and_draft_with_no_side_effects(
         ) as mock_port_closed,
         pytest.raises(
             LifecycleError,
+            # The message must name the CLI's `--draft` flag (the only way a
+            # CLI user can supply a draft — there is no second positional),
+            # the env-var fallback, and the extra_args pair in-process
+            # callers forward.
             match=(
-                r"mlx_lm_server requires target\+draft: pass as positional args or "
-                r"set LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL"
+                r"mlx_lm_server requires target\+draft: run `modelman provider isolate "
+                r"mlx_lm_server <target> --draft <draft>`, or set "
+                r"LLM_ISOLATE_MLXLM_MODEL/LLM_ISOLATE_MLXLM_DRAFT_MODEL "
+                r"\(in-process callers forward the pair as extra_args=\(target, draft\)\)"
             ),
         ),
     ):
