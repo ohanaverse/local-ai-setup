@@ -174,7 +174,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 	}
 
 	if currentItem != nil {
-		items = append(items[:1], append([]list.Item{*currentItem}, items[1:]...)...)
+		items = append([]list.Item{items[0], *currentItem}, items[1:]...)
 	}
 
 	l := list.New(items, ThemedListDelegate(theme), width, height)
