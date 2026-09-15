@@ -37,6 +37,14 @@ Out of scope (see follow-up issue #79):
   This design takes a first step in that direction by introducing a Python
   lifecycle module for MTPLX and keeping the bash scripts as shims.
 
+> **Superseded/completed (issue #79):** the bash isolation helpers named
+> above have since been deleted and every provider's lifecycle logic
+> (including MTPLX's) consolidated into
+> `modelman/src/modelman/providers/lifecycle/` (`orchestrate.py` +
+> `backends/`), exposed as `modelman provider isolate/stop/stop-all/
+> restore/list`. This spec is kept as-is below as a historical record of
+> MTPLX's original design.
+
 ## Registry entry
 
 ### Provider

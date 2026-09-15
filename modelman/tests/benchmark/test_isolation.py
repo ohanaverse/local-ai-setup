@@ -184,6 +184,7 @@ def test_supported_provider_ids_matches_the_backends_registry_documented_list():
     llamacpp backend is registered in BACKENDS but retired (issue #33,
     2026-09-07 — see docs/reference/provider-artifacts.md), so it is
     deliberately absent. Any change to the supported set must update this
-    literal, backends/__init__.py's constant, and the bash helper's own
-    "Supported:" header comment together."""
+    literal and backends/__init__.py's constant together (issue #79
+    retired the old bash helper's own "Supported:" header comment, which
+    used to need the same update)."""
     assert frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"}) == isolation.SUPPORTED_PROVIDER_IDS

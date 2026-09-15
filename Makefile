@@ -1,12 +1,7 @@
 .PHONY: lint lint-shell check-links test-all install
 
 SHELL_SCRIPTS := \
-	bin/llm-isolate-provider \
-	bin/llm-restore-providers \
-	bin/lib/poll.sh \
 	bin/lib/mlx-lm-resolve.sh \
-	bin/lib/mlx-lm-server.sh \
-	bin/lib/mtplx.sh \
 	bin/mlx-quantize \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \

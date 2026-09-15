@@ -35,8 +35,18 @@ repo: the `llamacpp` entries in the benchmark scripts, `SUPPORTED_PROVIDER_IDS`
 (`modelman/src/modelman/benchmark/isolation.py`), `DEFAULT_PROVIDER_IDS`
 (`modelman/src/modelman/registry.py`), and the two litellm rows. **Kept:** the
 provider implementation `modelman/src/modelman/providers/llamacpp.py` (marked
-UNUSED in its module docstring) and the `llamacpp` case branch in
-`bin/llm-isolate-provider`.
+UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
+`modelman/src/modelman/providers/lifecycle/backends/llamacpp.py` — present in
+`BACKENDS` but excluded from `SUPPORTED_PROVIDER_IDS`, with
+`restore_action = "skip"` (so `modelman provider restore` never touches it).
+
+> **Update (issue #79):** the bash isolation helpers this section originally
+> pointed at (`bin/llm-isolate-provider`'s `llamacpp` case branch,
+> `bin/llm-restore-providers`' `restart_launchd` line) were deleted when
+> provider isolation was ported to Python. The re-enable steps below are
+> updated for the current architecture — re-enabling llamacpp no longer means
+> uncommenting bash, it means flipping two settings in
+> `backends/__init__.py` (see step 7).
 
 ### To re-enable llama.cpp
 
@@ -63,12 +73,23 @@ UNUSED in its module docstring) and the `llamacpp` case branch in
 7. Re-enable the code wiring (each was removed 2026-09-07 — see git history
    of this repo for the exact diffs):
    - `llamacpp` back in `DEFAULT_PROVIDER_IDS` (`modelman/src/modelman/registry.py`)
-   - `llamacpp` back in `SUPPORTED_PROVIDER_IDS` (`modelman/src/modelman/benchmark/isolation.py`)
+   - `"llamacpp"` back into `SUPPORTED_PROVIDER_IDS`
+     (`modelman/src/modelman/providers/lifecycle/backends/__init__.py`) — this
+     is the one place both `modelman provider isolate llamacpp` and
+     `modelman benchmark` check isolability from (`modelman.benchmark.
+     isolation.SUPPORTED_PROVIDER_IDS` just re-exports it)
    - `llama_cpp` entries back in `benchmarks/qwen3.8-benchmark` and
      `benchmarks/ornith-1.5-benchmark` (`DIRECT_URLS`, `DIRECT_MODELS`,
-     `LITELLM_MODELS`, `ISOLATE_ID`, `ISOLATE_ENV`, `display_key`,
-     `ensure_all_local_started`, backend loops)
-   - llamacpp `restart_launchd` line back in `bin/llm-restore-providers`
+     `LITELLM_MODELS`, `ISOLATE_ID`, `display_key`,
+     `ensure_all_local_started`, backend loops — issue #79 rewrote these
+     scripts to call `modelman provider isolate`/`restore` via `uv run`
+     instead of shelling out to `bin/llm-isolate-provider`/`bin/llm-
+     restore-providers`, but `ISOLATE_ID` and `DIRECT_MODELS` still exist,
+     now holding the `modelman provider` CLI's provider ids; see
+     `benchmarks/lib/benchmark-common.sh`)
+   - flip `LlamaCppBackend.restore_action` from `"skip"` to `"restart"`
+     (`modelman/src/modelman/providers/lifecycle/backends/llamacpp.py`) so
+     `modelman provider restore` restarts the LaunchAgent again
    - remove the UNUSED marker from `modelman/src/modelman/providers/llamacpp.py`
    - drop the retirement notes from `docs/guides/` and root `CLAUDE.md`
 
@@ -100,7 +121,16 @@ UNUSED in its module docstring) and the `llamacpp` case branch in
 
 - Not a LaunchAgent — a plain backgrounded `mlx_lm.server --draft-model`
   subprocess, pidfile-managed (`/tmp/local-ai-setup-mlx-lm-server.pid`, log
-  at `/tmp/local-ai-setup-mlx-lm-server.log`) by `bin/lib/mlx-lm-server.sh`.
+  at `/tmp/local-ai-setup-mlx-lm-server.log`) by
+  `modelman/src/modelman/providers/lifecycle/pidproc.py`'s generic
+  pidfile-tracked-process helper (`PidfileProcess`), used by
+  `modelman/src/modelman/providers/lifecycle/backends/mlx_lm_server.py`
+  (formerly `bin/lib/mlx-lm-server.sh`, deleted — issue #79). One behavior
+  change from the bash version: the old script truncated the log file on
+  every start (`>"$MLX_LM_SERVER_LOG"`); `PidfileProcess.start()` opens it
+  for append (`"ab"`) instead, so the log now accumulates across restarts
+  within a session rather than resetting each time — worth knowing if
+  you're tailing it expecting only the current run's output.
   A plist would bake in one fixed target+draft pairing, defeating the goal
   of sweeping many pairings per benchmark session — so there is nothing to
   restore from a plist here, only the code wiring below.
@@ -109,12 +139,14 @@ UNUSED in its module docstring) and the `llamacpp` case branch in
   in `modelman/src/modelman/registry.py`); one variant = one target+draft
   pairing (`ModelEntry.fetch` = target, `ModelEntry.draft` = draft).
 - Code wiring: `DEFAULT_PROVIDER_IDS` (`registry.py`), `SUPPORTED_PROVIDER_IDS`
-  (`modelman/src/modelman/benchmark/isolation.py`), `PROVIDER_POLICIES`
-  (`modelman/src/modelman/litellm.py`), the `mlx_lm_server` case branch in
-  `bin/llm-isolate-provider`, and the unconditional `mlx_lm_server_stop` in
-  `bin/llm-restore-providers` (this provider is never part of the standing
-  baseline, so restoring the *others* is not enough — it must always be
-  stopped too).
+  (`modelman/src/modelman/providers/lifecycle/backends/__init__.py`,
+  re-exported by `modelman/src/modelman/benchmark/isolation.py`),
+  `PROVIDER_POLICIES` (`modelman/src/modelman/litellm.py`), the
+  `MlxLmServerBackend` class in
+  `modelman/src/modelman/providers/lifecycle/backends/mlx_lm_server.py`,
+  and its unconditional stop inside `orchestrate.restore()` (this provider
+  is never part of the standing baseline, so restoring the *others* is not
+  enough — it must always be stopped too).
 - **Local-path artifact ownership (shared with the `omlx` provider's
   `local_path` support):** a directory produced by `bin/mlx-quantize` or
   hand-run `mlx_lm.convert`/`dwq` is user-produced, not something modelman

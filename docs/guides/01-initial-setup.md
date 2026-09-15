@@ -216,8 +216,9 @@ curl -s http://localhost:11434/api/tags | head -3
 ### 3. llama.cpp — RETIRED
 
 > **Retired 2026-09-07** (issue #33): the LaunchAgent's pinned GGUF no longer
-> existed, so the agent crash-looped at every login and
-> `bin/llm-restore-providers` could never succeed. Removed from this host:
+> existed, so the agent crash-looped at every login and the provider-restore
+> step (then `bin/llm-restore-providers`, now `modelman provider restore`
+> after issue #79's port) could never succeed. Removed from this host:
 > both plists, the logs, and the Homebrew formula. The verbatim plist, the
 > litellm rows, the registry block, and the full re-enable procedure live in
 > [provider-artifacts.md](../reference/provider-artifacts.md).
@@ -517,7 +518,7 @@ claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
 
 ## Gotchas
 
-- **oMLX serves 4-bit and 6-bit variants — name the exact one.** LiteLLM model_list has `omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-6bit`, but the oMLX server currently serves only what it loaded at startup (`/v1/models` right now lists just `Qwen3.8-27B-4bit`). Requesting any other exposed `omlx/*` name fails until that variant is actually loaded — switch via `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-isolate-provider omlx` (4-bit) or `...omlx-6bit` (6-bit), restore with `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-restore-providers`.
+- **oMLX serves 4-bit and 6-bit variants — name the exact one.** LiteLLM model_list has `omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-6bit`, but the oMLX server currently serves only what it loaded at startup (`/v1/models` right now lists just `Qwen3.8-27B-4bit`). Requesting any other exposed `omlx/*` name fails until that variant is actually loaded — switch via `uv run --directory modelman modelman provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), restore with `uv run --directory modelman modelman provider restore`.
 - **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` or `~/.local/bin/llm-restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).

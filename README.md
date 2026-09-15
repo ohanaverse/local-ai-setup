@@ -69,7 +69,7 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 
 ```
 .
-├── bin/                # llm-isolate-provider, llm-restore-providers (benchmark isolation)
+├── bin/                # check-links, mlx-quantize (monorepo-wide utilities; provider isolation moved to modelman's `provider` CLI)
 ├── benchmarks/         # legacy benchmark scripts + write-ups
 │   └── results/        # benchmark output artifacts
 ├── docs/

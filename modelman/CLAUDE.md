@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (ready/delete/move/expose), and apply them on exit. CLI subcommands: `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — a local model wt's picker may offer alongside any other currently-running local model; delegates to bin/llm-isolate-provider; `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (ready/delete/move/expose), and apply them on exit. CLI subcommands: `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — a local model wt's picker may offer alongside any other currently-running local model; delegates to `src/modelman/providers/lifecycle/orchestrate.py` in-process (issue #79 — no more bash isolation helper); `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
 
 ## Monorepo context
 
 - `wt/` (Go sibling) reads `registry.toml` and `modelman.toml` (exposure flags) read-only. The cross-language schema is pinned by the `docs/contracts/` fixtures, loaded by `tests/contracts/` here and `wt/internal/config` there — change a fixture without updating both sides and both CI jobs fail.
-- `modelman benchmark` shells out to `bin/llm-isolate-provider` / `bin/llm-restore-providers` **by PATH** (`src/modelman/benchmark/isolation.py`) — the monorepo root's `bin/` must be on PATH for `modelman benchmark` to isolate providers.
+- `modelman benchmark` isolates providers in-process through `src/modelman/providers/lifecycle/orchestrate.py` (`src/modelman/benchmark/isolation.py` calls it directly — no subprocess, no PATH lookup). The old `bin/llm-isolate-provider`/`bin/llm-restore-providers` bash helpers were retired (issue #79); nothing in modelman shells out to `bin/` any more.
 
 ## Common development commands
 
@@ -17,7 +17,7 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 
 - **Install dependencies:** `make install` (runs `uv sync`)
 - **Run the CLI during development:** `uv run modelman` (TUI)
-- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`, `uv run modelman start <model_id>`, `uv run modelman stop <model_id>` / `uv run modelman stop --all` (bare `stop` is a usage error — see `local_control.py` below)
+- **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`, `uv run modelman start <model_id>`, `uv run modelman stop <model_id>` / `uv run modelman stop --all` (bare `stop` is a usage error — see `local_control.py` below), `uv run modelman provider isolate/stop/stop-all/restore/list` (the lower-level per-provider lifecycle CLI issue #79 ported from bash — see the "Provider lifecycle" bullet below)
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
 - **Lint / format / typecheck:** `make lint`, `make format`, `make typecheck` (or `make check` to run lint+typecheck together)
@@ -124,7 +124,37 @@ This pattern is required because `Screen.app` is only valid while the screen is 
 - Each provider module (`ollama.py`, `llamacpp.py`, `omlx.py`, `mtplx.py`, `mlx_lm_server.py`) calls `ProviderRegistry.register(ItsProvider)` at import time.
 - `src/modelman/providers/__init__.py` imports every provider module solely to trigger registration. Code that needs providers should import from `modelman.providers` rather than a single submodule.
 - `src/modelman/providers/_progress.py` — shared progress-callback helpers (`llamacpp.py`/`omlx.py`/`ollama.py`/`mlx_lm_server.py` all use it) plus `DownloadCancelled`, raised by the HF `ProgressTqdm` bar when its `should_cancel` callable returns True. `OMLXProvider`, `LlamaCppProvider`, and `MLXLMServerProvider`'s `download()` methods all wire `should_cancel` to their own `_cancel_requested` flag, flipped by `cancel_current()` (called from `PendingChanges.cancel()`, typically from another thread while this download's context is still active) and also, best-effort, by their own `download()` when a `BaseException` — a real Ctrl+C included — unwinds through the `snapshot_download` call. That second flip mostly does NOT extend `should_cancel`'s real reach, though: `download()`'s `finally` clears the class-level active context on its way out, so a straggling worker thread only picks up the flip if its own `display()` call lands in the brief window before that clear runs — the mechanism that actually protects an in-flight download is a concurrent `cancel_current()` call arriving while the context is still set. `PendingChanges.apply()` (`queue.py`) catches `DownloadCancelled` around the download step and persists any already-completed work before returning.
-- `src/modelman/providers/mtplx.py` — MTPLX is discovery-only: it finds models MTPLX has already cached under `~/.mtplx/models` (dir names `<org>--<model>`, mapped back to the registry's `org/model` repo id by `_dir_name`/`_repo_id`) and its `download()` always raises `NotImplementedError` — MTPLX manages its own cache via the `mtplx` CLI, modelman never drives a download for it. The live server's start/stop/warmup lives separately in `src/modelman/providers/lifecycle.py`, not in the provider class: `mtplx serve` runs as a plain backgrounded subprocess (never a LaunchAgent, one model per process like `mlx_lm_server`) tracked by a pidfile at `/tmp/local-ai-setup-mtplx.pid`, serving on port 8003; `bin/llm-isolate-provider`'s `mtplx` branch shells out to `python3 -m modelman.providers.lifecycle isolate mtplx` to drive it.
+- `src/modelman/providers/mtplx.py` — MTPLX is discovery-only: it finds models MTPLX has already cached under `~/.mtplx/models` (dir names `<org>--<model>`, mapped back to the registry's `org/model` repo id by `_dir_name`/`_repo_id`) and its `download()` always raises `NotImplementedError` — MTPLX manages its own cache via the `mtplx` CLI, modelman never drives a download for it. The live server's start/stop/warmup lives separately, not in the provider class: `mtplx serve` runs as a plain backgrounded subprocess (never a LaunchAgent, one model per process like `mlx_lm_server`) tracked by a pidfile at `/tmp/local-ai-setup-mtplx.pid`, serving on port 8003 — driven by the `MtplxBackend` class in `src/modelman/providers/lifecycle/backends/mtplx.py` (see "Provider lifecycle" below).
+
+### Provider lifecycle (`src/modelman/providers/lifecycle/`)
+
+Local-provider isolate/stop/stop-all/restore logic, ported from the bash
+helpers `bin/llm-isolate-provider`/`bin/llm-restore-providers` (issue
+#79, now deleted). `orchestrate.py` holds the isolate/stop/stop_all/restore
+implementations; `backends/` holds one `Backend` subclass per provider
+(`ollama.py`, `omlx.py`, `mlx_lm_server.py`, `mtplx.py`, `llamacpp.py`,
+registered in `backends/__init__.py`'s `BACKENDS` dict, with
+`SUPPORTED_PROVIDER_IDS` marking which are fully supported vs.
+retired-only like `llamacpp`); `probe.py`/`launchd.py`/`pidproc.py`/
+`binaries.py` hold primitives the backends share (`pidproc.py`'s
+`PidfileProcess` generalizes the pidfile-tracked-background-process
+pattern mtplx and mlx_lm_server both use). `cli.py` exposes it all as
+`modelman provider isolate/stop/stop-all/restore/list` — everything runs
+in-process now; nothing shells out to a script in `bin/`. `modelman
+benchmark` and `local_control.py`'s `start`/`stop` both call
+`orchestrate.py` directly rather than going through the CLI.
+
+**Testing pattern:** backend tests (`tests/providers/lifecycle/backends/test_*.py`,
+e.g. `test_mtplx.py`) use `unittest.mock.patch` on the module-attribute
+*as imported into the backend module's own namespace* — e.g.
+`patch("modelman.providers.lifecycle.backends.mtplx.subprocess.run")`,
+`patch("modelman.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed")`,
+`patch("modelman.providers.lifecycle.backends.mtplx._PROC")` — rather than
+patching the origin module (`probe.py`, `pidproc.py`) directly. This is
+the standard "patch where it's used, not where it's defined" convention,
+applied consistently across the whole `lifecycle/` package; it sits
+alongside (but is distinct from) the `Provider`-class `runner=` injection
+seam noted below.
 
 ### Ollama capability detection
 

@@ -8,7 +8,7 @@
 
 - Full stack installed and initially configured per [01-initial-setup](01-initial-setup.md) — the four LaunchAgents exist and load (`~/Library/LaunchAgents/`: `local.litellm.proxy.plist`, `homebrew.mxcl.omlx.plist`, `homebrew.mxcl.postgresql@16.plist`, `homebrew.mxcl.redis.plist`) — llama.cpp's plist was retired 2026-09-07 (see [provider-artifacts.md](../reference/provider-artifacts.md))
 - modelman runnable from its repo, not a global install (it is not installed as a `uv tool` — guide 02 Gotchas).
-- This repo checked out — `bin/llm-isolate-provider` / `bin/llm-restore-providers` live here (guide 05), and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
+- This repo checked out — `modelman` (the `provider isolate`/`provider restore` CLI, guide 05) lives at `modelman/`, and `~/.local/bin/llm-restart` is on PATH for whole-stack restarts.
 - Every restart command below assumes your terminal user is the one whose launchd domain owns the agents (`gui/$(id -u)`), i.e. a normal logged-in session, not an SSH-into-a-different-user session.
 
 ## TL;DR
@@ -410,22 +410,22 @@ New numbers should appear there, and the TL;DR block must be green again (`brew 
 
 ### 5. Benchmark leftovers — restore the stack, recognize residue
 
-After any benchmark work (guide 05), make sure the stack was restored. `modelman benchmark run` isolates and restores internally (in a `finally`), so a completed clean run leaves nothing behind — manual restore is needed when you called `bin/llm-isolate-provider` by hand, or the run was hard-killed (SIGKILL/SIGTERM; Ctrl-C still restores):
+After any benchmark work (guide 05), make sure the stack was restored. `modelman benchmark run` isolates and restores internally (in a `finally`), so a completed clean run leaves nothing behind — manual restore is needed when you called `modelman provider isolate` by hand, or the run was hard-killed (SIGKILL/SIGTERM; Ctrl-C still restores):
 
-<!-- UNVERIFIED — restarting live services; not run in this session. Expected output per the script's verified contract (guide 05): -->
+<!-- UNVERIFIED — restarting live services; not run in this session (this host currently has omlx down on an unrelated Xcode-CLT license gate, which would make a live restore hang/fail for reasons unrelated to this doc). Output below is read from the CLI's source (`src/modelman/providers/lifecycle/cli.py::restore_cmd`), not captured from a live run: -->
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
-bin/llm-restore-providers
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
+uv run modelman provider restore
 ```
 
 ```text
-[llm-restore-providers] providers restored
+restored providers
 ```
 
-It restarts all three providers in parallel, skips the ones already answering, and exits 1 if any fails to come back.
+(`--json` instead prints the `{"provider": "restore", "model": "", "direct_url": "", "ok": ..., "error": ...}` envelope.) It restarts all three providers in parallel, skips the ones already answering, and exits 1 if any fails to come back.
 
-**Isolation residue fingerprint:** after a benchmark (or a hard-killed run), the two local backend ports answer — `4000(litellm):401` still answers, :11434 always answers 200 (the ollama daemon stays up; `ollama ps` is header-only unless an ollama isolation loaded a model), and the isolated target is whichever of :11434/:8000 is alive; only the non-isolated one goes dark. For an `ollama` isolation: :11434 answers with a loaded row in `ollama ps` (that's the residue) while :8000 refuses — the healthy stack's `ollama ps` prints the bare header only (run live, 2026-08-29). For an `omlx` isolation: :8000 answers while `ollama ps` is header-only. Cure: `bin/llm-restore-providers`, then re-run the TL;DR block.
+**Isolation residue fingerprint:** after a benchmark (or a hard-killed run), the two local backend ports answer — `4000(litellm):401` still answers, :11434 always answers 200 (the ollama daemon stays up; `ollama ps` is header-only unless an ollama isolation loaded a model), and the isolated target is whichever of :11434/:8000 is alive; only the non-isolated one goes dark. For an `ollama` isolation: :11434 answers with a loaded row in `ollama ps` (that's the residue) while :8000 refuses — the healthy stack's `ollama ps` prints the bare header only (run live, 2026-08-29). For an `omlx` isolation: :8000 answers while `ollama ps` is header-only. Cure: `uv run modelman provider restore`, then re-run the TL;DR block.
 
 <!-- UNVERIFIED — the residue states above were not induced in this session (inducing them means stopping live backends); the detection commands and the loaded-header `ollama ps` output are the same ones verified live in the healthy state (header only, no rows). -->
 

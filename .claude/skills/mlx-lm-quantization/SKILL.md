@@ -9,7 +9,7 @@ description: Produce a quantized MLX model variant with mlx-lm and register it i
 2. Register the output directory in modelman by hand-editing `registry.toml` — the TUI's omlx dialog has no local-path field. Add an `[[models]]` entry with `provider_id = "omlx"` and a `[models.fetch]` `local_path = "<out-dir>"` (absolute path); see `docs/guides/10-mlx-lm-quantization.md` for the exact snippet.
 3. `modelman expose` the model so `wt` picks it up.
 
-For a target+draft speculative-decoding pairing (`mlx_lm.server --draft-model`) instead of a single quantized model, register both sides under provider `mlx_lm_server` (dual-model form) and isolate with `bin/llm-isolate-provider mlx_lm_server <target> <draft>` — see `docs/guides/10-mlx-lm-quantization.md`.
+For a target+draft speculative-decoding pairing (`mlx_lm.server --draft-model`) instead of a single quantized model, register both sides under provider `mlx_lm_server` (dual-model form) and isolate with `uv run --directory modelman modelman provider isolate mlx_lm_server <target> --draft <draft>` — see `docs/guides/10-mlx-lm-quantization.md`.
 
 ## Gotchas
 
