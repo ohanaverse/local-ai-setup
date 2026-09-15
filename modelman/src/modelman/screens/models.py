@@ -81,7 +81,9 @@ def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
     )
 
 
-def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -> ModelEntry:
+def _variant_to_model_entry(
+    variant: dict, *, family: str, registry: Registry, source: str = "curated"
+) -> ModelEntry:
     """Convert a ModelForm VariantSpec-shaped dict to a ModelEntry.
 
     The dialog still emits the legacy TypedDict shape (provider, name,
@@ -92,7 +94,10 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
     Edit mode preserves `variant["id"]` (the immutable key the user
     sees in the picker); add mode derives the same `provider/name`
     shape ModelForm produced. We don't need a separate "id derivation"
-    step — the form already gave us one.
+    step — the form already gave us one. `source` defaults to
+    "curated" (every normal add/edit); the discovered-registration flow
+    passes "discovered" explicitly so provenance survives into
+    registry.toml, matching the CLI's own auto-register convention.
     """
     provider_id = variant["provider"]
     # Sanity: provider must exist in the registry. Defends against a
@@ -129,7 +134,7 @@ def _variant_to_model_entry(variant: dict, *, family: str, registry: Registry) -
         provider_id=provider_id,
         model_name=name,
         location=variant.get("location"),
-        source="curated",
+        source=source,
         cost=cost,
         model_info=model_info,
         fetch=fetch,
@@ -727,6 +732,14 @@ class ModelScreen(Screen[None]):
             return None
         return next((m for m in self.registry.models if m.id == mid), None)
 
+    def _current_discovered(self) -> DiscoveredModel | None:
+        """DiscoveredModel under the cursor, or None (cursor is on a real
+        model row, or the table is empty)."""
+        mid = self._current_model_id()
+        if mid is None:
+            return None
+        return self._discovered_by_key.get(mid)
+
     def _current_family(self) -> str | None:
         """The family of the model under the cursor, or None (empty table,
         or nothing to key off of). Used to default the Add dialog's family
@@ -738,6 +751,31 @@ class ModelScreen(Screen[None]):
         if entry is None:
             return None
         return self.queued_moves.get(entry.id, entry.family)
+
+    def _append_new_model_entry(
+        self, variant: VariantSpec, family: str, source: str
+    ) -> ModelEntry | None:
+        """Build and persist a ModelEntry for a freshly submitted add or
+        discovered-registration dialog result. Returns None (after
+        notifying) on an id collision. Shared by _on_add_model and
+        _on_register_discovered so the collision guard and the
+        immediate save_registry() can't drift between the two — every
+        add path persists the registry entry right away (the post-exit
+        runner looks up models by id against a freshly-loaded-from-disk
+        registry).
+        """
+        if any(m.id == variant["id"] for m in self.registry.models):
+            self.app.notify("Model ID already exists")
+            return None
+        entry = _variant_to_model_entry(
+            dict(variant), family=family, registry=self.registry, source=source
+        )
+        if entry.cost is not None:
+            entry.pricing_updated_at = _now_iso()
+        self.registry.models.append(entry)
+        save_registry(self.registry, self.registry_path)
+        self._last_provider_used = variant["provider"]
+        return entry
 
     def action_add_model(self) -> None:
         from .forms import ModelForm
@@ -763,23 +801,45 @@ class ModelScreen(Screen[None]):
     def _on_add_model(self, result) -> None:
         if result is None:
             return
-        variant = result.spec
-        if any(m.id == variant["id"] for m in self.registry.models):
-            self.app.notify("Model ID already exists")
+        entry = self._append_new_model_entry(result.spec, result.family, result.source)
+        if entry is None:
             return
-        entry = _variant_to_model_entry(variant, family=result.family, registry=self.registry)
-        if entry.cost is not None:
-            entry.pricing_updated_at = _now_iso()
-        self.registry.models.append(entry)
-        # Persist immediately (mirrors _on_edit_model): the post-exit
-        # runner (main.py's run_queued_ops) looks up this model by id
-        # against a freshly-loaded-from-disk registry, so an added
-        # model that wasn't persisted yet would be treated as an
-        # unknown/missing id at apply time — persisting now avoids that
-        # entirely, rather than relying on it degrading gracefully.
-        save_registry(self.registry, self.registry_path)
-        self.queued_ready[variant["id"]] = True
-        self._last_provider_used = variant["provider"]
+        self.queued_ready[entry.id] = True
+        self.reload()
+        self._refresh_pending_bar()
+
+    def _open_register_dialog(self, discovered: DiscoveredModel) -> None:
+        from .forms import ModelForm
+
+        self.app.push_screen(
+            ModelForm(
+                providers=self._provider_list(),
+                discovered=discovered,
+                families=self._families_list(),
+                family=None,
+                provider_kinds=self._provider_kinds(),
+            ),
+            lambda result: self._on_register_discovered(result, discovered),
+        )
+
+    def _on_register_discovered(self, result, discovered: DiscoveredModel) -> None:
+        if result is None:
+            return
+        entry = self._append_new_model_entry(result.spec, result.family, result.source)
+        if entry is None:
+            return
+        # Already on disk — the artifact came from the provider's own
+        # filesystem scan, so record it as ready directly (mirroring
+        # what the reconcile worker already does for known models)
+        # instead of queuing a ready-on: a queued ready-on would call
+        # provider.download() at apply time, and for omlx that would
+        # try to fetch discovered.variant_id (a bare directory
+        # basename) as an HF repo id, which HF rejects outright.
+        self.state.set(
+            entry.id,
+            ModelState(ready=True, disk_path=discovered.path, size_bytes=discovered.size_bytes),
+        )
+        self.discovered = [d for d in self.discovered if d is not discovered]
         self.reload()
         self._refresh_pending_bar()
 
@@ -802,6 +862,10 @@ class ModelScreen(Screen[None]):
         self.reload()
 
     def action_edit_model(self) -> None:
+        discovered = self._current_discovered()
+        if discovered is not None:
+            self._open_register_dialog(discovered)
+            return
         entry = self._current_entry()
         if entry is None:
             return

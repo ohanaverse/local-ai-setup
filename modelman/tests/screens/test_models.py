@@ -2002,6 +2002,82 @@ async def test_add_model_saves_registry_immediately_and_queues_ready_on(
         assert any(m.id == "ollama/newmodel:7b" for m in reloaded.models)
 
 
+@pytest.mark.asyncio
+async def test_register_discovered_model_writes_ready_state_without_queuing_download(
+    tmp_path, monkeypatch
+):
+    """Registering a discovered omlx model (bare directory basename, no
+    HF org segment) must not queue a ready-on: apply() would call
+    provider.download() with that basename as an HF repo id, which HF
+    rejects outright — and the artifact needs no download at all, since
+    it's already on disk. This is the regression the design doc calls
+    out explicitly."""
+    from modelman.local_control import DiscoveredModel
+    from modelman.registry import load_registry
+    from modelman.screens import models as models_module
+
+    reg_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    reg = Registry(
+        providers=[
+            ProviderEntry(id="omlx", name="oMLX", auth=AuthConfig(type="none"), location="local")
+        ],
+        families=[FamilyEntry(name="qwen3.8")],
+        models=[],
+    )
+    save_registry(reg, reg_path)
+    save_state(StateStore(), state_path)
+    monkeypatch.setenv("MODELMAN_REGISTRY", str(reg_path))
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    discovered = DiscoveredModel(
+        provider_id="omlx",
+        variant_id="Qwen3.8-27B-4bit",
+        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        size_bytes=19_530_941_006,
+    )
+    monkeypatch.setattr(
+        models_module, "discover_unregistered_models", lambda registry: [discovered]
+    )
+
+    app = ModelmanApp()
+    entry_id = "omlx/Qwen3.8-27B-4bit"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let the reconcile+discover worker settle
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        mt.move_cursor(row=mt.row_count - 1)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        provider_sel = app.screen.query_one("#provider-select", Select)
+        model_input = app.screen.query_one("#model", Input)
+        assert provider_sel.value == "omlx"
+        assert model_input.value == "Qwen3.8-27B-4bit"
+
+        app.screen.query_one("#save", Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert entry_id not in app.screen.queued_ready
+        model_state = app.screen.state.get(entry_id)
+        assert model_state.ready is True
+        assert model_state.disk_path == "/Users/keith/.omlx/models/Qwen3.8-27B-4bit"
+        assert model_state.size_bytes == 19_530_941_006
+        assert app.screen._discovered_by_key == {}
+
+    reloaded = load_registry(reg_path)
+    entry = next(m for m in reloaded.models if m.provider_id == "omlx")
+    assert entry.id == entry_id
+    assert entry.source == "discovered"
+    assert entry.fetch is not None
+    assert entry.fetch.repo == "Qwen3.8-27B-4bit"
+
+
 # --- pricing_updated_at preservation / refresh ---------------------------
 
 
