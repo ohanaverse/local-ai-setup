@@ -60,10 +60,8 @@ class MtplxBackend(PidfileTrackedBackend):
         more than one mtplx entry, refuse rather than guess — a caller that
         failed to forward the model name would otherwise silently serve
         (and benchmark) the wrong weights with no error."""
-        positional_model = extra_args[0] if extra_args and extra_args[0] else ""
-        if model or positional_model:
-            resolved = model or positional_model
-        else:
+        resolved = model or self._positional_arg(extra_args, 0)
+        if not resolved:
             registry = load_registry()
             matches = [m.model_name for m in registry.models if m.provider_id == "mtplx"]
             if len(matches) == 1:
