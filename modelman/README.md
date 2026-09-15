@@ -146,7 +146,11 @@ The TUI has a single screen:
 - **Model screen** — the app's only/root screen: a single table of every
   model across every family, sorted family · location (local before
   cloud) · provider · model name (columns: family · provider · model ·
-  loc · status ✓/○/↓/↑/✗/→ · exposed · cost · size). LOC is an icon
+  loc · status ✓/○/↓/↑/✗/→/+ · exposed · cost · size). An on-disk
+  artifact with no `registry.toml` entry shows up as an extra row with
+  status `+`; pressing `enter`/`e` on it opens a registration dialog
+  (Provider/Model prefilled and locked) instead of the normal edit
+  dialog, so you just pick a family to register it. LOC is an icon
   (↗ cloud / ▤ local / `—` when unknown) and EXPOSED shows `Y`/`–`; COST
   renders per-token input/cache/output prices per million tokens as
   three space-delimited values, each a leading-space-padded 2-digit

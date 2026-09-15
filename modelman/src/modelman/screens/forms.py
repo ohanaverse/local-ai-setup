@@ -12,6 +12,7 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Select
 
+from ..local_control import DiscoveredModel
 from ..ollama_caps import auto_detect_model_info
 from ..providers.base import VariantSpec
 from ..registry import Cost, _cost_from_dict, _cost_to_dict
@@ -267,6 +268,7 @@ class ModelFormResult(NamedTuple):
     spec: VariantSpec
     family: str
     pricing_updated_at: str | None = None
+    source: str = "curated"
 
 
 T = TypeVar("T")
@@ -414,6 +416,7 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         family: str | None = None,
         provider_kinds: dict[str, str] | None = None,
         pricing_updated_at: str | None = None,
+        discovered: DiscoveredModel | None = None,
     ) -> None:
         super().__init__()
         self._providers = providers
@@ -451,19 +454,32 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         # undisturbed.
         self._no_real_families = families is not None and not families and family is None
         self._pricing_updated_at = pricing_updated_at
+        # Set only for "register this on-disk-but-unregistered artifact"
+        # mode: locks Provider/Model to what the provider's own
+        # filesystem scan reported (see _submit_discovered) instead of
+        # the normal free-text add flow.
+        self._discovered = discovered
 
     def compose(self) -> ComposeResult:
         editing = self._variant is not None
         v: VariantSpec = self._variant if self._variant is not None else cast("VariantSpec", {})
         if editing:
             initial_provider = v.get("provider") or self._providers[0]
+        elif self._discovered is not None:
+            initial_provider = self._discovered.provider_id
         elif self._default_provider and self._default_provider in self._providers:
             initial_provider = self._default_provider
         else:
             initial_provider = self._providers[0]
         self._initial_provider: str = initial_provider
 
-        model_val = self._reconstruct_model(v) if editing else ""
+        model_val = (
+            self._reconstruct_model(v)
+            if editing
+            else self._discovered.variant_id
+            if self._discovered is not None
+            else ""
+        )
         local_path_val = self._reconstruct_local_path(v) if editing else ""
         target_repo_val, target_local_path_val, draft_repo_val, draft_local_path_val = (
             self._reconstruct_dual_model(v) if editing else ("", "", "", "")
@@ -556,14 +572,14 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
                 options=[(p, p) for p in self._providers],
                 value=initial_provider,
                 allow_blank=False,
-                disabled=editing,
+                disabled=editing or self._discovered is not None,
                 id="provider-select",
             )
             yield Label("Model:", id="model-label")
             yield Input(
                 value=model_val,
                 placeholder=placeholder,
-                disabled=editing,
+                disabled=editing or self._discovered is not None,
                 id="model",
             )
             # "local-only" kind (llamacpp/omlx): a second, optional field
@@ -762,6 +778,8 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         )
         if new_family_selected:
             self.query_one("#new-family-input", Input).focus()
+        elif self._discovered is not None:
+            self.query_one("#family-select", Select).focus()
         elif self._variant is None:
             self.query_one("#provider-select", Select).focus()
         else:
@@ -886,8 +904,10 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             return
         # Edit mode: provider is locked (disabled Select), but Textual may
         # still fire Changed on mount. Skip location updates in edit mode
-        # to preserve the variant's location value.
-        if self._variant is not None:
+        # to preserve the variant's location value. Discovered mode is
+        # likewise locked — this keeps the "provider is locked" invariant
+        # explicit rather than incidental.
+        if self._variant is not None or self._discovered is not None:
             return
         provider = str(event.value)
         kind = self._provider_kinds.get(provider, self._default_kind(provider))
@@ -997,6 +1017,9 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
         )
 
     def _submit(self) -> None:
+        if self._discovered is not None:
+            self._submit_discovered()
+            return
         provider = str(self.query_one("#provider-select", Select).value)
         kind = self._provider_kinds.get(provider, self._default_kind(provider))
 
@@ -1074,6 +1097,52 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             return
         self.dismiss(
             ModelFormResult(spec=spec, family=family, pricing_updated_at=self._pricing_updated_at)
+        )
+
+    def _submit_discovered(self) -> None:
+        """Register a discovered (on-disk, unregistered) artifact.
+
+        Provider and Model are pinned to what the provider's own
+        filesystem scan reported (DiscoveredModel) rather than routed
+        through parse_model()'s free-text 'org/repo' validation — that
+        scan already verified the artifact's identity, and for omlx in
+        particular the reported name is a bare directory basename with
+        no HF org segment, which parse_model() would reject outright.
+        Id/repo derivation mirrors local_control.py's
+        _register_discovered_model exactly, so a model registered from
+        the TUI resolves identically to one registered via `modelman
+        start <name>`.
+        """
+        assert self._discovered is not None
+        discovered = self._discovered
+
+        try:
+            cost = self._parse_cost_from_fields()
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        self._clear_error()
+
+        quantization = self.query_one("#quantization", Input).value.strip() or None
+        vid = f"{discovered.provider_id}/{discovered.variant_id.replace('/', '--')}"
+        spec: VariantSpec = {
+            "id": vid,
+            "provider": discovered.provider_id,
+            "name": discovered.variant_id,
+            "repo": discovered.variant_id,
+            "local_path": None,
+            "files": None,
+            "quantizations": None,
+            "location": "local",
+            "cost": _cost_to_dict(cost) if cost is not None else None,
+            "quantization": quantization,
+            "model_info": None,
+        }
+        family = self._resolve_family()
+        if family is None:
+            return
+        self.dismiss(
+            ModelFormResult(spec=spec, family=family, pricing_updated_at=None, source="discovered")
         )
 
     def _submit_dual_model(self, provider: str) -> None:
