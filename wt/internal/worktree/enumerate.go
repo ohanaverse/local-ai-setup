@@ -3,11 +3,36 @@ package worktree
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
+
+// fetchTimeout bounds how long Enumerate waits on `git fetch` before giving
+// up and falling back to whatever local refs already exist — an
+// unreachable remote must never block the picker from showing.
+const fetchTimeout = 5 * time.Second
+
+// fetchRemotes refreshes remote-tracking refs (and prunes ones deleted
+// upstream) so the picker's remote-branches group reflects branches pushed
+// since the user's last manual `git fetch`/`pull`/`push`. Fetches every
+// configured remote, not just "origin", matching the fork-workflow support
+// already built into IsDefaultBranchForm (origin/main, upstream/main, ...).
+// Failure — offline, no remotes configured, timeout — is silently ignored;
+// Enumerate falls back to whatever local refs already exist, the same
+// non-fatal convention DefaultBranch uses below.
+func fetchRemotes(dir string) {
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--all", "--prune")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	_ = cmd.Run()
+}
 
 // Type of a pickable target.
 type Type string
@@ -237,6 +262,8 @@ func SkipInPicker(groupKind GroupKind, e Entry, defaultBranch string) bool {
 // checked out in a worktree are omitted from the bare-branch lists
 // so the picker never shows duplicates.
 func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
+	fetchRemotes(dir)
+
 	worktreeEntries, err := listWorktrees(dir, cwdRoot)
 	if err != nil {
 		return nil, err

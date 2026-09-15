@@ -412,6 +412,8 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 
 `internal/worktree` handles enumeration (`Enumerate` → worktrees / local branches / remote-only branches) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
 
+> **`Enumerate` fetches before listing.** It runs `git fetch --all --prune` (5s timeout) before building the picker's groups, so branches teammates pushed since your last manual fetch/pull/push show up, and remote-tracking refs for branches deleted upstream are pruned. Fetches every configured remote, not just `origin` (fork workflows: `upstream`, etc.). Failure — offline, no remotes, timeout — is silently ignored; the picker falls back to whatever local refs already exist. `-W`/`--cwd` skip `Enumerate` entirely (no picker, no fetch) and `EnsureForName`'s `-W` path never consults remotes in the first place.
+
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and
 > directories inside `.git` have no worktree, so `--show-toplevel` fails there;
 > `--git-dir` succeeds. Don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
