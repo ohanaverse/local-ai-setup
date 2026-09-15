@@ -1658,3 +1658,39 @@ func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
 		t.Error("emitPriceNotice invoked with no launch")
 	}
 }
+
+// TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent verifies
+// the pricing reminder does NOT fire for a command-agent launch (e.g.
+// shell), which records pendingSurveyState with m.ID == "" — the reminder
+// is meaningless there and was previously firing unconditionally alongside
+// the summary line.
+func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.T) {
+	prevSummary, prevSurvey, prevRunSurvey, prevNotice := pendingSummary, pendingSurveyState, runSurvey, emitPriceNotice
+	t.Cleanup(func() {
+		pendingSummary = prevSummary
+		pendingSurveyState = prevSurvey
+		runSurvey = prevRunSurvey
+		emitPriceNotice = prevNotice
+	})
+
+	pendingSummary = "wt: shell · 1s"
+	pendingSurveyState = pendingSurvey{agent: "shell", m: config.Model{}}
+	runSurvey = func(agent string, m config.Model) {}
+	noticeCalled := false
+	emitPriceNotice = func() { noticeCalled = true }
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	printPendingSummaryAndSurvey()
+	w.Close()
+	os.Stdout = old
+	_, _ = io.ReadAll(r)
+
+	if noticeCalled {
+		t.Error("emitPriceNotice was invoked for a command agent (m.ID == \"\")")
+	}
+}

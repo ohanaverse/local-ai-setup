@@ -493,6 +493,137 @@ func TestEnumerateRemoteBranchShadowedByLocal(t *testing.T) {
 	}
 }
 
+// TestEnumerateFetchesNewRemoteBranches verifies Enumerate refreshes
+// remote-tracking refs before listing branches, so a branch a teammate
+// pushed since the last manual `git fetch` still shows up in the picker's
+// remote-branches group without the user having to fetch by hand.
+func TestEnumerateFetchesNewRemoteBranches(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	remoteDir := filepath.Join(dir, "remote.git")
+	// -b main pins the bare repo's HEAD to refs/heads/main regardless of the
+	// host's init.defaultBranch config; without it, a host defaulting to
+	// "master" leaves the bare repo's HEAD pointing at a branch that's never
+	// pushed, so the clone below checks out an unborn HEAD and the later
+	// `checkout -b teammate-feature` + push fails with "src refspec ... does
+	// not match any" instead of exercising the fetch behavior under test.
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare remote: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("git push -u origin main: %v\n%s", err, out)
+	}
+
+	// Simulate a teammate pushing a new branch straight to the bare remote,
+	// via a separate clone — dir's local repo never runs `git fetch` and
+	// has no on-disk knowledge of this branch.
+	cloneDir := t.TempDir()
+	if out, err := exec.Command("git", "clone", remoteDir, cloneDir).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(cloneDir, "checkout", "-b", "teammate-feature"); err != nil {
+		t.Fatalf("git checkout -b teammate-feature: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(cloneDir, "push", "origin", "teammate-feature"); err != nil {
+		t.Fatalf("git push teammate-feature: %v\n%s", err, out)
+	}
+
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Branch == "origin/teammate-feature" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected origin/teammate-feature to appear after Enumerate fetched, got %+v", groups)
+	}
+}
+
+// TestEnumeratePrunesDeletedRemoteBranches verifies Enumerate's fetch runs
+// with --prune, so a remote-tracking ref for a branch deleted upstream is
+// removed from the picker instead of lingering as a stale, unselectable entry.
+func TestEnumeratePrunesDeletedRemoteBranches(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	remoteDir := filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare remote: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("git push -u origin main: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "checkout", "-b", "gone-soon"); err != nil {
+		t.Fatalf("git checkout -b gone-soon: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "origin", "gone-soon"); err != nil {
+		t.Fatalf("git push gone-soon: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "fetch", "origin"); err != nil {
+		t.Fatalf("git fetch origin: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "branch", "-d", "gone-soon"); err != nil {
+		t.Fatalf("git branch -d gone-soon: %v\n%s", err, out)
+	}
+	// dir now has a stale refs/remotes/origin/gone-soon even though the
+	// branch is about to be deleted upstream too.
+	if out, err := exec.Command("git", "-C", remoteDir, "branch", "-D", "gone-soon").CombinedOutput(); err != nil {
+		t.Fatalf("git -C remote branch -D gone-soon: %v\n%s", err, out)
+	}
+
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Branch == "origin/gone-soon" {
+				t.Fatalf("origin/gone-soon should have been pruned, got %+v", groups)
+			}
+		}
+	}
+}
+
+// TestEnumerateToleratesFetchFailure verifies a failing fetch (e.g. no
+// network, a dead/misconfigured remote) never blocks the picker — Enumerate
+// must still succeed using whatever local refs already exist, matching the
+// non-fatal, best-effort convention used elsewhere in this package (e.g.
+// DefaultBranch).
+func TestEnumerateToleratesFetchFailure(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	if out, err := runGitCmd(dir, "remote", "add", "origin", "/nonexistent/does-not-exist.git"); err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatalf("Enumerate() error = %v, want nil (fetch failure must be non-fatal)", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("got %d groups, want 3 even with a failing remote", len(groups))
+	}
+}
+
 // setupTestRepo creates a minimal git repo with a default branch (main)
 // and a couple of local feature branches, so Enumerate has something to
 // group. The repo points at a fake "origin" so origin/HEAD resolves and

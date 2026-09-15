@@ -62,7 +62,7 @@ For agents, args append to the command; for `shell` (implements `ArgSetter`), th
 
 After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
 
-Immediately after the summary, a stale-pricing notice may print (one line, issue #69): when modelman's `price_refresh_last_run` (top-level key in `~/.config/local-ai/modelman.toml`) isn't today's date — or is absent — wt prints `wt: token pricing last refreshed <date> — run 'modelman refresh-prices'` (or the "never been refreshed" variant; a malformed (non-`YYYY-MM-DD`) value also uses the "never been refreshed" wording). wt only notifies; modelman owns the refresh. Parse errors on modelman.toml stay silent.
+Immediately after the summary, a stale-pricing notice may print (one line, issue #69): when modelman's `price_refresh_last_run` (top-level key in `~/.config/local-ai/modelman.toml`) isn't today's date — or is absent — wt prints `wt: token pricing last refreshed <date> — run 'modelman refresh-prices'` (or the "never been refreshed" variant; a malformed (non-`YYYY-MM-DD`) value also uses the "never been refreshed" wording). wt only notifies; modelman owns the refresh. Parse errors on modelman.toml stay silent. Skipped for command agents like `shell` (`m.ID == ""` — same convention the session survey below uses), since they never touch a priced model.
 
 Immediately after the summary, a post-session survey prompts up to four questions (did it work? speed? quality? — and on non-skip answers, what task were you doing) on the parent terminal — see [Session survey](#session-survey-go) below.
 
@@ -411,6 +411,8 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 ## Worktree (Go)
 
 `internal/worktree` handles enumeration (`Enumerate` → worktrees / local branches / remote-only branches) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
+
+> **`Enumerate` fetches before listing.** It runs `git fetch --all --prune` (5s timeout) before building the picker's groups, so branches teammates pushed since your last manual fetch/pull/push show up, and remote-tracking refs for branches deleted upstream are pruned. Fetches every configured remote, not just `origin` (fork workflows: `upstream`, etc.). Failure — offline, no remotes, timeout — is silently ignored; the picker falls back to whatever local refs already exist. `-W`/`--cwd` skip `Enumerate` entirely (no picker, no fetch) and `EnsureForName`'s `-W` path never consults remotes in the first place.
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and
 > directories inside `.git` have no worktree, so `--show-toplevel` fails there;
