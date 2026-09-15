@@ -44,24 +44,12 @@ display_key() {
     esac
 }
 
-# Isolation lives in bin/llm-isolate-provider (also used by `modelman
-# benchmark`); this script calls it with model-name env overrides instead of
-# duplicating the stop/start/warmup logic here. Fails hard: without the
-# helper on PATH, isolation (and therefore valid results) is not possible.
-ISOLATE_HELPER="$(cd "$(dirname "$0")/../bin" && pwd)/llm-isolate-provider"
-
-# Map this script's backend keys to the helper's provider ids.
-# omlx_4bit/omlx_6bit -> omlx/omlx-6bit (helper naming for the variants).
+# Map this script's backend keys to the lifecycle provider ids.
+# omlx_4bit/omlx_6bit -> omlx/omlx-6bit (lifecycle naming for the variants).
 declare -A ISOLATE_ID
 ISOLATE_ID[ollama]="ollama"
 ISOLATE_ID[omlx_4bit]="omlx"
 ISOLATE_ID[omlx_6bit]="omlx-6bit"
-
-# Env var per backend (helper naming: LLM_ISOLATE_<PROVIDER>_MODEL).
-declare -A ISOLATE_ENV
-ISOLATE_ENV[ollama]="LLM_ISOLATE_OLLAMA_MODEL"
-ISOLATE_ENV[omlx_4bit]="LLM_ISOLATE_OMLX_4BIT_MODEL"
-ISOLATE_ENV[omlx_6bit]="LLM_ISOLATE_OMLX_6BIT_MODEL"
 
 OUTFILE="/tmp/ornith-1.5-benchmark-$(date +%Y%m%d-%H%M%S).md"
 {
@@ -132,7 +120,7 @@ done
 
 echo ""
 echo "  [cleanup] restoring all local services..."
-"$(cd "$(dirname "$0")/../bin" && pwd)/llm-restore-providers"
+"${MODELMAN_PROVIDER[@]}" restore
 
 echo ""
 echo "Results saved to: $OUTFILE"

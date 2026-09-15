@@ -5,7 +5,6 @@ from __future__ import annotations
 import itertools
 import os
 import plistlib
-import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +12,7 @@ from pathlib import Path
 from modelman.benchmark.agent.pidriver import DirectRouteConfig, RowConfig
 from modelman.benchmark.agent.task import TaskBundle
 from modelman.benchmark.errors import BenchmarkError
+from modelman.providers import lifecycle
 from modelman.registry import Registry
 
 LITELLM_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.litellm.proxy.plist"
@@ -220,16 +220,21 @@ def preflight(
 ) -> None:
     """Fail fast on everything that would otherwise die mid-run, after
     already paying for the agent rows."""
-    missing_helpers = [
-        name
-        for name in ("llm-isolate-provider", "llm-restore-providers")
-        if shutil.which(name) is None
-    ]
-    if missing_helpers:
-        raise BenchmarkError(
-            f"isolation helper(s) not found on PATH: {', '.join(missing_helpers)}. "
-            "Ensure local-ai-setup/bin is on PATH."
-        )
+    # Fail before paying for a single agent row if a provider this suite
+    # needs can't be isolated on this machine (missing binary, missing
+    # LaunchAgent plist). Same purpose the old `which llm-isolate-provider`
+    # check served, asked of the backends that now do the isolating — and
+    # more precisely, since it names the actual unavailable provider.
+    unavailable = []
+    for provider_id in dict.fromkeys(row.provider_id for row in suite.rows):
+        backend = lifecycle.BACKENDS.get(provider_id)
+        if backend is None:
+            continue  # cloud (or otherwise un-isolated) provider — nothing to check
+        reason = backend.check_available()
+        if reason is not None:
+            unavailable.append(f"{provider_id}: {reason}")
+    if unavailable:
+        raise BenchmarkError(f"provider(s) unavailable: {'; '.join(unavailable)}")
 
     for row in suite.rows:
         if row.route == "direct" and row.provider_id not in suite.routes_direct:

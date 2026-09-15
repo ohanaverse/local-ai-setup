@@ -447,10 +447,11 @@ def rejudge_run(
     return outcomes
 
 
-# What bin/llm-isolate-provider can actually isolate — see
-# modelman.benchmark.isolation.SUPPORTED_PROVIDER_IDS, the single source of
-# truth this set now aliases instead of rebuilding from an unrelated
-# registry constant plus a one-off addition.
+# What modelman can actually isolate — see
+# modelman.benchmark.isolation.SUPPORTED_PROVIDER_IDS (itself a re-export of
+# the lifecycle backends' own constant), the single source of truth this set
+# aliases instead of rebuilding from an unrelated registry constant plus a
+# one-off addition.
 ISOLATABLE_PROVIDERS = isolation.SUPPORTED_PROVIDER_IDS
 
 
@@ -515,7 +516,7 @@ def run_suite(
                     )
                 elif row.provider_id == "mtplx":
                     # MTPLX is single-model-per-process; pass the repo id so
-                    # bin/llm-isolate-provider starts the requested model.
+                    # isolation starts the requested model.
                     # Pre-resolved onto the row at suite-load time (like the
                     # mlx_lm_server pairing fields above) rather than a live
                     # registry lookup here — suite.py's _expand_rows() always
@@ -541,8 +542,8 @@ def run_suite(
                     )
                 continue
             if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
-                # A cloud row contends with nothing on this machine, and running
-                # the helper for it fails outright — bin/llm-isolate-provider
+                # A cloud row contends with nothing on this machine, and
+                # isolating it fails outright — the lifecycle's BACKENDS registry
                 # knows only the local backends — which used to mark every cloud
                 # row ISOLATION_ERROR before a single request was made.
                 try:
@@ -584,7 +585,7 @@ def run_suite(
 
     # A failed restore must not discard a completed sweep: the local backends
     # are the least valuable thing in play here, the row data is not, and on
-    # this host `llm-restore-providers` can time out on llama.cpp while every
+    # this host a restore can time out on a wedged provider while every
     # row's data is perfectly good. Persist first, then surface the failure.
     restore_error: str | None = None
     if isolated_any:

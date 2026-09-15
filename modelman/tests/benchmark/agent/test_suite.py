@@ -292,13 +292,41 @@ def test_preflight_passes_when_everything_is_configured(tmp_path, monkeypatch):
     preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
 
 
-def test_preflight_missing_isolation_helper_raises(tmp_path, monkeypatch):
+def test_preflight_unavailable_provider_raises(tmp_path, monkeypatch):
+    """Preflight must fail before a single (paid) agent row runs if a
+    provider the suite needs can't be isolated on this machine — a missing
+    binary or LaunchAgent plist would otherwise only surface as an
+    ISOLATION_ERROR partway through the sweep. The check now asks the
+    lifecycle backend that actually does the isolating, so the message names
+    the provider and the real reason."""
+    from modelman.providers import lifecycle
+
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        lifecycle.BACKENDS["ollama"], "check_available", lambda: "ollama binary not found on PATH"
+    )
     suite = load_suite(_write_suite(tmp_path, _passing_suite_toml()), _registry())
     task = load_task(MINI_DRIFT)
-    with pytest.raises(BenchmarkError, match="llm-isolate-provider"):
+    with pytest.raises(BenchmarkError, match="ollama binary not found on PATH"):
         preflight(suite, _registry(), task, plist_path=tmp_path / "missing.plist")
+
+
+def test_preflight_ignores_providers_with_no_local_backend(tmp_path, monkeypatch):
+    """A cloud row contends with nothing on this machine and has no backend
+    to ask, so preflight must skip it rather than treating "not in BACKENDS"
+    as unavailable — that would block every suite with an openrouter row."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    cloud_registry = Registry(
+        providers=[ProviderEntry(id="openrouter", name="OpenRouter", location="cloud")],
+        models=[
+            ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="x")
+        ],
+    )
+    body = _passing_suite_toml().replace('models = ["ollama/a"]', 'models = ["openrouter/x"]')
+    body = body.replace('routes = ["direct"]', 'routes = ["litellm"]')
+    suite = load_suite(_write_suite(tmp_path, body), cloud_registry)
+    task = load_task(MINI_DRIFT)
+    preflight(suite, cloud_registry, task, plist_path=tmp_path / "missing.plist")
 
 
 def test_preflight_missing_direct_route_block_raises(tmp_path, monkeypatch):

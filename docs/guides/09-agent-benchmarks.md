@@ -22,7 +22,7 @@ uv run modelman benchmark agent list-suites --root ../benchmarks/suites
 uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml --dry-run
 ```
 
-Captured live on 2026-09-05 (one `ollama/glm-5.3-flash:cloud` row on the `day31-drift` task, judged by `anthropic/claude-opus-5` through OpenRouter — 90 s, 21 requests, 20 tool calls):
+Captured live on 2026-09-05 (one `ollama/glm-5.3-flash:cloud` row on the `day31-drift` task, judged by `anthropic/claude-opus-5` through OpenRouter — 90 s, 21 requests, 20 tool calls). Kept verbatim as a historical record (see `benchmarks/results/agent-bench-smoke-20260905-160301.md`) even though it predates both llamacpp's 2026-09-07 retirement and this port's issue #79 — the `[llm-restore-providers]`-prefixed message below is what the then-current bash `bin/llm-restore-providers` script actually printed at the time:
 
 ```bash
 uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml
@@ -36,7 +36,7 @@ uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml
 uv run modelman benchmark agent show --latest
 ```
 
-That run exits 1 *after* finishing: the sweep is complete and persisted, and only putting the local backends back failed (here, a `local.llamacpp.server` LaunchAgent pointing at a GGUF that no longer exists). The error names the directory that survived, and `--latest` still resolves to it — a failed restore never costs you the data. See Step 4 for what the run scored.
+That run exits 1 *after* finishing: the sweep is complete and persisted, and only putting the local backends back failed (here, a `local.llamacpp.server` LaunchAgent pointing at a GGUF that no longer exists — this specific failure mode can no longer happen today, since llamacpp is retired-only with `restore_action="skip"` and `modelman provider restore` never touches it; see [provider-artifacts.md](../reference/provider-artifacts.md)). The error names the directory that survived, and `--latest` still resolves to it — a failed restore never costs you the data. See Step 4 for what the run scored.
 
 ## Steps
 
@@ -54,7 +54,7 @@ A suite (`benchmarks/suites/*.toml`) picks a task and a `[[rows]]` matrix (model
 uv run modelman benchmark agent run --suite <path> [--row <label-or-index>]... [--passes N] [--skip-judge] [--dry-run]
 ```
 
-Local rows are grouped by provider and isolated once per group (stop-others, start, warmup) via the same `bin/llm-isolate-provider`/`bin/llm-restore-providers` helpers `modelman benchmark` uses — see [05-benchmarks](05-benchmarks.md) Step 1 for exactly what isolation does per backend. Judging always runs *after* `restore_providers()`, so a cloud judge call never contends with a loaded local model.
+Local rows are grouped by provider and isolated once per group (stop-others, start, warmup) via the same in-process `src/modelman/providers/lifecycle/orchestrate.py` isolate/restore functions `modelman benchmark` uses — see [05-benchmarks](05-benchmarks.md) Step 1 for exactly what isolation does per backend. Judging always runs *after* `restore_providers()`, so a cloud judge call never contends with a loaded local model.
 
 ### 4. Read the report
 

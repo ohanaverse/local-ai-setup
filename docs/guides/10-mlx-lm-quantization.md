@@ -12,7 +12,7 @@ Two independent features, both built on the same `mlx_lm.*` tooling bundled insi
 ## Prerequisites
 
 - omlx installed (`brew install omlx`) — this is where `mlx_lm.convert`/`dynamic_quant`/`dwq`/`server` actually live; none of them are on `PATH` directly, or a declared dependency of this repo. Override with `MLX_LM_BIN_DIR` if you maintain a separate `pip install`ed mlx-lm.
-- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on `PATH`).
+- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, `modelman provider` CLI runnable from `modelman/`).
 - For speculative decoding: a target and draft model that **share a tokenizer** — mlx-lm's speculative decoding only works across same-tokenizer pairs (this is generic mlx-lm decoding, not omlx's MTP/DFlash/VLM-MTP mechanisms, none of which apply here).
 
 ## TL;DR
@@ -25,13 +25,13 @@ bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/som
 #   [[models]] entry with provider_id = "omlx" and a [models.fetch]
 #   local_path = "/tmp/some-model-4bit" (absolute path).
 
-bin/llm-isolate-provider mlx_lm_server org/target-repo org/draft-repo
+uv run --directory modelman modelman provider isolate mlx_lm_server org/target-repo --draft org/draft-repo --json
 # → {"provider":"mlx_lm_server","model":"org/target-repo (+draft org/draft-repo)",
 #    "direct_url":"http://localhost:8001/v1/chat/completions","ok":true,"error":null}
 
 curl -s http://localhost:8001/v1/models
 
-bin/llm-restore-providers
+uv run --directory modelman modelman provider restore
 ```
 
 ## Steps
@@ -71,10 +71,10 @@ TUI → Add model → provider `mlx_lm_server` → dual-model form → target (r
 ### 4. Isolate and serve the pairing
 
 ```bash
-bin/llm-isolate-provider mlx_lm_server <target> <draft>
+uv run --directory modelman modelman provider isolate mlx_lm_server <target> --draft <draft>
 ```
 
-Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you must always pass the target and draft explicitly (positional args, or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`). This isolates on port 8001, backgrounded with a pidfile at `/tmp/local-ai-setup-mlx-lm-server.pid` (log at `/tmp/local-ai-setup-mlx-lm-server.log`) — not a LaunchAgent, since a plist would bake in one fixed pairing and defeat sweeping many pairings per session.
+Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you must always pass the target and draft explicitly (`<target>` positional + `--draft <draft>` — note `--draft` is a flag, not a second positional, since the port from the old bash isolation helper — or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`). This isolates on port 8001, backgrounded with a pidfile at `/tmp/local-ai-setup-mlx-lm-server.pid` (log at `/tmp/local-ai-setup-mlx-lm-server.log`) — not a LaunchAgent, since a plist would bake in one fixed pairing and defeat sweeping many pairings per session.
 
 ### 5. Expose and use it
 
@@ -90,17 +90,17 @@ curl -s http://localhost:8001/v1/chat/completions -d '{"model":"default","messag
 Check `/tmp/local-ai-setup-mlx-lm-server.log` for mlx_lm.server's draft/acceptance reporting to confirm speculative decoding is actually engaging (a tokenizer-mismatched pairing still serves, it just never speculates).
 
 ```bash
-bin/llm-isolate-provider omlx   # isolate something else
+uv run --directory modelman modelman provider isolate omlx   # isolate something else
 ```
 
-Confirms `mlx_lm_server` was stopped, port 8001 closed, pidfile removed — `bin/llm-restore-providers` does the same unconditionally at the end of every `modelman benchmark` run, even if `mlx_lm_server` was the last isolated provider.
+Confirms `mlx_lm_server` was stopped, port 8001 closed, pidfile removed — `modelman provider restore` does the same unconditionally at the end of every `modelman benchmark` run, even if `mlx_lm_server` was the last isolated provider.
 
 ## Gotchas
 
 - **modelman never deletes a `local_path` artifact.** A directory from `mlx_lm.convert`/`dwq` is user-produced (possibly hours of GPU time), not something modelman downloaded — deleting the registry entry (or a ready-off toggle) leaves the directory on disk. Clean up failed experiments with a manual `rm -rf`.
 - **No default target/draft pairing exists anywhere in this repo.** Every `mlx_lm_server` isolate call — manual or from `modelman benchmark` — must supply both sides; there's no fallback to guess from.
 - **`mlx_lm_server` is one-model-per-process**, unlike ollama (single daemon, any model) or omlx (one daemon, both 4-bit/6-bit variants). Sweeping multiple pairings in one benchmark run restarts the process between them.
-- **The omlx keg version drifts on `brew upgrade omlx`.** `bin/mlx-quantize` and the isolation helpers resolve `mlx_lm.*` by globbing the keg and taking the newest match — never hardcode a version path.
+- **The omlx keg version drifts on `brew upgrade omlx`.** `bin/mlx-quantize` and the `modelman provider isolate` lifecycle backends (`src/modelman/providers/lifecycle/binaries.py`) resolve `mlx_lm.*` by globbing the keg and taking the newest match — never hardcode a version path.
 
 ## Going deeper
 

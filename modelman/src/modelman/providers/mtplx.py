@@ -17,7 +17,7 @@ from .base import LocalModel, Provider, VariantSpec, _Runner
 from .registry import ProviderRegistry
 
 # The mtplx serve port and derived base URLs — the single source of
-# truth inside modelman: lifecycle.py (server management), registry.py
+# truth inside modelman: lifecycle/ (server management), registry.py
 # (the provider template's auth.base_url), and local_control.py (probe
 # fallback) all import from here. The bash (bin/lib/mtplx.sh) and Go
 # (wt/internal/localgate) sides each keep their own single in-file

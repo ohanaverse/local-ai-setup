@@ -1,6 +1,8 @@
 """Shared pytest fixtures."""
 
+import os
 import subprocess
+import urllib.error
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -50,6 +52,102 @@ def _never_call_real_ollama(monkeypatch):
     # _probe_running/_ollama_loaded_names explicitly.
     monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
     monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.backends.ollama._loaded_model_names",
+        lambda: [],
+    )
+
+
+_real_subprocess_run = subprocess.run
+
+# argv[0] basenames (plus the "mlx_lm.*" family) the suite must NEVER
+# actually execute: every one of them either drives a live local model
+# provider on this machine or bounces a real LaunchAgent. `launchctl`
+# would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
+# `mlx_lm.server` would tear down or spawn a real multi-GB local model
+# an agent may be using mid-request.
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "ollama"})
+_FAKE_BINARY_PREFIXES = ("mlx_lm.",)
+
+
+def _should_fake(argv0: str) -> bool:
+    """Match on the BASENAME, not the whole argv[0]: mtplx and mlx_lm.*
+    are invoked through `binaries.require_binary()`/`resolve_mlx_lm_bin()`,
+    which return absolute paths (e.g.
+    /opt/homebrew/Cellar/omlx/0.10.0/libexec/bin/mlx_lm.server)."""
+    name = os.path.basename(argv0)
+    return name in _FAKE_BINARIES or name.startswith(_FAKE_BINARY_PREFIXES)
+
+
+def _fake_provider_run(cmd, *args, **kwargs):
+    """Intercept every live-provider binary invocation; delegate everything
+    else to the real subprocess.run.
+
+    `subprocess` is one shared module object — `monkeypatch.setattr` on
+    ANY dotted path that resolves through it (e.g.
+    "modelman.providers.lifecycle.launchd.subprocess.run") replaces
+    `subprocess.run` globally for the whole interpreter, not just calls
+    made from launchd.py. That cuts both ways:
+
+    - A flat `MagicMock(return_value=...)` here would silently neuter
+      every other module's real subprocess.run call for the duration of
+      every test (git in benchmark/agent/workspace.py, `pi --version` in
+      runner.py, gates.py's test runners, litellm.py's restart command,
+      ...), which is exactly the regression a full-suite run caught —
+      hence the real-delegating fallback below.
+    - Conversely, ONE global patch is all the interception there is: a
+      per-module patch of `backends.omlx.subprocess.run` would be
+      overwritten by whichever autouse fixture patched the shared
+      `subprocess.run` last. So the allow-list has to name every binary
+      any backend shells out to, not just launchctl — otherwise
+      omlx/mtplx/mlx_lm calls fall through to the real binary whenever a
+      test forgets to stub them explicitly.
+
+    `ollama` is routed through `_fake_ollama_runner` rather than the
+    generic success below so it keeps the closed "not found" semantics
+    `_never_call_real_ollama` established for the provider-level runners.
+    """
+    argv = list(cmd) if isinstance(cmd, list | tuple) else [cmd]
+    argv0 = str(argv[0]) if argv else ""
+    if _should_fake(argv0):
+        if os.path.basename(argv0) == "ollama":
+            return _fake_ollama_runner(argv, **kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return _real_subprocess_run(cmd, *args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_live_providers(monkeypatch):
+    """The full suite must never poll a real localhost port, bounce a real
+    LaunchAgent, signal a real pid, or drive a real provider binary while
+    exercising the lifecycle primitives (probe/launchd/pidproc) and the
+    backends built on top of them."""
+    # Like `subprocess` above, `urllib.request` and `os` are each one
+    # shared module object — this patches urlopen/kill globally for the
+    # whole interpreter, not just calls made from probe.py/pidproc.py.
+    # Harmless today (probe.py is the only urlopen call site besides
+    # local_process.py, which shares its fate intentionally, and
+    # pidproc.py is the only os.kill call site in this codebase — grepped
+    # to confirm), but a future module that calls the real urlopen/kill
+    # directly would be silently neutered here too; if that ever bites,
+    # give it the same real-delegating wrapper `_fake_provider_run` uses
+    # above instead of widening this comment.
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.probe.urllib.request.urlopen",
+        MagicMock(side_effect=urllib.error.URLError("hermetic test")),
+    )
+    # One global patch, one allow-list: see `_fake_provider_run`. The
+    # dotted path only picks the module object to reach `subprocess`
+    # through — the replacement is process-wide, so it covers
+    # omlx/mtplx/mlx_lm calls made from their own backend modules too.
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.launchd.subprocess.run",
+        _fake_provider_run,
+    )
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.pidproc.os.kill",
+        lambda *a, **k: None,
+    )
 
 
 @pytest.fixture

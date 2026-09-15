@@ -9,58 +9,60 @@
 - **No other local model loaded.** Local MLX/GGUF models share the Apple Silicon GPU/RAM and distort each other's timings — only one local model may be loaded during any benchmark. Isolation (Step 1) enforces this for the *known* models; see Gotchas for the ollama leftover-caveat.
 - Models exposed through LiteLLM per [04-litellm-config](04-litellm-config.md). Default `modelman benchmark run` only picks local models (provider in `LOCAL_PROVIDERS`: ollama, omlx, mlx_lm_server, mtplx) with `exposed = true` in `~/.config/local-ai/modelman.toml` (`discover_targets`, `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/runner.py`); today that's `ollama/qwen3.8:27b-mlx`, `ollama/ornith-1.5:35b`, `omlx/mlx-community--Qwen3.8-27B-4bit`, and `mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality` (issue #66) — four local models, out of 27 exposed in total (thirteen ollama + twelve openrouter + one omlx + one mtplx). If a model you want isn't in that set, pass `--model`/`--family` to bypass the exposure filter, or `expose` it first (guide 04 §2).
 - Backends healthy: the three-port block in Verification answers (oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`). llama.cpp was retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).
-- modelman runnable from its repo (`uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`; modelman is not installed globally). Isolation helpers callable:
-  `bin/llm-isolate-provider <ollama|omlx|omlx-6bit>` and `bin/llm-restore-providers` from `/Users/keith/github/ohanaverse/local-ai-setup`.
+- modelman runnable from its repo (`uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`; modelman is not installed globally). Provider lifecycle CLI callable the same way:
+  `uv run modelman provider isolate <ollama|omlx|omlx-6bit>` and `uv run modelman provider restore` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` (or `uv run --directory modelman modelman provider ...` from the repo root — that's how the `benchmarks/` scripts invoke it).
 
 ## TL;DR
 
-<!-- UNVERIFIED — not run end-to-end from this session: the isolate call stops live services and the benchmark run takes minutes and mutates model state. The usage-error paths of both bin/ helpers were run live (see Step 1). -->
+<!-- UNVERIFIED — not run end-to-end from this session: the isolate call stops live services and the benchmark run takes minutes and mutates model state. The usage-error paths of the CLI were run live (see Step 1). -->
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
-bin/llm-isolate-provider omlx
+# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
+uv run modelman provider isolate omlx --json
 # → {"provider": "omlx", "model": "Ornith-1.5-35B-A3B-MLX-4bit",
 #    "direct_url": "http://localhost:8000/v1/chat/completions", "ok": true, "error": null}
 
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark run --family ornith-1.5:35b --passes 3
 # → Benchmark complete: <YYYYMMDD-HHMMSS>
 #   Results: /Users/keith/.config/local-ai/benchmarks/<YYYYMMDD-HHMMSS>
 
-# from: /Users/keith/github/ohanaverse/local-ai-setup
-bin/llm-restore-providers
-# → [llm-restore-providers] providers restored
+uv run modelman provider restore
+# → restored providers
 
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark show-results --latest   # prints summary.md
 ```
 
-Artifacts land in `/Users/keith/.config/local-ai/benchmarks/<run-id>/` (`summary.md`, `results.json`, `payload.json`; run-id = UTC `YYYYMMDD-HHMMSS` — from `src/modelman/benchmark/results.py` `write_results`). Note: `modelman benchmark run` calls the same two `bin/` helpers internally — it isolates before each target and restores in a `finally` block — so the manual isolate is a pre-flight and the manual restore is only needed if you isolated without running, or the run was hard-killed (SIGKILL/SIGTERM) — Ctrl-C still triggers modelman's restore.
+Artifacts land in `/Users/keith/.config/local-ai/benchmarks/<run-id>/` (`summary.md`, `results.json`, `payload.json`; run-id = UTC `YYYYMMDD-HHMMSS` — from `src/modelman/benchmark/results.py` `write_results`). Note: `modelman benchmark run` calls the same `orchestrate.isolate`/`orchestrate.restore` functions internally, in-process (`src/modelman/benchmark/isolation.py`) — it isolates before each target and restores in a `finally` block — so the manual isolate is a pre-flight and the manual restore is only needed if you isolated without running, or the run was hard-killed (SIGKILL/SIGTERM) — Ctrl-C still triggers modelman's restore.
 
 ## Steps
 
 ### 1. Isolate one provider
 
-`bin/llm-isolate-provider` stops every *other* local provider, then starts + warms the target (warmup = one `max_tokens: 1` chat request, retried up to 90 attempts until the server answers). Safe read-only probes, verified live from `/Users/keith/github/ohanaverse/local-ai-setup`:
+`modelman provider isolate` stops every *other* local provider, then starts + warms the target (warmup = one `max_tokens: 1` chat request, retried up to 90 attempts until the server answers). It's the CLI over `src/modelman/providers/lifecycle/orchestrate.py`; per-provider start/stop/warmup logic lives in one `Backend` subclass per provider under `src/modelman/providers/lifecycle/backends/` — this is an in-process port of the old `bin/llm-isolate-provider`/`bin/llm-restore-providers` bash scripts (issue #79; both deleted). Safe read-only probes, verified live from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`:
 
 ```bash
-bin/llm-isolate-provider            # no arg
+uv run modelman provider isolate            # no arg
 ```
 
 ```text
-usage: llm-isolate-provider <provider-id>
+Usage: modelman provider isolate [OPTIONS] {provider_id} [model]
+Try 'modelman provider isolate --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Missing argument 'provider_id'.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
+(exit 2.)
 
 ```bash
-bin/llm-isolate-provider notaprovider
+uv run modelman provider isolate notaprovider
 ```
 
 ```text
-unknown provider: notaprovider
+error: unknown provider: notaprovider
 ```
 (exit 1; the unknown-arg and no-arg paths exit before any service is touched.)
 
-Per-argument behavior (from the script itself, `bin/llm-isolate-provider`):
+Per-argument behavior (from `backends/ollama.py` and `backends/omlx.py`; unchanged from the bash version this replaced):
 
 | Arg | Stops | Starts + warms (model) | Serves on |
 |-----|-------|------------------------|-----------|
@@ -68,9 +70,9 @@ Per-argument behavior (from the script itself, `bin/llm-isolate-provider`):
 | `omlx` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup Ornith-1.5 4-bit (`Ornith-1.5-35B-A3B-MLX-4bit`) | `http://localhost:8000/v1/chat/completions` |
 | `omlx-6bit` | ollama (`ollama stop` + `ollama ps` poll) | `omlx start`; warmup Ornith-1.5 6-bit (`Ornith-1.5-35B-A3B-MLX-6bit`) | `http://localhost:8000/v1/chat/completions` |
 
-Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL`. On success it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — that contract is what modelman's adapter parses (`~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/isolation.py`).
+Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_OMLX_4BIT_MODEL`, `LLM_ISOLATE_OMLX_6BIT_MODEL` — this still works (the CLI deliberately keeps the env-var fallback for compatibility with the old bash helpers), but the **now-preferred** form is the explicit positional argument: `uv run modelman provider isolate ollama <model>` (or `--json` for the machine-readable envelope). With `--json`, it prints a JSON envelope (`provider`, `model`, `direct_url`, `ok`, `error`) — the same 5-key contract the bash script produced — which is what modelman's own benchmark adapter reads in-process (`src/modelman/benchmark/isolation.py`) without going through the CLI at all.
 
-`bin/llm-restore-providers` restarts all three services in parallel (ollama, oMLX, LiteLLM), skips any already answering its health URL, and exits 1 if any fails to come back.
+`uv run modelman provider restore` restarts all three services in parallel (ollama, oMLX, LiteLLM), skips any already answering its health URL, and exits 1 if any fails to come back; on success it prints `restored providers` (or the JSON envelope with `--json`).
 
 ### 2. Run `modelman benchmark`
 
@@ -185,13 +187,13 @@ ls /Users/keith/.config/local-ai/benchmarks/
 
 ## Gotchas
 
-- **Isolation is mandatory.** Local models share Apple Silicon GPU/RAM; a second loaded model skews every number in the run (this repo's `CLAUDE.md`). modelman enforces it internally — each target is isolated through `bin/llm-isolate-provider` before its requests and the whole stack is restored in a `finally` — which is why that helper must be on PATH — modelman locates it via `shutil.which` (`src/modelman/benchmark/isolation.py:23`).
+- **Isolation is mandatory.** Local models share Apple Silicon GPU/RAM; a second loaded model skews every number in the run (this repo's `CLAUDE.md`). modelman enforces it internally — each target is isolated through `src/modelman/providers/lifecycle/orchestrate.py` (called in-process, not via a subprocess or PATH lookup — issue #79) before its requests, and the whole stack is restored in a `finally` (`src/modelman/benchmark/isolation.py`).
 - **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service.
-- **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `bin/llm-isolate-provider omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. modelman always passes the provider id (`omlx`, never `omlx-6bit`), so an oMLX 6-bit target would be warmed as 4-bit — dormant today (no `omlx` provider in the registry yet), keep in mind for future backends.
-- **The isolate helper only stops the *named* ollama model.** `ollama stop` targets `ornith-1.5:35b` by default (`LLM_ISOLATE_OLLAMA_MODEL`); a different ollama model you left loaded earlier survives isolation and will still fight for GPU/RAM. Unload it by hand or override the env var.
-- **Fixed warmup model for `ollama` isolation.** `bin/llm-isolate-provider ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, default `ornith-1.5:35b`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `modelman benchmark run` (this also makes the `ollama stop`/poll path correct when isolating other backends). Two resident models = GPU/RAM contention = garbage timings.
+- **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `uv run modelman provider isolate omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. modelman always passes the provider id (`omlx`, never `omlx-6bit`), so an oMLX 6-bit target would be warmed as 4-bit — dormant today (no `omlx` provider in the registry yet), keep in mind for future backends.
+- **The isolate command only stops the *named* ollama model.** `ollama stop` targets `ornith-1.5:35b` by default (`LLM_ISOLATE_OLLAMA_MODEL`); a different ollama model you left loaded earlier survives isolation and will still fight for GPU/RAM. Unload it by hand or override the env var.
+- **Fixed warmup model for `ollama` isolation.** `uv run modelman provider isolate ollama` warms a FIXED model (`LLM_ISOLATE_OLLAMA_MODEL`, default `ornith-1.5:35b`), not the benchmark target — benchmarking any other ollama model requires `export LLM_ISOLATE_OLLAMA_MODEL=<target-model>` before `modelman benchmark run` (this also makes the `ollama stop`/poll path correct when isolating other backends). Two resident models = GPU/RAM contention = garbage timings.
 - **`--run-id` ignores `--results-dir`** — it reads `/Users/keith/.config/local-ai/benchmarks/<run-id>/summary.md` only.
-- **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); `bin/*` helpers use `#!/bin/bash`. Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
+- **Shebang split.** `benchmarks/*` scripts use Homebrew bash (`#!/opt/homebrew/bin/bash`); `bin/*` (now just `check-links` and `mlx-quantize`) uses `#!/bin/bash` (`check-links` is Python, `#!/usr/bin/env python3`). Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style).
 - **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/results/`; modelman runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.
 - **OpenRouter rows are N/A without an API key** (legacy scripts read `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`).
 - **Run modelman from the repo.** modelman is not installed globally. Always run it with `uv run modelman …` from `/Users/keith/github/ohanaverse/local-ai-setup/modelman`.
@@ -199,9 +201,9 @@ ls /Users/keith/.config/local-ai/benchmarks/
 ## Going deeper
 
 - Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-09-05-modelman-benchmark-design.md`
-- Isolation helpers, stop/start/warmup per backend: `/Users/keith/github/ohanaverse/local-ai-setup/bin/llm-isolate-provider`, `.../bin/llm-restore-providers`, and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
+- Provider lifecycle CLI + orchestration, stop/start/warmup per backend: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/providers/lifecycle/` (`cli.py` the `modelman provider` commands, `orchestrate.py` isolate/stop/stop-all/restore, `backends/` one module per provider), and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
 - Legacy benchmark docs + archived numbers: `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
-- modelman source: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` helper adapter)
+- modelman source: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` in-process lifecycle adapter)
 - Launching `wt` agents against the benchmarked models: [06-wt-agents-and-models](06-wt-agents-and-models.md)
 - Spend/usage data the proxy logs per benchmark request: [07-usage-and-spend](07-usage-and-spend.md)
 - Agentic (not single-turn) coding benchmarks — real task, gates + judge: [09-agent-benchmarks](09-agent-benchmarks.md)

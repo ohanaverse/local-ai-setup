@@ -11,9 +11,9 @@
 - `./benchmarks/ornith-1.5-benchmark [max_tokens]` — single-pass (3 Ornith-1.5-35B local variants + OpenRouter)
 - `modelman benchmark agent run --suite <path>` — agentic coding benchmark (real task, gates + judge); see `docs/guides/09-agent-benchmarks.md`
 - `./benchmarks/ornith-1.5-benchmark-multi N` — multi-pass
-- `bin/llm-isolate-provider <ollama|omlx|omlx-6bit|mtplx>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp branch retained but disabled — see `docs/reference/provider-artifacts.md`)
-- `bin/llm-isolate-provider mlx_lm_server <target> <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional args or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
-- `bin/llm-restore-providers` — bring all providers back up after a benchmark
+- `uv run --directory modelman modelman provider isolate <ollama|omlx|omlx-6bit|mtplx>` — stop others, start+warmup one (for `modelman benchmark`; llamacpp is retired-only, present in `BACKENDS` but excluded from `SUPPORTED_PROVIDER_IDS` — see `docs/reference/provider-artifacts.md`)
+- `uv run --directory modelman modelman provider isolate mlx_lm_server <target> --draft <draft>` — isolate a target+draft speculative-decoding pairing on port 8001; no default pairing exists, target/draft must always be passed (positional `target` + `--draft`, or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`)
+- `uv run --directory modelman modelman provider restore` — bring all providers back up after a benchmark
 - `bin/mlx-quantize <convert|dynamic-quant|dwq> --model <repo-or-path> [--mlx-path <out-dir>]` — thin wrapper around the omlx-bundled mlx_lm quantization tools; see `docs/guides/10-mlx-lm-quantization.md`
 - `make lint-shell` — validate `bash -n` and `shellcheck --severity=error` across `bin/` and `benchmarks/`
 - `make lint` — umbrella target (`lint-shell` + `check-links`); lighter than `test-all`
@@ -23,7 +23,7 @@
 
 ## Architecture
 - `benchmarks/` — bash benchmark scripts, docs, and `results/` (per-run markdown)
-- `bin/` — isolation helpers (`llm-isolate-provider`, `llm-restore-providers`) invoked by both `modelman benchmark` (via `modelman/src/modelman/benchmark/isolation.py`, by PATH) and the legacy benchmark scripts. These are monorepo-wide utilities; the modelman package calls them through `$PATH`, not by importing Python code.
+- `bin/` — monorepo-wide utilities not owned by any one package (`check-links`, `mlx-quantize`). Provider isolation used to live here as bash helpers (`llm-isolate-provider`/`llm-restore-providers`); that logic was ported to Python (issue #79) and now lives in `modelman/src/modelman/providers/lifecycle/` (`orchestrate.py` + `backends/`), exposed as the `modelman provider isolate/stop/stop-all/restore/list` CLI. `modelman benchmark` calls the orchestrator in-process (no subprocess, no PATH lookup); the benchmark scripts under `benchmarks/` call the CLI via `uv run --directory modelman modelman provider ...`.
 - `modelman/` — model registry TUI/CLI (Python/uv; `src/modelman`, own `CLAUDE.md`, own `Makefile`). Canonical owner of `registry.toml`, `modelman.toml` (exposure state), LiteLLM config writes, and the `modelman benchmark` tool; the agentic coding benchmark (`benchmark/agent/`) is a separate module tree under the same package
 - `wt/` — worktree agent launcher (Go module; `cmd/wt`, `internal/`, own `CLAUDE.md`, own `Makefile`). Reads modelman's `registry.toml` and `modelman.toml` (exposure + the per-model `running` flags behind the multi-model local-running gate) read-only; owns `~/.config/agent-wt/config.toml`, rotation + usage state
 - `Makefile` — lint target for shell scripts (root + wt), `check-links` (all tracked markdown), `test-all` (aggregates modelman + wt)
@@ -31,7 +31,7 @@
 - `.github/workflows/` — shell-ci (root lint), wt-ci (Go + wt lint), modelman-ci (Python)
 - LiteLLM config: `~/.config/litellm/config.yaml`
 - LaunchAgent plists: `~/Library/LaunchAgents/local.litellm.proxy.plist` (LiteLLM) — referenced by the isolation helpers. (The llama.cpp plist was retired 2026-09-07 — artifact + restore steps in `docs/reference/provider-artifacts.md`.)
-- `mlx_lm_server` provider — one target+draft speculative-decoding pairing served by `mlx_lm.server --draft-model` as a plain backgrounded subprocess (pidfile `/tmp/local-ai-setup-mlx-lm-server.pid`, `bin/lib/mlx-lm-server.sh`), never a LaunchAgent (one model per process; sweeping many pairings means restarting it between them, not baking one into a plist). `local_path`-sourced artifacts (from `bin/mlx-quantize`, or the `omlx`/`mlx_lm_server` providers' local-path fields) are user-produced and modelman never deletes them — cleanup after a failed experiment is a manual `rm -rf`. See `docs/reference/provider-artifacts.md` and `docs/guides/10-mlx-lm-quantization.md`.
+- `mlx_lm_server` provider — one target+draft speculative-decoding pairing served by `mlx_lm.server --draft-model` as a plain backgrounded subprocess (pidfile `/tmp/local-ai-setup-mlx-lm-server.pid`, driven by `modelman/src/modelman/providers/lifecycle/pidproc.py`'s generic pidfile-tracked-process helper plus `backends/mlx_lm_server.py`), never a LaunchAgent (one model per process; sweeping many pairings means restarting it between them, not baking one into a plist). `local_path`-sourced artifacts (from `bin/mlx-quantize`, or the `omlx`/`mlx_lm_server` providers' local-path fields) are user-produced and modelman never deletes them — cleanup after a failed experiment is a manual `rm -rf`. See `docs/reference/provider-artifacts.md` and `docs/guides/10-mlx-lm-quantization.md`.
 
 ## Key Gotchas
 - **Benchmark isolation is still mandatory**: `modelman benchmark` and the legacy benchmark scripts still enforce full exclusivity (only one local model loaded at a time) for clean measurement — local MLX/GGUF models share Apple Silicon GPU/RAM and distort each other's results otherwise. Normal (non-benchmark) usage via `modelman start`/the TUI's `s` keybinding allows multiple local models to run concurrently, subject to real per-provider process limits (see `modelman/CLAUDE.md`'s "Local-model lifecycle" section) — advisory only, not enforced.
@@ -40,7 +40,7 @@
 - **Shebang split**: benchmark scripts use `#!/opt/homebrew/bin/bash` (Homebrew bash); `bin/` helpers use `#!/bin/bash`. Exception: `bin/check-links` uses `#!/usr/bin/env python3` — regex/URL-decoding markdown link parsing isn't reasonable in bash.
 - **Results go to `/tmp/<benchmark>-<timestamp>.md`**; archive into `benchmarks/results/`.
 - **OpenRouter rows are skipped (N/A) without an API key**: the benchmark reads `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`; missing key → OpenRouter rows written as N/A.
-- **Guide docs embed live `litellm_exposed` snapshots**: guides 00, 02, 04, 05, 06, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all six go stale at once — `git grep -n "litellm_exposed = " docs/guides/` before and after touching modelman state to catch drift. (Run the same grep before and after *any* modelman state change — the list of affected guides may drift.)
+- **Guide docs embed live `exposed` snapshots**: guides 00, 02, 04, 05, 06, and 08 all show live `grep`/TOML output of `~/.config/local-ai/modelman.toml` exposure flags. Exposing/unexposing a model makes all six go stale at once — `git grep -n "exposed = " docs/guides/` before and after touching modelman state to catch drift (the field was renamed from `litellm_exposed`, which is now only a legacy read fallback). (Run the same grep before and after *any* modelman state change — the list of affected guides may drift.)
 
 ## Quick test commands
 

@@ -20,6 +20,7 @@ from modelman.benchmark.agent.pidriver import PiRunResult
 from modelman.benchmark.agent.runner import run_suite
 from modelman.benchmark.agent.suite import JudgeConfig, load_suite
 from modelman.benchmark.errors import BenchmarkError
+from modelman.providers import lifecycle
 from modelman.registry import DraftSpec, Fetch, ModelEntry, ProviderEntry, Registry
 
 MINI_DRIFT = Path(__file__).parent / "fixtures" / "tasks" / "mini-drift"
@@ -105,7 +106,14 @@ _no_diff_run = _fake_run()
 
 @pytest.fixture(autouse=True)
 def _hermetic_preflight(monkeypatch):
+    # shutil.which stub covers ollama/mtplx-style require_binary() checks;
+    # mlx_lm_server resolves via MLX_LM_BIN_DIR / a /opt/homebrew/Cellar/omlx
+    # glob instead (binaries.resolve_mlx_lm_bin), so it needs its own stub —
+    # the Cellar glob matches on dev Macs but not on CI.
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
+    monkeypatch.setattr(
+        lifecycle.BACKENDS["mlx_lm_server"], "check_available", lambda: None
+    )
 
 
 def test_run_suite_isolates_once_per_provider_group(tmp_path, monkeypatch):

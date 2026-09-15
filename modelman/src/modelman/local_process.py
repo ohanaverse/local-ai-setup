@@ -24,7 +24,8 @@ class ProcessResult:
     error: str | None
 
 
-# Provider ids that use an LLM_ISOLATE_*_MODEL env var in bin/llm-isolate-provider.
+# Provider ids whose lifecycle backend resolves its model from a single
+# LLM_ISOLATE_*_MODEL env var (backends/base.py's _resolve_model).
 # mlx_lm_server is deliberately absent: it takes target+draft as positional args.
 ENV_VAR_BY_PROVIDER = {
     "ollama": "LLM_ISOLATE_OLLAMA_MODEL",

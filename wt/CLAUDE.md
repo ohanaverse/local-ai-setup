@@ -157,6 +157,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
 | `internal/localgate/` | multi-model local-running gate (2026-09-14 design): probes every flagged model (except ollama, which trusts the flag) + shared Apply policy |
+| `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor (agent add/edit/delete) |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
 | `docs/superpowers/` | specs + plans |

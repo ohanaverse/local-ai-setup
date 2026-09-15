@@ -24,16 +24,20 @@ import (
 const probeTimeout = 2 * time.Second
 
 // omlxModelsURL and mlxLMServerModelsURL are the /v1/models endpoints
-// bin/llm-isolate-provider's own warmup logic treats as "provider is up"
-// for these two providers (see that script's start_omlx/start_mlx_lm_server
-// functions). Package-level vars so tests can point them at an
-// httptest.Server instead of the real localhost ports.
+// modelman's own warmup logic treats as "provider is up" for these two
+// providers (see modelman/src/modelman/providers/lifecycle/backends/
+// omlx.py and backends/mlx_lm_server.py — formerly bin/llm-isolate-
+// provider's start_omlx/start_mlx_lm_server functions, deleted issue #79).
+// Package-level vars so tests can point them at an httptest.Server instead
+// of the real localhost ports.
 var (
 	omlxModelsURL        = "http://localhost:8000/v1/models"
 	mlxLMServerModelsURL = "http://localhost:8001/v1/models"
 	// Port 8003 is mtplx's fixed serve port; modelman's single source is
-	// modelman/providers/mtplx.py (MTPLX_PORT). Bash (bin/lib/mtplx.sh) and
-	// Go each carry the number once — keep them in lockstep if it moves.
+	// modelman/providers/mtplx.py (MTPLX_PORT), also imported by
+	// modelman/providers/lifecycle/backends/mtplx.py. Go carries the number
+	// once here — keep it in lockstep if it moves (the old bash duplicate,
+	// bin/lib/mtplx.sh, was deleted issue #79).
 	mtplxModelsURL = "http://localhost:8003/v1/models"
 )
 
@@ -137,8 +141,9 @@ func Available(m config.Model) bool {
 		}
 		return false
 	case "mlx_lm_server":
-		// One target+draft pairing per process — bin/llm-isolate-provider's
-		// mlx_lm_server branch is the only thing that starts one, and
+		// One target+draft pairing per process — modelman's
+		// MlxLmServerBackend (modelman/src/modelman/providers/lifecycle/
+		// backends/mlx_lm_server.py) is the only thing that starts one, and
 		// mlx_lm.server loads its model before serving, so a non-empty
 		// /v1/models is already model-accurate. An exact-name check is not
 		// possible here: the server reports the target string it was
