@@ -843,3 +843,28 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	}
 }
 
+// TestRunAgentCmdSkipsPriceNoticeForCommandAgent verifies the pricing
+// reminder does NOT fire for command agents (e.g. shell), which launch with
+// a zero-value config.Model (m.ID == "") and never touch a priced model —
+// the reminder is meaningless there and was previously firing unconditionally.
+func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
+	prevNotice := emitPriceNotice
+	t.Cleanup(func() { emitPriceNotice = prevNotice })
+
+	called := false
+	emitPriceNotice = func() { called = true }
+
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+
+	cmd := exec.Command(truePath)
+	if err := runAgentCmd(cmd, "shell", config.Model{}); err != nil {
+		t.Fatalf("runAgentCmd() error: %v", err)
+	}
+	if called {
+		t.Error("emitPriceNotice was invoked for a command agent (m.ID == \"\")")
+	}
+}
+

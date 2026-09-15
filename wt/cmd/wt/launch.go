@@ -198,7 +198,12 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
 	// summary would glue to that partial output. Println adds the trailing
 	// newline itself, so the line is always self-terminated.
 	fmt.Println("\n" + agents.Summary(agent, m, time.Since(start)))
-	emitPriceNotice()
+	// Command agents (e.g. shell) launch with a zero-value config.Model
+	// (m.ID == "") and never touch a priced model, so the reminder is
+	// meaningless for them — same convention survey.PromptRun already uses.
+	if m.ID != "" {
+		emitPriceNotice()
+	}
 	survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
 	if err != nil {
 		var ee *exec.ExitError

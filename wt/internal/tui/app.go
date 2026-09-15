@@ -1017,7 +1017,12 @@ func printPendingSummaryAndSurvey() {
 		// Println adds the trailing newline itself.
 		fmt.Println("\n" + pendingSummary)
 		pendingSummary = ""
-		emitPriceNotice()
+		// Command agents (e.g. shell) record pendingSurveyState with
+		// m.ID == "" and never touch a priced model, so the reminder is
+		// meaningless for them — same convention runSurvey already uses.
+		if pendingSurveyState.m.ID != "" {
+			emitPriceNotice()
+		}
 	}
 	if pendingSurveyState.agent != "" {
 		runSurvey(pendingSurveyState.agent, pendingSurveyState.m)
