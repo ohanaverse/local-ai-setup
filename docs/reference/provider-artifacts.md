@@ -89,7 +89,12 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
      `benchmarks/lib/benchmark-common.sh`)
    - flip `LlamaCppBackend.restore_action` from `"skip"` to `"restart"`
      (`modelman/src/modelman/providers/lifecycle/backends/llamacpp.py`) so
-     `modelman provider restore` restarts the LaunchAgent again
+     `modelman provider restore` restarts the LaunchAgent again. This is a
+     one-field change on purpose: `LlamaCppBackend.restore()` is already
+     implemented and tested (health probe → `launchctl load -w` → wait for
+     port 8080, raising if it never answers), and is gated on
+     `restore_action == "restart"`, so flipping the field is all that is
+     needed — no method to write.
    - remove the UNUSED marker from `modelman/src/modelman/providers/llamacpp.py`
    - drop the retirement notes from `docs/guides/` and root `CLAUDE.md`
 

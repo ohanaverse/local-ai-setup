@@ -21,7 +21,10 @@ are in bash today:
 
 from __future__ import annotations
 
+import urllib.request
+
 from .. import launchd, probe
+from ..envelope import LifecycleError
 from .base import Backend, StartPlan
 
 LLAMACPP_PORT = 8080
@@ -43,7 +46,11 @@ class LlamaCppBackend(Backend):
     # provider's case arm guards its teardown with `[ -n "$SOLO" ] ||`,
     # while `llamacpp)` runs `stop_all_local llamacpp` unconditionally.
     respects_solo = False
-    # bin/llm-restore-providers never restarts llamacpp (retired 2026-09-07).
+    # llamacpp is retired (2026-09-07), so it is deliberately NOT part of
+    # the standing baseline `orchestrate.restore()` brings back. Flipping
+    # this one field to "restart" is the documented re-enable step in
+    # docs/reference/provider-artifacts.md — `restore()` below is a real,
+    # tested implementation precisely so that flip works on its own.
     restore_action = "skip"
 
     def check_available(self) -> str | None:
@@ -76,6 +83,31 @@ class LlamaCppBackend(Backend):
             return None
         # Literal port number, matching bash's hardcoded warning text.
         return "llama.cpp still listening on port 8080"
+
+    def restore(self) -> None:
+        """Bring the LaunchAgent-managed llama.cpp server back up.
+
+        Guarded by `restore_action`, which is `"skip"` today — so
+        `orchestrate.restore()` never calls this on the current retired
+        configuration. It exists anyway because the re-enable runbook
+        (docs/reference/provider-artifacts.md) documents flipping
+        `restore_action` to `"restart"` as a single-field change: without a
+        real override, that flip would land on `Backend.restore()`'s
+        inherited no-op and report success while llama.cpp stayed down.
+
+        Same shape as `OmlxBackend.restore()`: one 2s health probe (not a
+        poll loop), then load the plist and wait for the port to open.
+        """
+        if self.restore_action != "restart":
+            return
+        try:
+            urllib.request.urlopen(LLAMACPP_HEALTH_URL, timeout=2.0)  # noqa: S310 — localhost probe
+            return
+        except OSError:
+            pass
+        launchd.load(launchd.LLAMACPP_PLIST)
+        if not probe.wait_for_port_open(LLAMACPP_HEALTH_URL, timeout=probe.RESTORE_WAIT_TIMEOUT):
+            raise LifecycleError(f"llamacpp did not come back up ({LLAMACPP_HEALTH_URL})")
 
 
 LLAMACPP = LlamaCppBackend()
