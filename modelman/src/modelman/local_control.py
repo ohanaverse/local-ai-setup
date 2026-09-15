@@ -492,6 +492,19 @@ def _discovered_models(
     ]
 
 
+def discover_unregistered_models(registry: Registry) -> list[DiscoveredModel]:
+    """Every on-disk artifact from an in-scope local provider with no
+    matching registry.toml entry — the standalone entry point the TUI's
+    models screen uses to surface discovered models. Reuses the same
+    enumeration and name-matching logic `modelman start`'s no-arg
+    inventory listing already relies on
+    (_provider_local_models/_discovered_models), so the TUI never needs
+    its own provider-scanning code.
+    """
+    local_map, _unqueryable = _provider_local_models(registry)
+    return _discovered_models(registry, local_map)
+
+
 def _find_discovered(registry: Registry, name: str) -> list[DiscoveredModel]:
     """Unregistered on-disk artifacts, across every in-scope provider, whose
     native name matches `name` (leniently, per _name_matches: a user may type
