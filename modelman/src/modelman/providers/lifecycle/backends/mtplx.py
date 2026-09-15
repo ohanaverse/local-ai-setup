@@ -52,14 +52,16 @@ class MtplxBackend(PidfileTrackedBackend):
         return None
 
     def resolve(self, model: str | None, extra_args: tuple[str, ...]) -> StartPlan:
-        """The MTPLX repo id to serve: the explicit `model`, else the single
-        mtplx model in the registry. With no explicit model and more than
-        one mtplx entry, refuse rather than guess — a caller that failed to
-        forward the model name would otherwise silently serve (and
-        benchmark) the wrong weights with no error."""
-        if model:
-            resolved = model
-        else:
+        """The MTPLX repo id to serve: the explicit `model`, else the first
+        positional `extra_args` entry (how local_control.py forwards it —
+        isolate_provider() only ever populates `model` from an env-var
+        lookup, and mtplx is deliberately excluded from that mapping), else
+        the single mtplx model in the registry. With no explicit model and
+        more than one mtplx entry, refuse rather than guess — a caller that
+        failed to forward the model name would otherwise silently serve
+        (and benchmark) the wrong weights with no error."""
+        resolved = model or self._positional_arg(extra_args, 0)
+        if not resolved:
             registry = load_registry()
             matches = [m.model_name for m in registry.models if m.provider_id == "mtplx"]
             if len(matches) == 1:

@@ -177,6 +177,13 @@ class Backend(ABC):
             raise LifecycleError(required_message)
         return resolved
 
+    @staticmethod
+    def _positional_arg(extra_args: tuple[str, ...], index: int) -> str:
+        """The `extra_args[index]` entry, or "" if absent/empty — the
+        shared positional-arg-as-absent convention `resolve()` uses
+        (mtplx's single model slot, mlx_lm_server's target/draft pair)."""
+        return extra_args[index] if len(extra_args) > index and extra_args[index] else ""
+
 
 class PidfileTrackedBackend(Backend):
     """Shared base for a backend that runs as a single plain backgrounded

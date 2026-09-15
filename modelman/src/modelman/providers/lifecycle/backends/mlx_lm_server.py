@@ -71,11 +71,9 @@ class MlxLmServerBackend(PidfileTrackedBackend):
         resolve() first and reject a bad request before touching anything
         else.
         """
-        positional_target = extra_args[0] if extra_args and extra_args[0] else ""
-        target = model or positional_target or os.environ.get(TARGET_ENV_VAR, "")
+        target = model or self._positional_arg(extra_args, 0) or os.environ.get(TARGET_ENV_VAR, "")
 
-        positional_draft = extra_args[1] if len(extra_args) > 1 and extra_args[1] else ""
-        draft = positional_draft or os.environ.get(DRAFT_ENV_VAR, "")
+        draft = self._positional_arg(extra_args, 1) or os.environ.get(DRAFT_ENV_VAR, "")
         if not target or not draft:
             raise LifecycleError(
                 "mlx_lm_server requires target+draft: run `modelman provider "
