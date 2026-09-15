@@ -1,152 +1,323 @@
 import json
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from modelman.providers.lifecycle import (
-    LifecycleResult,
-    _start_mtplx_serve,
-    isolate,
-    stop,
-    stop_all,
-)
+from modelman.providers.lifecycle import LifecycleResult, isolate, stop, stop_all
+from modelman.providers.lifecycle.backends.base import StartPlan
+
+# NOTE: mtplx's own internals (resolve()'s registry-ambiguity logic, the
+# --model-id pinning, the solo-restart early-raise in
+# replace_own_occupant(), and the stop_and_wait() port-closed bug fix) now
+# live in modelman.providers.lifecycle.backends.mtplx and are tested in
+# tests/providers/lifecycle/backends/test_mtplx.py. The tests below cover
+# only what still genuinely belongs to __init__.py: isolate()'s/stop()'s
+# own dispatch control flow (delegating to MTPLX's methods for mtplx, to
+# the bash helper for every other provider) and _stop_others/
+# _delegate_isolate/_delegate_stop_all/stop_all/_main, all unchanged by
+# this task.
 
 
-def _mtplx_registry():
-    from modelman.registry import ModelEntry, Registry
-
-    return Registry(
-        providers=[],
-        models=[
-            ModelEntry(
-                id="mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
-                family="qwen3.8",
-                provider_id="mtplx",
-                model_name="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
-            )
-        ],
-    )
+def _mtplx_plan(model: str = "Some/Model") -> StartPlan:
+    return StartPlan(model=model, direct_url="http://localhost:8003/v1/chat/completions")
 
 
-def test_isolate_mtplx_starts_serve_and_warmup():
-    """isolate('mtplx') must stop other providers, start mtplx serve for the
-    registry's mtplx model, wait for it to come up, and run a warmup call
-    before reporting success. Skipping any of these steps would return
-    ok=True for a server that isn't actually ready to take chat
-    completions."""
+# --- isolate("mtplx", ...) control flow ------------------------------------
+
+
+def test_isolate_mtplx_keep_path_warms_without_restarting():
+    """isolate() must keep semantics: when MTPLX is already serving the
+    resolved model, it must (unless solo) stop every OTHER provider via
+    _stop_others(keep="mtplx") and only warm the existing server — never
+    call start()/wait_ready(). This is __init__.py's own control-flow
+    contract, now expressed as calls into MTPLX's backend methods instead
+    of the deleted private functions, and must stay byte-for-byte
+    identical to today's behavior."""
+    plan = _mtplx_plan()
     with (
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        # _start_mtplx_serve now returns the Popen handle isolate() must
-        # forward into _wait_for_model — configure the mock's return value
-        # explicitly so this flow stays visible even though Mock()'s
-        # implicit MagicMock return would already satisfy it.
-        patch("modelman.providers.lifecycle._start_mtplx_serve", return_value=MagicMock()) as mock_start,
-        patch("modelman.providers.lifecycle._wait_for_model") as mock_wait,
-        patch("modelman.providers.lifecycle._warmup") as mock_warmup,
-        patch("modelman.providers.lifecycle.load_registry", return_value=_mtplx_registry()),
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=True),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle.MTPLX.start") as mock_start,
+        patch("modelman.providers.lifecycle.MTPLX.wait_ready") as mock_wait_ready,
+        patch("modelman.providers.lifecycle.MTPLX.warm") as mock_warm,
     ):
-        result = isolate("mtplx")
-    mock_stop.assert_called_once()
-    mock_start.assert_called_once_with("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
-    mock_wait.assert_called_once_with("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", mock_start.return_value)
-    mock_warmup.assert_called_once()
+        result = isolate("mtplx", "Some/Model")
+    mock_stop_others.assert_called_once_with(keep="mtplx")
+    mock_start.assert_not_called()
+    mock_wait_ready.assert_not_called()
+    mock_warm.assert_called_once_with(plan)
     assert result.ok is True
     assert result.provider == "mtplx"
+    assert result.model == "Some/Model"
     assert result.direct_url == "http://localhost:8003/v1/chat/completions"
 
 
-def test_isolate_mtplx_uses_explicit_model():
-    """An explicit model argument to isolate('mtplx', model) must be
-    forwarded to _start_mtplx_serve verbatim rather than being ignored in
-    favor of the registry default. The positional arg is the only way a
-    benchmark sweep selects which model gets served; a forwarding gap would
-    silently serve the registry default instead."""
+def test_isolate_mtplx_different_model_restarts():
+    """A different model (or no server) must take the full restart path:
+    mtplx is single-model-per-process, so serving model B means a stop +
+    respawn, and (non-solo) _stop_others must tear mtplx down too (no
+    keep)."""
+    plan = _mtplx_plan()
     with (
-        patch("modelman.providers.lifecycle._stop_others"),
-        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
-        patch("modelman.providers.lifecycle._wait_for_model"),
-        patch("modelman.providers.lifecycle._warmup"),
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=False),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle.MTPLX.replace_own_occupant") as mock_replace,
+        patch("modelman.providers.lifecycle.MTPLX.start") as mock_start,
+        patch("modelman.providers.lifecycle.MTPLX.wait_ready") as mock_wait_ready,
+        patch("modelman.providers.lifecycle.MTPLX.warm") as mock_warm,
     ):
-        isolate("mtplx", "Some/Explicit-Model")
-    mock_start.assert_called_once_with("Some/Explicit-Model")
+        result = isolate("mtplx", "Some/Model")
+    mock_stop_others.assert_called_once_with()
+    mock_replace.assert_not_called()
+    mock_start.assert_called_once_with(plan)
+    mock_wait_ready.assert_called_once_with(plan)
+    mock_warm.assert_called_once_with(plan)
+    assert result.ok is True
 
 
-def test_isolate_mtplx_no_model_in_registry_returns_error():
-    """isolate('mtplx') must return an error envelope, not raise, when the
-    registry has no mtplx model configured. An uncaught exception here
-    would crash the isolation helper's JSON-envelope contract that the bash
-    shim and benchmark tooling depend on."""
-    from modelman.registry import Registry
+def test_isolate_solo_different_model_stops_only_mtplx():
+    """solo=True on a different-model isolate must stop only mtplx's own
+    occupant (MTPLX.replace_own_occupant), never the sibling providers via
+    _stop_others — this is the same-provider-only local-model lifecycle's
+    whole point: starting mtplx must not tear down an unrelated
+    ollama/omlx instance running alongside it."""
+    plan = _mtplx_plan("org/new")
+    with (
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=False),
+        patch("modelman.providers.lifecycle.MTPLX.replace_own_occupant") as mock_replace,
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle.MTPLX.start") as mock_start,
+        patch("modelman.providers.lifecycle.MTPLX.wait_ready"),
+        patch("modelman.providers.lifecycle.MTPLX.warm"),
+    ):
+        result = isolate("mtplx", "org/new", solo=True)
+    mock_replace.assert_called_once_with(plan)
+    mock_stop_others.assert_not_called()
+    mock_start.assert_called_once_with(plan)
+    assert result.ok is True
+
+
+def test_isolate_solo_replace_own_occupant_failure_prevents_start():
+    """A replace_own_occupant() failure (the solo-restart early-raise,
+    tested directly in test_mtplx.py) must propagate immediately out of
+    isolate(), which must never call start() afterward — matching today's
+    behavior where a failed solo stop never falls through to spawning a
+    new server."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    plan = _mtplx_plan("org/new")
+    with (
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=False),
+        patch(
+            "modelman.providers.lifecycle.MTPLX.replace_own_occupant",
+            side_effect=LifecycleError("mtplx binary not found on PATH"),
+        ),
+        patch("modelman.providers.lifecycle.MTPLX.start") as mock_start,
+    ):
+        result = isolate("mtplx", "org/new", solo=True)
+    mock_start.assert_not_called()
+    assert result.ok is False
+    assert result.error == "mtplx binary not found on PATH"
+
+
+def test_isolate_mtplx_keep_path_stop_others_failure_does_not_teardown():
+    """A _stop_others(keep='mtplx') failure on the keep path must NOT
+    trigger MTPLX.stop_and_wait() teardown: the mtplx server itself is
+    healthy and untouched — only stopping the OTHER providers failed,
+    which has nothing to do with mtplx's health and must not tear it
+    down."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    plan = _mtplx_plan()
+    with (
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=True),
+        patch(
+            "modelman.providers.lifecycle._stop_others",
+            side_effect=LifecycleError("failed to stop other providers"),
+        ),
+        patch("modelman.providers.lifecycle.MTPLX.warm") as mock_warm,
+        patch("modelman.providers.lifecycle.MTPLX.stop_and_wait") as mock_cleanup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_warm.assert_not_called()
+    mock_cleanup.assert_not_called()
+    assert result.ok is False
+
+
+def test_isolate_mtplx_keep_path_tears_down_wedged_server_on_warmup_failure():
+    """A keep-path warmup failure (server answers /v1/models but hangs or
+    errors on chat completions — a wedged server) must tear the server
+    down via MTPLX.stop_and_wait(), not leave it running.
+
+    Without this, the keep branch never sets `started`, so the except
+    block's `if started: MTPLX.stop_and_wait()` teardown never fires — the
+    wedged server stays up forever, and every future isolate() call just
+    re-probes it as 'serving', retries the same doomed warmup, and fails
+    again with no path to recovery short of a manual `mtplx stop`."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    plan = _mtplx_plan()
+    with (
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=True),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch(
+            "modelman.providers.lifecycle.MTPLX.warm",
+            side_effect=LifecycleError("failed to warm up"),
+        ),
+        patch("modelman.providers.lifecycle.MTPLX.stop_and_wait") as mock_cleanup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_stop_others.assert_called_once_with(keep="mtplx")
+    mock_cleanup.assert_called_once()
+    assert result.ok is False
+    assert "failed to warm up" in (result.error or "")
+
+
+def test_isolate_stops_serve_when_wait_ready_fails():
+    """A half-started isolate (serve up, model load/warmup failed) must
+    stop the spawned mtplx serve via MTPLX.stop_and_wait().
+
+    Otherwise the orphan holds port 8003 and GPU/RAM while local_control
+    clears the running-model marker on failure, so nothing tears it down —
+    violating the one-local-model-at-a-time invariant this module exists
+    to enforce."""
+    from modelman.providers.lifecycle import LifecycleError
+
+    plan = _mtplx_plan()
+    with (
+        patch("modelman.providers.lifecycle.MTPLX.resolve", return_value=plan),
+        patch("modelman.providers.lifecycle.MTPLX.already_serving", return_value=False),
+        patch("modelman.providers.lifecycle._stop_others"),
+        patch("modelman.providers.lifecycle.MTPLX.start"),
+        patch(
+            "modelman.providers.lifecycle.MTPLX.wait_ready",
+            side_effect=LifecycleError("timed out"),
+        ),
+        patch("modelman.providers.lifecycle.MTPLX.warm"),
+        patch("modelman.providers.lifecycle.MTPLX.stop_and_wait") as mock_cleanup,
+    ):
+        result = isolate("mtplx", "Some/Model")
+    mock_cleanup.assert_called_once()
+    assert result.ok is False
+    assert "timed out" in (result.error or "")
+
+
+def test_isolate_fails_before_any_teardown_when_resolve_raises():
+    """isolate('mtplx') must return an error envelope, not raise, when
+    MTPLX.resolve() fails (e.g. no mtplx model configured) — and must not
+    call _stop_others or MTPLX.stop_and_wait, since nothing was ever
+    started."""
+    from modelman.providers.lifecycle import LifecycleError
 
     with (
-        patch("modelman.providers.lifecycle._stop_others"),
-        patch("modelman.providers.lifecycle.load_registry", return_value=Registry()),
+        patch(
+            "modelman.providers.lifecycle.MTPLX.resolve",
+            side_effect=LifecycleError("no mtplx model in the registry"),
+        ),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle.MTPLX.stop_and_wait") as mock_cleanup,
     ):
         result = isolate("mtplx")
     assert result.ok is False
     assert "no mtplx model" in (result.error or "")
+    mock_stop_others.assert_not_called()
+    mock_cleanup.assert_not_called()
 
 
-def test_start_mtplx_serve_pins_model_id():
-    """_start_mtplx_serve must always pass --model-id explicitly to
-    `mtplx serve`. Without it, mtplx derives its own slug for /v1/models
-    that never matches the org/model repo id _wait_for_model polls for,
-    so isolation times out even though the server is healthy (see the
-    2026-09-10 live smoke test note below)."""
-    # Live smoke test (2026-09-10) found that mtplx serve, without
-    # --model-id, reports a slug it derives from the artifact (e.g.
-    # "mtplx-qwen38-27b-optimized-quality") in /v1/models — never the
-    # org/model repo id _wait_for_model polls for — so isolation timed
-    # out even though the server was healthy. Pinning --model-id to the
-    # resolved model makes /v1/models report exactly what's expected.
+def test_isolate_registry_error_returns_envelope_not_traceback():
+    """A corrupt registry.toml surfaces from MTPLX.resolve() as a
+    RegistryError (NOT a LifecycleError) — isolate()'s except clause must
+    still catch it and return an ok=False envelope, never a raw
+    traceback, since the bash shim and benchmark isolation parse stdout as
+    JSON."""
+    from modelman.registry import RegistryError
+
     with (
-        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._wait_for_port_closed"),
-        patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
-        patch("builtins.open", mock_open()),
-        patch("modelman.providers.lifecycle.time.sleep"),
+        patch(
+            "modelman.providers.lifecycle.MTPLX.resolve",
+            side_effect=RegistryError("corrupt"),
+        ),
+        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
+        patch("modelman.providers.lifecycle.MTPLX.stop_and_wait") as mock_cleanup,
     ):
-        mock_popen.return_value = MagicMock(pid=1234, poll=MagicMock(return_value=None))
-        _start_mtplx_serve("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
-    args = mock_popen.call_args.args[0]
-    assert "--model-id" in args
-    assert args[args.index("--model-id") + 1] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+        result = isolate("mtplx")
+    assert result.ok is False
+    assert "corrupt" in (result.error or "")
+    # The failure happened before serve started: nothing to tear down,
+    # and stop-others must not have run either (fail before any teardown).
+    mock_stop_others.assert_not_called()
+    mock_cleanup.assert_not_called()
 
 
-def test_start_mtplx_serve_does_not_stop_mtplx_again():
-    """isolate() already stops mtplx (via _stop_others()'s stop-all) before
-    calling _start_mtplx_serve(). A second _stop_mtplx() call here just pays
-    an extra 10s-grace subprocess + port-poll for no behavioral benefit."""
-    with (
-        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_stop,
-        patch("modelman.providers.lifecycle._wait_for_port_closed"),
-        patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
-        patch("builtins.open", mock_open()),
-        patch("modelman.providers.lifecycle.time.sleep"),
+def test_cli_registry_error_prints_json_envelope(capsys):
+    """The CLI entry point must answer a corrupt registry with a JSON
+    envelope on stdout and exit 1 — this is the bash-shim stdout contract
+    that modelman/benchmark/isolation.py parses (invalid JSON there
+    surfaces as the non-actionable 'isolation helper returned invalid
+    JSON')."""
+    from modelman.providers.lifecycle import _main
+    from modelman.registry import RegistryError
+
+    with patch(
+        "modelman.providers.lifecycle.MTPLX.resolve",
+        side_effect=RegistryError("corrupt"),
     ):
-        mock_popen.return_value = MagicMock(pid=1234, poll=MagicMock(return_value=None))
-        _start_mtplx_serve("org/repo")
-    mock_stop.assert_not_called()
+        code = _main(["isolate", "mtplx"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert out["ok"] is False
+    assert "corrupt" in out["error"]
 
 
-def test_stop_mtplx_runs_mtplx_stop():
-    """subprocess.run must be invoked with the shutil.which-resolved binary
-    path, not a bare "mtplx" literal — matching _start_mtplx_serve's own
-    resolve-once-then-reuse pattern. Mocking shutil.which also makes this
-    test hermetic: it previously depended on a real `mtplx` being on the
-    ambient PATH to reach the (correctly, but accidentally) same result."""
-    with (
-        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle.subprocess.run") as mock_run,
+def test_cli_prints_json_envelope(capsys):
+    """The CLI's stdout on success must be exactly the JSON envelope and
+    nothing else — stdout IS the contract the bash shim and
+    modelman/benchmark/isolation.py parse. A stray traceback or empty
+    stdout here surfaces downstream only as "isolation helper returned
+    invalid JSON", not the real cause."""
+    from modelman.providers.lifecycle import _main
+
+    with patch(
+        "modelman.providers.lifecycle.isolate",
+        return_value=LifecycleResult("mtplx", "m", "http://localhost:8003/v1/chat/completions", True, None),
     ):
-        mock_run.return_value.returncode = 0
+        rc = _main(["isolate", "mtplx"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data == {"provider": "mtplx", "model": "m", "direct_url": "http://localhost:8003/v1/chat/completions", "ok": True, "error": None}
+
+
+# --- stop("mtplx") control flow --------------------------------------------
+
+
+def test_stop_mtplx_returns_ok_true_on_clean_stop():
+    with patch("modelman.providers.lifecycle.MTPLX.stop_and_wait", return_value=None):
         result = stop("mtplx")
-    mock_run.assert_called_once()
-    args = mock_run.call_args.args[0]
-    assert args[:2] == ["/usr/local/bin/mtplx", "stop"]
-    assert "--port" in args and "8003" in args
     assert result.ok is True
+    assert result.error is None
+    assert result.provider == "mtplx"
+    assert result.direct_url == "http://localhost:8003/v1/chat/completions"
+
+
+def test_stop_mtplx_returns_ok_false_with_warning_as_error():
+    """stop()'s mtplx branch must translate a MTPLX.stop_and_wait()
+    warning into ok=False with that warning as the error text, matching
+    the file-wide convention every other dispatch path
+    (_delegate_isolate/_delegate_stop_all) already uses."""
+    with patch(
+        "modelman.providers.lifecycle.MTPLX.stop_and_wait",
+        return_value="mtplx still listening on port 8003",
+    ):
+        result = stop("mtplx")
+    assert result.ok is False
+    assert result.error == "mtplx still listening on port 8003"
 
 
 def test_stop_non_mtplx_returns_error_envelope_not_raise():
@@ -179,20 +350,7 @@ def test_stop_all_delegates_to_bash_helper_only():
     assert result.provider == "stop-all"
 
 
-def test_cli_prints_json_envelope(capsys):
-    """The CLI's stdout on success must be exactly the JSON envelope and
-    nothing else — stdout IS the contract the bash shim and
-    modelman/benchmark/isolation.py parse. A stray traceback or empty
-    stdout here surfaces downstream only as "isolation helper returned
-    invalid JSON", not the real cause."""
-    from modelman.providers.lifecycle import _main
-
-    with patch("modelman.providers.lifecycle.isolate", return_value=LifecycleResult("mtplx", "m", "http://localhost:8003/v1/chat/completions", True, None)):
-        rc = _main(["isolate", "mtplx"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    data = json.loads(out)
-    assert data == {"provider": "mtplx", "model": "m", "direct_url": "http://localhost:8003/v1/chat/completions", "ok": True, "error": None}
+# --- non-mtplx delegation (unchanged by this task) -------------------------
 
 
 def test_delegate_isolate_sets_env_var_for_mapped_providers():
@@ -224,133 +382,6 @@ def test_delegate_isolate_mtplx_uses_positional_arg_not_env_var():
     assert args == ["/bin/llm-isolate-provider", "mtplx"]
     env = mock_run.call_args.kwargs.get("env")
     assert env is None
-
-
-def _mock_urlopen(body: bytes):
-    """Return a MagicMock that behaves as a context manager yielding an object
-    whose .read() returns `body`."""
-    m = MagicMock()
-    m.return_value.__enter__.return_value.read.return_value = body
-    return m
-
-
-def test_warmup_matches_spaced_json():
-    """MTPLX may serialize the response with spaces between keys and values;
-    the warmup success check must match that form, not only compact JSON."""
-    from modelman.providers.lifecycle import _warmup
-
-    body = b'{"object": "chat.completion", "choices": []}'
-    with patch("modelman.providers.lifecycle.urllib.request.urlopen", _mock_urlopen(body)):
-        # Should return without raising.
-        _warmup("org/repo")
-
-
-def test_warmup_fails_when_no_chat_completion_marker():
-    """A response that never contains a chat.completion marker must time out
-    (here we make the deadline immediate by mocking time)."""
-    from modelman.providers.lifecycle import LifecycleError, _warmup
-
-    body = b'{"object":"list"}'
-    with (
-        patch("modelman.providers.lifecycle.urllib.request.urlopen", _mock_urlopen(body)),
-        patch("modelman.providers.lifecycle.time.monotonic", side_effect=[0.0, 1.0, 1000.0]),
-        patch("modelman.providers.lifecycle.time.sleep"),
-        pytest.raises(LifecycleError, match="warm up"),
-    ):
-        _warmup("org/repo", timeout=1.0)
-
-
-def test_start_mtplx_serve_raises_when_port_still_held():
-    """If the previous mtplx process has not released port 8003, start must
-    fail fast instead of spawning into a port it cannot bind."""
-    from modelman.providers.lifecycle import LifecycleError, _start_mtplx_serve
-
-    with (
-        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._wait_for_port_closed", side_effect=LifecycleError("port still answering")),
-        patch("modelman.providers.lifecycle.subprocess.Popen") as mock_popen,
-        pytest.raises(LifecycleError, match="port still answering"),
-    ):
-        _start_mtplx_serve("org/repo")
-    mock_popen.assert_not_called()
-
-
-def test_wait_for_port_closed_treats_http_error_as_still_open():
-    """HTTPError (e.g. a 404/500 from the health path) means the server
-    answered — the port is NOT closed. HTTPError is a URLError/OSError
-    subclass, so a bare `except OSError` would misread it as "closed" and
-    let a spawn proceed into a port that is still held by the prior
-    process."""
-    from urllib.error import HTTPError
-
-    from modelman.providers.lifecycle import LifecycleError, _wait_for_port_closed
-
-    mock_urlopen = MagicMock(side_effect=HTTPError("http://x", 404, "not found", None, None))
-    with (
-        patch("modelman.providers.lifecycle.urllib.request.urlopen", mock_urlopen),
-        patch("modelman.providers.lifecycle.time.monotonic", side_effect=[0.0, 0.0, 1000.0]),
-        patch("modelman.providers.lifecycle.time.sleep"),
-        pytest.raises(LifecycleError, match="still answering"),
-    ):
-        _wait_for_port_closed("http://localhost:8003/v1/models", timeout=1.0)
-    mock_urlopen.assert_called_once()
-
-
-def test_wait_for_port_closed_returns_on_connection_refused():
-    """A true connection-level failure (port actually closed) must return
-    immediately rather than being misread as "still open"."""
-    from modelman.providers.lifecycle import _wait_for_port_closed
-
-    with patch(
-        "modelman.providers.lifecycle.urllib.request.urlopen",
-        side_effect=ConnectionRefusedError(),
-    ):
-        _wait_for_port_closed("http://localhost:8003/v1/models", timeout=1.0)  # must not raise
-
-
-def test_wait_for_port_closed_read_timeout_means_still_open():
-    """A read TimeoutError means the listener accepted the connection and
-    then stalled (hung server / still draining under the 10s stop grace)
-    — the port is still held. Declaring it closed spawns a new mtplx
-    serve into the busy port, which dies as the misleading 'exited
-    immediately (address already in use)' instead of the intended 'port
-    still held' error."""
-    from modelman.providers.lifecycle import LifecycleError, _wait_for_port_closed
-
-    with (
-        patch(
-            "modelman.providers.lifecycle.urllib.request.urlopen",
-            side_effect=TimeoutError,
-        ),
-        pytest.raises(LifecycleError, match="still answering"),
-    ):
-        _wait_for_port_closed("http://localhost:8003/v1/models", timeout=0.3)
-
-
-def test_start_mtplx_serve_raises_when_process_exits_immediately():
-    """A bad CLI flag or missing weights can make mtplx serve exit before the
-    model ever loads; start must surface that instead of waiting 300s."""
-    from modelman.providers.lifecycle import LifecycleError, _start_mtplx_serve
-
-    proc = MagicMock()
-    proc.pid = 1234
-    proc.poll.return_value = 1
-    # mock_open() doesn't simulate real file position tracking — .tell()
-    # and read_data must be configured explicitly so the log-tail read
-    # (f.seek(0, 2); size = f.tell(); f.seek(...); f.read().decode(...))
-    # behaves like a real (here, empty) file instead of returning a bare
-    # MagicMock from .tell() that can't be compared against an int.
-    log_mock = mock_open(read_data=b"")
-    log_mock.return_value.tell.return_value = 0
-    with (
-        patch("modelman.providers.lifecycle.shutil.which", return_value="/usr/local/bin/mtplx"),
-        patch("modelman.providers.lifecycle._wait_for_port_closed"),
-        patch("modelman.providers.lifecycle.subprocess.Popen", return_value=proc),
-        patch("modelman.providers.lifecycle.time.sleep"),
-        patch("builtins.open", log_mock),
-        pytest.raises(LifecycleError, match="exited immediately"),
-    ):
-        _start_mtplx_serve("org/repo")
 
 
 def test_delegate_isolate_forwards_extra_args():
@@ -411,284 +442,3 @@ def test_stop_others_without_env_or_path_raises(monkeypatch):
 
     with pytest.raises(LifecycleError, match="not found"):
         _stop_others()
-
-
-def test_isolate_stops_serve_when_model_wait_fails():
-    """A half-started isolate (serve up, model load/warmup failed) must
-    stop the spawned mtplx serve.
-
-    Otherwise the orphan holds port 8003 and GPU/RAM while local_control
-    clears the [local].running_model marker on failure, so nothing tears
-    it down — violating the one-local-model-at-a-time invariant this
-    module exists to enforce."""
-    from modelman.providers.lifecycle import LifecycleError
-
-    with (
-        patch("modelman.providers.lifecycle._stop_others"),
-        patch("modelman.providers.lifecycle._start_mtplx_serve"),
-        patch(
-            "modelman.providers.lifecycle._wait_for_model",
-            side_effect=LifecycleError("timed out"),
-        ),
-        patch("modelman.providers.lifecycle._warmup"),
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
-    ):
-        result = isolate("mtplx", "Some/Model")
-    mock_cleanup.assert_called_once()
-    assert result.ok is False
-    assert "timed out" in (result.error or "")
-
-
-def test_isolate_registry_error_returns_envelope_not_traceback():
-    """A corrupt registry.toml (RegistryError, not LifecycleError) must
-    surface as an ok=False envelope, never a raw traceback — the bash
-    shim and benchmark isolation parse stdout as JSON."""
-    from modelman.registry import RegistryError
-
-    with (
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        patch(
-            "modelman.providers.lifecycle.load_registry",
-            side_effect=RegistryError("corrupt"),
-        ),
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
-    ):
-        result = isolate("mtplx")
-    assert result.ok is False
-    assert "corrupt" in (result.error or "")
-    # The failure happened before serve started: nothing to tear down,
-    # and stop-others must not have run either (fail before any teardown).
-    mock_stop.assert_not_called()
-    mock_cleanup.assert_not_called()
-
-
-def test_cli_registry_error_prints_json_envelope(capsys):
-    """The CLI entry point must answer a corrupt registry with a JSON
-    envelope on stdout and exit 1 — this is the bash-shim stdout contract
-    that modelman/benchmark/isolation.py parses (invalid JSON there
-    surfaces as the non-actionable 'isolation helper returned invalid
-    JSON')."""
-    from modelman.providers.lifecycle import _main
-    from modelman.registry import RegistryError
-
-    with patch(
-        "modelman.providers.lifecycle.load_registry",
-        side_effect=RegistryError("corrupt"),
-    ):
-        code = _main(["isolate", "mtplx"])
-    out = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert out["ok"] is False
-    assert "corrupt" in out["error"]
-
-
-def test_wait_for_model_raises_promptly_when_serve_dies():
-    """A serve process that dies mid-load (OOM kill, missing weights
-    found late) must fail the wait immediately with the log tail, not
-    poll a dead port for the full 300s deadline — the real crash cause
-    would otherwise sit unread in the mtplx log."""
-    from modelman.providers.lifecycle import LifecycleError, _wait_for_model
-
-    proc = MagicMock()
-    proc.poll.return_value = 137  # SIGKILL'd (OOM) on first check
-    proc.returncode = 137
-    with (
-        patch(
-            "modelman.providers.lifecycle._http_models_ids",
-            side_effect=AssertionError("must not poll HTTP after process death"),
-        ),
-        pytest.raises(LifecycleError, match="exited during model load"),
-    ):
-        _wait_for_model("Org/Model", proc, timeout=300.0)
-
-
-def test_isolate_mtplx_same_model_keeps_loaded():
-    """Re-isolating the model mtplx is already serving must not pay a
-    full stop + reload: the bash providers keep an already-loaded target
-    (stop_all_local's keep arg), and the mtplx path now does the same by
-    name-checking /v1/models before tearing down — mtplx is
-    single-model-per-process, so 'same provider' is only keepable when
-    it is the same model."""
-    with (
-        patch(
-            "modelman.providers.lifecycle._serving_model", return_value=True
-        ) as mock_probe,
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
-        patch("modelman.providers.lifecycle._wait_for_model"),
-        patch("modelman.providers.lifecycle._warmup") as mock_warmup,
-    ):
-        result = isolate("mtplx", "Some/Model")
-    mock_probe.assert_called_once_with("Some/Model")
-    mock_stop.assert_called_once_with(keep="mtplx")
-    mock_start.assert_not_called()
-    mock_warmup.assert_called_once_with("Some/Model")
-    assert result.ok is True
-
-
-def test_isolate_mtplx_keep_path_tears_down_wedged_server_on_warmup_failure():
-    """A keep-path warmup failure (server answers /v1/models but hangs or
-    errors on chat completions — a wedged server) must tear the server
-    down, not leave it running.
-
-    Without this, the keep branch never sets `started`, so the except
-    block's `if started: _stop_mtplx()` teardown never fires — the wedged
-    server stays up forever, and every future isolate() call just
-    re-probes it as 'serving', retries the same doomed warmup, and fails
-    again with no path to recovery short of a manual `mtplx stop`."""
-    from modelman.providers.lifecycle import LifecycleError
-
-    with (
-        patch("modelman.providers.lifecycle._serving_model", return_value=True),
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
-        patch(
-            "modelman.providers.lifecycle._warmup",
-            side_effect=LifecycleError("failed to warm up"),
-        ),
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
-    ):
-        result = isolate("mtplx", "Some/Model")
-    mock_stop.assert_called_once_with(keep="mtplx")
-    mock_start.assert_not_called()
-    mock_cleanup.assert_called_once()
-    assert result.ok is False
-    assert "failed to warm up" in (result.error or "")
-
-
-def test_isolate_mtplx_keep_path_stop_others_failure_does_not_teardown():
-    """A _stop_others(keep='mtplx') failure on the keep path must NOT
-    trigger _stop_mtplx() teardown: the mtplx server itself is healthy
-    and untouched — only stopping the OTHER providers failed, which has
-    nothing to do with mtplx's health and must not tear it down."""
-    from modelman.providers.lifecycle import LifecycleError
-
-    with (
-        patch("modelman.providers.lifecycle._serving_model", return_value=True),
-        patch(
-            "modelman.providers.lifecycle._stop_others",
-            side_effect=LifecycleError("failed to stop other providers"),
-        ),
-        patch("modelman.providers.lifecycle._warmup") as mock_warmup,
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_cleanup,
-    ):
-        result = isolate("mtplx", "Some/Model")
-    mock_warmup.assert_not_called()
-    mock_cleanup.assert_not_called()
-    assert result.ok is False
-
-
-def test_isolate_mtplx_different_model_restarts():
-    """A different model (or no server) must take the full restart path:
-    mtplx is single-model-per-process, so serving model B means a stop +
-    respawn, and _stop_others must tear mtplx down too (no keep)."""
-    with (
-        patch(
-            "modelman.providers.lifecycle._serving_model", return_value=False
-        ),
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start,
-        patch("modelman.providers.lifecycle._wait_for_model"),
-        patch("modelman.providers.lifecycle._warmup"),
-    ):
-        result = isolate("mtplx", "Some/Model")
-    mock_stop.assert_called_once_with()
-    mock_start.assert_called_once_with("Some/Model")
-    assert result.ok is True
-
-
-def test_isolate_solo_different_model_stops_only_mtplx():
-    """solo=True on a different-model isolate must stop only mtplx's own
-    occupant (_stop_mtplx), never the sibling providers via _stop_others —
-    this is the same-provider-only local-model lifecycle's whole point:
-    starting mtplx must not tear down an unrelated ollama/omlx instance
-    running alongside it."""
-    with (
-        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
-        patch("modelman.providers.lifecycle._serving_model", return_value=False),
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_stop_mtplx,
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
-        patch("modelman.providers.lifecycle._start_mtplx_serve"),
-        patch("modelman.providers.lifecycle._wait_for_model"),
-        patch("modelman.providers.lifecycle._warmup"),
-    ):
-        result = isolate("mtplx", "org/new", solo=True)
-    mock_stop_mtplx.assert_called_once()
-    mock_stop_others.assert_not_called()
-    assert result.ok is True
-
-
-def test_isolate_solo_surfaces_stop_mtplx_failure_instead_of_starting(tmp_path):
-    """Regression test for a review finding: solo=True's `_stop_mtplx()`
-    call discarded its LifecycleResult, so a failed stop (unlike the
-    non-solo `_stop_others()` path, which raises on failure) silently fell
-    through to `_start_mtplx_serve()`. That call's `_wait_for_port_closed`
-    poll would then fail ~10s later with a generic "port still answering"
-    message that hides the real stop failure. isolate() must raise the
-    stop's own error immediately and never attempt to start a new server
-    on top of a port that failed to close."""
-    with (
-        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
-        patch("modelman.providers.lifecycle._serving_model", return_value=False),
-        patch(
-            "modelman.providers.lifecycle._stop_mtplx",
-            return_value=LifecycleResult("mtplx", "", "", False, "mtplx binary not found on PATH"),
-        ),
-        patch("modelman.providers.lifecycle._start_mtplx_serve") as mock_start_serve,
-    ):
-        result = isolate("mtplx", "org/new", solo=True)
-    mock_start_serve.assert_not_called()
-    assert result.ok is False
-    assert result.error == "mtplx binary not found on PATH"
-
-
-def test_isolate_non_solo_different_model_stops_everyone():
-    """The default (solo unset) must keep today's full-exclusivity
-    behavior unchanged: a different-model isolate stops every OTHER local
-    provider via _stop_others, not just mtplx's own occupant — this is
-    what modelman benchmark still needs for clean measurement."""
-    with (
-        patch("modelman.providers.lifecycle._resolve_mtplx_model", return_value="org/new"),
-        patch("modelman.providers.lifecycle._serving_model", return_value=False),
-        patch("modelman.providers.lifecycle._stop_mtplx") as mock_stop_mtplx,
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop_others,
-        patch("modelman.providers.lifecycle._start_mtplx_serve"),
-        patch("modelman.providers.lifecycle._wait_for_model"),
-        patch("modelman.providers.lifecycle._warmup"),
-    ):
-        result = isolate("mtplx", "org/new")
-    mock_stop_others.assert_called_once_with()
-    mock_stop_mtplx.assert_not_called()
-    assert result.ok is True
-
-
-def test_isolate_mtplx_ambiguous_registry_refuses_instead_of_guessing():
-    """With no explicit model and more than one mtplx entry, isolate()
-    must refuse, not silently serve the first registry match.
-
-    This branch already had to patch four callers that failed to
-    forward the model name; without the refusal a fifth such gap would
-    serve (and benchmark) the wrong weights with ok=true — the
-    silent-wrong-weights failure mode."""
-    from modelman.registry import ModelEntry, Registry
-
-    two = Registry(
-        providers=[],
-        models=[
-            ModelEntry(
-                id=f"mtplx/Org/m{n}",
-                family="qwen3.8",
-                provider_id="mtplx",
-                model_name=f"Org/m{n}",
-            )
-            for n in (1, 2)
-        ],
-    )
-    with (
-        patch("modelman.providers.lifecycle._stop_others") as mock_stop,
-        patch("modelman.providers.lifecycle.load_registry", return_value=two),
-    ):
-        result = isolate("mtplx")
-    assert result.ok is False
-    assert "model required" in (result.error or "")
-    mock_stop.assert_not_called()  # refuse before any teardown
