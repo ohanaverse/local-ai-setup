@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from .base import Backend
 from .ollama import OLLAMA
+from .omlx import OMLX_4BIT, OMLX_6BIT
 
 BACKENDS: dict[str, Backend] = {}
 BACKENDS[OLLAMA.id] = OLLAMA
+BACKENDS[OMLX_4BIT.id] = OMLX_4BIT
+BACKENDS[OMLX_6BIT.id] = OMLX_6BIT
