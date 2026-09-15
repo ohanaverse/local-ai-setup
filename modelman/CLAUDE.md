@@ -135,14 +135,23 @@ implementations; `backends/` holds one `Backend` subclass per provider
 (`ollama.py`, `omlx.py`, `mlx_lm_server.py`, `mtplx.py`, `llamacpp.py`,
 registered in `backends/__init__.py`'s `BACKENDS` dict, with
 `SUPPORTED_PROVIDER_IDS` marking which are fully supported vs.
-retired-only like `llamacpp`); `probe.py`/`launchd.py`/`pidproc.py`/
-`binaries.py` hold primitives the backends share (`pidproc.py`'s
-`PidfileProcess` generalizes the pidfile-tracked-background-process
-pattern mtplx and mlx_lm_server both use). `cli.py` exposes it all as
-`modelman provider isolate/stop/stop-all/restore/list` — everything runs
-in-process now; nothing shells out to a script in `bin/`. `modelman
-benchmark` and `local_control.py`'s `start`/`stop` both call
-`orchestrate.py` directly rather than going through the CLI.
+retired-only like `llamacpp`) — mtplx and mlx_lm_server subclass
+`backends/base.py`'s `PidfileTrackedBackend` instead of `Backend`
+directly, since both are single-process, pidfile-tracked backends that
+otherwise duplicated the same `self._proc` field; `probe.py`/`launchd.py`/
+`pidproc.py`/`binaries.py` hold primitives the backends share
+(`pidproc.py`'s `PidfileProcess` generalizes the pidfile-tracked-
+background-process pattern itself — spawn/stop/log-tail — while
+`PidfileTrackedBackend` only factors out the `Backend`-side `_proc`
+bookkeeping). `cli.py` exposes it all as `modelman provider
+isolate/stop/stop-all/restore/list` — everything runs in-process now;
+nothing shells out to a script in `bin/`. `modelman benchmark` and
+`local_control.py`'s `start`/`stop` both call `orchestrate.py` directly
+rather than going through the CLI. `stop_all()`'s `keep` argument takes a
+PROVIDER ID, matching `isolate()`/`stop()` — it resolves internally to the
+right `occupancy_key` (so `--keep omlx-6bit` keeps both omlx variants) and
+rejects an unknown id with `ok=False` before any teardown runs; `cli.py`'s
+`stop-all --keep` just forwards the raw string.
 
 **Testing pattern:** backend tests (`tests/providers/lifecycle/backends/test_*.py`,
 e.g. `test_mtplx.py`) use `unittest.mock.patch` on the module-attribute
