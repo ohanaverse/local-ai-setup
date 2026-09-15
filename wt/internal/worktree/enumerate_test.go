@@ -502,7 +502,13 @@ func TestEnumerateFetchesNewRemoteBranches(t *testing.T) {
 	gitInit(t, dir)
 
 	remoteDir := filepath.Join(dir, "remote.git")
-	if out, err := exec.Command("git", "init", "--bare", remoteDir).CombinedOutput(); err != nil {
+	// -b main pins the bare repo's HEAD to refs/heads/main regardless of the
+	// host's init.defaultBranch config; without it, a host defaulting to
+	// "master" leaves the bare repo's HEAD pointing at a branch that's never
+	// pushed, so the clone below checks out an unborn HEAD and the later
+	// `checkout -b teammate-feature` + push fails with "src refspec ... does
+	// not match any" instead of exercising the fetch behavior under test.
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remoteDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare remote: %v\n%s", err, out)
 	}
 	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
