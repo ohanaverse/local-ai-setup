@@ -20,6 +20,7 @@ drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 import urllib.request
@@ -65,14 +66,21 @@ class OmlxBackend(Backend):
     def start(self, plan: StartPlan) -> None:
         # bash: `omlx start >/dev/null 2>&1 || true` — output discarded,
         # failure swallowed; the daemon is idempotent to start when already
-        # running.
+        # running. warm() is NOT called here — orchestrate.isolate() calls
+        # it once after start()+wait_ready() for every backend; calling it
+        # here too would warm the model twice per isolate() (a real bug
+        # fixed alongside this port: see orchestrate.isolate()'s docstring).
         subprocess.run(["omlx", "start"], capture_output=True, check=False)
-        self.warm(plan)
 
     def stop_and_wait(self) -> str | None:
         # bash: `silence_stdout omlx stop || true` — output discarded,
-        # failure swallowed.
-        subprocess.run(["omlx", "stop"], capture_output=True, check=False)
+        # failure swallowed, INCLUDING a missing binary (bash's "command not
+        # found" is just another nonzero exit `|| true` swallows). subprocess
+        # raises FileNotFoundError instead of returning a nonzero exit for a
+        # missing binary, so that must be caught explicitly to preserve the
+        # same tolerance.
+        with contextlib.suppress(FileNotFoundError):
+            subprocess.run(["omlx", "stop"], capture_output=True, check=False)
         if probe.port_closed_within(OMLX_HEALTH_URL, timeout=probe.STOP_WAIT_TIMEOUT):
             return None
         # Literal port number, matching bash's hardcoded message — there is

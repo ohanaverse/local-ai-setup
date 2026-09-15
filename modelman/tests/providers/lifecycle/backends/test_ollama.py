@@ -136,11 +136,9 @@ def test_start_kickstarts_when_health_probe_fails():
             side_effect=OSError("connection refused"),
         ),
         patch("modelman.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
-        patch("modelman.providers.lifecycle.backends.base.warmup") as mock_warmup,
     ):
         OllamaBackend().start(plan)
     mock_kickstart.assert_called_once_with(OLLAMA_LABEL)
-    mock_warmup.assert_called_once()
 
 
 def test_start_does_not_kickstart_when_health_probe_succeeds():
@@ -153,13 +151,24 @@ def test_start_does_not_kickstart_when_health_probe_succeeds():
             "modelman.providers.lifecycle.backends.ollama.urllib.request.urlopen"
         ) as mock_urlopen,
         patch("modelman.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
-        patch("modelman.providers.lifecycle.backends.base.warmup") as mock_warmup,
     ):
         mock_urlopen.return_value.__enter__ = lambda self: self
         mock_urlopen.return_value.__exit__ = lambda *a: None
         OllamaBackend().start(plan)
     mock_kickstart.assert_not_called()
-    mock_warmup.assert_called_once()
+
+
+def test_start_does_not_warm():
+    """warm() is orchestrate.isolate()'s job (called once after
+    start()+wait_ready() for every backend) — start() calling it too would
+    warm the model twice per isolate(). Regression test for that bug."""
+    plan = OLLAMA.resolve("m", ())
+    with (
+        patch("modelman.providers.lifecycle.backends.ollama.urllib.request.urlopen"),
+        patch("modelman.providers.lifecycle.backends.base.warmup") as mock_warmup,
+    ):
+        OllamaBackend().start(plan)
+    mock_warmup.assert_not_called()
 
 
 # --- stop_and_wait() ------------------------------------------------------

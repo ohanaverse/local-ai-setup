@@ -19,10 +19,22 @@ from .envelope import LifecycleError
 
 # bash: wait_for_port_closed url 5 = 5 x (1s curl + 0.2s sleep)
 STOP_WAIT_TIMEOUT = 6.0
-# bash: poll_until_down ... 0.5 120 (mlx_lm_server pre-bind wait)
+# bash: poll_until_down ... 0.5 120 (mlx_lm_server pre-bind wait). bash's own
+# comment on this call sizes it as "60s (0.5s x 120)" — the sleep interval
+# only, ignoring curl's own up-to-1s per-attempt timeout — so 60.0 here
+# matches the bash author's stated intent, not a literal worst-case bound
+# (which, like bash's, can theoretically run to ~120 x 1.5s =180s if every
+# attempt hits curl's connect timeout rather than a fast refuse).
 PREBIND_WAIT_TIMEOUT = 60.0
-# bash: ollama's 90 x (2s health + <=120s chat + 1s sleep), as one deadline
-WARMUP_TIMEOUT = 300.0
+# bash: ollama's `for _ in {1..90}` retry loop, each attempt up to (2s
+# health + <=120s chat + 1s sleep). A literal port of "90 attempts" to a
+# wall-clock deadline can't reproduce bash exactly (attempt cost varies
+# 3s-123s), so this targets generous coverage of the realistic "still
+# loading" case (health fails fast, or chat errors fast) rather than
+# bash's pathological worst case of 90 x 123s (~3h, requiring 90
+# consecutive full 120s chat timeouts) — that extreme was never a real
+# operational target even in bash.
+WARMUP_TIMEOUT = 600.0
 # today's _wait_for_model default, unchanged
 MODEL_LOAD_TIMEOUT = 300.0
 # bash: wait_for url name 30 = 30 x (2s + 1s)
@@ -30,7 +42,20 @@ RESTORE_WAIT_TIMEOUT = 90.0
 
 
 def wait_for_port_closed(url: str, timeout: float = 6.0) -> None:
-    """Poll a localhost URL until it stops responding, or raise on timeout.
+    """Poll a localhost URL until it stops responding, raising on timeout.
+    The raising sibling of `port_closed_within`, which owns the actual
+    polling loop and classification rules — see its docstring."""
+    if port_closed_within(url, timeout=timeout):
+        return
+    raise LifecycleError(f"port still answering at {url} after {timeout}s")
+
+
+def port_closed_within(url: str, *, timeout: float) -> bool:
+    """Poll a localhost URL until it stops responding, returning True/False
+    instead of raising on timeout — used directly by stop-and-wait helpers
+    that want to warn rather than fail, and by `wait_for_port_closed` (the
+    raising sibling used where a caller must not proceed past a still-open
+    port).
 
     A response — success or HTTP error status — means something is still
     listening. `HTTPError` is a `URLError`/`OSError` subclass, so it must
@@ -42,34 +67,6 @@ def wait_for_port_closed(url: str, timeout: float = 6.0) -> None:
     port" case this poll exists to catch. Only a connection-level failure
     (refused, reset, no route) means the port actually closed.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — localhost probe
-                resp.read()
-        except urllib.error.HTTPError:
-            pass  # server answered (with an error status) — still open
-        except urllib.error.URLError as exc:
-            # urlopen wraps connection-level failures in URLError. A
-            # connect timeout (reason is a TimeoutError) is ambiguous —
-            # treat it as still open rather than risk spawning into a
-            # held port.
-            if isinstance(exc.reason, TimeoutError):
-                pass
-            else:
-                return  # refused / reset / no route — port closed
-        except TimeoutError:
-            pass  # accepted the connection, then stalled mid-read — still open
-        except ConnectionError:
-            return  # reset at read time — the listener is dying or gone
-        time.sleep(0.2)
-    raise LifecycleError(f"port still answering at {url} after {timeout}s")
-
-
-def port_closed_within(url: str, *, timeout: float) -> bool:
-    """Same polling loop as `wait_for_port_closed`, but returns True/False
-    instead of raising on timeout. Used by stop-and-wait helpers that want
-    to warn rather than fail when a port doesn't close in time."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:

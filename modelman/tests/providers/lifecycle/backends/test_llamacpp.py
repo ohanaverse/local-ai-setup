@@ -91,18 +91,29 @@ def test_resolve_prefers_explicit_model_then_env_var(monkeypatch):
 # --- start() -----------------------------------------------------------
 
 
-def test_start_loads_plist_then_warms():
-    """bash: `launchctl load -w <plist>` then warmup_or_die. Warming is what
-    proves the server actually came up, so it must not be skipped."""
+def test_start_loads_plist():
+    """bash: `launchctl load -w <plist>` then warmup_or_die."""
     plan = LLAMACPP.resolve("local-llama", ())
     with (
         patch(f"{MODULE}.launchd.load") as mock_load,
         patch(f"{MODULE}.launchd.LLAMACPP_PLIST", "/plist/path"),
-        patch.object(type(LLAMACPP), "warm") as mock_warm,
     ):
         LLAMACPP.start(plan)
     mock_load.assert_called_once_with("/plist/path")
-    mock_warm.assert_called_once_with(plan)
+
+
+def test_start_does_not_warm():
+    """warm() is orchestrate.isolate()'s job (called once after
+    start()+wait_ready() for every backend) — start() calling it too would
+    warm the model twice per isolate(). Regression test for that bug."""
+    plan = LLAMACPP.resolve("local-llama", ())
+    with (
+        patch(f"{MODULE}.launchd.load"),
+        patch(f"{MODULE}.launchd.LLAMACPP_PLIST", "/plist/path"),
+        patch.object(type(LLAMACPP), "warm") as mock_warm,
+    ):
+        LLAMACPP.start(plan)
+    mock_warm.assert_not_called()
 
 
 # --- stop_and_wait() ---------------------------------------------------

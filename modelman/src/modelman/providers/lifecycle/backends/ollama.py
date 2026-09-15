@@ -74,7 +74,10 @@ class OllamaBackend(Backend):
             urllib.request.urlopen(OLLAMA_HEALTH_URL, timeout=2.0)  # noqa: S310 — localhost probe
         except OSError:
             launchd.kickstart(launchd.OLLAMA_LABEL)
-        self.warm(plan)
+        # warm() is NOT called here — orchestrate.isolate() calls it once
+        # after start()+wait_ready() for every backend; calling it here too
+        # would warm the model twice per isolate() (a real bug fixed
+        # alongside this port: see orchestrate.isolate()'s docstring).
 
     def stop_and_wait(self) -> str | None:
         # Stop EVERY model `ollama ps` reports loaded (not just the default

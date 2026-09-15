@@ -144,8 +144,21 @@ class MtplxBackend(Backend):
         port 8003 actually stopped answering — bash's `stop mtplx` case arm
         never captured a warning either, so a stop that reported success
         while mtplx kept the port bound went completely unnoticed. This now
-        polls `probe.port_closed_within` after the stop command succeeds
-        and reports a warning if the port is still open.
+        polls `probe.port_closed_within` and reports a warning if the port
+        is still open.
+
+        The port check runs regardless of `mtplx stop`'s exit code, not
+        only after a clean exit — `mtplx stop` itself exits non-zero
+        whenever nothing is listening on the port (see orchestrate.py's
+        module docstring), which is exactly the state on a machine's first
+        `modelman start` of an mtplx model. Short-circuiting on that exit
+        code alone (the original shape of this fix) treated "nothing to
+        stop" as a hard failure and made `replace_own_occupant()` raise on
+        a start that had nothing to replace. Checking the port first makes
+        "stop command failed, but the port is already closed" resolve to
+        success, while still surfacing the command's own stderr — more
+        informative than the generic "still listening" message below — when
+        the port genuinely never closes.
         """
         try:
             bin_path = binaries.require_binary("mtplx")
@@ -157,11 +170,11 @@ class MtplxBackend(Backend):
             text=True,
             check=False,
         )
+        if probe.port_closed_within(self.health_url, timeout=probe.STOP_WAIT_TIMEOUT):
+            return None
         if result.returncode != 0:
             return result.stderr.strip() or result.stdout.strip() or "mtplx stop failed"
-        if not probe.port_closed_within(self.health_url, timeout=probe.STOP_WAIT_TIMEOUT):
-            return "mtplx still listening on port 8003"
-        return None
+        return "mtplx still listening on port 8003"
 
 
 MTPLX = MtplxBackend()

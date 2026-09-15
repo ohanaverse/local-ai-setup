@@ -274,6 +274,7 @@ def mlx_spawn_argv(monkeypatch):
     )
     monkeypatch.setattr(f"{MLX_MODULE}._PROC", proc)
     monkeypatch.setattr(f"{MLX_MODULE}.probe.port_closed_within", lambda *a, **k: True)
+    monkeypatch.setattr(f"{MLX_MODULE}.probe.wait_for_model", lambda *a, **k: None)
     monkeypatch.setattr(f"{MLX_MODULE}.probe.warmup", lambda *a, **k: None)
     monkeypatch.setattr(f"{LIFECYCLE}.orchestrate._stop_others", lambda keep="": None)
     return spawned

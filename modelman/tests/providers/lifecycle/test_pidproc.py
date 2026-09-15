@@ -75,14 +75,22 @@ def test_stop_tolerates_unreadable_pid_content():
     mock_unlink.assert_called_once_with("/tmp/x.pid")
 
 
+def _ps_matching(name="mtplx"):
+    """A subprocess.run mock standing in for `ps -p <pid> -o command=`
+    reporting a command that identity-matches PidfileProcess(name=name)."""
+    return MagicMock(return_value=MagicMock(returncode=0, stdout=f"/usr/local/bin/{name} serve\n"))
+
+
 def test_stop_sends_sigterm_when_process_alive():
-    """A live process must be sent SIGTERM (never SIGKILL) — this matches
-    bash's mlx_lm_server_stop exactly: fire-and-forget, no escalation."""
+    """A live process that still identity-matches the pidfile's name must
+    be sent SIGTERM (never SIGKILL) — this matches bash's
+    mlx_lm_server_stop exactly: fire-and-forget, no escalation."""
     m = mock_open(read_data="1234")
     with (
         patch("builtins.open", m),
         patch("modelman.providers.lifecycle.pidproc.os.kill") as mock_kill,
         patch("modelman.providers.lifecycle.pidproc.os.unlink") as mock_unlink,
+        patch("modelman.providers.lifecycle.pidproc.subprocess.run", _ps_matching()),
     ):
         _proc().stop()
     # First call is the liveness check (signal 0), second is the real SIGTERM.
@@ -123,9 +131,71 @@ def test_stop_always_removes_pidfile_even_on_permission_error():
             side_effect=[None, PermissionError()],
         ),
         patch("modelman.providers.lifecycle.pidproc.os.unlink") as mock_unlink,
+        patch("modelman.providers.lifecycle.pidproc.subprocess.run", _ps_matching()),
     ):
         _proc().stop()  # must not raise
     mock_unlink.assert_called_once_with("/tmp/x.pid")
+
+
+@pytest.mark.parametrize("content", ["0", "-1", "-1234"])
+def test_stop_treats_non_positive_pid_as_corrupt(content):
+    """A pidfile holding "0" or a negative number must never reach
+    os.kill: signal 0 (this process's own process group) and negative pids
+    (broadcast to every process this user can signal) are both far more
+    dangerous than the ValueError case right above, which this mirrors —
+    remove the pidfile and treat it as nothing-to-do."""
+    m = mock_open(read_data=content)
+    with (
+        patch("builtins.open", m),
+        patch("modelman.providers.lifecycle.pidproc.os.kill") as mock_kill,
+        patch("modelman.providers.lifecycle.pidproc.os.unlink") as mock_unlink,
+    ):
+        _proc().stop()
+    mock_kill.assert_not_called()
+    mock_unlink.assert_called_once_with("/tmp/x.pid")
+
+
+def test_stop_skips_signal_when_pid_identity_mismatches():
+    """If the OS has reassigned the pidfile's pid to an unrelated process
+    (this process died and the pid was recycled), the liveness check alone
+    can't tell — `ps` reporting a command with no relation to this
+    PidfileProcess's name must suppress the SIGTERM rather than signal
+    whatever now holds that pid."""
+    m = mock_open(read_data="1234")
+    ps_mismatch = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="/Applications/Safari.app/Contents/MacOS/Safari\n")
+    )
+    with (
+        patch("builtins.open", m),
+        patch("modelman.providers.lifecycle.pidproc.os.kill") as mock_kill,
+        patch("modelman.providers.lifecycle.pidproc.os.unlink") as mock_unlink,
+        patch("modelman.providers.lifecycle.pidproc.subprocess.run", ps_mismatch),
+    ):
+        _proc().stop()
+    # Only the liveness check (signal 0) fires; no SIGTERM to the wrong process.
+    assert mock_kill.call_args_list == [((1234, 0),)]
+    mock_unlink.assert_called_once_with("/tmp/x.pid")
+
+
+def test_stop_signals_when_identity_check_is_inconclusive():
+    """When `ps` itself can't be run (missing, sandboxed away), the
+    identity check must not block the stop — proceeding on bare liveness
+    is the pre-existing, safer default absent positive evidence of a
+    mismatch."""
+    m = mock_open(read_data="1234")
+    with (
+        patch("builtins.open", m),
+        patch("modelman.providers.lifecycle.pidproc.os.kill") as mock_kill,
+        patch("modelman.providers.lifecycle.pidproc.os.unlink"),
+        patch(
+            "modelman.providers.lifecycle.pidproc.subprocess.run",
+            side_effect=OSError("ps not found"),
+        ),
+    ):
+        _proc().stop()
+    import signal
+
+    assert mock_kill.call_args_list[1].args == (1234, signal.SIGTERM)
 
 
 def test_log_tail_returns_last_512_chars():

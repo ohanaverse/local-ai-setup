@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import signal
 import subprocess
 import time
@@ -48,12 +49,17 @@ class PidfileProcess:
 
     def stop(self) -> None:
         """Read self.pidfile (missing file = return, nothing to do). Parse
-        the pid (unreadable/empty content = remove the pidfile and return,
-        tolerant like bash). If the process is alive, send SIGTERM —
-        swallow ProcessLookupError/PermissionError. Always unlink the
-        pidfile at the end, even if the process was already dead. No
-        SIGKILL escalation, no waitpid/reaping — this matches bash's
-        mlx_lm_server_stop exactly (SIGTERM-only, fire and forget)."""
+        the pid (unreadable/empty content, or a non-positive value = remove
+        the pidfile and return, tolerant like bash — os.kill(0, ...) would
+        signal this process's own group and os.kill(-1, ...) would broadcast
+        to every process this user can signal, so a corrupt pidfile must
+        never reach os.kill at all). If the process is alive AND still
+        looks like the process this pidfile was written for (best-effort —
+        see `_looks_like_this_process`), send SIGTERM — swallow
+        ProcessLookupError/PermissionError. Always unlink the pidfile at the
+        end, even if the process was already dead. No SIGKILL escalation,
+        no waitpid/reaping — this matches bash's mlx_lm_server_stop exactly
+        (SIGTERM-only, fire and forget)."""
         try:
             with open(self.pidfile) as f:
                 content = f.read().strip()
@@ -64,14 +70,48 @@ class PidfileProcess:
         except ValueError:
             os.unlink(self.pidfile)
             return
+        if pid <= 0:
+            os.unlink(self.pidfile)
+            return
         try:
             os.kill(pid, 0)  # liveness check; raises if not alive/permitted
-            os.kill(pid, signal.SIGTERM)
+            if self._looks_like_this_process(pid):
+                os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(self.pidfile)
+
+    def _looks_like_this_process(self, pid: int) -> bool:
+        """Best-effort guard against a dead process's pid being reassigned
+        by the OS to an unrelated process before stop() runs (the liveness
+        check above only proves SOME process now holds `pid`, not that it's
+        still ours). Shells out to `ps -p <pid> -o command=` (macOS/BSD ps;
+        this project is Darwin-only) and checks whether `self.name` appears
+        in the reported command, ignoring punctuation so "mlx_lm_server"
+        matches a reported "mlx_lm.server" binary name.
+
+        Returns True (proceed with the signal) whenever identity can't be
+        confirmed either way — `ps` failing, the pid already gone, or an
+        empty/unrecognized command — since the previous behavior (signal
+        on bare liveness) is the safer default absent real evidence of a
+        mismatch; this only suppresses the signal on a *positive* mismatch.
+        """
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return True
+        if result.returncode != 0 or not result.stdout.strip():
+            return True
+        command = re.sub(r"[^a-z0-9]", "", result.stdout.lower())
+        needle = re.sub(r"[^a-z0-9]", "", self.name.lower())
+        return needle in command
 
     def log_tail(self, max_bytes: int = 1024) -> str:
         """Same as today's _log_tail: open self.logfile in binary mode,

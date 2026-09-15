@@ -22,6 +22,7 @@ drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
 from __future__ import annotations
 
 import os
+import subprocess
 
 from .. import binaries, probe
 from ..envelope import LifecycleError
@@ -48,6 +49,15 @@ class MlxLmServerBackend(Backend):
     health_url = MLX_LM_SERVER_HEALTH_URL
     chat_url = MLX_LM_SERVER_CHAT_URL
     restore_action = "stop"  # never part of the standing baseline
+
+    def __init__(self) -> None:
+        # Transient per-call state: the Popen handle start() spawns, so
+        # wait_ready() can watch for the process dying mid-load — same
+        # pattern as MtplxBackend. Safe as an instance attribute (this
+        # class is a module-level singleton) only because mlx_lm_server is
+        # single-occupancy — there is never more than one concurrent
+        # isolate() call in flight for this backend.
+        self._proc: subprocess.Popen | None = None
 
     def check_available(self) -> str | None:
         # check_available()'s contract (backends/base.py) is "reason string
@@ -130,7 +140,18 @@ class MlxLmServerBackend(Backend):
             )
         if plan.argv is None:  # resolve() always populates argv
             raise LifecycleError("mlx_lm_server start plan has no argv")
-        _PROC.spawn(plan.argv)
+        self._proc = _PROC.spawn(plan.argv)
+
+    def wait_ready(self, plan: StartPlan) -> None:
+        # Without this, a crash after spawn()'s own immediate-exit check
+        # (bad draft pairing, OOM during weight load) went undetected until
+        # warm()'s health-url poll exhausted its full WARMUP_TIMEOUT against
+        # a dead port, instead of failing fast with the real exit code and
+        # log tail — the same gap MtplxBackend.wait_ready() closes for its
+        # structurally identical single-process, pidfile-tracked case.
+        probe.wait_for_model(
+            self.health_url, plan.extra["target"], proc=self._proc, timeout=probe.MODEL_LOAD_TIMEOUT
+        )
 
     def warm(self, plan: StartPlan) -> None:
         # Base Backend.warm() would pass plan.model (the "<target> (+draft

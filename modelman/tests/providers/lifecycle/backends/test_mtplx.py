@@ -326,19 +326,54 @@ def test_stop_and_wait_returns_reason_when_binary_missing():
     assert result == "mtplx binary not found on PATH"
 
 
-def test_stop_and_wait_returns_stderr_when_stop_command_fails():
+def test_stop_and_wait_returns_stderr_when_stop_command_fails_and_port_stays_open():
+    """A genuine stop failure (the command errors AND the port is still
+    listening afterward) must surface the command's own stderr — more
+    informative than the generic "still listening" message."""
     with (
         patch(
             "modelman.providers.lifecycle.backends.mtplx.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
         patch("modelman.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch(
+            "modelman.providers.lifecycle.backends.mtplx.probe.port_closed_within",
+            return_value=False,
+        ),
     ):
         mock_run.return_value.returncode = 1
         mock_run.return_value.stderr = "boom"
         mock_run.return_value.stdout = ""
         result = MTPLX.stop_and_wait()
     assert result == "boom"
+
+
+def test_stop_and_wait_succeeds_when_stop_command_fails_but_port_already_closed():
+    """Bug fix: `mtplx stop` itself exits non-zero whenever nothing is
+    listening on the port (see orchestrate.py's module docstring) — the
+    exact state on a machine's first `modelman start` of an mtplx model.
+    Treating that nonzero exit alone as a hard failure (the original shape
+    of this fix, before the port check was moved ahead of it) made
+    replace_own_occupant() raise on a start that had nothing to replace,
+    since the solo isolate() path does not suppress that exception. The
+    port check must run — and be allowed to win — regardless of the stop
+    command's own exit code."""
+    with (
+        patch(
+            "modelman.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            return_value="/usr/local/bin/mtplx",
+        ),
+        patch("modelman.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch(
+            "modelman.providers.lifecycle.backends.mtplx.probe.port_closed_within",
+            return_value=True,
+        ),
+    ):
+        mock_run.return_value.returncode = 1
+        mock_run.return_value.stderr = "no process listening on port 8003"
+        mock_run.return_value.stdout = ""
+        result = MTPLX.stop_and_wait()
+    assert result is None
 
 
 def test_stop_and_wait_reports_failure_when_port_never_closes():

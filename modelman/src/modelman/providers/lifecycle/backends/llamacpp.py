@@ -67,9 +67,12 @@ class LlamaCppBackend(Backend):
 
     def start(self, plan: StartPlan) -> None:
         # bash: `launchctl load -w ~/Library/.../local.llamacpp.server.plist
-        # 2>/dev/null || true` then warmup_or_die.
+        # 2>/dev/null || true` then warmup_or_die. warm() is NOT called here
+        # — orchestrate.isolate() calls it once after start()+wait_ready()
+        # for every backend; calling it here too would warm the model twice
+        # per isolate() (a real bug fixed alongside this port: see
+        # orchestrate.isolate()'s docstring).
         launchd.load(launchd.LLAMACPP_PLIST)
-        self.warm(plan)
 
     def stop_and_wait(self) -> str | None:
         # Silent no-op on a missing plist — see the module docstring: bash's

@@ -138,20 +138,28 @@ def test_resolve_instances_do_not_cross_read_each_others_env_var(monkeypatch):
 # --- start() -------------------------------------------------------------
 
 
-def test_start_invokes_omlx_start_and_warms_swallowing_failure():
+def test_start_invokes_omlx_start_swallowing_failure():
     """bash's start_omlx() runs `omlx start >/dev/null 2>&1 || true` — a
-    non-zero return code must not raise — then warms the model. A failed
-    subprocess.run() call (mocked to return a non-zero code) must not
-    propagate."""
+    non-zero return code must not raise. A failed subprocess.run() call
+    (mocked to return a non-zero code) must not propagate."""
     plan = OMLX_4BIT.resolve("m", ())
-    with (
-        patch("modelman.providers.lifecycle.backends.omlx.subprocess.run") as mock_run,
-        patch("modelman.providers.lifecycle.backends.base.warmup") as mock_warmup,
-    ):
+    with patch("modelman.providers.lifecycle.backends.omlx.subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(["omlx", "start"], 1)
         OmlxBackend("omlx", ENV_VAR_4BIT, DEFAULT_4BIT_MODEL, restore_action="restart").start(plan)
     mock_run.assert_called_once_with(["omlx", "start"], capture_output=True, check=False)
-    mock_warmup.assert_called_once()
+
+
+def test_start_does_not_warm():
+    """warm() is orchestrate.isolate()'s job (called once after
+    start()+wait_ready() for every backend) — start() calling it too would
+    warm the model twice per isolate(). Regression test for that bug."""
+    plan = OMLX_4BIT.resolve("m", ())
+    with (
+        patch("modelman.providers.lifecycle.backends.omlx.subprocess.run"),
+        patch("modelman.providers.lifecycle.backends.base.warmup") as mock_warmup,
+    ):
+        OMLX_4BIT.start(plan)
+    mock_warmup.assert_not_called()
 
 
 # --- stop_and_wait() -------------------------------------------------------
@@ -201,6 +209,26 @@ def test_stop_and_wait_swallows_subprocess_failure():
         ),
     ):
         mock_run.return_value = subprocess.CompletedProcess(["omlx", "stop"], 1)
+        result = OMLX_6BIT.stop_and_wait()
+    assert result is None
+
+
+def test_stop_and_wait_tolerates_missing_binary():
+    """`omlx stop` itself missing from PATH must not raise — bash's
+    `silence_stdout omlx stop || true` swallows a "command not found" exit
+    just as tolerantly as any other nonzero exit; subprocess.run raises
+    FileNotFoundError for a missing binary instead, so that must be caught
+    explicitly to preserve the same tolerance."""
+    with (
+        patch(
+            "modelman.providers.lifecycle.backends.omlx.subprocess.run",
+            side_effect=FileNotFoundError("omlx"),
+        ),
+        patch(
+            "modelman.providers.lifecycle.backends.omlx.probe.port_closed_within",
+            return_value=True,
+        ),
+    ):
         result = OMLX_6BIT.stop_and_wait()
     assert result is None
 

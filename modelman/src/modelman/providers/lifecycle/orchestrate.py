@@ -101,7 +101,7 @@ def _stop_others(keep: str = "") -> None:
             except Exception as exc:  # noqa: BLE001 — a stop is never fatal here
                 _log(f"warning: {backend.id} stop failed: {exc}")
                 return
-            if warning:
+            if warning is not None:
                 _log(f"warning: {warning}")
 
         return _run

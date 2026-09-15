@@ -304,6 +304,43 @@ def test_start_spawns_with_exact_argv_when_port_closes_cleanly():
     )
 
 
+# --- wait_ready() -----------------------------------------------------
+
+
+def test_wait_ready_polls_for_bare_target_watching_spawned_proc():
+    """wait_ready() must poll for plan.extra["target"] (matching warm()'s
+    own model argument) and pass start()'s spawned Popen through so a
+    mid-load crash (OOM, bad draft pairing) is detected via proc.poll()
+    almost immediately, rather than being discovered only after warm()
+    exhausts its full WARMUP_TIMEOUT against a dead port — the same
+    protection MtplxBackend.wait_ready() has for its structurally
+    identical single-process, pidfile-tracked case."""
+    with patch(
+        "modelman.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
+        return_value="/bin/mlx_lm.server",
+    ):
+        plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
+
+    fake_proc = object()
+    with (
+        patch("modelman.providers.lifecycle.backends.mlx_lm_server._PROC") as mock_proc,
+        patch(
+            "modelman.providers.lifecycle.backends.mlx_lm_server.probe.port_closed_within",
+            return_value=True,
+        ),
+    ):
+        mock_proc.spawn.return_value = fake_proc
+        MLX_LM_SERVER.start(plan)
+        with patch(
+            "modelman.providers.lifecycle.backends.mlx_lm_server.probe.wait_for_model"
+        ) as mock_wait:
+            MLX_LM_SERVER.wait_ready(plan)
+
+    mock_wait.assert_called_once_with(
+        MLX_LM_SERVER.health_url, "target-repo", proc=fake_proc, timeout=probe.MODEL_LOAD_TIMEOUT
+    )
+
+
 # --- warm() ------------------------------------------------------------
 
 
@@ -389,14 +426,13 @@ def test_restore_is_the_inherited_no_op():
     mock_warmup.assert_not_called()
 
 
-def test_wait_ready_and_already_serving_are_inherited_defaults():
+def test_already_serving_is_the_inherited_default():
     """No keep-loaded-weights fast path exists for this backend (that's
-    mtplx-only) — already_serving() is always False and wait_ready() is a
-    no-op, matching the base class defaults."""
+    mtplx-only) — already_serving() is always False, matching the base
+    class default."""
     with patch(
         "modelman.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
         return_value="/bin/mlx_lm.server",
     ):
         plan = MLX_LM_SERVER.resolve("target-repo", ("target-repo", "draft-repo"))
     assert MLX_LM_SERVER.already_serving(plan) is False
-    MLX_LM_SERVER.wait_ready(plan)  # must not raise
