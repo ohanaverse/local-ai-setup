@@ -24,19 +24,15 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict
 
-from ..local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
-from ..local_process import ProcessResult as LifecycleResult
-from ..local_process import http_models_ids as _http_models_ids
-from ..registry import load_registry
-from .mtplx import MTPLX_BASE, MTPLX_PORT, MTPLX_V1_BASE
+from ...local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
+from ...local_process import http_models_ids as _http_models_ids
+from ...registry import load_registry
+from ..mtplx import MTPLX_BASE, MTPLX_PORT, MTPLX_V1_BASE
+from .envelope import LifecycleError, LifecycleResult
 
 MTPLX_DIRECT_URL = f"{MTPLX_V1_BASE}/chat/completions"
 MTPLX_PIDFILE = "/tmp/local-ai-setup-mtplx.pid"
 MTPLX_LOG = "/tmp/local-ai-setup-mtplx.log"
-
-
-class LifecycleError(Exception):
-    """Raised for internal lifecycle failures that map to ok=False."""
 
 
 def _log_tail(max_bytes: int = 1024) -> str:

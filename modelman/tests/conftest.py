@@ -1,6 +1,7 @@
 """Shared pytest fixtures."""
 
 import subprocess
+import urllib.error
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -50,6 +51,76 @@ def _never_call_real_ollama(monkeypatch):
     # _probe_running/_ollama_loaded_names explicitly.
     monkeypatch.setattr("modelman.local_control._ollama_loaded_names", lambda: [])
     monkeypatch.setattr("modelman.local_control._http_models_ids", lambda url, timeout=2.0: [])
+    # TODO(next task): drop this try/except once backends/ollama.py exists
+    # and patch it unconditionally like the lines above. `raising=False`
+    # (as the brief for this task originally specified) only suppresses a
+    # missing *attribute* on an existing module — pytest's monkeypatch
+    # still unconditionally imports the dotted module path before that
+    # check runs, so a module that doesn't exist yet raises ImportError
+    # regardless of raising=False. Confirmed against this repo's pytest
+    # (9.1.1): `_pytest.monkeypatch.derive_importpath` calls `resolve()`
+    # unguarded, and `raising` only gates the later `getattr` call;
+    # `resolve()` itself re-wraps the ModuleNotFoundError as a plain
+    # ImportError, so the except clause must catch ImportError (the base
+    # class), not just ModuleNotFoundError.
+    try:
+        monkeypatch.setattr(
+            "modelman.providers.lifecycle.backends.ollama._loaded_model_names",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "modelman.providers.lifecycle.backends.ollama.subprocess.run",
+            _fake_ollama_runner,
+        )
+    except ImportError:
+        pass
+
+
+_real_subprocess_run = subprocess.run
+
+
+def _fake_launchctl_run(cmd, *args, **kwargs):
+    """Intercept only launchctl invocations; delegate everything else to
+    the real subprocess.run.
+
+    `subprocess` is one shared module object — `monkeypatch.setattr` on
+    ANY dotted path that resolves through it (e.g.
+    "modelman.providers.lifecycle.launchd.subprocess.run") replaces
+    `subprocess.run` globally for the whole interpreter, not just calls
+    made from launchd.py. A flat `MagicMock(return_value=...)` here would
+    silently neuter every other module's real subprocess.run call for the
+    duration of every test (git in benchmark/agent/workspace.py, `pi
+    --version` in runner.py, gates.py's test runners, litellm.py's
+    restart command, ...), which is exactly the regression a full-suite
+    run caught. Only launchctl calls need to be fake here — nothing else
+    the test suite exercises should ever shell out to it.
+    """
+    argv = cmd if isinstance(cmd, list) else [cmd]
+    if argv and argv[0] == "launchctl":
+        return subprocess.CompletedProcess(cmd, 0)
+    return _real_subprocess_run(cmd, *args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_live_providers(monkeypatch):
+    """The full suite must never poll a real localhost port, bounce a real
+    LaunchAgent, or signal a real pid while exercising the new lifecycle
+    primitives (probe/launchd/pidproc) or the backends a later task builds
+    on top of them. probe/launchd/pidproc already exist after this task,
+    so their patches are hermetic now; the rest target modules a later
+    task creates."""
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.probe.urllib.request.urlopen",
+        MagicMock(side_effect=urllib.error.URLError("hermetic test")),
+    )
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.launchd.subprocess.run",
+        _fake_launchctl_run,
+    )
+    monkeypatch.setattr(
+        "modelman.providers.lifecycle.pidproc.os.kill",
+        lambda *a, **k: None,
+    )
 
 
 @pytest.fixture
