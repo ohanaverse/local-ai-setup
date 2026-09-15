@@ -210,30 +210,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			m.pendingHighlight = ""
 		} else {
-			// Default the cursor to the repo default branch so Enter
-			// launches on main without an extra keystroke. Only
-			// checked-out worktrees on the default branch are pickable
-			// (bare default rows are filtered in buildList), so match by
-			// Branch == defaultBranch; the first hit wins because each
-			// branch appears at most once in the picker. m.defaultBranch
-			// is "" when the repo has no origin/HEAD to read it from, in
-			// which case this never matches and falls through below.
-			byDefaultBranch := m.defaultBranch != "" && selectFirstEntry(&m.list, func(ei entryItem) bool {
-				return ei.entry.Branch == m.defaultBranch
+			// Default the cursor to the repo root so Enter relaunches
+			// where the user already is without an extra keystroke.
+			// buildList always pins the (current) entry at index 1
+			// (right after the sentinel) when one exists, so this is
+			// the starting selection regardless of which branch the
+			// repo root is on.
+			selectFirstEntry(&m.list, func(ei entryItem) bool {
+				return ei.label == "(current)"
 			})
-			// Fallback: when the current checkout isn't on the default
-			// branch (or the default branch couldn't be determined at
-			// all), the match above found nothing. The cursor would
-			// otherwise stay on the "+ New worktree…" sentinel, so a bare
-			// Enter would open the prompt instead of relaunching in the
-			// repo the user is already in. Select the entry buildList
-			// already tagged (current) so Enter relaunches there even
-			// from a non-default branch.
-			if !byDefaultBranch {
-				selectFirstEntry(&m.list, func(ei entryItem) bool {
-					return ei.label == "(current)"
-				})
-			}
 		}
 		return m, nil
 	case selectedEntryMsg:

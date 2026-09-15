@@ -3,6 +3,7 @@ package tui
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -275,53 +276,58 @@ func TestViewReady(t *testing.T) {
 	}
 }
 
-// TestEntriesLoadedPositionsCursorOnDefaultBranch asserts that when the
-// picker loads, the cursor lands on the entry for the repo default branch
-// (so Enter launches on main without any keystrokes). When the current
-// worktree IS on the default branch, that (current) row is what the cursor
-// points at; otherwise the cursor jumps to whichever worktree holds main.
-// A repo with no worktree on the default branch leaves the cursor at its
-// default position (the sentinel) — bare default-branch rows are filtered
-// out of the picker.
-func TestEntriesLoadedPositionsCursorOnDefaultBranch(t *testing.T) {
+// TestEntriesLoadedPositionsCursorOnRepoRoot asserts that when the picker
+// loads, the cursor lands on the repo-root ((current)) entry as the starting
+// selection — so Enter relaunches where the user already is without any
+// extra keystrokes. This holds regardless of which branch the repo root is
+// on, and even when a separate worktree exists for the repo's default
+// branch: repo root is always the starting selection now, replacing the old
+// rule that preferred the default-branch entry first.
+func TestEntriesLoadedPositionsCursorOnRepoRoot(t *testing.T) {
+	// A real, existing directory so filepath.EvalSymlinks (used by buildList
+	// to tag the (current) entry) actually resolves the repo root; a
+	// nonexistent fixture path would resolve to "" and falsely match every
+	// other nonexistent worktree path in this group.
+	repoRoot := t.TempDir()
 	m := model{width: 80, height: 24}
 	groups := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-			{Type: worktree.TypeWorktree, Branch: "feature", Path: "/tmp/repo/.worktrees/feature"},
+			{Type: worktree.TypeCurrent, Branch: "main", Path: repoRoot},
+			{Type: worktree.TypeWorktree, Branch: "feature", Path: filepath.Join(repoRoot, ".worktrees", "feature")},
 		}},
 		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
 			{Type: worktree.TypeBranch, Branch: "other"},
 		}},
 	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: repoRoot})
 	m = got.(model)
 
 	selected := m.list.SelectedItem().(entryItem)
 	if selected.kind != kindEntry {
-		t.Fatalf("cursor on sentinel/separator (%v), want a default-branch entry", selected.kind)
+		t.Fatalf("cursor on sentinel/separator (%v), want the repo-root entry", selected.kind)
 	}
 	if selected.entry.Branch != "main" {
 		t.Errorf("cursor on branch %q, want main", selected.entry.Branch)
 	}
-	if selected.entry.Path != "/tmp/repo" {
-		t.Errorf("cursor on path %q, want current worktree /tmp/repo", selected.entry.Path)
+	if selected.entry.Path != repoRoot {
+		t.Errorf("cursor on path %q, want current worktree %q", selected.entry.Path, repoRoot)
 	}
 
-	// When the current worktree is NOT on the default branch, the cursor
-	// jumps to whichever worktree holds main instead.
+	// The current worktree is on a non-default branch, and a separate
+	// worktree holds the default branch. The cursor must still land on the
+	// repo root (develop), not jump to the default-branch worktree.
 	groups2 := []worktree.EntryGroup{
 		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "develop", Path: "/tmp/repo"},
-			{Type: worktree.TypeWorktree, Branch: "main", Path: "/tmp/repo/.worktrees/main"},
+			{Type: worktree.TypeCurrent, Branch: "develop", Path: repoRoot},
+			{Type: worktree.TypeWorktree, Branch: "main", Path: filepath.Join(repoRoot, ".worktrees", "main")},
 		}},
 	}
 	m2 := model{width: 80, height: 24}
-	got2, _ := m2.Update(entriesLoadedMsg{groups: groups2, defaultBranch: "main", repoRoot: "/tmp/repo"})
+	got2, _ := m2.Update(entriesLoadedMsg{groups: groups2, defaultBranch: "main", repoRoot: repoRoot})
 	m2 = got2.(model)
 	selected2 := m2.list.SelectedItem().(entryItem)
-	if selected2.kind != kindEntry || selected2.entry.Branch != "main" {
-		t.Errorf("cursor = %+v, want main entry even when current is develop", selected2)
+	if selected2.kind != kindEntry || selected2.entry.Branch != "develop" {
+		t.Errorf("cursor = %+v, want the repo-root entry (develop) even though a separate worktree holds the default branch", selected2)
 	}
 }
 
