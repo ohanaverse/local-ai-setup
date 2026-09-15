@@ -115,6 +115,26 @@ def test_resolve_no_model_in_registry_raises():
         MTPLX.resolve(None, ())
 
 
+def test_resolve_uses_positional_extra_args_over_registry():
+    """Regression test: local_control.py forwards mtplx's desired model
+    through extra_args, not the `model` param — isolate_provider() only
+    ever populates `model` from an env-var lookup, and mtplx is
+    deliberately excluded from that mapping (test_local_control.py's
+    test_start_mtplx_isolates_without_env_var). Before this fix, resolve()
+    silently ignored extra_args and fell back to registry auto-detection,
+    which raised "registry holds N mtplx models" as soon as a second mtplx
+    model was registered — even though the caller DID specify which one to
+    start. Mirrors MlxLmServerBackend.resolve()'s `model or extra_args[0]`
+    precedence."""
+    entries = [_mtplx_model_entry(f"Org/m{n}") for n in (1, 2)]
+    with patch(
+        "modelman.providers.lifecycle.backends.mtplx.load_registry",
+        return_value=_registry(entries),
+    ):
+        plan = MTPLX.resolve(None, ("Org/m2",))
+    assert plan.model == "Org/m2"
+
+
 def test_resolve_ambiguous_registry_raises_exact_message():
     """With no explicit model and more than one mtplx entry, resolve() must
     refuse, not silently pick the first match — a caller that failed to
