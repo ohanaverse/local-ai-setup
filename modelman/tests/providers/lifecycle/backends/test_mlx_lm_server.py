@@ -65,12 +65,12 @@ def test_check_available_returns_none_when_binary_resolves():
 @pytest.mark.parametrize(
     "model,extra_args,env",
     [
-        # target missing entirely (no positional, no env var)
+        # both missing entirely (no positionals, no env vars)
         (None, (), {}),
         # target given, draft missing (no second positional, no env var)
         ("target-repo", ("target-repo",), {}),
-        # both missing
-        (None, (), {}),
+        # target missing, draft given via positional
+        (None, ("", "draft-repo"), {}),
     ],
 )
 def test_resolve_validates_target_and_draft_with_no_side_effects(
@@ -111,18 +111,6 @@ def test_resolve_validates_target_and_draft_with_no_side_effects(
     mock_proc.stop.assert_not_called()
     mock_proc.spawn.assert_not_called()
     mock_port_closed.assert_not_called()
-
-
-def test_resolve_target_missing_only():
-    """Draft present, target missing entirely — must still raise."""
-    with (
-        patch(
-            "modelman.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin"
-        ) as mock_resolve_bin,
-        pytest.raises(LifecycleError, match="mlx_lm_server requires target\\+draft"),
-    ):
-        MLX_LM_SERVER.resolve(None, ("", "draft-repo"))
-    mock_resolve_bin.assert_not_called()
 
 
 # --- resolve() — precedence ----------------------------------------------
