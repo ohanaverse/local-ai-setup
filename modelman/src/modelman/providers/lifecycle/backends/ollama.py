@@ -14,8 +14,7 @@ import subprocess
 import time
 import urllib.request
 
-from .. import launchd, probe
-from ..envelope import LifecycleError
+from .. import launchd
 from .base import Backend, StartPlan
 
 OLLAMA_PORT = 11434
@@ -94,14 +93,7 @@ class OllamaBackend(Backend):
         return "ollama still has models loaded"
 
     def restore(self) -> None:
-        try:
-            urllib.request.urlopen(OLLAMA_HEALTH_URL, timeout=2.0)  # noqa: S310 — localhost probe
-            return
-        except OSError:
-            pass
-        launchd.kickstart(launchd.OLLAMA_LABEL)
-        if not probe.wait_for_port_open(OLLAMA_HEALTH_URL, timeout=probe.RESTORE_WAIT_TIMEOUT):
-            raise LifecycleError(f"ollama did not come back up ({OLLAMA_HEALTH_URL})")
+        self._restart_if_down(restart=lambda: launchd.kickstart(launchd.OLLAMA_LABEL))
 
 
 OLLAMA = OllamaBackend()

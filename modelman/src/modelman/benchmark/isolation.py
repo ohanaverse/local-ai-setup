@@ -31,6 +31,16 @@ SUPPORTED_PROVIDER_IDS = lifecycle.SUPPORTED_PROVIDER_IDS
 # dataclasses.
 
 
+def _require_ok(result: IsolateResult, message: str) -> IsolateResult:
+    """Raise BenchmarkError(f"{message}: {result.error}") when
+    `result.ok` is False, else return `result` unchanged — the
+    ok=False-envelope-to-exception translation every function below needs
+    at its one lifecycle call."""
+    if not result.ok:
+        raise BenchmarkError(f"{message}: {result.error}")
+    return result
+
+
 def _normalize_pairing_arg(value: str, *, is_path: bool) -> str:
     """Normalize one isolate extra-arg: expand and absolutize local_path
     values (so the isolation key is stable across equivalent spellings —
@@ -110,9 +120,7 @@ def isolate_provider(
         if var:
             model = env.get(var)
     result = lifecycle.isolate(provider_id, model, extra_args=extra_args, solo=solo)
-    if not result.ok:
-        raise BenchmarkError(f"isolation failed for {provider_id}: {result.error}")
-    return result
+    return _require_ok(result, f"isolation failed for {provider_id}")
 
 
 def stop_all_local_providers() -> IsolateResult:
@@ -120,10 +128,7 @@ def stop_all_local_providers() -> IsolateResult:
     start` before starting a different model) — the single place that knows
     how to tear down whichever local provider happens to be running, without
     modelman having to track that itself."""
-    result = lifecycle.stop_all()
-    if not result.ok:
-        raise BenchmarkError(f"stop-all failed: {result.error}")
-    return result
+    return _require_ok(lifecycle.stop_all(), "stop-all failed")
 
 
 def stop_provider(provider_id: str) -> IsolateResult:
@@ -133,14 +138,9 @@ def stop_provider(provider_id: str) -> IsolateResult:
     different model on it — mlx_lm_server and mtplx never need this
     (mlx_lm_server self-replaces inside its own start(); mtplx's replace
     logic lives in the lifecycle's isolate())."""
-    result = lifecycle.stop(provider_id)
-    if not result.ok:
-        raise BenchmarkError(f"stop failed for {provider_id}: {result.error}")
-    return result
+    return _require_ok(lifecycle.stop(provider_id), f"stop failed for {provider_id}")
 
 
 def restore_providers() -> None:
     """Restore all local providers to their standing baseline."""
-    result = lifecycle.restore()
-    if not result.ok:
-        raise BenchmarkError(f"failed to restore providers: {result.error}")
+    _require_ok(lifecycle.restore(), "failed to restore providers")

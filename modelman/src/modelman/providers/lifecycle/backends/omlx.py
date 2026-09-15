@@ -23,10 +23,8 @@ from __future__ import annotations
 import contextlib
 import shutil
 import subprocess
-import urllib.request
 
 from .. import probe
-from ..envelope import LifecycleError
 from .base import Backend, StartPlan
 
 OMLX_PORT = 8000
@@ -90,16 +88,9 @@ class OmlxBackend(Backend):
     def restore(self) -> None:
         if self.restore_action != "restart":
             return
-        # bash: `curl -s -m 2 http://localhost:8000/v1/models >/dev/null
-        # 2>&1 && return 0` — a single one-shot 2s probe, not a poll loop.
-        try:
-            urllib.request.urlopen(OMLX_HEALTH_URL, timeout=2.0)  # noqa: S310 — localhost probe
-            return
-        except OSError:
-            pass
-        subprocess.run(["omlx", "start"], capture_output=True, check=False)
-        if not probe.wait_for_port_open(OMLX_HEALTH_URL, timeout=probe.RESTORE_WAIT_TIMEOUT):
-            raise LifecycleError(f"omlx did not come back up ({OMLX_HEALTH_URL})")
+        self._restart_if_down(
+            restart=lambda: subprocess.run(["omlx", "start"], capture_output=True, check=False)
+        )
 
 
 # Only the 4-bit instance restores — starting it twice (once via each

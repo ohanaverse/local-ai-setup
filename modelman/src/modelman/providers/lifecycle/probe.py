@@ -41,6 +41,17 @@ MODEL_LOAD_TIMEOUT = 300.0
 RESTORE_WAIT_TIMEOUT = 90.0
 
 
+def _deadline_loop(timeout: float):
+    """Yield once per attempt until `timeout` elapses, then stop — the
+    `deadline = time.monotonic() + timeout; while time.monotonic() <
+    deadline: ...` skeleton shared by every poll loop below, factored out
+    so each function keeps only its own per-attempt logic and sleep
+    interval."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        yield
+
+
 def wait_for_port_closed(url: str, timeout: float = 6.0) -> None:
     """Poll a localhost URL until it stops responding, raising on timeout.
     The raising sibling of `port_closed_within`, which owns the actual
@@ -67,8 +78,7 @@ def port_closed_within(url: str, *, timeout: float) -> bool:
     port" case this poll exists to catch. Only a connection-level failure
     (refused, reset, no route) means the port actually closed.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    for _ in _deadline_loop(timeout):
         try:
             with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — localhost probe
                 resp.read()
@@ -92,8 +102,7 @@ def wait_for_port_open(url: str, *, timeout: float = 90.0, interval: float = 1.0
     HTTP error status, counts as "up"), returning True once it does or
     False after `timeout` elapses. Mirrors bash's `poll_until_up`, which
     never raises — this matches that: non-raising, boolean return."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    for _ in _deadline_loop(timeout):
         try:
             with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — localhost probe
                 resp.read()
@@ -115,8 +124,7 @@ def wait_for_model(
 ) -> None:
     """Poll `models_url` until it lists `model`, the serve process dies
     (when `proc` is given), or the deadline passes."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    for _ in _deadline_loop(timeout):
         if proc is not None and proc.poll() is not None:
             # The serve process died mid-load (OOM kill, missing weights
             # discovered late): without this check the HTTP poll below
@@ -157,8 +165,7 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
             "stream": False,
         }
     ).encode()
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    for _ in _deadline_loop(timeout):
         try:
             urllib.request.urlopen(health_url, timeout=2.0)  # noqa: S310 — localhost probe
         except OSError:

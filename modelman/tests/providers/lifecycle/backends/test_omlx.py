@@ -241,9 +241,9 @@ def test_restore_no_ops_for_6bit_instance():
     all (no probe, no subprocess call, no wait) since the 4-bit instance's
     restore already covers the shared daemon."""
     with (
-        patch("modelman.providers.lifecycle.backends.omlx.urllib.request.urlopen") as mock_urlopen,
+        patch("modelman.providers.lifecycle.backends.base.urllib.request.urlopen") as mock_urlopen,
         patch("modelman.providers.lifecycle.backends.omlx.subprocess.run") as mock_run,
-        patch("modelman.providers.lifecycle.backends.omlx.probe.wait_for_port_open") as mock_wait,
+        patch("modelman.providers.lifecycle.backends.base.wait_for_port_open") as mock_wait,
     ):
         OMLX_6BIT.restore()
     mock_urlopen.assert_not_called()
@@ -255,9 +255,9 @@ def test_restore_4bit_no_ops_when_already_up():
     """restore() must not start omlx at all when it already answers its
     health check — a no-op restart would be pointless churn."""
     with (
-        patch("modelman.providers.lifecycle.backends.omlx.urllib.request.urlopen") as mock_urlopen,
+        patch("modelman.providers.lifecycle.backends.base.urllib.request.urlopen") as mock_urlopen,
         patch("modelman.providers.lifecycle.backends.omlx.subprocess.run") as mock_run,
-        patch("modelman.providers.lifecycle.backends.omlx.probe.wait_for_port_open") as mock_wait,
+        patch("modelman.providers.lifecycle.backends.base.wait_for_port_open") as mock_wait,
     ):
         mock_urlopen.return_value.__enter__ = lambda self: self
         mock_urlopen.return_value.__exit__ = lambda *a: None
@@ -272,12 +272,12 @@ def test_restore_4bit_starts_and_waits_when_down():
     fallback path."""
     with (
         patch(
-            "modelman.providers.lifecycle.backends.omlx.urllib.request.urlopen",
+            "modelman.providers.lifecycle.backends.base.urllib.request.urlopen",
             side_effect=OSError("refused"),
         ),
         patch("modelman.providers.lifecycle.backends.omlx.subprocess.run") as mock_run,
         patch(
-            "modelman.providers.lifecycle.backends.omlx.probe.wait_for_port_open",
+            "modelman.providers.lifecycle.backends.base.wait_for_port_open",
             return_value=True,
         ) as mock_wait,
     ):
@@ -294,12 +294,12 @@ def test_restore_4bit_raises_lifecycle_error_when_it_never_comes_back():
     ollama's restore() error shape from Task 2."""
     with (
         patch(
-            "modelman.providers.lifecycle.backends.omlx.urllib.request.urlopen",
+            "modelman.providers.lifecycle.backends.base.urllib.request.urlopen",
             side_effect=OSError("refused"),
         ),
         patch("modelman.providers.lifecycle.backends.omlx.subprocess.run"),
         patch(
-            "modelman.providers.lifecycle.backends.omlx.probe.wait_for_port_open",
+            "modelman.providers.lifecycle.backends.base.wait_for_port_open",
             return_value=False,
         ),
         pytest.raises(LifecycleError, match="omlx did not come back up"),

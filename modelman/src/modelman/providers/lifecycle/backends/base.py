@@ -10,11 +10,13 @@ self-sufficient.
 from __future__ import annotations
 
 import os
+import urllib.request
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..envelope import LifecycleError
-from ..probe import WARMUP_TIMEOUT, warmup
+from ..probe import RESTORE_WAIT_TIMEOUT, WARMUP_TIMEOUT, wait_for_port_open, warmup
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,24 @@ class Backend(ABC):
         """Restore this backend to its normal (non-benchmark) state after
         a benchmark run releases exclusivity. Default: no-op — backends
         with restore_action="restart" override in later tasks."""
+
+    def _restart_if_down(self, *, restart: Callable[[], object]) -> None:
+        """Shared shape for a restore_action="restart" backend's restore():
+        one one-shot 2s probe of self.health_url (matching bash's single
+        `curl -m 2`, not a poll loop) — return immediately if already up;
+        otherwise call `restart()` and poll self.health_url via
+        `wait_for_port_open`, raising LifecycleError if it never comes
+        back. ollama/omlx/llamacpp's restore() bodies were otherwise
+        identical copies of this shape, differing only in how they
+        restart (`launchd.kickstart`, `omlx start`, `launchd.load`)."""
+        try:
+            urllib.request.urlopen(self.health_url, timeout=2.0)  # noqa: S310 — localhost probe
+            return
+        except OSError:
+            pass
+        restart()
+        if not wait_for_port_open(self.health_url, timeout=RESTORE_WAIT_TIMEOUT):
+            raise LifecycleError(f"{self.id} did not come back up ({self.health_url})")
 
     def _resolve_model(
         self, explicit: str | None, *, required: bool = False, required_message: str = ""

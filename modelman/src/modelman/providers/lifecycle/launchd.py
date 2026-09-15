@@ -19,41 +19,27 @@ LITELLM_HEALTH_URL = f"http://localhost:{LITELLM_PORT}/v1/models"
 LLAMACPP_PLIST = Path.home() / "Library/LaunchAgents/local.llamacpp.server.plist"
 
 
-def kickstart(label: str) -> bool:
-    """`launchctl kickstart -k gui/<uid>/<label>`. Swallows failure (matches
-    bash's `2>/dev/null || true`), returns whether it ran without raising."""
+def _run_launchctl(args: list[str]) -> bool:
+    """Run `launchctl <args>`, swallowing failure (matches bash's
+    `2>/dev/null || true`) and returning whether it exited zero.
+    `FileNotFoundError` is an `OSError` subclass, so one except suffices."""
     try:
-        result = subprocess.run(
-            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
-            capture_output=True,
-            check=False,
-        )
-    except (OSError, FileNotFoundError):
+        result = subprocess.run(["launchctl", *args], capture_output=True, check=False)
+    except OSError:
         return False
     return result.returncode == 0
+
+
+def kickstart(label: str) -> bool:
+    """`launchctl kickstart -k gui/<uid>/<label>`."""
+    return _run_launchctl(["kickstart", "-k", f"gui/{os.getuid()}/{label}"])
 
 
 def load(plist: Path) -> bool:
-    """`launchctl load -w <plist>`. Swallows failure, returns success."""
-    try:
-        result = subprocess.run(
-            ["launchctl", "load", "-w", str(plist)],
-            capture_output=True,
-            check=False,
-        )
-    except (OSError, FileNotFoundError):
-        return False
-    return result.returncode == 0
+    """`launchctl load -w <plist>`."""
+    return _run_launchctl(["load", "-w", str(plist)])
 
 
 def unload(plist: Path) -> bool:
-    """`launchctl unload <plist>`. Swallows failure, returns success."""
-    try:
-        result = subprocess.run(
-            ["launchctl", "unload", str(plist)],
-            capture_output=True,
-            check=False,
-        )
-    except (OSError, FileNotFoundError):
-        return False
-    return result.returncode == 0
+    """`launchctl unload <plist>` (no -w flag, matching bash's unload usage)."""
+    return _run_launchctl(["unload", str(plist)])

@@ -24,6 +24,7 @@ Two invariants this module owns:
 from __future__ import annotations
 
 import contextlib
+import functools
 import sys
 import urllib.error
 import urllib.request
@@ -65,6 +66,36 @@ def _distinct_backends(keep: str = "") -> list[Backend]:
     return picked
 
 
+def _run_job(
+    fn: Callable[[], str | None],
+    *,
+    log_prefix: str,
+    exc_label: str = "",
+    errors: list[str] | None = None,
+) -> Callable[[], None]:
+    """Wrap `fn` — a zero-arg callable returning a warning/error string, or
+    None on success — as a `_run_parallel` job: call it, turn an escaping
+    exception into an error string too (prefixed with `exc_label` when
+    given, so a bare exception message still names which step it came
+    from), log any non-None result under `log_prefix`, and record it in
+    `errors` when a list is given (omitted entirely for a warning that must
+    never fail the aggregate). The shared "run one per-backend step, never
+    let it raise, optionally count it as a real failure" shape `_stop_others`
+    and `restore()` used to reimplement as two slightly different closures."""
+
+    def _run() -> None:
+        try:
+            error = fn()
+        except Exception as exc:  # noqa: BLE001 — aggregate/never-a-traceback contract
+            error = f"{exc_label}: {exc}" if exc_label else str(exc)
+        if error:
+            _log(f"{log_prefix}{error}")
+            if errors is not None:
+                errors.append(error)
+
+    return _run
+
+
 def _run_parallel(jobs: list[Callable[[], None]]) -> None:
     """Run independent per-backend jobs concurrently — matching bash's
     backgrounded stop/restart subshells, where isolating costs the slowest
@@ -94,19 +125,12 @@ def _stop_others(keep: str = "") -> None:
     stuck provider must not abort the whole isolation.
     """
 
-    def _stop_one(backend: Backend) -> Callable[[], None]:
-        def _run() -> None:
-            try:
-                warning = backend.stop_and_wait()
-            except Exception as exc:  # noqa: BLE001 — a stop is never fatal here
-                _log(f"warning: {backend.id} stop failed: {exc}")
-                return
-            if warning is not None:
-                _log(f"warning: {warning}")
-
-        return _run
-
-    _run_parallel([_stop_one(backend) for backend in _distinct_backends(keep)])
+    _run_parallel(
+        [
+            _run_job(backend.stop_and_wait, log_prefix="warning: ", exc_label=f"{backend.id} stop failed")
+            for backend in _distinct_backends(keep)
+        ]
+    )
 
 
 def isolate(
@@ -305,46 +329,28 @@ def restore() -> LifecycleResult:
     Plus the LiteLLM proxy, which is not a Backend — see `_restore_litellm`.
     """
     errors: list[str] = []
+    log_prefix = f"{RESTORE_LOG_PREFIX} "
 
-    def _job(fn: Callable[[], str | None], *, counts: bool) -> Callable[[], None]:
-        def _run() -> None:
-            try:
-                error = fn()
-            except Exception as exc:  # noqa: BLE001 — aggregate, never a traceback
-                error = str(exc)
-            if error:
-                _log(f"{RESTORE_LOG_PREFIX} {error}")
-                if counts:
-                    errors.append(error)
+    def _restart_step(backend: Backend) -> str | None:
+        # Backend.restore()'s contract is raise-on-failure, not
+        # return-an-error — discard whatever it returns rather than
+        # letting a non-None value masquerade as an error string.
+        backend.restore()
+        return None
 
-        return _run
-
-    def _restart(backend: Backend) -> Callable[[], str | None]:
-        def _run() -> str | None:
-            # Backend.restore()'s contract is raise-on-failure, not
-            # return-an-error — discard whatever it returns rather than
-            # letting a non-None value masquerade as an error string.
-            backend.restore()
-            return None
-
-        return _run
-
-    def _stop_quietly(backend: Backend) -> Callable[[], str | None]:
-        def _run() -> str | None:
-            warning = backend.stop_and_wait()
-            if warning:
-                _log(f"{RESTORE_LOG_PREFIX} warning: {warning}")
-            return None  # a "stop" task never fails the aggregate
-
-        return _run
+    def _stop_quietly_step(backend: Backend) -> str | None:
+        warning = backend.stop_and_wait()
+        return f"warning: {warning}" if warning else None  # never fails the aggregate
 
     jobs: list[Callable[[], None]] = []
     for backend in _distinct_backends():
         if backend.restore_action == "restart":
-            jobs.append(_job(_restart(backend), counts=True))
+            jobs.append(
+                _run_job(functools.partial(_restart_step, backend), log_prefix=log_prefix, errors=errors)
+            )
         elif backend.restore_action == "stop":
-            jobs.append(_job(_stop_quietly(backend), counts=False))
-    jobs.append(_job(_restore_litellm, counts=True))
+            jobs.append(_run_job(functools.partial(_stop_quietly_step, backend), log_prefix=log_prefix))
+    jobs.append(_run_job(_restore_litellm, log_prefix=log_prefix, errors=errors))
 
     _run_parallel(jobs)
 

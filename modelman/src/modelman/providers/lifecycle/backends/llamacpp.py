@@ -21,10 +21,7 @@ are in bash today:
 
 from __future__ import annotations
 
-import urllib.request
-
 from .. import launchd, probe
-from ..envelope import LifecycleError
 from .base import Backend, StartPlan
 
 LLAMACPP_PORT = 8080
@@ -103,14 +100,7 @@ class LlamaCppBackend(Backend):
         """
         if self.restore_action != "restart":
             return
-        try:
-            urllib.request.urlopen(LLAMACPP_HEALTH_URL, timeout=2.0)  # noqa: S310 — localhost probe
-            return
-        except OSError:
-            pass
-        launchd.load(launchd.LLAMACPP_PLIST)
-        if not probe.wait_for_port_open(LLAMACPP_HEALTH_URL, timeout=probe.RESTORE_WAIT_TIMEOUT):
-            raise LifecycleError(f"llamacpp did not come back up ({LLAMACPP_HEALTH_URL})")
+        self._restart_if_down(restart=lambda: launchd.load(launchd.LLAMACPP_PLIST))
 
 
 LLAMACPP = LlamaCppBackend()

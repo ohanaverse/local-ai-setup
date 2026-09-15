@@ -15,6 +15,7 @@ from modelman.providers.lifecycle.backends.llamacpp import (
 from modelman.providers.lifecycle.envelope import LifecycleError
 
 MODULE = "modelman.providers.lifecycle.backends.llamacpp"
+BASE_MODULE = "modelman.providers.lifecycle.backends.base"
 
 
 def test_llamacpp_registered_in_backends_but_not_supported_ids():
@@ -187,9 +188,9 @@ def test_restore_no_ops_while_restore_action_is_skip():
     """The shipped default must stay inert: a retired provider must not be
     resurrected by every post-benchmark restore."""
     with (
-        patch(f"{MODULE}.urllib.request.urlopen") as mock_urlopen,
+        patch(f"{BASE_MODULE}.urllib.request.urlopen") as mock_urlopen,
         patch(f"{MODULE}.launchd.load") as mock_load,
-        patch(f"{MODULE}.probe.wait_for_port_open") as mock_wait,
+        patch(f"{BASE_MODULE}.wait_for_port_open") as mock_wait,
     ):
         LLAMACPP.restore()
     mock_urlopen.assert_not_called()
@@ -202,9 +203,9 @@ def test_restore_no_ops_when_already_up():
     server that already answers is left completely alone rather than being
     bounced."""
     with (
-        patch(f"{MODULE}.urllib.request.urlopen") as mock_urlopen,
+        patch(f"{BASE_MODULE}.urllib.request.urlopen") as mock_urlopen,
         patch(f"{MODULE}.launchd.load") as mock_load,
-        patch(f"{MODULE}.probe.wait_for_port_open") as mock_wait,
+        patch(f"{BASE_MODULE}.wait_for_port_open") as mock_wait,
     ):
         mock_urlopen.return_value.__enter__ = lambda self: self
         mock_urlopen.return_value.__exit__ = lambda *a: None
@@ -219,9 +220,9 @@ def test_restore_loads_plist_and_waits_when_down():
     actually brought back by loading its LaunchAgent and waiting for the
     port to answer."""
     with (
-        patch(f"{MODULE}.urllib.request.urlopen", side_effect=OSError("refused")),
+        patch(f"{BASE_MODULE}.urllib.request.urlopen", side_effect=OSError("refused")),
         patch(f"{MODULE}.launchd.load") as mock_load,
-        patch(f"{MODULE}.probe.wait_for_port_open", return_value=True) as mock_wait,
+        patch(f"{BASE_MODULE}.wait_for_port_open", return_value=True) as mock_wait,
     ):
         _restartable().restore()
     mock_load.assert_called_once_with(launchd.LLAMACPP_PLIST)
@@ -233,9 +234,9 @@ def test_restore_raises_lifecycle_error_when_it_never_comes_back():
     RAISE, so orchestrate.restore() counts it as a failed restore instead
     of reporting a success nobody can act on."""
     with (
-        patch(f"{MODULE}.urllib.request.urlopen", side_effect=OSError("refused")),
+        patch(f"{BASE_MODULE}.urllib.request.urlopen", side_effect=OSError("refused")),
         patch(f"{MODULE}.launchd.load"),
-        patch(f"{MODULE}.probe.wait_for_port_open", return_value=False),
+        patch(f"{BASE_MODULE}.wait_for_port_open", return_value=False),
         pytest.raises(LifecycleError, match="llamacpp did not come back up"),
     ):
         _restartable().restore()

@@ -57,9 +57,15 @@ class PidfileProcess:
         looks like the process this pidfile was written for (best-effort —
         see `_looks_like_this_process`), send SIGTERM — swallow
         ProcessLookupError/PermissionError. Always unlink the pidfile at the
-        end, even if the process was already dead. No SIGKILL escalation,
-        no waitpid/reaping — this matches bash's mlx_lm_server_stop exactly
-        (SIGTERM-only, fire and forget)."""
+        end, even if the process was already dead. No SIGKILL escalation —
+        this matches bash's mlx_lm_server_stop exactly (SIGTERM-only, fire
+        and forget). Followed by a bounded best-effort reap (`_reap`): bash
+        has nothing equivalent to reap, because bash's `kill` doesn't hold a
+        live child handle the way `spawn()`'s `subprocess.Popen` does — when
+        `stop()` runs in the same process that called `spawn()` (e.g. the
+        TUI replacing an occupant mid-session), the signaled process is a
+        real child of this process, and never reaping it leaves a zombie
+        pid-table entry for the rest of this process's lifetime."""
         try:
             with open(self.pidfile) as f:
                 content = f.read().strip()
@@ -77,11 +83,30 @@ class PidfileProcess:
             os.kill(pid, 0)  # liveness check; raises if not alive/permitted
             if self._looks_like_this_process(pid):
                 os.kill(pid, signal.SIGTERM)
+                self._reap(pid)
         except (ProcessLookupError, PermissionError):
             pass
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(self.pidfile)
+
+    @staticmethod
+    def _reap(pid: int, timeout: float = 2.0, interval: float = 0.1) -> None:
+        """Best-effort, bounded `waitpid(pid, WNOHANG)` poll after signaling
+        `pid`, so a child this process itself spawned doesn't linger as a
+        zombie. `os.waitpid` raises `ChildProcessError` when `pid` isn't
+        actually a child of this process — the common case when `stop()`
+        runs in a fresh CLI invocation that never spawned it — so this is a
+        quick no-op there, not a hang."""
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+                if reaped_pid == pid:
+                    return
+                time.sleep(interval)
+        except ChildProcessError:
+            pass
 
     def _looks_like_this_process(self, pid: int) -> bool:
         """Best-effort guard against a dead process's pid being reassigned

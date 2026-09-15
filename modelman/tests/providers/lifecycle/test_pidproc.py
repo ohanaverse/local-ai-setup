@@ -1,3 +1,4 @@
+import os
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
@@ -95,6 +96,51 @@ def test_stop_sends_sigterm_when_process_alive():
         _proc().stop()
     # First call is the liveness check (signal 0), second is the real SIGTERM.
     assert mock_kill.call_args_list[0].args == (1234, 0)
+    import signal
+
+    assert mock_kill.call_args_list[1].args == (1234, signal.SIGTERM)
+    mock_unlink.assert_called_once_with("/tmp/x.pid")
+
+
+def test_stop_reaps_child_process_after_sigterm():
+    """A process this same Python process spawned (e.g. the TUI replacing
+    an occupant mid-session) must be waitpid-reaped after SIGTERM, not left
+    as a zombie pid-table entry for the rest of this process's lifetime —
+    the bug a prior review caught: stop() signaled by raw pid but never
+    called waitpid/proc.wait() on the child it (or a sibling call) spawned."""
+    m = mock_open(read_data="1234")
+    with (
+        patch("builtins.open", m),
+        patch("modelman.providers.lifecycle.pidproc.os.kill") as mock_kill,
+        patch(
+            "modelman.providers.lifecycle.pidproc.os.waitpid", return_value=(1234, 0)
+        ) as mock_waitpid,
+        patch("modelman.providers.lifecycle.pidproc.os.unlink") as mock_unlink,
+        patch("modelman.providers.lifecycle.pidproc.subprocess.run", _ps_matching()),
+    ):
+        _proc().stop()
+    mock_waitpid.assert_called_once_with(1234, os.WNOHANG)
+    mock_kill.assert_called()  # SIGTERM still sent before the reap attempt
+    mock_unlink.assert_called_once_with("/tmp/x.pid")
+
+
+def test_stop_tolerates_reaping_a_process_it_did_not_spawn():
+    """When stop() runs in a fresh process that never spawned the pid it
+    read from the pidfile (the common case: a separate `modelman provider
+    stop` CLI invocation), `os.waitpid` raises ChildProcessError — this
+    must be swallowed as a quick no-op, not propagate or hang."""
+    m = mock_open(read_data="1234")
+    with (
+        patch("builtins.open", m),
+        patch("modelman.providers.lifecycle.pidproc.os.kill") as mock_kill,
+        patch(
+            "modelman.providers.lifecycle.pidproc.os.waitpid",
+            side_effect=ChildProcessError(),
+        ),
+        patch("modelman.providers.lifecycle.pidproc.os.unlink") as mock_unlink,
+        patch("modelman.providers.lifecycle.pidproc.subprocess.run", _ps_matching()),
+    ):
+        _proc().stop()  # must not raise
     import signal
 
     assert mock_kill.call_args_list[1].args == (1234, signal.SIGTERM)
