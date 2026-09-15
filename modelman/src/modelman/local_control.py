@@ -4,9 +4,10 @@ docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md.
 
 `modelman start`/`modelman stop` (main.py) are the only place a local
 model's process is started or stopped for normal (non-benchmark) usage.
-Both delegate the actual stop/start to bin/llm-isolate-provider via
-modelman.benchmark.isolation — the same subprocess contract `modelman
-benchmark` uses — and record which models are running via a per-model
+Both delegate the actual stop/start to modelman.benchmark.isolation —
+the same in-process lifecycle contract `modelman benchmark` uses, which
+drives modelman.providers.lifecycle's backends — and record which models
+are running via a per-model
 `running: bool` flag on modelman.toml's ModelState (state.py), which wt's
 model picker reads read-only to filter its catalog to running local
 models plus cloud models. Cross-provider concurrency is unrestricted —
@@ -213,8 +214,8 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
         return False
     ids = _http_models_ids(f"{base}/v1/models")
     if provider_id == "mlx_lm_server":
-        # One target+draft pairing per process (bin/llm-isolate-provider's
-        # mlx_lm_server branch is the only thing that starts one): the
+        # One target+draft pairing per process (the lifecycle's
+        # mlx_lm_server backend is the only thing that starts one): the
         # server loads its model before serving, so a non-empty /v1/models
         # is already model-accurate. An exact-name check would false-fail
         # permanently when the registry's local_path/repo spelling differs
@@ -842,7 +843,7 @@ def start_local_model(
         if occupant is not None and model.provider_id not in _OMLX_PROVIDER_IDS:
             # mtplx and mlx_lm_server tear down their own prior occupant
             # INSIDE the isolate_provider(..., solo=True) call just above
-            # (providers/lifecycle.py's isolate()), not before it — so the
+            # (providers/lifecycle's orchestrate.isolate()), not before it — so the
             # occupant's flag can only be cleared here, once that call has
             # actually succeeded. Clearing it earlier (before
             # isolate_provider() even ran) would mark the occupant stopped

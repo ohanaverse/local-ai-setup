@@ -1,27 +1,28 @@
-"""Subprocess contract with local-ai-setup isolation helpers."""
+"""Benchmark-facing wrapper around modelman's local-provider lifecycle.
+
+Formerly the subprocess contract with `bin/llm-isolate-provider` /
+`bin/llm-restore-providers`; those calls are gone (issue #79) and every
+function here now drives `modelman.providers.lifecycle` in-process. The five
+public names and their signatures are unchanged, so no caller
+(`local_control.py`, `benchmark/runner.py`, `benchmark/agent/runner.py`)
+needed edits: this layer's job is still to translate the lifecycle's
+`ok=False` envelopes into the `BenchmarkError` its callers expect.
+"""
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import subprocess
-from typing import Any
 
 from modelman.benchmark.errors import BenchmarkError
 from modelman.local_process import ProcessResult as IsolateResult
 
-# What bin/llm-isolate-provider can actually isolate, mirroring that script's
-# own "Supported:" header comment — the shell script is the real source of
-# truth (it owns the case statement), and this constant is the one place
-# modelman code checks isolability, kept here next to the rest of the
-# subprocess contract with that script rather than rebuilt ad hoc elsewhere.
-# llamacpp retired 2026-09-07 (issue #33): kept as a case branch in
-# bin/llm-isolate-provider but not isolatable. Re-enable steps:
-# docs/reference/provider-artifacts.md
-SUPPORTED_PROVIDER_IDS: frozenset[str] = frozenset(
-    {"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"}
-)
+from ..providers import lifecycle
+
+# The isolable provider set now lives with the backends that implement it
+# (modelman/providers/lifecycle/backends/__init__.py) — re-exported here
+# under its established name so existing importers (local_control.py,
+# benchmark/agent/runner.py) are unaffected.
+SUPPORTED_PROVIDER_IDS = lifecycle.SUPPORTED_PROVIDER_IDS
 
 # IsolateResult is modelman.local_process.ProcessResult under its
 # established name here — shared with modelman.providers.lifecycle
@@ -51,12 +52,12 @@ def mlx_lm_server_pairing_args(
     draft_local_path: str | None,
     draft_repo: str | None,
 ) -> tuple[str, str]:
-    """Resolve the target+draft extra args bin/llm-isolate-provider requires
-    for an mlx_lm_server isolate call.
+    """Resolve the target+draft extra args an mlx_lm_server isolate call
+    requires.
 
-    mlx_lm_server has no baked-in default pairing in the helper (unlike
-    ollama/omlx, which fall back to a baked-in model name), so the pairing
-    must be passed through explicitly on every call. Resolution order is
+    mlx_lm_server has no baked-in default pairing (unlike ollama/omlx, which
+    fall back to a baked-in model name), so the pairing must be passed
+    through explicitly on every call. Resolution order is
     local_path over repo, matching the providers' own resolution order. The
     local_path-vs-repo fields are the discriminator: only a local_path value
     is a filesystem path that may be normalized; a repo value is an HF repo
@@ -77,125 +78,69 @@ def mlx_lm_server_pairing_args(
     )
 
 
-def _helper_path(name: str) -> str:
-    path = shutil.which(name)
-    if path is None:
-        raise BenchmarkError(
-            f"isolation helper '{name}' not found on PATH. Ensure local-ai-setup/bin is on PATH."
-        )
-    return path
-
-
 def isolate_provider(
     provider_id: str, *extra_args: str, env: dict[str, str] | None = None, solo: bool = False
 ) -> IsolateResult:
-    """Delegate service isolation to the local-ai-setup helper.
+    """Isolate one local provider: stop the others, start+warm this one.
 
-    `extra_args` is forwarded verbatim, after `provider_id`, to the shell
-    helper's argv — e.g. `isolate_provider("mlx_lm_server", target, draft)`.
-    mlx_lm_server has no default target/draft pairing in the shell script
-    (unlike ollama/omlx, which fall back to a baked-in model name), so the
+    `extra_args` is forwarded verbatim to the backend's `resolve()` as its
+    positional args — e.g. `isolate_provider("mlx_lm_server", target,
+    draft)`. mlx_lm_server has no default target/draft pairing, so the
     pairing must be passed through explicitly on every call.
 
-    `env`, when given, is merged over a copy of the current environment and
-    passed to the subprocess — this is how a caller (modelman start) makes
-    the helper warm up a *specific* model instead of its baked-in default
-    (LLM_ISOLATE_OLLAMA_MODEL etc., see that script's header). Omitted
-    entirely from the subprocess.run() call when None, so existing callers
-    that never pass env see no change in behavior.
+    `env`, when given, is the caller's own dict of LLM_ISOLATE_*_MODEL
+    overrides (see `local_process.ENV_VAR_BY_PROVIDER`) — this is how
+    `modelman start` warms up a *specific* model instead of the provider's
+    baked-in default. The named variable's value is extracted and passed as
+    the EXPLICIT model argument (highest precedence in the backend's
+    resolution order) rather than left to the backend's own os.environ
+    fallback: `env` is a dict the caller built, not necessarily equal to
+    this process's real environment.
 
-    `solo=True` prepends `--solo` to the helper's argv, which skips
-    stopping every OTHER local provider before starting `provider_id` —
-    used by modelman's same-provider-only local-model lifecycle
-    (local_control.py). Never passed by modelman benchmark, which still
-    needs full exclusivity for clean measurement.
+    `solo=True` skips stopping every OTHER local provider before starting
+    `provider_id` — used by modelman's same-provider-only local-model
+    lifecycle (local_control.py). Never passed by modelman benchmark, which
+    still needs full exclusivity for clean measurement.
     """
-    helper = _helper_path("llm-isolate-provider")
-    run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "check": False}
-    if env is not None:
-        run_kwargs["env"] = {**os.environ, **env}
-    argv = [helper, *(["--solo"] if solo else []), provider_id, *extra_args]
-    result = subprocess.run(argv, **run_kwargs)
-    if result.returncode != 0:
-        raise BenchmarkError(
-            f"isolation failed for {provider_id}: {result.stderr.strip() or result.stdout.strip()}"
-        )
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise BenchmarkError(
-            f"isolation helper returned invalid JSON for {provider_id}: {exc}"
-        ) from exc
-    return IsolateResult(
-        provider=data.get("provider", provider_id),
-        model=data.get("model", ""),
-        direct_url=data.get("direct_url", ""),
-        ok=data.get("ok", False),
-        error=data.get("error"),
-    )
+    model: str | None = None
+    if env:
+        from ..local_process import ENV_VAR_BY_PROVIDER
+
+        var = ENV_VAR_BY_PROVIDER.get(provider_id)
+        if var:
+            model = env.get(var)
+    result = lifecycle.isolate(provider_id, model, extra_args=extra_args, solo=solo)
+    if not result.ok:
+        raise BenchmarkError(f"isolation failed for {provider_id}: {result.error}")
+    return result
 
 
 def stop_all_local_providers() -> IsolateResult:
-    """Stop every local provider via the isolation helper's `stop-all`
-    mode. Used by `modelman stop` (and by `modelman start` before starting
-    a different model) — the single place that knows how to tear down
-    whichever local provider happens to be running, without modelman
-    having to track that itself."""
-    helper = _helper_path("llm-isolate-provider")
-    result = subprocess.run(
-        [helper, "stop-all"], capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        raise BenchmarkError(
-            f"stop-all failed: {result.stderr.strip() or result.stdout.strip()}"
-        )
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise BenchmarkError(f"isolation helper returned invalid JSON for stop-all: {exc}") from exc
-    return IsolateResult(
-        provider=data.get("provider") or "stop-all",
-        model=data.get("model") or "",
-        direct_url=data.get("direct_url") or "",
-        ok=data.get("ok", False),
-        error=data.get("error"),
-    )
+    """Stop every local provider. Used by `modelman stop` (and by `modelman
+    start` before starting a different model) — the single place that knows
+    how to tear down whichever local provider happens to be running, without
+    modelman having to track that itself."""
+    result = lifecycle.stop_all()
+    if not result.ok:
+        raise BenchmarkError(f"stop-all failed: {result.error}")
+    return result
 
 
 def stop_provider(provider_id: str) -> IsolateResult:
-    """Stop exactly one local provider via the isolation helper's `stop`
-    mode, leaving every other local provider running. Used by the
-    same-provider-only local-model lifecycle to replace a single-port
-    provider's (omlx/omlx-6bit) occupant before starting a different
-    model on it — mlx_lm_server and mtplx never need this (mlx_lm_server
-    self-replaces inside its own start function; mtplx's replace logic
-    lives in providers/lifecycle.py's isolate())."""
-    helper = _helper_path("llm-isolate-provider")
-    result = subprocess.run(
-        [helper, "stop", provider_id], capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        raise BenchmarkError(
-            f"stop failed for {provider_id}: {result.stderr.strip() or result.stdout.strip()}"
-        )
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise BenchmarkError(f"isolation helper returned invalid JSON for stop {provider_id}: {exc}") from exc
-    return IsolateResult(
-        provider=data.get("provider") or provider_id,
-        model=data.get("model") or "",
-        direct_url=data.get("direct_url") or "",
-        ok=data.get("ok", False),
-        error=data.get("error"),
-    )
+    """Stop exactly one local provider, leaving every other one running.
+    Used by the same-provider-only local-model lifecycle to replace a
+    single-port provider's (omlx/omlx-6bit) occupant before starting a
+    different model on it — mlx_lm_server and mtplx never need this
+    (mlx_lm_server self-replaces inside its own start(); mtplx's replace
+    logic lives in the lifecycle's isolate())."""
+    result = lifecycle.stop(provider_id)
+    if not result.ok:
+        raise BenchmarkError(f"stop failed for {provider_id}: {result.error}")
+    return result
 
 
 def restore_providers() -> None:
-    """Restore all local providers via the local-ai-setup helper."""
-    helper = _helper_path("llm-restore-providers")
-    result = subprocess.run([helper], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise BenchmarkError(
-            f"failed to restore providers: {result.stderr.strip() or result.stdout.strip() or 'unknown error'}"
-        )
+    """Restore all local providers to their standing baseline."""
+    result = lifecycle.restore()
+    if not result.ok:
+        raise BenchmarkError(f"failed to restore providers: {result.error}")

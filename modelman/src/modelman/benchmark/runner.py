@@ -172,7 +172,7 @@ def run_benchmark(
                     )
                 elif target.provider_id == "mtplx":
                     # MTPLX is single-model-per-process; pass the repo id so
-                    # bin/llm-isolate-provider starts the requested model.
+                    # isolation starts the requested model.
                     extra_args = (target.model_name,)
                 else:
                     extra_args = ()
