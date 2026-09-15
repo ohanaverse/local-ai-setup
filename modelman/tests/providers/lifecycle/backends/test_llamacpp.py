@@ -133,9 +133,13 @@ def test_stop_and_wait_unloads_and_polls_when_plist_present():
 
 
 def test_stop_and_wait_warns_when_port_stays_open():
-    """A port that never closes must come back as bash's exact warning text
-    — stop-all only warns on it, but orchestrate.stop() turns the same
-    string into a hard failure, so the wording is part of the contract."""
+    """A port that never closes must come back as bash's exact warning text.
+
+    llamacpp is reached only through stop-all/_stop_others (orchestrate.stop()
+    rejects it — it is outside SUPPORTED_PROVIDER_IDS), and those log the
+    string to stderr rather than failing. So the wording is what a user sees
+    when a retired llama.cpp refuses to let go of port 8080 during an
+    isolate — worth keeping byte-identical to bash's."""
     with (
         patch(f"{MODULE}.launchd.LLAMACPP_PLIST") as mock_plist,
         patch(f"{MODULE}.launchd.unload"),

@@ -126,6 +126,8 @@ class MlxLmServerBackend(Backend):
                 "that cannot bind (is something else listening on "
                 f"{MLX_LM_SERVER_PORT}?)"
             )
+        if plan.argv is None:  # resolve() always populates argv
+            raise LifecycleError("mlx_lm_server start plan has no argv")
         _PROC.spawn(plan.argv)
 
     def warm(self, plan: StartPlan) -> None:

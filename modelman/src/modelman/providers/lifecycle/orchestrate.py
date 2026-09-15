@@ -134,13 +134,20 @@ def isolate(
     backend = BACKENDS.get(provider_id)
     if backend is None:
         return LifecycleResult(provider_id, model or "", "", False, f"unknown provider: {provider_id}")
-    reason = backend.check_available()
-    if reason is not None:
-        return LifecycleResult(provider_id, model or "", "", False, reason)
 
     started = False
     plan = None
     try:
+        # check_available() is INSIDE the try on purpose. Its contract is
+        # "reason string or None, never raises", but the module's
+        # never-a-traceback invariant must hold structurally rather than
+        # depend on every present and future backend honoring that — a
+        # backend whose availability probe throws must still produce an
+        # envelope, not escape as a raw traceback to callers that only
+        # branch on `ok`.
+        reason = backend.check_available()
+        if reason is not None:
+            return LifecycleResult(provider_id, model or "", "", False, reason)
         plan = backend.resolve(model, tuple(extra_args))
         if backend.already_serving(plan):
             # Keep semantics, matching bash's `stop_all_local $provider`
@@ -220,6 +227,13 @@ def stop(provider_id: str) -> LifecycleResult:
     envelope such callers read).
     """
     if provider_id not in SUPPORTED_PROVIDER_IDS:
+        # Two distinct cases, distinguishable to the caller: a registered
+        # backend that `stop` nonetheless refuses (llamacpp), versus an id
+        # nothing knows about at all.
+        if provider_id in BACKENDS:
+            return LifecycleResult(
+                provider_id, "", "", False, f"provider not supported for stop: {provider_id}"
+            )
         return LifecycleResult(provider_id, "", "", False, f"unknown provider: {provider_id}")
     backend = BACKENDS[provider_id]
     try:

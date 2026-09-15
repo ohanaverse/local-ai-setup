@@ -79,6 +79,26 @@ def test_isolate_unavailable_backend_fails_without_teardown():
     mock_start.assert_not_called()
 
 
+def test_isolate_returns_envelope_when_check_available_raises():
+    """check_available()'s contract is "reason string or None, never raises",
+    but orchestrate.py's never-a-traceback invariant is stated
+    unconditionally, so it must hold structurally rather than depend on
+    every current and future backend honoring that contract. A backend whose
+    availability probe throws must still yield an ok=False envelope —
+    callers only branch on `ok`, so an escaping exception would surface as
+    an unhandled crash."""
+    with (
+        patch.object(BACKENDS["omlx"], "check_available", side_effect=OSError("boom")),
+        patch(f"{ORCH}._stop_others") as mock_stop_others,
+        patch.object(BACKENDS["omlx"], "start") as mock_start,
+    ):
+        result = orchestrate.isolate("omlx")
+    assert result.ok is False
+    assert "boom" in (result.error or "")
+    mock_stop_others.assert_not_called()
+    mock_start.assert_not_called()
+
+
 @pytest.mark.parametrize("provider_id", ["ollama", "omlx", "mlx_lm_server", "mtplx"])
 def test_isolate_resolve_failure_returns_error_envelope_without_teardown(provider_id):
     """BUG FIX (b), proven at the orchestration level for EVERY backend.
@@ -228,6 +248,31 @@ def test_isolate_restart_path_stops_siblings_and_own_occupant():
     mock_start.assert_called_once_with(plan)
     mock_wait_ready.assert_called_once_with(plan)
     mock_warm.assert_called_once_with(plan)
+    assert result.ok is True
+
+
+def test_isolate_non_solo_stops_siblings_before_own_occupant():
+    """Order matters, so pin it: the siblings go down first, then this
+    backend's own occupant, then start(). Running replace_own_occupant()
+    before _stop_others() would hand mtplx's freed port 8003 back over a
+    window where the siblings still hold GPU/RAM, and start()'s port poll
+    would be racing a teardown that hasn't happened yet."""
+    plan = _plan("org/new")
+    calls = []
+    with (
+        patch.object(MTPLX, "check_available", return_value=None),
+        patch.object(MTPLX, "resolve", return_value=plan),
+        patch.object(MTPLX, "already_serving", return_value=False),
+        patch(f"{ORCH}._stop_others", side_effect=lambda **kw: calls.append("stop_others")),
+        patch.object(
+            MTPLX, "replace_own_occupant", side_effect=lambda p: calls.append("replace_own")
+        ),
+        patch.object(MTPLX, "start", side_effect=lambda p: calls.append("start")),
+        patch.object(MTPLX, "wait_ready"),
+        patch.object(MTPLX, "warm"),
+    ):
+        result = orchestrate.isolate("mtplx", "org/new")
+    assert calls == ["stop_others", "replace_own", "start"]
     assert result.ok is True
 
 
