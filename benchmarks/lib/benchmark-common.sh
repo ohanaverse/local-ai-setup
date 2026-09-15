@@ -4,16 +4,23 @@
 #
 # Expects the sourcing script to have already set MAX_TOKENS and PROMPT
 # (used by build_payload), and to set OUTFILE before calling run_streaming
-# or write_table_header. isolate_one expects ISOLATE_HELPER, ISOLATE_ID,
-# ISOLATE_ENV, and DIRECT_MODELS to be set by the sourcing script (each
-# script keeps its own copies of these — they differ per backend set).
+# or write_table_header. isolate_one expects ISOLATE_ID and DIRECT_MODELS to
+# be set by the sourcing script (each script keeps its own copies of these —
+# they differ per backend set).
 # ISOLATE_EXTRA is optional: a sourcing script may set
-# ISOLATE_EXTRA[key]="second-positional-arg" for a future backend whose
-# no-ISOLATE_ENV branch needs more than one positional arg after the model
-# (e.g. a draft-model repo); every current backend leaves it unset, which
-# isolate_one treats as no extra args.
+# ISOLATE_EXTRA[key]="second-positional-arg" for a future backend that needs
+# more than one positional arg after the model (e.g. a draft-model repo);
+# every current backend leaves it unset, which isolate_one treats as no
+# extra args.
 
 BENCHMARK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODELMAN_DIR="$(cd "$BENCHMARK_LIB_DIR/../../modelman" && pwd)"
+MODELMAN_PROVIDER=(uv run --directory "$MODELMAN_DIR" modelman provider)
+
+command -v uv >/dev/null 2>&1 || {
+    echo "[setup] error: 'uv' is required to isolate local providers (calls modelman provider via uv run) but is not on PATH" >&2
+    exit 1
+}
 
 declare -A ISOLATE_EXTRA
 
@@ -40,46 +47,42 @@ PYEOF
 
 # --- Service management ----------------------------------------------------
 
-# Stop all local providers, then start+warmup only the requested backend's
-# model (the helper polls until the model actually answers). A backend with
-# no ISOLATE_ENV entry (e.g. mtplx) is single-model-per-process and takes its
-# model as a positional arg instead of an env var (bin/llm-isolate-provider's
-# mtplx case reads $2) — forward DIRECT_MODELS[$key] positionally so
-# isolation selects the model this run actually requested, instead of
-# falling back to registry resolution: silently the wrong weights if some
-# other mtplx entry happens to be the registry's single match, or an
-# outright refusal once the registry holds more than one.
+# Stop other local providers, then start+warmup only the requested backend's
+# model (modelman provider isolate polls until the model actually answers).
+# Every backend now goes through the CLI's positional MODEL argument —
+# forward DIRECT_MODELS[$key] explicitly so isolation selects the model this
+# run actually requested, instead of falling back to the CLI's own env-var or
+# registry-default resolution: silently the wrong weights if some other
+# registry entry happens to be the default, or an outright refusal once the
+# registry holds more than one candidate. An explicit CLI argument is the
+# highest-precedence source per the CLI's own resolution order (explicit arg
+# > env var > default), so there is no more env-var-vs-positional branch here.
 # ISOLATE_EXTRA[$key], if set, is word-split and appended after the model —
 # a future backend needing a second positional arg (e.g. a draft model) sets
 # it; every current backend leaves it unset/empty.
 isolate_one() {
     local key="$1"
     echo "  [isolation] isolating ${ISOLATE_ID[$key]} (${DIRECT_MODELS[$key]})..."
-    if [ -n "${ISOLATE_ENV[$key]:-}" ]; then
-        env "${ISOLATE_ENV[$key]}=${DIRECT_MODELS[$key]}" \
-            "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" >/dev/null
-    else
-        # ISOLATE_EXTRA[$key] is deliberately word-split below: it's a
-        # space-separated list of additional positional args, empty for
-        # every current single-arg backend.
-        # shellcheck disable=SC2086
-        "$ISOLATE_HELPER" "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" ${ISOLATE_EXTRA[$key]:-} >/dev/null
-    fi
+    # ISOLATE_EXTRA[$key] is deliberately word-split below: it's a
+    # space-separated list of additional positional args, empty for
+    # every current single-arg backend.
+    # shellcheck disable=SC2086
+    "${MODELMAN_PROVIDER[@]}" isolate "${ISOLATE_ID[$key]}" "${DIRECT_MODELS[$key]}" ${ISOLATE_EXTRA[$key]:-} >/dev/null
 }
 
 # Ensure all local services are running (called at script start). Delegates
-# to the already-idempotent bin/llm-restore-providers (it no-ops per-service
+# to the already-idempotent `modelman provider restore` (it no-ops per-service
 # when already up) rather than duplicating its start/poll logic here.
 #
-# Best-effort, like the inline version this replaced: llm-restore-providers
-# exits 1 when any one service fails its health poll, and these scripts run
-# under set -e, so an unchecked call would abort the whole run (including
-# the OpenRouter rows that need no local service) leaving a header-only
-# result file. A degraded run — some local rows erroring — still beats a
-# zero-row run, so warn and continue instead.
+# Best-effort, like the inline version this replaced: `modelman provider
+# restore` exits 1 when any one service fails its health poll, and these
+# scripts run under set -e, so an unchecked call would abort the whole run
+# (including the OpenRouter rows that need no local service) leaving a
+# header-only result file. A degraded run — some local rows erroring — still
+# beats a zero-row run, so warn and continue instead.
 ensure_all_local_started() {
     echo "[setup] ensuring all local services are running..."
-    if ! "$BENCHMARK_LIB_DIR/../../bin/llm-restore-providers"; then
+    if ! "${MODELMAN_PROVIDER[@]}" restore; then
         echo "[setup] WARNING: one or more local providers failed to start; " \
             "affected rows will error out, cloud rows still run" >&2
     fi
