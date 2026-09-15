@@ -92,16 +92,17 @@ func (e entryItem) Description() string {
 type selectedEntryMsg struct{ entry worktree.Entry }
 
 // buildList constructs a list.Model from worktree groups in the order
-// the picker should render them: sentinel, then the worktrees group,
-// then the local-branches group, then — only when the remote-branches
-// group is non-empty — a separator row, then the remote-branches group.
-// Entries matching the repo default branch are rendered with
-// "(default)"; the entry matching the launch directory (after resolving
-// symlinks) is rendered with "(current)", which wins over "(default)"
-// so the current worktree stays distinguishable from a separate worktree
-// on the default branch. The markers are tracked on entryItem.label so
-// the underlying worktree.Entry is never mutated and remains safe to
-// forward into selectedEntryMsg.
+// the picker should render them: sentinel, then the repo-root ((current))
+// entry pinned second, then the rest of the worktrees group, then the
+// local-branches group, then — only when the remote-branches group is
+// non-empty — a separator row, then the remote-branches group. Entries
+// matching the repo default branch are rendered with "(default)"; the
+// entry matching the launch directory (after resolving symlinks) is
+// rendered with "(current)", which wins over "(default)" so the current
+// worktree stays distinguishable from a separate worktree on the default
+// branch. The markers are tracked on entryItem.label so the underlying
+// worktree.Entry is never mutated and remains safe to forward into
+// selectedEntryMsg.
 //
 // repoRoot is resolved with filepath.EvalSymlinks so symlinked paths
 // (e.g. ~/.worktrees/foo -> .worktrees/foo) compare correctly against
@@ -111,6 +112,12 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 
 	items := make([]list.Item, 0)
 	items = append(items, entryItem{kind: kindNewWorktree})
+
+	// The repo-root entry is the picker's starting selection (set in
+	// app.go), so it must be immediately reachable after the sentinel
+	// rather than buried at its alphabetical position within the
+	// worktrees group. Held aside here and spliced in below.
+	var currentItem *entryItem
 
 	for _, g := range groups {
 		// Render the locals→remotes divider only when at least one remote
@@ -158,8 +165,16 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 					ei.label = "(current)"
 				}
 			}
+			if ei.label == "(current)" {
+				currentItem = &ei
+				continue
+			}
 			items = append(items, ei)
 		}
+	}
+
+	if currentItem != nil {
+		items = append(items[:1], append([]list.Item{*currentItem}, items[1:]...)...)
 	}
 
 	l := list.New(items, ThemedListDelegate(theme), width, height)

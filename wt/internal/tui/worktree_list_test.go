@@ -266,6 +266,43 @@ func TestBuildListOrdering(t *testing.T) {
 	}
 }
 
+// TestBuildListCurrentPinnedSecondRegardlessOfPosition asserts the repo-root
+// ((current)) entry always lands at index 1 (right after the sentinel), even
+// when its alphabetical position within the worktrees group would place it
+// elsewhere. This is the picker's starting selection, so it must be
+// immediately reachable rather than buried among other worktrees; the
+// remaining worktree entries keep their relative (alphabetical) order.
+func TestBuildListCurrentPinnedSecondRegardlessOfPosition(t *testing.T) {
+	// A real, existing directory so filepath.EvalSymlinks (used by buildList
+	// to tag the (current) entry) actually resolves the repo root; a
+	// nonexistent fixture path would resolve to "" and falsely match every
+	// other nonexistent worktree path in this group.
+	repoRoot := t.TempDir()
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeWorktree, Branch: "alpha", Path: filepath.Join(repoRoot, ".worktrees", "alpha")},
+			{Type: worktree.TypeCurrent, Branch: "main", Path: repoRoot},
+			{Type: worktree.TypeWorktree, Branch: "zeta", Path: filepath.Join(repoRoot, ".worktrees", "zeta")},
+		}},
+	}
+	l := buildList(groups, "", repoRoot, themes.Default, 80, 24)
+	items := l.Items()
+
+	current, ok := items[1].(entryItem)
+	if !ok || current.label != "(current)" || current.entry.Branch != "main" {
+		t.Fatalf("items[1] = %+v, want the (current) entry for main", items[1])
+	}
+
+	alpha, ok := items[2].(entryItem)
+	if !ok || alpha.entry.Branch != "alpha" {
+		t.Fatalf("items[2] = %+v, want alpha", items[2])
+	}
+	zeta, ok := items[3].(entryItem)
+	if !ok || zeta.entry.Branch != "zeta" {
+		t.Fatalf("items[3] = %+v, want zeta", items[3])
+	}
+}
+
 // TestBuildListCurrentMarker asserts the entry whose Path resolves to
 // repoRoot is annotated with "(current)" so users see which worktree
 // they launched from. The marker lives on entryItem.label, not the
