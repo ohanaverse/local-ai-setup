@@ -8,7 +8,7 @@ from dataclasses import replace
 
 from textual.widgets import DataTable
 
-from ..providers.base import Provider
+from ..providers.base import LocalModel, Provider
 from ..registry import (
     ModelEntry,
     ProviderEntry,
@@ -61,7 +61,10 @@ def reload_preserving_cursor(table: DataTable, repopulate: Callable[[], None]) -
 
 
 def reconcile_model_state(
-    models: Iterable[ModelEntry], registry: Registry, state: StateStore
+    models: Iterable[ModelEntry],
+    registry: Registry,
+    state: StateStore,
+    local_map: dict[tuple[str, str], LocalModel] | None = None,
 ) -> None:
     """Ask each provider whether each of `models` is on disk and write the
     result straight into `state`: for local-artifact models (per
@@ -79,12 +82,21 @@ def reconcile_model_state(
     list` answers everything) cost one subprocess for the whole batch
     instead of one per model. Providers without a batch implementation
     (resolve_local returns None) take the per-model path:
-    `is_downloaded()`/`size_of()`/`path_of()` per model, and `list_local()`
-    at most once per provider, only when at least one model is ready AND
-    path_of() failed to resolve one of the ready ones (calling it inside
-    the per-model loop, or unconditionally, turns every reconcile into an
-    extra subprocess/filesystem scan even when nothing in the batch is
-    downloaded).
+    `is_downloaded()`/`size_of()`/`path_of()` per model, and a name-keyed
+    sweep of on-disk artifacts at most once per provider, only when at
+    least one model is ready AND path_of() failed to resolve one of the
+    ready ones (calling it inside the per-model loop, or unconditionally,
+    turns every reconcile into an extra subprocess/filesystem scan even
+    when nothing in the batch is downloaded).
+
+    `local_map`, when passed, is a pre-fetched `local_control.
+    _provider_local_models()` result (keyed `(provider_id, variant_id)`):
+    the name-keyed sweep above reads from it instead of calling
+    `provider.list_local()` itself, so a caller that already needs that
+    enumeration for something else (ModelScreen's reconcile worker also
+    runs `discover_unregistered_models()` in the same pass) doesn't pay
+    for two separate `list_local()` calls per provider. Omit it to fall
+    back to a fresh `provider.list_local()` call, as before.
     """
     # Deferred import: this module is imported by screens/models.py at
     # module load time, and models.py imports ProviderRegistry back —
@@ -171,19 +183,29 @@ def reconcile_model_state(
                 checked.append((m, ready, model_size))
                 any_ready = any_ready or ready
 
-            # list_local() sweep: at most once per provider, only when at
+            # Name-keyed sweep: at most once per provider, only when at
             # least one model is ready AND path_of() failed to resolve at
-            # least one of them (see docstring).
+            # least one of them (see docstring). Reads from `local_map`
+            # when the caller supplied one instead of calling
+            # provider.list_local() itself (see docstring).
             if needs_name_sweep and any_ready:
                 local_by_name: dict[str, str] = {}
-                try:
-                    for lm in provider.list_local():
-                        lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
+                if local_map is not None:
+                    for (map_provider_id, variant_id), lm in local_map.items():
+                        if map_provider_id != provider_name:
+                            continue
                         lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
-                        if isinstance(lm_name, str) and isinstance(lp, str):
-                            local_by_name[lm_name] = lp
-                except Exception:
-                    pass
+                        if isinstance(lp, str):
+                            local_by_name[variant_id] = lp
+                else:
+                    try:
+                        for lm in provider.list_local():
+                            lm_name = lm.get("name") or lm.get("variant_id")  # type: ignore[attr-defined]
+                            lp = lm.get("local_path") or lm.get("path")  # type: ignore[attr-defined]
+                            if isinstance(lm_name, str) and isinstance(lp, str):
+                                local_by_name[lm_name] = lp
+                    except Exception:
+                        pass
                 for i, (m, ready, _size) in enumerate(checked):
                     if ready and i not in paths:
                         found = local_by_name.get(m.model_name) or local_by_name.get(m.id)

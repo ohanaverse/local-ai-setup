@@ -501,7 +501,16 @@ class ModelForm(ModelmanModal[ModelFormResult | None]):
             if kind in ("local-only", "dual-model")
             else v.get("location") or "local"
         )
-        location_locked = kind in ("native", "cloud-only", "local-only", "dual-model")
+        # Discovered mode is always local by construction (discovery only
+        # scans local providers' on-disk artifacts — see
+        # local_control._provider_local_models) and _submit_discovered()
+        # hardcodes "local" regardless of what this Select shows, so it
+        # must be locked here too — otherwise the field renders editable
+        # while any choice the user makes there is silently discarded.
+        location_locked = (
+            kind in ("native", "cloud-only", "local-only", "dual-model")
+            or self._discovered is not None
+        )
 
         # Pricing prefill. Add mode starts with both sections disabled;
         # edit mode reads the flat cost fields from the variant.

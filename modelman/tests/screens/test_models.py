@@ -87,6 +87,19 @@ def test_variant_to_model_entry_derives_native_from_provider_auth():
     assert local_entry.native is False
 
 
+def test_variant_to_model_entry_accepts_explicit_source():
+    """Callers editing an existing entry must be able to pass its current
+    `source` through explicitly, since VariantSpec never carries the field
+    itself (model_entry_to_variant doesn't emit it) — this is what lets
+    _on_edit_model preserve a "discovered" entry's provenance."""
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", auth=AuthConfig(type="none"))]
+    )
+    variant = {"id": "ollama/x", "provider": "ollama", "name": "x"}
+    entry = _variant_to_model_entry(variant, family="x", registry=registry, source="discovered")
+    assert entry.source == "discovered"
+
+
 def test_variant_to_model_entry_passes_through_cost():
     """The adapter must carry cost from the dialog result into the registry
     ModelEntry, accepting either a Cost object or a plain dict."""
@@ -1024,6 +1037,59 @@ async def test_discard_reverts_immediately_saved_registry_edit(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_edit_model_preserves_discovered_source(tmp_path, monkeypatch):
+    """Regression: editing a model registered via the discovered-artifact
+    flow (source="discovered") must not silently reclassify it back to
+    "curated" — _on_edit_model previously called _variant_to_model_entry
+    without passing the entry's existing source through, so the very
+    first edit after registering a discovered model erased the
+    provenance this feature exists to track."""
+    from unittest.mock import MagicMock
+
+    from modelman.app import ModelmanApp
+    from modelman.providers import registry as prov_registry
+
+    entry = ModelEntry(
+        id="ollama/glm-5.3:cloud",
+        family="glm",
+        provider_id="ollama",
+        model_name="glm-5.3:cloud",
+        location="cloud",
+        source="discovered",
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[entry])
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.size_of.return_value = None
+    stub.is_downloaded.return_value = False
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        from modelman.screens.models import ModelScreen
+
+        assert isinstance(app.screen, ModelScreen)
+
+        # Edit the model (any save-triggering change) and confirm the
+        # persisted entry keeps its discovered provenance.
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#subscription-checkbox", Checkbox).value = True
+        await pilot.pause()
+        app.screen.query_one("#subscription-price", Input).value = "20"
+        app.screen.query_one("#save", Button).focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    reg_after_edit = load_registry(reg_path)
+    assert reg_after_edit.model("ollama/glm-5.3:cloud").source == "discovered"
+
+
+@pytest.mark.asyncio
 async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path, monkeypatch):
     """Regression for the reported bug: an omlx model whose files are on
     disk but whose modelman.toml still says ready=False must reconcile
@@ -1096,7 +1162,7 @@ async def test_discovered_model_renders_as_synthetic_row(tmp_path, monkeypatch):
     monkeypatch.setattr(
         models_module,
         "discover_unregistered_models",
-        lambda registry: [
+        lambda registry, local_map=None: [
             DiscoveredModel(
                 provider_id="mtplx",
                 variant_id="Youssofal/Qwen3.8-27B-MTPLX",
@@ -2038,7 +2104,7 @@ async def test_register_discovered_model_writes_ready_state_without_queuing_down
         size_bytes=19_530_941_006,
     )
     monkeypatch.setattr(
-        models_module, "discover_unregistered_models", lambda registry: [discovered]
+        models_module, "discover_unregistered_models", lambda registry, local_map=None: [discovered]
     )
 
     app = ModelmanApp()
@@ -2116,7 +2182,7 @@ async def test_register_discovered_model_persists_ready_state_to_disk(tmp_path, 
         size_bytes=19_530_941_006,
     )
     monkeypatch.setattr(
-        models_module, "discover_unregistered_models", lambda registry: [discovered]
+        models_module, "discover_unregistered_models", lambda registry, local_map=None: [discovered]
     )
 
     app = ModelmanApp()

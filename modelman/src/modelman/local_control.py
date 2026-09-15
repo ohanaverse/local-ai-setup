@@ -492,7 +492,10 @@ def _discovered_models(
     ]
 
 
-def discover_unregistered_models(registry: Registry) -> list[DiscoveredModel]:
+def discover_unregistered_models(
+    registry: Registry,
+    local_map: dict[tuple[str, str], LocalModel] | None = None,
+) -> list[DiscoveredModel]:
     """Every on-disk artifact from an in-scope local provider with no
     matching registry.toml entry — the standalone entry point the TUI's
     models screen uses to surface discovered models. Reuses the same
@@ -500,8 +503,17 @@ def discover_unregistered_models(registry: Registry) -> list[DiscoveredModel]:
     inventory listing already relies on
     (_provider_local_models/_discovered_models), so the TUI never needs
     its own provider-scanning code.
+
+    `local_map`, when passed, is a `_provider_local_models()` result the
+    caller already fetched — ModelScreen's reconcile worker computes one
+    map per mount and hands it to both this function and
+    `reconcile_model_state()`'s path-resolution fallback so each in-scope
+    provider's `list_local()` runs once per mount, not twice. Callers with
+    no reconcile step of their own (e.g. `modelman start`'s no-arg
+    listing) omit it and get a freshly-fetched map, as before.
     """
-    local_map, _unqueryable = _provider_local_models(registry)
+    if local_map is None:
+        local_map, _unqueryable = _provider_local_models(registry)
     return _discovered_models(registry, local_map)
 
 

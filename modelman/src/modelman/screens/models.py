@@ -22,6 +22,7 @@ from ..litellm import (
 )
 from ..local_control import (
     LocalControlError,
+    _provider_local_models,
     discover_unregistered_models,
     running_model_ids,
     same_provider_occupant,
@@ -82,7 +83,7 @@ def _cost_changed(old: Cost | None, new: Cost | None) -> bool:
 
 
 def _variant_to_model_entry(
-    variant: dict, *, family: str, registry: Registry, source: str = "curated"
+    variant: dict, *, family: str, registry: Registry, source: str | None = "curated"
 ) -> ModelEntry:
     """Convert a ModelForm VariantSpec-shaped dict to a ModelEntry.
 
@@ -324,9 +325,14 @@ class ModelScreen(Screen[None]):
         local_control.py) and stores the result on self.discovered —
         the same background worker, not a second one, since both calls
         are read-only provider queries with no reason to run
-        concurrently.
+        concurrently. The on-disk enumeration itself
+        (_provider_local_models) is fetched once here and handed to both
+        reconcile_model_state() and discover_unregistered_models(), so
+        each in-scope provider's list_local() runs once per mount rather
+        than once per call.
         """
-        reconcile_model_state(self.registry.models, self.registry, self.state)
+        local_map, _unqueryable = _provider_local_models(self.registry)
+        reconcile_model_state(self.registry.models, self.registry, self.state, local_map)
         # Self-heal the running flag the same way ready/disk_path already
         # are: a model flagged running whose process actually died (crash,
         # manual kill outside modelman) must not keep showing RUNNING=●
@@ -337,7 +343,7 @@ class ModelScreen(Screen[None]):
         for model_id, model_state in list(self.state.models.items()):
             if model_state.running and model_id not in verified:
                 self.state.models[model_id] = replace(model_state, running=False)
-        self.discovered = discover_unregistered_models(self.registry)
+        self.discovered = discover_unregistered_models(self.registry, local_map)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
@@ -942,7 +948,7 @@ class ModelScreen(Screen[None]):
         if old_entry is None:
             return
         new_entry = _variant_to_model_entry(
-            updated, family=old_entry.family, registry=self.registry
+            updated, family=old_entry.family, registry=self.registry, source=old_entry.source
         )
         if _cost_changed(old_entry.cost, new_entry.cost):
             new_entry.pricing_updated_at = _now_iso()

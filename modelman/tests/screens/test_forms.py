@@ -525,6 +525,40 @@ async def test_modelform_discovered_mode_locks_provider_and_model():
 
 
 @pytest.mark.asyncio
+async def test_modelform_discovered_mode_locks_location_for_ollama_kind():
+    # Regression: location_locked used to gate only on provider `kind`
+    # ("native"/"cloud-only"/"local-only"/"dual-model"), so a discovered
+    # artifact on an "ollama"-kind provider (outside that set) rendered
+    # Location as editable even though _submit_discovered() hardcodes
+    # "local" regardless of what the user picks there — the field must
+    # be locked for every discovered-mode registration, not just some
+    # provider kinds, so it never shows a choice that gets discarded.
+    from modelman.local_control import DiscoveredModel
+
+    discovered = DiscoveredModel(
+        provider_id="ollama",
+        variant_id="ornith-1.5:35b",
+        path="ollama:ornith-1.5:35b",
+        size_bytes=123,
+    )
+    form = ModelForm(
+        providers=["ollama"],
+        discovered=discovered,
+        families=["ornith"],
+        family="ornith",
+        provider_kinds={"ollama": "ollama"},
+    )
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(form)
+        await pilot.pause()
+        location_sel = app.screen.query_one("#location-select", Select)
+        assert location_sel.value == "local"
+        assert location_sel.disabled is True
+
+
+@pytest.mark.asyncio
 async def test_modelform_discovered_mode_submits_without_parse_model():
     # The regression this guards: omlx's discovered variant_id has no
     # '/' (a bare directory basename), which parse_model() rejects for
