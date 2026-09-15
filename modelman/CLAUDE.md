@@ -42,7 +42,7 @@ For day-to-day development you can still run focused subsets:
 - `uv run pytest tests/test_queue.py -q` — queue apply logic
 - `uv run pytest -k "not screen" -q` — skip the slow Textual screen tests
 
-The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~1056 tests) runs in ~1.5 min on this host. Numbers drift — re-measure before trusting them.
+The screen tests (`tests/screens/*.py`, ~1.5 min) use Textual's `App.run_test()`; the full modelman suite (~1272 tests) runs in ~1.5 min on this host. Numbers drift — re-measure before trusting them.
 
 ## Architecture
 
