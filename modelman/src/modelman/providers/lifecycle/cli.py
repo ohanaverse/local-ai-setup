@@ -137,18 +137,12 @@ def stop_all_cmd(
 ) -> None:
     """Stop every local provider, optionally keeping one occupancy
     domain's models loaded."""
-    # `--keep` takes a PROVIDER ID, but stop_all() matches against
-    # `occupancy_key` — resolve one to the other here rather than passing
-    # the raw string through. Without this, `--keep omlx-6bit` matched no
-    # occupancy key at all and therefore STOPPED omlx (whose occupancy_key
-    # is "omlx"), i.e. the exact opposite of what was asked, and a typo'd
-    # id silently kept nothing instead of erroring.
-    backend = lifecycle.BACKENDS.get(keep) if keep else None
-    if keep and backend is None:
-        result = LifecycleResult("stop-all", "", "", False, f"unknown provider for --keep: {keep}")
-    else:
-        keep_key = backend.occupancy_key if backend is not None else ""
-        result = _run_command(lambda: lifecycle.stop_all(keep_key), provider="stop-all")
+    # `--keep` takes a PROVIDER ID — same as `isolate`/`stop`'s positional
+    # provider_id — and stop_all() itself resolves it to the right
+    # occupancy_key (and rejects an unknown id) rather than this CLI layer
+    # doing that translation, matching how isolate_cmd/stop_cmd forward
+    # their provider ids straight through to orchestrate.py.
+    result = _run_command(lambda: lifecycle.stop_all(keep or ""), provider="stop-all")
     _emit(
         result,
         json_output,

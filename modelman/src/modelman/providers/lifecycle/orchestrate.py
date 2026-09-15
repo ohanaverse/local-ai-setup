@@ -272,9 +272,32 @@ def stop(provider_id: str) -> LifecycleResult:
 
 def stop_all(keep: str = "") -> LifecycleResult:
     """Stop every local provider, optionally keeping one occupancy domain's
-    models loaded. Always ok=True — a stop-all's own warnings never fail the
-    call (bash's `stop-all` verb prints `"ok": true` unconditionally too)."""
-    _stop_others(keep)
+    models loaded.
+
+    `keep`, like `isolate()`/`stop()`, takes a PROVIDER ID — resolved here
+    to its `occupancy_key` before reaching `_stop_others()`, which matches
+    on occupancy_key (see `_distinct_backends`). Resolving it here, rather
+    than pushing that translation onto every caller, is what keeps a raw
+    id like "omlx-6bit" (occupancy_key "omlx") from matching no occupancy
+    key at all and stopping the opposite of what was asked. `keep` is
+    checked against `BACKENDS`, not `SUPPORTED_PROVIDER_IDS` — llamacpp is
+    a valid id to keep even though it's retired-only, since `_stop_others`
+    tears it down too (see its docstring).
+
+    An unknown `keep` id fails fast with ok=False, before any teardown
+    runs — unlike a bare `_stop_others()` warning, this must not be
+    swallowed, or a typo'd id would silently stop everything (including
+    the provider the caller meant to protect) while reporting success.
+    Otherwise always ok=True — a stop-all's own per-backend warnings never
+    fail the call (bash's `stop-all` verb prints `"ok": true`
+    unconditionally too)."""
+    keep_key = ""
+    if keep:
+        backend = BACKENDS.get(keep)
+        if backend is None:
+            return LifecycleResult("stop-all", "", "", False, f"unknown provider for --keep: {keep}")
+        keep_key = backend.occupancy_key
+    _stop_others(keep_key)
     return LifecycleResult("stop-all", "", "", True, None)
 
 

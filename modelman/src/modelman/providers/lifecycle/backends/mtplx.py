@@ -25,7 +25,7 @@ from ...mtplx import MTPLX_BASE, MTPLX_PORT, MTPLX_V1_BASE
 from .. import binaries, probe
 from ..envelope import LifecycleError
 from ..pidproc import PidfileProcess
-from .base import Backend, StartPlan
+from .base import PidfileTrackedBackend, StartPlan
 
 MTPLX_DIRECT_URL = f"{MTPLX_V1_BASE}/chat/completions"
 MTPLX_PIDFILE = "/tmp/local-ai-setup-mtplx.pid"
@@ -34,7 +34,7 @@ MTPLX_LOG = "/tmp/local-ai-setup-mtplx.log"
 _PROC = PidfileProcess(name="mtplx", pidfile=MTPLX_PIDFILE, logfile=MTPLX_LOG)
 
 
-class MtplxBackend(Backend):
+class MtplxBackend(PidfileTrackedBackend):
     id = "mtplx"
     occupancy_key = "mtplx"
     env_var = None
@@ -43,14 +43,6 @@ class MtplxBackend(Backend):
     chat_url = MTPLX_DIRECT_URL
     cleanup_on_failure = True  # the ONE backend that sets this True
     restore_action = "stop"  # never part of the standing baseline
-
-    def __init__(self) -> None:
-        # Transient per-call state: the Popen handle start() spawns, so
-        # wait_ready() can watch for the process dying mid-load. Safe as
-        # an instance attribute (this class is a module-level singleton)
-        # only because mtplx is single-occupancy — there is never more
-        # than one concurrent isolate() call in flight for this backend.
-        self._proc: subprocess.Popen | None = None
 
     def check_available(self) -> str | None:
         try:

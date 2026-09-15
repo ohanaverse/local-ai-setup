@@ -10,6 +10,7 @@ self-sufficient.
 from __future__ import annotations
 
 import os
+import subprocess
 import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -175,3 +176,20 @@ class Backend(ABC):
         if required and not resolved:
             raise LifecycleError(required_message)
         return resolved
+
+
+class PidfileTrackedBackend(Backend):
+    """Shared base for a backend that runs as a single plain backgrounded
+    subprocess tracked by a pidfile (never a LaunchAgent) — mtplx and
+    mlx_lm_server both fit this shape (see `pidproc.PidfileProcess`).
+
+    Factors out the one field both backends otherwise duplicated
+    verbatim: the Popen handle `start()` spawns, so `wait_ready()` can
+    watch for the process dying mid-load. Safe as a plain instance
+    attribute (each concrete subclass is a module-level singleton) only
+    because these backends are single-occupancy — there is never more
+    than one concurrent isolate() call in flight for a given backend.
+    """
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None

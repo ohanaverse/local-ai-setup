@@ -566,6 +566,32 @@ def test_stop_all_keep_excludes_by_occupancy_key(stub_stops):
     assert stub_stops["llamacpp"].called
 
 
+def test_stop_all_keep_resolves_provider_id_to_occupancy_key(stub_stops):
+    """stop_all(), like isolate()/stop(), takes a PROVIDER ID for `keep` —
+    not an occupancy_key — and resolves it internally. "omlx-6bit"'s
+    occupancy_key is "omlx" (one daemon, one port, two registry ids), so
+    keeping it must keep BOTH omlx variants. Passing the raw id through to
+    _stop_others() unresolved — as an earlier version did from the CLI
+    layer — matched no occupancy key at all and therefore STOPPED omlx:
+    the exact opposite of what was asked."""
+    orchestrate.stop_all(keep="omlx-6bit")
+    assert not stub_stops["omlx"].called
+    assert not stub_stops["omlx-6bit"].called
+    assert stub_stops["ollama"].called
+
+
+def test_stop_all_rejects_unknown_keep_id_instead_of_keeping_nothing(stub_stops):
+    """An unrecognized `keep` id must fail fast with ok=False before any
+    teardown runs, not match no occupancy key and silently stop everything
+    while still reporting ok=true — a typo could otherwise kill the very
+    provider the caller meant to protect, with no signal at all."""
+    result = orchestrate.stop_all(keep="bogus-id")
+    assert result.ok is False
+    assert "bogus-id" in result.error
+    for backend_id in ("ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "llamacpp"):
+        assert not stub_stops[backend_id].called, backend_id
+
+
 # --- restore() ---------------------------------------------------------
 
 

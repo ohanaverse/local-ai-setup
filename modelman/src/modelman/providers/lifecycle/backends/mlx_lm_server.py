@@ -22,12 +22,11 @@ drive `isolate()`/`stop()`/`stop_all()`/`restore()`, reached from
 from __future__ import annotations
 
 import os
-import subprocess
 
 from .. import binaries, probe
 from ..envelope import LifecycleError
 from ..pidproc import PidfileProcess
-from .base import Backend, StartPlan
+from .base import PidfileTrackedBackend, StartPlan
 
 MLX_LM_SERVER_PORT = 8001
 MLX_LM_SERVER_BASE = f"http://localhost:{MLX_LM_SERVER_PORT}"
@@ -41,7 +40,7 @@ DRAFT_ENV_VAR = "LLM_ISOLATE_MLXLM_DRAFT_MODEL"
 _PROC = PidfileProcess(name="mlx_lm_server", pidfile=PIDFILE, logfile=LOGFILE)
 
 
-class MlxLmServerBackend(Backend):
+class MlxLmServerBackend(PidfileTrackedBackend):
     id = "mlx_lm_server"
     occupancy_key = "mlx_lm_server"
     env_var = None  # two separate env vars (target/draft), not one — see resolve()
@@ -49,15 +48,6 @@ class MlxLmServerBackend(Backend):
     health_url = MLX_LM_SERVER_HEALTH_URL
     chat_url = MLX_LM_SERVER_CHAT_URL
     restore_action = "stop"  # never part of the standing baseline
-
-    def __init__(self) -> None:
-        # Transient per-call state: the Popen handle start() spawns, so
-        # wait_ready() can watch for the process dying mid-load — same
-        # pattern as MtplxBackend. Safe as an instance attribute (this
-        # class is a module-level singleton) only because mlx_lm_server is
-        # single-occupancy — there is never more than one concurrent
-        # isolate() call in flight for this backend.
-        self._proc: subprocess.Popen | None = None
 
     def check_available(self) -> str | None:
         # check_available()'s contract (backends/base.py) is "reason string

@@ -141,43 +141,17 @@ def test_isolate_forwards_solo():
 
 
 def test_stop_all_forwards_keep():
-    # --keep must reach orchestrate.stop_all() as the named provider's
-    # occupancy key so that domain's models are left loaded.
-    result = LifecycleResult("stop-all", "", "", True, None)
-    with patch(f"{LIFECYCLE}.stop_all", return_value=result) as mock_stop_all:
-        invoked = runner.invoke(app, ["provider", "stop-all", "--keep", "omlx"])
-    assert invoked.exit_code == 0, invoked.stderr
-    mock_stop_all.assert_called_once_with("omlx")
-
-
-def test_stop_all_keep_resolves_provider_id_to_occupancy_key():
-    # --keep takes a PROVIDER ID, but stop_all() matches on occupancy_key.
-    # "omlx-6bit"'s occupancy_key is "omlx" (one daemon, one port, two
-    # registry ids), so keeping it must keep BOTH omlx variants. Passing
-    # the raw id through — as an earlier version did — matched no
-    # occupancy key at all and therefore STOPPED omlx: the exact opposite
-    # of what the user asked for.
+    # --keep must reach orchestrate.stop_all() as the raw provider id —
+    # stop_all() itself resolves that to the right occupancy_key (and
+    # validates it), matching how isolate_cmd/stop_cmd forward their
+    # provider ids straight through without any CLI-side translation. The
+    # id->occupancy_key resolution and unknown-id rejection are covered at
+    # the orchestrate.py layer, in test_orchestrate.py.
     result = LifecycleResult("stop-all", "", "", True, None)
     with patch(f"{LIFECYCLE}.stop_all", return_value=result) as mock_stop_all:
         invoked = runner.invoke(app, ["provider", "stop-all", "--keep", "omlx-6bit"])
     assert invoked.exit_code == 0, invoked.stderr
-    mock_stop_all.assert_called_once_with("omlx")
-
-
-def test_stop_all_rejects_unknown_keep_id_instead_of_keeping_nothing():
-    # An unrecognized --keep id used to match no occupancy key and silently
-    # stop everything while reporting ok=true — a typo could therefore kill
-    # the very provider the user was trying to protect, with no signal at
-    # all. It must be an ok=False envelope and a non-zero exit instead, and
-    # stop_all() must never be reached.
-    with patch(f"{LIFECYCLE}.stop_all") as mock_stop_all:
-        invoked = runner.invoke(app, ["provider", "stop-all", "--keep", "bogus-id", "--json"])
-    assert invoked.exit_code == 1
-    mock_stop_all.assert_not_called()
-    parsed = json.loads(invoked.stdout)
-    assert set(parsed.keys()) == {"provider", "model", "direct_url", "ok", "error"}
-    assert parsed["ok"] is False
-    assert "bogus-id" in parsed["error"]
+    mock_stop_all.assert_called_once_with("omlx-6bit")
 
 
 def test_stop_all_without_keep_passes_empty_string():
