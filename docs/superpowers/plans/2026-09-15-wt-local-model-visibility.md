@@ -1,6 +1,6 @@
 # wt Local-Model Visibility Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make wt's model picker show a local model whenever it's live-verified `running`, regardless of its `exposed`/`ready` flags — while keeping LiteLLM-forced routes (e.g. `claude`+`mtplx`) working by having `modelman start` keep `exposed` in sync automatically.
 
@@ -33,7 +33,7 @@
 
 **Contract fixture note:** the spec's testing section flags `docs/contracts/modelman.sample.toml` and its two per-language contract tests (`wt/internal/config/modelman_fixture_test.go`, `modelman/tests/contracts/test_modelman_fixture.py`) as needing a check. Both were read during planning: they assert on the raw parsed `Exposed`/`Ready`/`Running` struct fields only (e.g. `models["ollama/contract-fixture:local"].Exposed` — the fixture already has a `running=true, exposed=false` local entry), never on the derived `IsExposed()` predicate. Neither file needs a change for this task — no step below touches them.
 
-- [ ] **Step 1: Update `TestIsExposedPredicate`'s doc comment and fixture to describe/exercise the new contract (will fail against current code)**
+- [x] **Step 1: Update `TestIsExposedPredicate`'s doc comment and fixture to describe/exercise the new contract (will fail against current code)**
 
 In `wt/internal/config/modelman_test.go`, replace the function's doc comment (lines 358-361):
 
@@ -117,7 +117,7 @@ Update the test table (replace the two existing local rows and add one):
 	}
 ```
 
-- [ ] **Step 2: Run the test to confirm it fails against current code**
+- [x] **Step 2: Run the test to confirm it fails against current code**
 
 ```bash
 cd wt && go test ./internal/config -run TestIsExposedPredicate -v
@@ -125,7 +125,7 @@ cd wt && go test ./internal/config -run TestIsExposedPredicate -v
 
 Expected: FAIL — `IsExposed("ollama/local-flag-not-ready")` currently returns `false`, and the new `ollama/local-flag-unexposed` case also returns `false`, but both now want `true`.
 
-- [ ] **Step 3: Implement the local-model bypass in `IsExposed`**
+- [x] **Step 3: Implement the local-model bypass in `IsExposed`**
 
 In `wt/internal/config/config.go`, replace (lines 550-569):
 
@@ -191,7 +191,7 @@ func (c *Config) IsExposed(m Model) bool {
 }
 ```
 
-- [ ] **Step 4: Run the test to confirm it passes**
+- [x] **Step 4: Run the test to confirm it passes**
 
 ```bash
 cd wt && go test ./internal/config -run TestIsExposedPredicate -v
@@ -199,7 +199,7 @@ cd wt && go test ./internal/config -run TestIsExposedPredicate -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full `internal/config` package test suite to check for regressions**
+- [x] **Step 5: Run the full `internal/config` package test suite to check for regressions**
 
 ```bash
 cd wt && go test ./internal/config -v 2>&1 | tail -60
@@ -207,7 +207,7 @@ cd wt && go test ./internal/config -v 2>&1 | tail -60
 
 Expected: PASS. `TestIsExposedNativeAlways`, `TestIsExposedNonNativeRequiresFlag`, `TestRegistryFixtureNativeExposure`, `TestRegistryFixtureProviderLocationInheritance` are all unaffected — they never set `Location`/`Providers` such that `ResolveLocation` resolves to `"local"` (`TestIsExposedNonNativeRequiresFlag`'s models have no provider registered at all, so `ResolveLocation` errors and falls through to the old cloud/native check unchanged; `TestRegistryFixtureProviderLocationInheritance`'s fixture model resolves to `"cloud"` via its provider, also unaffected).
 
-- [ ] **Step 6: Write the failing end-to-end integration test in `internal/localgate`**
+- [x] **Step 6: Write the failing end-to-end integration test in `internal/localgate`**
 
 Append to `wt/internal/localgate/localgate_test.go`:
 
@@ -274,7 +274,7 @@ cd wt && go test ./internal/localgate -run TestLocalModelVisibilityIgnoresExpose
 
 Expected: PASS (already, since Task 1 Step 3 is complete by this point).
 
-- [ ] **Step 7: Run the full wt test suite**
+- [x] **Step 7: Run the full wt test suite**
 
 ```bash
 cd wt && go test ./... && go vet ./...
@@ -282,7 +282,7 @@ cd wt && go test ./... && go vet ./...
 
 Expected: PASS, no vet issues.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 cd wt
@@ -316,7 +316,7 @@ EOF
 - Consumes: `expose_model(registry: Registry, state: StateStore, model_id: str, litellm_path: Path) -> list[str]` and `ExposeError`/`LiteLLMConfigError` (`modelman/src/modelman/litellm.py`), `default_litellm_config_path() -> Path`, `ModelState`/`StateStore`/`locked_state`/`load_state` (`modelman/src/modelman/state.py`) — all pre-existing.
 - Produces: a new private helper `_expose_for_start(registry: Registry, state: StateStore, model_id: str, litellm_path: Path | None) -> list[str]` in `local_control.py`, consumed by `start_local_model`'s two success paths only.
 
-- [ ] **Step 1: Add the autouse fixture that keeps `expose_model` calls hermetic**
+- [x] **Step 1: Add the autouse fixture that keeps `expose_model` calls hermetic**
 
 In `modelman/tests/conftest.py`, add after the existing `_never_restart_live_proxy` fixture (around line 38):
 
@@ -344,7 +344,7 @@ cd modelman && uv run pytest tests/test_local_control.py -q
 
 Expected: PASS (identical to before this step — the fixture only changes an env var no code reads yet).
 
-- [ ] **Step 2: Write the failing tests for the new auto-expose behavior**
+- [x] **Step 2: Write the failing tests for the new auto-expose behavior**
 
 Add to `modelman/tests/test_local_control.py` (near the other `test_start_*` tests, e.g. after `test_start_already_running_and_probed_serving_is_idempotent`):
 
@@ -432,7 +432,7 @@ def test_stop_local_model_does_not_clear_exposed_flag(tmp_path):
     assert state.get("ollama/qwen3.8:27b-mlx").exposed is True
 ```
 
-- [ ] **Step 3: Run the new tests to confirm the first three fail (the fourth passes trivially — it pins `stop_local_model`, which this task does not change)**
+- [x] **Step 3: Run the new tests to confirm the first three fail (the fourth passes trivially — it pins `stop_local_model`, which this task does not change)**
 
 ```bash
 cd modelman && uv run pytest tests/test_local_control.py -k "exposes_previously_unexposed or already_running_unexposed or succeeds_with_warning or does_not_clear_exposed" -v
@@ -440,7 +440,7 @@ cd modelman && uv run pytest tests/test_local_control.py -k "exposes_previously_
 
 Expected: `test_start_exposes_previously_unexposed_ready_model`, `test_start_already_running_unexposed_model_gets_exposed`, and `test_start_succeeds_with_warning_when_expose_fails` FAIL (no code calls `expose_model` from `start_local_model` yet, so `exposed` stays `False` and no warning is added). `test_stop_local_model_does_not_clear_exposed_flag` PASSES already.
 
-- [ ] **Step 4: Add `LiteLLMConfigError` to the `.litellm` import**
+- [x] **Step 4: Add `LiteLLMConfigError` to the `.litellm` import**
 
 In `modelman/src/modelman/local_control.py`, replace:
 
@@ -454,7 +454,7 @@ with:
 from .litellm import ExposeError, LiteLLMConfigError, default_litellm_config_path, expose_model
 ```
 
-- [ ] **Step 5: Add the `_expose_for_start` helper**
+- [x] **Step 5: Add the `_expose_for_start` helper**
 
 In `modelman/src/modelman/local_control.py`, add immediately before `def start_local_model(` (currently line 746):
 
@@ -486,7 +486,7 @@ def _expose_for_start(
         ]
 ```
 
-- [ ] **Step 6: Wire the helper into the already-running branch**
+- [x] **Step 6: Wire the helper into the already-running branch**
 
 In `start_local_model`, replace:
 
@@ -525,7 +525,7 @@ with:
         _clear_stale_running_flag(resolved_id, state_path)
 ```
 
-- [ ] **Step 7: Wire the helper into the fresh-start final block**
+- [x] **Step 7: Wire the helper into the fresh-start final block**
 
 In `start_local_model`, replace:
 
@@ -568,7 +568,7 @@ with:
     )
 ```
 
-- [ ] **Step 8: Run the new tests to confirm they pass**
+- [x] **Step 8: Run the new tests to confirm they pass**
 
 ```bash
 cd modelman && uv run pytest tests/test_local_control.py -k "exposes_previously_unexposed or already_running_unexposed or succeeds_with_warning or does_not_clear_exposed" -v
@@ -576,7 +576,7 @@ cd modelman && uv run pytest tests/test_local_control.py -k "exposes_previously_
 
 Expected: all four PASS.
 
-- [ ] **Step 9: Run the full `test_local_control.py` suite to check for regressions**
+- [x] **Step 9: Run the full `test_local_control.py` suite to check for regressions**
 
 ```bash
 cd modelman && uv run pytest tests/test_local_control.py -q
@@ -584,7 +584,7 @@ cd modelman && uv run pytest tests/test_local_control.py -q
 
 Expected: PASS. Every other `test_start_*` test either reaches `_expose_for_start` and gets a harmless real-but-hermetic expose attempt (via Step 1's fixture) or a caught `ExposeError` (most models in `_registry()`/`_state_path()` default to `ready=False` unless a test explicitly sets it), and no test asserts `result.warnings == []` exactly (confirmed by inspection — grep `\.warnings` in the test file before this task found no such assertion).
 
-- [ ] **Step 10: Run the full modelman test suite**
+- [x] **Step 10: Run the full modelman test suite**
 
 ```bash
 cd modelman && make check && uv run pytest -k "not screen" -q
@@ -592,7 +592,7 @@ cd modelman && make check && uv run pytest -k "not screen" -q
 
 Expected: PASS, no lint/typecheck errors.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 cd modelman
@@ -625,7 +625,7 @@ EOF
 
 **Interfaces:** None — prose only, no code interfaces.
 
-- [ ] **Step 1: Update wt/CLAUDE.md's Exposure predicate section**
+- [x] **Step 1: Update wt/CLAUDE.md's Exposure predicate section**
 
 Replace:
 
@@ -648,7 +648,7 @@ with:
 This means wt's picker can now show a local model modelman's own TUI still renders `–` for in its EXPOSED column — that divergence is intentional for local models; `modelman start` keeps `exposed` in sync automatically so LiteLLM-forced routes (see the Agents table below) keep working without a separate manual expose step. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
 ```
 
-- [ ] **Step 2: Update modelman/CLAUDE.md's Local-model lifecycle section**
+- [x] **Step 2: Update modelman/CLAUDE.md's Local-model lifecycle section**
 
 In the paragraph beginning "`modelman start <model_id>` / `modelman stop <model_id>` / `modelman stop --all`, and the modelman TUI's `s` keybinding...", after the sentence ending "...wt's picker) verifies it with a live probe first.", insert:
 
@@ -656,7 +656,7 @@ In the paragraph beginning "`modelman start <model_id>` / `modelman stop <model_
 `start_local_model()` also exposes the model (flips `exposed=True` and writes its LiteLLM `model_list` entry, mirroring `modelman expose`) as part of every start — including the idempotent already-running path — so wt's picker, which no longer checks `exposed` for local models (see `wt/CLAUDE.md`'s Exposure predicate), still works for agents whose route to it is forced through LiteLLM; a failure to expose degrades to a warning rather than blocking the start. `stop_local_model()` leaves `exposed` untouched. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
 ```
 
-- [ ] **Step 3: Check links**
+- [x] **Step 3: Check links**
 
 ```bash
 cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibility && make check-links
@@ -664,7 +664,7 @@ cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibili
 
 Expected: PASS (the new doc references point at the already-committed spec file from Task 0's brainstorming step).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add wt/CLAUDE.md modelman/CLAUDE.md
@@ -691,7 +691,7 @@ EOF
 
 **Interfaces:** None.
 
-- [ ] **Step 1: Run the full monorepo verification**
+- [x] **Step 1: Run the full monorepo verification**
 
 ```bash
 cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibility && make test-all
@@ -699,7 +699,7 @@ cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibili
 
 Expected: PASS — lint, modelman `make check`/`make test`, wt `go build`/`vet`/`test` all green.
 
-- [ ] **Step 2: Manually re-verify the original motivating case, if the mtplx model from the bug report is still running**
+- [x] **Step 2: Manually re-verify the original motivating case, if the mtplx model from the bug report is still running**
 
 ```bash
 cd wt && cat > /tmp/verify-local-visibility.go <<'EOF'
@@ -740,6 +740,6 @@ rm /tmp/verify-local-visibility.go
 
 Expected: prints the running mtplx model id for both `claude` and `pi`, matching the manual verification already done during the original debugging session — this time without needing to first run `modelman expose` by hand.
 
-- [ ] **Step 3: Report completion**
+- [x] **Step 3: Report completion**
 
 No commit needed for this task — it's verification only. If Step 1 or 2 surfaces a regression, return to the relevant task above and fix it there (with its own commit), then re-run this task.
