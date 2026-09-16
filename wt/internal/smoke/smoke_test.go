@@ -1,0 +1,226 @@
+// Tests for internal/smoke's eligibility computation and row classification.
+// Process execution is stubbed via the buildAndRun seam throughout — no
+// real subprocess is ever exec'd here.
+package smoke
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+)
+
+// smokeFixtureConfig builds a small multi-agent, multi-provider config:
+// claude supports ollama+openrouter, codex supports only ollama, agy only
+// its own native provider, and shell is deliberately included as an Agent
+// entry (with a provider it would otherwise match) to prove EligibleAgents
+// excludes it via IsCommand rather than relying on it being absent from
+// config.toml.
+func smokeFixtureConfig() *config.Config {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+			{ID: "agy", Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama", ModelName: "qwen3.8:27b-mlx", Location: config.LocationLocal},
+			{ID: "openrouter/glm-5.3-flash", ProviderID: "openrouter", ModelName: "glm-5.3-flash", Location: config.LocationCloud},
+			{ID: "agy/native", ProviderID: "agy", ModelName: "native", Native: true, Location: config.LocationCloud},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama", "openrouter"}},
+			{Name: "codex", SupportedProviders: []string{"ollama"}},
+			{Name: "agy", SupportedProviders: []string{"agy"}},
+			{Name: "shell", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	cfg.ExposeAllForTest()
+	cfg.SetLocalRunningForTest("ollama/qwen3.8:27b-mlx")
+	return cfg
+}
+
+func findModel(t *testing.T, cfg *config.Config, id string) config.Model {
+	t.Helper()
+	idx := config.IndexModelByID(cfg.Models, id)
+	if idx < 0 {
+		t.Fatalf("fixture missing model %q", id)
+	}
+	return cfg.Models[idx]
+}
+
+// TestEligibleAgentsExcludesShellAndMatchesProviders asserts a local model
+// is eligible only for agents whose supported_providers include its
+// provider, and that shell is excluded even though it's configured with a
+// matching provider in this fixture — proving the exclusion comes from
+// agents.IsCommand, not from shell simply being absent.
+func TestEligibleAgentsExcludesShellAndMatchesProviders(t *testing.T) {
+	cfg := smokeFixtureConfig()
+	m := findModel(t, cfg, "ollama/qwen3.8:27b-mlx")
+	got := EligibleAgents(cfg, m)
+	want := []string{"claude", "codex"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("EligibleAgents = %v, want %v", got, want)
+	}
+}
+
+// TestEligibleAgentsAgyNarrowedToNative asserts agy — whose only supported
+// provider is its own native one — is eligible only for agy/native, never
+// for a model under another provider, mirroring agents-smoke.sh's comment
+// that agy's driver ignores whatever model is passed.
+func TestEligibleAgentsAgyNarrowedToNative(t *testing.T) {
+	cfg := smokeFixtureConfig()
+	m := findModel(t, cfg, "agy/native")
+	got := EligibleAgents(cfg, m)
+	want := []string{"agy"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("EligibleAgents = %v, want %v", got, want)
+	}
+}
+
+// TestEligibleAgentsCloudModel asserts a cloud model is only eligible for
+// the agent(s) whose supported_providers list that provider.
+func TestEligibleAgentsCloudModel(t *testing.T) {
+	cfg := smokeFixtureConfig()
+	m := findModel(t, cfg, "openrouter/glm-5.3-flash")
+	got := EligibleAgents(cfg, m)
+	want := []string{"claude"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("EligibleAgents = %v, want %v", got, want)
+	}
+}
+
+// TestAllEligibleModelsUnionsAcrossAgents asserts the interactive picker's
+// candidate list is the union (deduped, sorted by id) of every model
+// eligible for at least one non-command agent.
+func TestAllEligibleModelsUnionsAcrossAgents(t *testing.T) {
+	cfg := smokeFixtureConfig()
+	got := AllEligibleModels(cfg)
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.ID)
+	}
+	want := []string{"agy/native", "ollama/qwen3.8:27b-mlx", "openrouter/glm-5.3-flash"}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("AllEligibleModels ids = %v, want %v", ids, want)
+	}
+}
+
+// withStubBuildAndRun replaces the buildAndRun seam for the duration of a
+// test, restoring the original on cleanup.
+func withStubBuildAndRun(t *testing.T, out execOutcome) {
+	t.Helper()
+	old := buildAndRun
+	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
+		return out
+	}
+	t.Cleanup(func() { buildAndRun = old })
+}
+
+// TestRunRowPass asserts exit 0 plus the sentinel present in captured
+// output classifies PASS.
+func TestRunRowPass(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "before WT-SMOKE-claude-run-1 after"})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".")
+	if res.Status != StatusPass {
+		t.Fatalf("Status = %v, want PASS (err=%v)", res.Status, res.Err)
+	}
+}
+
+// TestRunRowFailMissingSentinel asserts exit 0 without the sentinel in
+// output classifies FAIL, not PASS — a process exiting cleanly is not
+// enough on its own when a sentinel was requested.
+func TestRunRowFailMissingSentinel(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "wrong output"})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".")
+	if res.Status != StatusFail {
+		t.Fatalf("Status = %v, want FAIL", res.Status)
+	}
+}
+
+// TestRunRowFailNonZeroExit asserts a non-zero exit code is FAIL
+// regardless of what the output contains.
+func TestRunRowFailNonZeroExit(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{ExitCode: 1, Output: "WT-SMOKE-claude-run-1"})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-claude-run-1", time.Second, ".")
+	if res.Status != StatusFail {
+		t.Fatalf("Status = %v, want FAIL", res.Status)
+	}
+}
+
+// TestRunRowSkipNotInstalled asserts a StartErr matching agents.Command's
+// exact "agent <name> not installed" text classifies SKIP — the same
+// substring convention agents-smoke.sh's classifier uses.
+func TestRunRowSkipNotInstalled(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf("agent claude not installed")})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".")
+	if res.Status != StatusSkip {
+		t.Fatalf("Status = %v, want SKIP", res.Status)
+	}
+}
+
+// TestRunRowFailOtherStartErr asserts a StartErr that is NOT the
+// not-installed message (e.g. a route-resolution failure) classifies FAIL,
+// not SKIP — only the exact installed-check message means SKIP.
+func TestRunRowFailOtherStartErr(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{StartErr: fmt.Errorf(`unknown provider "x" for model "y"`)})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".")
+	if res.Status != StatusFail {
+		t.Fatalf("Status = %v, want FAIL", res.Status)
+	}
+}
+
+// TestRunRowFailTimeout asserts a timed-out row classifies FAIL with a
+// timeout-specific error, and never blocks on a hung process.
+func TestRunRowFailTimeout(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{TimedOut: true})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, ".")
+	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
+		t.Fatalf("Status = %v, Err = %v, want FAIL with a timeout error", res.Status, res.Err)
+	}
+}
+
+// TestRunRowCustomPromptSkipsSentinelCheck asserts an empty sentinel (the
+// --prompt override case) makes exit-code-0 alone sufficient for PASS —
+// the documented verification degradation for a custom prompt.
+func TestRunRowCustomPromptSkipsSentinelCheck(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "anything at all"})
+	res := RunRow(&config.Config{}, "claude", config.Model{ID: "ollama/x"}, "do the task", "", time.Second, ".")
+	if res.Status != StatusPass {
+		t.Fatalf("Status = %v, want PASS (empty sentinel means exit-code-only)", res.Status)
+	}
+}
+
+// TestNewRunIDFormat asserts NewRunID produces the "run-<8 hex chars>"
+// shape RunRow's default prompt embeds.
+func TestNewRunIDFormat(t *testing.T) {
+	id := NewRunID()
+	if !strings.HasPrefix(id, "run-") {
+		t.Fatalf("NewRunID() = %q, want run- prefix", id)
+	}
+	suffix := strings.TrimPrefix(id, "run-")
+	if len(suffix) != 8 {
+		t.Fatalf("NewRunID() suffix = %q, want 8 hex chars", suffix)
+	}
+	for _, r := range suffix {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Fatalf("NewRunID() = %q contains non-hex character %q", id, r)
+		}
+	}
+}
+
+// TestDefaultPrompt asserts the sentinel is embedded verbatim in the
+// prompt RunRow will later search for in captured output.
+func TestDefaultPrompt(t *testing.T) {
+	prompt, sentinel := DefaultPrompt("claude", "run-abcd1234")
+	wantSentinel := "WT-SMOKE-claude-run-abcd1234"
+	if sentinel != wantSentinel {
+		t.Fatalf("sentinel = %q, want %q", sentinel, wantSentinel)
+	}
+	if !strings.Contains(prompt, sentinel) {
+		t.Fatalf("prompt %q does not contain sentinel %q", prompt, sentinel)
+	}
+}
