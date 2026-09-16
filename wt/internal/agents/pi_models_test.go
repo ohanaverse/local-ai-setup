@@ -410,6 +410,40 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 	}
 }
 
+// syncModels in direct mode must resync a non-ollama provider's baseUrl/apiKey
+// to the registry's current values even when a block already exists, unlike
+// ollama (which supports a legitimate user-customized remote endpoint — see
+// TestSyncModelsDirectPreservesCustomProvider). Without this, a value wt
+// itself wrote at some earlier point (e.g. a registry base_url that has since
+// changed) gets permanently stuck: isLaunchable only checks that the model id
+// is present and _launch:true, never the provider's baseUrl, so a stale port
+// silently causes every launch against that provider to fail to connect
+// (observed live: an mtplx provider block stuck on a stale port 8001 while
+// the registry — and the actual running server — had moved to 8003).
+func TestSyncModelsDirectResyncsStaleNonOllamaProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1:8001/v1","models":[{"_launch":true,"id":"Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["mtplx"]
+	if p.BaseURL != "http://localhost:8003/v1" {
+		t.Errorf("baseUrl = %q, want the registry's current value %q (stale wt-written value must not stick)", p.BaseURL, "http://localhost:8003/v1")
+	}
+	if p.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (resynced placeholder)", p.APIKey, defaultPiOllamaAPIKey)
+	}
+}
+
 // syncModels in litellm mode must create models.json when it does not exist,
 // so a fresh pi install routes through LiteLLM on the very first launch
 // instead of silently bypassing the gateway.

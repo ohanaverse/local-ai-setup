@@ -308,23 +308,44 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 		}
 
 		if existed {
-			// Reset WT-written values (gateway redirects or non-canonical local
-			// ollama forms) to the provider's direct endpoint. Custom user config
-			// is preserved verbatim.
 			if p.API == "" {
 				p.API = "openai-completions"
 				mutated = true
 			}
-			if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
+			if providerID == piOllamaProviderID {
+				// ollama uniquely supports a legitimate user-customized remote
+				// endpoint (see TestSyncModelsDirectPreservesCustomProvider), so
+				// only reset values wt is known to have written itself: gateway
+				// redirects or non-canonical local-ollama forms.
+				if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
+					if p.BaseURL != wantBaseURL {
+						p.BaseURL = wantBaseURL
+						mutated = true
+					}
+					if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
+						if p.APIKey != wantAPIKey {
+							p.APIKey = wantAPIKey
+							mutated = true
+						}
+					}
+				}
+			} else {
+				// Every other provider block is wholly wt-owned: its baseUrl and
+				// secret come from the registry, never from a user hand-editing
+				// models.json, so always resync rather than pattern-matching for
+				// staleness. Without this, a value wt itself wrote at some
+				// earlier point (e.g. a registry base_url that has since
+				// changed) gets permanently stuck — isLaunchable only checks
+				// that the model id is present and _launch:true, never the
+				// provider's baseUrl, so a stale port silently breaks every
+				// launch against that provider with no error surfaced.
 				if p.BaseURL != wantBaseURL {
 					p.BaseURL = wantBaseURL
 					mutated = true
 				}
-				if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
-					if p.APIKey != wantAPIKey {
-						p.APIKey = wantAPIKey
-						mutated = true
-					}
+				if p.APIKey != wantAPIKey {
+					p.APIKey = wantAPIKey
+					mutated = true
 				}
 			}
 		}
