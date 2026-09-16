@@ -209,6 +209,28 @@ func TestPrintSmokeJSONSchema(t *testing.T) {
 	}
 }
 
+// TestValidateSmokeTimeoutRejectsNonPositive asserts --timeout 0 (and a
+// negative duration) is rejected with a clear error before any row runs —
+// without this check, a non-positive timeout makes every agent get killed
+// the instant it starts and reported as "timed out after 0s", which reads
+// as every agent being broken rather than a bad flag value.
+func TestValidateSmokeTimeoutRejectsNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -1 * time.Second} {
+		err := validateSmokeTimeout(d)
+		if err == nil || !strings.Contains(err.Error(), "--timeout must be positive") {
+			t.Fatalf("validateSmokeTimeout(%s) = %v, want a positive-timeout error", d, err)
+		}
+	}
+}
+
+// TestValidateSmokeTimeoutAcceptsPositive asserts an ordinary positive
+// timeout passes validation unchanged.
+func TestValidateSmokeTimeoutAcceptsPositive(t *testing.T) {
+	if err := validateSmokeTimeout(60 * time.Second); err != nil {
+		t.Fatalf("validateSmokeTimeout(60s) = %v, want nil", err)
+	}
+}
+
 // TestSmokeCmdFlags asserts the command's flags are registered with the
 // documented defaults — a cheap guard against a typo'd flag name/default
 // silently breaking --timeout or --json.

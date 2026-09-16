@@ -68,6 +68,10 @@ Exit code: `0` if every non-SKIP row PASSed, `1` if any row FAILed. SKIP
 
 `wt smoke` never starts, stops, or isolates local model providers (use
 `modelman start`/`stop`) and never flips LiteLLM routing — it tests
-whatever is live right now. See
+whatever is live right now. It does still run a driver's normal pre-launch
+step where one exists — e.g. `pi`'s model-catalog sync to
+`~/.pi/agent/models.json` — the same as a real launch would; it just never
+touches modelman-owned `registry.toml`/`modelman.toml` or starts/stops any
+provider process. See
 `docs/superpowers/specs/2026-09-16-wt-smoke-design.md` for the full design
 rationale.

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -46,6 +47,14 @@ type RowResult struct {
 // Config.EligibleModels and localgate.Apply, so a model wt smoke reports
 // eligible is a model a real `wt -A <agent> -M <id>` launch would accept.
 func EligibleAgents(cfg *config.Config, m config.Model) []string {
+	// Probe the local-running gate once for the whole function, not once
+	// per agent: localgate.Apply calls ResolveAll internally, which does a
+	// live HTTP probe (2s timeout) per flagged non-ollama local model. With
+	// N configured agents that's N redundant probe rounds for an answer
+	// that doesn't change agent-to-agent. Apply's only other behavior
+	// beyond FilterToRunningLocal is the pinned-rejection check, which is
+	// irrelevant here (pinned is always "").
+	verified := localgate.ResolveAll(cfg)
 	var out []string
 	for _, a := range cfg.Agents {
 		if agents.IsCommand(a.Name) {
@@ -55,8 +64,8 @@ func EligibleAgents(cfg *config.Config, m config.Model) []string {
 		if err != nil {
 			continue
 		}
-		gate := localgate.Apply(cfg, eligible, "")
-		if config.IndexModelByID(gate.Eligible, m.ID) >= 0 {
+		running := cfg.FilterToRunningLocal(eligible, verified)
+		if config.IndexModelByID(running, m.ID) >= 0 {
 			out = append(out, a.Name)
 		}
 	}
@@ -68,6 +77,9 @@ func EligibleAgents(cfg *config.Config, m config.Model) []string {
 // currently eligible for at least one non-command agent — the candidate
 // list wt smoke's interactive picker offers when no model id is given.
 func AllEligibleModels(cfg *config.Config) []config.Model {
+	// See the matching comment in EligibleAgents: probe once, not once per
+	// agent.
+	verified := localgate.ResolveAll(cfg)
 	seen := map[string]bool{}
 	var out []config.Model
 	for _, a := range cfg.Agents {
@@ -78,8 +90,8 @@ func AllEligibleModels(cfg *config.Config) []config.Model {
 		if err != nil {
 			continue
 		}
-		gate := localgate.Apply(cfg, eligible, "")
-		for _, m := range gate.Eligible {
+		running := cfg.FilterToRunningLocal(eligible, verified)
+		for _, m := range running {
 			if !seen[m.ID] {
 				seen[m.ID] = true
 				out = append(out, m)
@@ -111,6 +123,25 @@ func notInstalledMessage(agent string) string {
 	return fmt.Sprintf("agent %s not installed", agent)
 }
 
+// maxCapturedOutput bounds how much of a row's combined stdout+stderr is
+// kept, matching the design spec's "truncated to a bounded tail" for the
+// FAIL detail block (human renderer) and the --json "output" field — both
+// consumers inherit the same bound because truncation happens once, here,
+// rather than being re-applied per renderer.
+const maxCapturedOutput = 8192 // 8 KiB
+
+const truncatedMarker = "...[truncated, showing last 8KiB]...\n"
+
+// truncateOutput bounds s to its last maxCapturedOutput bytes, prefixing a
+// marker line when truncation actually occurs so a reader knows output was
+// cut. Left unchanged (no marker) when s already fits.
+func truncateOutput(s string) string {
+	if len(s) <= maxCapturedOutput {
+		return s
+	}
+	return truncatedMarker + s[len(s)-maxCapturedOutput:]
+}
+
 func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
 	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, false, nil, cfg, nil)
 	if err != nil {
@@ -128,6 +159,20 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	cmd.Stderr = &buf
 	cmdLine := strings.Join(cmd.Args, " ")
 
+	// cmd.Stdout/Stderr being a *bytes.Buffer makes os/exec create a pipe
+	// plus an internal copy goroutine per stream; cmd.Wait() blocks until
+	// those goroutines see EOF. claude/codex/copilot/opencode are all
+	// Node-based CLIs that can spawn descendants (MCP servers, language
+	// server helpers, ...) — killing only the direct child on timeout can
+	// leave a descendant holding the pipe's write end open, and Wait()
+	// would then never return. WaitDelay bounds how long Wait() will keep
+	// waiting on the copy goroutines past process exit/kill before giving
+	// up anyway, and Setpgid puts the whole tree in one process group so
+	// the timeout path below can kill child+descendants together. Both
+	// must be set before Start().
+	cmd.WaitDelay = 5 * time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	if err := cmd.Start(); err != nil {
 		return execOutcome{Command: cmdLine, StartErr: err}
 	}
@@ -140,15 +185,21 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		if waitErr != nil {
 			ee, ok := waitErr.(*exec.ExitError)
 			if !ok {
-				return execOutcome{Command: cmdLine, Output: buf.String(), StartErr: waitErr}
+				return execOutcome{Command: cmdLine, Output: truncateOutput(buf.String()), StartErr: waitErr}
 			}
 			exitCode = ee.ExitCode()
 		}
-		return execOutcome{Command: cmdLine, Output: buf.String(), ExitCode: exitCode}
+		return execOutcome{Command: cmdLine, Output: truncateOutput(buf.String()), ExitCode: exitCode}
 	case <-time.After(timeout):
-		_ = cmd.Process.Kill()
+		// Kill the whole process group (negative pid), not just the direct
+		// child, so a surviving descendant can't keep Wait() blocked
+		// forever. Errors are tolerated the same way the direct-child Kill
+		// this replaced already did (the process may already be gone).
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
 		<-done
-		return execOutcome{Command: cmdLine, Output: buf.String(), TimedOut: true}
+		return execOutcome{Command: cmdLine, Output: truncateOutput(buf.String()), TimedOut: true}
 	}
 }
 

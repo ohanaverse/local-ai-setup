@@ -212,6 +212,40 @@ func TestNewRunIDFormat(t *testing.T) {
 	}
 }
 
+// TestTruncateOutputShortUnchanged asserts output at or under the 8KiB
+// bound passes through byte-for-byte, with no marker prepended — only
+// output that actually exceeds the bound should ever be flagged as cut.
+func TestTruncateOutputShortUnchanged(t *testing.T) {
+	short := strings.Repeat("a", maxCapturedOutput)
+	got := truncateOutput(short)
+	if got != short {
+		t.Fatalf("truncateOutput changed output at the exact bound (len %d)", len(short))
+	}
+	tiny := "hello world"
+	if got := truncateOutput(tiny); got != tiny {
+		t.Fatalf("truncateOutput(%q) = %q, want unchanged", tiny, got)
+	}
+}
+
+// TestTruncateOutputLongTailWithMarker asserts output over the 8KiB bound
+// is cut to its last maxCapturedOutput bytes and prefixed with a marker —
+// this is what caps the FAIL detail block (human renderer) and the --json
+// "output" field, per the design spec's "truncated to a bounded tail".
+func TestTruncateOutputLongTailWithMarker(t *testing.T) {
+	long := strings.Repeat("x", maxCapturedOutput) + "TAIL-MARKER-END"
+	got := truncateOutput(long)
+	if !strings.HasPrefix(got, truncatedMarker) {
+		t.Fatalf("truncateOutput output missing truncation marker prefix: %q", got[:min(80, len(got))])
+	}
+	if !strings.HasSuffix(got, "TAIL-MARKER-END") {
+		t.Fatal("truncateOutput dropped the tail of long output instead of keeping the last bytes")
+	}
+	body := strings.TrimPrefix(got, truncatedMarker)
+	if len(body) != maxCapturedOutput {
+		t.Fatalf("truncated body len = %d, want %d", len(body), maxCapturedOutput)
+	}
+}
+
 // TestDefaultPrompt asserts the sentinel is embedded verbatim in the
 // prompt RunRow will later search for in captured output.
 func TestDefaultPrompt(t *testing.T) {

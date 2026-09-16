@@ -63,6 +63,9 @@ func smokeCmd(a *app) *cobra.Command {
 
 			promptOverride := mustGetString(cmd, "prompt")
 			timeout, _ := cmd.Flags().GetDuration("timeout")
+			if err := validateSmokeTimeout(timeout); err != nil {
+				return err
+			}
 			jsonOut, _ := cmd.Flags().GetBool("json")
 
 			cwd, err := os.Getwd()
@@ -100,6 +103,19 @@ func smokeCmd(a *app) *cobra.Command {
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
 	return cmd
+}
+
+// validateSmokeTimeout rejects a non-positive --timeout before any row
+// runs. Without this, time.After(timeout) in internal/smoke.realBuildAndRun
+// fires immediately for --timeout 0 (or a negative duration), killing every
+// agent the instant it starts and reporting "FAIL: timed out after 0s" for
+// all of them — a confusing failure mode that reads as every agent being
+// broken rather than a bad flag value.
+func validateSmokeTimeout(timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive, got %s", timeout)
+	}
+	return nil
 }
 
 // resolveSmokeModel resolves the model to test: the pinned id if given
