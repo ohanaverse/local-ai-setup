@@ -101,6 +101,14 @@ type Resumer interface {
 	LatestSession(path string) (*session.Session, error)
 }
 
+// OneShotRunner is an optional Driver capability for agents that can run a
+// single prompt non-interactively and exit. wt smoke appends OneShotArgs'
+// return value to the command Build already constructed, to verify a
+// model works through this agent without an interactive session.
+type OneShotRunner interface {
+	OneShotArgs(prompt string) []string
+}
+
 // InstructionPointer describes a single file created by `wt --init`.
 type InstructionPointer struct {
 	Path    string // relative to the repo root, e.g. "CLAUDE.md"

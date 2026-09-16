@@ -129,7 +129,7 @@ make help                            # list Makefile targets
 
 Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `check` (shellcheck lint + shfmt format-check).
 
-Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,localgate}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
+Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,localgate,smoke}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
@@ -145,12 +145,14 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers (`maybeInstallGuard`, `checkGuardStatus`, `removeGuard`); TTY seams (`isStdinTTY`/`stdinTTY`) and picker-TTY errors |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
 | `cmd/wt/stats.go` | `wt stats` command — read-only report over `survey.jsonl` |
+| `cmd/wt/smoke.go` | `wt smoke` command — one-shot model×agent smoke test, human/JSON output |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog); helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
 | `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
 | `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model picker's per-row usage columns, and the rotation module |
 | `internal/refcount/` | live-session "in use" model counts: JSONL state file keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point, consumed by the model picker's ref column |
 | `internal/survey/` | post-session survey: append-only JSONL verdicts (worked/speed/quality + task description), 1d/7d/30d stats per model and per agent×model combo — used by the post-run prompt, the model picker's survey segment, and `wt stats` |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
+| `internal/smoke/` | `wt smoke`'s testable core: `Eligibility` (one localgate probe round → both the eligible-model union and each model's eligible-agent list; `EligibleAgents`/`AllEligibleModels` are thin wrappers over it — a caller needing both answers in one invocation should call `Eligibility` directly to avoid paying two probe rounds), `RunRow` (PASS/FAIL/SKIP classification via the `buildAndRun` seam) |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
 | `internal/initseed/` | `--init` seeding |
@@ -356,6 +358,7 @@ Consequence: codex has no direct path for any local provider (none serves `opena
 | `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
 | `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |
 | `Resumer` | `ResumeFlag()` + `LatestSession(path)` for resume support | claude, opencode |
+| `OneShotRunner` | `OneShotArgs(prompt)` — non-interactive single-prompt invocation, consumed by `wt smoke` | claude, codex, copilot, opencode, pi, agy |
 
 Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the session lookup in `internal/session` returns nil for them.
 
@@ -386,6 +389,17 @@ The pre-launch `ollamacheck.Check` is **skipped when LiteLLM routing is on** (`c
 ### Adding a new agent driver
 
 See the `adding-a-wt-agent` skill.
+
+## Smoke test (`wt smoke`)
+
+`wt smoke <model-id>` finds every agent currently eligible for one model and
+runs a one-shot prompt through each via `agents.BuildLaunchCmd` (the same
+in-process launch construction a real launch uses), reporting PASS/FAIL/SKIP.
+Distinct from `make test-agents`/agents-smoke.sh's hand-curated regression
+matrix (static agent×model list, both routing modes) — `wt smoke` tests
+whatever routing mode is live right now, against whichever model you point it
+at. Read-only against modelman-owned state; never starts/stops local models
+or flips LiteLLM routing. See `docs/wt-smoke.md`.
 
 ## Guard (Go)
 
@@ -436,6 +450,8 @@ wt -W my-feature -A claude   # named worktree + launch
 wt --cwd -A codex    # current repo root
 claude-wt --cwd      # shim forwards to wt
 wt --init            # seed agent instruction files
+wt smoke <model-id>     # one-shot smoke test: every agent currently eligible for one model
+                       # (live routing only, read-only against modelman.toml; see docs/wt-smoke.md)
 make test-agents        # live one-shot smoke: every agent × configured models, both routing modes
                        # (flips [litellm].enabled off/on in modelman.toml — resolved at ${XDG_CONFIG_HOME:-$HOME/.config}/local-ai/modelman.toml, the path wt reads — and restores it afterwards; --modes current for one pass)
 ```

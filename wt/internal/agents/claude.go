@@ -73,3 +73,7 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc.Args = append(lc.Args, "--model", r.ModelRef)
 	return lc
 }
+
+// OneShotArgs runs a single prompt non-interactively and exits — used by
+// wt smoke to verify a model works through this agent.
+func (claudeDriver) OneShotArgs(prompt string) []string { return []string{"-p", prompt} }
