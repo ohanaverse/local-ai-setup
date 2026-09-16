@@ -287,6 +287,8 @@ flags read-only (`wt/internal/config/modelman.go`,
 every verified-running local model — see `wt/CLAUDE.md`'s "Local-model
 gate" section.
 
+`start_local_model()` also exposes the model (flips `exposed=True` and writes its LiteLLM `model_list` entry, mirroring `modelman expose`) as part of every start — including the idempotent already-running path — so wt's picker, which no longer checks `exposed` for local models (see `wt/CLAUDE.md`'s Exposure predicate), still works for agents whose route to it is forced through LiteLLM; a failure to expose degrades to a warning rather than blocking the start. `stop_local_model()` leaves `exposed` untouched. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
+
 `modelman start`'s no-arg listing and its discovered-model auto-register
 path (`_provider_local_models` in `local_control.py`, gated on each
 provider's `Provider.supports_discovery` class attribute — `False` for
