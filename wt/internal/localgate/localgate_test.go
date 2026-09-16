@@ -451,3 +451,56 @@ func TestApplyKeepsEveryVerifiedLocalDropsOnlyTheDrifted(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalModelVisibilityIgnoresExposedFlag pins the 2026-09-15 local-
+// model visibility design end-to-end: a local model with exposed=false
+// must still surface through the full wt picker pipeline
+// (EligibleModelsIn's Stage-1 filter, then Apply's Stage-2 running-
+// verified gate) as long as it's actually running, and must NOT surface
+// when it isn't running — proving `running` alone, not `exposed`, is the
+// real local-model visibility gate.
+func TestLocalModelVisibilityIgnoresExposedFlag(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("model-a"))
+	defer srv.Close()
+	defer SetOmlxProbeURLForTest(srv.URL)()
+
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "testagent", SupportedProviders: []string{"omlx"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/model-a", ModelName: "model-a", ProviderID: "omlx", Location: config.LocationLocal},
+		},
+	}
+	cfg.SetExposedForTest(map[string]config.ExposureEntry{}) // nothing exposed
+
+	t.Run("running and unexposed is eligible end-to-end", func(t *testing.T) {
+		cfg.SetLocalRunningForTest("omlx/model-a")
+		eligible, err := cfg.EligibleModels("testagent", "", "")
+		if err != nil {
+			t.Fatalf("EligibleModels() error: %v", err)
+		}
+		if len(eligible) != 1 || eligible[0].ID != "omlx/model-a" {
+			t.Fatalf("Stage 1 eligible = %v, want [omlx/model-a] despite exposed=false", idsOf(eligible))
+		}
+		res := Apply(cfg, eligible, "")
+		if got := idsOf(res.Eligible); len(got) != 1 || got[0] != "omlx/model-a" {
+			t.Errorf("Stage 2 Eligible = %v, want [omlx/model-a]", got)
+		}
+	})
+
+	t.Run("not running and unexposed is excluded by Stage 2", func(t *testing.T) {
+		cfg.SetLocalRunningForTest() // nothing running
+		eligible, err := cfg.EligibleModels("testagent", "", "")
+		if err != nil {
+			t.Fatalf("EligibleModels() error: %v", err)
+		}
+		if len(eligible) != 1 {
+			t.Fatalf("Stage 1 eligible = %v, want [omlx/model-a] (Stage 1 never checks running)", idsOf(eligible))
+		}
+		res := Apply(cfg, eligible, "")
+		if len(res.Eligible) != 0 {
+			t.Errorf("Stage 2 Eligible = %v, want none (not running)", idsOf(res.Eligible))
+		}
+	})
+}
