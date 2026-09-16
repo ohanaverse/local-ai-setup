@@ -342,7 +342,12 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 				for _, m := range models {
 					wantedModelNames[m.ModelName] = true
 				}
-				owned = true
+				// A block with no existing models can't confirm ownership
+				// this way — an empty set is vacuously "all models match",
+				// which would misclassify a foreign block someone is still
+				// populating (e.g. their own "openrouter" entry with a
+				// custom baseUrl/apiKey but no models yet) as wt-owned.
+				owned = len(existing) > 0
 				for id := range existing {
 					if !wantedModelNames[id] {
 						owned = false

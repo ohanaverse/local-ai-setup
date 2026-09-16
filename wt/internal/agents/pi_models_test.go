@@ -582,6 +582,39 @@ func TestSyncModelsDirectForeignBlockNeverMarked(t *testing.T) {
 	}
 }
 
+// A foreign non-ollama block with no models yet (the user is still setting
+// it up, or cleared it to re-add fresh entries) must not be misclassified as
+// wt-owned. The legacy inference treats "every existing model is one wt
+// would write" as ownership proof, which is vacuously true over an empty
+// set — without an explicit guard an empty foreign block would have its
+// baseUrl/apiKey clobbered on the very first sync.
+func TestSyncModelsDirectForeignEmptyBlockNeverAdopted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"api":"openai-completions","apiKey":"sk-personal-key","baseUrl":"https://openrouter.ai/api/v1","models":[]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-registry-key", BaseURL: "https://openrouter.ai/api/v2"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.WTOwned {
+		t.Error("_wtOwned was set on a foreign provider block with no existing models")
+	}
+	if p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("baseUrl = %q, want the user's own value preserved", p.BaseURL)
+	}
+	if p.APIKey != "sk-personal-key" {
+		t.Errorf("apiKey = %q, want the user's own key preserved", p.APIKey)
+	}
+}
+
 // syncModels in litellm mode must create models.json when it does not exist,
 // so a fresh pi install routes through LiteLLM on the very first launch
 // instead of silently bypassing the gateway.
