@@ -25,6 +25,7 @@ is_cloud_effective,
 )
 from modelman.registry import AuthConfig, Cost, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
+from tests.conftest import ENFORCED_LITELLM_SETTINGS
 
 
 def _provider(pid, *, base_url=None, secret_ref=None, auth_type="none"):
@@ -651,10 +652,7 @@ def test_roundtrip_preserves_comments_byte_identical(tmp_path):
 def test_ensure_adds_drop_params_when_section_missing():
     config = {"model_list": []}
     assert ensure_litellm_settings(config) is True
-    assert config["litellm_settings"] == {
-        "drop_params": True,
-        "use_chat_completions_url_for_anthropic_messages": True,
-    }
+    assert config["litellm_settings"] == ENFORCED_LITELLM_SETTINGS
 
 
 def test_ensure_corrects_drop_params_false():
@@ -671,12 +669,7 @@ def test_ensure_corrects_drop_params_false():
 
 
 def test_ensure_leaves_correct_drop_params_untouched():
-    config = {
-        "litellm_settings": {
-            "drop_params": True,
-            "use_chat_completions_url_for_anthropic_messages": True,
-        }
-    }
+    config = {"litellm_settings": dict(ENFORCED_LITELLM_SETTINGS)}
     assert ensure_litellm_settings(config) is False
 
 
@@ -689,11 +682,7 @@ def test_ensure_preserves_other_litellm_settings():
         }
     }
     assert ensure_litellm_settings(config) is True
-    assert config["litellm_settings"] == {
-        "drop_params": True,
-        "use_chat_completions_url_for_anthropic_messages": True,
-        "num_workers": 4,
-    }
+    assert config["litellm_settings"] == {**ENFORCED_LITELLM_SETTINGS, "num_workers": 4}
 
 
 def test_ensure_adds_use_chat_completions_url_for_anthropic_messages_when_missing():
@@ -711,6 +700,9 @@ def test_ensure_adds_use_chat_completions_url_for_anthropic_messages_when_missin
 
 
 def test_ensure_corrects_use_chat_completions_url_for_anthropic_messages_false():
+    # Value-enforced like drop_params: a hand-set or stale `false` would
+    # bring back the /v1/messages 404 against openai/*-prefixed local
+    # backends, so modelman corrects it, not just missing keys.
     config = {
         "litellm_settings": {
             "drop_params": True,
@@ -722,12 +714,9 @@ def test_ensure_corrects_use_chat_completions_url_for_anthropic_messages_false()
 
 
 def test_ensure_leaves_correct_use_chat_completions_url_for_anthropic_messages_untouched():
-    config = {
-        "litellm_settings": {
-            "drop_params": True,
-            "use_chat_completions_url_for_anthropic_messages": True,
-        }
-    }
+    # Idempotency: a config that already has the correct value must not be
+    # reported as changed, or every write would needlessly bounce the proxy.
+    config = {"litellm_settings": dict(ENFORCED_LITELLM_SETTINGS)}
     assert ensure_litellm_settings(config) is False
 
 
@@ -746,10 +735,7 @@ def test_ensure_leaves_existing_bridge_drop_params_untouched():
     # Presence-based: an existing key — an extended list or a deliberate
     # empty list — marks the row user-managed; only missing keys are added.
     config = {
-        "litellm_settings": {
-            "drop_params": True,
-            "use_chat_completions_url_for_anthropic_messages": True,
-        },
+        "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
         "model_list": [
             {
                 "model_name": "a",
@@ -776,10 +762,7 @@ def test_ensure_never_touches_non_bridge_rows():
             {"model_name": "x", "litellm_params": {"model": "openai/x"}},
             {"model_name": "y", "litellm_params": {"model": "openrouter/y"}},
         ],
-        "litellm_settings": {
-            "drop_params": True,
-            "use_chat_completions_url_for_anthropic_messages": True,
-        },
+        "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
     }
     assert ensure_litellm_settings(config) is False
 

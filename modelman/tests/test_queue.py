@@ -38,6 +38,7 @@ from modelman.state import (
     load_state,
     save_state,
 )
+from tests.conftest import ENFORCED_LITELLM_SETTINGS
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -909,10 +910,7 @@ def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypat
     save_litellm_config(
         {
             "model_list": [],
-            "litellm_settings": {
-                "drop_params": True,
-                "use_chat_completions_url_for_anthropic_messages": True,
-            },
+            "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
         },
         path,
     )

@@ -8,6 +8,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# The full set of litellm_settings keys ensure_litellm_settings() value-enforces
+# (modelman/src/modelman/litellm.py). Shared so tests asserting the "already
+# correct, no-op" shape don't hand-roll the dict at every call site — a real
+# risk once a third enforced key is added and one copy gets missed.
+ENFORCED_LITELLM_SETTINGS = {
+    "drop_params": True,
+    "use_chat_completions_url_for_anthropic_messages": True,
+}
+
 
 def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Closed, deterministic runner for tests that don't inject a runner.

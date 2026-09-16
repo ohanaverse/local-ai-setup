@@ -403,6 +403,12 @@ def remove_exposed(config: dict[str, Any], model_id: str) -> None:
     ]
 
 
+_ENFORCED_LITELLM_SETTINGS: dict[str, Any] = {
+    "drop_params": True,
+    "use_chat_completions_url_for_anthropic_messages": True,
+}
+
+
 def ensure_litellm_settings(config: dict[str, Any]) -> bool:
     """Ensure launcher-required LiteLLM settings are present.
 
@@ -425,7 +431,13 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
       surfaces it as "model may not exist" (discovered debugging mtplx
       2026-09-16). This flag routes `/v1/messages` through
       chat/completions instead, matching what these backends actually
-      serve.
+      serve. LiteLLM only exposes this as a global `litellm_settings`
+      flag, not a per-deployment `litellm_params` key, so — unlike
+      `additional_drop_params` below — it cannot be scoped to just the
+      `openai/*` rows that need it; a hypothetical future deployment
+      relying on the default Responses-API bridge would be flipped too.
+      Accepted for now since every current `openai/*`-prefixed
+      deployment is one of these local backends.
     - `additional_drop_params: ["reasoning_effort"]` is
       **presence-based** — added to every model_list row whose
       `litellm_params.model` starts with `ollama_chat/` and lacks the
@@ -442,15 +454,11 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
     settings = config.get("litellm_settings")
     if settings is None:
         settings = config["litellm_settings"] = {}
-    if isinstance(settings, dict) and settings.get("drop_params") is not True:
-        settings["drop_params"] = True
-        changed = True
-    if (
-        isinstance(settings, dict)
-        and settings.get("use_chat_completions_url_for_anthropic_messages") is not True
-    ):
-        settings["use_chat_completions_url_for_anthropic_messages"] = True
-        changed = True
+    if isinstance(settings, dict):
+        for key, value in _ENFORCED_LITELLM_SETTINGS.items():
+            if settings.get(key) is not value:
+                settings[key] = value
+                changed = True
     rows = config.get("model_list")
     if isinstance(rows, list):
         for row in rows:
