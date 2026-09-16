@@ -344,6 +344,42 @@ def test_set_exposed_preserves_user_managed_additional_drop_params():
     assert params["additional_drop_params"] == ["reasoning_effort", "user_param"]
 
 
+def test_set_exposed_preserves_user_managed_use_chat_completions_api_false():
+    # A user who deliberately opted a `openai/*` deployment OUT of the
+    # Responses->chat/completions bridge (e.g. it actually implements
+    # /v1/responses) must not have that choice silently reverted to the
+    # default `true` on re-expose; ensure_litellm_settings is
+    # presence-based and would otherwise re-add `true` once the key goes
+    # missing from the fresh entry.
+    config = {
+        "model_list": [
+            {
+                "model_name": "mtplx/a",
+                "litellm_params": {
+                    "model": "openai/a",
+                    "api_base": "http://old:8003/v1",
+                    "use_chat_completions_api": False,
+                },
+            }
+        ]
+    }
+    set_exposed(
+        config,
+        "mtplx/a",
+        {
+            "model_name": "mtplx/a",
+            "litellm_params": {
+                "model": "openai/a",
+                "api_base": "http://new:8003/v1",
+            },
+        },
+    )
+    ensure_litellm_settings(config)
+    params = config["model_list"][0]["litellm_params"]
+    assert params["api_base"] == "http://new:8003/v1"
+    assert params["use_chat_completions_api"] is False
+
+
 def test_remove_exposed_removes_row():
     config = {"model_list": [{"model_name": "ollama/a"}, {"model_name": "ollama/b"}]}
     remove_exposed(config, "ollama/a")
@@ -759,10 +795,43 @@ def test_ensure_leaves_existing_bridge_drop_params_untouched():
 def test_ensure_never_touches_non_bridge_rows():
     config = {
         "model_list": [
-            {"model_name": "x", "litellm_params": {"model": "openai/x"}},
             {"model_name": "y", "litellm_params": {"model": "openrouter/y"}},
         ],
         "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
+    }
+    assert ensure_litellm_settings(config) is False
+
+
+def test_ensure_adds_use_chat_completions_api_to_openai_rows():
+    # mtplx/omlx/mlx_lm_server register as `openai/<name>` (the only way to
+    # reach a generic OpenAI-compatible local server), but none of them
+    # implement /v1/responses. codex always speaks the Responses API, so
+    # without this flag every codex request 404s, the deployment gets
+    # cooldown-blacklisted, and codex's retries land on a 429 from
+    # LiteLLM's router cooldown — discovered debugging wt smoke codex×mtplx
+    # 2026-09-16.
+    config = {
+        "model_list": [
+            {"model_name": "a", "litellm_params": {"model": "openai/a"}},
+        ]
+    }
+    assert ensure_litellm_settings(config) is True
+    params = config["model_list"][0]["litellm_params"]
+    assert params["use_chat_completions_api"] is True
+
+
+def test_ensure_leaves_existing_use_chat_completions_api_untouched():
+    # Presence-based like additional_drop_params: a user who explicitly
+    # set `false` (a hypothetical openai/*-registered backend that DOES
+    # implement /v1/responses) has that choice respected, not overwritten.
+    config = {
+        "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
+        "model_list": [
+            {
+                "model_name": "a",
+                "litellm_params": {"model": "openai/a", "use_chat_completions_api": False},
+            },
+        ],
     }
     assert ensure_litellm_settings(config) is False
 

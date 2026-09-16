@@ -80,6 +80,8 @@ PROVIDER_POLICIES: dict[str, ProviderPolicy] = {
 # write (settings-persistence spec, 2026-08-31).
 _BRIDGE_PREFIX = "ollama_chat/"  # LiteLLM's chat-completions→ollama bridge
 _BRIDGE_DROP_PARAMS = ("reasoning_effort",)  # BerriAI/litellm#37452 workaround
+_OPENAI_PREFIX = "openai/"  # local OpenAI-compatible servers: mtplx/omlx/mlx_lm_server/llamacpp
+_RESPONSES_BRIDGE_PARAM = "use_chat_completions_api"  # per-deployment Responses→chat bridge
 _TOKENS_PER_MILLION = 1_000_000
 
 
@@ -361,10 +363,13 @@ def set_exposed(config: dict[str, Any], model_id: str, entry: dict[str, Any]) ->
     promises.
 
     When replacing an existing row, any user-managed
-    `litellm_params.additional_drop_params` is preserved. The
-    settings-persistence spec treats that key as presence-based (Decision
-    3), so re-exposing a model must not reset an extended list or a
-    deliberate `[]` back to the default.
+    `litellm_params.additional_drop_params` or `.use_chat_completions_api`
+    is preserved. The settings-persistence spec treats both keys as
+    presence-based (Decision 3), so re-exposing a model must not reset an
+    extended `additional_drop_params` list (or a deliberate `[]`) back to
+    the default, and must not silently flip a deliberate
+    `use_chat_completions_api: false` (opting a real-Responses-API-capable
+    `openai/*` deployment out of the bridge) back to `true`.
     """
     rows = _model_list_rows(config)
     if rows is None:
@@ -375,16 +380,12 @@ def set_exposed(config: dict[str, Any], model_id: str, entry: dict[str, Any]) ->
         if isinstance(row, dict) and row.get("model_name") == model_id:
             old_params = row.get("litellm_params")
             new_params = entry.get("litellm_params")
-            if (
-                isinstance(old_params, dict)
-                and isinstance(new_params, dict)
-                and "additional_drop_params" in old_params
-                and "additional_drop_params" not in new_params
-            ):
-                entry = copy.deepcopy(entry)
-                entry["litellm_params"]["additional_drop_params"] = old_params[
-                    "additional_drop_params"
-                ]
+            if isinstance(old_params, dict) and isinstance(new_params, dict):
+                for preserved_key in ("additional_drop_params", _RESPONSES_BRIDGE_PARAM):
+                    if preserved_key in old_params and preserved_key not in new_params:
+                        entry = copy.deepcopy(entry)
+                        entry["litellm_params"][preserved_key] = old_params[preserved_key]
+                        new_params = entry["litellm_params"]
             rows[i] = entry
             return
     rows.append(entry)
@@ -445,6 +446,26 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
       1.98.x's bridge (BerriAI/litellm#37452); an existing key of any
       value (an extended list, a deliberate `[]`) marks the row
       user-managed and is left untouched.
+    - `litellm_params.use_chat_completions_api: True` is
+      **presence-based** — added to every model_list row whose
+      `litellm_params.model` starts with `openai/` (mtplx, omlx,
+      mlx_lm_server, llamacpp — every local OpenAI-compatible server) and
+      lacks the key. Unlike claude's `/v1/messages` bridge above, codex
+      calls LiteLLM's native `/v1/responses` endpoint directly, which
+      assumes an `openai`-provider deployment speaks the real OpenAI
+      Responses API; these backends implement only `/v1/chat/completions`,
+      so every real request 404s, the deployment gets
+      cooldown-blacklisted, and codex's retries land on the router's
+      `RouterRateLimitError` (surfaced as HTTP 429 "Too Many Requests" —
+      not real throttling) once the cooldown is active (discovered
+      debugging `wt smoke` codex×mtplx 2026-09-16). This flag is LiteLLM's
+      own per-deployment escape hatch (`litellm/types/router.py`'s
+      `LiteLLM_Params.use_chat_completions_api`) that bridges
+      Responses→chat/completions for just that row, so — unlike the
+      anthropic-messages flag, which is global-only — it can be scoped
+      exactly to the `openai/*` rows that need it. Presence-based like
+      `additional_drop_params`: an existing key of any value marks the
+      row user-managed and is left untouched.
 
     Tolerates hand-edited degenerate shapes the way the rest of the
     module does: a scalar `litellm_settings` or non-dict `model_list`
@@ -468,12 +489,13 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
             if not isinstance(params, dict):
                 continue
             model = params.get("model")
-            if (
-                isinstance(model, str)
-                and model.startswith(_BRIDGE_PREFIX)
-                and "additional_drop_params" not in params
-            ):
+            if not isinstance(model, str):
+                continue
+            if model.startswith(_BRIDGE_PREFIX) and "additional_drop_params" not in params:
                 params["additional_drop_params"] = list(_BRIDGE_DROP_PARAMS)
+                changed = True
+            if model.startswith(_OPENAI_PREFIX) and _RESPONSES_BRIDGE_PARAM not in params:
+                params[_RESPONSES_BRIDGE_PARAM] = True
                 changed = True
     return changed
 
