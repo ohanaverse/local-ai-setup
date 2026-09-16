@@ -152,7 +152,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/refcount/` | live-session "in use" model counts: JSONL state file keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point, consumed by the model picker's ref column |
 | `internal/survey/` | post-session survey: append-only JSONL verdicts (worked/speed/quality + task description), 1d/7d/30d stats per model and per agent×model combo — used by the post-run prompt, the model picker's survey segment, and `wt stats` |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
-| `internal/smoke/` | `wt smoke`'s testable core: `EligibleAgents`, `AllEligibleModels`, `RunRow` (PASS/FAIL/SKIP classification via the `buildAndRun` seam) |
+| `internal/smoke/` | `wt smoke`'s testable core: `Eligibility` (one localgate probe round → both the eligible-model union and each model's eligible-agent list; `EligibleAgents`/`AllEligibleModels` are thin wrappers over it — a caller needing both answers in one invocation should call `Eligibility` directly to avoid paying two probe rounds), `RunRow` (PASS/FAIL/SKIP classification via the `buildAndRun` seam) |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
 | `internal/initseed/` | `--init` seeding |
