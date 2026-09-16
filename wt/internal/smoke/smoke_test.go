@@ -246,6 +246,44 @@ func TestTruncateOutputLongTailWithMarker(t *testing.T) {
 	}
 }
 
+// TestBoundedWriterStaysBoundedDuringWrites asserts boundedWriter never
+// retains more than maxCapturedOutput bytes at any point while writes are
+// still arriving — not just after the fact like truncateOutput — so a
+// runaway agent that logs megabytes before its timeout can't balloon the
+// in-memory buffer realBuildAndRun captures stdout/stderr into.
+func TestBoundedWriterStaysBoundedDuringWrites(t *testing.T) {
+	var w boundedWriter
+	for i := 0; i < 20; i++ {
+		chunk := strings.Repeat("x", maxCapturedOutput/2)
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if len(w.tail) > maxCapturedOutput {
+			t.Fatalf("after write %d, retained %d bytes, want <= %d", i, len(w.tail), maxCapturedOutput)
+		}
+	}
+}
+
+// TestBoundedWriterMatchesTruncateOutput asserts boundedWriter's final
+// String() equals truncateOutput applied to the same bytes written in one
+// shot — the incremental, memory-bounded capture path must produce the
+// exact same marker+tail output the existing truncateOutput contract (and
+// its tests) already pin down.
+func TestBoundedWriterMatchesTruncateOutput(t *testing.T) {
+	full := strings.Repeat("y", maxCapturedOutput) + "TAIL-MARKER-END"
+	want := truncateOutput(full)
+
+	var w boundedWriter
+	for _, chunk := range []string{full[:100], full[100:5000], full[5000:]} {
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if got := w.String(); got != want {
+		t.Fatalf("boundedWriter.String() = %q, want %q (from truncateOutput)", got[:min(80, len(got))], want[:min(80, len(want))])
+	}
+}
+
 // TestDefaultPrompt asserts the sentinel is embedded verbatim in the
 // prompt RunRow will later search for in captured output.
 func TestDefaultPrompt(t *testing.T) {

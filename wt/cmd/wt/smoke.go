@@ -47,12 +47,11 @@ func smokeCmd(a *app) *cobra.Command {
 			if len(args) > 0 {
 				modelID = args[0]
 			}
-			m, err := resolveSmokeModel(a.cfg, modelID)
+			m, eligible, err := resolveSmokeModel(a.cfg, modelID)
 			if err != nil {
 				return err
 			}
 
-			eligible := smoke.EligibleAgents(a.cfg, m)
 			if len(eligible) == 0 {
 				return fmt.Errorf("model %q has no currently eligible agents", m.ID)
 			}
@@ -121,28 +120,36 @@ func validateSmokeTimeout(timeout time.Duration) error {
 // resolveSmokeModel resolves the model to test: the pinned id if given
 // (validated against the currently eligible set, with a message
 // distinguishing "unknown" from "exists but not eligible right now"), or
-// an interactive pick from the eligible list when omitted.
-func resolveSmokeModel(cfg *config.Config, modelID string) (config.Model, error) {
-	all := smoke.AllEligibleModels(cfg)
+// an interactive pick from the eligible list when omitted. Also returns the
+// resolved model's eligible agents (from the same smoke.Eligibility call
+// that resolved the model) so the caller doesn't need a second
+// smoke.EligibleAgents call — that would pay its own localgate probe round
+// on top of this one.
+func resolveSmokeModel(cfg *config.Config, modelID string) (config.Model, []string, error) {
+	all, agentsForModel := smoke.Eligibility(cfg)
 	if modelID != "" {
 		if idx := config.IndexModelByID(all, modelID); idx >= 0 {
-			return all[idx], nil
+			return all[idx], agentsForModel[all[idx].ID], nil
 		}
 		if idx := config.IndexModelByID(cfg.Models, modelID); idx >= 0 {
-			return config.Model{}, fmt.Errorf(
+			return config.Model{}, nil, fmt.Errorf(
 				"model %q is not currently eligible for any agent (not exposed, or a local "+
 					"model that isn't running — check `modelman start %s` or `modelman litellm status`)",
 				modelID, modelID)
 		}
-		return config.Model{}, fmt.Errorf("unknown model %q", modelID)
+		return config.Model{}, nil, fmt.Errorf("unknown model %q", modelID)
 	}
 	if len(all) == 0 {
-		return config.Model{}, fmt.Errorf("no models are currently eligible for any agent — expose a cloud model or start a local one with `modelman start <id>`")
+		return config.Model{}, nil, fmt.Errorf("no models are currently eligible for any agent — expose a cloud model or start a local one with `modelman start <id>`")
 	}
 	if !stdinTTY() {
-		return config.Model{}, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
+		return config.Model{}, nil, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
 	}
-	return pickModelInteractive(os.Stdin, os.Stdout, all)
+	m, err := pickModelInteractive(os.Stdin, os.Stdout, all)
+	if err != nil {
+		return config.Model{}, nil, err
+	}
+	return m, agentsForModel[m.ID], nil
 }
 
 // pickModelInteractive prints a numbered list of models to w and reads a
@@ -155,7 +162,10 @@ func pickModelInteractive(r io.Reader, w io.Writer, models []config.Model) (conf
 	}
 	fmt.Fprint(w, "Select a model: ")
 	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil {
+	// ReadString returns the data read so far alongside the error when the
+	// stream ends before the delimiter (e.g. stdin closed with no trailing
+	// newline) — only bail if nothing was read at all.
+	if err != nil && line == "" {
 		return config.Model{}, err
 	}
 	line = strings.TrimSpace(line)

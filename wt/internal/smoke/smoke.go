@@ -6,7 +6,6 @@
 package smoke
 
 import (
-	"bytes"
 	"crypto/rand"
 	"fmt"
 	"os/exec"
@@ -41,47 +40,22 @@ type RowResult struct {
 	Err      error
 }
 
-// EligibleAgents returns, sorted, every non-command agent currently
-// eligible to launch model m — the same membership (provider support) and
-// exposure/local-running-gate rules wt's own launch path applies via
+// Eligibility runs a single localgate probe round and walks the agent×model
+// eligibility rules once, returning both the union of eligible models
+// (AllEligibleModels' answer) and, per model id, the sorted list of eligible
+// agents (EligibleAgents' answer) — the same membership (provider support)
+// and exposure/local-running-gate rules wt's own launch path applies via
 // Config.EligibleModels and localgate.Apply, so a model wt smoke reports
 // eligible is a model a real `wt -A <agent> -M <id>` launch would accept.
-func EligibleAgents(cfg *config.Config, m config.Model) []string {
-	// Probe the local-running gate once for the whole function, not once
-	// per agent: localgate.Apply calls ResolveAll internally, which does a
-	// live HTTP probe (2s timeout) per flagged non-ollama local model. With
-	// N configured agents that's N redundant probe rounds for an answer
-	// that doesn't change agent-to-agent. Apply's only other behavior
-	// beyond FilterToRunningLocal is the pinned-rejection check, which is
-	// irrelevant here (pinned is always "").
+// wt smoke's command layer calls this once per invocation and derives both
+// answers from the result, instead of calling EligibleAgents and
+// AllEligibleModels back to back, which would each pay their own probe
+// round (localgate.ResolveAll does a live HTTP probe, up to 2s per flagged
+// non-ollama local model).
+func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[string][]string) {
 	verified := localgate.ResolveAll(cfg)
-	var out []string
-	for _, a := range cfg.Agents {
-		if agents.IsCommand(a.Name) {
-			continue
-		}
-		eligible, err := cfg.EligibleModels(a.Name, "", "")
-		if err != nil {
-			continue
-		}
-		running := cfg.FilterToRunningLocal(eligible, verified)
-		if config.IndexModelByID(running, m.ID) >= 0 {
-			out = append(out, a.Name)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// AllEligibleModels returns, sorted by id, the union of every model
-// currently eligible for at least one non-command agent — the candidate
-// list wt smoke's interactive picker offers when no model id is given.
-func AllEligibleModels(cfg *config.Config) []config.Model {
-	// See the matching comment in EligibleAgents: probe once, not once per
-	// agent.
-	verified := localgate.ResolveAll(cfg)
+	agentsForModel = map[string][]string{}
 	seen := map[string]bool{}
-	var out []config.Model
 	for _, a := range cfg.Agents {
 		if agents.IsCommand(a.Name) {
 			continue
@@ -94,12 +68,34 @@ func AllEligibleModels(cfg *config.Config) []config.Model {
 		for _, m := range running {
 			if !seen[m.ID] {
 				seen[m.ID] = true
-				out = append(out, m)
+				models = append(models, m)
 			}
+			agentsForModel[m.ID] = append(agentsForModel[m.ID], a.Name)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	for id := range agentsForModel {
+		sort.Strings(agentsForModel[id])
+	}
+	return models, agentsForModel
+}
+
+// EligibleAgents returns, sorted, every non-command agent currently
+// eligible to launch model m. A thin Eligibility wrapper for callers that
+// only need one model's agent list; callers that also need
+// AllEligibleModels in the same invocation should call Eligibility directly
+// to share one probe round instead of calling both wrappers.
+func EligibleAgents(cfg *config.Config, m config.Model) []string {
+	_, agentsForModel := Eligibility(cfg)
+	return agentsForModel[m.ID]
+}
+
+// AllEligibleModels returns, sorted by id, the union of every model
+// currently eligible for at least one non-command agent — the candidate
+// list wt smoke's interactive picker offers when no model id is given.
+func AllEligibleModels(cfg *config.Config) []config.Model {
+	models, _ := Eligibility(cfg)
+	return models
 }
 
 // execOutcome is what the buildAndRun seam reports for one row.
@@ -142,6 +138,33 @@ func truncateOutput(s string) string {
 	return truncatedMarker + s[len(s)-maxCapturedOutput:]
 }
 
+// boundedWriter caps the process output held in memory to at most
+// maxCapturedOutput bytes throughout the run, not just once the process
+// exits or times out — a runaway agent (verbose logging, a stuck retry
+// loop) that writes megabytes before the timeout never grows the captured
+// buffer past the bound that's eventually kept anyway. String applies the
+// same tail-keeping + marker convention as truncateOutput.
+type boundedWriter struct {
+	tail      []byte
+	truncated bool
+}
+
+func (b *boundedWriter) Write(p []byte) (int, error) {
+	b.tail = append(b.tail, p...)
+	if len(b.tail) > maxCapturedOutput {
+		b.truncated = true
+		b.tail = append([]byte(nil), b.tail[len(b.tail)-maxCapturedOutput:]...)
+	}
+	return len(p), nil
+}
+
+func (b *boundedWriter) String() string {
+	if b.truncated {
+		return truncatedMarker + string(b.tail)
+	}
+	return string(b.tail)
+}
+
 func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
 	cmd, err := agents.BuildLaunchCmd(agentName, m, cwd, false, nil, cfg, nil)
 	if err != nil {
@@ -154,13 +177,14 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 	}
 	cmd.Args = append(cmd.Args, osr.OneShotArgs(prompt)...)
 
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	buf := &boundedWriter{}
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 	cmdLine := strings.Join(cmd.Args, " ")
 
-	// cmd.Stdout/Stderr being a *bytes.Buffer makes os/exec create a pipe
-	// plus an internal copy goroutine per stream; cmd.Wait() blocks until
+	// cmd.Stdout/Stderr being the exact same io.Writer value makes os/exec
+	// share one pipe and copy goroutine between them instead of racing two
+	// writers on buf; cmd.Wait() blocks until
 	// those goroutines see EOF. claude/codex/copilot/opencode are all
 	// Node-based CLIs that can spawn descendants (MCP servers, language
 	// server helpers, ...) — killing only the direct child on timeout can
@@ -185,11 +209,11 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 		if waitErr != nil {
 			ee, ok := waitErr.(*exec.ExitError)
 			if !ok {
-				return execOutcome{Command: cmdLine, Output: truncateOutput(buf.String()), StartErr: waitErr}
+				return execOutcome{Command: cmdLine, Output: buf.String(), StartErr: waitErr}
 			}
 			exitCode = ee.ExitCode()
 		}
-		return execOutcome{Command: cmdLine, Output: truncateOutput(buf.String()), ExitCode: exitCode}
+		return execOutcome{Command: cmdLine, Output: buf.String(), ExitCode: exitCode}
 	case <-time.After(timeout):
 		// Kill the whole process group (negative pid), not just the direct
 		// child, so a surviving descendant can't keep Wait() blocked
@@ -199,7 +223,7 @@ func realBuildAndRun(cfg *config.Config, agentName string, m config.Model, promp
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 		<-done
-		return execOutcome{Command: cmdLine, Output: truncateOutput(buf.String()), TimedOut: true}
+		return execOutcome{Command: cmdLine, Output: buf.String(), TimedOut: true}
 	}
 }
 
