@@ -158,12 +158,16 @@ running = true
 	}
 }
 
-// TestLoadExposesOnlyLitellmExposedModels asserts the end-to-end wiring of
-// Load(), deriveNative, and modelman exposure: native models are always
-// exposed; non-native models are exposed only when modelman.toml marks them
-// litellm_exposed. This prevents wt from advertising models that the LiteLLM
-// proxy is not configured to serve.
-func TestLoadExposesOnlyExposedModels(t *testing.T) {
+// TestLoadModelExposureAcrossNativeLocalCloud asserts the end-to-end wiring
+// of Load(), deriveNative, and modelman exposure across the three location
+// classes (2026-09-15 local-model-visibility design): native models are
+// always exposed at this Stage-1 check; LOCAL models are always exposed
+// here too, regardless of their modelman.toml `exposed`/`ready` flags —
+// their real picker visibility is decided separately by the live-verified
+// running gate (internal/localgate), not by this predicate; cloud models
+// still require modelman.toml's `exposed` flag (legacy `litellm_exposed`
+// still read as a fallback).
+func TestLoadModelExposureAcrossNativeLocalCloud(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("MODELMAN_REGISTRY", "")

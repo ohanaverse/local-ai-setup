@@ -755,14 +755,33 @@ def _expose_for_start(
     docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md.
 
     Mutates `state.models[model_id]` in place on success (mirrors
-    `_resolve_or_register`'s own expose_model call above) but never
-    raises: an expose failure degrades to a warning string rather than
-    blocking an otherwise-successful start, since wt's local-model picker
-    no longer depends on `exposed` at all.
+    `_resolve_or_register`'s own expose_model call above). Catches
+    ExposeError/LiteLLMConfigError/OSError (the latter covers a plain
+    filesystem failure writing LiteLLM's config, e.g. ENOSPC/EACCES/a
+    read-only config dir) and returns a warning string instead of
+    raising, so an expose failure degrades gracefully rather than
+    blocking an otherwise-successful start — since wt's local-model
+    picker no longer depends on `exposed` at all.
     """
     try:
         return expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
-    except (ExposeError, LiteLLMConfigError) as exc:
+    except ExposeError as exc:
+        if "not ready" in str(exc):
+            return [
+                f"{model_id} is running but could not be exposed to LiteLLM because it "
+                f"is not yet marked ready: {exc} — run `modelman sync` (or wait for the "
+                f"next reconcile) so readiness catches up, then re-run `modelman start "
+                f"{model_id}` or `modelman expose {model_id}`; re-running `modelman expose "
+                f"{model_id}` right now will hit the same readiness check and fail the "
+                f"same way. Agents whose route to it is forced through LiteLLM won't "
+                f"reach it until this is resolved."
+            ]
+        return [
+            f"{model_id} is running but could not be exposed to LiteLLM: {exc} — "
+            f"agents whose route to it is forced through LiteLLM won't reach it "
+            f"until you run `modelman expose {model_id}`"
+        ]
+    except (LiteLLMConfigError, OSError) as exc:
         return [
             f"{model_id} is running but could not be exposed to LiteLLM: {exc} — "
             f"agents whose route to it is forced through LiteLLM won't reach it "

@@ -202,6 +202,28 @@ def test_start_succeeds_with_warning_when_expose_fails(tmp_path):
     assert any("could not be exposed" in w for w in result.warnings)
 
 
+def test_start_succeeds_with_warning_when_expose_raises_oserror(tmp_path):
+    # Regression test: expose_model()'s underlying LiteLLM config write can
+    # raise a plain OSError (ENOSPC, EACCES, a read-only config dir) rather
+    # than one of the two exception types _expose_for_start used to catch.
+    # Before this fix an uncaught OSError here would propagate out of
+    # start_local_model() on the fresh-start path — AFTER the local model's
+    # process had already been isolate_provider()-started — leaving the
+    # model genuinely running while its `running` flag never got persisted.
+    # It must instead degrade to a warning, same as ExposeError/
+    # LiteLLMConfigError.
+    state_path = _state_path(tmp_path, {})  # ready defaults to False
+
+    with patch(
+        "modelman.local_control.expose_model", side_effect=OSError(28, "No space left on device")
+    ):
+        result = start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
+
+    assert result.already_running is False
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
+    assert any("could not be exposed" in w for w in result.warnings)
+
+
 def test_stop_local_model_does_not_clear_exposed_flag(tmp_path):
     # exposed is sticky across stop/start cycles — stopping a model's
     # process must not revert its LiteLLM model_list membership, so

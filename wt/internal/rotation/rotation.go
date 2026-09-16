@@ -71,7 +71,18 @@ func cfgHasModels(cfg *config.Config) bool {
 
 // Next returns the first model after the last launched one that is eligible
 // for agent under the given tags/family filters. It computes the eligible
-// list and delegates to NextFromEligible.
+// list via cfg.EligibleModels and delegates to NextFromEligible.
+//
+// WARNING: cfg.EligibleModels does NOT apply the local-model running gate
+// (internal/localgate.Apply/FilterToRunningLocal) — since the 2026-09-15
+// local-model-visibility design, a local model is Stage-1 "exposed"
+// unconditionally, so Next's candidate set can include every local model
+// registered for the agent regardless of whether it's actually running.
+// Today Next has no production caller — cmd/wt/launch.go and
+// internal/tui/app.go both call NextFromEligible directly with an
+// already-gated slice — but any future caller of Next itself must run its
+// result (or the eligible slice fed to it) through localgate.Apply first,
+// or use NextFromEligible with a pre-gated slice instead.
 func (r *Rotation) Next(cfg *config.Config, agent, tags, family string) (config.Model, bool) {
 	if !cfgHasModels(cfg) {
 		return config.Model{}, false
