@@ -59,3 +59,7 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	}
 	return lc
 }
+
+// OneShotArgs runs a single prompt non-interactively and exits — used by
+// wt smoke to verify a model works through this agent.
+func (piDriver) OneShotArgs(prompt string) []string { return []string{"-p", prompt} }

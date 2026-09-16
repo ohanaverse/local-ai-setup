@@ -65,3 +65,7 @@ func (opencodeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 // validated); a unique id + npm @ai-sdk/openai-compatible makes opencode treat
 // it as fully custom.
 const opencodeGatewayProviderID = "agent-wt"
+
+// OneShotArgs runs a single prompt non-interactively and exits — used by
+// wt smoke to verify a model works through this agent.
+func (opencodeDriver) OneShotArgs(prompt string) []string { return []string{"run", prompt} }
