@@ -37,4 +37,10 @@ def test_atomic_write_toml_leaves_no_tmp_file_on_dump_failure(tmp_path, monkeypa
         atomic_write_toml({"a": 1}, target)
 
     assert not target.exists()
-    assert list(tmp_path.iterdir()) == []
+    # Check specifically for atomic_write's own leftover temp file
+    # (".<name>.<random>.tmp", per _toml_io.py's mkstemp call) rather than
+    # asserting tmp_path is entirely empty: the modelman-wide autouse
+    # _default_litellm_config fixture (tests/conftest.py) also writes a
+    # scratch litellm config into this same tmp_path, which is unrelated
+    # to what this test is verifying.
+    assert list(tmp_path.glob(f".{target.name}.*")) == []

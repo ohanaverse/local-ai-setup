@@ -137,6 +137,111 @@ def test_start_already_running_and_probed_serving_is_idempotent(tmp_path):
     assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
 
 
+def test_start_exposes_previously_unexposed_ready_model(tmp_path):
+    # The motivating bug: a model started via `modelman start` but never
+    # separately exposed showed as running in modelman's own TUI but
+    # never appeared in wt's picker, because wt used to also require
+    # exposed=true for local models. Under the 2026-09-15 design wt no
+    # longer checks `exposed` for local models at all, so the flag's only
+    # remaining job is keeping LiteLLM's model_list in sync for agents
+    # whose route is forced through the proxy — a fresh start of an
+    # already-ready, not-yet-exposed model must expose it too, with no
+    # separate `modelman expose` step required.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=False))
+    save_state(store, state_path)
+    litellm_path = tmp_path / "config.yaml"
+    litellm_path.write_text("model_list: []\n")
+
+    result = start_local_model(
+        _registry(), "ollama/qwen3.8:27b-mlx", state_path, litellm_path=litellm_path
+    )
+
+    assert result.already_running is False
+    state = load_state(state_path)
+    assert state.get("ollama/qwen3.8:27b-mlx").running is True
+    assert state.get("ollama/qwen3.8:27b-mlx").exposed is True
+
+
+def test_start_already_running_unexposed_model_gets_exposed(tmp_path):
+    # Re-running `modelman start` on a model that's already running but
+    # was never exposed (drifted state from before this feature, or a
+    # manually-cleared exposed flag on a still-running model) is the
+    # remediation path — it must expose the model without a full
+    # teardown/restart, since the probe already confirms it's healthy.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=False, running=True))
+    save_state(store, state_path)
+    litellm_path = tmp_path / "config.yaml"
+    litellm_path.write_text("model_list: []\n")
+
+    with patch("modelman.local_control._probe_running", return_value=True):
+        result = start_local_model(
+            _registry(), "ollama/qwen3.8:27b-mlx", state_path, litellm_path=litellm_path
+        )
+
+    assert result.already_running is True
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").exposed is True
+
+
+def test_start_succeeds_with_warning_when_expose_fails(tmp_path):
+    # A model that isn't `ready` yet can still be started — expose_model's
+    # ready gate rejects it, but that must degrade to a warning rather
+    # than aborting an otherwise-successful start: wt's local-model
+    # visibility no longer depends on `exposed` at all, only on the
+    # running probe, so a failed expose must not block getting the model
+    # running.
+    state_path = _state_path(tmp_path, {})  # ready defaults to False
+
+    result = start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
+
+    assert result.already_running is False
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
+    assert any("could not be exposed" in w for w in result.warnings)
+
+
+def test_start_succeeds_with_warning_when_expose_raises_oserror(tmp_path):
+    # Regression test: expose_model()'s underlying LiteLLM config write can
+    # raise a plain OSError (ENOSPC, EACCES, a read-only config dir) rather
+    # than one of the two exception types _expose_for_start used to catch.
+    # Before this fix an uncaught OSError here would propagate out of
+    # start_local_model() on the fresh-start path — AFTER the local model's
+    # process had already been isolate_provider()-started — leaving the
+    # model genuinely running while its `running` flag never got persisted.
+    # It must instead degrade to a warning, same as ExposeError/
+    # LiteLLMConfigError.
+    state_path = _state_path(tmp_path, {})  # ready defaults to False
+
+    with patch(
+        "modelman.local_control.expose_model", side_effect=OSError(28, "No space left on device")
+    ):
+        result = start_local_model(_registry(), "ollama/qwen3.8:27b-mlx", state_path)
+
+    assert result.already_running is False
+    assert load_state(state_path).get("ollama/qwen3.8:27b-mlx").running is True
+    assert any("could not be exposed" in w for w in result.warnings)
+
+
+def test_stop_local_model_does_not_clear_exposed_flag(tmp_path):
+    # exposed is sticky across stop/start cycles — stopping a model's
+    # process must not revert its LiteLLM model_list membership, so
+    # restarting it later doesn't need to re-expose.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=True, running=True))
+    save_state(store, state_path)
+
+    with patch("modelman.local_control._stop_ollama_model") as mock_stop_ollama:
+        stop_local_model("ollama/qwen3.8:27b-mlx", state_path)
+    mock_stop_ollama.assert_called_once_with("qwen3.8:27b-mlx")
+
+    state = load_state(state_path)
+    assert state.get("ollama/qwen3.8:27b-mlx").running is False
+    assert state.get("ollama/qwen3.8:27b-mlx").exposed is True
+
+
 def test_start_marker_names_dead_model_clears_it_and_restarts(tmp_path):
     # Flag matches but the probe says nothing is serving (crash, reboot,
     # `omlx stop`): the flag must be cleared and the full start must run —

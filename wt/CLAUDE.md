@@ -205,11 +205,12 @@ and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
 contract tests and modelman's `tests/contracts/` — a schema change must
 update both sides or both CI jobs fail.
 
-**Exposure predicate (shared with modelman):** wt filters models using the same rule as the TUI:
-- Native models (provider `auth.type = "native"`): always exposed
-- Non-native: `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`)
+**Exposure predicate (2026-09-15 local-model visibility design):** wt's `IsExposed` decides Stage-1 (tag/family/provider) catalog membership:
+- Native models (provider `auth.type = "native"`): always exposed.
+- Local models (location resolves to `"local"`): always exposed here too — catalog membership for local models is governed entirely by the live-verified running gate below (`internal/localgate.Apply`/`FilterToRunningLocal`), not by `exposed`/`ready`. A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
+- Cloud (and any model whose location doesn't resolve to local): `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`), unchanged from before.
 
-This ensures wt's model picker never offers a model the TUI would show as `–` in the EXPOSED column.
+This means wt's picker can now show a local model modelman's own TUI still renders `–` for in its EXPOSED column — that divergence is intentional for local models; `modelman start` keeps `exposed` in sync automatically so LiteLLM-forced routes (see the Agents table below) keep working without a separate manual expose step. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
 
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt
 > bug** — e.g. a `registry.toml` with models referencing `provider_id`s but

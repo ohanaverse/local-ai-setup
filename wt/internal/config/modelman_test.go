@@ -158,12 +158,16 @@ running = true
 	}
 }
 
-// TestLoadExposesOnlyLitellmExposedModels asserts the end-to-end wiring of
-// Load(), deriveNative, and modelman exposure: native models are always
-// exposed; non-native models are exposed only when modelman.toml marks them
-// litellm_exposed. This prevents wt from advertising models that the LiteLLM
-// proxy is not configured to serve.
-func TestLoadExposesOnlyExposedModels(t *testing.T) {
+// TestLoadModelExposureAcrossNativeLocalCloud asserts the end-to-end wiring
+// of Load(), deriveNative, and modelman exposure across the three location
+// classes (2026-09-15 local-model-visibility design): native models are
+// always exposed at this Stage-1 check; LOCAL models are always exposed
+// here too, regardless of their modelman.toml `exposed`/`ready` flags —
+// their real picker visibility is decided separately by the live-verified
+// running gate (internal/localgate), not by this predicate; cloud models
+// still require modelman.toml's `exposed` flag (legacy `litellm_exposed`
+// still read as a fallback).
+func TestLoadModelExposureAcrossNativeLocalCloud(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("MODELMAN_REGISTRY", "")
@@ -244,10 +248,10 @@ ready = false
 		t.Errorf("agy/native (native provider) must always be exposed")
 	}
 	if !cfg.IsExposed(byID["ollama/exposed"]) {
-		t.Errorf("ollama/exposed (litellm_exposed=true, ready=true) must be exposed")
+		t.Errorf("ollama/exposed (local model) must be exposed (2026-09-15: local models bypass exposed flag)")
 	}
-	if cfg.IsExposed(byID["ollama/unexposed"]) {
-		t.Errorf("ollama/unexposed (litellm_exposed=false) must not be exposed")
+	if !cfg.IsExposed(byID["ollama/unexposed"]) {
+		t.Errorf("ollama/unexposed (local model, exposed=false) must still be exposed (2026-09-15: local models bypass exposed flag — running gate is Stage-2)")
 	}
 }
 
@@ -355,9 +359,13 @@ func TestModelmanPathExpandsTildeInXDG(t *testing.T) {
 	}
 }
 
-// TestIsExposedPredicate implements the exposure rule:
-// native OR (exposed AND (ready OR cloud location)).
-// Cloud location may be inherited from the provider even when the model row
+// TestIsExposedPredicate implements the exposure rule (2026-09-15 local-
+// model visibility design): native OR local OR (exposed AND (ready OR
+// cloud location)). Local models bypass the exposed/ready check entirely
+// here — their catalog membership is governed solely by the live-verified
+// running gate (internal/localgate), pinned end-to-end by
+// TestLocalModelVisibilityIgnoresExposedFlag in internal/localgate. Cloud
+// location may be inherited from the provider even when the model row
 // omits its own `location` key.
 func TestIsExposedPredicate(t *testing.T) {
 	dir := t.TempDir()
@@ -408,6 +416,14 @@ location = "local"
 tags = ["code"]
 
 [[models]]
+id = "ollama/local-flag-unexposed"
+family = "local-flag-unexposed"
+provider_id = "ollama"
+model_name = "local-flag-unexposed"
+location = "local"
+tags = ["code"]
+
+[[models]]
 id = "openrouter/cloud-flag"
 family = "cloud-flag"
 provider_id = "openrouter"
@@ -432,8 +448,11 @@ tags = ["code"]
 	}
 
 	// Native model: always exposed regardless of flag
-	// Local model with flag+ready: exposed
-	// Local model with flag+not-ready: NOT exposed
+	// Local model with flag+ready: exposed (unchanged)
+	// Local model with flag+not-ready: exposed too (2026-09-15: local
+	//   models bypass the ready gate — running-verification is the real gate)
+	// Local model with exposed=false: exposed too (bypasses the exposed
+	//   flag itself, not just ready)
 	// Cloud model with flag (no ready key): exposed
 	// Cloud-inherited model with flag (no ready key, no model location): exposed
 	writeModelmanState(t, dir, `
@@ -450,6 +469,10 @@ ready = true
 [model_state."ollama/local-flag-not-ready"]
 exposed = true
 ready = false
+
+[model_state."ollama/local-flag-unexposed"]
+exposed = false
+ready = true
 
 [model_state."openrouter/cloud-flag"]
 exposed = true
@@ -474,8 +497,9 @@ exposed = true
 		reason   string
 	}{
 		{"native-provider/native-model", true, "native models are always exposed"},
-		{"ollama/local-flag-ready", true, "flag + ready = exposed"},
-		{"ollama/local-flag-not-ready", false, "flag + not-ready (local) = not exposed"},
+		{"ollama/local-flag-ready", true, "local models are exposed to wt regardless of the exposed/ready flags"},
+		{"ollama/local-flag-not-ready", true, "local models bypass the ready gate — visibility is governed by the running probe, not this predicate"},
+		{"ollama/local-flag-unexposed", true, "local models bypass the exposed flag entirely — visibility is governed by the running probe, not this predicate"},
 		{"openrouter/cloud-flag", true, "cloud location exempts from ready gate"},
 		{"openrouter/cloud-inherited", true, "cloud location inherited from provider exempts from ready gate"},
 	}

@@ -46,7 +46,7 @@ from .benchmark.isolation import (
     stop_all_local_providers,
     stop_provider,
 )
-from .litellm import ExposeError, default_litellm_config_path, expose_model
+from .litellm import ExposeError, LiteLLMConfigError, default_litellm_config_path, expose_model
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
 from .providers.base import LocalModel, Provider, _Runner
@@ -743,6 +743,54 @@ def running_model_ids(registry: Registry, state: StateStore, state_path: Path | 
     return sorted(verified)
 
 
+def _expose_for_start(
+    registry: Registry,
+    state: StateStore,
+    model_id: str,
+    litellm_path: Path | None,
+) -> tuple[bool, list[str]]:
+    """Best-effort expose of a model that is (or is about to be) running,
+    so LiteLLM's model_list stays in sync for agents whose route to it is
+    forced through the proxy — see
+    docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md.
+
+    Mutates `state.models[model_id]` in place on success (mirrors
+    `_resolve_or_register`'s own expose_model call above) and returns
+    (True, warnings). Catches ExposeError/LiteLLMConfigError/OSError (the
+    latter covers a plain filesystem failure writing LiteLLM's config,
+    e.g. ENOSPC/EACCES/a read-only config dir) and returns (False,
+    warnings) instead of raising, so an expose failure degrades
+    gracefully rather than blocking an otherwise-successful start —
+    since wt's local-model picker no longer depends on `exposed` at all.
+
+    The caller uses the returned bool, not `state.models[model_id].exposed`
+    directly, to decide whether to persist exposed=True: `state` is read
+    before this call runs (sometimes well before, e.g. across
+    isolate_provider()'s real wall time), so re-reading it afterwards
+    would still reflect that stale snapshot when this function fails
+    before mutating it — silently reverting any exposed/unexpose written
+    by a concurrent process in the meantime.
+    """
+    try:
+        return True, expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
+    except (ExposeError, LiteLLMConfigError, OSError) as exc:
+        if isinstance(exc, ExposeError) and "not ready" in str(exc):
+            return False, [
+                f"{model_id} is running but could not be exposed to LiteLLM because it "
+                f"is not yet marked ready: {exc} — run `modelman sync` (or wait for the "
+                f"next reconcile) so readiness catches up, then re-run `modelman start "
+                f"{model_id}` or `modelman expose {model_id}`; re-running `modelman expose "
+                f"{model_id}` right now will hit the same readiness check and fail the "
+                f"same way. Agents whose route to it is forced through LiteLLM won't "
+                f"reach it until this is resolved."
+            ]
+        return False, [
+            f"{model_id} is running but could not be exposed to LiteLLM: {exc} — "
+            f"agents whose route to it is forced through LiteLLM won't reach it "
+            f"until you run `modelman expose {model_id}`"
+        ]
+
+
 def start_local_model(
     registry: Registry,
     model_id: str,
@@ -824,9 +872,20 @@ def start_local_model(
     already = fresh_state.get(resolved_id).running
     if already:
         if _probe_running(model.provider_id, model.model_name, probe_origin):
+            expose_ok, expose_warnings = _expose_for_start(registry, fresh_state, resolved_id, litellm_path)
+            if expose_ok:
+                try:
+                    with locked_state(state_path) as fresh:
+                        existing = fresh.models.get(resolved_id, ModelState())
+                        if not existing.exposed:
+                            fresh.models[resolved_id] = replace(existing, exposed=True)
+                except OSError as exc:
+                    expose_warnings = expose_warnings + [
+                        f"{resolved_id}'s exposed flag could not be persisted: {exc}"
+                    ]
             return StartResult(
                 model_id=resolved_id, already_running=True,
-                warnings=registration_warnings, other_running=other_running,
+                warnings=registration_warnings + expose_warnings, other_running=other_running,
             )
         _clear_stale_running_flag(resolved_id, state_path)
 
@@ -883,10 +942,15 @@ def start_local_model(
             # emits now.
             _clear_stale_running_flag(occupant, state_path)
 
+    expose_ok, expose_warnings = _expose_for_start(registry, fresh_state, resolved_id, litellm_path)
     try:
         with locked_state(state_path) as fresh:
             existing = fresh.models.get(resolved_id, ModelState())
-            fresh.models[resolved_id] = replace(existing, running=True)
+            fresh.models[resolved_id] = replace(
+                existing,
+                running=True,
+                exposed=True if expose_ok else existing.exposed,
+            )
     except OSError as exc:
         raise LocalControlError(
             f"{resolved_id} started successfully but its running flag could not be "
@@ -894,7 +958,7 @@ def start_local_model(
         ) from exc
     return StartResult(
         model_id=resolved_id, already_running=False, direct_url=direct_url,
-        warnings=registration_warnings, other_running=other_running,
+        warnings=registration_warnings + expose_warnings, other_running=other_running,
     )
 
 

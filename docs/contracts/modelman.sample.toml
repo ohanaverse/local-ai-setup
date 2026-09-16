@@ -11,9 +11,28 @@
 # renaming its exposed key, modelman moving model_state) makes
 # both CI jobs fail in the same PR.
 #
-# Exposure rule (both tools): native OR (exposed AND (ready OR cloud location)).
-# - Local model with exposed=true, ready=false → NOT exposed
-# - Cloud model with exposed=true (no ready key) → exposed
+# Exposure rule — modelman's own predicate (is_effectively_exposed) is
+# still: native OR (exposed AND (ready OR cloud location)). wt's Stage-1
+# IsExposed check now diverges for LOCAL models as of the 2026-09-15
+# wt-local-model-visibility design
+# (docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md):
+# wt treats every local model as always exposed at this check, regardless
+# of its `exposed`/`ready` flags — real local-model visibility in wt's
+# picker is governed separately by the live-verified `running` gate, not
+# by `exposed`/`ready` at all. Cloud and native models are unchanged: both
+# tools still apply the same rule to them.
+# - Local model with exposed=true, ready=false → NOT exposed per
+#   modelman's own predicate; wt's Stage-1 check treats it as exposed
+#   anyway (local models always pass Stage-1) — its actual visibility in
+#   wt's picker depends only on whether it's running, not on this row.
+# - Cloud model with exposed=true (no ready key) → exposed on both sides.
+#
+# The DATA rows below are unaffected by this divergence: the tests that
+# read this fixture (wt/internal/config/modelman_fixture_test.go,
+# modelman/tests/contracts/test_modelman_fixture.py) assert only on the
+# RAW parsed fields (.Exposed/.Ready/.Running), never on the derived
+# IsExposed()/is_effectively_exposed() predicate, so they round-trip
+# correctly regardless of which exposure rule is current.
 #
 # Local-model running state (multi-model local lifecycle design,
 # 2026-09-14): each model_state entry carries its own `running` flag,
@@ -64,7 +83,13 @@ litellm_exposed = true
 # no exposed key; defaults to false
 
 # Local model with flag on but not ready: tests the ready gate for local models.
-# Exposure: flag=true + ready=false + location=local → NOT exposed.
+# Exposure per modelman's own predicate (is_effectively_exposed): flag=true
+# + ready=false + location=local → NOT exposed. wt's Stage-1 IsExposed
+# check no longer applies this gate to local models at all (2026-09-15
+# design) — it reads this row's raw .Exposed/.Ready fields in the fixture
+# test but does not derive an IsExposed() value from them for a local
+# model; the model's real visibility in wt's picker is decided solely by
+# the separate live-verified `running` gate.
 [model_state."ollama/contract-fixture:local-not-ready"]
 ready = false
 disk_path = "ollama:contract-fixture:local-not-ready"

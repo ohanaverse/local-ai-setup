@@ -548,21 +548,35 @@ func deriveNative(cfg *Config) {
 }
 
 // IsExposed reports whether m should appear in wt's model catalog.
-// Native models are always exposed (they cannot route through LiteLLM).
-// Non-native models require exposed AND (ready OR cloud location).
 //
-// The cloud-location check uses ResolveLocation: a model may omit its own
-// `location` and inherit it from the provider. validate() already guarantees
-// the location is resolvable, so an error here is treated as non-cloud.
+// Native models are always exposed (they cannot route through LiteLLM).
+//
+// Local models are always exposed here too (2026-09-15 local-model
+// visibility design): their catalog membership is governed entirely by
+// the live-verified running gate (internal/localgate.Apply /
+// FilterToRunningLocal), applied downstream of this Stage-1 check, not by
+// the exposed/ready flags in modelman.toml. modelman's start_local_model
+// keeps `exposed` in sync on start so LiteLLM-forced routes still work —
+// see docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md.
+//
+// Cloud (and any model whose location cannot be resolved — a registry
+// data gap, treated conservatively as non-local) requires exposed AND
+// (ready OR cloud location), unchanged from before. The cloud-location
+// check uses ResolveLocation: a model may omit its own `location` and
+// inherit it from the provider.
 func (c *Config) IsExposed(m Model) bool {
 	if m.Native {
+		return true
+	}
+	loc, locErr := c.ResolveLocation(m)
+	if locErr == nil && loc == LocationLocal {
 		return true
 	}
 	st, ok := c.exposed[m.ID]
 	if !ok || !st.Exposed {
 		return false
 	}
-	if loc, err := c.ResolveLocation(m); err == nil && loc == "cloud" {
+	if locErr == nil && loc == LocationCloud {
 		return true
 	}
 	return st.Ready
