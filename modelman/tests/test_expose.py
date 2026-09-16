@@ -12,6 +12,7 @@ from modelman.litellm import (
 )
 from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
+from tests.conftest import ENFORCED_LITELLM_SETTINGS
 
 
 def _registry(*, cloud=False):
@@ -210,7 +211,7 @@ def test_unexpose_true_noop_skips_save_and_restart(tmp_path, monkeypatch):
         {
             "model_list": [],
             "general_settings": {},
-            "litellm_settings": {"drop_params": True},
+            "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
         },
         path,
     )

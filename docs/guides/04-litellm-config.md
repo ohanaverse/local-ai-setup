@@ -177,7 +177,9 @@ When to hand-edit vs modelman:
 |---|---|
 | `model_list` rows (expose a model) | modelman — `expose`/`unexpose`/TUI `l` (keeps `modelman.toml` flags honest) |
 | One-off tweak inside an existing `model_list` row | hand-edit (temporary: next `expose`/`unexpose` of that id replaces the row) — see Gotchas |
-| `general_settings`, `litellm_settings`, logging, router/callback settings, any non-`model_list` section | hand-edit — modelman never rewrites these, so the edits survive indefinitely |
+| `general_settings`, logging, router/callback settings, any non-`model_list` section | hand-edit — modelman never rewrites these, so the edits survive indefinitely |
+| `litellm_settings` keys **other than** `drop_params`/`use_chat_completions_url_for_anthropic_messages` | hand-edit — survives indefinitely, same as above |
+| `litellm_settings.drop_params`, `litellm_settings.use_chat_completions_url_for_anthropic_messages` | modelman — value-enforced to `true` on every expose/unexpose write (`ensure_litellm_settings()`); a hand-set `false` is silently reverted on the next write |
 
 Hand-edit flow — always back up, edit, validate, restart:
 

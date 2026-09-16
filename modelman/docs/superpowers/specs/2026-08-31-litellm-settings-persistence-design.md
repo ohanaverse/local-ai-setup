@@ -74,6 +74,7 @@ regenerated away.
    | Setting | Where | Why | Rule |
    |---|---|---|---|
    | `drop_params: true` | `litellm_settings` (global) | copilot sends `parallel_tool_calls` → `400 UnsupportedParamsError` without it | **value-enforced**: set to `true` when missing or not `true` |
+   | `use_chat_completions_url_for_anthropic_messages: true` | `litellm_settings` (global) | LiteLLM's `/v1/messages` endpoint (claude-wt's wire protocol) bridges any `openai`-provider deployment through the OpenAI Responses API by default; mtplx/omlx/mlx_lm_server (all `openai/<name>`) implement only `/v1/chat/completions`, so every real request 404s and the deployment gets cooldown-blacklisted (discovered debugging mtplx 2026-09-16) | **value-enforced**: set to `true` when missing or not `true`. LiteLLM only exposes this globally, not per-deployment, so unlike the other two rules it cannot be scoped to just the `openai/*` rows that need it — accepted since every current `openai/*` deployment is a local backend needing it |
    | `additional_drop_params: ["reasoning_effort"]` | entry `litellm_params` | codex crashes the responses→`ollama_chat` bridge (`BerriAI/litellm#37452`) | **presence-based**: add when missing; an existing key (any value, incl. an extended list or explicit `[]`) is left untouched |
 
    The two rules differ deliberately. `drop_params` exists solely for the
