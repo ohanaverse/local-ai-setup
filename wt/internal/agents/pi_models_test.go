@@ -492,6 +492,96 @@ func TestSyncModelsDirectPreservesForeignNonOllamaProvider(t *testing.T) {
 	}
 }
 
+// A non-ollama block explicitly marked _wtOwned must resync its
+// baseUrl/apiKey even when one of its existing model ids is no longer in the
+// registry's current model set for that provider — the scenario a plain
+// model rename/removal produces (delete the old registry entry, add a new
+// variant; see docs/guides/10-mlx-lm-quantization.md). Without the marker,
+// the legacy model-membership inference alone would misclassify this block
+// as foreign and re-introduce the exact stale-baseUrl bug
+// TestSyncModelsDirectResyncsStaleNonOllamaProvider fixed, permanently, since
+// model entries are only ever appended and never pruned.
+func TestSyncModelsDirectMarkedBlockSurvivesModelRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1:8001/v1","models":[{"_launch":true,"id":"old-quant-variant"}],"_wtOwned":true}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			// Registry has moved on to a new variant; "old-quant-variant" no
+			// longer appears anywhere in cfg.Models for this provider.
+			{ID: "mtplx/new-quant-variant", ModelName: "new-quant-variant", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["mtplx"]
+	if p.BaseURL != "http://localhost:8003/v1" {
+		t.Errorf("baseUrl = %q, want the registry's current value %q (marker must survive the stale old-quant-variant id)", p.BaseURL, "http://localhost:8003/v1")
+	}
+	if p.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (resynced placeholder)", p.APIKey, defaultPiOllamaAPIKey)
+	}
+}
+
+// A legacy (pre-marker) non-ollama block that the model-membership inference
+// confirms as wt-owned must get _wtOwned stamped onto it, so it stays
+// resyncable even after a future registry model rename/removal would
+// otherwise defeat that inference (see
+// TestSyncModelsDirectMarkedBlockSurvivesModelRename). This is the
+// self-migration path: no user action is needed to adopt the marker.
+func TestSyncModelsDirectStampsLegacyOwnedBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1:8001/v1","models":[{"_launch":true,"id":"Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	if !f.Providers["mtplx"].WTOwned {
+		t.Error("_wtOwned was not stamped onto a block the legacy inference confirmed as wt-owned")
+	}
+}
+
+// A foreign non-ollama block (the user's own independently-configured
+// provider) must never gain the _wtOwned marker, even though wt still
+// appends registry models into its model list (see
+// TestSyncModelsDirectPreservesForeignNonOllamaProvider). Otherwise a later
+// sync would treat it as wt's to rewrite and clobber the user's baseUrl/apiKey.
+func TestSyncModelsDirectForeignBlockNeverMarked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"api":"openai-completions","apiKey":"sk-personal-key","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"anthropic/claude-opus-4"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-registry-key", BaseURL: "https://openrouter.ai/api/v2"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.WTOwned {
+		t.Error("_wtOwned was set on a foreign provider block")
+	}
+	if p.BaseURL != "https://openrouter.ai/api/v1" || p.APIKey != "sk-personal-key" {
+		t.Error("foreign block's baseUrl/apiKey were not preserved")
+	}
+}
+
 // syncModels in litellm mode must create models.json when it does not exist,
 // so a fresh pi install routes through LiteLLM on the very first launch
 // instead of silently bypassing the gateway.
