@@ -234,14 +234,20 @@ ruamel round-trip, so sections modelman doesn't own (`general_settings`,
 `router_settings`, unknown keys, hand-written comments) survive untouched
 (comments attached to a specific `model_list` row are best-effort — one
 positioned next to a row modelman removes or replaces can be dropped).
-modelman additionally owns two launcher-required settings and ensures them on
-every write: `litellm_settings.drop_params: true` (without it, copilot's
-`parallel_tool_calls` gets rejected with `400 UnsupportedParamsError`) and
-`additional_drop_params: ["reasoning_effort"]` on every `model_list` entry
-routed through the `ollama_chat/` bridge (a workaround for a LiteLLM 1.98.x
-responses-bridge crash hit by codex, BerriAI/litellm#37452; an entry already
-carrying the key, whatever its value, is left as-is). A write that changes
-nothing saves nothing and does not restart the proxy.
+modelman additionally owns three launcher-required settings and ensures them
+on every write: `litellm_settings.drop_params: true` (without it, copilot's
+`parallel_tool_calls` gets rejected with `400 UnsupportedParamsError`),
+`litellm_settings.use_chat_completions_url_for_anthropic_messages: true`
+(without it, LiteLLM 1.98.0's `/v1/messages` endpoint — claude's wire
+protocol — bridges any `openai/<name>` deployment through the OpenAI
+Responses API instead of chat/completions; mtplx/omlx/mlx_lm_server only
+implement chat/completions, so claude-wt sees every local `openai/*` model
+as "may not exist"), and `additional_drop_params: ["reasoning_effort"]` on
+every `model_list` entry routed through the `ollama_chat/` bridge (a
+workaround for a LiteLLM 1.98.x responses-bridge crash hit by codex,
+BerriAI/litellm#37452; an entry already carrying the key, whatever its
+value, is left as-is). A write that changes nothing saves nothing and does
+not restart the proxy.
 
 By default the running LiteLLM proxy is **not** automatically restarted
 after an expose/unexpose change. Set `MODELMAN_LITELLM_RESTART_CMD` to a

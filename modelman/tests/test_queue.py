@@ -904,10 +904,17 @@ def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypat
     # (a native provider must never actually have one) directly in the table.
     monkeypatch.setitem(PROVIDER_POLICIES, "agy", ProviderPolicy(prefix="agy/"))
     path = tmp_path / "config.yaml"
-    # Seed drop_params so ensure_litellm_settings is a no-op: a fully
+    # Seed litellm_settings so ensure_litellm_settings is a no-op: a fully
     # rejected queue must save nothing and restart nothing.
     save_litellm_config(
-        {"model_list": [], "litellm_settings": {"drop_params": True}}, path
+        {
+            "model_list": [],
+            "litellm_settings": {
+                "drop_params": True,
+                "use_chat_completions_url_for_anthropic_messages": True,
+            },
+        },
+        path,
     )
 
     calls = []

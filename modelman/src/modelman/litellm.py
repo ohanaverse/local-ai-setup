@@ -406,13 +406,26 @@ def remove_exposed(config: dict[str, Any], model_id: str) -> None:
 def ensure_litellm_settings(config: dict[str, Any]) -> bool:
     """Ensure launcher-required LiteLLM settings are present.
 
-    Returns True iff the document changed. Two curated rules
+    Returns True iff the document changed. Three curated rules
     (settings-persistence spec, Decision 3):
 
     - `litellm_settings.drop_params` is **value-enforced** — set to
       `True` when missing or not `true`. copilot sends
       `parallel_tool_calls`, which the ollama backend rejects with
       `400 UnsupportedParamsError` unless LiteLLM drops it.
+    - `litellm_settings.use_chat_completions_url_for_anthropic_messages`
+      is **value-enforced** the same way. LiteLLM's `/v1/messages`
+      endpoint (claude-wt's wire protocol) bridges any deployment whose
+      `litellm_params.model` resolves to the `openai` custom provider
+      through the OpenAI Responses API by default — but mtplx, omlx, and
+      mlx_lm_server (all registered as `openai/<name>`, the only way to
+      reach a generic OpenAI-compatible local server) implement only
+      `/v1/chat/completions`, not `/v1/responses`. Every real request
+      404s, the deployment gets cooldown-blacklisted, and claude-wt
+      surfaces it as "model may not exist" (discovered debugging mtplx
+      2026-09-16). This flag routes `/v1/messages` through
+      chat/completions instead, matching what these backends actually
+      serve.
     - `additional_drop_params: ["reasoning_effort"]` is
       **presence-based** — added to every model_list row whose
       `litellm_params.model` starts with `ollama_chat/` and lacks the
@@ -431,6 +444,12 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
         settings = config["litellm_settings"] = {}
     if isinstance(settings, dict) and settings.get("drop_params") is not True:
         settings["drop_params"] = True
+        changed = True
+    if (
+        isinstance(settings, dict)
+        and settings.get("use_chat_completions_url_for_anthropic_messages") is not True
+    ):
+        settings["use_chat_completions_url_for_anthropic_messages"] = True
         changed = True
     rows = config.get("model_list")
     if isinstance(rows, list):

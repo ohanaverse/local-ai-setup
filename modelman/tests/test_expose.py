@@ -210,7 +210,10 @@ def test_unexpose_true_noop_skips_save_and_restart(tmp_path, monkeypatch):
         {
             "model_list": [],
             "general_settings": {},
-            "litellm_settings": {"drop_params": True},
+            "litellm_settings": {
+                "drop_params": True,
+                "use_chat_completions_url_for_anthropic_messages": True,
+            },
         },
         path,
     )

@@ -19,7 +19,7 @@ to answer a one-shot prompt on stdout.
 
 | Agent | Result | Notes |
 |---|---|---|
-| claude | ✅ works | `ANTHROPIC_BASE_URL` → LiteLLM proxy, `--model <registry-id>`; a `claude-code:unrecognized_model` notice is benign |
+| claude | ✅ works | `ANTHROPIC_BASE_URL` → LiteLLM proxy, `--model <registry-id>`; a `claude-code:unrecognized_model` notice is benign. This row only covered `ollama_chat/*` — local `openai/*` backends (mtplx/omlx/mlx_lm_server) needed a further fix, see below |
 | pi | ✅ works | after the dedicated `litellm` provider fix (below) |
 | opencode | ✅ works | after the custom-provider fix (below) |
 | copilot | ✅ works | after proxy `litellm_settings.drop_params: true` and wt-side `WIRE_API=completions` (below) |
@@ -229,11 +229,51 @@ model ref `agent-wt/<registry-id>` (opencode splits on the first slash), and
 summarization model (`gpt-5-nano`) otherwise queries the proxy with a model
 name it does not expose (400 noise in litellm's log on every run).
 
-### claude / agy / shell
+### claude — litellm 1.98.0 `/v1/messages` Responses-API bridge (local `openai/*` backends)
 
-claude needed no changes in litellm mode. agy takes its model inside its own
-TUI (no `--model`/env contract), and shell is not an LLM agent — neither is
-routable to a specific proxy model by wt.
+claude needed no changes in litellm mode for `ollama_chat/*` or
+`openrouter/*` models (the 2026-08-31 matrix only covered
+`ollama/glm-5.3-flash:cloud`). It breaks for any model registered as
+`openai/<name>` — mtplx, omlx, and mlx_lm_server all use this shape, since
+it's the only way to point LiteLLM at a generic OpenAI-compatible local
+server. Symptom: claude-wt prints the CLI's generic "There's an issue with
+the selected model ... It may not exist or you may not have access to it."
+
+Root cause (found debugging mtplx 2026-09-16): claude speaks the Anthropic
+Messages API (`POST /v1/messages`). LiteLLM 1.98.0's experimental
+anthropic-messages handler bridges any deployment whose resolved
+`custom_llm_provider` is `openai` through the OpenAI **Responses API**
+(`litellm.aresponses()` → `POST <api_base>/v1/responses`) instead of
+chat/completions
+(`litellm/llms/anthropic/experimental_pass_through/messages/handler.py`,
+`_RESPONSES_API_PROVIDERS = frozenset({"openai"})`). mtplx's OpenAI-
+compatible server implements only `/v1/chat/completions` — no `/v1/responses`
+route exists at all — so every real request 404s, the deployment gets
+cooldown-blacklisted after retries, and litellm's `NotFoundError` surfaces
+through claude-wt as "model may not exist." `/v1/chat/completions` against
+the same model works fine throughout — this is `/v1/messages`-specific, the
+same underlying responses-bridge mechanism as the codex crash above, just a
+different failure mode (404 on a route the backend never implements, vs. a
+crash on a request the backend does receive).
+
+**Fix (shipped in modelman, applied & verified 2026-09-16):**
+`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py`
+value-enforces `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`
+in `~/.config/litellm/config.yaml` on every write, alongside `drop_params`.
+This is litellm's own documented escape hatch
+(`litellm/llms/anthropic/experimental_pass_through/messages/handler.py`'s
+`_should_route_to_responses_api`) — it routes **every** `openai`-provider
+deployment's `/v1/messages` traffic through chat/completions instead,
+matching what mtplx/omlx/mlx_lm_server actually serve. Verified via direct
+`/v1/messages` curl probes against both registered mtplx models (200, was
+404) and confirmed `openrouter/*` and `ollama_chat/*` routing is unaffected
+(different `custom_llm_provider`, never hit `_RESPONSES_API_PROVIDERS`).
+
+### agy / shell
+
+agy takes its model inside its own TUI (no `--model`/env contract), and
+shell is not an LLM agent — neither is routable to a specific proxy model by
+wt.
 
 ## Ops notes
 
