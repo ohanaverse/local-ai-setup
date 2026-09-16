@@ -444,6 +444,54 @@ func TestSyncModelsDirectResyncsStaleNonOllamaProvider(t *testing.T) {
 	}
 }
 
+// A non-ollama provider block holding a model wt doesn't recognize (i.e. not
+// one of the registry's own models for that provider id) must be treated as
+// the user's own independently-configured pi provider, not wt-owned — its
+// baseUrl/apiKey must survive a sync untouched, the same protection ollama
+// gets via its fixed-pattern check (TestSyncModelsDirectPreservesCustomProvider).
+// Without this, TestSyncModelsDirectResyncsStaleNonOllamaProvider's fix for
+// stale wt-written values would also silently clobber a user's personal
+// "openrouter" (or any other) provider block that happens to share a
+// provider id with the registry.
+func TestSyncModelsDirectPreservesForeignNonOllamaProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"api":"openai-completions","apiKey":"sk-personal-key","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"anthropic/claude-opus-4"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-registry-key", BaseURL: "https://openrouter.ai/api/v2"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("baseUrl = %q, want the user's own value preserved", p.BaseURL)
+	}
+	if p.APIKey != "sk-personal-key" {
+		t.Errorf("apiKey = %q, want the user's own key preserved", p.APIKey)
+	}
+	foundForeign, foundRegistry := false, false
+	for _, m := range p.Models {
+		if m.ID == "anthropic/claude-opus-4" {
+			foundForeign = true
+		}
+		if m.ID == "z-ai/glm-5.3-flash" {
+			foundRegistry = true
+		}
+	}
+	if !foundForeign {
+		t.Error("user's own model entry was removed")
+	}
+	if !foundRegistry {
+		t.Error("registry model entry was not added alongside the user's own")
+	}
+}
+
 // syncModels in litellm mode must create models.json when it does not exist,
 // so a fresh pi install routes through LiteLLM on the very first launch
 // instead of silently bypassing the gateway.

@@ -100,6 +100,12 @@ func isDefaultOllamaAPIKey(apiKey string) bool {
 // mode="direct", the URL is gone and the revert cannot match; the user must
 // edit models.json by hand in that case.)
 //
+// Direct mode also writes one provider block per non-ollama registry
+// provider that has models (see syncDirectProviders): a pre-existing block
+// is resynced to the registry's current baseUrl/apiKey only when wt
+// recognizes every model already in it, so a user's independently-configured
+// provider sharing that provider id is left untouched.
+//
 // Litellm mode creates/updates the dedicated "litellm" provider with
 // registry-id entries pointing at the LiteLLM gateway, restores a
 // previously-gateway-redirected ollama provider to the local endpoint (its
@@ -244,8 +250,19 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // the first slash, so an unqualified model name containing a slash (e.g.
 // openrouter's "z-ai/glm-4.6") would otherwise resolve against provider
 // "z-ai" silently. Providers without a base_url are skipped — the same
-// condition surfaces as an error from ResolveRoute at launch time. Returns
-// whether anything changed.
+// condition surfaces as an error from ResolveRoute at launch time.
+//
+// A pre-existing non-ollama block is only resynced (baseUrl/apiKey reset to
+// the registry's current values) when every model already in it is one wt
+// itself would write for that provider (see the "wt-owned" check below); a
+// block holding a model wt doesn't know about is a signal the user
+// configured that provider id in pi independently of this registry, and its
+// baseUrl/apiKey are left untouched — same "wt never writes blocks it
+// doesn't own" contract ollama gets via its fixed-pattern check, just
+// detected differently since non-ollama base_urls are arbitrary registry
+// values with no fixed "known stale" form to match against.
+//
+// Returns whether anything changed.
 func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 	byProvider := map[string][]config.Model{}
 	for _, m := range cfg.Models {
@@ -292,6 +309,10 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 		for _, m := range p.Models {
 			existing[m.ID] = true
 		}
+		originalModelIDs := make([]string, 0, len(p.Models))
+		for _, m := range p.Models {
+			originalModelIDs = append(originalModelIDs, m.ID)
+		}
 		for _, m := range models {
 			if existing[m.ModelName] {
 				continue
@@ -330,22 +351,40 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 					}
 				}
 			} else {
-				// Every other provider block is wholly wt-owned: its baseUrl and
-				// secret come from the registry, never from a user hand-editing
-				// models.json, so always resync rather than pattern-matching for
-				// staleness. Without this, a value wt itself wrote at some
-				// earlier point (e.g. a registry base_url that has since
-				// changed) gets permanently stuck — isLaunchable only checks
-				// that the model id is present and _launch:true, never the
-				// provider's baseUrl, so a stale port silently breaks every
-				// launch against that provider with no error surfaced.
-				if p.BaseURL != wantBaseURL {
-					p.BaseURL = wantBaseURL
-					mutated = true
+				// Resync baseUrl/apiKey to the registry's current values, but
+				// only when the block is wt-owned: every model it already held
+				// (before this call's additions above) must be one wt itself
+				// would write for this provider. Without resyncing at all, a
+				// value wt itself wrote at some earlier point (e.g. a registry
+				// base_url that has since changed) gets permanently stuck —
+				// isLaunchable only checks that the model id is present and
+				// _launch:true, never the provider's baseUrl, so a stale port
+				// silently breaks every launch against that provider with no
+				// error surfaced. But resyncing unconditionally would clobber a
+				// user's independently-configured pi provider that happens to
+				// share this provider id (e.g. a personal "openrouter" block
+				// with its own apiKey) — a foreign model entry is the signal
+				// that block isn't wt's to rewrite.
+				wantedModelNames := make(map[string]bool, len(models))
+				for _, m := range models {
+					wantedModelNames[m.ModelName] = true
 				}
-				if p.APIKey != wantAPIKey {
-					p.APIKey = wantAPIKey
-					mutated = true
+				wtOwned := true
+				for _, id := range originalModelIDs {
+					if !wantedModelNames[id] {
+						wtOwned = false
+						break
+					}
+				}
+				if wtOwned {
+					if p.BaseURL != wantBaseURL {
+						p.BaseURL = wantBaseURL
+						mutated = true
+					}
+					if p.APIKey != wantAPIKey {
+						p.APIKey = wantAPIKey
+						mutated = true
+					}
 				}
 			}
 		}
