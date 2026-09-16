@@ -21,9 +21,11 @@ from __future__ import annotations
 import copy
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
@@ -80,9 +82,49 @@ PROVIDER_POLICIES: dict[str, ProviderPolicy] = {
 # write (settings-persistence spec, 2026-08-31).
 _BRIDGE_PREFIX = "ollama_chat/"  # LiteLLM's chat-completions→ollama bridge
 _BRIDGE_DROP_PARAMS = ("reasoning_effort",)  # BerriAI/litellm#37452 workaround
+_DROP_PARAMS_KEY = "additional_drop_params"
 _OPENAI_PREFIX = "openai/"  # local OpenAI-compatible servers: mtplx/omlx/mlx_lm_server/llamacpp
 _RESPONSES_BRIDGE_PARAM = "use_chat_completions_api"  # per-deployment Responses→chat bridge
+# Single source of truth for set_exposed's key-preservation loop, so a new
+# presence-based ensure rule can't be added to one without the other.
+_PRESERVED_LITELLM_PARAM_KEYS = (_DROP_PARAMS_KEY, _RESPONSES_BRIDGE_PARAM)
+_LOCAL_API_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TOKENS_PER_MILLION = 1_000_000
+
+
+def _is_local_api_base(api_base: Any) -> bool:
+    """True when `api_base` points at a loopback host.
+
+    `openai/` in `litellm_params.model` is LiteLLM's own syntax for a real
+    OpenAI cloud deployment, so the prefix alone can't distinguish one from
+    modelman's local OpenAI-compatible backends (mtplx/omlx/mlx_lm_server/
+    llamacpp) that reuse it to reach a generic OpenAI-compatible server.
+    Every current local backend's default `api_base` is a localhost URL, so
+    that's the signal used to scope the Responses-bridge rule below to rows
+    modelman actually manages, leaving a hand-added real OpenAI deployment
+    (no `api_base`, or one pointing at a real host) untouched.
+    """
+    return isinstance(api_base, str) and urlparse(api_base).hostname in _LOCAL_API_HOSTS
+
+
+def _add_presence_based_param(
+    params: dict[str, Any],
+    model: str,
+    prefix: str,
+    key: str,
+    value: Any,
+    row_ok: Callable[[dict[str, Any]], bool] = lambda _params: True,
+) -> bool:
+    """Add `key: value` to `params` iff `model` matches `prefix`, `key` is
+    absent, and `row_ok(params)` allows it. Returns whether it added.
+
+    Presence-based: an existing `key` of any value marks the row
+    user-managed and is left untouched.
+    """
+    if not model.startswith(prefix) or key in params or not row_ok(params):
+        return False
+    params[key] = value
+    return True
 
 
 def provider_policy(provider_id: str) -> ProviderPolicy | None:
@@ -381,11 +423,14 @@ def set_exposed(config: dict[str, Any], model_id: str, entry: dict[str, Any]) ->
             old_params = row.get("litellm_params")
             new_params = entry.get("litellm_params")
             if isinstance(old_params, dict) and isinstance(new_params, dict):
-                for preserved_key in ("additional_drop_params", _RESPONSES_BRIDGE_PARAM):
-                    if preserved_key in old_params and preserved_key not in new_params:
-                        entry = copy.deepcopy(entry)
-                        entry["litellm_params"][preserved_key] = old_params[preserved_key]
-                        new_params = entry["litellm_params"]
+                to_preserve = {
+                    key: old_params[key]
+                    for key in _PRESERVED_LITELLM_PARAM_KEYS
+                    if key in old_params and key not in new_params
+                }
+                if to_preserve:
+                    entry = copy.deepcopy(entry)
+                    entry["litellm_params"].update(to_preserve)
             rows[i] = entry
             return
     rows.append(entry)
@@ -448,22 +493,27 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
       user-managed and is left untouched.
     - `litellm_params.use_chat_completions_api: True` is
       **presence-based** — added to every model_list row whose
-      `litellm_params.model` starts with `openai/` (mtplx, omlx,
-      mlx_lm_server, llamacpp — every local OpenAI-compatible server) and
-      lacks the key. Unlike claude's `/v1/messages` bridge above, codex
-      calls LiteLLM's native `/v1/responses` endpoint directly, which
-      assumes an `openai`-provider deployment speaks the real OpenAI
-      Responses API; these backends implement only `/v1/chat/completions`,
-      so every real request 404s, the deployment gets
-      cooldown-blacklisted, and codex's retries land on the router's
-      `RouterRateLimitError` (surfaced as HTTP 429 "Too Many Requests" —
-      not real throttling) once the cooldown is active (discovered
-      debugging `wt smoke` codex×mtplx 2026-09-16). This flag is LiteLLM's
-      own per-deployment escape hatch (`litellm/types/router.py`'s
-      `LiteLLM_Params.use_chat_completions_api`) that bridges
-      Responses→chat/completions for just that row, so — unlike the
-      anthropic-messages flag, which is global-only — it can be scoped
-      exactly to the `openai/*` rows that need it. Presence-based like
+      `litellm_params.model` starts with `openai/` *and* whose
+      `litellm_params.api_base` is a loopback host (mtplx, omlx,
+      mlx_lm_server, llamacpp — every local OpenAI-compatible server
+      default to a localhost `api_base`), and lacks the key. Unlike
+      claude's `/v1/messages` bridge above, codex calls LiteLLM's native
+      `/v1/responses` endpoint directly, which assumes an
+      `openai`-provider deployment speaks the real OpenAI Responses API;
+      these backends implement only `/v1/chat/completions`, so every real
+      request 404s, the deployment gets cooldown-blacklisted, and codex's
+      retries land on the router's `RouterRateLimitError` (surfaced as
+      HTTP 429 "Too Many Requests" — not real throttling) once the
+      cooldown is active (discovered debugging `wt smoke` codex×mtplx
+      2026-09-16). This flag is LiteLLM's own per-deployment escape hatch
+      (`litellm/types/router.py`'s `LiteLLM_Params.use_chat_completions_api`)
+      that bridges Responses→chat/completions for just that row, so —
+      unlike the anthropic-messages flag, which is global-only — it can be
+      scoped exactly to the `openai/*` rows that need it. `openai/` is
+      also LiteLLM's own syntax for a *real* OpenAI cloud deployment
+      though, so the prefix alone can't tell modelman's local backends
+      apart from a hand-added real one; the `api_base` check (see
+      `_is_local_api_base`) is what does that. Presence-based like
       `additional_drop_params`: an existing key of any value marks the
       row user-managed and is left untouched.
 
@@ -491,11 +541,18 @@ def ensure_litellm_settings(config: dict[str, Any]) -> bool:
             model = params.get("model")
             if not isinstance(model, str):
                 continue
-            if model.startswith(_BRIDGE_PREFIX) and "additional_drop_params" not in params:
-                params["additional_drop_params"] = list(_BRIDGE_DROP_PARAMS)
+            if _add_presence_based_param(
+                params, model, _BRIDGE_PREFIX, _DROP_PARAMS_KEY, list(_BRIDGE_DROP_PARAMS)
+            ):
                 changed = True
-            if model.startswith(_OPENAI_PREFIX) and _RESPONSES_BRIDGE_PARAM not in params:
-                params[_RESPONSES_BRIDGE_PARAM] = True
+            if _add_presence_based_param(
+                params,
+                model,
+                _OPENAI_PREFIX,
+                _RESPONSES_BRIDGE_PARAM,
+                True,
+                row_ok=lambda p: _is_local_api_base(p.get("api_base")),
+            ):
                 changed = True
     return changed
 
