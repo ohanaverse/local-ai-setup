@@ -38,6 +38,21 @@ def _never_restart_live_proxy(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_litellm_config(monkeypatch, tmp_path):
+    """start_local_model's auto-expose (2026-09-15 local-model visibility
+    design) resolves an unset litellm_path via default_litellm_config_path(),
+    which would otherwise read/write the developer's real
+    ~/.config/litellm/config.yaml whenever a test starts a ready, non-cloud
+    local model without passing its own litellm_path. Point the default at
+    a scratch file instead; tests that pass litellm_path explicitly are
+    unaffected — that argument always wins over this env-var default.
+    """
+    path = tmp_path / "auto-litellm-config.yaml"
+    path.write_text("model_list: []\n")
+    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(path))
+
+
+@pytest.fixture(autouse=True)
 def _never_call_real_ollama(monkeypatch):
     """The full suite must never shell out to the user's live `ollama`
     daemon. Redirect the module-level default runners in
