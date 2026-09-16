@@ -269,6 +269,45 @@ matching what mtplx/omlx/mlx_lm_server actually serve. Verified via direct
 404) and confirmed `openrouter/*` and `ollama_chat/*` routing is unaffected
 (different `custom_llm_provider`, never hit `_RESPONSES_API_PROVIDERS`).
 
+### codex — `/v1/responses` 404 against `openai/*` local backends (fix: per-deployment `use_chat_completions_api`)
+
+Same underlying fault as the claude section above — mtplx/omlx/mlx_lm_server
+register as `openai/<name>` and implement only `/v1/chat/completions` — but a
+different failure mode: codex doesn't go through the anthropic-messages
+bridge at all. It always speaks the Responses API natively (wire_api is
+locked to `"responses"`; see the codex section above), so `wt smoke` sends
+`POST /v1/responses` straight to LiteLLM, which calls `litellm.aresponses()`
+against the deployment. For an `openai`-provider deployment LiteLLM assumes
+the backend natively serves `/v1/responses` and passes the call straight
+through — no route exists on mtplx's server, so the first real request 404s.
+
+**Symptom (discovered debugging `wt smoke codex mtplx/...` 2026-09-16):** the
+first attempt gets a `NotFoundError` (visible in `~/.litellm.err.log` as
+`OpenAIException - {"detail":"Not Found"}`); the deployment then enters the
+router's `cooldown_list`, and every retry within the cooldown window gets
+`litellm.types.router.RouterRateLimitError: No deployments available ...`
+surfaced to the client as **HTTP 429 Too Many Requests** — codex retries 5x,
+each landing inside the cooldown, then gives up with a generic "high demand"
+banner. Not real throttling — same masking behavior noted in the debugging
+playbook above (`ERROR: Reconnecting... 1/5` / `exceeded retry limit, last
+status: 429`).
+
+**Fix (shipped in modelman, applied & verified 2026-09-16):**
+`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` adds
+`litellm_params.use_chat_completions_api: true` (presence-based, like
+`additional_drop_params`) to every model_list row whose `litellm_params.model`
+starts with `openai/`. This is LiteLLM's own per-deployment escape hatch
+(`litellm/types/router.py`'s `LiteLLM_Params.use_chat_completions_api`,
+consumed in `litellm/responses/main.py`) that bridges a Responses API call
+into a chat/completions call before dispatch — unlike
+`use_chat_completions_url_for_anthropic_messages` above, it's scoped to a
+single deployment, not global, so it applies cleanly to mtplx/omlx/
+mlx_lm_server without touching a hypothetical future deployment that *does*
+serve `/v1/responses` natively (that row would just carry an explicit
+`use_chat_completions_api: false`, which `set_exposed`/`ensure_litellm_settings`
+both preserve on re-expose). Verified via a direct `/v1/responses` curl probe
+against mtplx (200, was 404→429) and `wt smoke <model> --only codex` (green).
+
 ### agy / shell
 
 agy takes its model inside its own TUI (no `--model`/env contract), and
