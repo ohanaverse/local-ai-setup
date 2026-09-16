@@ -20,11 +20,22 @@ type piModelsFile struct {
 // relevant to wt; unknown siblings pi supports round-trip through the generic
 // JSON decode only if they are absent — extra fields inside a provider block
 // are dropped, so wt never writes provider blocks it does not own.
+//
+// WTOwned marks a non-ollama block as one wt itself created or has since
+// confirmed ownership of (see syncDirectProviders). Recording this
+// explicitly, instead of re-inferring it from whether the block's current
+// models are all still in the registry's model set, survives a registry
+// model rename/removal — the append-only model list would otherwise
+// permanently retain a defunct id and make the inference misfire forever.
+// omitempty because the whole file is rewritten on every mutation
+// (syncModels); without it every foreign block would gain a spurious
+// "_wtOwned": false the first time anything else in the file changes.
 type piProvider struct {
 	API     string    `json:"api"`
 	APIKey  string    `json:"apiKey"`
 	BaseURL string    `json:"baseUrl"`
 	Models  []piModel `json:"models"`
+	WTOwned bool      `json:"_wtOwned,omitempty"`
 }
 
 // piModel is a single entry in pi's model catalog.
@@ -99,6 +110,14 @@ func isDefaultOllamaAPIKey(apiKey string) bool {
 // the whole [gateway] section was deleted rather than flipped to
 // mode="direct", the URL is gone and the revert cannot match; the user must
 // edit models.json by hand in that case.)
+//
+// Direct mode also writes one provider block per non-ollama registry
+// provider that has models (see syncDirectProviders): a pre-existing block's
+// baseUrl/apiKey are resynced to the registry's current values only when wt
+// owns the block (marked _wtOwned, or recognizes every model already in it),
+// so a user's independently-configured provider sharing that provider id
+// keeps its own baseUrl/apiKey. Registry models are still appended to the
+// block's model list either way — only the connection values are protected.
 //
 // Litellm mode creates/updates the dedicated "litellm" provider with
 // registry-id entries pointing at the LiteLLM gateway, restores a
@@ -244,8 +263,19 @@ func revertOllamaProvider(cfg *config.Config, f piModelsFile) bool {
 // the first slash, so an unqualified model name containing a slash (e.g.
 // openrouter's "z-ai/glm-4.6") would otherwise resolve against provider
 // "z-ai" silently. Providers without a base_url are skipped — the same
-// condition surfaces as an error from ResolveRoute at launch time. Returns
-// whether anything changed.
+// condition surfaces as an error from ResolveRoute at launch time.
+//
+// A pre-existing non-ollama block is only resynced (baseUrl/apiKey reset to
+// the registry's current values) when every model already in it is one wt
+// itself would write for that provider (see the "wt-owned" check below); a
+// block holding a model wt doesn't know about is a signal the user
+// configured that provider id in pi independently of this registry, and its
+// baseUrl/apiKey are left untouched — same "wt never writes blocks it
+// doesn't own" contract ollama gets via its fixed-pattern check, just
+// detected differently since non-ollama base_urls are arbitrary registry
+// values with no fixed "known stale" form to match against.
+//
+// Returns whether anything changed.
 func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 	byProvider := map[string][]config.Model{}
 	for _, m := range cfg.Models {
@@ -285,6 +315,9 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 			p.API = "openai-completions"
 			p.BaseURL = wantBaseURL
 			p.APIKey = wantAPIKey
+			if providerID != piOllamaProviderID {
+				p.WTOwned = true
+			}
 			mutated = true
 		}
 
@@ -292,6 +325,38 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 		for _, m := range p.Models {
 			existing[m.ID] = true
 		}
+
+		// Ownership decides whether a pre-existing non-ollama block's
+		// baseUrl/apiKey get resynced below (see the "else" branch). Must be
+		// evaluated against the block's models from before this call's
+		// additions, so it's computed here, ahead of the append loop.
+		var owned bool
+		if providerID != piOllamaProviderID {
+			owned = p.WTOwned
+			if !owned {
+				// Legacy (pre-marker) block: fall back to requiring every
+				// model already in it to still be one wt would write for
+				// this provider today. See the piProvider.WTOwned doc
+				// comment for why this is fragile and the marker exists.
+				wantedModelNames := make(map[string]bool, len(models))
+				for _, m := range models {
+					wantedModelNames[m.ModelName] = true
+				}
+				// A block with no existing models can't confirm ownership
+				// this way — an empty set is vacuously "all models match",
+				// which would misclassify a foreign block someone is still
+				// populating (e.g. their own "openrouter" entry with a
+				// custom baseUrl/apiKey but no models yet) as wt-owned.
+				owned = len(existing) > 0
+				for id := range existing {
+					if !wantedModelNames[id] {
+						owned = false
+						break
+					}
+				}
+			}
+		}
+
 		for _, m := range models {
 			if existing[m.ModelName] {
 				continue
@@ -308,21 +373,56 @@ func syncDirectProviders(cfg *config.Config, f piModelsFile) bool {
 		}
 
 		if existed {
-			// Reset WT-written values (gateway redirects or non-canonical local
-			// ollama forms) to the provider's direct endpoint. Custom user config
-			// is preserved verbatim.
 			if p.API == "" {
 				p.API = "openai-completions"
 				mutated = true
 			}
-			if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
-				if p.BaseURL != wantBaseURL {
-					p.BaseURL = wantBaseURL
-					mutated = true
+			if providerID == piOllamaProviderID {
+				// ollama uniquely supports a legitimate user-customized remote
+				// endpoint (see TestSyncModelsDirectPreservesCustomProvider), so
+				// only reset values wt is known to have written itself: gateway
+				// redirects or non-canonical local-ollama forms.
+				if isLocalOllamaBaseURL(p.BaseURL) || p.BaseURL == cfg.LitellmBaseURL()+"/v1" {
+					if p.BaseURL != wantBaseURL {
+						p.BaseURL = wantBaseURL
+						mutated = true
+					}
+					if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
+						if p.APIKey != wantAPIKey {
+							p.APIKey = wantAPIKey
+							mutated = true
+						}
+					}
 				}
-				if isDefaultOllamaAPIKey(p.APIKey) || (cfg.LitellmAPIKey() != "" && p.APIKey == cfg.LitellmAPIKey()) {
+			} else {
+				// Resync baseUrl/apiKey to the registry's current values, but
+				// only when the block is owned (see above). Without resyncing
+				// at all, a value wt itself wrote at some earlier point (e.g.
+				// a registry base_url that has since changed) gets
+				// permanently stuck — isLaunchable only checks that the model
+				// id is present and _launch:true, never the provider's
+				// baseUrl, so a stale port silently breaks every launch
+				// against that provider with no error surfaced. But
+				// resyncing unconditionally would clobber a user's
+				// independently-configured pi provider that happens to share
+				// this provider id (e.g. a personal "openrouter" block with
+				// its own apiKey).
+				if owned {
+					if p.BaseURL != wantBaseURL {
+						p.BaseURL = wantBaseURL
+						mutated = true
+					}
 					if p.APIKey != wantAPIKey {
 						p.APIKey = wantAPIKey
+						mutated = true
+					}
+					if !p.WTOwned {
+						// Confirmed via the legacy inference, not the
+						// marker: stamp it now so this block stays
+						// resyncable even after a future registry model
+						// rename/removal would otherwise defeat that
+						// inference.
+						p.WTOwned = true
 						mutated = true
 					}
 				}

@@ -4,7 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (ready/delete/move/expose), and apply them on exit. CLI subcommands: `migrate` (one-time import of legacy config), `sync` (reconcile state against providers), `expose`/`unexpose` (LiteLLM model_list), `litellm status|on|off|set` (the LiteLLM routing on/off switch wt reads), `start [model_id]`/`stop` (issue #65 — a local model wt's picker may offer alongside any other currently-running local model; delegates to `src/modelman/providers/lifecycle/orchestrate.py` in-process (issue #79 — no more bash isolation helper); `start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"); `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md`, monorepo-root docs).
+`modelman` is a small Python 3.13 Textual TUI and CLI for managing local LLM models across multiple providers (Ollama, oMLX — llama.cpp is retired but its provider code is kept; see `docs/reference/provider-artifacts.md`) and exposing them through LiteLLM. The TUI lets you browse models, queue changes (ready/delete/move/expose), and apply them on exit.
+
+CLI subcommands:
+
+| Subcommand | Purpose |
+|---|---|
+| `migrate` | One-time import of legacy config |
+| `sync` | Reconcile state against providers |
+| `expose <id>` / `unexpose <id>` | Add/remove a LiteLLM `model_list` entry |
+| `litellm status\|on\|off\|set` | The LiteLLM routing on/off switch wt reads |
+| `start [model_id]` / `stop` | issue #65 — a local model wt's picker may offer alongside any other currently-running local model; delegates to `src/modelman/providers/lifecycle/orchestrate.py` in-process (issue #79 — no more bash isolation helper) |
+
+`start` with no `model_id` prints a live three-way inventory — registered+on-disk, registered-but-missing, and discovered-but-unregistered — asked live of the providers rather than trusting only cached state (the registered buckets via each provider's own `resolve_local()`/`is_downloaded()`/`size_of()`, the discovered bucket via `list_local()`; a provider that can't be asked is named in a caveat line instead of being silently read as "nothing there"). `start <name>` accepts a registry id, an existing model's native provider-side name, or the native name of a discovered artifact, auto-registering+exposing the last case after an interactive family prompt — see `../docs/superpowers/specs/2026-09-13-modelman-start-provider-discovery-design.md` (monorepo-root docs).
 
 ## Monorepo context
 

@@ -410,6 +410,211 @@ func TestSyncModelsDirectPreservesCustomProvider(t *testing.T) {
 	}
 }
 
+// syncModels in direct mode must resync a non-ollama provider's baseUrl/apiKey
+// to the registry's current values even when a block already exists, unlike
+// ollama (which supports a legitimate user-customized remote endpoint — see
+// TestSyncModelsDirectPreservesCustomProvider). Without this, a value wt
+// itself wrote at some earlier point (e.g. a registry base_url that has since
+// changed) gets permanently stuck: isLaunchable only checks that the model id
+// is present and _launch:true, never the provider's baseUrl, so a stale port
+// silently causes every launch against that provider to fail to connect
+// (observed live: an mtplx provider block stuck on a stale port 8001 while
+// the registry — and the actual running server — had moved to 8003).
+func TestSyncModelsDirectResyncsStaleNonOllamaProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1:8001/v1","models":[{"_launch":true,"id":"Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["mtplx"]
+	if p.BaseURL != "http://localhost:8003/v1" {
+		t.Errorf("baseUrl = %q, want the registry's current value %q (stale wt-written value must not stick)", p.BaseURL, "http://localhost:8003/v1")
+	}
+	if p.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (resynced placeholder)", p.APIKey, defaultPiOllamaAPIKey)
+	}
+}
+
+// A non-ollama provider block holding a model wt doesn't recognize (i.e. not
+// one of the registry's own models for that provider id) must be treated as
+// the user's own independently-configured pi provider, not wt-owned — its
+// baseUrl/apiKey must survive a sync untouched, the same protection ollama
+// gets via its fixed-pattern check (TestSyncModelsDirectPreservesCustomProvider).
+// Without this, TestSyncModelsDirectResyncsStaleNonOllamaProvider's fix for
+// stale wt-written values would also silently clobber a user's personal
+// "openrouter" (or any other) provider block that happens to share a
+// provider id with the registry.
+func TestSyncModelsDirectPreservesForeignNonOllamaProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"api":"openai-completions","apiKey":"sk-personal-key","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"anthropic/claude-opus-4"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-registry-key", BaseURL: "https://openrouter.ai/api/v2"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("baseUrl = %q, want the user's own value preserved", p.BaseURL)
+	}
+	if p.APIKey != "sk-personal-key" {
+		t.Errorf("apiKey = %q, want the user's own key preserved", p.APIKey)
+	}
+	foundForeign, foundRegistry := false, false
+	for _, m := range p.Models {
+		if m.ID == "anthropic/claude-opus-4" {
+			foundForeign = true
+		}
+		if m.ID == "z-ai/glm-5.3-flash" {
+			foundRegistry = true
+		}
+	}
+	if !foundForeign {
+		t.Error("user's own model entry was removed")
+	}
+	if !foundRegistry {
+		t.Error("registry model entry was not added alongside the user's own")
+	}
+}
+
+// A non-ollama block explicitly marked _wtOwned must resync its
+// baseUrl/apiKey even when one of its existing model ids is no longer in the
+// registry's current model set for that provider — the scenario a plain
+// model rename/removal produces (delete the old registry entry, add a new
+// variant; see docs/guides/10-mlx-lm-quantization.md). Without the marker,
+// the legacy model-membership inference alone would misclassify this block
+// as foreign and re-introduce the exact stale-baseUrl bug
+// TestSyncModelsDirectResyncsStaleNonOllamaProvider fixed, permanently, since
+// model entries are only ever appended and never pruned.
+func TestSyncModelsDirectMarkedBlockSurvivesModelRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1:8001/v1","models":[{"_launch":true,"id":"old-quant-variant"}],"_wtOwned":true}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			// Registry has moved on to a new variant; "old-quant-variant" no
+			// longer appears anywhere in cfg.Models for this provider.
+			{ID: "mtplx/new-quant-variant", ModelName: "new-quant-variant", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["mtplx"]
+	if p.BaseURL != "http://localhost:8003/v1" {
+		t.Errorf("baseUrl = %q, want the registry's current value %q (marker must survive the stale old-quant-variant id)", p.BaseURL, "http://localhost:8003/v1")
+	}
+	if p.APIKey != defaultPiOllamaAPIKey {
+		t.Errorf("apiKey = %q, want %q (resynced placeholder)", p.APIKey, defaultPiOllamaAPIKey)
+	}
+}
+
+// A legacy (pre-marker) non-ollama block that the model-membership inference
+// confirms as wt-owned must get _wtOwned stamped onto it, so it stays
+// resyncable even after a future registry model rename/removal would
+// otherwise defeat that inference (see
+// TestSyncModelsDirectMarkedBlockSurvivesModelRename). This is the
+// self-migration path: no user action is needed to adopt the marker.
+func TestSyncModelsDirectStampsLegacyOwnedBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"mtplx":{"api":"openai-completions","apiKey":"mtplx-local","baseUrl":"http://127.0.0.1:8001/v1","models":[{"_launch":true,"id":"Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "mtplx", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8003/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ModelName: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance", ProviderID: "mtplx"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	if !f.Providers["mtplx"].WTOwned {
+		t.Error("_wtOwned was not stamped onto a block the legacy inference confirmed as wt-owned")
+	}
+}
+
+// A foreign non-ollama block (the user's own independently-configured
+// provider) must never gain the _wtOwned marker, even though wt still
+// appends registry models into its model list (see
+// TestSyncModelsDirectPreservesForeignNonOllamaProvider). Otherwise a later
+// sync would treat it as wt's to rewrite and clobber the user's baseUrl/apiKey.
+func TestSyncModelsDirectForeignBlockNeverMarked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"api":"openai-completions","apiKey":"sk-personal-key","baseUrl":"https://openrouter.ai/api/v1","models":[{"_launch":true,"id":"anthropic/claude-opus-4"}]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-registry-key", BaseURL: "https://openrouter.ai/api/v2"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.WTOwned {
+		t.Error("_wtOwned was set on a foreign provider block")
+	}
+	if p.BaseURL != "https://openrouter.ai/api/v1" || p.APIKey != "sk-personal-key" {
+		t.Error("foreign block's baseUrl/apiKey were not preserved")
+	}
+}
+
+// A foreign non-ollama block with no models yet (the user is still setting
+// it up, or cleared it to re-add fresh entries) must not be misclassified as
+// wt-owned. The legacy inference treats "every existing model is one wt
+// would write" as ownership proof, which is vacuously true over an empty
+// set — without an explicit guard an empty foreign block would have its
+// baseUrl/apiKey clobbered on the very first sync.
+func TestSyncModelsDirectForeignEmptyBlockNeverAdopted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	writeFile(t, path, `{"providers":{"openrouter":{"api":"openai-completions","apiKey":"sk-personal-key","baseUrl":"https://openrouter.ai/api/v1","models":[]}}}`)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "secret_ref", SecretRef: "sk-registry-key", BaseURL: "https://openrouter.ai/api/v2"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/z-ai/glm-5.3-flash", ModelName: "z-ai/glm-5.3-flash", ProviderID: "openrouter"},
+		},
+	}
+	if err := syncModels(cfg, path); err != nil {
+		t.Fatalf("syncModels: %v", err)
+	}
+	f := readPiModels(t, path)
+	p := f.Providers["openrouter"]
+	if p.WTOwned {
+		t.Error("_wtOwned was set on a foreign provider block with no existing models")
+	}
+	if p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("baseUrl = %q, want the user's own value preserved", p.BaseURL)
+	}
+	if p.APIKey != "sk-personal-key" {
+		t.Errorf("apiKey = %q, want the user's own key preserved", p.APIKey)
+	}
+}
+
 // syncModels in litellm mode must create models.json when it does not exist,
 // so a fresh pi install routes through LiteLLM on the very first launch
 // instead of silently bypassing the gateway.
