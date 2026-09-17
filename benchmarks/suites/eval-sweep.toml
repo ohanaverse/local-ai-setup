@@ -1,0 +1,32 @@
+# benchmarks/suites/eval-sweep.toml
+name = "eval-sweep"
+cooldown_s = 15.0
+
+[judge]
+model = "anthropic/claude-opus-5"
+temperature = 0.0
+samples = 3
+max_attempts = 2
+route = "openrouter"
+
+[coding]
+dataset = "humaneval"
+limit = 40
+
+[routes.direct.omlx]
+base_url = "http://localhost:8000/v1"
+
+[[rows]]
+model = "ollama/qwen3.8:27b-mlx"
+route = "litellm"
+
+[[rows]]
+model = "omlx/mlx-community--Qwen3.8-27B-4bit"
+provider = "omlx"
+route = "direct"
+direct_model = "Qwen3.8-27B-4bit"
+
+[[rows]]
+model = "ollama/glm-5.3-flash:cloud"
+route = "litellm"
+categories = ["coding", "reasoning"]
