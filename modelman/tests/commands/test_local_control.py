@@ -83,6 +83,27 @@ def test_stop_command_clears_marker(tmp_path, monkeypatch):
     assert load_state(path=state_path).get("ollama/x").running is False
 
 
+def test_stop_command_single_model_prints_unexpose_warning(tmp_path, monkeypatch):
+    # `modelman stop <id>` must surface a failed un-expose the same way
+    # `modelman start` already surfaces a failed expose - a stopped model
+    # whose LiteLLM row could not be removed needs a visible warning, not a
+    # silent partial failure.
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text(
+        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
+    )
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    with (
+        patch("modelman.local_control._stop_ollama_model"),
+        patch("modelman.local_control.unexpose_model", side_effect=OSError(28, "No space left")),
+    ):
+        result = runner.invoke(app, ["stop", "ollama/x"])
+    assert result.exit_code == 0, result.stdout
+    assert "warning:" in result.output
+    assert "could not be un-exposed" in result.output
+
+
 def test_stop_command_noop_message_when_nothing_running(tmp_path, monkeypatch):
     # `modelman stop --all` against an empty state must report a clean
     # no-op rather than erroring - "nothing is running" is a normal state,

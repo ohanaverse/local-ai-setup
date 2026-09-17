@@ -689,6 +689,8 @@ def stop(
         typer.echo(f"{model_id} is not running.")
     else:
         typer.echo(f"Stopped {result.stopped_model_id}.")
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 if __name__ == "__main__":

@@ -46,7 +46,13 @@ from .benchmark.isolation import (
     stop_all_local_providers,
     stop_provider,
 )
-from .litellm import ExposeError, LiteLLMConfigError, default_litellm_config_path, expose_model
+from .litellm import (
+    ExposeError,
+    LiteLLMConfigError,
+    default_litellm_config_path,
+    expose_model,
+    unexpose_model,
+)
 from .local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from .local_process import http_models_ids as _http_models_ids
 from .providers.base import LocalModel, Provider, _Runner
@@ -124,6 +130,7 @@ class StartResult:
 class StopResult:
     # The marker that was cleared, or None if nothing was running.
     stopped_model_id: str | None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -225,16 +232,39 @@ def _probe_running(provider_id: str, model_name: str, base_origin_url: str | Non
     return any(_name_matches(served, model_name) for served in ids)
 
 
-def _clear_stale_running_flag(model_id: str, state_path: Path | None) -> None:
+def _clear_stale_running_flag(
+    model_id: str, state_path: Path | None, litellm_path: Path | None = None
+) -> None:
     """Best-effort: clear ONE model's running flag when it's still True —
     used when a probe finds it not actually serving (stale flag), or after
     a failed start/stop for that specific model. Never touches any other
-    model's flag."""
+    model's flag.
+
+    Also best-effort un-exposes the model when it was exposed: a model
+    modelman no longer believes is running must not stay routable through
+    LiteLLM (the same reasoning as stop_local_model's unexpose). Done
+    OUTSIDE the locked_state transaction below, mirroring
+    _expose_for_start/_unexpose_for_stop's own pattern, so the LiteLLM
+    config write and proxy restart never happen while holding the
+    process-wide state lock.
+    """
+    try:
+        state = load_state(state_path)
+    except OSError:
+        return
+    existing = state.models.get(model_id)
+    if existing is None or not existing.running:
+        return
+    if existing.exposed:
+        with contextlib.suppress(LiteLLMConfigError, OSError):
+            unexpose_model(state, model_id, litellm_path or default_litellm_config_path())
     try:
         with locked_state(state_path) as fresh:
-            existing = fresh.models.get(model_id)
-            if existing is not None and existing.running:
-                fresh.models[model_id] = replace(existing, running=False)
+            fresh_existing = fresh.models.get(model_id)
+            if fresh_existing is not None and fresh_existing.running:
+                fresh.models[model_id] = replace(
+                    fresh_existing, running=False, exposed=state.models[model_id].exposed
+                )
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
 
@@ -720,11 +750,17 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
     )
 
 
-def running_model_ids(registry: Registry, state: StateStore, state_path: Path | None = None) -> list[str]:
+def running_model_ids(
+    registry: Registry,
+    state: StateStore,
+    state_path: Path | None = None,
+    litellm_path: Path | None = None,
+) -> list[str]:
     """Every local model flagged running AND confirmed by a live probe —
     the same self-healing rule every other consumer (the TUI indicator,
     wt's picker) applies. A flagged-but-dead entry is opportunistically
-    cleared. Sorted for stable display."""
+    cleared (running AND exposed — see _clear_stale_running_flag). Sorted
+    for stable display."""
     providers_by_id = _provider_by_id(registry)
     models_by_id = {m.id: m for m in registry.models}
     verified: list[str] = []
@@ -739,7 +775,7 @@ def running_model_ids(registry: Registry, state: StateStore, state_path: Path | 
         if _probe_running(model.provider_id, model.model_name, probe_origin):
             verified.append(model_id)
         else:
-            _clear_stale_running_flag(model_id, state_path)
+            _clear_stale_running_flag(model_id, state_path, litellm_path)
     return sorted(verified)
 
 
@@ -788,6 +824,31 @@ def _expose_for_start(
             f"{model_id} is running but could not be exposed to LiteLLM: {exc} — "
             f"agents whose route to it is forced through LiteLLM won't reach it "
             f"until you run `modelman expose {model_id}`"
+        ]
+
+
+def _unexpose_for_stop(
+    state: StateStore,
+    model_id: str,
+    litellm_path: Path | None,
+) -> tuple[bool, list[str]]:
+    """Best-effort unexpose of a model that just stopped (or was found not
+    actually running), so LiteLLM's model_list stops pointing at a dead
+    backend — the counterpart to `_expose_for_start`.
+
+    Mutates `state.models[model_id]` in place on success (mirrors
+    `_expose_for_start`'s own expose_model call) and returns (True,
+    warnings). Catches LiteLLMConfigError/OSError and returns (False,
+    warnings) instead of raising, so a failed unexpose degrades gracefully
+    rather than blocking an otherwise-successful stop — the caller still
+    clears `running`, and `exposed` is left as-is.
+    """
+    try:
+        return True, unexpose_model(state, model_id, litellm_path or default_litellm_config_path())
+    except (LiteLLMConfigError, OSError) as exc:
+        return False, [
+            f"{model_id} was stopped but could not be un-exposed from LiteLLM: {exc} — "
+            f"run `modelman unexpose {model_id}` to finish removing it"
         ]
 
 
@@ -887,7 +948,7 @@ def start_local_model(
                 model_id=resolved_id, already_running=True,
                 warnings=registration_warnings + expose_warnings, other_running=other_running,
             )
-        _clear_stale_running_flag(resolved_id, state_path)
+        _clear_stale_running_flag(resolved_id, state_path, litellm_path)
 
     if model.provider_id == "ollama":
         # Flag-only: no process action, ollama lazy-loads on request.
@@ -912,15 +973,15 @@ def start_local_model(
                 raise LocalControlError(
                     f"failed to stop {occupant} before starting {resolved_id}: {exc}"
                 ) from exc
-            _clear_stale_running_flag(occupant, state_path)
+            _clear_stale_running_flag(occupant, state_path, litellm_path)
 
         try:
             result = isolate_provider(model.provider_id, *extra_args, env=env, solo=True)
         except BenchmarkError as exc:
-            _clear_stale_running_flag(resolved_id, state_path)
+            _clear_stale_running_flag(resolved_id, state_path, litellm_path)
             raise LocalControlError(f"failed to start {resolved_id}: {exc}") from exc
         if not result.ok:
-            _clear_stale_running_flag(resolved_id, state_path)
+            _clear_stale_running_flag(resolved_id, state_path, litellm_path)
             raise LocalControlError(f"failed to start {resolved_id}: {result.error or 'unknown error'}")
         direct_url = result.direct_url or None
 
@@ -940,7 +1001,7 @@ def start_local_model(
             # port, and mtplx's name-checked probe self-heals only on some
             # later read — too late for the warning/indicator this start
             # emits now.
-            _clear_stale_running_flag(occupant, state_path)
+            _clear_stale_running_flag(occupant, state_path, litellm_path)
 
     expose_ok, expose_warnings = _expose_for_start(registry, fresh_state, resolved_id, litellm_path)
     try:
@@ -962,10 +1023,19 @@ def start_local_model(
     )
 
 
-def stop_local_model(model_id: str, state_path: Path | None = None) -> StopResult:
-    """Stop exactly one running local model and clear its flag. No-op
-    when it isn't running. Raises LocalControlError for an unknown
-    provider id embedded in model_id's prefix."""
+def stop_local_model(
+    model_id: str, state_path: Path | None = None, *, litellm_path: Path | None = None
+) -> StopResult:
+    """Stop exactly one running local model, un-expose it from LiteLLM if
+    it was exposed, and clear its flags. No-op when it isn't running.
+    Raises LocalControlError for an unknown provider id embedded in
+    model_id's prefix.
+
+    A stopped model must not stay routable through LiteLLM — `exposed` is
+    no longer sticky across a stop/start cycle (a fresh start always
+    re-exposes via `_expose_for_start` anyway, so nothing extra is needed
+    on the way back up).
+    """
     state = load_state(state_path)
     current = state.get(model_id)
     if not current.running:
@@ -987,16 +1057,28 @@ def stop_local_model(model_id: str, state_path: Path | None = None) -> StopResul
         except BenchmarkError as exc:
             raise LocalControlError(f"failed to stop {model_id}: {exc}") from exc
 
+    unexpose_ok = True
+    warnings: list[str] = []
+    if current.exposed:
+        unexpose_ok, warnings = _unexpose_for_stop(state, model_id, litellm_path)
+
     with locked_state(state_path) as fresh:
         existing = fresh.models.get(model_id)
         if existing is not None and existing.running:
-            fresh.models[model_id] = replace(existing, running=False)
-    return StopResult(stopped_model_id=model_id)
+            fresh.models[model_id] = replace(
+                existing,
+                running=False,
+                exposed=state.models[model_id].exposed if unexpose_ok else existing.exposed,
+            )
+    return StopResult(stopped_model_id=model_id, warnings=warnings)
 
 
-def stop_all_local_models(state_path: Path | None = None) -> list[str]:
-    """Stop every currently-running local model and clear all their
-    flags. Returns the sorted list of model ids that were stopped."""
+def stop_all_local_models(
+    state_path: Path | None = None, *, litellm_path: Path | None = None
+) -> list[str]:
+    """Stop every currently-running local model, best-effort un-expose
+    each one that was exposed, and clear all their flags. Returns the
+    sorted list of model ids that were stopped."""
     state = load_state(state_path)
     running_ids = sorted(mid for mid, s in state.models.items() if s.running)
     if not running_ids:
@@ -1005,9 +1087,15 @@ def stop_all_local_models(state_path: Path | None = None) -> list[str]:
         stop_all_local_providers()
     except BenchmarkError as exc:
         raise LocalControlError(f"failed to stop local models: {exc}") from exc
+    for mid in running_ids:
+        if state.models[mid].exposed:
+            with contextlib.suppress(LiteLLMConfigError, OSError):
+                unexpose_model(state, mid, litellm_path or default_litellm_config_path())
     with locked_state(state_path) as fresh:
         for mid in running_ids:
             existing = fresh.models.get(mid)
             if existing is not None and existing.running:
-                fresh.models[mid] = replace(existing, running=False)
+                fresh.models[mid] = replace(
+                    existing, running=False, exposed=state.models[mid].exposed
+                )
     return running_ids
