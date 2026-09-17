@@ -10,12 +10,13 @@ model the agent benchmark already applies to a model's diff via gates.py.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 
-_PASS_AT_1_RE = re.compile(r"pass@1[^\d]*([\d.]+)", re.IGNORECASE)
+_PASS_AT_1_RE = re.compile(r"pass@1(?!\d)[^\d]*([\d.]+)", re.IGNORECASE)
 
 
 @dataclass
@@ -82,7 +83,7 @@ def run_coding_category(
             capture_output=True,
             text=True,
             timeout=1800,
-            env={"OPENAI_API_KEY": api_key},
+            env={**os.environ, "OPENAI_API_KEY": api_key},
         )
         if result.returncode != 0:
             return CodingResult(

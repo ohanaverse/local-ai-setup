@@ -71,3 +71,21 @@ def test_run_coding_category_reports_unparseable_output_as_error():
     )
     assert result.pass_at_1 is None
     assert "could not parse" in result.error
+
+
+def test_run_coding_category_regex_boundary_avoids_pass_at_n_false_positive():
+    # Tests that regex boundary correctly rejects pass@10 and extracts pass@1.
+    # Ensures multiple pass@X metrics don't cause false positives from higher-order metrics.
+    def fake_run(cmd, **kwargs):
+        return _FakeCompletedProcess(0, "humaneval (base tests)\npass@10: 0.532\npass@1: 0.732\n")
+
+    result = run_coding_category(
+        base_url="http://localhost:8000/v1",
+        model="m",
+        api_key="k",
+        dataset="humaneval",
+        limit=None,
+        run_cmd=fake_run,
+    )
+    assert result.pass_at_1 == 0.732
+    assert result.error is None
