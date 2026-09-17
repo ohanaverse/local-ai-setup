@@ -28,6 +28,7 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades |
 | [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`modelman benchmark agent`) |
 | [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
+| [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`modelman benchmark eval`) |
 
 ## 60-second health check
 
