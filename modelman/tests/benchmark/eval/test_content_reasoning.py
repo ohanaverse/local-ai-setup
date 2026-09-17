@@ -7,7 +7,7 @@ from pathlib import Path
 
 from modelman.benchmark.eval.category import load_category
 
-CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
+CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
 
 
 def test_reasoning_category_loads_and_sums_to_100():
