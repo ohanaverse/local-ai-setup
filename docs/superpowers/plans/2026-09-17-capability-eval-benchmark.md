@@ -3075,7 +3075,7 @@ from pathlib import Path
 
 from modelman.benchmark.eval.category import load_category
 
-CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
+CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
 
 
 def test_reasoning_category_loads_and_sums_to_100():
@@ -3243,7 +3243,7 @@ from pathlib import Path
 
 from modelman.benchmark.eval.category import load_category
 
-CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
+CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
 
 
 def test_planning_category_loads_and_sums_to_100():
@@ -3404,7 +3404,7 @@ from pathlib import Path
 
 from modelman.benchmark.eval.category import load_category
 
-CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
+CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
 
 
 def test_code_review_category_loads_and_sums_to_100():
@@ -3596,7 +3596,7 @@ from pathlib import Path
 
 from modelman.benchmark.eval.category import load_category
 
-CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
+CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
 
 
 def test_doc_summary_category_loads_and_sums_to_100():
@@ -3862,7 +3862,7 @@ from pathlib import Path
 
 from modelman.benchmark.eval.category import CODING_CATEGORY, load_category
 
-CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
+CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks" / "tasks" / "eval"
 
 
 def test_coding_category_loads_with_dataset_and_limit():
