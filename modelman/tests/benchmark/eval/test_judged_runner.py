@@ -1,0 +1,89 @@
+"""Tests for modelman.benchmark.eval.judged_runner — one generation call per
+item, scored by the shared judge_core mechanics, aggregated to a /100
+category score.
+"""
+
+import json
+
+from modelman.benchmark.eval.category import Category, Item
+from modelman.benchmark.eval.judged_runner import run_judged_category
+from modelman.benchmark.judge_core import Rubric
+
+RUBRIC = Rubric(dimensions={"bug_detection": 60, "actionability": 40})
+CATEGORY = Category(
+    name="mini_review",
+    path=None,
+    items=[
+        Item(id="i1", prompt="review this", meta={"seeded_issue": "off by one"}),
+        Item(id="i2", prompt="review that", meta={}),
+    ],
+    rubric=RUBRIC,
+    rubric_md="score bug_detection (60) and actionability (40)",
+)
+
+
+class _FakeRowTransport:
+    def __init__(self):
+        self.prompts_seen: list[str] = []
+
+    def complete(self, prompt: str, *, temperature: float) -> str:
+        self.prompts_seen.append(prompt)
+        return "There is an off-by-one error in the loop bound."
+
+
+class _FakeJudgeTransport:
+    def __init__(self, totals: list[int]):
+        self.totals = list(totals)
+
+    def complete(self, prompt: str, *, temperature: float) -> str:
+        if not self.totals:
+            return "not json"
+        total = self.totals.pop(0)
+        bug_det = min(total, 60)
+        action = min(total - bug_det, 40)
+        return json.dumps(
+            {"scores": {"bug_detection": bug_det, "actionability": action}, "total": total}
+        )
+
+
+def test_run_judged_category_sends_item_prompt_verbatim_to_row_transport():
+    row_transport = _FakeRowTransport()
+    run_judged_category(
+        CATEGORY,
+        row_transport,
+        _FakeJudgeTransport([60, 40]),
+        temperature=0.0,
+        judge_temperature=0.0,
+        judge_samples=1,
+        judge_max_attempts=1,
+    )
+    assert row_transport.prompts_seen == ["review this", "review that"]
+
+
+def test_run_judged_category_scores_as_mean_of_item_totals():
+    result = run_judged_category(
+        CATEGORY,
+        _FakeRowTransport(),
+        _FakeJudgeTransport([60, 40]),
+        temperature=0.0,
+        judge_temperature=0.0,
+        judge_samples=1,
+        judge_max_attempts=1,
+    )
+    assert result.score_100 == 50.0
+    assert len(result.items) == 2
+
+
+def test_run_judged_category_ignores_judge_fail_items_in_the_mean():
+    result = run_judged_category(
+        CATEGORY,
+        _FakeRowTransport(),
+        _FakeJudgeTransport([80]),  # only one valid reply; item 2's judge call fails to parse
+        temperature=0.0,
+        judge_temperature=0.0,
+        judge_samples=1,
+        judge_max_attempts=1,
+    )
+    assert result.items[1].judge.status == "judge_fail"
+    assert result.items[1].score_100 is None
+    assert result.score_100 == 80.0
