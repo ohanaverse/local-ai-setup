@@ -254,6 +254,36 @@ def test_stop_local_model_unexposes_a_previously_exposed_model(tmp_path):
     assert result.warnings == []
 
 
+def test_stop_local_model_preserves_concurrent_expose_when_nothing_to_unexpose(tmp_path):
+    # Same race guard, single-stop path: stopping a model that was never
+    # exposed must not clobber a concurrent expose landing in the
+    # meantime back to the stale False snapshot.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=False, running=True))
+    save_state(store, state_path)
+
+    def _load_then_race(path=None):
+        result = load_state(path)
+        with locked_state(state_path) as fresh:
+            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=True)
+        return result
+
+    with (
+        patch("modelman.local_control.load_state", side_effect=_load_then_race),
+        patch("modelman.local_control._stop_ollama_model") as mock_stop_ollama,
+        patch("modelman.local_control.unexpose_model") as mock_unexpose,
+    ):
+        result = stop_local_model("ollama/a", state_path)
+
+    mock_unexpose.assert_not_called()
+    mock_stop_ollama.assert_called_once_with("a")
+    assert result.stopped_model_id == "ollama/a"
+    state = load_state(state_path)
+    assert state.get("ollama/a").running is False
+    assert state.get("ollama/a").exposed is True
+
+
 def test_stop_local_model_skips_unexpose_when_not_exposed(tmp_path):
     # No point touching LiteLLM's config for a model that was never
     # exposed — this also means a stop with no litellm_path passed never
@@ -921,7 +951,7 @@ def test_stop_all_local_models_failed_unexpose_does_not_clobber_concurrent_expos
     save_state(store, state_path)
 
     def _concurrent_write_then_fail(*args, **kwargs):
-        # Simulate another process (e.g. `modelman expose ollama/a`)
+        # Simulate another process (e.g. `modelman unexpose ollama/a`)
         # racing this stop_all_local_models() call.
         with locked_state(state_path) as fresh:
             fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=False)
@@ -939,6 +969,35 @@ def test_stop_all_local_models_failed_unexpose_does_not_clobber_concurrent_expos
     # Must reflect the concurrent write (False), not the stale pre-attempt
     # snapshot (True) that stop_all_local_models loaded before the race.
     assert load_state(state_path).get("ollama/a").exposed is False
+
+
+def test_stop_all_local_models_preserves_concurrent_expose_when_nothing_to_unexpose(tmp_path):
+    # Same race guard, --all path: a model with nothing to unexpose (it
+    # was never exposed) must not have a concurrent expose clobbered
+    # back to the stale False snapshot either.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=False, running=True))
+    save_state(store, state_path)
+
+    def _load_then_race(path=None):
+        result = load_state(path)
+        with locked_state(state_path) as fresh:
+            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=True)
+        return result
+
+    with (
+        patch("modelman.local_control.load_state", side_effect=_load_then_race),
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.apply_unexpose_queue") as mock_apply,
+    ):
+        result = stop_all_local_models(state_path)
+
+    mock_apply.assert_not_called()
+    assert result.stopped == ["ollama/a"]
+    state = load_state(state_path)
+    assert state.get("ollama/a").running is False
+    assert state.get("ollama/a").exposed is True
 
 
 def test_running_model_ids_unexposes_a_stale_flagged_model(tmp_path):
@@ -996,6 +1055,40 @@ def test_clear_stale_running_flag_failed_unexpose_does_not_clobber_concurrent_wr
     # Must reflect the concurrent write, not the stale True snapshot this
     # function loaded before the race.
     assert state.get("ollama/a").exposed is False
+
+
+def test_clear_stale_running_flag_preserves_concurrent_expose_when_nothing_to_unexpose(tmp_path):
+    # When the model was already not-exposed at read time, this function
+    # never attempts an unexpose — but the final write used to overwrite
+    # `exposed` unconditionally with the stale pre-attempt snapshot
+    # anyway. A concurrent `modelman expose <id>` landing in the window
+    # between this function's initial load_state() and its own
+    # locked_state() call must survive, not get clobbered back to False.
+    from modelman.local_control import _clear_stale_running_flag
+    from modelman.state import load_state as real_load_state
+    from modelman.state import locked_state
+
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=False, running=True))
+    save_state(store, state_path)
+
+    def _load_then_race(path=None):
+        result = real_load_state(path)
+        with locked_state(state_path) as fresh:
+            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=True)
+        return result
+
+    with (
+        patch("modelman.local_control.load_state", side_effect=_load_then_race),
+        patch("modelman.local_control.unexpose_model") as mock_unexpose,
+    ):
+        _clear_stale_running_flag("ollama/a", state_path)
+
+    mock_unexpose.assert_not_called()
+    state = load_state(state_path)
+    assert state.get("ollama/a").running is False
+    assert state.get("ollama/a").exposed is True
 
 
 def test_start_mlx_lm_server_resolves_pairing_args(tmp_path):

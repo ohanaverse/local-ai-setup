@@ -276,7 +276,11 @@ def _clear_stale_running_flag(
                 fresh.models[model_id] = replace(
                     fresh_existing,
                     running=False,
-                    exposed=state.models[model_id].exposed if unexpose_ok else fresh_existing.exposed,
+                    exposed=(
+                        state.models[model_id].exposed
+                        if (existing.exposed and unexpose_ok)
+                        else fresh_existing.exposed
+                    ),
                 )
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
@@ -1081,7 +1085,11 @@ def stop_local_model(
             fresh.models[model_id] = replace(
                 existing,
                 running=False,
-                exposed=state.models[model_id].exposed if unexpose_ok else existing.exposed,
+                exposed=(
+                    state.models[model_id].exposed
+                    if (current.exposed and unexpose_ok)
+                    else existing.exposed
+                ),
             )
     return StopResult(stopped_model_id=model_id, warnings=warnings)
 
@@ -1103,6 +1111,7 @@ def stop_all_local_models(
         raise LocalControlError(f"failed to stop local models: {exc}") from exc
 
     exposed_ids = [mid for mid in running_ids if state.models[mid].exposed]
+    exposed_id_set = set(exposed_ids)
     unexpose_ok = True
     warnings: list[str] = []
     if exposed_ids:
@@ -1126,6 +1135,10 @@ def stop_all_local_models(
                 fresh.models[mid] = replace(
                     existing,
                     running=False,
-                    exposed=state.models[mid].exposed if unexpose_ok else existing.exposed,
+                    exposed=(
+                        state.models[mid].exposed
+                        if (mid in exposed_id_set and unexpose_ok)
+                        else existing.exposed
+                    ),
                 )
     return StopAllResult(stopped=running_ids, warnings=warnings)
