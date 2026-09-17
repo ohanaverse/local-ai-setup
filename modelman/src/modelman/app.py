@@ -56,7 +56,13 @@ class ModelmanApp(App[QueuedOps | None]):
                 state_path=_default_state_path(),
             )
         )
-        self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
+        self.run_worker(
+            self._run_price_refresh,
+            exclusive=True,
+            thread=True,
+            name="price-refresh",
+            description="Refreshing token prices",
+        )
 
     def _run_price_refresh(self) -> None:
         """Daily-gated background refresh of OpenRouter prices.
