@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -45,5 +46,21 @@ func stubUsageStore(t *testing.T) usage.Store {
 	old := newUsageStore
 	newUsageStore = func() usage.Store { return store }
 	t.Cleanup(func() { newUsageStore = old })
+	return store
+}
+
+// stubRefcountStore swaps the newRefcountStore seam to a Store rooted at a
+// fresh temp directory, so tests that build the model picker through a path
+// that calls newRefcountStore() directly (rather than passing their own
+// Store into buildModelItems) never read the developer's real
+// ~/.config/agent-wt/refcount.jsonl — whose live "in use" counts would
+// otherwise make the ref column (and any assertion on it) depend on host
+// state. Mirrors stubUsageStore's isolation of usage.jsonl.
+func stubRefcountStore(t *testing.T) refcount.Store {
+	t.Helper()
+	store := refcount.NewStoreAt(t.TempDir())
+	old := newRefcountStore
+	newRefcountStore = func() refcount.Store { return store }
+	t.Cleanup(func() { newRefcountStore = old })
 	return store
 }

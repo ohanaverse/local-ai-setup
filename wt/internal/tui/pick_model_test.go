@@ -18,6 +18,7 @@ import (
 // that gets smoke-tested.
 func TestPickModelEnterSelectsHighlightedModel(t *testing.T) {
 	stubUsageStore(t)
+	stubRefcountStore(t)
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
@@ -44,6 +45,7 @@ func TestPickModelEnterSelectsHighlightedModel(t *testing.T) {
 // from "user picked the first model" and must not silently launch a default.
 func TestPickModelEscCancels(t *testing.T) {
 	stubUsageStore(t)
+	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
 	m := newPickModel(nil, models, themes.Default)
 
@@ -63,6 +65,7 @@ func TestPickModelEscCancels(t *testing.T) {
 // picker is a separate, standalone Bubble Tea program from the main app.
 func TestPickModelCtrlCCancels(t *testing.T) {
 	stubUsageStore(t)
+	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
 	m := newPickModel(nil, models, themes.Default)
 
@@ -81,6 +84,7 @@ func TestPickModelCtrlCCancels(t *testing.T) {
 // filter mode, matching the main TUI's universal quit-key convention.
 func TestPickModelQCancelsWhenIdle(t *testing.T) {
 	stubUsageStore(t)
+	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
 	m := newPickModel(nil, models, themes.Default)
 
@@ -102,6 +106,7 @@ func TestPickModelQCancelsWhenIdle(t *testing.T) {
 // must not reappear in this standalone picker.
 func TestPickModelQTypesIntoFilterInsteadOfQuitting(t *testing.T) {
 	stubUsageStore(t)
+	stubRefcountStore(t)
 	models := []config.Model{
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
@@ -120,5 +125,32 @@ func TestPickModelQTypesIntoFilterInsteadOfQuitting(t *testing.T) {
 	}
 	if !strings.Contains(gm.list.FilterInput.Value(), "q") {
 		t.Errorf("filter input = %q, want to contain q", gm.list.FilterInput.Value())
+	}
+}
+
+// TestNewPickModelFamilyTotalsCoverFullCatalog asserts that a family's
+// 30-day usage total (embedded in each row's line) reflects every model in
+// cfg's full catalog, not just the narrower eligible slice this picker
+// renders — matching buildModelItems' contract and the agent flow's picker.
+// Without this, wt smoke's picker would show a lower family total (and could
+// sort differently) than the main wt picker for the exact same family,
+// whenever a family has models that aren't currently eligible.
+func TestNewPickModelFamilyTotalsCoverFullCatalog(t *testing.T) {
+	store := stubUsageStore(t)
+	stubRefcountStore(t)
+	eligible := config.Model{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"}
+	ineligible := config.Model{ID: "ollama/gemma4:14b", ModelName: "gemma4:14b", ProviderID: "ollama", Family: "gemma4"}
+	// Record usage against the model that is NOT in the eligible slice this
+	// picker renders — only the full catalog (cfg.Models) knows about it.
+	if err := store.Record(ineligible.ID); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	cfg := &config.Config{Models: []config.Model{eligible, ineligible}}
+
+	m := newPickModel(cfg, []config.Model{eligible}, themes.Default)
+
+	item := m.list.Items()[0].(*modelItem)
+	if !strings.Contains(item.line, "  1  ") {
+		t.Errorf("line = %q, want it to include the family's 30-day total (1) from the ineligible sibling model", item.line)
 	}
 }
