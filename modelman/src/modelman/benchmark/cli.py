@@ -9,6 +9,7 @@ import typer
 
 from modelman.benchmark.agent.cli import agent_app
 from modelman.benchmark.errors import BenchmarkError
+from modelman.benchmark.eval.cli import eval_app
 from modelman.benchmark.results import BenchmarkRun
 from modelman.benchmark.runner import (
     DEFAULT_RESULTS_DIR,
@@ -21,6 +22,7 @@ from modelman.state import load_state, save_state
 
 benchmark_app = typer.Typer(help="Benchmark local LLM models.")
 benchmark_app.add_typer(agent_app, name="agent")
+benchmark_app.add_typer(eval_app, name="eval")
 
 
 def _record_latest(run: BenchmarkRun, run_dir: Path) -> None:
