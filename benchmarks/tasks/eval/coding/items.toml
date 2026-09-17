@@ -1,0 +1,6 @@
+# EvalPlus dataset config for the coding category — no hand-authored items,
+# no rubric/judge. `limit` keeps a multi-model x multi-engine sweep
+# tractable; a suite's own [coding] block can override this per run (see
+# eval/suite.py's CodingConfig).
+dataset = "humaneval"
+limit = 40

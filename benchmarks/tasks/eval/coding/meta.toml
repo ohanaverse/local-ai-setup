@@ -1,0 +1,2 @@
+[meta]
+intent = "Graded entirely by EvalPlus's HumanEval+ pass@1, not the in-house judge — see docs/superpowers/specs/2026-09-17-capability-eval-benchmark-design.md's Content plan table for why coding is the one category with a real community-maintained grader instead of a hand-authored rubric."
