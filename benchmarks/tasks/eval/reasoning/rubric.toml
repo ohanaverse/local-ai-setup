@@ -1,0 +1,7 @@
+verdicts = ["correct", "partially_correct", "incorrect"]
+
+[dimensions]
+correct_answer = 40
+valid_reasoning_chain = 30
+no_unjustified_leaps = 15
+clarity = 15

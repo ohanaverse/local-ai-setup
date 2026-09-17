@@ -1,0 +1,62 @@
+[[items]]
+id = "age-riddle"
+prompt = """
+In five years, Mira will be twice as old as she was three years ago.
+How old is Mira now? Show your reasoning, then state the final answer clearly.
+"""
+[items.meta]
+reference_notes = "correct answer: 11. Let x = current age. x+5 = 2*(x-3) -> x+5 = 2x-6 -> x = 11."
+
+[[items]]
+id = "logic-grid-3"
+prompt = """
+Three friends -- Ada, Bo, and Cy -- each own exactly one pet from
+{cat, dog, fish} and live on a different one of floors {1, 2, 3}.
+- Ada does not live on floor 1.
+- The dog owner lives on floor 2.
+- Cy owns the fish.
+- Bo lives on a higher floor than the dog owner.
+Who owns the dog, and what floor do they live on? Show your reasoning.
+"""
+[items.meta]
+reference_notes = "correct answer: Ada owns the dog and lives on floor 2. Cy owns fish (given). Bo owns cat (remaining) or dog -- dog owner is floor 2, Bo lives higher than floor 2 so Bo is floor 3 and does not own the dog; Ada is left with the dog, and since Ada isn't floor 1, Ada is floor 2, matching the dog-owner-is-floor-2 clue. Bo is floor 3 with the cat, Cy is floor 1 with the fish."
+
+[[items]]
+id = "rate-problem"
+prompt = """
+Pipe A fills a tank in 6 hours. Pipe B fills the same tank in 4 hours.
+If both pipes run together starting from an empty tank, how long until the
+tank is full? Show your work.
+"""
+[items.meta]
+reference_notes = "correct answer: 2.4 hours (12/5 hours). Combined rate = 1/6 + 1/4 = 5/12 tank/hour; time = 12/5 = 2.4 hours."
+
+[[items]]
+id = "sequence-rule"
+prompt = """
+A sequence begins 2, 6, 12, 20, 30, ...
+What is the 8th term? Explain the pattern you found before giving the answer.
+"""
+[items.meta]
+reference_notes = "correct answer: 72. The nth term is n*(n+1); 8th term = 8*9 = 72."
+
+[[items]]
+id = "overlap-sets"
+prompt = """
+In a class of 30 students, 18 play soccer, 15 play basketball, and 7 play
+neither sport. How many students play both soccer and basketball?
+"""
+[items.meta]
+reference_notes = "correct answer: 10. Students playing at least one sport = 30-7=23. 18+15-23=10 play both."
+
+[[items]]
+id = "truth-tellers"
+prompt = """
+On an island, every person is either a truth-teller (always tells the
+truth) or a liar (always lies). You meet two people, P and Q.
+P says: 'Q is a liar.'
+Q says: 'P and I are both truth-tellers.'
+What is P, and what is Q? Show your reasoning.
+"""
+[items.meta]
+reference_notes = "correct answer: P is a truth-teller, Q is a liar. If Q were a truth-teller, Q's statement (both are truth-tellers) would be true, meaning P is a truth-teller, so P's statement ('Q is a liar') would have to be true -- contradiction (Q can't be both liar and truth-teller). So Q is a liar; Q's statement is false, meaning not both are truth-tellers. Since Q is a liar, P's statement 'Q is a liar' is true, so P is a truth-teller. Consistent."
