@@ -306,6 +306,59 @@ async def test_reconcile_shows_reality_when_manifest_out_of_date(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_reconcile_self_heal_clears_exposed_column_for_dead_model(tmp_path, monkeypatch):
+    """A model left flagged running+exposed from a prior session, whose
+    process died externally before the TUI reopens, must show as NOT
+    exposed after the on-mount reconcile self-heals it — not just NOT
+    running. _clear_stale_running_flag() already un-exposes it on disk;
+    the in-memory self.state used to render the table was left stale."""
+    from unittest.mock import MagicMock
+
+    o35 = ModelEntry(
+        id="ollama/o35", family="ornith", provider_id="ollama", model_name="ornith:35b"
+    )
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[o35])
+    litellm_path = tmp_path / "litellm-config.yaml"
+    litellm_path.write_text(
+        "model_list:\n  - model_name: ollama/o35\n    litellm_params:\n      model: ollama/o35\n"
+    )
+    monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
+
+    store = StateStore()
+    store.set("ollama/o35", ModelState(ready=True, exposed=True, running=True))
+    save_state(store, state_path)
+
+    from modelman.providers import registry
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = 1024
+    monkeypatch.setattr(registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    # The probe finds nothing actually serving — the process died outside
+    # modelman's knowledge (crash, manual kill).
+    monkeypatch.setattr("modelman.local_control._probe_running", lambda *a, **k: False)
+
+    from modelman.app import ModelmanApp
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        mt = app.screen.query_one("#model-table", DataTable)
+        row = mt.get_row_at(0)
+        assert row[5] == "–"  # EXPOSED column: "–", not "Y"
+        assert app.screen.state.get("ollama/o35").running is False
+        assert app.screen.state.get("ollama/o35").exposed is False
+
+    from modelman.state import load_state as _load_state
+
+    # And the disk-side flag (already written by _clear_stale_running_flag)
+    # agrees.
+    assert _load_state(state_path).get("ollama/o35").exposed is False
+
+
+@pytest.mark.asyncio
 async def test_reconcile_does_not_persist_to_disk_on_cancel(tmp_path, monkeypatch):
     """Reconcile is in-memory only until Apply. Cancelling out of the dialog
     (or having no queue at all) must not write modelman.toml."""
@@ -1812,6 +1865,8 @@ async def test_escape_while_model_start_running_shows_force_quit_dialog(tmp_path
         await pilot.pause()
         await pilot.pause()  # let on-mount reconcile settle first
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2), "start_local_model was never called"
 
         await pilot.press("escape")
@@ -1899,6 +1954,8 @@ async def test_force_quit_restores_terminal_before_hard_exit(tmp_path, monkeypat
         await pilot.pause()
         await pilot.pause()
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2)
 
         # Spy on the real (headless test) driver's teardown methods rather
@@ -1974,6 +2031,8 @@ async def test_ctrl_q_while_force_quit_dialog_open_force_quits(tmp_path, monkeyp
         await pilot.pause()
         await pilot.pause()
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2)
 
         await pilot.press("escape")
@@ -2044,6 +2103,8 @@ async def test_force_quit_dialog_warns_about_pending_changes(tmp_path, monkeypat
         table = app.screen.query_one("#model-table", DataTable)
         table.move_cursor(row=table.get_row_index("omlx/a"))
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2)
 
         # Cursor to the ollama row (rows are keyed by model id) and queue a

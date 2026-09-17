@@ -346,12 +346,29 @@ class ModelScreen(Screen[None]):
         # are: a model flagged running whose process actually died (crash,
         # manual kill outside modelman) must not keep showing RUNNING=●
         # forever. running_model_ids() re-probes every flagged model and
-        # clears any stale flag as a side effect; anything it doesn't
-        # return is not verified running, so it gets cleared here too.
+        # clears any stale flag (and best-effort un-exposes it) as a side
+        # effect; anything it doesn't return is not verified running, so
+        # it gets cleared here too — exposed is re-read from disk since
+        # running_model_ids() already wrote the post-unexpose value there.
         verified = set(running_model_ids(self.registry, self.state, self.state_path))
-        for model_id, model_state in list(self.state.models.items()):
-            if model_state.running and model_id not in verified:
-                self.state.models[model_id] = replace(model_state, running=False)
+        stale_ids = [
+            model_id
+            for model_id, model_state in self.state.models.items()
+            if model_state.running and model_id not in verified
+        ]
+        if stale_ids:
+            # running_model_ids() already best-effort un-exposed each of
+            # these on disk (_clear_stale_running_flag) — pull that fresh
+            # value in rather than leaving self.state's in-memory copy at
+            # its stale pre-reconcile exposed value, which would render a
+            # wrong "Y" in the EXPOSED column for the rest of the session.
+            fresh_state = load_state(self.state_path)
+            for model_id in stale_ids:
+                model_state = self.state.models[model_id]
+                fresh_exposed = fresh_state.models.get(model_id, model_state).exposed
+                self.state.models[model_id] = replace(
+                    model_state, running=False, exposed=fresh_exposed
+                )
         self.discovered = discover_unregistered_models(self.registry, local_map)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
@@ -609,6 +626,19 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
         self.reload()
 
+    def _lifecycle_worker_busy(self) -> bool:
+        """True while a model-start or model-stop worker is still running.
+
+        Starting/stopping a local model is disruptive and can be slow (a
+        multi-GB warmup, a proxy restart) — a second 's' press while one is
+        in flight must be rejected outright rather than queued or allowed
+        to race it, since Textual cannot cancel a live `thread=True`
+        worker (see action_back's force-quit dialog for the same
+        constraint)."""
+        return any(
+            w.name in ("model-start", "model-stop") and w.is_running for w in self.workers
+        )
+
     def action_toggle_running(self) -> None:
         entry = self._current_entry()
         if entry is None:
@@ -622,18 +652,15 @@ class ModelScreen(Screen[None]):
         if not self._is_ready(entry.id):
             self.app.notify("Model is not ready — mark it ready first")
             return
+        if self._lifecycle_worker_busy():
+            self.app.notify("A model start/stop is already in progress — wait for it to finish")
+            return
         mid = entry.id
         currently_running = self.state.get(mid).running
 
         if currently_running:
-            self.app.notify(f"Stopping {mid}…")
-            self.run_worker(
-                lambda: self._do_stop(mid),
-                thread=True,
-                exclusive=False,
-                name="model-stop",
-                description=f"Stopping {mid}",
-            )
+            message = f"Stop {mid}? This will also un-expose it from LiteLLM."
+            self.app.push_screen(ConfirmModal(message), lambda ok: self._on_stop_confirmed(mid, ok))
             return
 
         others = [m for m in self.state.models if m != mid and self.state.models[m].running]
@@ -656,9 +683,11 @@ class ModelScreen(Screen[None]):
                 f"{replacement_note}\n"
                 f"Start {mid} anyway?"
             )
-            self.app.push_screen(ConfirmModal(message), lambda ok: self._on_start_confirmed(mid, ok))
         else:
-            self._on_start_confirmed(mid, True)
+            # Starting is disruptive/slow too (a warmup, an expose+proxy
+            # restart) — every start is confirmed, not just a replacement.
+            message = f"Start {mid}?"
+        self.app.push_screen(ConfirmModal(message), lambda ok: self._on_start_confirmed(mid, ok))
 
     def _on_start_confirmed(self, model_id: str, confirmed: bool | None) -> None:
         if not confirmed:
@@ -672,8 +701,21 @@ class ModelScreen(Screen[None]):
             description=f"Starting {model_id}",
         )
 
+    def _on_stop_confirmed(self, model_id: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self.app.notify(f"Stopping {model_id}…")
+        self.run_worker(
+            lambda: self._do_stop(model_id),
+            thread=True,
+            exclusive=False,
+            name="model-stop",
+            description=f"Stopping {model_id}",
+        )
+
     def _resync_running_flags(self) -> None:
-        """Merge just the `running` flags from disk back onto self.state.
+        """Merge just the `running`/`exposed` flags from disk back onto
+        self.state.
 
         local_control owns those flags and writes them to modelman.toml
         from these workers, so they have to be re-read — but a full
@@ -683,7 +725,8 @@ class ModelScreen(Screen[None]):
         queue is applied on exit), silently reverting the READY/SIZE/path
         columns after the first `s` press. Same reasoning — and same
         targeted-resync shape — as action_toggle_litellm's `[litellm]`
-        merge.
+        merge. `exposed` is included alongside `running` because start/stop
+        now flip it too (auto-expose on start, auto-unexpose on stop).
         """
         fresh = load_state(self.state_path)
         for model_id, fresh_state in fresh.models.items():
@@ -691,7 +734,9 @@ class ModelScreen(Screen[None]):
             if current is None:
                 self.state.models[model_id] = fresh_state
             else:
-                self.state.models[model_id] = replace(current, running=fresh_state.running)
+                self.state.models[model_id] = replace(
+                    current, running=fresh_state.running, exposed=fresh_state.exposed
+                )
 
     def _do_start(self, model_id: str) -> None:
         try:
@@ -702,6 +747,8 @@ class ModelScreen(Screen[None]):
         self._resync_running_flags()
         message = f"{model_id} is already running." if result.already_running else f"Started {model_id}."
         self.app.call_from_thread(self.app.notify, message)
+        for warning in result.warnings:
+            self.app.call_from_thread(self.app.notify, warning, severity="warning")
         self.app.call_from_thread(self.reload)
 
     def _do_stop(self, model_id: str) -> None:
@@ -713,6 +760,8 @@ class ModelScreen(Screen[None]):
         self._resync_running_flags()
         message = f"Stopped {model_id}." if result.stopped_model_id else f"{model_id} was not running."
         self.app.call_from_thread(self.app.notify, message)
+        for warning in result.warnings:
+            self.app.call_from_thread(self.app.notify, warning, severity="warning")
         self.app.call_from_thread(self.reload)
 
     def _provider_list(self) -> list[str]:

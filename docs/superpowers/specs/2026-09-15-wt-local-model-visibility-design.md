@@ -76,6 +76,12 @@ This is idempotent: `expose_model` only writes the LiteLLM config and
 restarts the proxy when something actually changed, so starting an
 already-exposed model is a no-op on this front.
 
+> **Superseded 2026-09-17:** the paragraph below no longer reflects the
+> code. `stop_local_model()`/`stop_all_local_models()` now un-expose a
+> stopped model instead of leaving `exposed` sticky — see
+> `modelman/CLAUDE.md`'s "Local-model lifecycle" section for the current
+> contract.
+
 `stop_local_model()` is **not** changed. `exposed` stays sticky after a
 stop — consistent with how `ready`/other flags already behave when a model
 is merely not currently running (a model can be `exposed` and `ready` while

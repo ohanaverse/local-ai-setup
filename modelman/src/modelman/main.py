@@ -587,7 +587,9 @@ def start(
         state = load_state()
         inventory = inventory_local_models(registry, state)
         if not (inventory.downloaded or inventory.not_downloaded or inventory.discovered):
-            typer.echo("No local models found. `modelman start <name>` will register one it finds on disk.")
+            typer.echo(
+                "No local models found. `modelman start <name>` will register one it finds on disk."
+            )
             _echo_inventory_caveats(inventory)
             return
         if inventory.downloaded:
@@ -605,7 +607,9 @@ def start(
         if inventory.discovered:
             typer.echo("Discovered (not in registry.toml — `modelman start <name>` to add):")
             for disc in inventory.discovered:
-                typer.echo(f"  {disc.provider_id}:{disc.variant_id}\t{format_size(disc.size_bytes)}")
+                typer.echo(
+                    f"  {disc.provider_id}:{disc.variant_id}\t{format_size(disc.size_bytes)}"
+                )
             typer.echo()
         _echo_inventory_caveats(inventory)
         typer.echo("Run `modelman start <model_id>` to start one.")
@@ -620,8 +624,14 @@ def start(
             result = start_local_model(registry, model_id, family=family)
             break
         except DiscoveredModelNeedsFamily as exc:
-            hint = f" (existing: {', '.join(exc.suggested_families)})" if exc.suggested_families else ""
-            typer.echo(f"{exc.provider_id}/{exc.variant_id} was found on disk but isn't registered yet.{hint}")
+            hint = (
+                f" (existing: {', '.join(exc.suggested_families)})"
+                if exc.suggested_families
+                else ""
+            )
+            typer.echo(
+                f"{exc.provider_id}/{exc.variant_id} was found on disk but isn't registered yet.{hint}"
+            )
             # default="" stops click's own prompt() from silently re-looping
             # on blank input (its built-in retry never returns an empty
             # string when no default is set) so this loop can print its own
@@ -665,14 +675,19 @@ def stop(
 
     if all_:
         try:
-            stopped = stop_all_local_models()
+            stop_all_result = stop_all_local_models()
         except LocalControlError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(1) from exc
-        if not stopped:
+        if not stop_all_result.stopped:
             typer.echo("No local model is running.")
         else:
-            typer.echo(f"Stopped {len(stopped)} model(s): {', '.join(stopped)}.")
+            typer.echo(
+                f"Stopped {len(stop_all_result.stopped)} model(s): "
+                f"{', '.join(stop_all_result.stopped)}."
+            )
+        for warning in stop_all_result.warnings:
+            typer.echo(f"warning: {warning}", err=True)
         return
 
     # Reached only when model_id is not None: the two checks above rule out
@@ -689,6 +704,8 @@ def stop(
         typer.echo(f"{model_id} is not running.")
     else:
         typer.echo(f"Stopped {result.stopped_model_id}.")
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 if __name__ == "__main__":

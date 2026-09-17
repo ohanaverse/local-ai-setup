@@ -1163,3 +1163,70 @@ def test_passes_ready_gate_provider_cloud_not_ready():
     state = StateStore()
     state.set("handmade/x", ModelState(ready=False, exposed=True))
     assert passes_ready_gate(model, state, registry) is True
+
+
+def test_apply_unexpose_queue_restarts_once_for_multiple_models(tmp_path, monkeypatch):
+    # `stop --all` must bounce the LiteLLM proxy once for the whole batch,
+    # not once per exposed model being stopped — this is the un-expose
+    # counterpart to test_apply_expose_queue_restarts_once_when_applied.
+    from modelman.litellm import apply_unexpose_queue, save_litellm_config
+    from modelman.state import ModelState, StateStore
+
+    state = StateStore()
+    state.set("ollama/a", ModelState(exposed=True))
+    state.set("ollama/b", ModelState(exposed=True))
+    path = tmp_path / "config.yaml"
+    save_litellm_config(
+        {
+            "model_list": [
+                {"model_name": "ollama/a", "litellm_params": {"model": "ollama/a"}},
+                {"model_name": "ollama/b", "litellm_params": {"model": "ollama/b"}},
+            ],
+            "general_settings": {},
+        },
+        path,
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    warnings = apply_unexpose_queue(state, ["ollama/a", "ollama/b"], path)
+
+    assert calls == ["restart"]
+    assert warnings == []
+    assert state.get("ollama/a").exposed is False
+    assert state.get("ollama/b").exposed is False
+    from modelman.litellm import load_litellm_config
+
+    assert load_litellm_config(path)["model_list"] == []
+
+
+def test_apply_unexpose_queue_no_restart_when_empty(tmp_path, monkeypatch):
+    # An empty batch (e.g. stop --all with nothing exposed) must not touch
+    # the config file or bounce the proxy at all.
+    from modelman.litellm import apply_unexpose_queue
+    from modelman.state import StateStore
+
+    calls = []
+    monkeypatch.setattr(
+        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
+    )
+    warnings = apply_unexpose_queue(StateStore(), [], tmp_path / "config.yaml")
+    assert warnings == []
+    assert calls == []
+
+
+def test_apply_unexpose_queue_propagates_config_failure(tmp_path):
+    # A missing/unwritable config file is a config-level failure, not a
+    # per-model one — it must propagate so the caller (stop_all_local_models)
+    # can turn it into a single warning covering the whole batch.
+    from modelman.litellm import LiteLLMConfigError, apply_unexpose_queue
+    from modelman.state import ModelState, StateStore
+
+    state = StateStore()
+    state.set("ollama/a", ModelState(exposed=True))
+    with pytest.raises(LiteLLMConfigError):
+        apply_unexpose_queue(state, ["ollama/a"], tmp_path / "does-not-exist.yaml")
+    # A failed batch must not flip the flag — the config was never touched.
+    assert state.get("ollama/a").exposed is True
