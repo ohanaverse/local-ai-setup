@@ -251,6 +251,8 @@ reach by accident and can lead to analyzing or mutating the wrong branch.
 - **Local imports in tests:** `test_queue.py` and other test files use `from X import Y` inside test functions (not module-level) as a consistent pattern — this is intentional, not inconsistency
 - **MagicMock provider stubs:** optional `Provider` capabilities (`resolve_local`, `path_of`) auto-exist as truthy mocks — set `stub.resolve_local.return_value = None` (or a well-formed, length-aligned list) when testing code that branches on them; reconcile treats a non-list/misaligned batch result as "no batch support" and falls back to the per-model path.
 - **Ruff bugbear B905 is enforced:** `zip()` needs an explicit `strict=` (usually `strict=True`); a bare `zip()` passes some focused checks but fails `make lint`.
+- **mypy catches what pytest can't:** reusing a local variable name for two different types across mutually-exclusive early-return branches of the same function (e.g. two `if`/return blocks in one Typer command) type-checks fine to a human and passes every test, but `mypy` flags it as an incompatible reassignment. A per-task `pytest`-only run will miss this — always run `make check` before calling a task done, not just before the final task.
+- **`ruff format` reflows every file it touches, not just yours.** Running it with no path (or on `src/`) will rewrite unrelated files' line-wrapping; if you then `git add` only your own files, the rest sits as stray uncommitted noise. Prefer `ruff format <specific-file>` or `ruff format --check` when verifying a small change, and check `git status --short` before committing.
 
 ## Important implementation notes
 
