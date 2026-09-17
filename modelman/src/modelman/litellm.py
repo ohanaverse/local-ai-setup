@@ -747,6 +747,47 @@ def apply_expose_queue(
     return outcomes, []
 
 
+def apply_unexpose_queue(
+    state: StateStore,
+    model_ids: list[str],
+    litellm_path: Path,
+) -> list[str]:
+    """Un-expose every id in `model_ids` with a single config load and a
+    single atomic save — the un-expose counterpart to apply_expose_queue,
+    used by stop_all_local_models() so stopping N exposed models bounces
+    the LiteLLM proxy once instead of N times.
+
+    Unlike apply_expose_queue, remove_exposed() never validates against
+    the registry and cannot fail per-model, so this takes no Registry and
+    has no per-item outcome to report: it either applies the whole batch
+    or raises. Config-level failures (missing/unwritable file) propagate
+    to the caller, same as apply_expose_queue and unexpose_model — the
+    caller decides how to turn that into a warning. Flags flip only after
+    the save succeeds, so state never claims an un-exposure the config
+    file lost.
+
+    Returns proxy-restart warnings (empty on success or when nothing
+    changed), matching apply_expose_queue's warnings contract.
+    """
+    if not model_ids:
+        return []
+    config = load_litellm_config(litellm_path)
+    before = copy.deepcopy(config)
+    for model_id in model_ids:
+        remove_exposed(config, model_id)
+    ensure_litellm_settings(config)
+    changed = config != before
+    if changed:
+        save_litellm_config(config, litellm_path)
+    flags_changed = False
+    for model_id in model_ids:
+        if _set_exposed_flag(state, model_id, False):
+            flags_changed = True
+    if changed or flags_changed:
+        return restart_litellm_proxy()
+    return []
+
+
 # Canonical restart command for the launchd-managed proxy, used when
 # MODELMAN_LITELLM_RESTART_CMD is unset. The env var is typically
 # exported only from an interactive shell (e.g. ~/.zshrc), so
