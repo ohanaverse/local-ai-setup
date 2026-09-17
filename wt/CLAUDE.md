@@ -405,7 +405,13 @@ app's worktree→agent→model state machine) that reuses `buildModelItems` for
 the same decorated/sorted rows the agent flow's model picker renders, over
 `smoke.Eligibility`'s unfiltered cross-agent union (never narrowed to one
 agent's supported providers, since here the eligible agents are derived
-*from* the chosen model rather than the reverse). See `docs/wt-smoke.md`.
+*from* the chosen model rather than the reverse). Always-on, timestamped
+progress lines go to stderr — a start line before each agent's row and a
+result line after, with FAIL rows carrying the same command/exit-code/output
+detail the final report shows (`logSmokeStart`/`logSmokeResult` in
+`cmd/wt/smoke.go`, sharing `writeSmokeFailDetail` with the final report so
+the two can't drift apart) — leaving stdout (the human table and `--json`
+report) unaffected. See `docs/wt-smoke.md`.
 
 ## Guard (Go)
 

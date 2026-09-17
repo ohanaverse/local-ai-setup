@@ -43,6 +43,28 @@ exposure/local-running-gate checks a real launch would (`Config.EligibleModels`
 + `internal/localgate.Apply`) — the exact rules `wt`'s own launch path
 applies, not a separate matrix.
 
+## Progress (stderr)
+
+While a run is in progress, `wt smoke` writes a timestamped line to stderr
+before and after each agent's row — always on, since it never touches
+stdout (the human table or `--json` report are unaffected). This makes a
+long or hung agent visible in real time instead of silence until the final
+report, and a FAIL is fully debuggable the moment it happens: the result
+line carries the same command/exit-code/error/output detail the final
+report's FAIL block shows.
+
+```
+[15:04:05] wt smoke: claude x ollama/qwen3.8:27b-mlx - starting
+[15:04:09] wt smoke: claude x ollama/qwen3.8:27b-mlx - PASS (4.2s)
+[15:04:09] wt smoke: codex x ollama/qwen3.8:27b-mlx - starting
+[15:07:09] wt smoke: codex x ollama/qwen3.8:27b-mlx - FAIL (180.0s): timed out after 3m0s
+  command: codex exec ...
+  exit code: 0
+  error: timed out after 3m0s
+[15:07:09] wt smoke: copilot x ollama/qwen3.8:27b-mlx - starting
+[15:07:09] wt smoke: copilot x ollama/qwen3.8:27b-mlx - SKIP (0.0s): agent copilot not installed
+```
+
 ## Output
 
 Human (default): one line per agent, `[STATUS] agent model (duration)`.

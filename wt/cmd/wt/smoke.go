@@ -32,6 +32,10 @@ var smokeExit = os.Exit
 // needs a TTY; tests stub it to avoid one.
 var pickModelTUI = tui.PickModel
 
+// smokeNow is a test seam wrapping time.Now so progress-log timestamps are
+// deterministic in tests.
+var smokeNow = time.Now
+
 func smokeCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "smoke [model-id]",
@@ -78,13 +82,17 @@ func smokeCmd(a *app) *cobra.Command {
 			}
 
 			runID := smoke.NewRunID()
+			stderr := cmd.ErrOrStderr()
 			rows := make([]smoke.RowResult, 0, len(agentsToRun))
 			for _, agentName := range agentsToRun {
 				prompt, sentinel := promptOverride, ""
 				if promptOverride == "" {
 					prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
 				}
-				rows = append(rows, smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd))
+				logSmokeStart(stderr, agentName, m.ID)
+				r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd)
+				logSmokeResult(stderr, r)
+				rows = append(rows, r)
 			}
 
 			var anyFail bool
@@ -198,25 +206,60 @@ func printSmokeHuman(w io.Writer, runID, modelID string, rows []smoke.RowResult)
 			skip++
 		default:
 			fail++
-			fmt.Fprintf(w, "  command: %s\n", r.Command)
-			fmt.Fprintf(w, "  exit code: %d\n", r.ExitCode)
-			if r.Err != nil {
-				fmt.Fprintf(w, "  error: %v\n", r.Err)
-			}
-			if r.Output != "" {
-				fmt.Fprintln(w, "  output:")
-				for _, line := range strings.Split(strings.TrimRight(r.Output, "\n"), "\n") {
-					fmt.Fprintf(w, "    %s\n", line)
-				}
-			}
+			writeSmokeFailDetail(w, r)
 		}
 	}
 	fmt.Fprintf(w, "=== PASS: %d FAIL: %d SKIP: %d (model=%s, runid=%s) ===\n", pass, fail, skip, modelID, runID)
 	return fail > 0, nil
 }
 
+// writeSmokeFailDetail writes a FAIL row's command/exit-code/error/output
+// block. Shared by printSmokeHuman's final report and logSmokeResult's live
+// stderr progress line so a FAIL is fully debuggable the moment it happens —
+// without waiting for the run to finish or re-running anything by hand — and
+// the two renderings can never drift apart.
+func writeSmokeFailDetail(w io.Writer, r smoke.RowResult) {
+	fmt.Fprintf(w, "  command: %s\n", r.Command)
+	fmt.Fprintf(w, "  exit code: %d\n", r.ExitCode)
+	if r.Err != nil {
+		fmt.Fprintf(w, "  error: %v\n", r.Err)
+	}
+	if r.Output != "" {
+		fmt.Fprintln(w, "  output:")
+		for _, line := range strings.Split(strings.TrimRight(r.Output, "\n"), "\n") {
+			fmt.Fprintf(w, "    %s\n", line)
+		}
+	}
+}
+
 func formatSmokeDuration(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// logSmokeStart writes a timestamped "starting" progress line to stderr
+// before an agent's row runs, so a long-running or hung agent is visible in
+// real time instead of silence until the final report.
+func logSmokeStart(w io.Writer, agentName, modelID string) {
+	fmt.Fprintf(w, "[%s] wt smoke: %s x %s - starting\n", smokeNow().Format("15:04:05"), agentName, modelID)
+}
+
+// logSmokeResult writes a timestamped result line to stderr right after an
+// agent's row finishes. PASS is a single line; SKIP appends its one-line
+// reason (e.g. agent not installed); FAIL appends its one-line reason and
+// then the same command/exit-code/error/output detail block the final
+// report shows, so a failure is fully debuggable live, without waiting for
+// the run to finish.
+func logSmokeResult(w io.Writer, r smoke.RowResult) {
+	ts := smokeNow().Format("15:04:05")
+	switch r.Status {
+	case smoke.StatusPass:
+		fmt.Fprintf(w, "[%s] wt smoke: %s x %s - PASS (%s)\n", ts, r.Agent, r.Model, formatSmokeDuration(r.Duration))
+	case smoke.StatusSkip:
+		fmt.Fprintf(w, "[%s] wt smoke: %s x %s - SKIP (%s): %v\n", ts, r.Agent, r.Model, formatSmokeDuration(r.Duration), r.Err)
+	default:
+		fmt.Fprintf(w, "[%s] wt smoke: %s x %s - FAIL (%s): %v\n", ts, r.Agent, r.Model, formatSmokeDuration(r.Duration), r.Err)
+		writeSmokeFailDetail(w, r)
+	}
 }
 
 // smokeJSONRow and smokeJSONReport are --json's wire schema — the contract
