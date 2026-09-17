@@ -665,14 +665,16 @@ def stop(
 
     if all_:
         try:
-            stopped = stop_all_local_models()
+            result = stop_all_local_models()
         except LocalControlError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(1) from exc
-        if not stopped:
+        if not result.stopped:
             typer.echo("No local model is running.")
         else:
-            typer.echo(f"Stopped {len(stopped)} model(s): {', '.join(stopped)}.")
+            typer.echo(f"Stopped {len(result.stopped)} model(s): {', '.join(result.stopped)}.")
+        for warning in result.warnings:
+            typer.echo(f"warning: {warning}", err=True)
         return
 
     # Reached only when model_id is not None: the two checks above rule out

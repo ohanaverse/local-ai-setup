@@ -104,6 +104,32 @@ def test_stop_command_single_model_prints_unexpose_warning(tmp_path, monkeypatch
     assert "could not be un-exposed" in result.output
 
 
+def test_stop_command_all_prints_unexpose_warning(tmp_path, monkeypatch):
+    # `modelman stop --all` must surface a failed batch un-expose the same
+    # way the single-model path already does (see
+    # test_stop_command_single_model_prints_unexpose_warning) — this was
+    # previously silently dropped.
+    state_path = tmp_path / "modelman.toml"
+    state_path.write_text(
+        '[model_state."ollama/x"]\nready = true\nexposed = true\nrunning = true\n'
+    )
+    monkeypatch.setenv("MODELMAN_STATE", str(state_path))
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch(
+            "modelman.local_control.apply_unexpose_queue",
+            side_effect=OSError(28, "No space left"),
+        ),
+    ):
+        result = runner.invoke(app, ["stop", "--all"])
+    assert result.exit_code == 0, result.stdout
+    assert "warning:" in result.output
+    assert "could not be un-exposed" in result.output
+    # The process still stops even though the unexpose failed.
+    assert load_state(path=state_path).get("ollama/x").running is False
+
+
 def test_stop_command_noop_message_when_nothing_running(tmp_path, monkeypatch):
     # `modelman stop --all` against an empty state must report a clean
     # no-op rather than erroring - "nothing is running" is a normal state,
