@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,78 @@ func TestValidateSmokeTimeoutRejectsNonPositive(t *testing.T) {
 func TestValidateSmokeTimeoutAcceptsPositive(t *testing.T) {
 	if err := validateSmokeTimeout(60 * time.Second); err != nil {
 		t.Fatalf("validateSmokeTimeout(60s) = %v, want nil", err)
+	}
+}
+
+// TestLogSmokeStartWritesTimestampedLine asserts the pre-run stderr line
+// names the agent and model and is timestamped from the smokeNow seam, so a
+// hung agent is visible (no output since its start line) instead of silence
+// until the final report.
+func TestLogSmokeStartWritesTimestampedLine(t *testing.T) {
+	old := smokeNow
+	smokeNow = func() time.Time { return time.Date(2026, 1, 1, 15, 4, 5, 0, time.UTC) }
+	defer func() { smokeNow = old }()
+
+	var buf bytes.Buffer
+	logSmokeStart(&buf, "claude", "ollama/x")
+	got := buf.String()
+	if !strings.HasPrefix(got, "[15:04:05]") {
+		t.Fatalf("output = %q, want a 15:04:05 timestamp prefix", got)
+	}
+	if !strings.Contains(got, "claude") || !strings.Contains(got, "ollama/x") || !strings.Contains(got, "starting") {
+		t.Fatalf("output = %q, want agent, model, and starting", got)
+	}
+}
+
+// TestLogSmokeResultFail asserts a FAIL row's live stderr line carries the
+// same command/exit-code/error/output detail as the final report's FAIL
+// block — a FAIL must be fully debuggable the moment it happens, without
+// waiting for the run to finish.
+func TestLogSmokeResultFail(t *testing.T) {
+	r := smoke.RowResult{
+		Agent: "codex", Model: "ollama/x", Status: smoke.StatusFail,
+		Duration: time.Second, Command: "codex exec ...", ExitCode: 1,
+		Output: "boom", Err: fmt.Errorf("exit code 1"),
+	}
+	var buf bytes.Buffer
+	logSmokeResult(&buf, r)
+	got := buf.String()
+	for _, want := range []string{"FAIL", "codex exec ...", "exit code: 1", "exit code 1", "boom"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output = %q, missing %q", got, want)
+		}
+	}
+}
+
+// TestLogSmokeResultSkipIncludesReason asserts a SKIP row's live stderr line
+// states why (e.g. agent not installed) instead of a bare status, matching
+// the final report's r.Err (SKIP rows never get a detail block there
+// either).
+func TestLogSmokeResultSkipIncludesReason(t *testing.T) {
+	r := smoke.RowResult{
+		Agent: "copilot", Model: "ollama/x", Status: smoke.StatusSkip,
+		Err: fmt.Errorf("agent copilot not installed"),
+	}
+	var buf bytes.Buffer
+	logSmokeResult(&buf, r)
+	got := buf.String()
+	if !strings.Contains(got, "SKIP") || !strings.Contains(got, "agent copilot not installed") {
+		t.Fatalf("output = %q, want SKIP and its reason", got)
+	}
+}
+
+// TestLogSmokeResultPassIsSingleLine asserts a PASS row's live stderr line
+// has no trailing detail block, mirroring the final report's PASS rendering.
+func TestLogSmokeResultPassIsSingleLine(t *testing.T) {
+	r := smoke.RowResult{Agent: "claude", Model: "ollama/x", Status: smoke.StatusPass, Duration: 2 * time.Second}
+	var buf bytes.Buffer
+	logSmokeResult(&buf, r)
+	got := buf.String()
+	if strings.Count(got, "\n") != 1 {
+		t.Fatalf("output = %q, want exactly one line", got)
+	}
+	if !strings.Contains(got, "PASS") {
+		t.Fatalf("output = %q, want PASS", got)
 	}
 }
 
