@@ -21,7 +21,11 @@ wt smoke <model-id> --json
 
 - `model-id` — a registry model id (`provider/name`). Omitted → interactive
   picker over every currently eligible model (cloud-exposed, or local and
-  live-verified-running).
+  live-verified-running), using the same decorated, sorted list (family,
+  usage, cost, tags, rotation marker) the `wt` agent flow's model picker
+  renders — unlike that flow, the list here is never narrowed to one
+  agent's supported providers, since `wt smoke` picks the model first and
+  derives its eligible agents from that choice afterward.
 - `--prompt` — override the default sentinel-echo prompt. A custom prompt
   cannot be verified for a sentinel it was never asked to produce, so
   verification degrades to "the agent exited 0 within the timeout" — this

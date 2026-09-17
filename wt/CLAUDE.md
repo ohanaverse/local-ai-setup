@@ -161,7 +161,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/localgate/` | multi-model local-running gate (2026-09-14 design): probes every flagged model (except ollama, which trusts the flag) + shared Apply policy |
 | `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor (agent add/edit/delete) |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
-| `internal/tui/` | Bubble Tea shell + pickers + launch/resume |
+| `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildModelItems`, consumed by `wt smoke` |
 | `docs/superpowers/` | specs + plans |
 
 ## Config (Go)
@@ -399,7 +399,13 @@ Distinct from `make test-agents`/agents-smoke.sh's hand-curated regression
 matrix (static agent×model list, both routing modes) — `wt smoke` tests
 whatever routing mode is live right now, against whichever model you point it
 at. Read-only against modelman-owned state; never starts/stops local models
-or flips LiteLLM routing. See `docs/wt-smoke.md`.
+or flips LiteLLM routing. With no model-id on a TTY, the interactive picker
+is `internal/tui.PickModel` — a standalone Bubble Tea program (not the main
+app's worktree→agent→model state machine) that reuses `buildModelItems` for
+the same decorated/sorted rows the agent flow's model picker renders, over
+`smoke.Eligibility`'s unfiltered cross-agent union (never narrowed to one
+agent's supported providers, since here the eligible agents are derived
+*from* the chosen model rather than the reverse). See `docs/wt-smoke.md`.
 
 ## Guard (Go)
 

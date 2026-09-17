@@ -7,17 +7,17 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +26,11 @@ import (
 // printed); tests override it to record the code instead of terminating
 // the test process.
 var smokeExit = os.Exit
+
+// pickModelTUI is a test seam wrapping tui.PickModel (the same decorated
+// picker the wt agent flow uses): production dials the real TUI, which
+// needs a TTY; tests stub it to avoid one.
+var pickModelTUI = tui.PickModel
 
 func smokeCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
@@ -47,7 +52,7 @@ func smokeCmd(a *app) *cobra.Command {
 			if len(args) > 0 {
 				modelID = args[0]
 			}
-			m, eligible, err := resolveSmokeModel(a.cfg, modelID)
+			m, eligible, err := resolveSmokeModel(a.cfg, a.theme, modelID)
 			if err != nil {
 				return err
 			}
@@ -120,12 +125,15 @@ func validateSmokeTimeout(timeout time.Duration) error {
 // resolveSmokeModel resolves the model to test: the pinned id if given
 // (validated against the currently eligible set, with a message
 // distinguishing "unknown" from "exists but not eligible right now"), or
-// an interactive pick from the eligible list when omitted. Also returns the
-// resolved model's eligible agents (from the same smoke.Eligibility call
-// that resolved the model) so the caller doesn't need a second
+// an interactive pick from the eligible list when omitted, via the same
+// decorated picker (tui.PickModel) the wt agent flow uses — unfiltered by
+// agent, since here the eligible agents are determined *from* the chosen
+// model rather than the other way around. Also returns the resolved
+// model's eligible agents (from the same smoke.Eligibility call that
+// resolved the model) so the caller doesn't need a second
 // smoke.EligibleAgents call — that would pay its own localgate probe round
 // on top of this one.
-func resolveSmokeModel(cfg *config.Config, modelID string) (config.Model, []string, error) {
+func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (config.Model, []string, error) {
 	all, agentsForModel := smoke.Eligibility(cfg)
 	if modelID != "" {
 		if idx := config.IndexModelByID(all, modelID); idx >= 0 {
@@ -145,35 +153,14 @@ func resolveSmokeModel(cfg *config.Config, modelID string) (config.Model, []stri
 	if !stdinTTY() {
 		return config.Model{}, nil, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
 	}
-	m, err := pickModelInteractive(os.Stdin, os.Stdout, all)
+	m, ok, err := pickModelTUI(cfg, all, theme)
 	if err != nil {
 		return config.Model{}, nil, err
 	}
+	if !ok {
+		return config.Model{}, nil, fmt.Errorf("model selection canceled")
+	}
 	return m, agentsForModel[m.ID], nil
-}
-
-// pickModelInteractive prints a numbered list of models to w and reads a
-// selection from r. Takes an explicit reader/writer (rather than os.Stdin/
-// os.Stdout directly) so tests can drive it without a real TTY.
-func pickModelInteractive(r io.Reader, w io.Writer, models []config.Model) (config.Model, error) {
-	fmt.Fprintln(w, "Eligible models:")
-	for i, m := range models {
-		fmt.Fprintf(w, "  %d) %s\n", i+1, m.ID)
-	}
-	fmt.Fprint(w, "Select a model: ")
-	line, err := bufio.NewReader(r).ReadString('\n')
-	// ReadString returns the data read so far alongside the error when the
-	// stream ends before the delimiter (e.g. stdin closed with no trailing
-	// newline) — only bail if nothing was read at all.
-	if err != nil && line == "" {
-		return config.Model{}, err
-	}
-	line = strings.TrimSpace(line)
-	n, err := strconv.Atoi(line)
-	if err != nil || n < 1 || n > len(models) {
-		return config.Model{}, fmt.Errorf("invalid selection %q", line)
-	}
-	return models[n-1], nil
 }
 
 // filterOnlyAgents narrows eligible to the comma-separated --only list,

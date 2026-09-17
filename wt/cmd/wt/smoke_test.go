@@ -14,6 +14,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // smokeFixtureConfig builds a one-agent, two-model config: one model is
@@ -42,7 +43,7 @@ func smokeFixtureConfig() *config.Config {
 // eligible set resolves directly, with no TTY/picker interaction.
 func TestResolveSmokeModelPinnedEligible(t *testing.T) {
 	cfg := smokeFixtureConfig()
-	m, eligible, err := resolveSmokeModel(cfg, "ollama/qwen3.8:27b-mlx")
+	m, eligible, err := resolveSmokeModel(cfg, themes.Default, "ollama/qwen3.8:27b-mlx")
 	if err != nil {
 		t.Fatalf("resolveSmokeModel: %v", err)
 	}
@@ -60,7 +61,7 @@ func TestResolveSmokeModelPinnedEligible(t *testing.T) {
 // "unknown model".
 func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 	cfg := smokeFixtureConfig()
-	_, _, err := resolveSmokeModel(cfg, "ollama/not-eligible:x")
+	_, _, err := resolveSmokeModel(cfg, themes.Default, "ollama/not-eligible:x")
 	if err == nil || !strings.Contains(err.Error(), "not currently eligible") {
 		t.Fatalf("err = %v, want a not-currently-eligible message", err)
 	}
@@ -70,7 +71,7 @@ func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 // registry entirely gets "unknown model".
 func TestResolveSmokeModelUnknown(t *testing.T) {
 	cfg := smokeFixtureConfig()
-	_, _, err := resolveSmokeModel(cfg, "ollama/does-not-exist")
+	_, _, err := resolveSmokeModel(cfg, themes.Default, "ollama/does-not-exist")
 	if err == nil || !strings.Contains(err.Error(), "unknown model") {
 		t.Fatalf("err = %v, want unknown model error", err)
 	}
@@ -85,7 +86,7 @@ func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
 	defer func() { stdinTTY = old }()
 
 	cfg := smokeFixtureConfig()
-	_, _, err := resolveSmokeModel(cfg, "")
+	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err == nil || !strings.Contains(err.Error(), "needs a TTY") {
 		t.Fatalf("err = %v, want a TTY-required message", err)
 	}
@@ -95,52 +96,58 @@ func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
 // with actionable guidance instead of silently opening an empty picker.
 func TestResolveSmokeModelNoneEligible(t *testing.T) {
 	cfg := &config.Config{}
-	_, _, err := resolveSmokeModel(cfg, "")
+	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err == nil || !strings.Contains(err.Error(), "no models are currently eligible") {
 		t.Fatalf("err = %v, want a no-eligible-models message", err)
 	}
 }
 
-// TestPickModelInteractiveValidSelection asserts a numbered choice resolves
-// to the corresponding model and the listing is printed to w.
-func TestPickModelInteractiveValidSelection(t *testing.T) {
-	models := []config.Model{{ID: "a/1"}, {ID: "b/2"}}
-	var out bytes.Buffer
-	m, err := pickModelInteractive(strings.NewReader("2\n"), &out, models)
+// TestResolveSmokeModelInteractivePicksViaTUI asserts that omitting the
+// model id on a TTY delegates to the shared tui.PickModel picker (the same
+// decorated list the wt agent flow uses) rather than a bare numbered
+// prompt, and resolves to whatever model the picker returns.
+func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {
+	old := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = old }()
+
+	oldPick := pickModelTUI
+	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
+		return models[0], true, nil
+	}
+	defer func() { pickModelTUI = oldPick }()
+
+	cfg := smokeFixtureConfig()
+	m, eligible, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err != nil {
-		t.Fatalf("pickModelInteractive: %v", err)
+		t.Fatalf("resolveSmokeModel: %v", err)
 	}
-	if m.ID != "b/2" {
-		t.Fatalf("got %q, want b/2", m.ID)
+	if m.ID != "ollama/qwen3.8:27b-mlx" {
+		t.Fatalf("got model %q, want the picker's returned model", m.ID)
 	}
-	if !strings.Contains(out.String(), "1) a/1") || !strings.Contains(out.String(), "2) b/2") {
-		t.Fatalf("listing output missing entries: %q", out.String())
+	if len(eligible) != 1 || eligible[0] != "claude" {
+		t.Fatalf("eligible agents = %v, want [claude]", eligible)
 	}
 }
 
-// TestPickModelInteractiveEOFNoTrailingNewline asserts a selection is still
-// honored when the input stream ends (io.EOF) right after the digit with no
-// trailing newline — e.g. `printf 2 | wt smoke`. bufio.Reader.ReadString
-// returns the data read so far alongside io.EOF in that case; discarding it
-// on any non-nil error would throw away a syntactically valid selection.
-func TestPickModelInteractiveEOFNoTrailingNewline(t *testing.T) {
-	models := []config.Model{{ID: "a/1"}, {ID: "b/2"}}
-	m, err := pickModelInteractive(strings.NewReader("2"), &bytes.Buffer{}, models)
-	if err != nil {
-		t.Fatalf("pickModelInteractive: %v", err)
-	}
-	if m.ID != "b/2" {
-		t.Fatalf("got %q, want b/2", m.ID)
-	}
-}
+// TestResolveSmokeModelInteractiveCanceled asserts that canceling the TUI
+// picker (Esc/q/Ctrl+C) surfaces a clear error instead of silently
+// resolving to a zero-value model.
+func TestResolveSmokeModelInteractiveCanceled(t *testing.T) {
+	old := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = old }()
 
-// TestPickModelInteractiveOutOfRange asserts a selection outside the
-// listed range is rejected rather than panicking on an out-of-bounds index.
-func TestPickModelInteractiveOutOfRange(t *testing.T) {
-	models := []config.Model{{ID: "a/1"}}
-	_, err := pickModelInteractive(strings.NewReader("5\n"), &bytes.Buffer{}, models)
-	if err == nil || !strings.Contains(err.Error(), "invalid selection") {
-		t.Fatalf("err = %v, want invalid selection error", err)
+	oldPick := pickModelTUI
+	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
+		return config.Model{}, false, nil
+	}
+	defer func() { pickModelTUI = oldPick }()
+
+	cfg := smokeFixtureConfig()
+	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
+	if err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("err = %v, want a canceled-picker message", err)
 	}
 }
 
