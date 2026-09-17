@@ -10,8 +10,10 @@ handful of direct HTTP calls per category instead of a full agent session.
 from __future__ import annotations
 
 import itertools
+import json
 import subprocess
-from dataclasses import dataclass, field
+import tomllib
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from modelman.benchmark.eval.suite import (
     LITELLM_PLIST,
     LIVE_PI_MODELS_PATH,
     OPENROUTER_BASE_URL,
+    JudgeConfig,
     RowConfig,
     Suite,
     load_live_models,
@@ -30,7 +33,7 @@ from modelman.benchmark.eval.suite import (
     preflight,
     resolve_row_endpoint,
 )
-from modelman.benchmark.judge_core import JudgeTransport, LiteLLMJudgeTransport
+from modelman.benchmark.judge_core import JudgeTransport, LiteLLMJudgeTransport, judge_row
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -238,3 +241,72 @@ def run_suite(
             results=results,
         )
     return run_dir, results
+
+
+def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> JudgeConfig:
+    with (run_dir / "run.toml").open("rb") as f:
+        run_data = tomllib.load(f)
+    judge_raw = run_data["suite"]["judge"]
+    return JudgeConfig(
+        model=judge_raw["model"],
+        temperature=judge_raw["temperature"],
+        samples=samples_override if samples_override is not None else judge_raw["samples"],
+        max_attempts=judge_raw["max_attempts"],
+        route=judge_raw["route"],
+    )
+
+
+def rejudge_run(
+    run_dir: Path,
+    categories: list[Category],
+    *,
+    row_filter: list[str] | None = None,
+    samples_override: int | None = None,
+    judge_transport_factory=None,
+) -> list[dict]:
+    """Re-score every judged-category item from its persisted response.txt,
+    without regenerating anything. `coding` has nothing to re-judge —
+    EvalPlus's pass@1 is deterministic and not touched here. There is no
+    Suite in hand at rejudge time — the judge config comes back from the
+    run's own persisted run.toml (Task 8's write_run_toml)."""
+    by_name = {c.name: c for c in categories}
+    judge_cfg = _judge_config_from_run_toml(run_dir, samples_override)
+    transport = (judge_transport_factory or _default_judge_transport_factory)(judge_cfg)
+
+    outcomes: list[dict] = []
+    for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
+        if row_filter and row_dir.name not in row_filter:
+            continue
+        for category_dir in sorted(p for p in row_dir.iterdir() if p.is_dir()):
+            category = by_name.get(category_dir.name)
+            if category is None or category.rubric is None:
+                continue  # coding, or a category this rejudge call wasn't given
+            for item_dir in sorted(p for p in category_dir.iterdir() if p.is_dir()):
+                response_path = item_dir / "response.txt"
+                if not response_path.is_file():
+                    continue
+                item = next((i for i in category.items if i.id == item_dir.name), None)
+                if item is None:
+                    continue
+                response_text = response_path.read_text(encoding="utf-8")
+                prompt = judged_runner._build_judge_prompt(item, category, response_text)
+                outcome = judge_row(
+                    transport,
+                    prompt,
+                    category.rubric,
+                    temperature=judge_cfg.temperature,
+                    samples=judge_cfg.samples,
+                    max_attempts=judge_cfg.max_attempts,
+                )
+                (item_dir / "judge.json").write_text(
+                    json.dumps(asdict(outcome), indent=2), encoding="utf-8"
+                )
+                outcomes.append(
+                    {
+                        "row": row_dir.name,
+                        "category": category.name,
+                        "item": item.id,
+                        "total": outcome.combined.total if outcome.combined else None,
+                    }
+                )
+    return outcomes
