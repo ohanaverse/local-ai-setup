@@ -1435,6 +1435,22 @@ async def test_confirm_exit_dialog_buttons_and_safe_focus():
 
 
 @pytest.mark.asyncio
+async def test_confirm_force_quit_dialog_buttons_and_safe_focus():
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    modal = ConfirmForceQuitDialog(["Starting ollama/a"], pending_changes=0)
+    async with ModelmanApp().run_test() as pilot:
+        await pilot.pause()
+        pilot.app.push_screen(modal)
+        await pilot.pause()
+        # Order left-to-right: Keep waiting (safe default), Force quit
+        # (warning/destructive). Initial focus is Keep waiting, so an
+        # accidental Enter never abandons the in-flight operation.
+        assert _button_ids(pilot.app) == ["wait", "force"]
+        assert _focused_id(pilot.app) == "wait"
+
+
+@pytest.mark.asyncio
 async def test_modelform_escape_from_input_dismisses():
     """Escape must cancel the modal even when the model Input is focused."""
     form = ModelForm(providers=["ollama"])
