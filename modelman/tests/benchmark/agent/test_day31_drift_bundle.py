@@ -71,8 +71,13 @@ _RUNNER_SCRIPT = (
 
 
 def _run_test_module(root: Path, module_name: str) -> tuple[int, int, int]:
+    # "-S" mirrors gates.py's own hidden-test subprocess invocations: without
+    # it, a same-named "tests" regular package anywhere in this harness venv's
+    # site-packages (e.g. the "eval" extra's evalplus -> stop-sequencer
+    # dependency, which ships a stray top-level tests/__init__.py) shadows the
+    # workspace's own tests/ namespace package and breaks dotted-name loading.
     result = subprocess.run(
-        [sys.executable, "-c", _RUNNER_SCRIPT, module_name],
+        [sys.executable, "-S", "-c", _RUNNER_SCRIPT, module_name],
         cwd=root,
         capture_output=True,
         text=True,
