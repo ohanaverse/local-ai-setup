@@ -346,12 +346,29 @@ class ModelScreen(Screen[None]):
         # are: a model flagged running whose process actually died (crash,
         # manual kill outside modelman) must not keep showing RUNNING=●
         # forever. running_model_ids() re-probes every flagged model and
-        # clears any stale flag as a side effect; anything it doesn't
-        # return is not verified running, so it gets cleared here too.
+        # clears any stale flag (and best-effort un-exposes it) as a side
+        # effect; anything it doesn't return is not verified running, so
+        # it gets cleared here too — exposed is re-read from disk since
+        # running_model_ids() already wrote the post-unexpose value there.
         verified = set(running_model_ids(self.registry, self.state, self.state_path))
-        for model_id, model_state in list(self.state.models.items()):
-            if model_state.running and model_id not in verified:
-                self.state.models[model_id] = replace(model_state, running=False)
+        stale_ids = [
+            model_id
+            for model_id, model_state in self.state.models.items()
+            if model_state.running and model_id not in verified
+        ]
+        if stale_ids:
+            # running_model_ids() already best-effort un-exposed each of
+            # these on disk (_clear_stale_running_flag) — pull that fresh
+            # value in rather than leaving self.state's in-memory copy at
+            # its stale pre-reconcile exposed value, which would render a
+            # wrong "Y" in the EXPOSED column for the rest of the session.
+            fresh_state = load_state(self.state_path)
+            for model_id in stale_ids:
+                model_state = self.state.models[model_id]
+                fresh_exposed = fresh_state.models.get(model_id, model_state).exposed
+                self.state.models[model_id] = replace(
+                    model_state, running=False, exposed=fresh_exposed
+                )
         self.discovered = discover_unregistered_models(self.registry, local_map)
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
