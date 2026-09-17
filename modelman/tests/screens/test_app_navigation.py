@@ -1812,6 +1812,8 @@ async def test_escape_while_model_start_running_shows_force_quit_dialog(tmp_path
         await pilot.pause()
         await pilot.pause()  # let on-mount reconcile settle first
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2), "start_local_model was never called"
 
         await pilot.press("escape")
@@ -1899,6 +1901,8 @@ async def test_force_quit_restores_terminal_before_hard_exit(tmp_path, monkeypat
         await pilot.pause()
         await pilot.pause()
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2)
 
         # Spy on the real (headless test) driver's teardown methods rather
@@ -1974,6 +1978,8 @@ async def test_ctrl_q_while_force_quit_dialog_open_force_quits(tmp_path, monkeyp
         await pilot.pause()
         await pilot.pause()
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2)
 
         await pilot.press("escape")
@@ -2044,6 +2050,8 @@ async def test_force_quit_dialog_warns_about_pending_changes(tmp_path, monkeypat
         table = app.screen.query_one("#model-table", DataTable)
         table.move_cursor(row=table.get_row_index("omlx/a"))
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         assert started.wait(timeout=2)
 
         # Cursor to the ollama row (rows are keyed by model id) and queue a

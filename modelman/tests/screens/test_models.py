@@ -2317,15 +2317,16 @@ async def test_running_column_shows_dash_when_not_running(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_action_toggle_running_starts_a_stopped_ready_model(tmp_path, monkeypatch):
-    # 's' on a ready-but-stopped local model must call start_local_model on a
-    # background thread (not block the UI) and pass the model's id through.
-    # This pins the happy path of the new toggle action before the confirm-
-    # dialog and stop paths are exercised separately.
+async def test_action_toggle_running_confirms_then_starts_a_stopped_ready_model(tmp_path, monkeypatch):
+    # 's' on a ready-but-stopped local model, with no other local model
+    # running, must still show a confirm dialog (starting is disruptive —
+    # every start/stop is confirmed, not just replacements) before calling
+    # start_local_model on a background thread.
     from unittest.mock import MagicMock
 
     from modelman.local_control import StartResult
     from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
 
     model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
     reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
@@ -2358,11 +2359,211 @@ async def test_action_toggle_running_starts_a_stopped_ready_model(tmp_path, monk
         await _open_model_screen(pilot)
         await pilot.pause()  # let reconcile settle
         await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        assert app.screen._message == "Start ollama/a?"
+        await pilot.press("y")
         for _ in range(200):
             await pilot.pause()
             if started.get("id") == "ollama/a":
                 break
     assert started["id"] == "ollama/a"
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_start_cancelled_does_not_start(tmp_path, monkeypatch):
+    # Dismissing the new solo-start confirm dialog ('n') must not call
+    # start_local_model at all.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = {}
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        started["id"] = model_id
+        raise AssertionError("start_local_model must not be called when the dialog is cancelled")
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+    assert started == {}
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_path, monkeypatch):
+    # 's' on a running local model must show a confirm dialog naming the
+    # un-expose side effect before calling stop_local_model — stopping is
+    # just as disruptive as starting and gets the same confirmation.
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StopResult
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=True))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(
+        "modelman.screens.models.running_model_ids",
+        lambda registry, state, state_path=None: [m for m, s in state.models.items() if s.running],
+    )
+
+    stopped = {}
+
+    def fake_stop(model_id, state_path=None, **kwargs):
+        stopped["id"] = model_id
+        return StopResult(stopped_model_id=model_id)
+
+    monkeypatch.setattr("modelman.screens.models.stop_local_model", fake_stop)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        assert "un-expose" in app.screen._message
+        await pilot.press("y")
+        for _ in range(200):
+            await pilot.pause()
+            if stopped.get("id") == "ollama/a":
+                break
+    assert stopped["id"] == "ollama/a"
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_stop_cancelled_does_not_stop(tmp_path, monkeypatch):
+    # Dismissing the stop confirm dialog ('n') must not call
+    # stop_local_model at all.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=True))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(
+        "modelman.screens.models.running_model_ids",
+        lambda registry, state, state_path=None: [m for m, s in state.models.items() if s.running],
+    )
+
+    stopped = {}
+
+    def fake_stop(model_id, state_path=None, **kwargs):
+        stopped["id"] = model_id
+        raise AssertionError("stop_local_model must not be called when the dialog is cancelled")
+
+    monkeypatch.setattr("modelman.screens.models.stop_local_model", fake_stop)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+    assert stopped == {}
+
+
+@pytest.mark.asyncio
+async def test_action_toggle_running_busy_guard_blocks_reentrant_start(tmp_path, monkeypatch):
+    # While a start/stop worker is still in flight, pressing 's' again
+    # (even on a different model) must not open another confirm dialog or
+    # call start_local_model a second time — start/stop is exclusive.
+    import threading
+    from unittest.mock import MagicMock
+
+    from modelman.local_control import StartResult
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmModal
+
+    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    call_count = {"n": 0}
+    release = threading.Event()
+    entered = threading.Event()
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        call_count["n"] += 1
+        entered.set()
+        release.wait(timeout=5)
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    monkeypatch.setattr("modelman.screens.models.start_local_model", fake_start)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()  # let reconcile settle
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("y")
+        for _ in range(200):
+            await pilot.pause()
+            if entered.is_set():
+                break
+        # The worker is now blocked inside fake_start; a second 's' must be
+        # rejected without opening a second dialog.
+        await pilot.press("s")
+        await pilot.pause()
+        assert not isinstance(app.screen, ConfirmModal)
+        release.set()
+        for _ in range(20):
+            await pilot.pause()
+    assert call_count["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -2411,6 +2612,8 @@ async def test_action_toggle_running_accepts_non_local_model_on_local_provider(t
         await pilot.pause()  # let reconcile settle
         app.screen.notify = lambda msg, *a, **k: notified.append(msg)
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         for _ in range(200):
             await pilot.pause()
             if started.get("id") == "ollama/a":
@@ -2520,6 +2723,8 @@ async def test_start_toggle_preserves_in_session_reconciled_state(tmp_path, monk
             ready=True, disk_path="/reconciled/path", size_bytes=4242, running=False
         )
         await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("y")
         for _ in range(200):
             await pilot.pause()
             if screen.state.models["ollama/a"].running:
