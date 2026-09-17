@@ -17,6 +17,7 @@ from modelman.local_control import (
     DiscoveredModelNeedsFamily,
     InventoryEntry,
     LocalControlError,
+    _clear_stale_running_flag,
     _name_matches,
     _probe_running,
     discover_unregistered_models,
@@ -966,6 +967,35 @@ def test_running_model_ids_unexposes_a_stale_flagged_model(tmp_path):
     on_disk = load_state(state_path)
     assert on_disk.get("ollama/qwen3.8:27b-mlx").running is False
     assert on_disk.get("ollama/qwen3.8:27b-mlx").exposed is False
+
+
+def test_clear_stale_running_flag_failed_unexpose_does_not_clobber_concurrent_write(tmp_path):
+    # Same race guard as stop_all_local_models: if unexpose_model() fails
+    # while this function is clearing a stale flag, the exposed field it
+    # writes back must reflect whatever a concurrent process wrote in the
+    # meantime, not the stale pre-attempt snapshot this function loaded
+    # for itself at the top.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
+    save_state(store, state_path)
+    litellm_path = tmp_path / "config.yaml"  # missing -> unexpose_model raises
+
+    def _concurrent_write_then_fail(*args, **kwargs):
+        with locked_state(state_path) as fresh:
+            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=False)
+        raise OSError(28, "No space left on device")
+
+    with patch(
+        "modelman.local_control.unexpose_model", side_effect=_concurrent_write_then_fail
+    ):
+        _clear_stale_running_flag("ollama/a", state_path, litellm_path)
+
+    state = load_state(state_path)
+    assert state.get("ollama/a").running is False
+    # Must reflect the concurrent write, not the stale True snapshot this
+    # function loaded before the race.
+    assert state.get("ollama/a").exposed is False
 
 
 def test_start_mlx_lm_server_resolves_pairing_args(tmp_path):

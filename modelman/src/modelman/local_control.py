@@ -263,15 +263,20 @@ def _clear_stale_running_flag(
     existing = state.models.get(model_id)
     if existing is None or not existing.running:
         return
+    unexpose_ok = True
     if existing.exposed:
-        with contextlib.suppress(LiteLLMConfigError, OSError):
+        try:
             unexpose_model(state, model_id, litellm_path or default_litellm_config_path())
+        except (LiteLLMConfigError, OSError):
+            unexpose_ok = False
     try:
         with locked_state(state_path) as fresh:
             fresh_existing = fresh.models.get(model_id)
             if fresh_existing is not None and fresh_existing.running:
                 fresh.models[model_id] = replace(
-                    fresh_existing, running=False, exposed=state.models[model_id].exposed
+                    fresh_existing,
+                    running=False,
+                    exposed=state.models[model_id].exposed if unexpose_ok else fresh_existing.exposed,
                 )
     except OSError:
         pass  # the LocalControlError about the failed start is the user's answer
