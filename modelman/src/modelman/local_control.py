@@ -49,6 +49,7 @@ from .benchmark.isolation import (
 from .litellm import (
     ExposeError,
     LiteLLMConfigError,
+    apply_unexpose_queue,
     default_litellm_config_path,
     expose_model,
     unexpose_model,
@@ -130,6 +131,13 @@ class StartResult:
 class StopResult:
     # The marker that was cleared, or None if nothing was running.
     stopped_model_id: str | None
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StopAllResult:
+    # Every model id stopped by this call, sorted.
+    stopped: list[str]
     warnings: list[str] = field(default_factory=list)
 
 
@@ -1075,27 +1083,44 @@ def stop_local_model(
 
 def stop_all_local_models(
     state_path: Path | None = None, *, litellm_path: Path | None = None
-) -> list[str]:
+) -> StopAllResult:
     """Stop every currently-running local model, best-effort un-expose
-    each one that was exposed, and clear all their flags. Returns the
-    sorted list of model ids that were stopped."""
+    every one that was exposed in a single batched LiteLLM write, and
+    clear all their flags. Returns the sorted list of model ids that were
+    stopped plus any non-fatal warnings (e.g. a failed batch unexpose)."""
     state = load_state(state_path)
     running_ids = sorted(mid for mid, s in state.models.items() if s.running)
     if not running_ids:
-        return []
+        return StopAllResult(stopped=[])
     try:
         stop_all_local_providers()
     except BenchmarkError as exc:
         raise LocalControlError(f"failed to stop local models: {exc}") from exc
-    for mid in running_ids:
-        if state.models[mid].exposed:
-            with contextlib.suppress(LiteLLMConfigError, OSError):
-                unexpose_model(state, mid, litellm_path or default_litellm_config_path())
+
+    exposed_ids = [mid for mid in running_ids if state.models[mid].exposed]
+    unexpose_ok = True
+    warnings: list[str] = []
+    if exposed_ids:
+        try:
+            warnings = apply_unexpose_queue(
+                state, exposed_ids, litellm_path or default_litellm_config_path()
+            )
+        except (LiteLLMConfigError, OSError) as exc:
+            unexpose_ok = False
+            warnings = [
+                f"{len(exposed_ids)} stopped model(s) could not be un-exposed from "
+                f"LiteLLM ({exc}); they may still be routable through a dead backend "
+                f"until you run `modelman unexpose <id>` for each: "
+                f"{', '.join(exposed_ids)}"
+            ]
+
     with locked_state(state_path) as fresh:
         for mid in running_ids:
             existing = fresh.models.get(mid)
             if existing is not None and existing.running:
                 fresh.models[mid] = replace(
-                    existing, running=False, exposed=state.models[mid].exposed
+                    existing,
+                    running=False,
+                    exposed=state.models[mid].exposed if unexpose_ok else existing.exposed,
                 )
-    return running_ids
+    return StopAllResult(stopped=running_ids, warnings=warnings)

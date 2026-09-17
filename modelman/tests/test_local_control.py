@@ -4,6 +4,7 @@ calls are mocked; these tests cover validation, probe-based idempotency,
 stale-marker recovery, and marker mutation — not bin/llm-isolate-provider
 itself (see tests/benchmark/test_isolation.py for that)."""
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -801,9 +802,10 @@ def test_stop_all_local_models_stops_every_running_one(tmp_path):
     # not one stop_provider() call per model.
     state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True, "omlx/model-a": True})
     with patch("modelman.local_control.stop_all_local_providers") as mock_stop_all:
-        stopped = stop_all_local_models(state_path)
+        result = stop_all_local_models(state_path)
     mock_stop_all.assert_called_once()
-    assert sorted(stopped) == ["ollama/qwen3.8:27b-mlx", "omlx/model-a"]
+    assert sorted(result.stopped) == ["ollama/qwen3.8:27b-mlx", "omlx/model-a"]
+    assert result.warnings == []
     state = load_state(state_path)
     assert state.get("ollama/qwen3.8:27b-mlx").running is False
     assert state.get("omlx/model-a").running is False
@@ -827,7 +829,9 @@ def test_running_model_ids_filters_to_probe_verified(tmp_path):
 def test_stop_all_local_models_unexposes_each_stopped_model(tmp_path):
     # `--all` must not leave a stopped model's LiteLLM row behind either —
     # same expose/running symmetry as a single stop_local_model() call,
-    # just applied to every model the batch stops.
+    # just applied to every model the batch stops, in a single batched
+    # config write (see test_stop_all_local_models_unexposes_in_one_batch
+    # for the call-count assertion).
     state_path = tmp_path / "modelman.toml"
     store = StateStore()
     store.set("ollama/qwen3.8:27b-mlx", ModelState(ready=True, exposed=True, running=True))
@@ -842,12 +846,98 @@ def test_stop_all_local_models_unexposes_each_stopped_model(tmp_path):
     )
 
     with patch("modelman.local_control.stop_all_local_providers"):
-        stopped = stop_all_local_models(state_path, litellm_path=litellm_path)
+        result = stop_all_local_models(state_path, litellm_path=litellm_path)
 
-    assert sorted(stopped) == ["ollama/qwen3.8:27b-mlx", "omlx/model-a"]
+    assert sorted(result.stopped) == ["ollama/qwen3.8:27b-mlx", "omlx/model-a"]
+    assert result.warnings == []
     state = load_state(state_path)
     assert state.get("ollama/qwen3.8:27b-mlx").exposed is False
     assert state.get("omlx/model-a").exposed is False  # was never exposed; stays False
+
+
+def test_stop_all_local_models_unexposes_in_one_batched_call(tmp_path):
+    # Two exposed models being stopped together must go through ONE
+    # apply_unexpose_queue call (one config load/save/restart), not one
+    # unexpose_model() call per model — the efficiency half of the
+    # code-review finding this task fixes.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
+    store.set("ollama/b", ModelState(ready=True, exposed=True, running=True))
+    save_state(store, state_path)
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.apply_unexpose_queue", return_value=[]) as mock_batch,
+    ):
+        result = stop_all_local_models(state_path)
+
+    mock_batch.assert_called_once()
+    (_, called_ids, _), _ = mock_batch.call_args
+    assert sorted(called_ids) == ["ollama/a", "ollama/b"]
+    assert sorted(result.stopped) == ["ollama/a", "ollama/b"]
+
+
+def test_stop_all_local_models_surfaces_unexpose_failure_as_warning(tmp_path):
+    # A batch unexpose failure (disk full, unwritable config) must not be
+    # silently swallowed: every process still stops and every running
+    # flag still clears, but the caller (main.py's --all branch) needs a
+    # warning to print, mirroring stop_local_model's StopResult.warnings.
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
+    save_state(store, state_path)
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch(
+            "modelman.local_control.apply_unexpose_queue",
+            side_effect=OSError(28, "No space left on device"),
+        ),
+    ):
+        result = stop_all_local_models(state_path)
+
+    assert result.stopped == ["ollama/a"]
+    assert any("could not be un-exposed" in w for w in result.warnings)
+    state = load_state(state_path)
+    # The process is stopped either way — a failed unexpose must not block it.
+    assert state.get("ollama/a").running is False
+
+
+def test_stop_all_local_models_failed_unexpose_does_not_clobber_concurrent_exposed_write(
+    tmp_path,
+):
+    # Race guard: stop_all_local_models() loads `state` once up front, then
+    # (in this test) a concurrent process flips `exposed` on disk while the
+    # batch unexpose is failing. The flag write at the end must fall back
+    # to the freshly-locked value, not the stale pre-attempt snapshot —
+    # the same guard stop_local_model() already has.
+    from modelman.state import locked_state
+
+    state_path = tmp_path / "modelman.toml"
+    store = StateStore()
+    store.set("ollama/a", ModelState(ready=True, exposed=True, running=True))
+    save_state(store, state_path)
+
+    def _concurrent_write_then_fail(*args, **kwargs):
+        # Simulate another process (e.g. `modelman expose ollama/a`)
+        # racing this stop_all_local_models() call.
+        with locked_state(state_path) as fresh:
+            fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=False)
+        raise OSError(28, "No space left on device")
+
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch(
+            "modelman.local_control.apply_unexpose_queue",
+            side_effect=_concurrent_write_then_fail,
+        ),
+    ):
+        stop_all_local_models(state_path)
+
+    # Must reflect the concurrent write (False), not the stale pre-attempt
+    # snapshot (True) that stop_all_local_models loaded before the race.
+    assert load_state(state_path).get("ollama/a").exposed is False
 
 
 def test_running_model_ids_unexposes_a_stale_flagged_model(tmp_path):
