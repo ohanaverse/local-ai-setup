@@ -2,5 +2,11 @@
 # no rubric/judge. `limit` keeps a multi-model x multi-engine sweep
 # tractable; a suite's own [coding] block can override this per run (see
 # eval/suite.py's CodingConfig).
+#
+# KNOWN LIMITATION: EvalPlus 0.3.1's grading step requires every problem in
+# the FULL dataset (164 for humaneval) to have a sample before it computes
+# pass@k, regardless of --id-range/limit — so this limit < 164 currently
+# makes the coding category fail with a CodingResult.error, not a score.
+# See docs/guides/11-capability-eval-benchmark.md's Gotchas.
 dataset = "humaneval"
 limit = 40

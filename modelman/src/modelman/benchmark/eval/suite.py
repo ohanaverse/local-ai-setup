@@ -97,6 +97,11 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             )
         if route not in ROW_ROUTES:
             raise BenchmarkError(f"suite row {index} has unknown route: {route!r}")
+        # Always run the friendly unknown-model check, even when `provider =`
+        # is set explicitly — otherwise `provider = ` short-circuits the `or`
+        # below and `registry.model(model_id)` raises a raw KeyError instead
+        # of a clean BenchmarkError for an unknown model_id.
+        _provider_for(model_id, registry)
         provider_id = raw.get("provider") or _provider_for(model_id, registry)
         model_entry = registry.model(model_id)
         label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{route}"

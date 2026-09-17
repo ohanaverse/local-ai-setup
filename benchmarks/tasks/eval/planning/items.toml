@@ -28,7 +28,7 @@ implementation plan to add a dark mode toggle that persists across
 sessions. Do not write code -- just the plan.
 """
 [items.meta]
-reference_notes = "A solid plan covers: a token/CSS-variable-based theming approach (not a page-by-page repaint), persistence mechanism (localStorage + respecting prefers-color-scheme as a default), where the toggle lives in the UI, and a check for any hardcoded colors that would break under the new theme. Scope discipline: it should not propose a full design-system rewrite when a toggle was asked for."
+reference_notes = "A solid plan covers: a systematic theming approach -- design tokens/CSS variables, Tailwind dark-mode variants, or a theme provider -- rather than a page-by-page repaint, persistence mechanism (localStorage + respecting prefers-color-scheme as a default), where the toggle lives in the UI, and a check for any hardcoded colors that would break under the new theme. Scope discipline: it should not propose a full design-system rewrite when a toggle was asked for."
 
 [[items]]
 id = "flaky-test-suite"

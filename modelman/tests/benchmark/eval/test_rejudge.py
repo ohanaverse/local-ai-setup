@@ -90,3 +90,57 @@ def test_rejudge_run_samples_override_takes_precedence_over_run_toml(tmp_path):
         judge_transport_factory=lambda judge_cfg: _CountingTransport(),
     )
     assert len(calls) == 3  # one sample per configured sample count, not run.toml's samples=1
+
+
+def test_rejudge_run_recomputes_score_json_and_summary_after_rescoring(tmp_path):
+    # Regression test for the stale-report finding: rejudge_run used to
+    # overwrite item-level judge.json without ever recomputing the
+    # category's score.json or re-rendering summary.md, so `eval show
+    # --latest` kept displaying the OLD, pre-rejudge numbers with no
+    # indication anything had changed — a silently-wrong-output bug, the
+    # worst failure mode for a benchmark/reporting tool. This seeds a run
+    # dir with STALE score.json/summary.md/metrics.jsonl (as if an original
+    # run_suite() had scored the item 10/100), rejudges it against a fake
+    # transport that always scores 90/100, and asserts every derived
+    # artifact reflects the new score, not the stale one.
+    run_dir = _seed_run(tmp_path)
+    (run_dir / "01--row1" / "mini_review" / "score.json").write_text(
+        json.dumps({"score_100": 10}), encoding="utf-8"
+    )
+    (run_dir / "summary.md").write_text("# stale\n\n10.0\n", encoding="utf-8")
+    (run_dir / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "label": "01--row1",
+                "model_id": "ollama/a",
+                "route": "litellm",
+                "error": None,
+                "categories": {"mini_review": 10},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    category = Category(
+        name="mini_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="review this", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+    rejudge_run(
+        run_dir,
+        [category],
+        judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+    )
+
+    score_data = json.loads((run_dir / "01--row1" / "mini_review" / "score.json").read_text())
+    assert score_data["score_100"] == 90.0  # the new judge score, not the stale 10
+
+    summary = (run_dir / "summary.md").read_text()
+    assert "90.0" in summary
+    assert "10.0" not in summary  # the stale number must not survive the re-render
+
+    metrics_line = json.loads((run_dir / "metrics.jsonl").read_text().splitlines()[0])
+    assert metrics_line["categories"]["mini_review"] == 90.0

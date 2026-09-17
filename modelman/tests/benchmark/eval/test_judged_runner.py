@@ -47,6 +47,9 @@ class _FakeJudgeTransport:
 
 
 def test_run_judged_category_sends_item_prompt_verbatim_to_row_transport():
+    # The row transport must receive exactly each item's own prompt text,
+    # with no judge/rubric wrapping mixed in — that wrapping only belongs in
+    # the separate judge prompt built after generation.
     row_transport = _FakeRowTransport()
     run_judged_category(
         CATEGORY,
@@ -61,6 +64,10 @@ def test_run_judged_category_sends_item_prompt_verbatim_to_row_transport():
 
 
 def test_run_judged_category_scores_as_mean_of_item_totals():
+    # A category's row-level score_100 is the mean of its items' judge
+    # totals (already /100 since every rubric sums to 100) — this pins the
+    # aggregation formula so a future change to it is deliberate, not
+    # accidental.
     result = run_judged_category(
         CATEGORY,
         _FakeRowTransport(),
@@ -75,6 +82,10 @@ def test_run_judged_category_scores_as_mean_of_item_totals():
 
 
 def test_run_judged_category_ignores_judge_fail_items_in_the_mean():
+    # An item whose judge call fails to parse must not drag the category
+    # mean down to zero, and must not silently vanish either — it's excluded
+    # from the mean but still recorded as a judge_fail item, so a partial
+    # judge outage degrades the score gracefully instead of corrupting it.
     result = run_judged_category(
         CATEGORY,
         _FakeRowTransport(),

@@ -22,6 +22,10 @@ NO_VERDICT_RUBRIC = Rubric(dimensions={"x": 50, "y": 30, "z": 20}, verdicts=None
 
 
 def test_parse_response_accepts_rubric_without_verdicts():
+    # verdicts=None means a "verdict" key is neither required nor validated
+    # against a closed set — this covers a category whose rubric has no
+    # verdict enum at all (the eval-benchmark categories), not just the
+    # agent benchmark's verdict-bearing rubric.
     raw = json.dumps({"scores": {"x": 40, "y": 20, "z": 10}, "total": 70})
     score = parse_response(raw, NO_VERDICT_RUBRIC)
     assert score.total == 70
@@ -29,12 +33,20 @@ def test_parse_response_accepts_rubric_without_verdicts():
 
 
 def test_parse_response_rejects_score_over_dimension_max():
+    # A per-dimension score must stay within its rubric-declared max points —
+    # an out-of-range value (here x=999 against a max of 50) is a strict
+    # contract violation, not silently clamped, so a malformed judge reply
+    # can't inflate a category's score.
     raw = json.dumps({"scores": {"x": 999, "y": 20, "z": 10}, "total": 70})
     with pytest.raises(JudgeContractError, match="x"):
         parse_response(raw, NO_VERDICT_RUBRIC)
 
 
 def test_parse_response_validates_verdict_when_rubric_requires_it():
+    # When a rubric DOES declare a closed verdict set, a verdict outside
+    # that set ("ok" vs. the declared {"good", "bad"}) must be rejected —
+    # this is the complement of the no-verdict test above, proving the
+    # validation is genuinely rubric-driven rather than always-off.
     raw = json.dumps({"scores": {"a": 50, "b": 30}, "total": 80, "verdict": "ok"})
     with pytest.raises(JudgeContractError, match="verdict"):
         parse_response(raw, VERDICT_RUBRIC)
@@ -49,6 +61,10 @@ class _StubTransport:
 
 
 def test_judge_row_combines_multiple_samples_by_median():
+    # Multi-sample judging (samples > 1) combines per-dimension scores by
+    # MEDIAN, not mean — a median is far less sensitive to one outlier
+    # sample, which matters since a judge's reply quality can vary run to
+    # run; this pins the exact combination rule.
     replies = [
         json.dumps({"scores": {"x": 40, "y": 20, "z": 10}, "total": 70}),
         json.dumps({"scores": {"x": 50, "y": 30, "z": 20}, "total": 100}),
@@ -67,6 +83,10 @@ def test_judge_row_combines_multiple_samples_by_median():
 
 
 def test_judge_row_returns_judge_fail_after_exhausting_attempts():
+    # After max_attempts consecutive malformed replies, judge_row must give
+    # up cleanly with status="judge_fail" and combined=None rather than
+    # raising or retrying forever — this is what lets a category's mean
+    # calculation treat the item as "no score" instead of crashing the run.
     outcome = judge_row(
         _StubTransport(["not json", "still not json"]),
         "prompt",

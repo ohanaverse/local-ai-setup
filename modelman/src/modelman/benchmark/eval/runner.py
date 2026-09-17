@@ -16,6 +16,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import mean
 
 from modelman.benchmark import isolation
 from modelman.benchmark.errors import BenchmarkError
@@ -33,7 +34,13 @@ from modelman.benchmark.eval.suite import (
     preflight,
     resolve_row_endpoint,
 )
-from modelman.benchmark.judge_core import JudgeTransport, LiteLLMJudgeTransport, judge_row
+from modelman.benchmark.judge_core import (
+    JudgeOutcome,
+    JudgeScore,
+    JudgeTransport,
+    LiteLLMJudgeTransport,
+    judge_row,
+)
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -179,59 +186,74 @@ def run_suite(
     results: list[RowRunResult] = []
     index = 0
     isolated_any = False
-    for provider_id, group in itertools.groupby(
-        sorted(rows, key=lambda r: (r.provider_id, r.model_id)), key=lambda r: r.provider_id
-    ):
-        prev_extra: tuple[str, ...] | None = None
-        for row in group:
-            try:
-                extra_args = _isolation_extra_args(row)
-            except BenchmarkError as exc:
-                index += 1
-                results.append(
-                    RowRunResult(row=row, row_dir=_row_dir(run_dir, index, row), error=str(exc))
-                )
-                continue
-
-            if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
+    restore_error: str | None = None
+    # Everything from isolation through the row loop is wrapped in a
+    # try/finally: a failed restore, or any per-row failure that somehow
+    # isn't caught by the narrower try/except below, must never skip the
+    # persist step and lose a whole sweep's already-collected results.
+    # Matches the design spec's "restore providers in a finally block...
+    # a failed restore never costs already-collected results" requirement.
+    try:
+        for provider_id, group in itertools.groupby(
+            sorted(rows, key=lambda r: (r.provider_id, r.model_id)), key=lambda r: r.provider_id
+        ):
+            prev_extra: tuple[str, ...] | None = None
+            for row in group:
                 try:
-                    isolation.isolate_provider(provider_id, *extra_args)
-                    isolated_any = True
-                except BenchmarkError as exc2:
+                    extra_args = _isolation_extra_args(row)
+                except BenchmarkError as exc:
                     index += 1
                     results.append(
-                        RowRunResult(
-                            row=row, row_dir=_row_dir(run_dir, index, row), error=str(exc2)
-                        )
+                        RowRunResult(row=row, row_dir=_row_dir(run_dir, index, row), error=str(exc))
                     )
                     continue
-                prev_extra = extra_args
 
-            index += 1
-            row_dir = _row_dir(run_dir, index, row)
+                if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
+                    try:
+                        isolation.isolate_provider(provider_id, *extra_args)
+                        isolated_any = True
+                    except BenchmarkError as exc2:
+                        index += 1
+                        results.append(
+                            RowRunResult(
+                                row=row, row_dir=_row_dir(run_dir, index, row), error=str(exc2)
+                            )
+                        )
+                        continue
+                    prev_extra = extra_args
+
+                index += 1
+                row_dir = _row_dir(run_dir, index, row)
+                try:
+                    category_results = _run_row(row, categories, suite, registry, judge_transport)
+                    results.append(
+                        RowRunResult(row=row, row_dir=row_dir, category_results=category_results)
+                    )
+                except Exception as exc3:
+                    # Broadened from `except BenchmarkError` — a row's category
+                    # dispatch can raise judge_core.JudgeTransportError (a plain
+                    # Exception, not a BenchmarkError, from row_transport.complete
+                    # inside judged_runner) or subprocess.TimeoutExpired (from
+                    # evalplus_runner's 1800s subprocess.run timeout). Either one
+                    # escaping uncaught would skip restore_providers() below and
+                    # every persist call, discarding a whole sweep's results and
+                    # leaving a local provider isolated/stopped.
+                    results.append(RowRunResult(row=row, row_dir=row_dir, error=str(exc3)))
+    finally:
+        if isolated_any:
             try:
-                category_results = _run_row(row, categories, suite, registry, judge_transport)
-                results.append(
-                    RowRunResult(row=row, row_dir=row_dir, category_results=category_results)
-                )
-            except BenchmarkError as exc3:
-                results.append(RowRunResult(row=row, row_dir=row_dir, error=str(exc3)))
+                isolation.restore_providers()
+            except BenchmarkError as exc:
+                restore_error = str(exc)
 
-    restore_error: str | None = None
-    if isolated_any:
-        try:
-            isolation.restore_providers()
-        except BenchmarkError as exc:
-            restore_error = str(exc)
-
-    for result in results:
-        report.write_row_artifacts(result)
-    (run_dir / "summary.md").write_text(
-        report.render_summary(run_id, results, registry, [c.name for c in categories]),
-        encoding="utf-8",
-    )
-    report.write_metrics_jsonl(run_dir / "metrics.jsonl", results)
-    report.write_run_toml(run_dir / "run.toml", suite, git_sha=_git_sha())
+        for result in results:
+            report.write_row_artifacts(result)
+        (run_dir / "summary.md").write_text(
+            report.render_summary(run_id, results, registry, [c.name for c in categories]),
+            encoding="utf-8",
+        )
+        report.write_metrics_jsonl(run_dir / "metrics.jsonl", results)
+        report.write_run_toml(run_dir / "run.toml", suite, git_sha=_git_sha())
 
     if restore_error is not None:
         raise RunSavedButRestoreFailed(
@@ -256,6 +278,98 @@ def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> 
     )
 
 
+def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
+    """label -> the row's persisted metrics.jsonl record (model_id/route/
+    error). This is the only place a post-rejudge reconstruction can recover
+    those fields — they were never written per-row-directory, only into the
+    run's aggregate metrics.jsonl by the original run_suite call."""
+    metrics_path = run_dir / "metrics.jsonl"
+    meta: dict[str, dict] = {}
+    if not metrics_path.is_file():
+        return meta
+    for line in metrics_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        meta[row["label"]] = row
+    return meta
+
+
+def _reconstruct_category_result(category_dir: Path) -> object | None:
+    """Rebuild a CodingResult or CategoryRowResult from one row's on-disk
+    category directory, reading whatever judge.json/score.json currently
+    say (i.e. post-rejudge for anything rejudge_run just rewrote)."""
+    coding_path = category_dir / "evalplus_result.json"
+    if coding_path.is_file():
+        data = json.loads(coding_path.read_text(encoding="utf-8"))
+        return evalplus_runner.CodingResult(**data)
+
+    item_results: list[judged_runner.ItemResult] = []
+    for item_dir in sorted(p for p in category_dir.iterdir() if p.is_dir()):
+        response_path = item_dir / "response.txt"
+        judge_path = item_dir / "judge.json"
+        if not response_path.is_file() or not judge_path.is_file():
+            continue
+        response_text = response_path.read_text(encoding="utf-8")
+        judge_data = json.loads(judge_path.read_text(encoding="utf-8"))
+        combined_data = judge_data.get("combined")
+        combined = JudgeScore(**combined_data) if combined_data else None
+        outcome = JudgeOutcome(
+            status=judge_data["status"],
+            samples=[],
+            combined=combined,
+            attempts_used=judge_data.get("attempts_used", 0),
+            error=judge_data.get("error"),
+        )
+        score = (
+            float(combined.total) if outcome.status == "scored" and combined is not None else None
+        )
+        item_results.append(
+            judged_runner.ItemResult(
+                item_id=item_dir.name, response_text=response_text, judge=outcome, score_100=score
+            )
+        )
+    if not item_results:
+        return None
+    scored = [r.score_100 for r in item_results if r.score_100 is not None]
+    score_100 = round(mean(scored), 2) if scored else None
+    return judged_runner.CategoryRowResult(
+        category=category_dir.name, items=item_results, score_100=score_100
+    )
+
+
+def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
+    """Rebuild the whole run's RowRunResult list from on-disk artifacts —
+    used after rejudge_run rewrites judge.json files, so summary.md/
+    metrics.jsonl/score.json can be regenerated to match instead of going
+    stale. row.model_id/route come back from metrics.jsonl (see
+    _read_metrics_row_meta); provider_id is not recoverable and is left
+    blank since report.py never reads it."""
+    meta = _read_metrics_row_meta(run_dir)
+    results: list[RowRunResult] = []
+    for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
+        row_meta = meta.get(row_dir.name, {})
+        row = RowConfig(
+            label=row_dir.name,
+            model_id=row_meta.get("model_id", row_dir.name),
+            route=row_meta.get("route", ""),
+            provider_id="",
+        )
+        error_path = row_dir / "error.txt"
+        if error_path.is_file():
+            results.append(
+                RowRunResult(row=row, row_dir=row_dir, error=error_path.read_text(encoding="utf-8"))
+            )
+            continue
+        category_results: dict[str, object] = {}
+        for category_dir in sorted(p for p in row_dir.iterdir() if p.is_dir()):
+            result = _reconstruct_category_result(category_dir)
+            if result is not None:
+                category_results[category_dir.name] = result
+        results.append(RowRunResult(row=row, row_dir=row_dir, category_results=category_results))
+    return results
+
+
 def rejudge_run(
     run_dir: Path,
     categories: list[Category],
@@ -263,12 +377,23 @@ def rejudge_run(
     row_filter: list[str] | None = None,
     samples_override: int | None = None,
     judge_transport_factory=None,
+    registry: Registry | None = None,
 ) -> list[dict]:
     """Re-score every judged-category item from its persisted response.txt,
     without regenerating anything. `coding` has nothing to re-judge —
     EvalPlus's pass@1 is deterministic and not touched here. There is no
     Suite in hand at rejudge time — the judge config comes back from the
-    run's own persisted run.toml (Task 8's write_run_toml)."""
+    run's own persisted run.toml (Task 8's write_run_toml).
+
+    After rescoring, recomputes every rescored category's score.json (mean
+    of its items' fresh judge.json totals) and re-renders the whole run's
+    summary.md/metrics.jsonl from current on-disk state, via
+    _reconstruct_run_results — otherwise `eval show --latest` would keep
+    displaying the old, pre-rejudge numbers with no indication anything had
+    gone stale, which is the worst failure mode for a benchmark tool.
+    `registry` is optional (unknown at rejudge time in general) — without
+    one, the capability matrix's family column falls back to the raw
+    model_id, same as report.py's own registry-miss fallback."""
     by_name = {c.name: c for c in categories}
     judge_cfg = _judge_config_from_run_toml(run_dir, samples_override)
     transport = (judge_transport_factory or _default_judge_transport_factory)(judge_cfg)
@@ -309,4 +434,23 @@ def rejudge_run(
                         "total": outcome.combined.total if outcome.combined else None,
                     }
                 )
+
+    # Recompute every category's score.json from the judge.json files just
+    # rewritten above (plus untouched categories' existing files), then
+    # re-render summary.md/metrics.jsonl for the whole run so `eval show`
+    # reflects the rejudge instead of silently serving stale numbers.
+    results = _reconstruct_run_results(run_dir)
+    for result in results:
+        for name, cat_result in result.category_results.items():
+            if isinstance(cat_result, judged_runner.CategoryRowResult):
+                (result.row_dir / name / "score.json").write_text(
+                    json.dumps({"score_100": cat_result.score_100}), encoding="utf-8"
+                )
+    run_id = run_dir.name
+    category_names = [c.name for c in categories]
+    (run_dir / "summary.md").write_text(
+        report.render_summary(run_id, results, registry or Registry(), category_names),
+        encoding="utf-8",
+    )
+    report.write_metrics_jsonl(run_dir / "metrics.jsonl", results)
     return outcomes

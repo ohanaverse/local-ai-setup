@@ -15,7 +15,7 @@ from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.eval.runner import RunSavedButRestoreFailed, run_suite
 from modelman.benchmark.eval.suite import CodingConfig, JudgeConfig, RowConfig, Suite
-from modelman.benchmark.judge_core import JudgeOutcome, JudgeScore, Rubric
+from modelman.benchmark.judge_core import JudgeOutcome, JudgeScore, JudgeTransportError, Rubric
 from modelman.registry import ModelEntry, ProviderEntry, Registry
 
 
@@ -133,6 +133,41 @@ def test_run_suite_raises_run_saved_but_restore_failed_on_restore_error(
         )
     assert exc_info.value.run_dir.is_dir()
     assert len(exc_info.value.results) == 1
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_survives_non_benchmark_error_row_failure_and_still_restores(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # Regression test for the Critical finding: judge_core.JudgeTransportError
+    # (raised by row_transport.complete inside judged_runner, and equally
+    # reachable from evalplus_runner's subprocess.TimeoutExpired) is a plain
+    # Exception, NOT a BenchmarkError. Before this fix it escaped run_suite's
+    # row-level try/except entirely, which skipped isolation.restore_providers()
+    # (leaving a local provider isolated/stopped) and every persist call
+    # (write_row_artifacts/render_summary/write_metrics_jsonl/write_run_toml),
+    # losing a whole sweep's already-collected results. This pins that a
+    # non-BenchmarkError row failure is caught, recorded as a failed
+    # RowRunResult, and does not prevent restore or persist.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_run_judged.side_effect = JudgeTransportError("network exploded")
+
+    run_dir, results = run_suite(
+        _suite(),
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert "network exploded" in results[0].error
+    mock_isolation.restore_providers.assert_called_once()
+    assert (run_dir / "summary.md").is_file()
+    assert (run_dir / "metrics.jsonl").is_file()
 
 
 def _fake_category_result(score: float):

@@ -166,9 +166,14 @@ def judge_cmd(
         target_dir = results_dir / str(run_id)
 
     categories = list_categories(root)
+    registry = load_registry()
     try:
         outcomes = rejudge_run(
-            target_dir, categories, row_filter=row or None, samples_override=samples
+            target_dir,
+            categories,
+            row_filter=row or None,
+            samples_override=samples,
+            registry=registry,
         )
     except (BenchmarkError, FileNotFoundError) as exc:
         typer.echo(f"error: {exc}", err=True)

@@ -84,6 +84,20 @@ def test_load_suite_rejects_unknown_model(tmp_path):
         load_suite(_write(tmp_path, body), _registry())
 
 
+def test_load_suite_rejects_unknown_model_even_with_explicit_provider(tmp_path):
+    # An explicit `provider =` on a row used to short-circuit the friendly
+    # _provider_for() unknown-model check (only reached via the `or` when
+    # `provider` is absent), so an unknown model_id paired with an explicit
+    # provider raised a raw KeyError from registry.model() instead of this
+    # same clean BenchmarkError — this pins that both paths now agree.
+    body = SUITE_BODY.replace(
+        'model = "ollama/a"\nroute = "litellm"',
+        'model = "ollama/nope"\nroute = "litellm"\nprovider = "ollama"',
+    )
+    with pytest.raises(BenchmarkError, match="unknown model"):
+        load_suite(_write(tmp_path, body), _registry())
+
+
 def test_preflight_rejects_direct_row_missing_route_block(tmp_path):
     body = SUITE_BODY.replace("[routes.direct.omlx]\n", "").replace(
         'base_url = "http://localhost:8000/v1"\n', ""

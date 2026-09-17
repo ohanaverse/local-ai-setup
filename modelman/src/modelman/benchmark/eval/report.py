@@ -28,7 +28,12 @@ def _cell(value: object) -> str:
     if isinstance(value, CodingResult):
         if value.pass_at_1 is not None:
             return f"{value.pass_at_1 * 100:.1f}%"
-        return "JUDGE_FAIL" if value.error else "N/A"
+        # "EVALPLUS_ERROR", not "JUDGE_FAIL" — coding has no judge (EvalPlus
+        # grades it directly), so labeling an EvalPlus execution failure
+        # JUDGE_FAIL would contradict the Anomalies table (which correctly
+        # calls it an evalplus error) and send someone hunting for a
+        # nonexistent judge problem.
+        return "EVALPLUS_ERROR" if value.error else "N/A"
     if isinstance(value, CategoryRowResult):
         return f"{value.score_100:.1f}" if value.score_100 is not None else "JUDGE_FAIL"
     return "N/A"

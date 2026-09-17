@@ -7,7 +7,18 @@ the value, matching the real `evalplus==0.3.1` output confirmed live in
 Task 12 (`cprint(f"{k}:\\t{v:.3f}", ...)` in evalplus/evaluate.py).
 """
 
-from modelman.benchmark.eval.evalplus_runner import _build_command, run_coding_category
+from modelman.benchmark.eval.evalplus_runner import (
+    _build_command,
+    _parse_pass_at_1,
+    run_coding_category,
+)
+
+# Real EvalPlus output prints the base-tests-only block first, then (when
+# the "+" tests also pass) a second "+" block with a different, usually
+# lower, number.
+_TWO_BLOCK_STDOUT = (
+    "humaneval (base tests)\npass@1:\t0.732\nhumaneval+ (base + extra tests)\npass@1:\t0.658\n"
+)
 
 
 class _FakeCompletedProcess:
@@ -17,15 +28,20 @@ class _FakeCompletedProcess:
         self.stderr = stderr
 
 
-def test_run_coding_category_parses_pass_at_1_from_stdout():
-    # Tests that the runner correctly extracts pass@1 ratio from EvalPlus stdout.
-    # Ensures the regex parsing and float conversion work correctly on valid output.
+def test_run_coding_category_prefers_plus_block_pass_at_1_over_base():
+    # Regression test for reporting the base-only pass@1 (0.732) instead of
+    # the "+" (base + extra tests) pass@1 (0.658): EvalPlus prints BOTH
+    # blocks in a real run, and the whole point of using EvalPlus over
+    # vanilla HumanEval is the hardened "+" grading — reporting the base
+    # score under this project's "coding" label would be misleadingly
+    # optimistic. Asserts the "+" value (0.658) wins, not the first-matched
+    # base value (0.732).
     def fake_run(cmd, **kwargs):
         assert "--base-url" in cmd
         assert "http://localhost:8000/v1" in cmd
         assert "--model" in cmd
         assert "server-name" in cmd
-        return _FakeCompletedProcess(0, "humaneval (base tests)\npass@1:\t0.732\n")
+        return _FakeCompletedProcess(0, _TWO_BLOCK_STDOUT)
 
     result = run_coding_category(
         base_url="http://localhost:8000/v1",
@@ -35,8 +51,35 @@ def test_run_coding_category_parses_pass_at_1_from_stdout():
         limit=5,
         run_cmd=fake_run,
     )
-    assert result.pass_at_1 == 0.732
+    assert result.pass_at_1 == 0.658
     assert result.error is None
+
+
+def test_parse_pass_at_1_falls_back_to_base_when_no_plus_block():
+    # When EvalPlus prints only the base-tests block (e.g. a --base-only
+    # run, or a dataset with no "+" extra-tests variant), there is no "+"
+    # score to prefer — the parser must fall back to the base block's
+    # pass@1 rather than returning None.
+    stdout = "humaneval (base tests)\npass@1:\t0.732\n"
+    assert _parse_pass_at_1(stdout) == 0.732
+
+
+def test_build_command_uses_installed_console_script_not_uvx():
+    # Regression test: _build_command must invoke the `evalplus.evaluate`
+    # console script installed via modelman's own `[eval]` extra (resolved
+    # on PATH from within `uv run`'s venv), not `uvx --from evalplus` — uvx
+    # runs EvalPlus in a separate ephemeral environment, bypassing the
+    # `[eval]` extra that's the deliberate opt-in gate for local code
+    # execution (EvalPlus executes model-generated code).
+    cmd = _build_command(
+        dataset="humaneval",
+        base_url="http://localhost:8000/v1",
+        model="server-name",
+        limit=None,
+        workdir="/tmp/x",
+    )
+    assert cmd[0] == "evalplus.evaluate"
+    assert "uvx" not in cmd
 
 
 def test_build_command_includes_greedy_flag():

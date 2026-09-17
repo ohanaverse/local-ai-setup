@@ -11,7 +11,7 @@ Design rationale: `docs/superpowers/specs/2026-09-17-capability-eval-benchmark-d
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on PATH).
 - A working LiteLLM apiKey seeded into `~/.pi/agent/models.json` for any `route = "litellm"` row or judge — same requirement as [09-agent-benchmarks](09-agent-benchmarks.md).
 - `OPENROUTER_API_KEY` available if the suite's `[judge]` or any row uses `route = "openrouter"`.
-- `uv sync --extra eval` from `modelman/` — the `coding` category needs EvalPlus, which is not installed by plain `make install`.
+- `uv sync --extra eval` from `modelman/` — the `coding` category needs EvalPlus, which is not installed by plain `make install`. `evalplus_runner` invokes the installed `evalplus.evaluate` console script by bare name, resolved on `PATH` from inside `uv run`'s own venv — so it must be resolvable there, which `uv sync --extra eval` guarantees (not `uvx`, which would bypass the extra entirely).
 
 ## TL;DR
 
@@ -64,6 +64,7 @@ Re-scores every judged category's items from their persisted `response.txt` — 
 - **`omlx` 4-bit/6-bit disambiguation is the same as every other suite here** — use a row's `provider =` override, and `direct_model =` for the server-side basename. See [05-benchmarks](05-benchmarks.md) Gotchas.
 - **A row's `categories =` narrows which categories that row runs**, independent of `--category`'s CLI-level narrowing — both apply, intersected.
 - **Judging (and coding's EvalPlus grading) both cost real time/spend per item** — a 5-category sweep across many rows adds up; use `--category`/`--row` to scope a suite down while iterating on content or rubrics.
+- **`coding`'s shipped `limit = 40` does not currently produce a real score.** EvalPlus 0.3.1's grading step requires every problem in the FULL dataset (164 for humaneval) to have a sample before it computes pass@k — `--id-range`/`limit` only bounds what gets *generated*, not what grading demands — so a `limit` smaller than the dataset size makes the `coding` category fail cleanly with a `CodingResult.error` every time, not a score, until a follow-up addresses this (either always running the full dataset, or a different approach). Set `limit` to the full dataset size (164 for humaneval) today if you need a real `coding` score, or accept that it will show as an error/N/A in the report.
 
 ## Going deeper
 

@@ -48,11 +48,22 @@ from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 
 _PASS_AT_1_RE = re.compile(r"pass@1(?!\d)[^\d]*([\d.]+)", re.IGNORECASE)
+# EvalPlus prints the base-tests-only block first, then (when the "+"/extra
+# tests pass) a second block headed like "humaneval+ (base + extra tests)".
+# This marker locates that second block so _parse_pass_at_1 can prefer it.
+_PLUS_BLOCK_MARKER = "(base + extra tests)"
 
 
 @dataclass
 class CodingResult:
     dataset: str
+    # The "+" (base + extra tests) pass@1 when EvalPlus reports one,
+    # falling back to the base-only score only when no "+" block is present
+    # (e.g. --base-only, or a dataset without an extra-tests variant). Do
+    # not "fix" this back to the base score — the whole point of using
+    # EvalPlus over vanilla HumanEval is the hardened "+" grading, and
+    # reporting the base score under this field would be misleadingly
+    # optimistic. See _parse_pass_at_1.
     pass_at_1: float | None
     raw_output: str
     error: str | None = None
@@ -61,10 +72,17 @@ class CodingResult:
 def _build_command(
     *, dataset: str, base_url: str, model: str, limit: int | None, workdir: str
 ) -> list[str]:
+    # Bare console-script name (resolved via PATH), not `uvx --from evalplus`:
+    # modelman itself runs via `uv run` from within its own venv, which puts
+    # that venv's bin/ (containing evalplus.evaluate once `uv sync --extra
+    # eval` has run) first on PATH — the same resolution `uv run --extra eval
+    # evalplus.evaluate ...` used during live verification (plan Task 12).
+    # `uvx --from evalplus` would instead run EvalPlus in an ephemeral,
+    # separate uv-managed tool environment, bypassing the project's own
+    # `[eval]` extra entirely — the extra is the deliberate opt-in gate for
+    # local code execution (EvalPlus runs model-generated code), so `uvx`
+    # would let anyone trigger a live EvalPlus run without it.
     cmd = [
-        "uvx",
-        "--from",
-        "evalplus",
         "evalplus.evaluate",
         "--dataset",
         dataset,
@@ -84,7 +102,24 @@ def _build_command(
 
 
 def _parse_pass_at_1(stdout: str) -> float | None:
-    match = _PASS_AT_1_RE.search(stdout)
+    """Prefer the "+" (base + extra tests) block's pass@1 over the base-only
+    block's. EvalPlus's real output prints both blocks when the "+" tests
+    pass:
+
+        humaneval (base tests)
+        pass@1:    0.732
+        humaneval+ (base + extra tests)
+        pass@1:    0.658
+
+    A plain `re.search` for the first `pass@1` match would silently pick
+    the base score — this project's whole reason for using EvalPlus over
+    vanilla HumanEval is the hardened "+" grading, so the base score alone
+    would be misleadingly optimistic. Falls back to searching the full
+    output (i.e. the base block) when no "+" block marker is present.
+    """
+    plus_idx = stdout.find(_PLUS_BLOCK_MARKER)
+    segment = stdout[plus_idx:] if plus_idx != -1 else stdout
+    match = _PASS_AT_1_RE.search(segment)
     if not match:
         return None
     try:
