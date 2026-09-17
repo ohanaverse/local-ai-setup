@@ -1,11 +1,42 @@
 """Subprocess wrapper around EvalPlus for the `coding` eval category.
 
-The exact CLI invocation here is the research doc's cited
-`--backend openai --base-url` form, NOT yet verified against a real EvalPlus
-install (see plan Task 11) — treat `_build_command`'s flags as the first
-draft, and update them there (one place) once verified. EvalPlus itself does
-both generation and grading and runs the generated code locally, same trust
-model the agent benchmark already applies to a model's diff via gates.py.
+Verified live 2026-09-17 (plan Task 12) against a real evalplus==0.3.1
+install driving generation through a local ollama server
+(`qwen3.8:27b-mlx`, `--backend openai --base-url http://localhost:11434/v1`).
+Two corrections vs. the Task 6 draft, both confirmed by the live run:
+
+1. `--greedy` is required. Without it, `run_codegen`'s default
+   `temperature=0.0` combined with `do_sample=not greedy` (True by default)
+   trips `OpenAIChatDecoder.codegen`'s own
+   `assert self.temperature > 0, "Temperature must be positive for
+   sampling"` — every invocation failed immediately before the draft's fix.
+   `--greedy` forces `temperature=0`, `bs=1`, `n_samples=1`, `do_sample=False`,
+   which also happens to match the pass@1-only use case here.
+2. `limit` is passed as `--id-range 0,<limit>`, not `--n-samples`.
+   `evalplus.evaluate`'s `--n-samples` is samples-PER-PROBLEM (for pass@10/
+   pass@100 estimation), not a dataset-subset size — passing `limit` there
+   would multiply generation calls by `limit` across the FULL dataset (164
+   problems for humaneval) instead of shrinking it, and could hang past
+   `run_coding_category`'s 1800s subprocess timeout uncaught.
+   `--id-range` at least bounds how many problems get GENERATED. KNOWN GAP
+   (not fixed here, needs a follow-up design decision): EvalPlus's grading
+   step in this version still asserts every problem in the FULL dataset has
+   a sample before computing pass@k (`evaluate()` in evalplus/evaluate.py:
+   `assert len(completion_id) == len(problems), "Missing problems in
+   samples"`), so any `limit` smaller than the dataset's full size (164 for
+   humaneval) makes evalplus.evaluate exit non-zero with that assertion —
+   surfaced cleanly here as a `CodingResult.error`, not a crash, but the
+   `coding` category will not produce a real pass@1 score whenever a subset
+   `limit` is configured until that gap is addressed.
+
+The `pass@1` output format itself matches the Task 6 draft's regex exactly:
+confirmed against evalplus/evaluate.py's own `cprint(f"{k}:\\t{v:.3f}", ...)`
+and reproduced live (offline, using ground-truth solutions to get a full,
+gradeable run) as `pass@1:\\t0.994` — colon, a literal tab, then a 3-decimal
+float; no ANSI color codes came through when stdout was captured
+non-interactively. EvalPlus itself does both generation and grading and
+runs the generated code locally, same trust model the agent benchmark
+already applies to a model's diff via gates.py.
 """
 
 from __future__ import annotations
@@ -45,9 +76,10 @@ def _build_command(
         model,
         "--root",
         workdir,
+        "--greedy",
     ]
     if limit is not None:
-        cmd += ["--n-samples", str(limit)]
+        cmd += ["--id-range", f"0,{limit}"]
     return cmd
 
 
