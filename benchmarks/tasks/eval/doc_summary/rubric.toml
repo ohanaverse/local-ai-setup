@@ -1,0 +1,7 @@
+verdicts = ["excellent", "adequate", "inadequate", "unusable"]
+
+[dimensions]
+factual_accuracy = 35
+coverage = 30
+conciseness = 20
+structure = 15

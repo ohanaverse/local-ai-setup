@@ -1,0 +1,164 @@
+[[items]]
+id = "changelog-excerpt"
+prompt = """
+Summarize the following changelog excerpt in a few sentences, for someone
+deciding whether to upgrade:
+
+## v3.4.0
+- BREAKING: `Client.connect()` now requires an explicit `timeout` argument;
+  the previous default of 30s has been removed. Callers relying on the
+  default will raise `TypeError` until updated.
+- Fixed a memory leak in `StreamReader` that occurred when a connection was
+  closed mid-read; long-running processes using streaming reads should see
+  reduced memory growth.
+- The `retry_on_failure` flag, deprecated since v3.1.0, has been removed.
+  Use `RetryPolicy` instead.
+- Performance: batch inserts are now ~2x faster due to a new bulk-encoding
+  path; no API changes required to benefit.
+- Fixed: `Client.close()` could hang indefinitely if called during an
+  in-flight request; it now respects a 5s grace period before force-closing.
+"""
+[items.meta]
+reference_notes = "Key facts to cover: (1) breaking change -- Client.connect() timeout arg now required, no default, will raise TypeError; (2) memory leak fix in StreamReader on mid-read close; (3) removal of long-deprecated retry_on_failure flag (use RetryPolicy); (4) ~2x faster batch inserts, no API change needed; (5) Client.close() hang fix with 5s grace period. A good summary flags the breaking change prominently since that's the actionable item for an upgrader."
+
+[[items]]
+id = "readme-excerpt"
+prompt = """
+Summarize the following README excerpt for a new contributor:
+
+## Development setup
+
+This project uses a monorepo layout with three independently-versioned
+packages: `core/`, `api/`, and `worker/`. Each has its own `package.json`
+and test suite, but they share a single `node_modules/` at the repo root
+via npm workspaces -- do not run `npm install` inside a subpackage
+directory, always run it from the repo root.
+
+Tests are split into unit tests (`npm test`, fast, no external services
+required) and integration tests (`npm run test:integration`, requires a
+local Postgres and Redis, started via `docker-compose up -d`). CI runs both;
+locally, most contributors only run unit tests during development and let
+CI catch integration failures.
+
+The `worker/` package polls a queue and has no HTTP server, so `npm run
+dev` in that directory starts a polling loop with verbose logging instead
+of a dev server -- this trips up contributors coming from `api/`, where
+`npm run dev` does start a server on port 3000.
+"""
+[items.meta]
+reference_notes = "Key facts: (1) three packages (core/api/worker) in one npm-workspaces monorepo, install only from repo root; (2) two test tiers -- unit tests need nothing extra, integration tests need Postgres+Redis via docker-compose; (3) most contributors run only unit tests locally, CI covers integration; (4) worker's `npm run dev` behaves differently from api's -- it polls with logging instead of serving HTTP, which is the excerpt's explicit 'trips up contributors' warning and should be called out."
+
+[[items]]
+id = "policy-excerpt"
+prompt = """
+Summarize the following internal policy excerpt for an engineer who just
+joined the on-call rotation:
+
+## Incident severity and paging policy
+
+Sev1 (full outage or data loss risk): page immediately, 24/7, no exceptions.
+Acknowledge within 5 minutes or escalation pages the secondary on-call.
+
+Sev2 (significant degradation, one region or one major feature down):
+page during business hours (9am-6pm local); outside those hours, post to
+#incidents and page only if it's still unresolved after 30 minutes.
+
+Sev3 (minor/cosmetic issue, workaround exists): no paging; file a ticket
+and mention it in the next team standup.
+
+Anyone -- not just on-call -- may declare a Sev1 if they believe one is
+occurring; a declared Sev1 that turns out to be a false alarm is never held
+against the person who declared it. The opposite failure (staying quiet
+about a real Sev1) is the one this policy is designed to prevent.
+"""
+[items.meta]
+reference_notes = "Key facts: (1) three severities with different paging rules -- Sev1 always pages immediately with 5-min ack SLA and secondary escalation; Sev2 pages during business hours only, otherwise waits 30 min after posting to #incidents; Sev3 never pages, just a ticket; (2) anyone can declare Sev1, not just on-call; (3) the policy explicitly protects false-alarm Sev1 declarations from blame, and explicitly states the goal is to avoid under-reporting real incidents -- this intent is worth including since it explains the other rules."
+
+[[items]]
+id = "api-doc-excerpt"
+prompt = """
+Summarize the following API documentation excerpt for someone about to
+integrate against this endpoint:
+
+## POST /v2/payments
+
+Idempotent via the required `Idempotency-Key` header: retrying the same
+request with the same key within 24 hours returns the original response
+without creating a duplicate payment. Keys are scoped per API key -- two
+different callers can reuse the same idempotency key value without
+colliding.
+
+Requests are processed asynchronously: a successful call returns `202
+Accepted` with a `status: "pending"` payment object, not a final result.
+Poll `GET /v2/payments/{id}` or subscribe to the `payment.completed`
+webhook to learn the final status (`succeeded`, `failed`, or
+`requires_action` for 3D Secure flows).
+
+Rate limit: 100 requests/minute per API key, returned as `429` with a
+`Retry-After` header in seconds when exceeded. This limit applies to this
+endpoint specifically and is separate from the account-wide rate limit
+documented elsewhere.
+"""
+[items.meta]
+reference_notes = "Key facts: (1) idempotency via required Idempotency-Key header, scoped per API key, 24-hour window; (2) the endpoint is async -- 202 + pending status is returned immediately, final status comes via polling GET /v2/payments/{id} or the payment.completed webhook, with three possible final states including a 3D-Secure case; (3) endpoint-specific rate limit of 100 req/min with 429 + Retry-After, explicitly separate from the account-wide limit. A summary that says '202 means success' is a factual error worth penalizing under factual_accuracy."
+
+[[items]]
+id = "design-doc-excerpt"
+prompt = """
+Summarize the following design-doc excerpt for a reviewer who has 5
+minutes before a review meeting:
+
+## Problem
+
+Our search index rebuild currently takes 6 hours and locks writes for the
+full duration, which means every rebuild is a maintenance-window event. As
+data volume grows, this window keeps getting longer and is now colliding
+with usage in other timezones.
+
+## Proposed approach
+
+Build the new index in the background (`_v2` suffix) while the old index
+(`_v1`) continues serving reads and accepting writes. Once the `_v2` build
+finishes, do an atomic alias swap so `search` points to `_v2` instead of
+`_v1`, then decommission `_v1` after a 24-hour safety window (in case the
+swap needs to be reverted). Writes during the build are dual-written to
+both indices to keep `_v2` current by the time it's ready to swap.
+
+## Risks
+
+Dual-writing doubles write load on the indexing service during the build
+window (estimated 6 hours), which could saturate it under peak traffic;
+mitigation is to throttle non-critical background reindex jobs during that
+window. There's also a data-consistency risk if a write to `_v2` fails
+silently during dual-write -- we need write-failure alerting specifically
+on the `_v2` path, not just the aggregate write-failure rate.
+"""
+[items.meta]
+reference_notes = "Key facts: (1) problem is a 6-hour write-locking rebuild that's outgrowing its maintenance window; (2) proposed fix is blue-green style: build _v2 in background while _v1 serves live, dual-write during the build, atomic alias swap at the end, 24h safety window before decommissioning _v1; (3) two named risks: doubled write load during the ~6h dual-write window (mitigated by throttling background jobs) and silent dual-write failure risk to _v2 specifically requiring dedicated alerting. Coverage should include both the mechanism (blue-green + dual-write + alias swap) and at least the write-load risk, not just the happy-path description."
+
+[[items]]
+id = "onboarding-excerpt"
+prompt = """
+Summarize the following excerpt for a new hire's first-week reading:
+
+## How we handle production access
+
+Nobody has standing production database access, including senior
+engineers and the CTO. Access is granted per-incident or per-approved-task
+through a break-glass tool that requires a second approver and
+auto-revokes after 4 hours. Every grant and every query run during a grant
+is logged and reviewed weekly by the security team, not just at grant time.
+
+Read replicas are the exception: any engineer can query a read replica at
+any time with no approval, since replicas contain no write path and are
+already 5-15 minutes stale by design, making them unsuitable for anything
+that needs current or mutable data anyway.
+
+The one deliberate gap in this policy is local development: engineers run
+production-shaped (not production-copy) seed data locally, and there is
+currently no mechanism preventing an engineer from manually copying
+production data into a local environment -- this is called out explicitly
+in the doc as a known gap under active discussion, not an oversight.
+"""
+[items.meta]
+reference_notes = "Key facts: (1) no standing prod DB access for anyone, including leadership; break-glass access needs a second approver, auto-revokes in 4 hours, and is logged + reviewed weekly (not just at grant time); (2) read replicas are a no-approval exception because they're inherently unsuitable for anything needing current/mutable data (5-15 min staleness, no write path); (3) the doc explicitly names a known policy gap around local dev seed data being production-shaped with no technical control preventing manual copying of real prod data -- and explicitly says this is a known open gap, not an oversight, which is worth preserving since dropping that framing would misrepresent the doc's own stance."
