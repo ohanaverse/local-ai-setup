@@ -1,0 +1,7 @@
+verdicts = ["solid_plan", "partial_plan", "weak_plan"]
+
+[dimensions]
+decomposition = 25
+risk_identification = 25
+completeness = 25
+scope_discipline = 25

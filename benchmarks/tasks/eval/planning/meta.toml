@@ -1,0 +1,2 @@
+[meta]
+intent = "Six realistic engineering-planning prompts (rate limiting, DB migration, a UI feature, a CI flakiness investigation, webhook reliability, an API deprecation) chosen so a shallow answer is easy to spot: each has 2-4 non-obvious concerns a competent engineer would raise unprompted."
