@@ -15,6 +15,7 @@ from .registry import (
     load_registry,
     sync_agent_providers,
 )
+from .screens.forms import ConfirmForceQuitDialog
 from .screens.models import ModelScreen
 from .settings import Settings, load_settings, save_settings
 from .state import _default_state_path, load_state
@@ -56,7 +57,13 @@ class ModelmanApp(App[QueuedOps | None]):
                 state_path=_default_state_path(),
             )
         )
-        self.run_worker(self._run_price_refresh, exclusive=True, thread=True)
+        self.run_worker(
+            self._run_price_refresh,
+            exclusive=True,
+            thread=True,
+            name="price-refresh",
+            description="Refreshing token prices",
+        )
 
     def _run_price_refresh(self) -> None:
         """Daily-gated background refresh of OpenRouter prices.
@@ -146,12 +153,18 @@ class ModelmanApp(App[QueuedOps | None]):
         """ctrl+q's entry point: delegate to the top ModelScreen's Escape
         handling (the apply/discard/cancel confirmation dialog when a
         queue is pending, or an immediate exit when it's empty) instead
-        of quitting out from under an unapplied queue. Falls through to
-        a direct exit when the top screen isn't a ModelScreen (e.g. a
-        modal is open)."""
+        of quitting out from under an unapplied queue. If the force-quit
+        dialog is already up (a background worker is still running from
+        a prior quit attempt), a second ctrl+q dismisses it as "Force
+        quit" instead of falling through to a plain self.exit() — which
+        would hang the same way the dialog exists to prevent. Falls
+        through to a direct exit for any other modal."""
         top = self.screen
         if isinstance(top, ModelScreen):
             top.action_back()
+            return
+        if isinstance(top, ConfirmForceQuitDialog):
+            top.dismiss(True)
             return
         self.exit()
 

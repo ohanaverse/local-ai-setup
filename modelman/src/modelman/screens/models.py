@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,7 +51,7 @@ from ..registry import (
 )
 from ..state import ModelState, StateStore, load_state, locked_state
 from . import reconcile_model_state, reload_preserving_cursor, row_key_at
-from .forms import ConfirmModal, default_form_kind
+from .forms import ConfirmForceQuitDialog, ConfirmModal, default_form_kind
 
 if TYPE_CHECKING:
     from ..local_control import DiscoveredModel
@@ -291,7 +294,13 @@ class ModelScreen(Screen[None]):
         self._refresh_pending_bar()
         self._update_litellm_status()
         mt.focus()
-        self.run_worker(self._run_reconcile, exclusive=True, thread=True)
+        self.run_worker(
+            self._run_reconcile,
+            exclusive=True,
+            thread=True,
+            name="reconcile",
+            description="Checking models on disk",
+        )
 
     def _sorted_models(self) -> list[ModelEntry]:
         """Every model, sorted (family, location, provider, model name) —
@@ -618,7 +627,13 @@ class ModelScreen(Screen[None]):
 
         if currently_running:
             self.app.notify(f"Stopping {mid}…")
-            self.run_worker(lambda: self._do_stop(mid), thread=True, exclusive=False)
+            self.run_worker(
+                lambda: self._do_stop(mid),
+                thread=True,
+                exclusive=False,
+                name="model-stop",
+                description=f"Stopping {mid}",
+            )
             return
 
         others = [m for m in self.state.models if m != mid and self.state.models[m].running]
@@ -649,7 +664,13 @@ class ModelScreen(Screen[None]):
         if not confirmed:
             return
         self.app.notify(f"Starting {model_id}…")
-        self.run_worker(lambda: self._do_start(model_id), thread=True, exclusive=False)
+        self.run_worker(
+            lambda: self._do_start(model_id),
+            thread=True,
+            exclusive=False,
+            name="model-start",
+            description=f"Starting {model_id}",
+        )
 
     def _resync_running_flags(self) -> None:
         """Merge just the `running` flags from disk back onto self.state.
@@ -983,7 +1004,37 @@ class ModelScreen(Screen[None]):
             self.queued_ready or self.queued_deletes or self.queued_moves or self.queued_exposes
         )
 
+    def _pending_change_count(self) -> int:
+        """Total queued mutations across ready/delete/move/expose, for the
+        force-quit dialog's data-loss warning."""
+        return (
+            len(self.queued_ready)
+            + len(self.queued_deletes)
+            + len(self.queued_moves)
+            + len(self.queued_exposes)
+        )
+
+    def _running_worker_descriptions(self) -> list[str]:
+        """Descriptions of every currently-RUNNING app-level worker
+        (model-start/stop, on-mount reconcile, daily price refresh — see
+        the `run_worker(..., thread=True)` call sites). These run on
+        asyncio's default (non-daemon) thread pool, which Textual cannot
+        cancel once started — quitting while one is live would otherwise
+        leave the process hanging until it finishes, possibly for
+        minutes (docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md).
+        `self.workers` is the app's own WorkerManager (a shortcut for
+        `self.app.workers`) and already tracks/self-cleans these; no
+        separate bookkeeping is needed."""
+        return [worker.description for worker in self.workers if worker.is_running]
+
     def action_back(self) -> None:
+        running = self._running_worker_descriptions()
+        if running:
+            self.app.push_screen(
+                ConfirmForceQuitDialog(running, self._pending_change_count()),
+                self._on_force_quit_confirm,
+            )
+            return
         if not self.has_pending_changes():
             # This screen is the app's root now — nothing to pop back to,
             # so Escape with no pending changes exits immediately.
@@ -1002,6 +1053,48 @@ class ModelScreen(Screen[None]):
             ),
             self._on_exit_confirm,
         )
+
+    def _on_force_quit_confirm(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self._force_quit()
+        # False/None ("Keep waiting" or Escape/dismiss): stay open, no-op.
+
+    def _force_quit(self) -> None:
+        """Hard-exit immediately, abandoning any running worker.
+
+        A normal `self.app.exit()` cannot help here: Textual cannot cancel
+        an in-flight `thread=True` worker (Python threads aren't
+        preemptible), so the process would still hang in
+        `asyncio.run()`'s own executor-join cleanup and then in
+        `concurrent.futures.thread`'s unconditional, untimed `atexit`
+        thread-join — exactly the multi-minute freeze this dialog exists
+        to route around. `sys.exit()` would hit that same cleanup path
+        (it unwinds normally), so only `os._exit()` — which skips atexit
+        handlers and thread joins entirely — actually returns control to
+        the shell right away.
+
+        The TUI is still in application mode (alt screen, raw terminal)
+        when this runs, so the driver must be torn down first, on the
+        main thread, synchronously — there's no async shutdown to await
+        here, and no chance for a background worker to run in between.
+        `App._driver` is a private attribute and textual is pinned only
+        as `>=0.80.0` (pyproject.toml), so every step is best-effort: a
+        future Textual internals change should degrade to "possibly messy
+        terminal", never "force quit stops working".
+        """
+        driver = getattr(self.app, "_driver", None)
+        if driver is not None:
+            with contextlib.suppress(Exception):
+                driver.disable_input()
+            with contextlib.suppress(Exception):
+                driver.stop_application_mode()
+            with contextlib.suppress(Exception):
+                driver.flush()
+        for stream in (sys.__stdout__, sys.__stderr__):
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.flush()
+        os._exit(0)
 
     def _on_exit_confirm(self, choice: str | None) -> None:
         if choice == "apply":

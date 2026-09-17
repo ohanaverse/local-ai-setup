@@ -1,5 +1,7 @@
+import threading
+
 import pytest
-from textual.widgets import Button, Checkbox, DataTable, Input
+from textual.widgets import Button, Checkbox, DataTable, Input, Label
 
 from modelman.app import ModelmanApp
 from modelman.registry import (
@@ -12,7 +14,7 @@ from modelman.registry import (
     load_registry,
     save_registry,
 )
-from modelman.state import StateStore, save_state
+from modelman.state import ModelState, StateStore, save_state
 
 from .test_forms import _submit
 
@@ -1737,3 +1739,329 @@ async def test_escape_with_empty_queue_exits_app(tmp_path, monkeypatch):
         await pilot.press("escape")
         await pilot.pause()
         assert app.return_value is None
+
+
+# ---------------------------------------------------------------------------
+# Force-quit while a background worker (model start/stop) is in flight.
+#
+# `s` runs start_local_model on a Textual thread=True worker (asyncio's
+# default, non-daemon ThreadPoolExecutor). Python threads aren't
+# preemptible and Textual cannot cancel a running thread worker, so a plain
+# quit while one is still polling for a model to come up would hang the
+# process — potentially for minutes — in stdlib shutdown (asyncio.run()'s
+# executor join, then concurrent.futures.thread's untimed atexit thread
+# join) long after the TUI itself looks closed. These tests pin the guard
+# that was added to ModelScreen.action_back() to catch that instead of
+# silently freezing the shell. See docs/superpowers/specs/
+# 2026-09-14-local-model-lifecycle-design.md for why abandoning an
+# in-flight start is safe (the `running` flag self-heals via live probe).
+# ---------------------------------------------------------------------------
+
+
+def _start_local_model_blocking_on(event: threading.Event, release: threading.Event):
+    """A start_local_model fake that signals `event` once called and then
+    blocks on `release` (bounded by a timeout so a test bug can't hang the
+    suite) — used to keep the model-start worker in the RUNNING state long
+    enough for the test to press escape/ctrl+q while it's still live."""
+    from modelman.local_control import StartResult
+
+    def fake_start(registry, model_id, state_path=None, **kwargs):
+        event.set()
+        release.wait(timeout=5)
+        return StartResult(model_id=model_id, already_running=False, other_running=[])
+
+    return fake_start
+
+
+@pytest.mark.asyncio
+async def test_escape_while_model_start_running_shows_force_quit_dialog(tmp_path, monkeypatch):
+    # Regression for the reported bug: quitting right after 's' must warn
+    # instead of silently hanging the shell for as long as the (real, slow)
+    # model warmup takes. The dialog must name the in-flight operation so
+    # the freeze is explained, not mysterious.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    model = ModelEntry(
+        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[model], providers=("omlx",)
+    )
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        "modelman.screens.models.start_local_model",
+        _start_local_model_blocking_on(started, release),
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let on-mount reconcile settle first
+        await pilot.press("s")
+        assert started.wait(timeout=2), "start_local_model was never called"
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ConfirmForceQuitDialog)
+        labels = " ".join(str(label.visual) for label in app.screen.query(Label))
+        assert "Starting omlx/a" in labels
+
+        # Let the worker finish so no thread is left running past the
+        # `run_test()` context (real modelman would hang on this exact
+        # thread at process exit — see the docstring above).
+        release.set()
+        for _ in range(50):
+            await pilot.pause()
+            if app.screen.__class__.__name__ != "ConfirmForceQuitDialog":
+                break
+
+
+@pytest.mark.asyncio
+async def test_escape_after_workers_settle_still_exits_immediately(tmp_path, monkeypatch):
+    # The new in-flight-worker guard must not fire once the on-mount
+    # reconcile/price-refresh workers have finished — otherwise every quit
+    # would show a spurious "still running" prompt, not just one that
+    # follows a real in-flight start/stop.
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
+    _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()  # let on-mount reconcile (and price refresh) settle
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, ConfirmForceQuitDialog)
+        assert app.return_value is None
+
+
+@pytest.mark.asyncio
+async def test_force_quit_restores_terminal_before_hard_exit(tmp_path, monkeypatch):
+    # Force-quitting must restore the terminal (leave alt-screen/raw mode)
+    # BEFORE hard-exiting via os._exit — otherwise the user's shell is left
+    # in a broken visual state even though the process itself returns
+    # instantly. os._exit is patched to record the call instead of actually
+    # running it, since a real call here would kill the pytest process.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    model = ModelEntry(
+        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[model], providers=("omlx",)
+    )
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        "modelman.screens.models.start_local_model",
+        _start_local_model_blocking_on(started, release),
+    )
+
+    exit_calls: list[int] = []
+    monkeypatch.setattr("modelman.screens.models.os._exit", exit_calls.append)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("s")
+        assert started.wait(timeout=2)
+
+        # Spy on the real (headless test) driver's teardown methods rather
+        # than replacing the driver outright — Textual keeps using it for
+        # input/shutdown bookkeeping (is_inline, send_message, close, ...)
+        # until the app actually exits, so a stand-in without those breaks
+        # the test harness itself, not just this assertion.
+        driver_calls: list[str] = []
+        driver = app._driver
+        assert driver is not None
+        monkeypatch.setattr(driver, "disable_input", lambda: driver_calls.append("disable_input"))
+        monkeypatch.setattr(
+            driver, "stop_application_mode", lambda: driver_calls.append("stop_application_mode")
+        )
+        monkeypatch.setattr(driver, "flush", lambda: driver_calls.append("flush"))
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmForceQuitDialog)
+
+        await pilot.press("f")
+        await pilot.pause()
+
+        assert driver_calls == ["disable_input", "stop_application_mode", "flush"]
+        assert exit_calls == [0]
+
+        release.set()
+        for _ in range(50):
+            await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_while_force_quit_dialog_open_force_quits(tmp_path, monkeypatch):
+    # Regression: ModelmanApp.request_quit() used to only special-case
+    # ModelScreen, so pressing ctrl+q a second time while the force-quit
+    # dialog was already open (self.screen is the dialog, not ModelScreen)
+    # fell through to a plain self.exit() — silently reintroducing the
+    # multi-minute hang this whole dialog exists to prevent. A second
+    # ctrl+q here must behave like clicking "Force quit", not bypass it.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    model = ModelEntry(
+        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[model], providers=("omlx",)
+    )
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        "modelman.screens.models.start_local_model",
+        _start_local_model_blocking_on(started, release),
+    )
+
+    exit_calls: list[int] = []
+    monkeypatch.setattr("modelman.screens.models.os._exit", exit_calls.append)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("s")
+        assert started.wait(timeout=2)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmForceQuitDialog)
+
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+
+        assert exit_calls == [0]
+
+        release.set()
+        for _ in range(50):
+            await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_force_quit_dialog_warns_about_pending_changes(tmp_path, monkeypatch):
+    # When a start/stop is in flight AND a queued change (ready/delete/
+    # move/expose) is pending, force-quit abandons both — the dialog must
+    # say so, since it's a stronger warning than "just the operation".
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    running_model = ModelEntry(
+        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+    )
+    queued_model = ModelEntry(
+        id="ollama/b", family="ornith", provider_id="ollama", model_name="b", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path,
+        monkeypatch,
+        models=[running_model, queued_model],
+        downloaded={"ollama/b": str(tmp_path / "d")},
+        providers=("omlx", "ollama"),
+    )
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+
+    def get_provider(name, cfg):
+        return stub
+
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(get_provider))
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        "modelman.screens.models.start_local_model",
+        _start_local_model_blocking_on(started, release),
+    )
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        # Cursor to the omlx row (sorts after ollama within the shared
+        # family/location) and start it — blocks on `release`.
+        table = app.screen.query_one("#model-table", DataTable)
+        table.move_cursor(row=table.get_row_index("omlx/a"))
+        await pilot.press("s")
+        assert started.wait(timeout=2)
+
+        # Cursor to the ollama row (rows are keyed by model id) and queue a
+        # delete on it.
+        table.move_cursor(row=table.get_row_index("ollama/b"))
+        await pilot.press("d")
+        await pilot.pause()
+        assert app.screen.queued_deletes
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ConfirmForceQuitDialog)
+        labels = " ".join(str(label.visual) for label in app.screen.query(Label))
+        assert "1 pending change(s) will be lost" in labels
+
+        release.set()
+        for _ in range(50):
+            await pilot.pause()
+            if app.screen.__class__.__name__ != "ConfirmForceQuitDialog":
+                break

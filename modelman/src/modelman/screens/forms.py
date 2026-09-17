@@ -1303,3 +1303,62 @@ class ConfirmExitDialog(ModelmanModal[Literal["apply", "cancel", "discard"]]):
         if value in ("apply", "cancel", "discard"):
             self.dismiss(value)  # type: ignore[arg-type]
 
+
+class ConfirmForceQuitDialog(ModelmanModal[bool]):
+    """Shown when the user tries to quit while a background worker (model
+    start/stop, the on-mount reconcile, or the daily price refresh) is
+    still running.
+
+    These run on Textual thread workers, which cannot be cancelled once
+    started — quitting normally would leave the process hanging, possibly
+    for minutes, until the worker's blocking call finishes (see
+    docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md).
+    `Keep waiting` just closes the dialog; `Force quit` hard-exits via
+    ModelScreen._force_quit(), abandoning the worker immediately.
+    """
+
+    DEFAULT_CSS = """
+    ConfirmForceQuitDialog > Vertical { width: 70; }
+    """
+
+    BINDINGS = [
+        ("f", "answer(True)"),
+        ("n", "answer(False)"),
+        Binding("escape", "answer(False)", show=False),
+    ]
+
+    def __init__(self, operations: list[str], pending_changes: int = 0) -> None:
+        super().__init__()
+        self._operations = operations
+        self._pending_changes = pending_changes
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Still running in the background:")
+            for description in self._operations:
+                yield Label(f"  … {description}")
+            yield Label(
+                "Quitting won't stop this — modelman may take a while to "
+                "return to the shell."
+            )
+            warning = "Force quitting abandons it immediately."
+            if self._pending_changes:
+                warning += f" {self._pending_changes} pending change(s) will be lost."
+            yield Label(warning)
+            yield self._button_row(
+                [
+                    Button("Keep waiting", id="wait", variant="default"),
+                    Button("Force quit", id="force", variant="warning"),
+                ]
+            )
+
+    def _modal_on_mount(self) -> None:
+        # Safe default: focus the non-destructive choice.
+        self._focus_button("wait")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "force")
+
+    def action_answer(self, value: bool) -> None:
+        self.dismiss(value)
+
