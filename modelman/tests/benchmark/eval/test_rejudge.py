@@ -8,6 +8,7 @@ from pathlib import Path
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.eval.runner import rejudge_run
 from modelman.benchmark.judge_core import Rubric
+from modelman.registry import ModelEntry, ProviderEntry, Registry
 
 
 def _seed_run(tmp_path: Path) -> Path:
@@ -108,10 +109,16 @@ def test_rejudge_run_recomputes_score_json_and_summary_after_rescoring(tmp_path)
         json.dumps({"score_100": 10}), encoding="utf-8"
     )
     (run_dir / "summary.md").write_text("# stale\n\n10.0\n", encoding="utf-8")
+    # Seeded with the REAL key write_metrics_jsonl uses: row.label ("row1"
+    # for a row whose directory is "01--row1", i.e. index=1 + label
+    # "row1") — NOT the directory name itself. Seeding this with the
+    # directory name is exactly the bug that let the label/model_id/route
+    # reconstruction mismatch through review (see the dedicated regression
+    # test below).
     (run_dir / "metrics.jsonl").write_text(
         json.dumps(
             {
-                "label": "01--row1",
+                "label": "row1",
                 "model_id": "ollama/a",
                 "route": "litellm",
                 "error": None,
@@ -144,3 +151,83 @@ def test_rejudge_run_recomputes_score_json_and_summary_after_rescoring(tmp_path)
 
     metrics_line = json.loads((run_dir / "metrics.jsonl").read_text().splitlines()[0])
     assert metrics_line["categories"]["mini_review"] == 90.0
+
+
+def test_rejudge_run_recovers_model_id_route_family_despite_double_index_prefix(tmp_path):
+    # Regression test for a real bug found in the final whole-branch
+    # review: a real suite-loaded row's auto-generated label already
+    # starts with its own index prefix (eval/suite.py's
+    # f"{index:02d}--{model}--{route}"), and _row_dir prepends ANOTHER
+    # index prefix on top of that when building the row's directory name
+    # — so a row's directory name and its label (what write_metrics_jsonl
+    # actually persists) are two different strings, e.g. label
+    # "01--a--litellm" vs. directory "01--01--a--litellm". Reconstruction
+    # used to look the directory name up directly against a dict keyed by
+    # the real label, always missing, and silently fell back to a garbage
+    # model_id (the directory name itself), a blank route, and — since
+    # report.py can't resolve a family from a garbage model_id — no
+    # family grouping in the capability matrix either. This seeds a run
+    # shaped exactly like a real suite-loaded row and a real Registry,
+    # and confirms reconstruction recovers the real model_id/route and
+    # that the family actually resolves.
+    run_dir = tmp_path
+    row_dir = run_dir / "01--01--a--litellm"
+    item_dir = row_dir / "mini_review" / "i1"
+    item_dir.mkdir(parents=True)
+    (item_dir / "response.txt").write_text("off by one in the loop", encoding="utf-8")
+    (run_dir / "run.toml").write_text(
+        """
+[run]
+git_sha = "abc123"
+
+[suite.judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[suite.coding]
+""",
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "label": "01--a--litellm",
+                "model_id": "ollama/a",
+                "route": "litellm",
+                "error": None,
+                "categories": {"mini_review": 10},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    category = Category(
+        name="mini_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="review this", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="fam-x", provider_id="ollama", model_name="a")],
+    )
+    rejudge_run(
+        run_dir,
+        [category],
+        judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+        registry=registry,
+    )
+
+    metrics_line = json.loads((run_dir / "metrics.jsonl").read_text().splitlines()[0])
+    assert metrics_line["label"] == "01--a--litellm"  # stable, matches the original run's label
+    assert metrics_line["model_id"] == "ollama/a"  # not the directory name "01--01--a--litellm"
+    assert metrics_line["route"] == "litellm"  # not blank
+
+    summary = (run_dir / "summary.md").read_text()
+    assert "fam-x" in summary  # family resolves — proves model_id was recovered, not garbage
+    assert "01--01--a--litellm" not in summary  # the raw directory name must never leak into it

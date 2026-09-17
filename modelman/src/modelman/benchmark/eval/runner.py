@@ -338,19 +338,41 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
     )
 
 
+def _row_label_from_dir_name(dir_name: str) -> str:
+    """Invert _row_dir's f"{index:02d}--{row.label}" naming: strip only the
+    leading index segment, on the FIRST "--", so a row.label that itself
+    contains "--" (the common case — suite.py's auto-generated labels are
+    "NN--model--route") round-trips intact. Falls back to the whole
+    directory name if it somehow contains no "--" at all."""
+    _, _, label = dir_name.partition("--")
+    return label or dir_name
+
+
 def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
     """Rebuild the whole run's RowRunResult list from on-disk artifacts —
     used after rejudge_run rewrites judge.json files, so summary.md/
     metrics.jsonl/score.json can be regenerated to match instead of going
     stale. row.model_id/route come back from metrics.jsonl (see
     _read_metrics_row_meta); provider_id is not recoverable and is left
-    blank since report.py never reads it."""
+    blank since report.py never reads it.
+
+    metrics.jsonl is keyed by row.label (what write_metrics_jsonl writes),
+    not by the row's directory name — _row_dir prepends its own index
+    prefix on top of a label that (for an auto-generated label) already
+    starts with one, so the directory name and the label are NOT the same
+    string. Recover the label via _row_label_from_dir_name before looking
+    it up, or every row falls back to a garbage model_id/blank route."""
     meta = _read_metrics_row_meta(run_dir)
     results: list[RowRunResult] = []
     for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
-        row_meta = meta.get(row_dir.name, {})
+        recovered_label = _row_label_from_dir_name(row_dir.name)
+        row_meta = meta.get(recovered_label, {})
         row = RowConfig(
-            label=row_dir.name,
+            # Prefer metrics.jsonl's own persisted label (stable across a
+            # rejudge, matches what the original run rendered) over the
+            # recovered one, which is only a fallback for a row with no
+            # metrics.jsonl entry at all.
+            label=row_meta.get("label", recovered_label),
             model_id=row_meta.get("model_id", row_dir.name),
             route=row_meta.get("route", ""),
             provider_id="",
