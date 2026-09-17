@@ -306,6 +306,8 @@ gate" section.
 
 The TUI's `s` keybinding runs start/stop on a `run_worker(..., thread=True)` background thread (`screens/models.py`'s `_do_start`/`_do_stop`), which Textual cannot cancel once started — a real warmup can block that thread for minutes. Quitting (`ModelScreen.action_back()`, reached by both Escape and Ctrl+Q) checks `self.workers` for anything still `is_running` (model start/stop, the on-mount reconcile, the daily price refresh) and, if so, shows `ConfirmForceQuitDialog` instead of exiting normally: `Keep waiting`, or `Force quit`, which calls `ModelScreen._force_quit()` to restore the terminal and then `os._exit(0)` — the only way out, since a normal exit would otherwise hang in `asyncio.run()`'s executor-join and then `concurrent.futures.thread`'s untimed `atexit` thread-join waiting for that same thread. Safe by the hint-not-truth `running` contract above: an abandoned start just leaves a flag the next live probe self-heals.
 
+`ModelmanApp.request_quit()` (`app.py`) is what actually routes `ctrl+q`: it `isinstance`-checks the top screen (`ModelScreen` → `action_back()`, `ConfirmForceQuitDialog` → `dismiss(True)`, i.e. same as clicking "Force quit") and falls through to a bare `self.exit()` for anything else. `ctrl+q` is a priority binding on `App`, resolved before any screen/modal's own bindings, so a modal can never intercept it by binding the key itself — any new modal that can be topmost during quit needs its own branch in `request_quit()`, or a second `ctrl+q` will silently bypass it.
+
 `modelman start`'s no-arg listing and its discovered-model auto-register
 path (`_provider_local_models` in `local_control.py`, gated on each
 provider's `Provider.supports_discovery` class attribute — `False` for
