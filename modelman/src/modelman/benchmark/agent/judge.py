@@ -1,60 +1,56 @@
-"""Blind LLM judge for agent-produced diffs."""
+"""Blind LLM judge for agent-produced diffs.
+
+The rubric-scoring mechanics (strict-JSON parsing, retry, multi-sample
+median) now live in modelman.benchmark.judge_core, generalized for reuse by
+modelman.benchmark.eval's per-category rubrics. This module keeps only what
+is specific to scoring a diff: the fixed diff-fixing Rubric, diff/message
+anonymization, and overclaim detection. Every function below keeps its old
+signature so no caller needs to change.
+"""
 
 from __future__ import annotations
 
-import json
 import re
-import time
-from dataclasses import dataclass
-from statistics import median
-from typing import Protocol
 
-import requests
+import requests  # noqa: F401 (imported for test patching)
+
+from modelman.benchmark.judge_core import (
+    JudgeContractError,
+    JudgeOutcome,
+    JudgeScore,
+    JudgeTransport,
+    JudgeTransportError,
+    LiteLLMJudgeTransport,
+    Rubric,
+)
+from modelman.benchmark.judge_core import judge_row as _judge_row
+from modelman.benchmark.judge_core import parse_response as _parse_response
 
 DIMENSIONS = ("root_cause", "approach", "test_quality", "scope", "coherence")
 MAX_POINTS = {"root_cause": 30, "approach": 25, "test_quality": 20, "scope": 15, "coherence": 10}
 VERDICTS = {"symptom_patch", "partial", "principled_fix", "no_useful_change"}
 
+AGENT_RUBRIC = Rubric(dimensions=dict(MAX_POINTS), verdicts=frozenset(VERDICTS))
 
-class JudgeContractError(Exception):
-    """The judge's response didn't satisfy the strict JSON score contract."""
-
-
-class JudgeTransportError(Exception):
-    """A transport failed to get a response at all (network/API failure).
-
-    Transports raise this after exhausting their own internal retry, so
-    judge_row's retry loop treats a network failure exactly like a
-    malformed response: one more attempt, then JUDGE_FAIL.
-    """
-
-
-class JudgeTransport(Protocol):
-    def complete(self, prompt: str, *, temperature: float) -> str: ...
-
-
-@dataclass
-class JudgeScore:
-    scores: dict[str, int]
-    total: int
-    verdict: str
-    flags: list[str]
-    rationale: str
-    raw_text: str
-
-
-@dataclass
-class JudgeOutcome:
-    status: str  # "scored" | "judge_fail"
-    samples: list[JudgeScore]
-    combined: JudgeScore | None
-    attempts_used: int
-    # Why judging failed. "judge_fail" alone cannot be acted on: a 404 (the
-    # model id does not exist at this gateway) and a 401 (no key) and a
-    # malformed reply are three different fixes, and the row's own data is fine
-    # in all three cases.
-    error: str | None = None
-
+__all__ = [
+    "DIMENSIONS",
+    "MAX_POINTS",
+    "VERDICTS",
+    "AGENT_RUBRIC",
+    "JudgeContractError",
+    "JudgeTransportError",
+    "JudgeTransport",
+    "JudgeScore",
+    "JudgeOutcome",
+    "LiteLLMJudgeTransport",
+    "anonymize_diff",
+    "anonymize_message",
+    "build_prompt",
+    "parse_response",
+    "judge_row",
+    "apply_cap",
+    "detect_overclaim",
+]
 
 _DIFF_HEADER_RE = re.compile(r"^diff --git a/\S+ b/\S+$", re.MULTILINE)
 _MINUS_HEADER_RE = re.compile(r"^--- a/\S+$", re.MULTILINE)
@@ -78,7 +74,6 @@ _SESSION_TOKEN_RE = re.compile(r"\b(session|token)[-_ ]?id\s*[:=]\s*\S+", re.IGN
 
 
 def anonymize_message(message: str) -> str:
-    """Strip model/provider/session/token strings and timestamps."""
     text = _MODEL_TOKEN_RE.sub("<model>", message)
     text = _TIMESTAMP_RE.sub("<timestamp>", text)
     text = _SESSION_TOKEN_RE.sub(lambda m: f"{m.group(1)}: <redacted>", text)
@@ -92,9 +87,6 @@ def build_prompt(
     closing_message: str,
     rubric_md: str,
 ) -> str:
-    """Everything the judge sees. No gate results, no hidden tests, no
-    meta.toml, no config label, no timing/token stats — the rubric itself
-    states the judge must not speculate about test results."""
     seed_section = (
         "\n\n".join(
             f"--- {path} (baseline) ---\n{content}" for path, content in seed_contents.items()
@@ -111,132 +103,20 @@ def build_prompt(
     )
 
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-
-
-_ANSWER_KEYS = {"scores", "total", "verdict"}
-
-
-def _json_candidate(raw_text: str) -> str:
-    """The part of a reply that should be parsed as JSON.
-
-    Tolerating the *wrapper* is not tolerating a bad score: `parse_response`
-    still validates every key, dimension, range and verdict below. A judge that
-    wraps its object in a markdown fence, or says "Here is my assessment:" first,
-    is answering correctly — and with `max_attempts` retrying the identical
-    prompt, a wrapper-intolerant parser turns that into a permanent JUDGE_FAIL on
-    every row, which is the only quality axis this harness has.
-
-    Scans every '{' for a parseable dict rather than stopping at the first one,
-    because a reply can contain an incidental JSON-looking fragment (an example,
-    a restated schema) before the judge's actual answer. The first candidate with
-    all three answer keys wins; failing that, the first parseable dict is kept as
-    a fallback so a genuinely malformed reply still surfaces its own parse error
-    from parse_response rather than a misleading one about an unrelated fragment."""
-    fenced = _FENCE_RE.search(raw_text)
-    text = fenced.group(1) if fenced else raw_text
-    decoder = json.JSONDecoder()
-    idx = 0
-    fallback: str | None = None
-    while idx < len(text):
-        # Skip whitespace and stray leading characters to find the first object.
-        if text[idx] == "{":
-            try:
-                obj, end = decoder.raw_decode(text, idx)
-                if isinstance(obj, dict):
-                    if obj.keys() >= _ANSWER_KEYS:
-                        return text[idx:end]
-                    if fallback is None:
-                        fallback = text[idx:end]
-            except json.JSONDecodeError:
-                pass
-        idx += 1
-    return fallback if fallback is not None else raw_text
-
-
 def parse_response(raw_text: str) -> JudgeScore:
-    try:
-        data = json.loads(_json_candidate(raw_text))
-    except json.JSONDecodeError as exc:
-        raise JudgeContractError(f"response is not valid JSON: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise JudgeContractError("response is not a JSON object")
-
-    missing = [k for k in ("scores", "total", "verdict") if k not in data]
-    if missing:
-        raise JudgeContractError(f"response missing keys: {missing}")
-
-    scores = data["scores"]
-    missing_dims = [d for d in DIMENSIONS if d not in scores]
-    if missing_dims:
-        raise JudgeContractError(f"scores missing dimensions: {missing_dims}")
-    for dim in DIMENSIONS:
-        value = scores[dim]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not (0 <= value <= MAX_POINTS[dim])
-        ):
-            raise JudgeContractError(f"invalid score for {dim}: {value!r}")
-
-    if data["verdict"] not in VERDICTS:
-        raise JudgeContractError(f"unknown verdict: {data['verdict']!r}")
-
-    return JudgeScore(
-        scores={d: scores[d] for d in DIMENSIONS},
-        total=int(data["total"]),
-        verdict=data["verdict"],
-        flags=list(data.get("flags", [])),
-        rationale=str(data.get("rationale", "")),
-        raw_text=raw_text,
-    )
+    return _parse_response(raw_text, AGENT_RUBRIC)
 
 
 def judge_row(
     transport: JudgeTransport, prompt: str, *, temperature: float, samples: int, max_attempts: int
 ) -> JudgeOutcome:
-    collected: list[JudgeScore] = []
-    attempts_used = 0
-    last_error: str | None = None
-    for _ in range(samples):
-        score: JudgeScore | None = None
-        for _attempt in range(max_attempts):
-            attempts_used += 1
-            try:
-                raw = transport.complete(prompt, temperature=temperature)
-                score = parse_response(raw)
-                last_error = None
-                break
-            except (JudgeContractError, JudgeTransportError) as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
-                continue
-        if score is None:
-            return JudgeOutcome(
-                status="judge_fail",
-                samples=collected,
-                combined=None,
-                attempts_used=attempts_used,
-                error=last_error,
-            )
-        collected.append(score)
-
-    if len(collected) == 1:
-        combined = collected[0]
-    else:
-        combined_scores = {
-            dim: round(median(s.scores[dim] for s in collected)) for dim in DIMENSIONS
-        }
-        combined = JudgeScore(
-            scores=combined_scores,
-            total=sum(combined_scores.values()),
-            verdict=collected[-1].verdict,
-            flags=sorted({f for s in collected for f in s.flags}),
-            rationale=collected[-1].rationale,
-            raw_text="\n---\n".join(s.raw_text for s in collected),
-        )
-    return JudgeOutcome(
-        status="scored", samples=collected, combined=combined, attempts_used=attempts_used
+    return _judge_row(
+        transport,
+        prompt,
+        AGENT_RUBRIC,
+        temperature=temperature,
+        samples=samples,
+        max_attempts=max_attempts,
     )
 
 
@@ -250,66 +130,4 @@ _TEST_PASS_CLAIM_RE = re.compile(
 
 
 def detect_overclaim(closing_message: str, hidden_pass: int, hidden_total: int) -> bool:
-    """Free signal: grep the closing message for a test-passing claim and
-    compare against the actual hidden-test ratio — a computed column, not
-    a judge dimension."""
     return bool(_TEST_PASS_CLAIM_RE.search(closing_message)) and hidden_pass < hidden_total
-
-
-class LiteLLMJudgeTransport:
-    """A plain OpenAI-compatible chat-completions call at a fixed temperature.
-    Not a pi subprocess: pi has no temperature flag, and a fresh HTTP
-    request gives the same context isolation a fresh process would, more
-    cheaply."""
-
-    def __init__(self, base_url: str, api_key: str, model: str, *, retry_backoff_s: float = 2.0):
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.model = model
-        self.retry_backoff_s = retry_backoff_s
-
-    def complete(self, prompt: str, *, temperature: float) -> str:
-        try:
-            return self._post(prompt, temperature)
-        except requests.RequestException:
-            time.sleep(self.retry_backoff_s)
-            try:
-                return self._post(prompt, temperature)
-            except requests.RequestException as exc:
-                raise JudgeTransportError(f"judge transport failed after retry: {exc}") from exc
-
-    def _post(self, prompt: str, temperature: float) -> str:
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature,
-                "stream": False,
-            },
-            timeout=120,
-        )
-        if response.status_code >= 400:
-            # The body, not just the status: "404" tells you the request failed,
-            # "No deployment found for model openrouter/anthropic/claude-opus-4"
-            # tells you the suite names a model this gateway does not serve —
-            # and the judge's own status field carries this text to judge.json.
-            raise JudgeTransportError(
-                f"HTTP {response.status_code} from {self.base_url}/chat/completions: "
-                f"{response.text[:200]}"
-            )
-        try:
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-            # A 200 with a malformed body (a proxy HTML error page, an empty
-            # choices list, a missing content key) is a transport failure, not
-            # a contract failure: the row's own data is fine, the gateway just
-            # did not return a usable reply. Raising JudgeTransportError keeps
-            # it inside complete()'s retry and judge_row's per-row JUDGE_FAIL
-            # handling instead of crashing the whole sweep.
-            raise JudgeTransportError(
-                f"malformed 200 response from {self.base_url}/chat/completions: "
-                f"{type(exc).__name__}: {response.text[:200]}"
-            ) from exc
