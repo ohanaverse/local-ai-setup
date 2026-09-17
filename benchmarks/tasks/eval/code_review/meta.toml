@@ -1,0 +1,2 @@
+[meta]
+intent = "Six snippets, one seeded issue each, spanning severity levels (off-by-one and mutable-default are subtle-but-real correctness bugs; SQL injection is a security-critical bug; race condition needs concurrency reasoning; resource leak and exception-swallowing are reliability issues). Chosen so a model that only pattern-matches on 'SQL string formatting = bad' without understanding severity still gets penalized on severity_judgment elsewhere in the set."
