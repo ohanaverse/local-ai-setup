@@ -118,6 +118,15 @@ def write_row_artifacts(result) -> None:
             (cat_dir / "evalplus_result.json").write_text(
                 json.dumps(asdict(cat_result), indent=2), encoding="utf-8"
             )
+            # Normalize pass@1 (a 0-1 fraction) to the same /100 scale the
+            # judged-category score.json below uses, so every category's
+            # score.json is directly comparable regardless of scoring method.
+            coding_score_100 = (
+                cat_result.pass_at_1 * 100 if cat_result.pass_at_1 is not None else None
+            )
+            (cat_dir / "score.json").write_text(
+                json.dumps({"score_100": coding_score_100}), encoding="utf-8"
+            )
         elif isinstance(cat_result, CategoryRowResult):
             for item_result in cat_result.items:
                 item_dir = cat_dir / item_result.item_id

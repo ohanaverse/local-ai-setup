@@ -118,6 +118,23 @@ def test_write_row_artifacts_writes_response_and_judge_json(tmp_path):
     assert judge_data["status"] == "scored"
 
 
+def test_write_row_artifacts_writes_score_json_for_coding_category(tmp_path):
+    # The coding category (a CodingResult, not a CategoryRowResult) must also
+    # get a score.json, normalized to the same /100 scale as judged
+    # categories' score.json — otherwise a per-row rollup that reads
+    # score.json across categories would silently skip coding rows.
+    row = RowRunResult(
+        row=RowConfig(label="a", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"),
+        row_dir=tmp_path / "01--a",
+        category_results={
+            "coding": CodingResult(dataset="humaneval", pass_at_1=0.5, raw_output="")
+        },
+    )
+    write_row_artifacts(row)
+    score_data = json.loads((tmp_path / "01--a" / "coding" / "score.json").read_text())
+    assert score_data["score_100"] == 50.0
+
+
 def test_write_run_toml_persists_judge_config_for_rejudging(tmp_path):
     # run.toml is the suite snapshot a later rejudge_run reads back to
     # reconstruct a judge transport with no Suite object in hand — it must
