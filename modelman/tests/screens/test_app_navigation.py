@@ -1931,6 +1931,66 @@ async def test_force_quit_restores_terminal_before_hard_exit(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_ctrl_q_while_force_quit_dialog_open_force_quits(tmp_path, monkeypatch):
+    # Regression: ModelmanApp.request_quit() used to only special-case
+    # ModelScreen, so pressing ctrl+q a second time while the force-quit
+    # dialog was already open (self.screen is the dialog, not ModelScreen)
+    # fell through to a plain self.exit() — silently reintroducing the
+    # multi-minute hang this whole dialog exists to prevent. A second
+    # ctrl+q here must behave like clicking "Force quit", not bypass it.
+    from unittest.mock import MagicMock
+
+    from modelman.providers import registry as prov_registry
+    from modelman.screens.forms import ConfirmForceQuitDialog
+
+    model = ModelEntry(
+        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+    )
+    reg_path, state_path = _seed_registry_and_state(
+        tmp_path, monkeypatch, models=[model], providers=("omlx",)
+    )
+    state = StateStore()
+    state.set("omlx/a", ModelState(ready=True, running=False))
+    save_state(state, state_path)
+
+    stub = MagicMock()
+    stub.name = "omlx"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+
+    started = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(
+        "modelman.screens.models.start_local_model",
+        _start_local_model_blocking_on(started, release),
+    )
+
+    exit_calls: list[int] = []
+    monkeypatch.setattr("modelman.screens.models.os._exit", exit_calls.append)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("s")
+        assert started.wait(timeout=2)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmForceQuitDialog)
+
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+
+        assert exit_calls == [0]
+
+        release.set()
+        for _ in range(50):
+            await pilot.pause()
+
+
+@pytest.mark.asyncio
 async def test_force_quit_dialog_warns_about_pending_changes(tmp_path, monkeypatch):
     # When a start/stop is in flight AND a queued change (ready/delete/
     # move/expose) is pending, force-quit abandons both — the dialog must
