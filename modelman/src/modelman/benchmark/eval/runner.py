@@ -384,7 +384,14 @@ def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
     for line in metrics_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            # A run interrupted mid-write (or a hand-edited line) leaves a
+            # partial line; skip it — the affected row just degrades to the
+            # label-fallback keying (house convention: malformed lines are
+            # skipped, not fatal, same as usage/wt_state).
+            continue
         key = row.get("row_dir") or row.get("label")
         meta[key] = row
     return meta

@@ -356,3 +356,33 @@ def test_rejudge_row_filter_unknown_value_raises(tmp_path):
             row_filter=["no-such-row"],
             judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
         )
+
+
+def test_reconstruct_skips_malformed_metrics_lines(tmp_path):
+    # metrics.jsonl is append-style and can be left with a truncated final
+    # line (run interrupted mid-write) or a hand-edited line; the
+    # reconstruction must skip malformed lines rather than crash rejudge
+    # with a raw JSONDecodeError — a skipped line only degrades to the
+    # label-fallback keying (the same house convention as usage/wt_state's
+    # "malformed lines are skipped, not fatal").
+    from modelman.benchmark.eval.runner import _reconstruct_run_results
+
+    run_dir = _seed_run(tmp_path)
+    (run_dir / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "label": "row1",
+                "model_id": "ollama/a",
+                "route": "litellm",
+                "error": None,
+                "categories": {"mini_review": 10},
+            }
+        )
+        + "\n"
+        + '{"label": "trunc", "model_i'  # truncated mid-write
+        + "\n",
+        encoding="utf-8",
+    )
+    results = _reconstruct_run_results(run_dir)
+    assert len(results) == 1
+    assert results[0].row.model_id == "ollama/a"  # from the healthy line, not a crash
