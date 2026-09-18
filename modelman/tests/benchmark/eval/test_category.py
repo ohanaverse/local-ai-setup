@@ -14,6 +14,10 @@ INVALID_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "categories_invalid"
 
 
 def test_load_category_reads_items_and_rubric():
+    # The happy path: a judged category loads its items (with per-item
+    # meta), its rubric dimensions, and the rubric markdown — the three
+    # inputs judged_runner's prompt builder and judge_core's scorer both
+    # consume, so any load-shape regression breaks the whole judged path.
     category = load_category(FIXTURE_ROOT / "mini_review")
     assert category.name == "mini_review"
     assert len(category.items) == 1
@@ -25,6 +29,9 @@ def test_load_category_reads_items_and_rubric():
 
 
 def test_load_category_coding_has_no_rubric():
+    # coding is the one rubric-less category (EvalPlus grades it, not a
+    # judge): load_category must return rubric=None with its dataset/limit
+    # config, and every dispatch site branches on exactly this None.
     category = load_category(FIXTURE_ROOT / "coding")
     assert category.name == CODING_CATEGORY
     assert category.rubric is None
@@ -33,10 +40,17 @@ def test_load_category_coding_has_no_rubric():
 
 
 def test_load_category_rejects_rubric_not_summing_to_100():
+    # Rubric dimensions must sum to 100: scores are reported on a /100
+    # scale, so a mis-weighted rubric would silently make category scores
+    # incomparable — the check is the guard that keeps every category's
+    # score_100 directly comparable.
     with pytest.raises(BenchmarkError, match="sum to 100"):
         load_category(INVALID_FIXTURE_ROOT / "bad_sum")
 
 
 def test_list_categories_finds_every_subdirectory():
+    # list_categories is the --root inventory behind both `list-categories`
+    # and run's category validation; it must surface every category
+    # directory (judged and coding alike), or rows silently run nothing.
     names = {c.name for c in list_categories(FIXTURE_ROOT)}
     assert names == {"mini_review", "coding"}
