@@ -154,3 +154,53 @@ def test_run_cmd_dry_run_prints_full_suite_row_indexes(mock_load_registry, tmp_p
     assert "03" in result.stdout  # full-suite index, not the renumbered "01"
     assert "row3" in result.stdout
     assert "1 of 3 row(s)" in result.stdout
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+def test_run_cmd_category_filter_allows_row_naming_other_known_categories(
+    mock_load_registry, tmp_path
+):
+    # --category narrows what RUNS, but a row's `categories =` must be
+    # validated against every category that EXISTS under --root, not the
+    # already-narrowed set: eval-sweep row 3 declares ["coding",
+    # "reasoning"] and `--category coding` should legitimately run just its
+    # coding cell, not be rejected as naming an "unknown" category.
+    from modelman.registry import ModelEntry, ProviderEntry, Registry
+
+    mock_load_registry.return_value = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        """
+name = "t"
+[judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 1
+route = "litellm"
+
+[[rows]]
+model = "ollama/a"
+route = "litellm"
+categories = ["coding", "mini_review"]
+""",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(FIXTURE_CATEGORIES),
+            "--category",
+            "coding",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "coding" in result.stdout

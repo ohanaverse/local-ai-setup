@@ -66,15 +66,18 @@ def run_cmd(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
-    categories = list_categories(root)
+    all_categories = list_categories(root)
+    categories = all_categories
     if category:
         wanted = set(category)
         categories = [c for c in categories if c.name in wanted]
 
-    # A row's `categories =` must name real categories: a typo would
-    # otherwise filter every category out silently and the row would
-    # "run" with zero results — a wasted, possibly billed run.
-    known_names = {c.name for c in categories}
+    # A row's `categories =` must name real categories (validated against
+    # the FULL set under --root, not the --category-filtered set: scoping
+    # with --category coding must not reject a row that also legitimately
+    # names reasoning): a typo would otherwise filter every category out
+    # silently and the row would "run" with zero results.
+    known_names = {c.name for c in all_categories}
     for r in loaded_suite.rows:
         if r.categories is not None:
             unknown = [c for c in r.categories if c not in known_names]
