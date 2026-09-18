@@ -131,9 +131,21 @@ def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
     if rubric.verdicts is not None and verdict not in rubric.verdicts:
         raise JudgeContractError(f"unknown verdict: {verdict!r}")
 
+    # `total` is part of the strict contract, same as the per-dimension
+    # scores: a non-int (which int() would silently coerce from "90" or
+    # crash on for a dict) and a total that disagrees with the declared
+    # scores are both malformed replies, and JudgeContractError is what
+    # judge_row's retry loop catches.
+    total = data["total"]
+    score_sum = sum(scores[d] for d in rubric.dimensions)
+    if isinstance(total, bool) or not isinstance(total, int):
+        raise JudgeContractError(f"total must be an int, got {total!r}")
+    if total != score_sum:
+        raise JudgeContractError(f"total {total} does not equal the sum of scores {score_sum}")
+
     return JudgeScore(
         scores={d: scores[d] for d in rubric.dimensions},
-        total=int(data["total"]),
+        total=total,
         verdict=str(verdict),
         flags=list(data.get("flags", [])),
         rationale=str(data.get("rationale", "")),

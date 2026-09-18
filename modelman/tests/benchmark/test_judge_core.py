@@ -76,6 +76,30 @@ class _StubTransport:
         return self.replies.pop(0)
 
 
+def test_parse_response_rejects_non_int_total():
+    # `total` must be a true int: a numeric string ("90") must not be
+    # silently coerced by int(), and a non-numeric value must raise
+    # JudgeContractError (which judge_row retries) instead of a raw
+    # ValueError/TypeError that escaped the retry loop and failed the
+    # whole category.
+    for bad in ("90", 90.5, None, {"v": 90}, [90]):
+        raw = json.dumps({"scores": {"x": 40, "y": 30, "z": 20}, "total": bad})
+        with pytest.raises(JudgeContractError, match="total"):
+            parse_response(raw, NO_VERDICT_RUBRIC)
+
+
+def test_parse_response_rejects_total_not_matching_score_sum():
+    # The declared total must equal the sum of the declared scores — a
+    # fabricated total (999 when scores sum to 90) would otherwise inflate
+    # the category score. Covers both directions (over and under).
+    raw = json.dumps({"scores": {"a": 60, "b": 30}, "total": 999, "verdict": "good"})
+    with pytest.raises(JudgeContractError, match="total"):
+        parse_response(raw, VERDICT_RUBRIC)
+    raw2 = json.dumps({"scores": {"a": 60, "b": 30}, "total": 80, "verdict": "good"})
+    with pytest.raises(JudgeContractError, match="total"):
+        parse_response(raw2, VERDICT_RUBRIC)
+
+
 def test_judge_row_combines_multiple_samples_by_median():
     # Multi-sample judging (samples > 1) combines per-dimension scores by
     # MEDIAN, not mean — a median is far less sensitive to one outlier
