@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.eval.runner import rejudge_run
 from modelman.benchmark.judge_core import Rubric
@@ -386,3 +387,176 @@ def test_reconstruct_skips_malformed_metrics_lines(tmp_path):
     results = _reconstruct_run_results(run_dir)
     assert len(results) == 1
     assert results[0].row.model_id == "ollama/a"  # from the healthy line, not a crash
+
+
+def test_reconstruct_skips_malformed_judge_json(tmp_path):
+    # One corrupted judge.json anywhere in the run (a crash mid-write or a
+    # hand edit) must not crash the whole rejudge/reconstruction with a raw
+    # JSONDecodeError — judge_cmd catches only BenchmarkError/
+    # FileNotFoundError, so a raw traceback would escape to the user. The
+    # malformed item is skipped (the same tolerance convention
+    # _read_metrics_row_meta applies to metrics.jsonl lines); the healthy
+    # item in the same category still reconstructs.
+    from modelman.benchmark.eval.runner import _reconstruct_run_results
+
+    run_dir = tmp_path
+    category_dir = run_dir / "01--row1" / "mini_review"
+    good_judge = {
+        "status": "scored",
+        "combined": {
+            "scores": {"a": 90},
+            "total": 90,
+            "verdict": "",
+            "flags": [],
+            "rationale": "",
+            "raw_text": "",
+        },
+        "attempts_used": 1,
+    }
+    for name, judge_body in (
+        ("i1", json.dumps(good_judge)),
+        ("i2", '{"status": "scored", "combin'),  # truncated mid-write
+    ):
+        item_dir = category_dir / name
+        item_dir.mkdir(parents=True)
+        (item_dir / "response.txt").write_text("response", encoding="utf-8")
+        (item_dir / "judge.json").write_text(judge_body, encoding="utf-8")
+    (run_dir / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "label": "row1",
+                "row_dir": "01--row1",
+                "model_id": "ollama/a",
+                "route": "litellm",
+                "error": None,
+                "categories": {"mini_review": 90},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    results = _reconstruct_run_results(run_dir)
+    assert len(results) == 1
+    cat = results[0].category_results["mini_review"]
+    # Only the healthy item reconstructs; its score stands in for the
+    # category rather than the whole reconstruction dying.
+    assert [i.item_id for i in cat.items] == ["i1"]
+    assert cat.score_100 == 90.0
+
+
+def test_reconstruct_skips_malformed_evalplus_result_json(tmp_path):
+    # Same tolerance class as the judge.json test, on the coding side: a
+    # corrupted evalplus_result.json must degrade that one category to
+    # empty (None) instead of crashing reconstruction with a raw
+    # JSONDecodeError.
+    from modelman.benchmark.eval.runner import _reconstruct_category_result
+
+    category_dir = tmp_path / "coding"
+    category_dir.mkdir()
+    (category_dir / "evalplus_result.json").write_text(
+        '{"dataset": "humaneval", "pass_at_1": 0.5, "raw_outp', encoding="utf-8"
+    )
+    assert _reconstruct_category_result(category_dir) is None
+
+
+def test_rejudge_row_index_resolves_to_the_same_row_run_selected(tmp_path):
+    # `judge --row N` must resolve to the SAME row `run --row N` selected:
+    # run numbers row dirs by SUITE position while execution order (sorted
+    # by (provider, model) for isolation grouping) differs on any
+    # multi-provider suite — the shipped eval-sweep.toml shape below has
+    # suite order qwen/omlx/glm but execution order glm/qwen/omlx. The
+    # index must come from each directory's own NN-- prefix (a suite
+    # position), never its position in the sorted listing (an execution
+    # position) — otherwise rejudge silently re-judges the WRONG row.
+    run_dir = tmp_path
+    # Row dirs as run_suite would write them for suite rows 1..3
+    # (qwen=01, omlx=02, glm=03) in execution order glm, qwen, omlx —
+    # sorted() here yields 01, 02, 03 anyway, so seed the dirs' INNER
+    # content to prove the index maps dir->row, not listing position.
+    for dir_name, label in (("01--qwen", "qwen"), ("02--omlx", "omlx"), ("03--glm", "glm")):
+        item_dir = run_dir / dir_name / "mini_review" / "i1"
+        item_dir.mkdir(parents=True)
+        (item_dir / "response.txt").write_text(f"response for {label}", encoding="utf-8")
+    (run_dir / "run.toml").write_text(
+        """
+[run]
+git_sha = "abc123"
+
+[suite.judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[suite.coding]
+""",
+        encoding="utf-8",
+    )
+    category = _mini_category()
+    outcomes = rejudge_run(
+        run_dir,
+        [category],
+        row_filter=["2"],
+        judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+    )
+    # Suite row 2 is the omlx row, whose dir is 02--omlx — not the second
+    # directory in any other ordering.
+    assert len(outcomes) == 1
+    assert outcomes[0]["row"] == "02--omlx"
+
+
+def test_rejudge_row_index_finds_filtered_run_dirs_with_gaps(tmp_path):
+    # A filtered run (--row 1,3) leaves a GAP in the dir numbering
+    # (01-- and 03--, no 02--). judge --row 3 must still find 03-- by
+    # parsing the dir's own index prefix — matching it by listing position
+    # (where 03-- is only the 2nd dir) would select nothing or the wrong
+    # row.
+    run_dir = tmp_path
+    for dir_name in ("01--row1", "03--row3"):
+        item_dir = run_dir / dir_name / "mini_review" / "i1"
+        item_dir.mkdir(parents=True)
+        (item_dir / "response.txt").write_text("response", encoding="utf-8")
+    (run_dir / "run.toml").write_text(
+        """
+[run]
+git_sha = "abc123"
+
+[suite.judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "litellm"
+
+[suite.coding]
+""",
+        encoding="utf-8",
+    )
+    category = _mini_category()
+    outcomes = rejudge_run(
+        run_dir,
+        [category],
+        row_filter=["3"],
+        judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0]["row"] == "03--row3"
+
+
+def test_rejudge_selection_error_surfaces_before_transport_construction(tmp_path):
+    # A bad --row must surface the "matched no row directories" error, not
+    # a judge-transport error (e.g. missing API key): selection happens
+    # before the transport is built, so the clearest error wins. The
+    # transport factory here raises if it is ever reached.
+    run_dir = _seed_run(tmp_path)
+    category = _mini_category()
+
+    def _boom_factory(_judge_cfg):
+        raise AssertionError("transport must not be built when row selection fails")
+
+    with pytest.raises(BenchmarkError, match="matched no row"):
+        rejudge_run(
+            run_dir, [category], row_filter=["no-such"], judge_transport_factory=_boom_factory
+        )

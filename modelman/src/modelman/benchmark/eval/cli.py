@@ -89,6 +89,23 @@ def run_cmd(
                 )
                 raise typer.Exit(1)
 
+    # Same check for the CLI's own --category values: a typo there (or a
+    # typo'd --root, which makes list_categories return []) would otherwise
+    # produce a zero-category "run" that still isolates providers, writes
+    # an empty summary, and repoints eval_last_run at it — the exact
+    # silent-empty failure mode the row-level check above exists to prevent.
+    if loaded_suite.rows and not all_categories:
+        typer.echo(f"error: no categories found under {root} (check --root)", err=True)
+        raise typer.Exit(1)
+    unknown_cli = [c for c in category if c not in known_names]
+    if unknown_cli:
+        typer.echo(
+            f"error: unknown category(ies): {', '.join(unknown_cli)} "
+            f"(known: {', '.join(sorted(known_names))})",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     rows = loaded_suite.rows
     if row:
         wanted_rows = set(row)

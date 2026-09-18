@@ -26,6 +26,38 @@ def _registry() -> Registry:
     )
 
 
+def _multi_provider_registry() -> Registry:
+    # Shaped like the shipped eval-sweep.toml: two ollama rows around one
+    # omlx row, so the (provider, model) execution sort reorders the suite.
+    return Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", location="local"),
+            ProviderEntry(id="omlx", name="oMLX", location="local"),
+        ],
+        models=[
+            ModelEntry(id="ollama/qwen", family="f", provider_id="ollama", model_name="qwen"),
+            ModelEntry(id="omlx/m", family="f", provider_id="omlx", model_name="m"),
+            ModelEntry(id="ollama/glm", family="f", provider_id="ollama", model_name="glm"),
+        ],
+    )
+
+
+def _multi_provider_suite() -> Suite:
+    # Suite order: qwen (1), omlx (2), glm (3). Execution order (sorted by
+    # (provider_id, model_id)): glm, qwen, omlx — deliberately different.
+    return Suite(
+        name="t",
+        cooldown_s=0,
+        judge=JudgeConfig(model="j", temperature=0.0, samples=1, max_attempts=1, route="litellm"),
+        coding=CodingConfig(),
+        rows=[
+            RowConfig(label="row1", model_id="ollama/qwen", route="litellm", provider_id="ollama"),
+            RowConfig(label="row2", model_id="omlx/m", route="litellm", provider_id="omlx"),
+            RowConfig(label="row3", model_id="ollama/glm", route="litellm", provider_id="ollama"),
+        ],
+    )
+
+
 def _suite(row_categories=None) -> Suite:
     return Suite(
         name="t",
@@ -254,9 +286,7 @@ def test_run_suite_skips_judge_transport_for_coding_only_rows(
     from modelman.benchmark.eval.evalplus_runner import CodingResult
 
     mock_resolve.return_value = ("http://localhost:8000/v1", "b-server-name", "ollama")
-    mock_run_coding.return_value = CodingResult(
-        dataset="humaneval", pass_at_1=0.5, raw_output="ok"
-    )
+    mock_run_coding.return_value = CodingResult(dataset="humaneval", pass_at_1=0.5, raw_output="ok")
 
     def _boom_factory(_judge_cfg):
         raise AssertionError("judge transport must not be built for a coding-only run")
@@ -306,3 +336,91 @@ def test_run_suite_sleeps_cooldown_between_rows_in_a_group(
         )
     # 3 rows, one group: cooldown after rows 1 and 2, none after row 3.
     assert mock_sleep.call_args_list == [call(0.25), call(0.25)]
+
+
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_unmatched_row_filter_raises_and_writes_nothing(mock_isolation, tmp_path):
+    # A --row value (label or index) that matches nothing must raise
+    # BenchmarkError BEFORE any run directory is created: the old silent
+    # empty selection created a run dir, wrote empty summary.md/
+    # metrics.jsonl/run.toml, repointed eval_last_run at it, and exited 0
+    # — the user believed a scoped benchmark ran. Mirrors the rejudge
+    # selector's no-match error.
+    suite = _multi_provider_suite()
+    with pytest.raises(BenchmarkError, match="matched no suite rows"):
+        run_suite(
+            suite,
+            _multi_provider_registry(),
+            [_mini_review_category()],
+            row_filter=["no-such-row"],
+            results_dir=tmp_path,
+            judge_transport_factory=lambda judge_cfg: object(),
+        )
+    with pytest.raises(BenchmarkError, match="matched no suite rows"):
+        run_suite(
+            suite,
+            _multi_provider_registry(),
+            [_mini_review_category()],
+            row_filter=["99"],  # index past the end of the suite
+            results_dir=tmp_path,
+            judge_transport_factory=lambda judge_cfg: object(),
+        )
+    # No run dir was created for either failed attempt (the autouse
+    # conftest fixture drops an unrelated _default_litellm_config dir into
+    # tmp_path — only eval-* run dirs matter here).
+    assert [p for p in tmp_path.iterdir() if p.name.startswith("eval-")] == []
+    mock_isolation.isolate_provider.assert_not_called()
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_row_dirs_are_numbered_by_suite_position_not_execution_order(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # On a multi-provider suite (like the shipped eval-sweep.toml) the
+    # execution order — sorted by (provider_id, model_id) for isolation
+    # grouping — differs from suite order. Row directories must be named
+    # by SUITE position anyway: `judge --row N` (and the docs' "reuse the
+    # same value for rejudge" promise) resolves N against the directory's
+    # own NN-- prefix, so numbering dirs by execution order made run and
+    # judge disagree about which row an index meant — run --row 2 selected
+    # the omlx row while judge --row 2 hit the qwen row's directory.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    run_dir, results = run_suite(
+        _multi_provider_suite(),
+        _multi_provider_registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: object(),
+    )
+    # Suite order row1=qwen, row2=omlx, row3=glm; execution order glm,
+    # qwen, omlx. Dirs named by suite position — not 01--row3.
+    assert sorted(r.row_dir.name for r in results) == ["01--row1", "02--row2", "03--row3"]
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_row_dirs_from_a_filtered_run_keep_suite_indexes(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # A filtered run (--row 1,3) executes only rows 1 and 3; its row dirs
+    # must keep the SUITE numbering (01-- and 03--, a gap where 02-- would
+    # be) so `judge --row 3` afterwards still finds the third suite row's
+    # directory. Renumbering the filtered selection 01/02 would silently
+    # re-point index 2 at the wrong row.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    run_dir, results = run_suite(
+        _multi_provider_suite(),
+        _multi_provider_registry(),
+        [_mini_review_category()],
+        row_filter=["1", "3"],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: object(),
+    )
+    assert sorted(r.row_dir.name for r in results) == ["01--row1", "03--row3"]

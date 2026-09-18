@@ -66,6 +66,14 @@ class RowConfig:
     draft_local_path: str | None = None
     draft_repo: str | None = None
     mtplx_model_name: str | None = None
+    # 1-based position of the row within the suite's [[rows]] list. Set at
+    # load time (and re-stamped by runner._select_rows over whatever list it
+    # was handed, so it also holds for hand-built suites in tests); runner
+    # numbers each run's row directories by it so `judge --row N` resolves
+    # to the same row `run --row N` selected even though execution order
+    # (sorted by provider/model for isolation grouping) differs from suite
+    # order on any multi-provider suite.
+    suite_index: int = 1
 
 
 @dataclass
@@ -138,6 +146,7 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
                 draft_local_path=model_entry.draft.local_path if model_entry.draft else None,
                 draft_repo=model_entry.draft.repo if model_entry.draft else None,
                 mtplx_model_name=model_entry.model_name,
+                suite_index=index,
             )
         )
     return rows

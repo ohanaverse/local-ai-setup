@@ -204,3 +204,114 @@ categories = ["coding", "mini_review"]
     )
     assert result.exit_code == 0
     assert "coding" in result.stdout
+
+
+_SUITE_BODY = """
+name = "t"
+[judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 1
+route = "litellm"
+
+[[rows]]
+model = "ollama/a"
+route = "litellm"
+"""
+
+
+def _mock_registry(mock_load_registry):
+    from modelman.registry import ModelEntry, ProviderEntry, Registry
+
+    mock_load_registry.return_value = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+@patch("modelman.benchmark.eval.cli.run_suite")
+def test_run_cmd_rejects_unknown_cli_category(mock_run_suite, mock_load_registry, tmp_path):
+    # A typo'd --category must exit 1 with a named error: it previously
+    # filtered every category out silently, producing a zero-category
+    # "run" that still isolated providers, wrote an empty summary, and
+    # repointed eval_last_run at it. run_suite is patched to fail the test
+    # if the validation ever lets execution through.
+    _mock_registry(mock_load_registry)
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(_SUITE_BODY, encoding="utf-8")
+    mock_run_suite.side_effect = AssertionError("run_suite must not be called")
+
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(FIXTURE_CATEGORIES),
+            "--category",
+            "reasning",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "reasning" in result.output
+    assert "unknown categor" in result.output
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+@patch("modelman.benchmark.eval.cli.run_suite")
+def test_run_cmd_rejects_empty_category_root(mock_run_suite, mock_load_registry, tmp_path):
+    # A typo'd --root makes list_categories return [] for a nonexistent
+    # directory; with rows in the suite that must exit 1 rather than run a
+    # zero-category sweep — the empty-root case of the same silent-empty
+    # failure the --category typo check guards against.
+    _mock_registry(mock_load_registry)
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(_SUITE_BODY, encoding="utf-8")
+    mock_run_suite.side_effect = AssertionError("run_suite must not be called")
+
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(tmp_path / "no-such-root"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "no categories found" in result.output
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+def test_run_cmd_rejects_row_filter_matching_nothing(mock_load_registry, tmp_path):
+    # A --row value matching no suite row (stale label after a suite edit,
+    # or an index past the end) must exit 1 with a named error AND create
+    # no run directory: the old silent no-op still created a run dir, wrote
+    # empty artifacts, and repointed eval_last_run at it while printing
+    # "complete: 0 row(s)". run_suite's selection raises before preflight,
+    # so the real thing runs here and no provider is ever touched.
+    _mock_registry(mock_load_registry)
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        _SUITE_BODY + '\n[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\n', encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(FIXTURE_CATEGORIES),
+            "--row",
+            "no-such-row",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "matched no suite rows" in result.output
+    assert "no-such-row" in result.output

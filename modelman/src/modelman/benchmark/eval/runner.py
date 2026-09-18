@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import json
 import subprocess
+import sys
 import time
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -69,6 +70,15 @@ class RunSavedButRestoreFailed(BenchmarkError):
         self.results = results
 
 
+def _row_index(row: RowConfig) -> int:
+    """The row's 1-based SUITE position (stashed on the RowConfig when the
+    suite was loaded/selected) — the stable identity a row's directory is
+    numbered by, independent of execution order (rows execute sorted by
+    (provider, model) for isolation grouping, which on any multi-provider
+    suite differs from suite order)."""
+    return row.suite_index
+
+
 def _row_dir(run_dir: Path, index: int, row: RowConfig) -> Path:
     return run_dir / f"{index:02d}--{row.label}"
 
@@ -122,37 +132,59 @@ def _isolation_extra_args(row: RowConfig) -> tuple[str, ...]:
 
 
 def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[RowConfig]:
+    # Stash each row's 1-based SUITE position on the RowConfig so run_suite
+    # can number its row directories by it (see _row_index): rows execute
+    # sorted by (provider, model) for isolation grouping, so on any
+    # multi-provider suite the execution order differs from suite order —
+    # numbering dirs by suite position is what makes `judge --row N` resolve
+    # to the same row `run --row N` selected.
+    for i, row in enumerate(rows, start=1):
+        row.suite_index = i
     if not row_filter:
         return list(rows)
     wanted = set(row_filter)
-    return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
+    selected = [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
+    if not selected:
+        # A --row value matching nothing must fail loudly (BenchmarkError →
+        # run_cmd exits 1): a silent [] would still create a run dir, write
+        # empty summary.md/metrics.jsonl/run.toml, and repoint eval_last_run
+        # at an empty run — the same silent-empty failure mode the rejudge
+        # selector was already fixed to raise on.
+        known = [r.label for r in rows]
+        raise BenchmarkError(
+            f"--row {', '.join(sorted(wanted))} matched no suite rows (known: {', '.join(known)})"
+        )
+    return selected
 
 
 def _select_row_dirs(row_dirs: list[Path], row_filter: list[str]) -> list[Path]:
     """Match rejudge's --row against row directories the way `run --row`
     matches suite rows: basename, label (the basename minus its "NN--"
-    index prefix), or 1-based position among the sorted row dirs. A value
-    that matches nothing raises — a silent empty rejudge would rewrite
-    summary.md/metrics.jsonl and exit 0 while re-judging nothing."""
+    index prefix), or a numeric index parsed from the basename's OWN
+    zero-padded NN-- prefix — which is the row's SUITE position (that is
+    what _row_dir numbers dirs by), so `judge --row N` resolves to the
+    same row `run --row N` selected even when execution order differs
+    from suite order (multi-provider suites) and even when a filtered
+    run left gaps in the dir numbering (run --row 1,3 → dirs 01--/03--).
+    A value that matches nothing raises — a silent empty rejudge would
+    rewrite summary.md/metrics.jsonl and exit 0 while re-judging nothing."""
     if not row_filter:
         return list(row_dirs)
     selected: list[Path] = []
-    matched_values: set[str] = set()
     known = [d.name for d in row_dirs]
     for value in row_filter:
         value_matched = False
-        for pos, row_dir in enumerate(row_dirs, start=1):
+        for row_dir in row_dirs:
+            dir_index = _row_index_from_dir_name(row_dir.name)
             if (
                 row_dir.name == value
                 or _row_label_from_dir_name(row_dir.name) == value
-                or (value.isdigit() and pos == int(value))
+                or (value.isdigit() and dir_index is not None and dir_index == int(value))
             ):
                 if row_dir not in selected:
                     selected.append(row_dir)
                 value_matched = True
-        if value_matched:
-            matched_values.add(value)
-        else:
+        if not value_matched:
             raise BenchmarkError(
                 f"--row {value!r} matched no row directories in this run "
                 f"(known: {', '.join(known)})"
@@ -250,7 +282,6 @@ def run_suite(
         judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
 
     results: list[RowRunResult] = []
-    index = 0
     isolated_any = False
     restore_error: str | None = None
     # Everything from isolation through the row loop is wrapped in a
@@ -275,9 +306,10 @@ def run_suite(
                 try:
                     extra_args = _isolation_extra_args(row)
                 except BenchmarkError as exc:
-                    index += 1
                     results.append(
-                        RowRunResult(row=row, row_dir=_row_dir(run_dir, index, row), error=str(exc))
+                        RowRunResult(
+                            row=row, row_dir=_row_dir(run_dir, _row_index(row), row), error=str(exc)
+                        )
                     )
                     continue
 
@@ -286,17 +318,17 @@ def run_suite(
                         isolation.isolate_provider(provider_id, *extra_args)
                         isolated_any = True
                     except BenchmarkError as exc2:
-                        index += 1
                         results.append(
                             RowRunResult(
-                                row=row, row_dir=_row_dir(run_dir, index, row), error=str(exc2)
+                                row=row,
+                                row_dir=_row_dir(run_dir, _row_index(row), row),
+                                error=str(exc2),
                             )
                         )
                         continue
                     prev_extra = extra_args
 
-                index += 1
-                row_dir = _row_dir(run_dir, index, row)
+                row_dir = _row_dir(run_dir, _row_index(row), row)
                 try:
                     category_results = _run_row(row, categories, suite, registry, judge_transport)
                     results.append(
@@ -397,13 +429,32 @@ def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
     return meta
 
 
+def _load_json_artifact(path: Path) -> object | None:
+    """Read a JSON artifact, tolerating malformed content: a run
+    interrupted mid-write (or a hand-edited file) leaves a truncated JSON
+    document, and one corrupted judge.json/evalplus_result.json anywhere
+    in the run must not crash the whole rejudge with a raw JSONDecodeError
+    (which judge_cmd doesn't catch). House convention from
+    _read_metrics_row_meta: malformed artifacts are skipped with a warning
+    to stderr, not fatal."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        print(f"warning: skipping malformed artifact: {path}", file=sys.stderr)
+        return None
+
+
 def _reconstruct_category_result(category_dir: Path) -> object | None:
     """Rebuild a CodingResult or CategoryRowResult from one row's on-disk
     category directory, reading whatever judge.json/score.json currently
     say (i.e. post-rejudge for anything rejudge_run just rewrote)."""
     coding_path = category_dir / "evalplus_result.json"
     if coding_path.is_file():
-        data = json.loads(coding_path.read_text(encoding="utf-8"))
+        data = _load_json_artifact(coding_path)
+        if not isinstance(data, dict):
+            # None (malformed) or well-formed JSON of the wrong shape —
+            # either way this category reconstructs as empty, not a crash.
+            return None
         return evalplus_runner.CodingResult(**data)
 
     item_results: list[judged_runner.ItemResult] = []
@@ -413,7 +464,14 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
         if not response_path.is_file() or not judge_path.is_file():
             continue
         response_text = response_path.read_text(encoding="utf-8")
-        judge_data = json.loads(judge_path.read_text(encoding="utf-8"))
+        judge_data = _load_json_artifact(judge_path)
+        if judge_data is None:
+            continue
+        if not isinstance(judge_data, dict) or "status" not in judge_data:
+            # Well-formed JSON but not a judge.json shape (e.g. someone
+            # parked a list there); same tolerance as a malformed file.
+            print(f"warning: skipping malformed artifact: {judge_path}", file=sys.stderr)
+            continue
         combined_data = judge_data.get("combined")
         combined = JudgeScore(**combined_data) if combined_data else None
         outcome = JudgeOutcome(
@@ -448,6 +506,18 @@ def _row_label_from_dir_name(dir_name: str) -> str:
     directory name if it somehow contains no "--" at all."""
     _, _, label = dir_name.partition("--")
     return label or dir_name
+
+
+def _row_index_from_dir_name(dir_name: str) -> int | None:
+    """The SUITE position a row directory was numbered by (the leading
+    zero-padded NN in _row_dir's f"{index:02d}--{row.label}" name), or None
+    when the name carries no numeric prefix (e.g. a hand-made or legacy
+    directory). Derived from the directory's OWN name, not its position in
+    a sorted listing — that keeps index selection correct when execution
+    order differs from suite order and when a filtered run left gaps in
+    the numbering (run --row 1,3 produces dirs 01-- and 03--)."""
+    prefix = dir_name.split("--", 1)[0]
+    return int(prefix) if prefix.isdigit() else None
 
 
 def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
@@ -530,12 +600,15 @@ def rejudge_run(
     one, the capability matrix's family column falls back to the raw
     model_id, same as report.py's own registry-miss fallback."""
     by_name = {c.name: c for c in categories}
+    # Select rows BEFORE building the judge transport: a bad --row value
+    # should surface as the clear "matched no row directories" error, not
+    # as a missing-judge-key transport error the user has to look past.
+    row_dirs = sorted(p for p in run_dir.iterdir() if p.is_dir())
+    selected_row_dirs = _select_row_dirs(row_dirs, list(row_filter or []))
     judge_cfg = _judge_config_from_run_toml(run_dir, samples_override)
     transport = (judge_transport_factory or _default_judge_transport_factory)(judge_cfg)
 
     outcomes: list[dict] = []
-    row_dirs = sorted(p for p in run_dir.iterdir() if p.is_dir())
-    selected_row_dirs = _select_row_dirs(row_dirs, list(row_filter or []))
     for row_dir in selected_row_dirs:
         for category_dir in sorted(p for p in row_dir.iterdir() if p.is_dir()):
             category = by_name.get(category_dir.name)
