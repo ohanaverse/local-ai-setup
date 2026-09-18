@@ -69,16 +69,23 @@ class JudgeOutcome:
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_ANSWER_KEYS = {"scores", "total"}
+_BASE_ANSWER_KEYS = frozenset({"scores", "total"})
 
 
-def _json_candidate(raw_text: str) -> str:
+def _json_candidate(raw_text: str, rubric: Rubric) -> str:
     """The part of a reply that should be parsed as JSON.
 
     Scans every '{' for a parseable dict rather than stopping at the first
     one, because a reply can contain an incidental JSON-looking fragment
-    before the judge's actual answer. The first candidate with both answer
-    keys wins; failing that, the first parseable dict is a fallback."""
+    before the judge's actual answer. The first candidate with all the
+    answer keys wins; failing that, the first parseable dict is a fallback.
+    "verdict" is only required among those keys when the rubric declares a
+    closed verdict set — otherwise a decoy fragment that happens to echo
+    just scores/total (e.g. the model restating the schema) would outrank
+    the real, verdict-bearing answer for rubrics like AGENT_RUBRIC that do
+    require one, while a rubric with verdicts=None never expects the key at
+    all and must not require it."""
+    answer_keys = _BASE_ANSWER_KEYS | ({"verdict"} if rubric.verdicts is not None else set())
     fenced = _FENCE_RE.search(raw_text)
     text = fenced.group(1) if fenced else raw_text
     decoder = json.JSONDecoder()
@@ -89,7 +96,7 @@ def _json_candidate(raw_text: str) -> str:
             try:
                 obj, end = decoder.raw_decode(text, idx)
                 if isinstance(obj, dict):
-                    if obj.keys() >= _ANSWER_KEYS:
+                    if obj.keys() >= answer_keys:
                         return text[idx:end]
                     if fallback is None:
                         fallback = text[idx:end]
@@ -101,7 +108,7 @@ def _json_candidate(raw_text: str) -> str:
 
 def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
     try:
-        data = json.loads(_json_candidate(raw_text))
+        data = json.loads(_json_candidate(raw_text, rubric))
     except json.JSONDecodeError as exc:
         raise JudgeContractError(f"response is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):

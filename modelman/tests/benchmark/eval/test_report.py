@@ -102,6 +102,39 @@ def test_render_summary_reports_isolation_errors():
     assert "ISOLATION_ERROR" in summary
 
 
+def test_render_summary_shows_partial_results_alongside_an_error():
+    # A row can carry BOTH an error and partial category_results (a later
+    # category failed after an earlier one already scored) — the matrix
+    # must render the completed category's real score, not blanket every
+    # cell with ISOLATION_ERROR just because the row also has an error.
+    row = RowRunResult(
+        row=RowConfig(label="a", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"),
+        row_dir=Path("/tmp/a"),
+        category_results={"doc_summary": _judged_result(80.0)},
+        error="coding: evalplus timed out",
+    )
+    summary = render_summary("test-run", [row], _registry(), ["doc_summary", "coding"])
+    assert "80.0" in summary
+    assert "ISOLATION_ERROR" in summary  # the coding cell, which never ran
+
+
+def test_write_row_artifacts_persists_partial_results_and_the_error(tmp_path):
+    # Regression test: write_row_artifacts used to return immediately when
+    # `error` was set, before writing any category artifacts, discarding a
+    # category's real (possibly API-billed) result whenever a row also
+    # carried an error for a later, failed category. Both must be written.
+    row = RowRunResult(
+        row=RowConfig(label="a", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"),
+        row_dir=tmp_path / "01--a",
+        category_results={"doc_summary": _judged_result(80.0)},
+        error="coding: evalplus timed out",
+    )
+    write_row_artifacts(row)
+    item_dir = tmp_path / "01--a" / "doc_summary" / "i1"
+    assert (item_dir / "response.txt").is_file()
+    assert (tmp_path / "01--a" / "error.txt").read_text() == "coding: evalplus timed out"
+
+
 def test_write_row_artifacts_writes_response_and_judge_json(tmp_path):
     # Per-item artifacts (response text + judge JSON) must land under
     # row_dir/<category>/<item_id>/ so later tooling (and humans) can inspect

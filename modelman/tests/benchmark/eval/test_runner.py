@@ -170,6 +170,52 @@ def test_run_suite_survives_non_benchmark_error_row_failure_and_still_restores(
     assert (run_dir / "metrics.jsonl").is_file()
 
 
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_preserves_earlier_category_results_when_a_later_category_fails(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # Regression test: a row with multiple categories must not lose an
+    # earlier category's already-computed (and possibly API-billed) judge
+    # score just because a LATER category in the same row fails. Before this
+    # fix, _run_row built its results dict locally and only returned it on
+    # full success, so any mid-loop exception silently discarded every
+    # category that had already finished — this pins that the first
+    # category's result survives, is persisted to disk, and the row is
+    # still recorded with an error for the category that actually failed.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_run_judged.side_effect = [
+        _fake_category_result(50.0),
+        JudgeTransportError("second category exploded"),
+    ]
+    other_category = Category(
+        name="other_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="p", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+
+    run_dir, results = run_suite(
+        _suite(),
+        _registry(),
+        [_mini_review_category(), other_category],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert "second category exploded" in results[0].error
+    assert results[0].category_results["mini_review"].score_100 == 50.0
+    assert "other_review" not in results[0].category_results
+    mock_isolation.restore_providers.assert_called_once()
+    row_dir = run_dir / "01--row1"
+    assert (row_dir / "mini_review" / "i1" / "response.txt").is_file()
+    assert (row_dir / "error.txt").is_file()
+
+
 def _fake_category_result(score: float):
     from modelman.benchmark.eval.judged_runner import CategoryRowResult, ItemResult
 

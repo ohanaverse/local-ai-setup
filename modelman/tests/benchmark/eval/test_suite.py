@@ -85,11 +85,11 @@ def test_load_suite_rejects_unknown_model(tmp_path):
 
 
 def test_load_suite_rejects_unknown_model_even_with_explicit_provider(tmp_path):
-    # An explicit `provider =` on a row used to short-circuit the friendly
-    # _provider_for() unknown-model check (only reached via the `or` when
-    # `provider` is absent), so an unknown model_id paired with an explicit
-    # provider raised a raw KeyError from registry.model() instead of this
-    # same clean BenchmarkError — this pins that both paths now agree.
+    # An explicit `provider =` on a row must not bypass the unknown-model
+    # check: the row's model_id is still looked up in the registry (to
+    # build the RowConfig's other fields), so an unknown model_id paired
+    # with an explicit provider must raise the same clean BenchmarkError as
+    # the no-provider case, not a raw KeyError.
     body = SUITE_BODY.replace(
         'model = "ollama/a"\nroute = "litellm"',
         'model = "ollama/nope"\nroute = "litellm"\nprovider = "ollama"',

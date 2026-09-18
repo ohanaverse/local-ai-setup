@@ -45,10 +45,16 @@ def _capability_matrix(results: list, registry: Registry, category_names: list[s
     lines = [header, sep]
     for r in sorted(results, key=lambda r: (_family_of(r.row.model_id, registry), r.row.label)):
         family = _family_of(r.row.model_id, registry)
-        if r.error:
-            cells = ["ISOLATION_ERROR"] * len(category_names)
-        else:
-            cells = [_cell(r.category_results.get(name)) for name in category_names]
+        # A row can have an error AND partial category_results (a later
+        # category failed after earlier ones already scored) — render the
+        # categories that actually ran, and ISOLATION_ERROR only for the
+        # ones that didn't.
+        cells = [
+            _cell(r.category_results[name])
+            if name in r.category_results
+            else ("ISOLATION_ERROR" if r.error else _cell(None))
+            for name in category_names
+        ]
         lines.append(f"| {family} | {r.row.label} | {r.row.route} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
@@ -86,7 +92,9 @@ def _anomalies(results: list, category_names: list[str]) -> str:
     for r in results:
         if r.error:
             lines.append(f"| {r.row.label} | ISOLATION_ERROR: {r.error[:200]} |")
-            continue
+        # Not an `elif`/`continue` — a row can carry an error alongside
+        # partial category_results, and those completed categories still
+        # deserve their own judge_fail/evalplus-error anomaly rows.
         for name in category_names:
             value = r.category_results.get(name)
             if isinstance(value, CategoryRowResult):
@@ -113,9 +121,10 @@ def render_summary(
 
 def write_row_artifacts(result) -> None:
     result.row_dir.mkdir(parents=True, exist_ok=True)
-    if result.error is not None:
-        (result.row_dir / "error.txt").write_text(result.error, encoding="utf-8")
-        return
+    # error and category_results are independent: a row can have BOTH (a
+    # later category failed after earlier ones already scored) — write
+    # whatever categories completed first, so a failure never costs
+    # already-computed (and possibly API-billed) results, then error.txt.
     for name, cat_result in result.category_results.items():
         cat_dir = result.row_dir / name
         cat_dir.mkdir(parents=True, exist_ok=True)
@@ -143,6 +152,8 @@ def write_row_artifacts(result) -> None:
             (cat_dir / "score.json").write_text(
                 json.dumps({"score_100": cat_result.score_100}), encoding="utf-8"
             )
+    if result.error is not None:
+        (result.row_dir / "error.txt").write_text(result.error, encoding="utf-8")
 
 
 def write_run_toml(path: Path, suite: Suite, *, git_sha: str) -> None:

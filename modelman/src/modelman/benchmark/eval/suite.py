@@ -78,13 +78,6 @@ def _short_model(model_id: str) -> str:
     return model_id.split("/")[-1]
 
 
-def _provider_for(model_id: str, registry: Registry) -> str:
-    try:
-        return registry.model(model_id).provider_id
-    except KeyError as exc:
-        raise BenchmarkError(f"suite row references unknown model: {model_id}") from exc
-
-
 def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
     rows: list[RowConfig] = []
     for index, raw in enumerate(raw_rows, start=1):
@@ -97,13 +90,15 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             )
         if route not in ROW_ROUTES:
             raise BenchmarkError(f"suite row {index} has unknown route: {route!r}")
-        # Always run the friendly unknown-model check, even when `provider =`
-        # is set explicitly — otherwise `provider = ` short-circuits the `or`
-        # below and `registry.model(model_id)` raises a raw KeyError instead
-        # of a clean BenchmarkError for an unknown model_id.
-        _provider_for(model_id, registry)
-        provider_id = raw.get("provider") or _provider_for(model_id, registry)
-        model_entry = registry.model(model_id)
+        # One registry.model() lookup instead of up to three (it's a linear
+        # scan) — this also covers the unknown-model check even when
+        # `provider =` is set explicitly, since that no longer short-circuits
+        # an `or` around the lookup.
+        try:
+            model_entry = registry.model(model_id)
+        except KeyError as exc:
+            raise BenchmarkError(f"suite row references unknown model: {model_id}") from exc
+        provider_id = raw.get("provider") or model_entry.provider_id
         label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{route}"
         rows.append(
             RowConfig(

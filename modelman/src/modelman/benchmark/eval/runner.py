@@ -132,6 +132,18 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
+class _RowCategoryFailed(Exception):
+    """Internal signal from _run_row: a category's dispatch raised partway
+    through the row, but earlier categories in the same row already
+    finished. Carries whatever category_results were collected before the
+    failure so run_suite can persist that partial (possibly API-billed)
+    work instead of discarding it along with the exception."""
+
+    def __init__(self, message: str, *, partial_results: dict[str, object]) -> None:
+        super().__init__(message)
+        self.partial_results = partial_results
+
+
 def _run_row(
     row: RowConfig,
     categories: list[Category],
@@ -145,22 +157,25 @@ def _run_row(
 
     results: dict[str, object] = {}
     for category in _row_categories(row, categories):
-        if category.name == CODING_CATEGORY:
-            dataset = suite.coding.dataset or category.coding_dataset or DEFAULT_CODING_DATASET
-            limit = suite.coding.limit if suite.coding.limit is not None else category.coding_limit
-            results[category.name] = evalplus_runner.run_coding_category(
-                base_url=base_url, model=model_name, api_key=api_key, dataset=dataset, limit=limit
-            )
-        else:
-            results[category.name] = judged_runner.run_judged_category(
-                category,
-                row_transport,
-                judge_transport,
-                temperature=0.0,
-                judge_temperature=suite.judge.temperature,
-                judge_samples=suite.judge.samples,
-                judge_max_attempts=suite.judge.max_attempts,
-            )
+        try:
+            if category.name == CODING_CATEGORY:
+                dataset = suite.coding.dataset or category.coding_dataset or DEFAULT_CODING_DATASET
+                limit = suite.coding.limit if suite.coding.limit is not None else category.coding_limit
+                results[category.name] = evalplus_runner.run_coding_category(
+                    base_url=base_url, model=model_name, api_key=api_key, dataset=dataset, limit=limit
+                )
+            else:
+                results[category.name] = judged_runner.run_judged_category(
+                    category,
+                    row_transport,
+                    judge_transport,
+                    temperature=0.0,
+                    judge_temperature=suite.judge.temperature,
+                    judge_samples=suite.judge.samples,
+                    judge_max_attempts=suite.judge.max_attempts,
+                )
+        except Exception as exc:
+            raise _RowCategoryFailed(str(exc), partial_results=results) from exc
     return results
 
 
@@ -229,15 +244,29 @@ def run_suite(
                     results.append(
                         RowRunResult(row=row, row_dir=row_dir, category_results=category_results)
                     )
+                except _RowCategoryFailed as exc3:
+                    # A category raised partway through the row (e.g. EvalPlus's
+                    # 1800s subprocess timeout, or judge_core.JudgeTransportError
+                    # from judged_runner) — _run_row already collected whatever
+                    # categories finished first; keep them (report.py/
+                    # write_row_artifacts persists both the completed categories
+                    # and the error) instead of discarding a row's real, possibly
+                    # API-billed, work just because a later category failed.
+                    results.append(
+                        RowRunResult(
+                            row=row,
+                            row_dir=row_dir,
+                            category_results=exc3.partial_results,
+                            error=str(exc3),
+                        )
+                    )
                 except Exception as exc3:
-                    # Broadened from `except BenchmarkError` — a row's category
-                    # dispatch can raise judge_core.JudgeTransportError (a plain
-                    # Exception, not a BenchmarkError, from row_transport.complete
-                    # inside judged_runner) or subprocess.TimeoutExpired (from
-                    # evalplus_runner's 1800s subprocess.run timeout). Either one
-                    # escaping uncaught would skip restore_providers() below and
-                    # every persist call, discarding a whole sweep's results and
-                    # leaving a local provider isolated/stopped.
+                    # Everything else — e.g. registry.model()/resolve_row_endpoint()
+                    # itself raising before any category ran. Broadened from
+                    # `except BenchmarkError`: escaping uncaught here would skip
+                    # restore_providers() below and every persist call, discarding
+                    # a whole sweep's results and leaving a local provider
+                    # isolated/stopped.
                     results.append(RowRunResult(row=row, row_dir=row_dir, error=str(exc3)))
     finally:
         if isolated_any:

@@ -52,6 +52,22 @@ def test_parse_response_validates_verdict_when_rubric_requires_it():
         parse_response(raw, VERDICT_RUBRIC)
 
 
+def test_parse_response_skips_a_scores_total_decoy_for_a_verdict_rubric():
+    # Regression test: a judge reply can contain a decoy JSON fragment (an
+    # illustrative example, or the model echoing the schema) that happens to
+    # have "scores"/"total" keys but no "verdict" before its real answer.
+    # For a rubric that declares a closed verdict set, the disambiguation
+    # must require "verdict" too, or the decoy wins the `>=` superset check
+    # and the real, verdict-bearing answer later in the text is never read.
+    raw = (
+        'Restating the schema: {"scores": {"a": 0, "b": 0}, "total": 0}\n'
+        + json.dumps({"scores": {"a": 50, "b": 30}, "total": 80, "verdict": "good"})
+    )
+    score = parse_response(raw, VERDICT_RUBRIC)
+    assert score.total == 80
+    assert score.verdict == "good"
+
+
 class _StubTransport:
     def __init__(self, replies: list[str]):
         self.replies = list(replies)
