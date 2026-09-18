@@ -20,18 +20,20 @@ from pathlib import Path
 from statistics import mean
 
 from modelman.benchmark import isolation
+from modelman.benchmark._routes import (
+    LITELLM_PLIST,
+    LIVE_PI_MODELS_PATH,
+    OPENROUTER_BASE_URL,
+    litellm_credentials,
+    openrouter_key,
+)
 from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.eval import evalplus_runner, judged_runner, report
 from modelman.benchmark.eval.category import CODING_CATEGORY, Category
 from modelman.benchmark.eval.suite import (
-    LITELLM_PLIST,
-    LIVE_PI_MODELS_PATH,
-    OPENROUTER_BASE_URL,
     JudgeConfig,
     RowConfig,
     Suite,
-    load_live_models,
-    openrouter_key,
     preflight,
     resolve_row_endpoint,
 )
@@ -83,14 +85,7 @@ def _default_judge_transport_factory(judge_cfg) -> JudgeTransport:
         if model.startswith("openrouter/"):
             model = model[len("openrouter/") :]
         return LiteLLMJudgeTransport(base_url=OPENROUTER_BASE_URL, api_key=key, model=model)
-    live = load_live_models(LIVE_PI_MODELS_PATH)
-    litellm_entry = live.get("providers", {}).get("litellm", {})
-    api_key = litellm_entry.get("apiKey")
-    if not api_key:
-        raise BenchmarkError(
-            "no LiteLLM apiKey found in ~/.pi/agent/models.json for the judge transport"
-        )
-    base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
+    base_url, api_key = litellm_credentials(LIVE_PI_MODELS_PATH)
     return LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=judge_cfg.model)
 
 

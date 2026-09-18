@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from modelman.benchmark import isolation
+from modelman.benchmark._routes import litellm_credentials
 from modelman.benchmark.agent import judge, pidriver, report
 from modelman.benchmark.agent import suite as suite_module
 from modelman.benchmark.agent.gates import GatesReport
@@ -125,17 +126,7 @@ def _build_judge_transport(
         return judge.LiteLLMJudgeTransport(
             base_url=suite_module.OPENROUTER_BASE_URL, api_key=key, model=model
         )
-    try:
-        live = json.loads(live_models_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        live = {}
-    litellm_entry = live.get("providers", {}).get("litellm", {})
-    api_key = litellm_entry.get("apiKey")
-    if not api_key:
-        raise BenchmarkError(
-            "no LiteLLM apiKey found in ~/.pi/agent/models.json for the judge transport"
-        )
-    base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
+    base_url, api_key = litellm_credentials(live_models_path)
     return judge.LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=judge_cfg.model)
 
 

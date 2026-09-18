@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 
+from modelman.benchmark._routes import LIVE_PI_MODELS_PATH, load_live_models
 from modelman.benchmark.errors import BenchmarkError
 
 DEFAULT_CONTEXT_WINDOW = 262144
-LIVE_PI_MODELS_PATH = Path.home() / ".pi" / "agent" / "models.json"
 
 PI_BASE_ARGS = [
     "--mode",
@@ -72,15 +72,6 @@ class PiTarget:
         return f"{self.pi_provider}/{self.launch_id}"
 
 
-def _load_live_models(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-
 def _lookup_live_entry(live: dict, pi_provider: str, launch_id: str) -> dict | None:
     provider = live.get("providers", {}).get(pi_provider, {})
     for entry in provider.get("models", []):
@@ -104,7 +95,7 @@ def resolve_pi_target(
     provider "could never be addressed" (spec, Verified against the live
     setup).
     """
-    live = _load_live_models(live_models_path)
+    live = load_live_models(live_models_path)
 
     if row.route == "litellm":
         pi_provider = "litellm"

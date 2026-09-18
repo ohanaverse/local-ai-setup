@@ -5,27 +5,32 @@ Deliberately parallel to (not shared with) modelman.benchmark.agent.suite:
 eval rows carry no `thinking` (no pi driver here) and instead carry an
 optional per-row `categories` override; the direct-route config needs no
 `api` protocol discriminator because every eval transport speaks the same
-OpenAI-compatible chat-completions wire format.
+OpenAI-compatible chat-completions wire format. The suite PARSING stays
+duplicated by design; the credential helpers those routes resolve through
+(LITELLM_PLIST, LIVE_PI_MODELS_PATH, OPENROUTER_BASE_URL, openrouter_key,
+load_live_models) are shared via modelman.benchmark._routes.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import plistlib
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from modelman.benchmark._routes import (  # noqa: F401 — re-exports; suite-only consumers patch them here
+    LITELLM_PLIST,
+    LIVE_PI_MODELS_PATH,
+    OPENROUTER_BASE_URL,
+    litellm_credentials,
+    load_live_models,
+    openrouter_key,
+)
 from modelman.benchmark.errors import BenchmarkError
 from modelman.providers import lifecycle
 from modelman.registry import Registry
 
-LITELLM_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.litellm.proxy.plist"
-LIVE_PI_MODELS_PATH = Path.home() / ".pi" / "agent" / "models.json"
 JUDGE_ROUTES = ("litellm", "openrouter")
 ROW_ROUTES = ("direct", "litellm", "openrouter")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 @dataclass
@@ -171,30 +176,6 @@ def load_suite(path: Path, registry: Registry) -> Suite:
     )
 
 
-def load_live_models(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-
-def openrouter_key(plist_path: Path = LITELLM_PLIST) -> str | None:
-    env_key = os.environ.get("OPENROUTER_API_KEY")
-    if env_key:
-        return env_key
-    if not plist_path.exists():
-        return None
-    try:
-        with plist_path.open("rb") as f:
-            data = plistlib.load(f)
-    except Exception:
-        return None
-    key = data.get("EnvironmentVariables", {}).get("OPENROUTER_API_KEY")
-    return str(key) if key else None
-
-
 def resolve_row_endpoint(
     row: RowConfig,
     model_name: str,
@@ -212,15 +193,7 @@ def resolve_row_endpoint(
     not know that prefix.
     """
     if row.route == "litellm":
-        live = load_live_models(live_models_path)
-        litellm_entry = live.get("providers", {}).get("litellm", {})
-        api_key = litellm_entry.get("apiKey")
-        if not api_key:
-            raise BenchmarkError(
-                "no LiteLLM apiKey found in ~/.pi/agent/models.json; launch a wt "
-                "pi session in litellm mode at least once to seed it"
-            )
-        base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
+        base_url, api_key = litellm_credentials(live_models_path)
         return base_url, row.model_id, api_key
     if row.route == "direct":
         direct_cfg = routes_direct.get(row.provider_id)
