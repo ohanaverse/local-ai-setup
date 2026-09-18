@@ -99,6 +99,19 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
         except KeyError as exc:
             raise BenchmarkError(f"suite row references unknown model: {model_id}") from exc
         provider_id = raw.get("provider") or model_entry.provider_id
+        if raw.get("provider"):
+            # An explicit provider must name a real provider id (registry
+            # providers — e.g. cloud openrouter — or a lifecycle backend).
+            # A typo'd id would silently skip provider isolation for a
+            # litellm-routed row (not in ISOLATABLE_PROVIDERS, not in
+            # BACKENDS), benchmarking against whatever is currently loaded
+            # and violating the mandatory-isolation invariant.
+            known = {p.id for p in registry.providers} | set(lifecycle.BACKENDS)
+            if raw["provider"] not in known:
+                raise BenchmarkError(
+                    f"suite row {index} names unknown provider: {raw['provider']!r} "
+                    f"(model {model_id!r} belongs to {model_entry.provider_id!r})"
+                )
         label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{route}"
         if label in seen_labels:
             # metrics.jsonl rows are keyed by label, and the rejudge

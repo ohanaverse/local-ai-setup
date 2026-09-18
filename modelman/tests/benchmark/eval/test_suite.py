@@ -148,6 +148,22 @@ def test_load_suite_rejects_duplicate_labels(tmp_path):
         load_suite(_write(tmp_path, body), _registry())
 
 
+def test_load_suite_rejects_unknown_explicit_provider(tmp_path):
+    # An explicit `provider =` must name a known provider id (registry
+    # providers or lifecycle BACKENDS): a typo'd id passes load, passes
+    # preflight (BACKENDS.get misses → skipped), and in run_suite's
+    # grouping never matches ISOLATABLE_PROVIDERS — so no isolation, no
+    # error, and a litellm-routed row benchmarks against whatever is
+    # currently loaded, silently violating the mandatory-isolation
+    # invariant.
+    body = SUITE_BODY.replace(
+        'model = "ollama/a"\nroute = "litellm"',
+        'model = "ollama/a"\nroute = "litellm"\nprovider = "omlqx"',
+    )
+    with pytest.raises(BenchmarkError, match="unknown provider"):
+        load_suite(_write(tmp_path, body), _registry())
+
+
 def test_preflight_scoped_rows_ignores_unselected_providers(tmp_path):
     # Preflighting only the SELECTED rows (--row) must not fail because an
     # unselected row's provider is down or a direct block is missing — the
