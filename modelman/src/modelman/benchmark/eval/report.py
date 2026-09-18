@@ -196,6 +196,11 @@ def write_metrics_jsonl(path: Path, results: list) -> None:
                 json.dumps(
                     {
                         "label": r.row.label,
+                        # row_dir (the row directory's basename) is unique
+                        # per run while label is not guaranteed to be — the
+                        # rejudge reconstruction keys on it to recover
+                        # model_id/route per row.
+                        "row_dir": r.row_dir.name,
                         "model_id": r.row.model_id,
                         "route": r.row.route,
                         "error": r.error,

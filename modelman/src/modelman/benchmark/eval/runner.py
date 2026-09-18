@@ -331,10 +331,17 @@ def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> 
 
 
 def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
-    """label -> the row's persisted metrics.jsonl record (model_id/route/
-    error). This is the only place a post-rejudge reconstruction can recover
-    those fields — they were never written per-row-directory, only into the
-    run's aggregate metrics.jsonl by the original run_suite call."""
+    """row-dir-basename -> the row's persisted metrics.jsonl record
+    (model_id/route/error). This is the only place a post-rejudge
+    reconstruction can recover those fields — they were never written
+    per-row-directory, only into the run's aggregate metrics.jsonl by the
+    original run_suite call.
+
+    Records are keyed by the row_dir field write_metrics_jsonl now writes
+    (unique per run). Older runs' metrics.jsonl have no row_dir; those
+    lines fall back to the label key, which is NOT guaranteed unique —
+    the label keying is exactly what allowed two same-labeled rows to
+    overwrite each other's metadata."""
     metrics_path = run_dir / "metrics.jsonl"
     meta: dict[str, dict] = {}
     if not metrics_path.is_file():
@@ -343,7 +350,8 @@ def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
         if not line.strip():
             continue
         row = json.loads(line)
-        meta[row["label"]] = row
+        key = row.get("row_dir") or row.get("label")
+        meta[key] = row
     return meta
 
 
@@ -408,39 +416,50 @@ def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
     _read_metrics_row_meta); provider_id is not recoverable and is left
     blank since report.py never reads it.
 
-    metrics.jsonl is keyed by row.label (what write_metrics_jsonl writes),
-    not by the row's directory name — _row_dir prepends its own index
-    prefix on top of a label that (for an auto-generated label) already
-    starts with one, so the directory name and the label are NOT the same
-    string. Recover the label via _row_label_from_dir_name before looking
-    it up, or every row falls back to a garbage model_id/blank route."""
+    metrics.jsonl is keyed by the row's directory basename (the row_dir
+    field write_metrics_jsonl writes), not by the row's label — _row_dir
+    prepends an index prefix on top of a label that (for an auto-generated
+    label) already starts with one, so the directory name and the label are
+    NOT the same string, and the label is not guaranteed unique anyway.
+    The directory basename needs no inversion, so it is looked up directly.
+
+    A row with an error AND already-scored categories on disk (a later
+    category failed after earlier ones finished) reconstructs BOTH: the
+    error and every category whose artifacts survived — a failure never
+    costs already-computed results."""
     meta = _read_metrics_row_meta(run_dir)
     results: list[RowRunResult] = []
     for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
-        recovered_label = _row_label_from_dir_name(row_dir.name)
-        row_meta = meta.get(recovered_label, {})
+        # A row directory always holds error.txt and/or category
+        # subdirectories — skip anything else (e.g. unrelated scratch dirs
+        # that happen to live under a run dir), which would otherwise be
+        # reconstructed as a garbage row with a directory-name model_id.
+        has_categories = any(p.is_dir() for p in row_dir.iterdir())
+        if not (row_dir / "error.txt").is_file() and not has_categories:
+            continue
+        row_meta = meta.get(row_dir.name) or meta.get(_row_label_from_dir_name(row_dir.name), {})
         row = RowConfig(
             # Prefer metrics.jsonl's own persisted label (stable across a
             # rejudge, matches what the original run rendered) over the
             # recovered one, which is only a fallback for a row with no
             # metrics.jsonl entry at all.
-            label=row_meta.get("label", recovered_label),
+            label=row_meta.get("label", _row_label_from_dir_name(row_dir.name)),
             model_id=row_meta.get("model_id", row_dir.name),
             route=row_meta.get("route", ""),
             provider_id="",
         )
         error_path = row_dir / "error.txt"
-        if error_path.is_file():
-            results.append(
-                RowRunResult(row=row, row_dir=row_dir, error=error_path.read_text(encoding="utf-8"))
-            )
-            continue
+        error_text = error_path.read_text(encoding="utf-8") if error_path.is_file() else None
         category_results: dict[str, object] = {}
         for category_dir in sorted(p for p in row_dir.iterdir() if p.is_dir()):
             result = _reconstruct_category_result(category_dir)
             if result is not None:
                 category_results[category_dir.name] = result
-        results.append(RowRunResult(row=row, row_dir=row_dir, category_results=category_results))
+        results.append(
+            RowRunResult(
+                row=row, row_dir=row_dir, category_results=category_results, error=error_text
+            )
+        )
     return results
 
 

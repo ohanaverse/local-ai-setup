@@ -231,3 +231,66 @@ route = "litellm"
     summary = (run_dir / "summary.md").read_text()
     assert "fam-x" in summary  # family resolves — proves model_id was recovered, not garbage
     assert "01--01--a--litellm" not in summary  # the raw directory name must never leak into it
+
+
+def test_reconstruct_keeps_scored_categories_alongside_error_txt(tmp_path):
+    # A row that scored one category then failed a later one has BOTH the
+    # scored artifacts and error.txt on disk; the post-rejudge
+    # reconstruction (which regenerates summary.md/metrics.jsonl) must keep
+    # the scored categories, not blank them to N/A — a failure never costs
+    # already-computed (possibly API-billed) results.
+    from modelman.benchmark.eval.runner import _reconstruct_run_results
+
+    run_dir = _seed_run(tmp_path)
+    item_dir = run_dir / "01--row1" / "mini_review" / "i1"
+    (item_dir / "judge.json").write_text(
+        json.dumps(
+            {
+                "status": "scored",
+                "combined": {
+                    "scores": {"a": 90},
+                    "total": 90,
+                    "verdict": "",
+                    "flags": [],
+                    "rationale": "",
+                    "raw_text": "",
+                },
+                "attempts_used": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "01--row1" / "error.txt").write_text("doc_summary timed out", encoding="utf-8")
+
+    results = _reconstruct_run_results(run_dir)
+    assert len(results) == 1
+    assert results[0].error == "doc_summary timed out"
+    assert "mini_review" in results[0].category_results
+    assert results[0].category_results["mini_review"].score_100 == 90.0
+
+
+def test_reconstruct_prefers_row_dir_key_over_colliding_labels(tmp_path):
+    # metrics.jsonl lines carry a row_dir key (the row's unique directory
+    # basename); two rows with colliding labels must each recover their OWN
+    # model_id/route via that key rather than both getting the last
+    # metrics line's values.
+    from modelman.benchmark.eval.runner import _reconstruct_run_results
+
+    for name in ("01--dup", "02--dup"):
+        # A row directory always holds error.txt and/or category
+        # subdirectories — reconstruct_run_results skips bare dirs.
+        (tmp_path / name / "mini_review").mkdir(parents=True)
+    (tmp_path / "metrics.jsonl").write_text(
+        json.dumps({"label": "dup", "row_dir": "01--dup", "model_id": "m/one", "route": "litellm"})
+        + "\n"
+        + json.dumps({"label": "dup", "row_dir": "02--dup", "model_id": "m/two", "route": "direct"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    results = _reconstruct_run_results(tmp_path)
+    by_dir = {r.row_dir.name: r for r in results}
+    assert by_dir["01--dup"].row.model_id == "m/one"
+    assert by_dir["01--dup"].row.route == "litellm"
+    assert by_dir["02--dup"].row.model_id == "m/two"
+    assert by_dir["02--dup"].row.route == "direct"
