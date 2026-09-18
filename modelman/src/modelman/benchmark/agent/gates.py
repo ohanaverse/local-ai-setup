@@ -71,20 +71,21 @@ def _tests_module_prefix(tests_dir: str) -> str:
     return tests_dir.replace("/", ".").replace("\\", ".")
 
 
-# Every subprocess below runs with "-S" (skip site-packages init): the
-# workspace's tests_dir is an implicit namespace package (see the no
-# top_level_dir note below), and a namespace-package portion loses to any
-# same-named REGULAR package (one with __init__.py) found anywhere else on
-# sys.path, no matter the search order. modelman's own harness venv can end
-# up with exactly such a collision — e.g. the "eval" extra's evalplus ->
-# stop-sequencer dependency installs a stray top-level tests/__init__.py
-# into site-packages — which would silently shadow the workspace's own
-# tests dir and break dotted-name test loading. "-S" keeps stdlib + cwd on
-# sys.path and drops the harness's site-packages, so a bundle's test run
-# never depends on (or is broken by) modelman's own dev dependencies.
+# Every subprocess below runs WITHOUT "-S": site-packages stays on
+# sys.path, so a bundle's tests can import third-party dependencies
+# installed in the harness venv. The original problem "-S" solved —
+# the eval extra's evalplus -> stop-sequencer dependency ships a stray
+# top-level tests/__init__.py into site-packages, and a REGULAR package
+# anywhere on sys.path beats the workspace's namespace-package tests/
+# portion regardless of sys.path order, silently breaking dotted-name
+# test loading — is instead solved structurally: create_workspace seeds
+# an empty __init__.py into the workspace's tests_dir, making it a
+# REGULAR package too, and regular-vs-regular resolves by sys.path
+# order with cwd first. Best of both: no shadowing, no third-party
+# import breakage.
 def _import_check(root: Path, module_name: str) -> bool:
     result = subprocess.run(
-        [sys.executable, "-S", "-c", f"import {module_name}"],
+        [sys.executable, "-c", f"import {module_name}"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -111,7 +112,7 @@ def _run_discover(root: Path, tests_dir: str) -> tuple[int, int, int] | None:
         "'errors': len(result.errors)}, sys.stdout)\n"
     )
     result = subprocess.run(
-        [sys.executable, "-S", "-c", script, tests_dir], cwd=root, capture_output=True, text=True
+        [sys.executable, "-c", script, tests_dir], cwd=root, capture_output=True, text=True
     )
     try:
         counts = json.loads(result.stdout)
@@ -181,7 +182,7 @@ def run_test_file(root: Path, module_name: str) -> list[TestOutcome]:
         "                  'failures': len(result.failures), 'errors': len(result.errors)}))\n"
     )
     result = subprocess.run(
-        [sys.executable, "-S", "-c", script, module_name], cwd=root, capture_output=True, text=True
+        [sys.executable, "-c", script, module_name], cwd=root, capture_output=True, text=True
     )
     try:
         summary_line = result.stdout.strip().splitlines()[-1]

@@ -183,3 +183,28 @@ def test_rename_detected_when_diff_renames_is_enabled(tmp_path):
         assert "test_pkg.py" in changed_names
     finally:
         destroy_workspace(ws)
+
+
+def test_create_workspace_seeds_tests_init(tmp_path):
+    # The workspace's tests dir must be a REGULAR package (a seeded
+    # __init__.py): a regular package in cwd beats any same-named REGULAR
+    # package shipped in harness site-packages (e.g. evalplus ->
+    # stop-sequencer's stray top-level tests/__init__.py) by sys.path
+    # order, where a namespace-package portion would lose to it regardless
+    # of order. Seeding at create time — before the baseline commit —
+    # keeps gates 6/7 semantics intact: it is never a "new file" for
+    # gate 7 and can only be flagged tampered if the agent edits it.
+    ws = create_workspace(_task(), base_dir=tmp_path)
+    try:
+        init = ws.root / "tests" / "__init__.py"
+        assert init.is_file()
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=ws.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "tests/__init__.py" in result.stdout.splitlines()
+    finally:
+        destroy_workspace(ws)
