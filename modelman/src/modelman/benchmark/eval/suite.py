@@ -26,7 +26,6 @@ LIVE_PI_MODELS_PATH = Path.home() / ".pi" / "agent" / "models.json"
 JUDGE_ROUTES = ("litellm", "openrouter")
 ROW_ROUTES = ("direct", "litellm", "openrouter")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_CODING_DATASET = "humaneval"
 
 
 @dataclass
@@ -80,6 +79,7 @@ def _short_model(model_id: str) -> str:
 
 def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
     rows: list[RowConfig] = []
+    seen_labels: set[str] = set()
     for index, raw in enumerate(raw_rows, start=1):
         model_id = raw.get("model")
         route = raw.get("route")
@@ -100,6 +100,13 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
             raise BenchmarkError(f"suite row references unknown model: {model_id}") from exc
         provider_id = raw.get("provider") or model_entry.provider_id
         label = raw.get("label") or f"{index:02d}--{_short_model(model_id)}--{route}"
+        if label in seen_labels:
+            # metrics.jsonl rows are keyed by label, and the rejudge
+            # reconstruction recovers model_id/route from those lines — a
+            # duplicate label would misattribute one row's scores to
+            # another. Refuse the suite at load time.
+            raise BenchmarkError(f"suite rows have duplicate row label: {label!r}")
+        seen_labels.add(label)
         rows.append(
             RowConfig(
                 label=label,

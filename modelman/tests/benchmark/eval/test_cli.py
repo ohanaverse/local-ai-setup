@@ -75,3 +75,42 @@ route = "litellm"
     assert result.exit_code == 0
     assert "ollama/a" in result.stdout
     assert "dry run" in result.stdout
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+def test_run_cmd_rejects_row_naming_unknown_category(mock_load_registry, tmp_path):
+    # A row's `categories =` must be validated against the known category
+    # names: a typo ("reasning") previously filtered every category out
+    # silently, and the row "ran" with zero results — a wasted, possibly
+    # billed run with nothing but N/A cells in the report.
+    from modelman.registry import ModelEntry, ProviderEntry, Registry
+
+    mock_load_registry.return_value = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        """
+name = "t"
+[judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 1
+route = "litellm"
+
+[[rows]]
+model = "ollama/a"
+route = "litellm"
+categories = ["reasning"]
+""",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        eval_app,
+        ["run", "--suite", str(suite_path), "--root", str(FIXTURE_CATEGORIES), "--dry-run"],
+    )
+    assert result.exit_code == 1
+    assert "reasning" in result.output
+    assert "unknown categor" in result.output

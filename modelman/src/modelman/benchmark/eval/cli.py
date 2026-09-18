@@ -71,6 +71,21 @@ def run_cmd(
         wanted = set(category)
         categories = [c for c in categories if c.name in wanted]
 
+    # A row's `categories =` must name real categories: a typo would
+    # otherwise filter every category out silently and the row would
+    # "run" with zero results — a wasted, possibly billed run.
+    known_names = {c.name for c in categories}
+    for r in loaded_suite.rows:
+        if r.categories is not None:
+            unknown = [c for c in r.categories if c not in known_names]
+            if unknown:
+                typer.echo(
+                    f"error: row {r.label!r} names unknown category(ies): "
+                    f"{', '.join(unknown)} (known: {', '.join(sorted(known_names))})",
+                    err=True,
+                )
+                raise typer.Exit(1)
+
     rows = loaded_suite.rows
     if row:
         wanted_rows = set(row)

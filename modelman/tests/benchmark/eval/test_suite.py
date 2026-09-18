@@ -132,3 +132,17 @@ def test_resolve_row_endpoint_litellm_route_reads_live_models_json(tmp_path):
     assert base_url == "http://localhost:4000/v1"
     assert model == "ollama/a"
     assert api_key == "sk-x"
+
+
+def test_load_suite_rejects_duplicate_labels(tmp_path):
+    # Two rows sharing an explicit label both write metrics.jsonl lines
+    # keyed by that label; the rejudge reconstruction can only keep one
+    # row's model_id/route for a colliding label, which misattributes
+    # scores across rows. Reject the suite at load time instead.
+    body = (
+        SUITE_BODY
+        + '\n\n[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\nlabel = "dup"\n'
+        + '[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\nlabel = "dup"\n'
+    )
+    with pytest.raises(BenchmarkError, match="duplicate row label"):
+        load_suite(_write(tmp_path, body), _registry())
