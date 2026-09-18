@@ -132,6 +132,38 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
+def _select_row_dirs(row_dirs: list[Path], row_filter: list[str]) -> list[Path]:
+    """Match rejudge's --row against row directories the way `run --row`
+    matches suite rows: basename, label (the basename minus its "NN--"
+    index prefix), or 1-based position among the sorted row dirs. A value
+    that matches nothing raises — a silent empty rejudge would rewrite
+    summary.md/metrics.jsonl and exit 0 while re-judging nothing."""
+    if not row_filter:
+        return list(row_dirs)
+    selected: list[Path] = []
+    matched_values: set[str] = set()
+    known = [d.name for d in row_dirs]
+    for value in row_filter:
+        value_matched = False
+        for pos, row_dir in enumerate(row_dirs, start=1):
+            if (
+                row_dir.name == value
+                or _row_label_from_dir_name(row_dir.name) == value
+                or (value.isdigit() and pos == int(value))
+            ):
+                if row_dir not in selected:
+                    selected.append(row_dir)
+                value_matched = True
+        if value_matched:
+            matched_values.add(value)
+        else:
+            raise BenchmarkError(
+                f"--row {value!r} matched no row directories in this run "
+                f"(known: {', '.join(known)})"
+            )
+    return selected
+
+
 class _RowCategoryFailed(Exception):
     """Internal signal from _run_row: a category's dispatch raised partway
     through the row, but earlier categories in the same row already
@@ -492,9 +524,9 @@ def rejudge_run(
     transport = (judge_transport_factory or _default_judge_transport_factory)(judge_cfg)
 
     outcomes: list[dict] = []
-    for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
-        if row_filter and row_dir.name not in row_filter:
-            continue
+    row_dirs = sorted(p for p in run_dir.iterdir() if p.is_dir())
+    selected_row_dirs = _select_row_dirs(row_dirs, list(row_filter or []))
+    for row_dir in selected_row_dirs:
         for category_dir in sorted(p for p in row_dir.iterdir() if p.is_dir()):
             category = by_name.get(category_dir.name)
             if category is None or category.rubric is None:

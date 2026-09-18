@@ -5,6 +5,8 @@ without regenerating them, using the judge config persisted in run.toml."""
 import json
 from pathlib import Path
 
+import pytest
+
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.eval.runner import rejudge_run
 from modelman.benchmark.judge_core import Rubric
@@ -294,3 +296,63 @@ def test_reconstruct_prefers_row_dir_key_over_colliding_labels(tmp_path):
     assert by_dir["01--dup"].row.route == "litellm"
     assert by_dir["02--dup"].row.model_id == "m/two"
     assert by_dir["02--dup"].row.route == "direct"
+
+
+def _mini_category() -> Category:
+    return Category(
+        name="mini_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="review this", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+
+
+def test_rejudge_row_filter_accepts_label_and_index(tmp_path):
+    # `run --row` accepts label-or-index, so `judge --row` must too: a user
+    # who ran `eval run --row 2` reuses the same value for rejudge. The
+    # filter used to match only the row-dir BASENAME ("02--row2"), so an
+    # index or label silently matched nothing — zero re-judged items, exit
+    # 0, with summary.md/metrics.jsonl rewritten as if a rejudge happened.
+    run_dir = _seed_run(tmp_path)
+    row2_dir = run_dir / "02--row2"
+    item_dir = row2_dir / "mini_review" / "i1"
+    item_dir.mkdir(parents=True)
+    (item_dir / "response.txt").write_text("another response", encoding="utf-8")
+
+    category = _mini_category()
+    outcomes = rejudge_run(
+        run_dir,
+        [category],
+        row_filter=["row2"],
+        judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0]["row"] == "02--row2"
+
+    outcomes_idx = rejudge_run(
+        run_dir,
+        [category],
+        row_filter=["2"],
+        judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+    )
+    assert len(outcomes_idx) == 1
+    assert outcomes_idx[0]["row"] == "02--row2"
+
+
+def test_rejudge_row_filter_unknown_value_raises(tmp_path):
+    # An unknown --row value must fail loudly (exit 1 in the CLI) rather
+    # than silently producing an empty no-op rejudge that still rewrites
+    # summary.md/metrics.jsonl and exits 0 — the user would believe a
+    # rejudge happened when nothing was re-judged.
+    from modelman.benchmark.errors import BenchmarkError
+
+    run_dir = _seed_run(tmp_path)
+    category = _mini_category()
+    with pytest.raises(BenchmarkError, match="matched no row"):
+        rejudge_run(
+            run_dir,
+            [category],
+            row_filter=["no-such-row"],
+            judge_transport_factory=lambda judge_cfg: _FakeJudgeTransport(),
+        )
