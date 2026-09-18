@@ -9,9 +9,13 @@ samples = 3
 max_attempts = 2
 route = "openrouter"
 
+# No [coding] limit: EvalPlus 0.3.1's grading step requires every problem
+# in the FULL dataset (164 for humaneval) to have a sample before it
+# computes pass@k, so any `limit` smaller than the dataset size makes the
+# coding category fail with an EVALPLUS_ERROR instead of a score. Leave
+# limit unset (or set it to the full dataset size) for a real score.
 [coding]
 dataset = "humaneval"
-limit = 40
 
 [routes.direct.omlx]
 base_url = "http://localhost:8000/v1"
