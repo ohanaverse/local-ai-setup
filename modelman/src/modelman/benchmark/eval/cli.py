@@ -96,14 +96,20 @@ def run_cmd(
         ]
 
     if dry_run:
-        for i, r in enumerate(rows, start=1):
-            row_categories = r.categories or [c.name for c in categories]
-            typer.echo(
-                f"{i:02d}  {r.label}  model={r.model_id}  route={r.route}  "
-                f"categories={row_categories}"
-            )
+        # Print each selected row with its FULL-suite index — --row N
+        # selects by full-suite position (run_suite matches the same way),
+        # so renumbering the filtered list here would show "01" for a row
+        # the user selected as 3 and defeat the dry run's purpose.
+        for i, r in enumerate(loaded_suite.rows, start=1):
+            if not row or r.label in set(row) or str(i) in set(row):
+                row_categories = r.categories or [c.name for c in categories]
+                typer.echo(
+                    f"{i:02d}  {r.label}  model={r.model_id}  route={r.route}  "
+                    f"categories={row_categories}"
+                )
         typer.echo(
-            f"{len(rows)} row(s), {len(categories)} categorie(s) resolved, dry run — nothing executed"
+            f"{len(rows)} of {len(loaded_suite.rows)} row(s), {len(categories)} categorie(s) "
+            "resolved, dry run — nothing executed"
         )
         return
 

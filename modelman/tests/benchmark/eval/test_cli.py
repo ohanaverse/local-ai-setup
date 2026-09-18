@@ -114,3 +114,43 @@ categories = ["reasning"]
     assert result.exit_code == 1
     assert "reasning" in result.output
     assert "unknown categor" in result.output
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+def test_run_cmd_dry_run_prints_full_suite_row_indexes(mock_load_registry, tmp_path):
+    # --row N selects by FULL-suite index (run_suite matches the same way),
+    # so the dry run must print each selected row's full-suite index —
+    # renumbering the filtered list would show "01" for a row the user
+    # selected as 3, defeating the dry run's purpose.
+    from modelman.registry import ModelEntry, ProviderEntry, Registry
+
+    mock_load_registry.return_value = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    suite_path = tmp_path / "suite.toml"
+    rows = "\n".join(
+        f'[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\nlabel = "row{i}"\n' for i in range(1, 4)
+    )
+    suite_path.write_text(
+        'name = "t"\n[judge]\nmodel = "j"\ntemperature = 0.0\nsamples = 1\n'
+        'max_attempts = 1\nroute = "litellm"\n\n' + rows,
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(FIXTURE_CATEGORIES),
+            "--dry-run",
+            "--row",
+            "3",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "03" in result.stdout  # full-suite index, not the renumbered "01"
+    assert "row3" in result.stdout
+    assert "1 of 3 row(s)" in result.stdout
