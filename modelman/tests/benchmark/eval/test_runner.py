@@ -7,7 +7,7 @@ network/process calls.
 """
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -272,3 +272,37 @@ def test_run_suite_skips_judge_transport_for_coding_only_rows(
         judge_transport_factory=_boom_factory,
     )
     assert results[0].category_results["coding"].pass_at_1 == 0.5
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_sleeps_cooldown_between_rows_in_a_group(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # Suite.cooldown_s is documented (and shipped in eval-sweep.toml as
+    # 15.0) as thermal settling between rows; it must actually be honored
+    # after each row except the first in a provider group — the first row
+    # runs right after isolation warmup, with nothing to settle from. It
+    # was previously parsed but never read: a dead knob that silently
+    # ignored the user's config.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    suite = _suite()
+    suite.cooldown_s = 0.25
+    suite.rows = [
+        RowConfig(label="r1", model_id="ollama/a", route="litellm", provider_id="ollama"),
+        RowConfig(label="r2", model_id="ollama/a", route="litellm", provider_id="ollama"),
+        RowConfig(label="r3", model_id="ollama/a", route="litellm", provider_id="ollama"),
+    ]
+    with patch("modelman.benchmark.eval.runner.time.sleep") as mock_sleep:
+        run_suite(
+            suite,
+            _registry(),
+            [_mini_review_category()],
+            results_dir=tmp_path,
+            judge_transport_factory=lambda suite: object(),
+        )
+    # 3 rows, one group: cooldown after rows 1 and 2, none after row 3.
+    assert mock_sleep.call_args_list == [call(0.25), call(0.25)]

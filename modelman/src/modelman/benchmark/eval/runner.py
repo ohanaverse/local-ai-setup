@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import json
 import subprocess
+import time
 import tomllib
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -268,7 +269,14 @@ def run_suite(
             sorted(rows, key=lambda r: (r.provider_id, r.model_id)), key=lambda r: r.provider_id
         ):
             prev_extra: tuple[str, ...] | None = None
-            for row in group:
+            for row_position, row in enumerate(group):
+                # Thermal settling between rows within a provider group
+                # (agent/runner.py honors cooldown_s between passes the
+                # same way); none before the first row — it runs right
+                # after the group's isolation warmup, with nothing to
+                # settle from.
+                if row_position > 0:
+                    time.sleep(suite.cooldown_s)
                 try:
                     extra_args = _isolation_extra_args(row)
                 except BenchmarkError as exc:
