@@ -199,16 +199,6 @@ def run_suite(
     judge_transport_factory=None,
 ) -> tuple[Path, list[RowRunResult]]:
     rows = _select_rows(suite.rows, row_filter)
-    # Preflight the SELECTION, not the whole suite: a scoped run must not
-    # be blocked by an unselected row's provider being down or its key
-    # missing.
-    preflight(suite, registry, rows=rows)
-
-    results_dir = results_dir or DEFAULT_RESULTS_DIR
-    run_id = "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    run_dir = results_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-
     # The judge transport hard-requires an API key (LiteLLM or OpenRouter);
     # build it only when at least one selected row will run a judged
     # category, so a coding-only EvalPlus run stays purely local.
@@ -217,6 +207,16 @@ def run_suite(
         for row in rows
         for category in _row_categories(row, categories)
     )
+    # Preflight the SELECTION, not the whole suite: a scoped run must not
+    # be blocked by an unselected row's provider being down or its key
+    # missing.
+    preflight(suite, registry, rows=rows, judge_route_active=needs_judge)
+
+    results_dir = results_dir or DEFAULT_RESULTS_DIR
+    run_id = "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    run_dir = results_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     judge_transport: JudgeTransport | None = None
     if needs_judge:
         judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)

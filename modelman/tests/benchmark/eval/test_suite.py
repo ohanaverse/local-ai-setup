@@ -166,3 +166,22 @@ def test_preflight_scoped_rows_ignores_unselected_providers(tmp_path):
         # Row 2 (omlx/direct) selected; row 1's ollama backend is "down"
         # and must not matter.
         preflight(suite, _registry(), rows=[suite.rows[1]])
+
+
+def test_preflight_judge_route_openrouter_ignored_for_coding_only_selection(tmp_path, monkeypatch):
+    # preflight must mirror run_suite's needs_judge design: the judge's
+    # OpenRouter key is only required when a selected row actually runs a
+    # judged category. A coding-only selection (EvalPlus, purely local,
+    # no judge call) must not be blocked on a missing OPENROUTER_API_KEY —
+    # the repo's philosophy is degrade-to-N/A, not block a local run.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("modelman.benchmark.eval.suite.LITELLM_PLIST", tmp_path / "missing.plist")
+    suite = load_suite(_write(tmp_path, SUITE_BODY), _registry())
+    coding_only = RowConfig(
+        label="coding-only",
+        model_id="ollama/a",
+        route="litellm",
+        provider_id="ollama",
+        categories=["coding"],
+    )
+    preflight(suite, _registry(), rows=[coding_only], judge_route_active=False)

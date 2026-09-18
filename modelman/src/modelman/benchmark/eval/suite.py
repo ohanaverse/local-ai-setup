@@ -231,13 +231,25 @@ def resolve_row_endpoint(
     raise BenchmarkError(f"row {row.label!r} has unknown route: {row.route!r}")
 
 
-def preflight(suite: Suite, registry: Registry, rows: list[RowConfig] | None = None) -> None:
+def preflight(
+    suite: Suite,
+    registry: Registry,
+    rows: list[RowConfig] | None = None,
+    *,
+    judge_route_active: bool | None = None,
+) -> None:
     """Fail fast on what the SELECTED rows would actually hit mid-run.
 
     `rows` defaults to the full suite; run_suite passes its post-_select_rows
     selection so a scoped run (--row/--category) is never blocked by an
     unselected row's provider being down, a missing direct-route block, or a
-    missing openrouter key."""
+    missing openrouter key.
+
+    `judge_route_active`: run_suite computes whether any selected row
+    actually runs a judged category (its needs_judge) and passes that here,
+    so the judge key is demanded only when the judge will really be called
+    (a coding-only EvalPlus run never invokes it). None keeps the
+    conservative default: a judge on route=openrouter implies the key."""
     if rows is None:
         rows = suite.rows
     unavailable = []
@@ -258,10 +270,17 @@ def preflight(suite: Suite, registry: Registry, rows: list[RowConfig] | None = N
                 f"but no [routes.direct.{row.provider_id}] block is configured"
             )
 
-    needs_openrouter = suite.judge.route == "openrouter" or any(
-        row.route == "openrouter" for row in rows
-    )
-    if needs_openrouter and openrouter_key() is None:
+    if judge_route_active is None:
+        judge_needs_key = suite.judge.route == "openrouter"
+    else:
+        judge_needs_key = judge_route_active and suite.judge.route == "openrouter"
+    needs_openrouter = any(row.route == "openrouter" for row in rows) or judge_needs_key
+    # Call openrouter_key(LITELLM_PLIST) EXPLICITLY with the module-global
+    # name (not the bare openrouter_key()) so a monkeypatch of
+    # modelman.benchmark.eval.suite.LITELLM_PLIST takes effect — a
+    # default-parameter plist path is bound at def time and patching the
+    # module attribute would not steer it.
+    if needs_openrouter and openrouter_key(LITELLM_PLIST) is None:
         raise BenchmarkError(
             f"OPENROUTER_API_KEY not found (environment or {LITELLM_PLIST}); "
             "needed for the judge and/or an openrouter row"
