@@ -164,10 +164,16 @@ def test_load_suite_rejects_unknown_explicit_provider(tmp_path):
         load_suite(_write(tmp_path, body), _registry())
 
 
-def test_preflight_scoped_rows_ignores_unselected_providers(tmp_path):
+def test_preflight_scoped_rows_ignores_unselected_providers(tmp_path, monkeypatch):
     # Preflighting only the SELECTED rows (--row) must not fail because an
     # unselected row's provider is down or a direct block is missing — the
     # selection never touches them, so their preconditions don't apply.
+    # The judge-route default branch (judge_route_active=None) calls the
+    # real openrouter_key(), so seed a fake key via the env and point the
+    # plist path at a nonexistent file — otherwise the test's pass/fail
+    # depends on this host's live credentials (latent CI flake).
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("modelman.benchmark.eval.suite.LITELLM_PLIST", tmp_path / "missing.plist")
     suite = load_suite(_write(tmp_path, SUITE_BODY), _registry())
 
     class _DownBackend:

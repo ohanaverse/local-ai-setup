@@ -8,7 +8,7 @@ Design rationale: `docs/superpowers/specs/2026-09-17-capability-eval-benchmark-d
 
 ## Prerequisites
 
-- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on PATH).
+- Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, modelman runnable via `uv run` — the provider lifecycle runs in-process in `modelman benchmark eval`, no isolation helpers on PATH needed).
 - A working LiteLLM apiKey seeded into `~/.pi/agent/models.json` for any `route = "litellm"` row or judge — same requirement as [09-agent-benchmarks](09-agent-benchmarks.md).
 - `OPENROUTER_API_KEY` available if the suite's `[judge]` or any row uses `route = "openrouter"`.
 - `uv sync --extra eval` from `modelman/` — the `coding` category needs EvalPlus, which is not installed by plain `make install`. `evalplus_runner` invokes the installed `evalplus.evaluate` console script by bare name, resolved on `PATH` from inside `uv run`'s own venv — so it must be resolvable there, which `uv sync --extra eval` guarantees (not `uvx`, which would bypass the extra entirely).

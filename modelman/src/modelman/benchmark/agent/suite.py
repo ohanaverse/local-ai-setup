@@ -7,9 +7,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from modelman.benchmark._routes import (  # noqa: F401 — OPENROUTER_BASE_URL is a re-export
-    LITELLM_PLIST,
-    OPENROUTER_BASE_URL,
+from modelman.benchmark._routes import (  # noqa: F401 — only OPENROUTER_BASE_URL is re-export-only;
+    LITELLM_PLIST,  # LITELLM_PLIST/openrouter_key are used below (the noqa keeps them importable
+    OPENROUTER_BASE_URL,  # here for the patch-where-used seams the agent tests rely on)
     openrouter_key,
 )
 from modelman.benchmark.agent.pidriver import DirectRouteConfig, RowConfig
