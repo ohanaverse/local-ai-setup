@@ -149,7 +149,7 @@ def _run_row(
     categories: list[Category],
     suite: Suite,
     registry: Registry,
-    judge_transport: JudgeTransport,
+    judge_transport: JudgeTransport | None,
 ) -> dict[str, object]:
     model = registry.model(row.model_id)
     base_url, model_name, api_key = resolve_row_endpoint(row, model.model_name, suite.routes_direct)
@@ -160,11 +160,21 @@ def _run_row(
         try:
             if category.name == CODING_CATEGORY:
                 dataset = suite.coding.dataset or category.coding_dataset or DEFAULT_CODING_DATASET
-                limit = suite.coding.limit if suite.coding.limit is not None else category.coding_limit
+                limit = (
+                    suite.coding.limit if suite.coding.limit is not None else category.coding_limit
+                )
                 results[category.name] = evalplus_runner.run_coding_category(
-                    base_url=base_url, model=model_name, api_key=api_key, dataset=dataset, limit=limit
+                    base_url=base_url,
+                    model=model_name,
+                    api_key=api_key,
+                    dataset=dataset,
+                    limit=limit,
                 )
             else:
+                # run_suite only builds the judge transport when at least one
+                # selected row runs a judged category, so None here is
+                # unreachable — an assertion, not a runtime branch.
+                assert judge_transport is not None
                 results[category.name] = judged_runner.run_judged_category(
                     category,
                     row_transport,
@@ -188,15 +198,28 @@ def run_suite(
     results_dir: Path | None = None,
     judge_transport_factory=None,
 ) -> tuple[Path, list[RowRunResult]]:
-    preflight(suite, registry)
     rows = _select_rows(suite.rows, row_filter)
+    # Preflight the SELECTION, not the whole suite: a scoped run must not
+    # be blocked by an unselected row's provider being down or its key
+    # missing.
+    preflight(suite, registry, rows=rows)
 
     results_dir = results_dir or DEFAULT_RESULTS_DIR
     run_id = "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_dir = results_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
+    # The judge transport hard-requires an API key (LiteLLM or OpenRouter);
+    # build it only when at least one selected row will run a judged
+    # category, so a coding-only EvalPlus run stays purely local.
+    needs_judge = any(
+        category.name != CODING_CATEGORY
+        for row in rows
+        for category in _row_categories(row, categories)
+    )
+    judge_transport: JudgeTransport | None = None
+    if needs_judge:
+        judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
 
     results: list[RowRunResult] = []
     index = 0

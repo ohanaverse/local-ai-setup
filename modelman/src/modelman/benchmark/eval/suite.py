@@ -231,9 +231,17 @@ def resolve_row_endpoint(
     raise BenchmarkError(f"row {row.label!r} has unknown route: {row.route!r}")
 
 
-def preflight(suite: Suite, registry: Registry) -> None:
+def preflight(suite: Suite, registry: Registry, rows: list[RowConfig] | None = None) -> None:
+    """Fail fast on what the SELECTED rows would actually hit mid-run.
+
+    `rows` defaults to the full suite; run_suite passes its post-_select_rows
+    selection so a scoped run (--row/--category) is never blocked by an
+    unselected row's provider being down, a missing direct-route block, or a
+    missing openrouter key."""
+    if rows is None:
+        rows = suite.rows
     unavailable = []
-    for provider_id in dict.fromkeys(row.provider_id for row in suite.rows):
+    for provider_id in dict.fromkeys(row.provider_id for row in rows):
         backend = lifecycle.BACKENDS.get(provider_id)
         if backend is None:
             continue
@@ -243,7 +251,7 @@ def preflight(suite: Suite, registry: Registry) -> None:
     if unavailable:
         raise BenchmarkError(f"provider(s) unavailable: {'; '.join(unavailable)}")
 
-    for row in suite.rows:
+    for row in rows:
         if row.route == "direct" and row.provider_id not in suite.routes_direct:
             raise BenchmarkError(
                 f"row {row.label!r} uses route=direct for provider {row.provider_id!r} "
@@ -251,7 +259,7 @@ def preflight(suite: Suite, registry: Registry) -> None:
             )
 
     needs_openrouter = suite.judge.route == "openrouter" or any(
-        row.route == "openrouter" for row in suite.rows
+        row.route == "openrouter" for row in rows
     )
     if needs_openrouter and openrouter_key() is None:
         raise BenchmarkError(

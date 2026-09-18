@@ -237,3 +237,38 @@ def _fake_category_result(score: float):
         items=[ItemResult(item_id="i1", response_text="r", judge=outcome, score_100=score)],
         score_100=score,
     )
+
+
+@patch("modelman.benchmark.eval.runner.evalplus_runner.run_coding_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_skips_judge_transport_for_coding_only_rows(
+    mock_isolation, mock_resolve, mock_run_coding, tmp_path
+):
+    # A coding-only run never invokes the judge, so building the judge
+    # transport (which hard-requires a LiteLLM/OpenRouter API key) must be
+    # deferred until a judged category will actually run — a purely local
+    # EvalPlus run must not need an API key. The factory here raises if it
+    # is ever called; coding dispatch is patched to return a real
+    # CodingResult so the run completes.
+    from modelman.benchmark.eval.evalplus_runner import CodingResult
+
+    mock_resolve.return_value = ("http://localhost:8000/v1", "b-server-name", "ollama")
+    mock_run_coding.return_value = CodingResult(
+        dataset="humaneval", pass_at_1=0.5, raw_output="ok"
+    )
+
+    def _boom_factory(_judge_cfg):
+        raise AssertionError("judge transport must not be built for a coding-only run")
+
+    suite = _suite(row_categories=["coding"])
+    suite.rows[0].route = "litellm"
+    coding_category = Category(name="coding", path=Path("."), items=[], rubric=None, rubric_md=None)
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        [coding_category],
+        results_dir=tmp_path,
+        judge_transport_factory=_boom_factory,
+    )
+    assert results[0].category_results["coding"].pass_at_1 == 0.5

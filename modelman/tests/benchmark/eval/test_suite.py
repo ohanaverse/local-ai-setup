@@ -146,3 +146,23 @@ def test_load_suite_rejects_duplicate_labels(tmp_path):
     )
     with pytest.raises(BenchmarkError, match="duplicate row label"):
         load_suite(_write(tmp_path, body), _registry())
+
+
+def test_preflight_scoped_rows_ignores_unselected_providers(tmp_path):
+    # Preflighting only the SELECTED rows (--row) must not fail because an
+    # unselected row's provider is down or a direct block is missing — the
+    # selection never touches them, so their preconditions don't apply.
+    suite = load_suite(_write(tmp_path, SUITE_BODY), _registry())
+
+    class _DownBackend:
+        @staticmethod
+        def check_available():
+            return "not running"
+
+    import unittest.mock as mock
+
+    with mock.patch("modelman.benchmark.eval.suite.lifecycle") as mock_lc:
+        mock_lc.BACKENDS = {"ollama": _DownBackend, "omlx": None}
+        # Row 2 (omlx/direct) selected; row 1's ollama backend is "down"
+        # and must not matter.
+        preflight(suite, _registry(), rows=[suite.rows[1]])
