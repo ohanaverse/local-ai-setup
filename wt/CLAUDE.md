@@ -308,7 +308,7 @@ wt config path               # print the config directory
 Global rotation — the Go equivalent of bash `--code`/`--design`. Each successful launch records a single model id; the next picker entry lands on the model *after* it. Per-slot rotation (`Slot{Agent,Tag,Family}`) was retired; only the global state file remains.
 
 - Public API (package `rotation`):
-  - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
+  - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `RecordFor(agent, modelID string) error` (rotation state plus an agent-attributed usage event; `Record` is `RecordFor("", id)`), `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
   - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
 - State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
 - The model picker marks the last-launched row with a `> ` prefix

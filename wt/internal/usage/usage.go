@@ -14,7 +14,7 @@ import (
 )
 
 // retentionWindow is the longest count window Counts reports (30 days).
-// Record prunes events older than this on every write so usage.jsonl
+// RecordFor prunes events older than this on every write so usage.jsonl
 // stays bounded by launch frequency instead of growing across the
 // lifetime of the install.
 const retentionWindow = 30 * 24 * time.Hour
@@ -66,7 +66,7 @@ func (s *StoreImpl) Record(modelID string) error { return s.RecordFor("", modelI
 
 // RecordFor appends one launch event for agent+modelID atomically, first dropping
 // any existing events older than retentionWindow so the file doesn't grow
-// unbounded — only the trailing 30-day window is ever read by Counts.
+// unbounded — only the trailing 30-day window is ever read by Counts/CountsForAgent.
 //
 // Concurrency: the read-prune-write critical section is guarded by a POSIX
 // advisory flock on a sidecar usage.jsonl.lock file in the same directory.
@@ -150,7 +150,7 @@ func (s *StoreImpl) CountsForAgent(agent string, modelIDs []string) map[string]U
 // Best-effort for display: if the scan aborts partway (e.g. a single corrupt
 // line exceeding bufio.Scanner's token limit), the counts accumulated so far
 // are returned with no error — a truncated read only skews displayed
-// numbers. Record's prune path is where scan errors are surfaced, because
+// numbers. RecordFor's prune path is where scan errors are surfaced, because
 // there the result overwrites the on-disk history.
 func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[string]UsageCounts {
 	want := map[string]bool{}

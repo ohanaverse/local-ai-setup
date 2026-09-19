@@ -943,7 +943,8 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation
 // advances exactly when a launch commits, no sooner. It also asserts the
 // usage store gets an event tagged with the launching agent, so per-pair
-// counts work for any agent-model pair.
+// counts work for any agent-model pair, and that a different agent's count
+// for the same model stays 0 (no cross-agent leakage).
 func TestLaunchAndRecordWritesLast(t *testing.T) {
 	dir := tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
@@ -972,6 +973,9 @@ func TestLaunchAndRecordWritesLast(t *testing.T) {
 	}
 	if u := usage.NewStoreAt(dir).CountsForAgent("claude", []string{first.model.ID})[first.model.ID]; u.ThirtyDay != 1 {
 		t.Fatalf("usage claude pair 30d = %d, want 1", u.ThirtyDay)
+	}
+	if u := usage.NewStoreAt(dir).CountsForAgent("codex", []string{first.model.ID})[first.model.ID]; u.ThirtyDay != 0 {
+		t.Fatalf("usage codex pair 30d = %d, want 0", u.ThirtyDay)
 	}
 }
 

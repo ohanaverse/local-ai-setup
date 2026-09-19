@@ -471,12 +471,12 @@ func TestRecordForUnregisteredModelAndPrune(t *testing.T) {
 
 	old := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	now = func() time.Time { return old }
+	defer func() { now = time.Now }()
 	if err := store.RecordFor("claude", id); err != nil {
 		t.Fatal(err)
 	}
 	fresh := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) // 49 days later
 	now = func() time.Time { return fresh }
-	defer func() { now = time.Now }()
 	if err := store.RecordFor("claude", id); err != nil {
 		t.Fatal(err)
 	}
