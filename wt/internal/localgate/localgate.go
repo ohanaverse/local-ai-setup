@@ -11,13 +11,12 @@
 package localgate
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // probeTimeout bounds each HTTP availability probe.
@@ -69,44 +68,11 @@ func SetMtplxProbeURLForTest(url string) (restore func()) {
 	return func() { mtplxModelsURL = old }
 }
 
-// nameMatches reports whether a server-reported model id names the same
-// model as want. Lenient on prefix (a server may report a path-ish
-// spelling of the same model), strict on the variant tail — omlx's 4-bit
-// and 6-bit variants share port 8000 and differ exactly there, so a
-// mismatched tail is a different model, never a spelling variant.
-func nameMatches(served, want string) bool {
-	return served == want || strings.HasSuffix(served, "/"+want) || strings.HasSuffix(want, "/"+served)
-}
+// nameMatches delegates to localmodels.NameMatches.
+func nameMatches(served, want string) bool { return localmodels.NameMatches(served, want) }
 
-// fetchModelIDs GETs an OpenAI-compatible /v1/models endpoint and returns
-// the ids of the models the server is actually serving; nil on any
-// failure (connection refused, timeout, non-2xx, non-JSON body) — nil
-// reads as "nothing serving", never as "unknown".
-func fetchModelIDs(url string) []string {
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil
-	}
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil
-	}
-	ids := make([]string, 0, len(body.Data))
-	for _, d := range body.Data {
-		if d.ID != "" {
-			ids = append(ids, d.ID)
-		}
-	}
-	return ids
-}
+// fetchModelIDs delegates to localmodels.FetchModelIDs.
+func fetchModelIDs(url string) []string { return localmodels.FetchModelIDs(httpClient, url) }
 
 // Available reports whether the local model m is actually serving right
 // now. The probe is name-checked against the flagged model — not just
