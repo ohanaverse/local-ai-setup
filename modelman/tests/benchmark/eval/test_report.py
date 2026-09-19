@@ -90,7 +90,7 @@ def test_render_summary_marks_judge_fail_rows():
 
 def test_render_summary_reports_isolation_errors():
     # A row that never ran because provider isolation failed must be called
-    # out explicitly (ISOLATION_ERROR) instead of looking like a row with no
+    # out explicitly (ROW_ERROR) instead of looking like a row with no
     # data, so a run's summary distinguishes "didn't run" from "scored 0".
     row = RowRunResult(
         row=RowConfig(label="a", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"),
@@ -99,14 +99,14 @@ def test_render_summary_reports_isolation_errors():
         error="isolation failed for ollama: not found",
     )
     summary = render_summary("test-run", [row], _registry(), ["doc_summary"])
-    assert "ISOLATION_ERROR" in summary
+    assert "ROW_ERROR" in summary
 
 
 def test_render_summary_shows_partial_results_alongside_an_error():
     # A row can carry BOTH an error and partial category_results (a later
     # category failed after an earlier one already scored) — the matrix
     # must render the completed category's real score, not blanket every
-    # cell with ISOLATION_ERROR just because the row also has an error.
+    # cell with ROW_ERROR just because the row also has an error.
     row = RowRunResult(
         row=RowConfig(label="a", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"),
         row_dir=Path("/tmp/a"),
@@ -115,7 +115,7 @@ def test_render_summary_shows_partial_results_alongside_an_error():
     )
     summary = render_summary("test-run", [row], _registry(), ["doc_summary", "coding"])
     assert "80.0" in summary
-    assert "ISOLATION_ERROR" in summary  # the coding cell, which never ran
+    assert "ROW_ERROR" in summary  # the coding cell, which never ran
 
 
 def test_write_row_artifacts_persists_partial_results_and_the_error(tmp_path):
@@ -228,7 +228,7 @@ def test_render_summary_escapes_pipes_and_newlines_in_table_cells():
     summary = render_summary("test-run", [row], _registry(), ["doc_summary"])
     assert "a\\|b" in summary
     assert "boom \\| bad second line" in summary
-    anomaly_line = next(line for line in summary.splitlines() if "ISOLATION_ERROR: boom" in line)
+    anomaly_line = next(line for line in summary.splitlines() if "ROW_ERROR: boom" in line)
     assert anomaly_line.count("|") - anomaly_line.count("\\|") == 3
 
 

@@ -77,12 +77,15 @@ def _capability_matrix(results: list, registry: Registry, category_names: list[s
         family = _md(_family_of(r.row.model_id, registry))
         # A row can have an error AND partial category_results (a later
         # category failed after earlier ones already scored) — render the
-        # categories that actually ran, and ISOLATION_ERROR only for the
-        # ones that didn't.
+        # categories that actually ran, and ROW_ERROR only for the
+        # ones that didn't. ROW_ERROR, not ISOLATION_ERROR: a row's error
+        # may be a generation or EvalPlus failure, and naming isolation
+        # would send the reader hunting for a provider problem that
+        # never existed (the reason is in the Anomalies table).
         cells = [
             _cell(r.category_results[name])
             if name in r.category_results
-            else ("ISOLATION_ERROR" if r.error else _cell(None))
+            else ("ROW_ERROR" if r.error else _cell(None))
             for name in category_names
         ]
         lines.append(
@@ -132,7 +135,7 @@ def _anomalies(results: list, category_names: list[str]) -> str:
     lines = ["| label | anomaly |", "|---|---|"]
     for r in results:
         if r.error:
-            lines.append(f"| {_md(r.row.label)} | ISOLATION_ERROR: {_md(r.error[:200])} |")
+            lines.append(f"| {_md(r.row.label)} | ROW_ERROR: {_md(r.error[:200])} |")
         # Not an `elif`/`continue` — a row can carry an error alongside
         # partial category_results, and those completed categories still
         # deserve their own judge_fail/evalplus-error anomaly rows.
