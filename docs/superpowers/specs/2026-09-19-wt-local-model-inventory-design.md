@@ -55,7 +55,7 @@ sub-projects 3-4 retire them.
 
 | Provider | Discovery | Running |
 |---|---|---|
-| ollama | `GET /api/tags` (pulled models; no subprocess) | `GET /api/ps` (loaded set) |
+| ollama | `GET /api/tags` (pulled models; no subprocess; entries with a `remote_host` are cloud models and are excluded) | `GET /api/ps` (loaded set) |
 | omlx | subdirectories of `model_dir` (default `~/.omlx/models`) | name-checked `GET /v1/models` on `:8000`; the probe also serves a hand-added `omlx-6bit` row |
 | mtplx | subdirectories of `model_dir` (default `~/.mtplx/models`); dir `Youssofal--X` maps to `Youssofal/X` | name-checked `/v1/models` on `:8003` |
 | mlx_lm_server | none (target+draft pairing is not discoverable) | non-empty `/v1/models` on `:8001`, registered rows only |
