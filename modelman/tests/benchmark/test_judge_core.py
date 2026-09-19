@@ -201,3 +201,15 @@ def test_judge_row_two_sample_median_rounds_half_up():
     )
     assert outcome.combined is not None
     assert outcome.combined.scores == {"x": 3, "y": 4, "z": 0}
+
+
+def test_parse_response_accepts_integral_float_scores_and_rejects_fractional():
+    # A judge that writes 40.0 means 40: rejecting it would fail every
+    # identical temperature-0 retry and turn the item into judge_fail/N/A.
+    # The scores come back as ints, so the derived total stays an int. A
+    # genuinely fractional score (40.5) remains a contract violation.
+    ok = parse_response(json.dumps({"scores": {"x": 40.0, "y": 20, "z": 10.0}}), NO_VERDICT_RUBRIC)
+    assert ok.scores == {"x": 40, "y": 20, "z": 10}
+    assert ok.total == 70 and isinstance(ok.total, int)
+    with pytest.raises(JudgeContractError):
+        parse_response(json.dumps({"scores": {"x": 40.5, "y": 20, "z": 10}}), NO_VERDICT_RUBRIC)

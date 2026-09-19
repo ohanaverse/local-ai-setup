@@ -132,6 +132,12 @@ def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
         raise JudgeContractError(f"scores missing dimensions: {missing_dims}")
     for dim, max_points in rubric.dimensions.items():
         value = scores[dim]
+        # An integral float ("25.0") is the same score spelled differently;
+        # rejecting it would fail identical temperature-0 retries the same
+        # way. Normalize to int so `total` and the stored scores stay ints.
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+            scores[dim] = value
         if isinstance(value, bool) or not isinstance(value, int) or not (0 <= value <= max_points):
             raise JudgeContractError(f"invalid score for {dim}: {value!r}")
 
