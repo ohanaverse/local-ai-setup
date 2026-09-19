@@ -1,12 +1,13 @@
 """Tests for modelman.benchmark.eval.judged_runner — one generation call per
-item, scored by the shared judge_core mechanics, aggregated to a /100
-category score.
+item (phase 1, under isolation), scored by the shared judge_core mechanics
+in a separate judge phase (after restore), aggregated to a /100 category
+score.
 """
 
 import json
 
 from modelman.benchmark.eval.category import Category, Item
-from modelman.benchmark.eval.judged_runner import run_judged_category
+from modelman.benchmark.eval.judged_runner import generate_category, judge_category
 from modelman.benchmark.judge_core import Rubric
 
 RUBRIC = Rubric(dimensions={"bug_detection": 60, "actionability": 40})
@@ -34,8 +35,10 @@ class _FakeRowTransport:
 class _FakeJudgeTransport:
     def __init__(self, totals: list[int]):
         self.totals = list(totals)
+        self.prompts_seen: list[str] = []
 
     def complete(self, prompt: str, *, temperature: float) -> str:
+        self.prompts_seen.append(prompt)
         if not self.totals:
             return "not json"
         total = self.totals.pop(0)
@@ -46,58 +49,86 @@ class _FakeJudgeTransport:
         )
 
 
-def test_run_judged_category_sends_item_prompt_verbatim_to_row_transport():
-    # The row transport must receive exactly each item's own prompt text,
-    # with no judge/rubric wrapping mixed in — that wrapping only belongs in
-    # the separate judge prompt built after generation.
+def _judge_kwargs(transport: _FakeJudgeTransport) -> dict:
+    return {
+        "judge_transport": transport,
+        "judge_temperature": 0.0,
+        "judge_samples": 1,
+        "judge_max_attempts": 1,
+    }
+
+
+def test_generate_category_sends_item_prompt_verbatim_and_judges_nothing():
+    # Phase 1 must send exactly each item's own prompt text (no judge/rubric
+    # wrapping mixed in — that only belongs in the separate judge prompt),
+    # and must return items with judge=None: judging is phase 2, after
+    # restore_providers(), so an interrupted judge phase leaves the
+    # generated responses on disk as rejudge-recoverable UNJUDGED items.
     row_transport = _FakeRowTransport()
-    run_judged_category(
-        CATEGORY,
-        row_transport,
-        _FakeJudgeTransport([60, 40]),
-        temperature=0.0,
-        judge_temperature=0.0,
-        judge_samples=1,
-        judge_max_attempts=1,
-    )
+    result = generate_category(CATEGORY, row_transport, temperature=0.0)
     assert row_transport.prompts_seen == ["review this", "review that"]
+    assert all(item.judge is None and item.score_100 is None for item in result.items)
+    assert result.score_100 is None
 
 
-def test_run_judged_category_scores_as_mean_of_item_totals():
+def test_judge_category_scores_as_mean_of_item_totals():
     # A category's row-level score_100 is the mean of its items' judge
     # totals (already /100 since every rubric sums to 100) — this pins the
     # aggregation formula so a future change to it is deliberate, not
     # accidental.
-    result = run_judged_category(
-        CATEGORY,
-        _FakeRowTransport(),
-        _FakeJudgeTransport([60, 40]),
-        temperature=0.0,
-        judge_temperature=0.0,
-        judge_samples=1,
-        judge_max_attempts=1,
-    )
+    result = generate_category(CATEGORY, _FakeRowTransport(), temperature=0.0)
+    judge_category(CATEGORY, result, **_judge_kwargs(_FakeJudgeTransport([60, 40])))
     assert result.score_100 == 50.0
-    assert len(result.items) == 2
+    assert [item.score_100 for item in result.items] == [60.0, 40.0]
 
 
-def test_run_judged_category_ignores_judge_fail_items_in_the_mean():
+def test_judge_category_ignores_judge_fail_items_in_the_mean():
     # An item whose judge call fails to parse must not drag the category
     # mean down to zero, and must not silently vanish either — it's excluded
     # from the mean but still recorded as a judge_fail item, so a partial
     # judge outage degrades the score gracefully instead of corrupting it.
-    result = run_judged_category(
-        CATEGORY,
-        _FakeRowTransport(),
-        _FakeJudgeTransport([80]),  # only one valid reply; item 2's judge call fails to parse
-        temperature=0.0,
-        judge_temperature=0.0,
-        judge_samples=1,
-        judge_max_attempts=1,
-    )
-    assert result.items[1].judge.status == "judge_fail"
+    result = generate_category(CATEGORY, _FakeRowTransport(), temperature=0.0)
+    # only one valid reply; item 2's judge call fails to parse
+    judge_category(CATEGORY, result, **_judge_kwargs(_FakeJudgeTransport([80])))
+    assert result.items[1].judge is not None
+    assert result.items[1].judge.status == "judge_fail"  # type: ignore[union-attr]
     assert result.items[1].score_100 is None
     assert result.score_100 == 80.0
+
+
+def test_judge_category_does_not_rejudge_already_judged_items():
+    # Judging is idempotent: re-invoking judge_category on a fully-judged
+    # result must make no further judge calls. This is what lets run_suite
+    # resume an interrupted judge phase without re-paying the judge for
+    # items that already carry a score.
+    result = generate_category(CATEGORY, _FakeRowTransport(), temperature=0.0)
+    transport = _FakeJudgeTransport([60, 40])
+    judge_category(CATEGORY, result, **_judge_kwargs(transport))
+    calls_after_first_pass = len(transport.prompts_seen)
+    judge_category(CATEGORY, result, **_judge_kwargs(transport))
+    assert len(transport.prompts_seen) == calls_after_first_pass
+    assert result.score_100 == 50.0  # scores unchanged by the second pass
+
+
+def test_judge_category_resumes_from_a_partial_judgment():
+    # A judge phase interrupted after item 1 scored must not re-judge item 1
+    # on resume — only the UNJUDGED item 2 gets a judge call, so the
+    # already-paid score survives untouched (no double spend) and the
+    # category mean covers both items.
+    result = generate_category(CATEGORY, _FakeRowTransport(), temperature=0.0)
+    judge_category(CATEGORY, result, **_judge_kwargs(_FakeJudgeTransport([60, 40])))
+    assert result.items[0].score_100 == 60.0
+    # Simulate the interrupt: item 2's outcome is discarded (never judged —
+    # exactly the state an interrupted run_suite judge phase leaves).
+    result.items[1].judge = None
+    result.items[1].score_100 = None
+    # Resume: the transport carries ONE reply, for item 2 only — if item 1
+    # were re-judged it would consume it and item 2 would come back
+    # judge_fail.
+    judge_category(CATEGORY, result, **_judge_kwargs(_FakeJudgeTransport([40])))
+    assert result.items[0].score_100 == 60.0  # untouched by the resume
+    assert result.items[1].score_100 == 40.0
+    assert result.score_100 == 50.0
 
 
 def test_build_judge_prompt_truncates_oversized_responses():

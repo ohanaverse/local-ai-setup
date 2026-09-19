@@ -6,12 +6,14 @@ orchestration logic (grouping, dispatch, restore-failure handling), not real
 network/process calls.
 """
 
+import json
 from pathlib import Path
 from unittest.mock import call, patch
 
 import pytest
 
 from modelman.benchmark.errors import BenchmarkError
+from modelman.benchmark.eval import judged_runner
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.eval.runner import RunSavedButRestoreFailed, run_suite
 from modelman.benchmark.eval.suite import (
@@ -92,11 +94,11 @@ def _mini_review_category() -> Category:
     )
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_isolates_once_per_provider_group_and_restores(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # A single-provider suite should isolate that provider exactly once
     # (not once per row) and restore providers exactly once afterward —
@@ -105,7 +107,7 @@ def test_run_suite_isolates_once_per_provider_group_and_restores(
     # lifecycle module, not from this mock, so it already contains "ollama"
     # (a real local provider) — nothing to set on mock_isolation for that.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     run_dir, results = run_suite(
         _suite(),
@@ -129,17 +131,17 @@ def test_run_suite_isolates_once_per_provider_group_and_restores(
     assert run_dir.is_dir()
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_row_categories_override_narrows_dispatch(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # A row's own `categories` list should narrow dispatch to just the named
     # categories, even when the suite runner was handed a broader category
     # set — this is how a suite targets a subset of capabilities per row.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     other_category = Category(
         name="other", path=Path("."), items=[], rubric=Rubric(dimensions={"a": 100}), rubric_md="x"
@@ -154,11 +156,11 @@ def test_run_suite_row_categories_override_narrows_dispatch(
     assert set(results[0].category_results) == {"mini_review"}
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_raises_run_saved_but_restore_failed_on_restore_error(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # A restore failure after every row has already completed and been
     # written to disk must not look like a lost run: run_suite raises
@@ -166,7 +168,7 @@ def test_run_suite_raises_run_saved_but_restore_failed_on_restore_error(
     # can still record the run instead of discarding good results.
     mock_isolation.restore_providers.side_effect = BenchmarkError("wedged")
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     with pytest.raises(RunSavedButRestoreFailed) as exc_info:
         run_suite(
@@ -180,11 +182,11 @@ def test_run_suite_raises_run_saved_but_restore_failed_on_restore_error(
     assert len(exc_info.value.results) == 1
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_survives_non_benchmark_error_row_failure_and_still_restores(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # Regression test for the Critical finding: judge_core.JudgeTransportError
     # (raised by row_transport.complete inside judged_runner, and equally
@@ -197,7 +199,7 @@ def test_run_suite_survives_non_benchmark_error_row_failure_and_still_restores(
     # non-BenchmarkError row failure is caught, recorded as a failed
     # RowRunResult, and does not prevent restore or persist.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    mock_run_judged.side_effect = JudgeTransportError("network exploded")
+    mock_generate.side_effect = JudgeTransportError("network exploded")
 
     run_dir, results = run_suite(
         _suite(),
@@ -215,11 +217,11 @@ def test_run_suite_survives_non_benchmark_error_row_failure_and_still_restores(
     assert (run_dir / "metrics.jsonl").is_file()
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_preserves_earlier_category_results_when_a_later_category_fails(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # Regression test: a row with multiple categories must not lose an
     # earlier category's already-computed (and possibly API-billed) judge
@@ -230,7 +232,7 @@ def test_run_suite_preserves_earlier_category_results_when_a_later_category_fail
     # category's result survives, is persisted to disk, and the row is
     # still recorded with an error for the category that actually failed.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    mock_run_judged.side_effect = [
+    mock_generate.side_effect = [
         _fake_category_result(50.0),
         JudgeTransportError("second category exploded"),
     ]
@@ -317,11 +319,11 @@ def test_run_suite_skips_judge_transport_for_coding_only_rows(
     assert results[0].category_results["coding"].pass_at_1 == 0.5
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_sleeps_cooldown_between_rows_in_a_group(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # Suite.cooldown_s is documented (and shipped in eval-sweep.toml as
     # 15.0) as thermal settling between rows; it must actually be honored
@@ -330,7 +332,7 @@ def test_run_suite_sleeps_cooldown_between_rows_in_a_group(
     # was previously parsed but never read: a dead knob that silently
     # ignored the user's config.
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     suite = _suite()
     suite.cooldown_s = 0.25
@@ -385,11 +387,11 @@ def test_run_suite_unmatched_row_filter_raises_and_writes_nothing(mock_isolation
     mock_isolation.isolate_provider.assert_not_called()
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_row_dirs_are_numbered_by_suite_position_not_execution_order(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # On a multi-provider suite (like the shipped eval-sweep.toml) the
     # execution order — sorted by (provider_id, model_id) for isolation
@@ -400,7 +402,7 @@ def test_row_dirs_are_numbered_by_suite_position_not_execution_order(
     # judge disagree about which row an index meant — run --row 2 selected
     # the omlx row while judge --row 2 hit the qwen row's directory.
     mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     run_dir, results = run_suite(
         _multi_provider_suite(),
@@ -414,11 +416,11 @@ def test_row_dirs_are_numbered_by_suite_position_not_execution_order(
     assert sorted(r.row_dir.name for r in results) == ["01--row1", "02--row2", "03--row3"]
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_row_dirs_from_a_filtered_run_keep_suite_indexes(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # A filtered run (--row 1,3) executes only rows 1 and 3; its row dirs
     # must keep the SUITE numbering (01-- and 03--, a gap where 02-- would
@@ -426,7 +428,7 @@ def test_row_dirs_from_a_filtered_run_keep_suite_indexes(
     # directory. Renumbering the filtered selection 01/02 would silently
     # re-point index 2 at the wrong row.
     mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     run_dir, results = run_suite(
         _multi_provider_suite(),
@@ -439,11 +441,11 @@ def test_row_dirs_from_a_filtered_run_keep_suite_indexes(
     assert sorted(r.row_dir.name for r in results) == ["01--row1", "03--row3"]
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_skips_rows_disjoint_from_the_category_selection(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path, capsys
+    mock_isolation, mock_resolve, mock_generate, tmp_path, capsys
 ):
     # A row whose own `categories =` is disjoint from the runner's category
     # set (a valid --category value that row doesn't declare) must be
@@ -454,7 +456,7 @@ def test_run_suite_skips_rows_disjoint_from_the_category_selection(
     # guards were added to prevent. The sibling row that DOES overlap runs
     # normally.
     mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     # Two rows: row1 declares only `coding` (disjoint — skipped), row2 has
     # no categories override (inherits the full set — runs). The single-row
@@ -487,11 +489,11 @@ def test_run_suite_skips_rows_disjoint_from_the_category_selection(
     assert "skipping row 'row1'" in err
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_raises_when_no_row_overlaps_the_category_selection(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # When EVERY selected row is disjoint from the category set, the run must
     # fail loudly (BenchmarkError → CLI exits 1) rather than create a run
@@ -509,11 +511,11 @@ def test_run_suite_raises_when_no_row_overlaps_the_category_selection(
     mock_isolation.isolate_provider.assert_not_called()
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_reisolates_when_the_model_changes_within_a_provider_group(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # Benchmark isolation is one-model-at-a-time even on multi-tenant ollama:
     # two ollama rows with DIFFERENT models must re-isolate between them
@@ -523,7 +525,7 @@ def test_run_suite_reisolates_when_the_model_changes_within_a_provider_group(
     # two models in GPU/RAM, breaking the invariant the isolation call
     # exists to enforce.
     mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     suite = _suite()
     suite.rows = [
@@ -550,11 +552,11 @@ def test_run_suite_reisolates_when_the_model_changes_within_a_provider_group(
     ]
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_direct_model_name_wins_over_registry_model_name_for_warmup(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+    mock_isolation, mock_resolve, mock_generate, tmp_path
 ):
     # An omlx direct-route row names `direct_model` because the daemon serves
     # the repo BASENAME while the registry model_name is org-prefixed; the
@@ -562,7 +564,7 @@ def test_run_suite_direct_model_name_wins_over_registry_model_name_for_warmup(
     # benchmarked weights desynchronize (warmup POSTs a name the daemon
     # resolves differently from what the row's requests actually use).
     mock_resolve.return_value = ("http://localhost:8000/v1", "Qwen3.8-27B-4bit", "ollama")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     suite = _suite()
     suite.routes_direct = {"omlx": DirectRouteConfig(base_url="http://localhost:8000/v1")}
@@ -596,12 +598,10 @@ def test_run_suite_direct_model_name_wins_over_registry_model_name_for_warmup(
     )
 
 
-@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
-def test_run_suite_cloud_rows_skip_isolation(
-    mock_isolation, mock_resolve, mock_run_judged, tmp_path
-):
+def test_run_suite_cloud_rows_skip_isolation(mock_isolation, mock_resolve, mock_generate, tmp_path):
     # A cloud model on a local provider's id (the shipped eval-sweep.toml's
     # `ollama/glm-5.3-flash:cloud` row) reaches a remote API through the
     # LiteLLM proxy — it contends with nothing on this machine, and isolating
@@ -609,7 +609,7 @@ def test_run_suite_cloud_rows_skip_isolation(
     # minutes to no effect. Cloud rows must skip isolation entirely (and
     # still restore nothing they never stopped).
     mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/glm-5.3-flash:cloud", "sk-x")
-    mock_run_judged.return_value = _fake_category_result(50.0)
+    mock_generate.return_value = _fake_category_result(50.0)
 
     suite = _suite()
     suite.rows[0] = RowConfig(
@@ -641,3 +641,169 @@ def test_run_suite_cloud_rows_skip_isolation(
     mock_isolation.restore_providers.assert_not_called()
     assert results[0].category_results["mini_review"].score_100 == 50.0
     assert (run_dir / "01--row1" / "mini_review" / "i1" / "response.txt").is_file()
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_judges_after_restore_not_interleaved_with_generation(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # Design spec step 4 / code-review finding #2: with the reference judge
+    # config (samples=3, OpenRouter) a multi-item category holds the
+    # exclusively-isolated local model pinned in RAM through minutes of
+    # judge round-trips while its provider stays down — judging must run
+    # strictly AFTER restore_providers(), never interleaved with
+    # generation. This pins the call ORDER via a shared call log: every
+    # generation call must precede restore, and every judge call must
+    # follow it.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    # generate_category fake leaves items UNJUDGED; judge_category is the
+    # real function, driven through the fake judge transport below.
+    from modelman.benchmark.eval.judged_runner import ItemResult
+
+    mock_generate.return_value = judged_runner.CategoryRowResult(
+        category="mini_review",
+        items=[ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)],
+        score_100=None,
+    )
+    call_log: list[str] = []
+
+    def _fake_isolate(provider_id, *args, env=None):
+        call_log.append(f"isolate:{provider_id}")
+
+    def _fake_restore():
+        call_log.append("restore")
+
+    mock_isolation.isolate_provider.side_effect = _fake_isolate
+    mock_isolation.restore_providers.side_effect = _fake_restore
+
+    class _LoggingJudgeTransport:
+        def complete(self, prompt, *, temperature):
+            call_log.append("judge")
+            return json.dumps({"scores": {"a": 50}, "total": 50})
+
+    suite = _suite()
+    suite.judge.samples = 1
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: _LoggingJudgeTransport(),
+    )
+    # Generation (isolate → generate) fully precedes restore, and judging
+    # follows restore: no judge call may appear before the restore entry.
+    assert "judge" not in call_log[: call_log.index("restore") + 1]
+    assert call_log[-1] == "judge" or "judge" in call_log[call_log.index("restore") :]
+    assert results[0].category_results["mini_review"].score_100 == 50.0
+    # The final on-disk state carries real scores, not the UNJUDGED snapshot.
+    score = json.loads((run_dir / "01--row1" / "mini_review" / "score.json").read_text())
+    assert score["score_100"] == 50.0
+    judge_json = json.loads(
+        (run_dir / "01--row1" / "mini_review" / "i1" / "judge.json").read_text()
+    )
+    assert judge_json["status"] == "scored"
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_interrupted_judge_phase_leaves_a_rejudge_recoverable_run(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # A judge transport that dies mid-phase (here: raises through
+    # judge_category's per-item retry) must not lose the sweep: the
+    # pre-judge snapshot in the finally block already persisted every
+    # response + run.toml, so the run on disk is complete but UNJUDGED —
+    # exactly the state rejudge_run recovers from. _judge_all records the
+    # failure as judge_fail items (not a raise), so the run finishes with
+    # an honest JUDGE_FAIL/UNJUDGED report instead of crashing.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    from modelman.benchmark.eval.judged_runner import ItemResult
+
+    mock_generate.return_value = judged_runner.CategoryRowResult(
+        category="mini_review",
+        items=[ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)],
+        score_100=None,
+    )
+
+    class _DeadJudgeTransport:
+        def complete(self, prompt, *, temperature):
+            raise JudgeTransportError("judge route dead")
+
+    run_dir, results = run_suite(
+        _suite(),
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: _DeadJudgeTransport(),
+    )
+    # Generation survived: the response is on disk, and judge.json records
+    # the failure (status judge_fail with the transport error) rather than
+    # the item vanishing.
+    row_dir = run_dir / "01--row1"
+    assert (row_dir / "mini_review" / "i1" / "response.txt").is_file()
+    judge_json = json.loads((row_dir / "mini_review" / "i1" / "judge.json").read_text())
+    assert judge_json["status"] == "judge_fail"
+    assert "judge route dead" in judge_json["error"]
+    # The summary calls it what it is.
+    assert "JUDGE_FAIL" in (run_dir / "summary.md").read_text()
+    # run.toml exists even though judging failed — rejudge recovery needs it.
+    assert (run_dir / "run.toml").is_file()
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_rejudge_transport_failure_is_contained_per_category(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # _judge_all must contain a judge_category failure to the category it
+    # happened in: a second category with a healthy transport still gets
+    # scored, rather than one dead judge round-trip aborting the whole
+    # scoring phase.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    from modelman.benchmark.eval.judged_runner import ItemResult
+
+    def _gen(category, transport, *, temperature):
+        return judged_runner.CategoryRowResult(
+            category=category.name,
+            items=[ItemResult(item_id="i1", response_text="r", judge=None, score_100=None)],
+            score_100=None,
+        )
+
+    mock_generate.side_effect = _gen
+
+    class _FlakyJudgeTransport:
+        """Dies on the SECOND category judged (one item each, so call 2 is
+        the other_review category's) so per-category containment is
+        observable without depending on prompt content."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, prompt, *, temperature):
+            self.calls += 1
+            if self.calls == 2:
+                raise JudgeTransportError("route dead on second category")
+            return json.dumps({"scores": {"a": 70}, "total": 70})
+
+    other_category = Category(
+        name="other_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="p", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+    run_dir, results = run_suite(
+        _suite(),
+        _registry(),
+        [_mini_review_category(), other_category],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: _FlakyJudgeTransport(),
+    )
+    # The healthy category scored; the dead one is honestly judge_fail.
+    assert results[0].category_results["mini_review"].score_100 == 70.0
+    assert results[0].category_results["other_review"].score_100 is None
+    assert "JUDGE_FAIL" in (run_dir / "summary.md").read_text()

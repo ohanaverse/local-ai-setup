@@ -35,7 +35,16 @@ def _cell(value: object) -> str:
         # nonexistent judge problem.
         return "EVALPLUS_ERROR" if value.error else "N/A"
     if isinstance(value, CategoryRowResult):
-        return f"{value.score_100:.1f}" if value.score_100 is not None else "JUDGE_FAIL"
+        if value.score_100 is not None:
+            return f"{value.score_100:.1f}"
+        # Distinguish "never judged" (the judge phase was interrupted —
+        # recoverable via `eval judge --latest`, which re-judges from the
+        # persisted response.txt) from "judged and the judge failed"
+        # (JUDGE_FAIL — retrying is the only fix, and re-judging may just
+        # fail again).
+        if any(item.judge is None for item in value.items):
+            return "UNJUDGED"
+        return "JUDGE_FAIL"
     return "N/A"
 
 
@@ -99,7 +108,9 @@ def _anomalies(results: list, category_names: list[str]) -> str:
             value = r.category_results.get(name)
             if isinstance(value, CategoryRowResult):
                 for item in value.items:
-                    if item.judge.status == "judge_fail":
+                    if item.judge is None:
+                        lines.append(f"| {r.row.label} | UNJUDGED ({name}/{item.item_id}) |")
+                    elif item.judge.status == "judge_fail":
                         lines.append(f"| {r.row.label} | JUDGE_FAIL ({name}/{item.item_id}) |")
             if isinstance(value, CodingResult) and value.error:
                 lines.append(f"| {r.row.label} | evalplus error ({name}): {value.error[:150]} |")
@@ -146,9 +157,15 @@ def write_row_artifacts(result) -> None:
                 item_dir = cat_dir / item_result.item_id
                 item_dir.mkdir(parents=True, exist_ok=True)
                 (item_dir / "response.txt").write_text(item_result.response_text, encoding="utf-8")
-                (item_dir / "judge.json").write_text(
-                    json.dumps(asdict(item_result.judge), indent=2), encoding="utf-8"
-                )
+                # judge.json only exists once the item was actually judged;
+                # between the two persist passes (responses under
+                # isolation's finally, scores after) an unjudged item has
+                # its response on disk and nothing else — exactly the state
+                # rejudge_run recovers from.
+                if item_result.judge is not None:
+                    (item_dir / "judge.json").write_text(
+                        json.dumps(asdict(item_result.judge), indent=2), encoding="utf-8"
+                    )
             (cat_dir / "score.json").write_text(
                 json.dumps({"score_100": cat_result.score_100}), encoding="utf-8"
             )

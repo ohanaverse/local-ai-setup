@@ -248,13 +248,74 @@ class _RowCategoryFailed(Exception):
         self.partial_results = partial_results
 
 
+def _judge_all(
+    results: list[RowRunResult],
+    categories: list[Category],
+    judge_transport: JudgeTransport,
+    *,
+    judge_temperature: float,
+    judge_samples: int,
+    judge_max_attempts: int,
+) -> None:
+    """Phase 2. Runs after restore_providers(): judging is a cloud call and
+    must not hold the exclusively-isolated local model in RAM while it
+    works (agent/runner.py's _judge_all ordering rule, made explicit in
+    the design spec's step 4). Judge failures here are recorded per-item
+    as judge_fail outcomes — never raised — so one flaky judge round-trip
+    degrades that item to N/A instead of aborting the sweep; every row's
+    generation is already safe on disk from the finally block above."""
+    by_name = {c.name: c for c in categories if c.rubric is not None}
+    for result in results:
+        # NOT skipped for error rows: a _RowCategoryFailed row keeps its
+        # completed categories in category_results, and "a failure never
+        # costs already-computed results" extends to judging them — only
+        # the failed category is absent from the dict. (agent/runner.py's
+        # _judge_all skips error rows, but there an error means no diff
+        # exists to judge; here the partial responses are real.)
+        for name, cat_result in result.category_results.items():
+            category = by_name.get(name)
+            if not isinstance(cat_result, judged_runner.CategoryRowResult) or category is None:
+                continue
+            try:
+                judged_runner.judge_category(
+                    category,
+                    cat_result,
+                    judge_transport,
+                    judge_temperature=judge_temperature,
+                    judge_samples=judge_samples,
+                    judge_max_attempts=judge_max_attempts,
+                )
+            except Exception as exc:
+                # A judge transport that raises through judge_category's
+                # retry loop (e.g. JudgeTransportError after its internal
+                # retry) marks the whole category judge_fail — this keeps
+                # the sweep alive instead of one dead route aborting every
+                # remaining row's scoring.
+                cat_result.score_100 = None
+                for item_result in cat_result.items:
+                    if item_result.judge is None:
+                        item_result.judge = JudgeOutcome(
+                            status="judge_fail",
+                            samples=[],
+                            combined=None,
+                            attempts_used=0,
+                            error=str(exc),
+                        )
+                print(
+                    f"warning: judge failed for {result.row.label}/{name}: {exc}", file=sys.stderr
+                )
+
+
 def _run_row(
     row: RowConfig,
     categories: list[Category],
     suite: Suite,
     registry: Registry,
-    judge_transport: JudgeTransport | None,
 ) -> dict[str, object]:
+    """Phase 1 for one row (under isolation): generation only, no judging.
+    Judged categories come back UNJUDGED (judge=None) — run_suite scores
+    them after restore_providers(), per the design spec's
+    judge-after-generation ordering rule."""
     model = registry.model(row.model_id)
     base_url, model_name, api_key = resolve_row_endpoint(row, model.model_name, suite.routes_direct)
     row_transport = LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=model_name)
@@ -275,18 +336,8 @@ def _run_row(
                     limit=limit,
                 )
             else:
-                # run_suite only builds the judge transport when at least one
-                # selected row runs a judged category, so None here is
-                # unreachable — an assertion, not a runtime branch.
-                assert judge_transport is not None
-                results[category.name] = judged_runner.run_judged_category(
-                    category,
-                    row_transport,
-                    judge_transport,
-                    temperature=0.0,
-                    judge_temperature=suite.judge.temperature,
-                    judge_samples=suite.judge.samples,
-                    judge_max_attempts=suite.judge.max_attempts,
+                results[category.name] = judged_runner.generate_category(
+                    category, row_transport, temperature=0.0
                 )
         except Exception as exc:
             raise _RowCategoryFailed(str(exc), partial_results=results) from exc
@@ -342,19 +393,27 @@ def run_suite(
     run_dir = results_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    judge_transport: JudgeTransport | None = None
-    if needs_judge:
-        judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
-
     results: list[RowRunResult] = []
     isolated_any = False
     restore_error: str | None = None
+    # Build the judge transport BEFORE generation (it was previously built
+    # lazily right before _judge_all): its factory hard-fails on a missing
+    # LiteLLM/OpenRouter key, and with judging now strictly post-restore a
+    # lazy build would surface that only after paying for the whole
+    # generation sweep. LiteLLMJudgeTransport.__init__ only stores strings
+    # — no connection is made until the first judge call, well after
+    # restore — so building early restores the fail-fast without
+    # reintroducing the judge-before-restore ordering bug.
+    judge_transport: JudgeTransport | None = None
+    if needs_judge:
+        judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
     # Everything from isolation through the row loop is wrapped in a
     # try/finally: a failed restore, or any per-row failure that somehow
     # isn't caught by the narrower try/except below, must never skip the
-    # persist step and lose a whole sweep's already-collected results.
-    # Matches the design spec's "restore providers in a finally block...
-    # a failed restore never costs already-collected results" requirement.
+    # restore+persist step and lose a whole sweep's already-collected
+    # results. Matches the design spec's "restore providers in a finally
+    # block... a failed restore never costs already-collected results"
+    # requirement.
     try:
         for provider_id, group in itertools.groupby(
             sorted(rows, key=lambda r: (r.provider_id, r.model_id)), key=lambda r: r.provider_id
@@ -406,15 +465,15 @@ def run_suite(
 
                 row_dir = _row_dir(run_dir, _row_index(row), row)
                 try:
-                    category_results = _run_row(row, categories, suite, registry, judge_transport)
+                    category_results = _run_row(row, categories, suite, registry)
                     results.append(
                         RowRunResult(row=row, row_dir=row_dir, category_results=category_results)
                     )
                 except _RowCategoryFailed as exc3:
                     # A category raised partway through the row (e.g. EvalPlus's
                     # 1800s subprocess timeout, or judge_core.JudgeTransportError
-                    # from judged_runner) — _run_row already collected whatever
-                    # categories finished first; keep them (report.py/
+                    # from generate_category) — _run_row already collected
+                    # whatever categories finished first; keep them (report.py/
                     # write_row_artifacts persists both the completed categories
                     # and the error) instead of discarding a row's real, possibly
                     # API-billed, work just because a later category failed.
@@ -441,6 +500,13 @@ def run_suite(
             except BenchmarkError as exc:
                 restore_error = str(exc)
 
+        # Persist the full run snapshot BEFORE judging (agent/runner.py's
+        # ordering): a crash or interrupt during the judge phase still
+        # leaves every response on disk — judged categories render as
+        # UNJUDGED, and run.toml (which rejudge_run reads its judge config
+        # back from) exists, so `eval judge --run-id <id>` recovers the run
+        # without regenerating anything. The post-judging persist below
+        # rewrites the score-dependent artifacts with real scores.
         for result in results:
             report.write_row_artifacts(result)
         (run_dir / "summary.md").write_text(
@@ -449,6 +515,38 @@ def run_suite(
         )
         report.write_metrics_jsonl(run_dir / "metrics.jsonl", results)
         report.write_run_toml(run_dir / "run.toml", suite, git_sha=_git_sha())
+
+    # Phase 2 — judging, strictly AFTER restore_providers() (design spec
+    # step 4): judge calls are cloud round-trips, and with the reference
+    # judge config (samples=3, OpenRouter) a multi-item category holds the
+    # exclusively-isolated local model pinned in RAM through minutes of
+    # judge round-trips while its provider stays down/locked — the exact
+    # interleaving the spec forbids. _run_row already left every judged
+    # category UNJUDGED; score them now, in place, with the transport
+    # built before generation (see the pre-generation comment above).
+    if needs_judge:
+        assert judge_transport is not None
+        _judge_all(
+            results,
+            categories,
+            judge_transport,
+            judge_temperature=suite.judge.temperature,
+            judge_samples=suite.judge.samples,
+            judge_max_attempts=suite.judge.max_attempts,
+        )
+        # Rewrite the score-dependent artifacts with real scores (the
+        # finally block's pre-judge snapshot wrote them as UNJUDGED). If
+        # the judge phase raised, this rewrite is skipped — but the
+        # finally block's snapshot (responses + UNJUDGED markers +
+        # run.toml) is already a complete, rejudge-recoverable run, so the
+        # exception propagates with nothing lost.
+        for result in results:
+            report.write_row_artifacts(result)
+        (run_dir / "summary.md").write_text(
+            report.render_summary(run_id, results, registry, [c.name for c in categories]),
+            encoding="utf-8",
+        )
+        report.write_metrics_jsonl(run_dir / "metrics.jsonl", results)
 
     if restore_error is not None:
         raise RunSavedButRestoreFailed(
@@ -560,9 +658,22 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
     for item_dir in sorted(p for p in category_dir.iterdir() if p.is_dir()):
         response_path = item_dir / "response.txt"
         judge_path = item_dir / "judge.json"
-        if not response_path.is_file() or not judge_path.is_file():
+        if not response_path.is_file():
             continue
         response_text = response_path.read_text(encoding="utf-8")
+        # An item directory with response.txt but no judge.json is an
+        # UNJUDGED item — a run whose judge phase was interrupted (see
+        # run_suite's pre-judge snapshot) or an item whose judge.json was
+        # removed. It still reconstructs (as judge=None) so summary.md
+        # shows UNJUDGED rather than the row vanishing; rejudge_run will
+        # score it from the response on this same pass.
+        if not judge_path.is_file():
+            item_results.append(
+                judged_runner.ItemResult(
+                    item_id=item_dir.name, response_text=response_text, judge=None, score_100=None
+                )
+            )
+            continue
         judge_data = _load_json_artifact(judge_path)
         if judge_data is None:
             continue
