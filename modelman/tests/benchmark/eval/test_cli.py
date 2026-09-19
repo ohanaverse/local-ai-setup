@@ -377,3 +377,15 @@ def test_run_cmd_rejects_row_filter_matching_nothing(mock_load_registry, tmp_pat
     assert result.exit_code == 1
     assert "matched no suite rows" in result.output
     assert "no-such-row" in result.output
+
+
+def test_list_categories_cmd_malformed_category_is_a_clean_error(tmp_path):
+    # A category whose items.toml is malformed raises BenchmarkError inside
+    # list_categories; the CLI must print `error: ...` and exit 1 like every
+    # other malformation, not dump a Python traceback.
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "items.toml").write_text("not [valid toml", encoding="utf-8")
+    result = runner.invoke(eval_app, ["list-categories", "--root", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "error:" in result.output
+    assert "Traceback" not in result.output

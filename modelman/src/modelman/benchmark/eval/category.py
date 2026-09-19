@@ -50,6 +50,14 @@ def _load_coding_category(name: str, path: Path, items_raw: dict[str, Any]) -> C
     )
 
 
+def _load_toml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise BenchmarkError(f"malformed TOML in {path}: {exc}") from exc
+
+
 def load_category(path: Path) -> Category:
     path = Path(path)
     name = path.name
@@ -59,8 +67,7 @@ def load_category(path: Path) -> Category:
     items_path = path / "items.toml"
     if not items_path.is_file():
         raise BenchmarkError(f"category {path} missing items.toml")
-    with items_path.open("rb") as f:
-        items_raw = tomllib.load(f)
+    items_raw = _load_toml(items_path)
 
     if name == CODING_CATEGORY:
         return _load_coding_category(name, path, items_raw)
@@ -75,8 +82,7 @@ def load_category(path: Path) -> Category:
     if missing:
         raise BenchmarkError(f"category {path} missing required entries: {', '.join(missing)}")
 
-    with rubric_toml_path.open("rb") as f:
-        rubric_raw = tomllib.load(f)
+    rubric_raw = _load_toml(rubric_toml_path)
     dimensions = rubric_raw.get("dimensions", {})
     if not dimensions:
         raise BenchmarkError(f"category {path} rubric.toml has no [dimensions]")

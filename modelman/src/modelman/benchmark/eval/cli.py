@@ -27,11 +27,21 @@ DEFAULT_CATEGORIES_ROOT = Path("benchmarks/tasks/eval")
 DEFAULT_SUITES_DIR = Path("benchmarks/suites")
 
 
+def _load_all_categories(root: Path) -> list:
+    """list_categories with a malformed category reported as a clean
+    `error: ...` / exit 1 instead of a raw traceback."""
+    try:
+        return list_categories(root)
+    except BenchmarkError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
 @eval_app.command("list-categories")
 def list_categories_cmd(
     root: Path = typer.Option(DEFAULT_CATEGORIES_ROOT, "--root"),  # noqa: B008
 ) -> None:
-    for category in list_categories(root):
+    for category in _load_all_categories(root):
         count = len(category.items) if category.rubric is not None else 0
         typer.echo(f"{category.name}  (items: {count})")
 
@@ -66,7 +76,7 @@ def run_cmd(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
-    all_categories = list_categories(root)
+    all_categories = _load_all_categories(root)
     categories = all_categories
     if category:
         wanted = set(category)
@@ -223,7 +233,7 @@ def judge_cmd(
     else:
         target_dir = results_dir / str(run_id)
 
-    categories = list_categories(root)
+    categories = _load_all_categories(root)
     registry = load_registry()
     try:
         outcomes = rejudge_run(
