@@ -48,8 +48,9 @@ func (r *Rotation) Last() (string, bool) {
 	return id, true
 }
 
-// Record writes modelID as the new last-launched model and records a usage event.
-func (r *Rotation) Record(modelID string) error {
+// RecordFor writes modelID as the new last-launched model and records a usage
+// event attributed to the agent.
+func (r *Rotation) RecordFor(agent, modelID string) error {
 	path := r.statePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -58,9 +59,12 @@ func (r *Rotation) Record(modelID string) error {
 		return err
 	}
 	// Usage recording is best-effort; do not fail rotation write if usage fails.
-	_ = r.store.Record(modelID)
+	_ = r.store.RecordFor(agent, modelID)
 	return nil
 }
+
+// Record is RecordFor with no agent attribution.
+func (r *Rotation) Record(modelID string) error { return r.RecordFor("", modelID) }
 
 // cfgHasModels reports whether cfg is safe to rotate against, i.e. non-nil
 // with at least one model. Shared by Next and NextFromEligible so the guard
