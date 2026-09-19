@@ -54,3 +54,39 @@ def test_list_categories_finds_every_subdirectory():
     # directory (judged and coding alike), or rows silently run nothing.
     names = {c.name for c in list_categories(FIXTURE_ROOT)}
     assert names == {"mini_review", "coding"}
+
+
+def _write_category(tmp_path: Path, rubric: str, items: str) -> Path:
+    root = tmp_path / "cat"
+    root.mkdir()
+    (root / "rubric.toml").write_text(rubric, encoding="utf-8")
+    (root / "rubric.md").write_text("rubric", encoding="utf-8")
+    (root / "items.toml").write_text(items, encoding="utf-8")
+    return root
+
+
+GOOD_ITEMS = '[[items]]\nid = "a"\nprompt = "p"\n'
+
+
+def test_load_category_rejects_non_positive_integer_weights(tmp_path):
+    # Float weights (33.3/33.3/33.4 sum to 99.99999999999999), negative
+    # weights that offset to 100, and string weights must all be clean
+    # BenchmarkErrors, not silent acceptance or a bare TypeError.
+    for dims in (
+        "a = 33.3\nb = 33.3\nc = 33.4",
+        "a = 150\nb = -50",
+        'a = "100"',
+    ):
+        sub = tmp_path / f"c{abs(hash(dims))}"
+        sub.mkdir()
+        root = _write_category(sub, f"[dimensions]\n{dims}\n", GOOD_ITEMS)
+        with pytest.raises(BenchmarkError, match="positive integers"):
+            load_category(root)
+
+
+def test_load_category_rejects_items_missing_id_or_prompt(tmp_path):
+    # An [[items]] entry without `id` or `prompt` used to raise a KeyError
+    # traceback from the CLI; it must be a BenchmarkError naming the entry.
+    root = _write_category(tmp_path, "[dimensions]\na = 100\n", '[[items]]\nid = "a"\n')
+    with pytest.raises(BenchmarkError, match=r"#1 needs string `id` and `prompt`"):
+        load_category(root)

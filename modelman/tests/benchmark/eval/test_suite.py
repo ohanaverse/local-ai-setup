@@ -250,3 +250,28 @@ def test_preflight_judge_route_openrouter_ignored_for_coding_only_selection(tmp_
         categories=["coding"],
     )
     preflight(suite, _registry(), rows=[coding_only], judge_route_active=False)
+
+
+def test_load_suite_wraps_file_and_toml_errors_in_benchmark_error(tmp_path):
+    # A mistyped --suite path or malformed TOML must surface as the clean
+    # one-line BenchmarkError the CLI catches, not a FileNotFoundError /
+    # TOMLDecodeError traceback.
+    with pytest.raises(BenchmarkError, match="cannot read suite"):
+        load_suite(tmp_path / "missing.toml", _registry())
+    with pytest.raises(BenchmarkError, match="malformed TOML"):
+        load_suite(_write(tmp_path, "name = [unterminated"), _registry())
+
+
+def test_load_suite_rejects_wrongly_typed_fields_with_clean_errors(tmp_path):
+    # Wrong-typed values used to raise bare TypeError/KeyError (a string
+    # `samples` failing `"3" < 1`, a route block without base_url) or be
+    # silently mis-read (a string `categories` iterated per character);
+    # each must be a BenchmarkError naming the offending field.
+    bad_bodies = {
+        "samples": SUITE_BODY.replace("samples = 1", 'samples = "3"'),
+        "base_url": SUITE_BODY.replace('base_url = "http://localhost:8000/v1"', "x = 1"),
+        "categories": SUITE_BODY.replace('categories = ["coding"]', 'categories = "reasoning"'),
+    }
+    for key, body in bad_bodies.items():
+        with pytest.raises(BenchmarkError, match=key):
+            load_suite(_write(tmp_path, body), _registry())

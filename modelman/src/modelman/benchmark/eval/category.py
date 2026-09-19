@@ -86,18 +86,46 @@ def load_category(path: Path) -> Category:
     dimensions = rubric_raw.get("dimensions", {})
     if not dimensions:
         raise BenchmarkError(f"category {path} rubric.toml has no [dimensions]")
+    # Weights must be positive integers: floats such as 33.3/33.3/33.4 sum
+    # to 99.99999999999999, negative weights can offset each other to 100,
+    # and a string weight would raise a bare TypeError from sum().
+    if not isinstance(dimensions, dict):
+        raise BenchmarkError(f"category {path} rubric.toml [dimensions] must be a table")
+    bad_weights = {
+        dim: weight
+        for dim, weight in dimensions.items()
+        if isinstance(weight, bool) or not isinstance(weight, int) or weight <= 0
+    }
+    if bad_weights:
+        raise BenchmarkError(
+            f"category {path} rubric dimensions must be positive integers, got {bad_weights!r}"
+        )
     total_points = sum(dimensions.values())
     if total_points != 100:
         raise BenchmarkError(
             f"category {path} rubric dimensions sum to {total_points}, must sum to 100"
         )
     verdicts = rubric_raw.get("verdicts")
+    if verdicts is not None and (
+        not isinstance(verdicts, list) or not all(isinstance(v, str) for v in verdicts)
+    ):
+        raise BenchmarkError(f"category {path} rubric.toml verdicts must be a list of strings")
     rubric = Rubric(dimensions=dict(dimensions), verdicts=frozenset(verdicts) if verdicts else None)
 
-    items = [
-        Item(id=raw["id"], prompt=raw["prompt"], meta=raw.get("meta", {}))
-        for raw in items_raw.get("items", [])
-    ]
+    items: list[Item] = []
+    for index, raw in enumerate(items_raw.get("items", []), start=1):
+        if (
+            not isinstance(raw, dict)
+            or not isinstance(raw.get("id"), str)
+            or not isinstance(raw.get("prompt"), str)
+        ):
+            raise BenchmarkError(
+                f"category {path} items.toml [[items]] #{index} needs string `id` and `prompt`"
+            )
+        meta = raw.get("meta", {})
+        if not isinstance(meta, dict):
+            raise BenchmarkError(f"category {path} items.toml [[items]] #{index} meta must be a table")
+        items.append(Item(id=raw["id"], prompt=raw["prompt"], meta=meta))
     if not items:
         raise BenchmarkError(f"category {path} items.toml has no [[items]]")
     # Ids become directory names and lookup keys: a duplicate silently

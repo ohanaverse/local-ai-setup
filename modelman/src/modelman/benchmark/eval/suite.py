@@ -94,6 +94,18 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
     rows: list[RowConfig] = []
     seen_labels: set[str] = set()
     for index, raw in enumerate(raw_rows, start=1):
+        if not isinstance(raw, dict):
+            raise BenchmarkError(f"suite row {index} must be a table")
+        row_categories = raw.get("categories")
+        if row_categories is not None and (
+            not isinstance(row_categories, list)
+            or not all(isinstance(c, str) for c in row_categories)
+        ):
+            # A bare string would otherwise be iterated character by
+            # character and reported as unknown categories "r, e, a, ...".
+            raise BenchmarkError(
+                f"suite row {index} categories must be a list of strings, got {row_categories!r}"
+            )
         model_id = raw.get("model")
         route = raw.get("route")
         if not model_id or not route:
@@ -154,8 +166,13 @@ def _expand_rows(raw_rows: list[dict], registry: Registry) -> list[RowConfig]:
 
 def load_suite(path: Path, registry: Registry) -> Suite:
     path = Path(path)
-    with path.open("rb") as f:
-        raw = tomllib.load(f)
+    try:
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+    except OSError as exc:
+        raise BenchmarkError(f"cannot read suite {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise BenchmarkError(f"malformed TOML in suite {path}: {exc}") from exc
 
     # Missing top-level keys raise BenchmarkError, not KeyError: every other
     # suite malformation (unknown model, duplicate label, unknown provider)
@@ -185,6 +202,15 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         max_attempts=judge_raw.get("max_attempts", 2),
         route=judge_route,
     )
+    # Type-check before the >= 1 comparison: `samples = "3"` would otherwise
+    # raise a bare TypeError from `"3" < 1`.
+    for key, value in (("samples", judge.samples), ("max_attempts", judge.max_attempts)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise BenchmarkError(f"suite {path.name} [judge] {key} must be an integer, got {value!r}")
+    if not isinstance(judge.temperature, int | float) or isinstance(judge.temperature, bool):
+        raise BenchmarkError(
+            f"suite {path.name} [judge] temperature must be a number, got {judge.temperature!r}"
+        )
     if judge.samples < 1 or judge.max_attempts < 1:
         raise BenchmarkError(
             f"suite {path.name} [judge] samples and max_attempts must be >= 1, got "
@@ -192,10 +218,14 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         )
     coding_raw = raw.get("coding", {})
     coding = CodingConfig(dataset=coding_raw.get("dataset"), limit=coding_raw.get("limit"))
-    routes_direct = {
-        provider_id: DirectRouteConfig(base_url=cfg["base_url"])
-        for provider_id, cfg in raw.get("routes", {}).get("direct", {}).items()
-    }
+    routes_direct: dict[str, DirectRouteConfig] = {}
+    for provider_id, cfg in raw.get("routes", {}).get("direct", {}).items():
+        if not isinstance(cfg, dict) or not cfg.get("base_url"):
+            raise BenchmarkError(
+                f"suite {path.name} [routes.direct.{provider_id}] is missing the required "
+                "base_url key"
+            )
+        routes_direct[provider_id] = DirectRouteConfig(base_url=cfg["base_url"])
     return Suite(
         name=name,
         cooldown_s=raw.get("cooldown_s", 15.0),
