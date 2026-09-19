@@ -266,3 +266,58 @@ func TestExpandHomeLeavesTildeUsernameLiteral(t *testing.T) {
 		t.Errorf("expandHome(~ops/...) = (%q, %v), want (literal, nil)", got, err)
 	}
 }
+
+// TestLoad_RegistryReadsProviderModelDirAndBaseURL verifies wt now decodes a
+// provider's model_dir and auth.base_url from registry.toml. The local model
+// inventory scans model_dir for on-disk models and probes base_url, so
+// dropping either would silently point discovery at the wrong place.
+func TestLoad_RegistryReadsProviderModelDirAndBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	writeRegistry(t, dir, `
+[[providers]]
+id = "mtplx"
+name = "MTPLX"
+location = "local"
+model_dir = "~/.mtplx/models"
+
+[providers.auth]
+type = "none"
+base_url = "http://localhost:8003/v1"
+`)
+	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.ProviderByID("mtplx")
+	if p == nil {
+		t.Fatal("mtplx provider not loaded")
+	}
+	if p.ModelDir != "~/.mtplx/models" {
+		t.Errorf("ModelDir = %q, want %q", p.ModelDir, "~/.mtplx/models")
+	}
+	if p.Auth.BaseURL != "http://localhost:8003/v1" {
+		t.Errorf("Auth.BaseURL = %q", p.Auth.BaseURL)
+	}
+}
+
+// TestExpandHomeExported verifies the exported ExpandHome expands a leading
+// ~/ against $HOME and leaves other paths alone — the inventory relies on it
+// to turn a registry model_dir like "~/.omlx/models" into a real directory.
+func TestExpandHomeExported(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := ExpandHome("~/a/b")
+	if err != nil || got != filepath.Join(home, "a/b") {
+		t.Errorf("ExpandHome(~/a/b) = %q, %v", got, err)
+	}
+	if got, _ := ExpandHome("/abs/path"); got != "/abs/path" {
+		t.Errorf("ExpandHome(/abs/path) = %q", got)
+	}
+}
