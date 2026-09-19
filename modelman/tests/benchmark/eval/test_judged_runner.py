@@ -98,3 +98,31 @@ def test_run_judged_category_ignores_judge_fail_items_in_the_mean():
     assert result.items[1].judge.status == "judge_fail"
     assert result.items[1].score_100 is None
     assert result.score_100 == 80.0
+
+
+def test_build_judge_prompt_truncates_oversized_responses():
+    # A looping model can emit 100KB+ on a single item; at judge samples=3
+    # that payload is sent to the paid judge three times, ballooning spend
+    # and risking the transport's 120s timeout (which would score the item
+    # judge_fail/N/A instead). The judge prompt must cap the embedded
+    # response, with an explicit marker so the judge knows the tail was
+    # cut — the agent benchmark's anonymize_diff applies the same 20k-char
+    # cap to its judged payloads.
+    from modelman.benchmark.eval.judged_runner import (
+        MAX_JUDGE_RESPONSE_CHARS,
+        _build_judge_prompt,
+    )
+
+    huge = "x" * (MAX_JUDGE_RESPONSE_CHARS + 5000)
+    prompt = _build_judge_prompt(CATEGORY.items[0], CATEGORY, huge)
+    # "x" appears nowhere else in this prompt (rubric, item prompt, meta
+    # note are all x-free), so the count pins exactly how much of the
+    # response survived the cap — 20k, not the full 25k.
+    assert prompt.count("x") == MAX_JUDGE_RESPONSE_CHARS
+    # The cut is marked, not silent: a judge shown an unmarked mid-thought
+    # ending would score the response as incomplete rather than truncated.
+    assert "[TRUNCATED]" in prompt
+    # A short response passes through verbatim, marker-free.
+    short = _build_judge_prompt(CATEGORY.items[0], CATEGORY, "short response")
+    assert "short response" in short
+    assert "[TRUNCATED]" not in short

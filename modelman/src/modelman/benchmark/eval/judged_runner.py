@@ -10,6 +10,13 @@ from statistics import mean
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.judge_core import JudgeOutcome, JudgeTransport, judge_row
 
+# Cap on the model response embedded in a judge prompt, matching
+# benchmark/agent/judge.py's anonymize_diff max_chars: a looping model can
+# emit 100KB+ on a reasoning item, and at judge samples=3 that payload is
+# sent to the (paid) judge three times — ballooning spend and risking the
+# transport's 120s timeout, which turns into judge_fail/N/A for the item.
+MAX_JUDGE_RESPONSE_CHARS = 20000
+
 
 @dataclass
 class ItemResult:
@@ -31,6 +38,11 @@ def _build_judge_prompt(item: Item, category: Category, response_text: str) -> s
     meta_section = (
         f"\n\n## Reference notes (never shown to the model)\n{meta_note}" if meta_note else ""
     )
+    if len(response_text) > MAX_JUDGE_RESPONSE_CHARS:
+        # Truncate with an explicit marker (agent/judge.py's convention) so
+        # the judge knows the tail was cut, rather than silently scoring a
+        # response that appears to end mid-thought.
+        response_text = response_text[:MAX_JUDGE_RESPONSE_CHARS] + "\n[TRUNCATED]\n"
     return (
         f"{category.rubric_md}\n\n"
         f"## Prompt given to the model\n{item.prompt}\n\n"
