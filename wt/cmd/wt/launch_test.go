@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // TestBuildLaunchUnknownAgent asserts that an unregistered agent returns a
@@ -692,6 +693,49 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 	got := store.Counts([]string{"claude/opus"})
 	if got["claude/opus"] != 1 {
 		t.Fatalf("refcount Counts = %d, want 1", got["claude/opus"])
+	}
+}
+
+// TestLaunchFilteredRecordsUsageForAgent verifies the non-TUI launch path
+// records a usage event tagged with the launching agent, so per-pair 1d/7d/30d
+// counts include launches made through -W/--cwd.
+func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("MODELMAN_REGISTRY", "")
+	worktree := t.TempDir()
+
+	binDir := t.TempDir()
+	claudeBin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude"}},
+		},
+	}
+	cfg.ExposeAllForTest()
+
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+
+	store := usage.NewStoreAt(filepath.Join(dir, "agent-wt"))
+	if got := store.CountsForAgent("claude", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 1 {
+		t.Fatalf("claude pair 30d = %d, want 1", got.ThirtyDay)
+	}
+	if got := store.CountsForAgent("codex", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 0 {
+		t.Fatalf("codex pair 30d = %d, want 0", got.ThirtyDay)
 	}
 }
 

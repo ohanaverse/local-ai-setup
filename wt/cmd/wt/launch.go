@@ -173,7 +173,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if berr != nil {
 		return berr
 	}
-	if rerr := rotation.New().Record(m.ID); rerr != nil {
+	if rerr := rotation.New().RecordFor(agent, m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
 	}
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {

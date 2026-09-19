@@ -405,3 +405,83 @@ func TestFamilyAggregationMissingFileIsEmpty(t *testing.T) {
 		t.Fatalf("family aggregation = %v, want empty", got)
 	}
 }
+
+// TestRecordForScopesCountsToAgent verifies CountsForAgent counts only
+// events recorded for that agent, while Counts still totals every agent
+// (and legacy agent-less lines). This is what lets the selector show
+// per-pair launch counts without losing model-level totals.
+func TestRecordForScopesCountsToAgent(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	for _, rec := range [][2]string{{"claude", "m"}, {"claude", "m"}, {"codex", "m"}, {"", "m"}} {
+		if err := store.RecordFor(rec[0], rec[1]); err != nil {
+			t.Fatalf("RecordFor(%q): %v", rec[0], err)
+		}
+	}
+
+	if got := store.CountsForAgent("claude", []string{"m"})["m"]; got != (UsageCounts{2, 2, 2}) {
+		t.Errorf("claude pair = %+v, want {2 2 2}", got)
+	}
+	if got := store.CountsForAgent("codex", []string{"m"})["m"]; got != (UsageCounts{1, 1, 1}) {
+		t.Errorf("codex pair = %+v, want {1 1 1}", got)
+	}
+	if got := store.Counts([]string{"m"})["m"]; got != (UsageCounts{4, 4, 4}) {
+		t.Errorf("model-level = %+v, want {4 4 4} (all agents + agentless)", got)
+	}
+}
+
+// TestCountsForAgentIgnoresLegacyLinesAndEmptyAgent verifies a usage line
+// written before the agent field existed (and an empty agent argument)
+// never count toward any pair. Guards against inflating a pair's numbers
+// with history that cannot be attributed to it.
+func TestCountsForAgentIgnoresLegacyLinesAndEmptyAgent(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	fixed := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return fixed }
+	defer func() { now = time.Now }()
+
+	legacy := `{"model_id":"m","timestamp":"2026-09-19T11:00:00Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "usage.jsonl"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := store.CountsForAgent("claude", []string{"m"})["m"]; got != (UsageCounts{}) {
+		t.Errorf("claude = %+v, want zero (legacy line has no agent)", got)
+	}
+	if got := store.CountsForAgent("", []string{"m"})["m"]; got != (UsageCounts{}) {
+		t.Errorf("empty agent = %+v, want zero", got)
+	}
+	if got := store.Counts([]string{"m"})["m"]; got != (UsageCounts{1, 1, 1}) {
+		t.Errorf("model-level = %+v, want {1 1 1} (legacy still counts)", got)
+	}
+}
+
+// TestRecordForUnregisteredModelAndPrune verifies a model id that exists in
+// no registry (a discovered on-disk model) records, reads back, and is
+// pruned at the 30-day window like any other id — the store must never
+// depend on registry membership.
+func TestRecordForUnregisteredModelAndPrune(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	const id = "omlx/Qwen3.8-27B-4bit"
+
+	old := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	now = func() time.Time { return old }
+	defer func() { now = time.Now }()
+	if err := store.RecordFor("claude", id); err != nil {
+		t.Fatal(err)
+	}
+	fresh := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) // 49 days later
+	now = func() time.Time { return fresh }
+	if err := store.RecordFor("claude", id); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := store.CountsForAgent("claude", []string{id})[id]; got != (UsageCounts{1, 1, 1}) {
+		t.Errorf("counts = %+v, want {1 1 1} (49-day-old event pruned)", got)
+	}
+}

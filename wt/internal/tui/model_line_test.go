@@ -28,6 +28,8 @@ func (s *mockStore) Record(modelID string) error {
 	return nil
 }
 
+func (s *mockStore) RecordFor(agent, modelID string) error { return nil }
+
 // TestModelItemLineFormat verifies the compact one-line model rendering:
 // family column, 30-day family count, model ID, location, per-model
 // 1d/7d/30d counts, per-token and subscription pricing, and optional tag

@@ -511,6 +511,14 @@ func (m Model) HasTag(tag string) bool {
 	return false
 }
 
+// DiscoveredModelID is the usage/survey id for a local model found on disk
+// with no registry entry: "<provider>/<artifact name as the provider lists
+// it>". Registry-matched models keep their registry id instead; callers do
+// that lookup before falling back to this.
+func DiscoveredModelID(providerID, artifactName string) string {
+	return providerID + "/" + artifactName
+}
+
 // ModelsWithTag returns models whose tags include tag.
 func (c *Config) ModelsWithTag(tag string) []Model {
 	var out []Model

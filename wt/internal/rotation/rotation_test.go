@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // TestLastMissingFile returns no last launch when rotation.state is absent.
@@ -319,5 +320,23 @@ func TestRotationNextFromEligible(t *testing.T) {
 	}
 	if m.ID != "b" {
 		t.Errorf("next = %q, want b (first after a)", m.ID)
+	}
+}
+
+// TestRecordForAttributesUsageToAgent verifies RecordFor writes the same
+// rotation state as Record and also records a usage event tagged with the
+// agent, so launch history is attributable to an agent-model pair.
+func TestRecordForAttributesUsageToAgent(t *testing.T) {
+	dir := t.TempDir()
+	r := NewAt(dir)
+	if err := r.RecordFor("claude", "omlx/Qwen3.8-27B-4bit"); err != nil {
+		t.Fatalf("RecordFor: %v", err)
+	}
+	if last, _ := r.Last(); last != "omlx/Qwen3.8-27B-4bit" {
+		t.Errorf("Last = %q", last)
+	}
+	got := usage.NewStoreAt(dir).CountsForAgent("claude", []string{"omlx/Qwen3.8-27B-4bit"})
+	if got["omlx/Qwen3.8-27B-4bit"].ThirtyDay != 1 {
+		t.Errorf("claude pair 30d = %d, want 1", got["omlx/Qwen3.8-27B-4bit"].ThirtyDay)
 	}
 }
