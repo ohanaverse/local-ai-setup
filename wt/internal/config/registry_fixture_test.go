@@ -97,7 +97,7 @@ func TestRegistryFixtureCost(t *testing.T) {
 		SubscriptionPeriod    string  `toml:"subscription_period"`
 	}
 	type fixtureModel struct {
-		ID   string     `toml:"id"`
+		ID   string      `toml:"id"`
 		Cost fixtureCost `toml:"cost"`
 	}
 	var fixture struct {
@@ -208,7 +208,7 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 	}
 	c := &Config{Providers: providers, Models: models}
 	deriveNative(c)
-	c.SetExposedForTest(map[string]ExposureEntry{"pinned-cloud/contract-fixture:inherit": {Exposed: true, Ready: false},})
+	c.SetExposedForTest(map[string]ExposureEntry{"pinned-cloud/contract-fixture:inherit": {Exposed: true, Ready: false}})
 
 	var inherit *Model
 	for i := range models {
