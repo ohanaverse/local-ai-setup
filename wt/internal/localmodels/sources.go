@@ -67,7 +67,9 @@ func scanModelDirs(dir string) ([]string, error) {
 }
 
 // mtplxRepoID maps an MTPLX "<org>--<model>" directory name to "org/model"
-// (every "--" becomes "/", matching modelman's _repo_id).
+// (every "--" becomes "/", matching modelman's _repo_id
+// (modelman/src/modelman/providers/mtplx.py). Caveat documented there: a
+// literal "--" inside a segment does not round-trip.
 func mtplxRepoID(dirName string) string {
 	return strings.ReplaceAll(dirName, "--", "/")
 }

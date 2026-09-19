@@ -34,9 +34,12 @@ var (
 	mlxLMServerModelsURL = "http://localhost:8001/v1/models"
 	// Port 8003 is mtplx's fixed serve port; modelman's single source is
 	// modelman/providers/mtplx.py (MTPLX_PORT), also imported by
-	// modelman/providers/lifecycle/backends/mtplx.py. Go carries the number
-	// once here — keep it in lockstep if it moves (the old bash duplicate,
-	// bin/lib/mtplx.sh, was deleted issue #79).
+	// modelman/providers/lifecycle/backends/mtplx.py. In Go the port numbers
+	// (8000/8001/8003) appear here AND as default origins in
+	// internal/localmodels/inventory.go; keep both in lockstep if any moves
+	// (localmodels prefers the registry's auth.base_url; localgate is
+	// hard-coded). The old bash duplicate, bin/lib/mtplx.sh, was deleted
+	// issue #79.
 	mtplxModelsURL = "http://localhost:8003/v1/models"
 )
 

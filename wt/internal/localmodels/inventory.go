@@ -13,7 +13,14 @@ import (
 type Status string
 
 const (
-	StatusOK          Status = "ok"
+	// StatusOK means discovery succeeded. It does NOT imply the server is up:
+	// a stopped omlx/mtplx server with model dirs on disk reports ok with
+	// nothing running, and an ollama /api/ps failure leaves ollama ok with
+	// nothing running.
+	StatusOK Status = "ok"
+	// StatusUnreachable means discovery itself failed: for ollama, /api/tags
+	// failed (daemon down); for omlx/mtplx, the model-directory scan (or
+	// config.ExpandHome) failed. It is NOT a server-liveness signal.
 	StatusUnreachable Status = "unreachable"
 	// StatusUnsupported marks a provider whose models cannot be discovered
 	// (mlx_lm_server's target+draft pairing); only running-state is probed.

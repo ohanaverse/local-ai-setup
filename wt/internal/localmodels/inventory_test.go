@@ -90,6 +90,29 @@ func TestInventoryOllamaDiscoveredAndRunning(t *testing.T) {
 	}
 }
 
+// TestInventoryDefaultModelDirViaExportedInventory verifies an omlx provider
+// with no model_dir falls back to ~/.omlx/models (via config.ExpandHome) and
+// that the exported Inventory wrapper reports the on-disk model as running when
+// the server serves it. The live registry's omlx row has no model_dir, so
+// production always takes this default path.
+func TestInventoryDefaultModelDirViaExportedInventory(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	root := filepath.Join(tmp, ".omlx", "models")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkdirs(t, root, "Qwen3.8-27B-4bit")
+	srv := modelsServer(t, "Qwen3.8-27B-4bit")
+	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx", srv.URL, "")}}
+
+	snap := Inventory(cfg)
+	e, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Qwen3.8-27B-4bit"))
+	if !ok || !e.Running {
+		t.Errorf("entry = %+v ok=%v, want discovered and running; snapshot=%+v", e, ok, snap)
+	}
+}
+
 // TestInventoryRegisteredMatchKeepsRegistryID verifies an on-disk oMLX dir that
 // matches a registry model (dir "Qwen3.8-27B-4bit" vs model_name
 // "mlx-community/Qwen3.8-27B-4bit") is reported under the REGISTRY id and marked
@@ -244,8 +267,10 @@ func TestInventoryIgnoresCloudModelsAndProviders(t *testing.T) {
 // TestInventoryProbesProvidersConcurrently verifies the probe round runs the
 // providers in parallel: each server holds its response until BOTH have been
 // hit, so a sequential implementation would take ~1.5s per provider while a
-// concurrent one finishes well under a second. This keeps the selector's open
-// latency at one probe timeout, not the sum of all of them.
+// concurrent one finishes well under a second. Concurrency is across provider
+// families only (the ollama family does /api/tags then /api/ps sequentially,
+// so its worst case is two probe timeouts); this keeps the selector's open
+// latency near the slowest family, not the sum of all of them.
 func TestInventoryProbesProvidersConcurrently(t *testing.T) {
 	var hits int32
 	barrier := func(next http.Handler) http.Handler {

@@ -200,7 +200,8 @@ registry is an error; seed with `modelman migrate`) and joins it in memory
 with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
 persists wt-owned fields only — wt never writes providers/models. Extra
 registry fields `model_info` and `fetch` are ignored by wt's parser; `cost`,
-`model_dir` (`Provider.ModelDir`), and `auth.base_url` (`Auth.BaseURL`) are
+`model_dir` (`Provider.ModelDir`), `auth.base_url` (`Auth.BaseURL`), and
+`auth.secret_ref` (`Auth.SecretRef`) are
 decoded (`config.ModelCost` in `internal/config/config.go`) and the cost is
 rendered as per-token + subscription pricing columns in the model picker
 (`internal/tui/model_list.go`).
