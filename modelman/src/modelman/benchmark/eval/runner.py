@@ -953,7 +953,7 @@ def rejudge_run(
                     max_attempts=judge_cfg.max_attempts,
                 )
                 judge_path = item_dir / "judge.json"
-                total = outcome.combined.total if outcome.combined else None
+                total: float | None = outcome.combined.total if outcome.combined else None
                 if outcome.status == "judge_fail" and judge_path.is_file():
                     # Never overwrite an existing judge.json with a failed
                     # re-judge (e.g. a transient judge outage): the earlier
