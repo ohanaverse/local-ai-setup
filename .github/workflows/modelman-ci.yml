@@ -6,20 +6,23 @@ on:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - ".github/workflows/modelman-ci.yml"
   pull_request:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - ".github/workflows/modelman-ci.yml"
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: modelman
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      # setup-uv publishes no floating major tag past v7, so pin the exact release.
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: uv sync
       - run: make check
       - run: make test

@@ -8,16 +8,18 @@ on:
       - "benchmarks/**"
       - "docs/**"
       - "Makefile"
+      - ".github/workflows/shell-ci.yml"
   pull_request:
     paths:
       - "bin/**"
       - "benchmarks/**"
       - "docs/**"
       - "Makefile"
+      - ".github/workflows/shell-ci.yml"
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make lint
