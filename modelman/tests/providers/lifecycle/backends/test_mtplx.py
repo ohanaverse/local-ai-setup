@@ -108,10 +108,13 @@ def test_resolve_falls_back_to_single_registry_match():
 
 
 def test_resolve_no_model_in_registry_raises():
-    with patch(
-        "modelman.providers.lifecycle.backends.mtplx.load_registry",
-        return_value=_registry([]),
-    ), pytest.raises(LifecycleError, match="no mtplx model in the registry"):
+    with (
+        patch(
+            "modelman.providers.lifecycle.backends.mtplx.load_registry",
+            return_value=_registry([]),
+        ),
+        pytest.raises(LifecycleError, match="no mtplx model in the registry"),
+    ):
         MTPLX.resolve(None, ())
 
 
@@ -143,12 +146,15 @@ def test_resolve_ambiguous_registry_raises_exact_message():
     _resolve_mtplx_model exactly, since it's user-facing in the CLI
     envelope's error field."""
     entries = [_mtplx_model_entry(f"Org/m{n}") for n in (1, 2)]
-    with patch(
-        "modelman.providers.lifecycle.backends.mtplx.load_registry",
-        return_value=_registry(entries),
-    ), pytest.raises(
-        LifecycleError,
-        match=r"model required: registry holds 2 mtplx models \(Org/m1, Org/m2\)",
+    with (
+        patch(
+            "modelman.providers.lifecycle.backends.mtplx.load_registry",
+            return_value=_registry(entries),
+        ),
+        pytest.raises(
+            LifecycleError,
+            match=r"model required: registry holds 2 mtplx models \(Org/m1, Org/m2\)",
+        ),
     ):
         MTPLX.resolve(None, ())
 
@@ -238,7 +244,9 @@ def test_start_raises_when_binary_missing():
             "modelman.providers.lifecycle.backends.mtplx.binaries.require_binary",
             side_effect=LifecycleError("mtplx binary not found on PATH"),
         ),
-        patch("modelman.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed") as mock_wait,
+        patch(
+            "modelman.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed"
+        ) as mock_wait,
         patch("modelman.providers.lifecycle.backends.mtplx._PROC") as mock_proc,
         pytest.raises(LifecycleError, match="mtplx binary not found on PATH"),
     ):

@@ -38,4 +38,3 @@ func TestCopilotBuildLitellm(t *testing.T) {
 	assertEnv(t, lc.Env, "COPILOT_MODEL", "ollama/qwen3.8:27b-mlx")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_WIRE_API", "completions")
 }
-

@@ -235,4 +235,3 @@ func configThemeUnsetCmd() *cobra.Command {
 		},
 	}
 }
-

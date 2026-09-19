@@ -121,7 +121,9 @@ class MtplxBackend(PidfileTrackedBackend):
         )
 
     def wait_ready(self, plan: StartPlan) -> None:
-        probe.wait_for_model(self.health_url, plan.model, proc=self._proc, timeout=probe.MODEL_LOAD_TIMEOUT)
+        probe.wait_for_model(
+            self.health_url, plan.model, proc=self._proc, timeout=probe.MODEL_LOAD_TIMEOUT
+        )
 
     def warm(self, plan: StartPlan) -> None:
         # mtplx's warmup uses a shorter timeout (120s) than the base

@@ -877,11 +877,7 @@ def test_load_registry_missing_protocols_key_parses_as_empty(tmp_path):
     # and the entry stays stuck without its template's protocols forever.
     path = tmp_path / "registry.toml"
     path.write_text(
-        "[[providers]]\n"
-        'id = "ollama"\n'
-        'name = "Ollama"\n'
-        "[providers.auth]\n"
-        'type = "none"\n'
+        '[[providers]]\nid = "ollama"\nname = "Ollama"\n[providers.auth]\ntype = "none"\n'
     )
     loaded = load_registry(path)
     assert loaded.provider("ollama").protocols == []

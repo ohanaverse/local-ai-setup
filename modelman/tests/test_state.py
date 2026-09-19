@@ -61,11 +61,7 @@ def test_legacy_litellm_exposed_key_is_rewritten_as_exposed(tmp_path):
     `exposed` key — otherwise the file accumulates both spellings forever
     and the two languages' readers can silently disagree on which one wins."""
     path = tmp_path / "modelman.toml"
-    path.write_text(
-        '[model_state."ollama/x"]\n'
-        "ready = true\n"
-        "litellm_exposed = true\n"
-    )
+    path.write_text('[model_state."ollama/x"]\nready = true\nlitellm_exposed = true\n')
     store = load_state(path=path)
     assert store.models["ollama/x"].exposed is True
 

@@ -29,7 +29,9 @@ def _seed(tmp_path, monkeypatch, *, models=(), providers=("ollama",)):
     state_path = tmp_path / "modelman.toml"
     save_registry(
         Registry(
-            providers=[ProviderEntry(id=p, name=p, auth=AuthConfig(type="none")) for p in providers],
+            providers=[
+                ProviderEntry(id=p, name=p, auth=AuthConfig(type="none")) for p in providers
+            ],
             models=list(models),
         ),
         reg_path,
@@ -142,8 +144,12 @@ def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatc
     # A model under a flag-only provider (no Provider class, like openrouter
     # or native) queued for ready-on must not crash when apply() runs—it should
     # skip the provider instance lookup and apply the flag changes cleanly.
-    entry = ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="openrouter/x")
-    reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry], providers=("ollama", "openrouter"))
+    entry = ModelEntry(
+        id="openrouter/x", family="f", provider_id="openrouter", model_name="openrouter/x"
+    )
+    reg_path, state_path = _seed(
+        tmp_path, monkeypatch, models=[entry], providers=("ollama", "openrouter")
+    )
 
     # Don't patch ProviderRegistry.get_class for openrouter—get_class
     # returns None (no backing Provider class), which short-circuits before
@@ -159,7 +165,9 @@ def test_run_queued_ops_handles_flag_only_provider_ready_on(tmp_path, monkeypatc
     assert "Marked openrouter/x ready" in out or "done:" in out
 
 
-def test_run_queued_ops_missing_ready_model_id_does_not_crash_whole_run(tmp_path, monkeypatch, capsys):
+def test_run_queued_ops_missing_ready_model_id_does_not_crash_whole_run(
+    tmp_path, monkeypatch, capsys
+):
     # A ready-on queued for a model id that's absent from a freshly-loaded
     # registry (e.g. deleted out-of-band, or a hand-edited registry.toml,
     # between the TUI queuing it and the post-exit runner loading fresh
@@ -167,7 +175,9 @@ def test_run_queued_ops_missing_ready_model_id_does_not_crash_whole_run(tmp_path
     # run. It should degrade to a per-item recorded failure, exactly like
     # a missing id already does for deletes/moves/exposes, and every other
     # queued op in the same run must still complete.
-    real_entry = ModelEntry(id="ollama/real", family="f", provider_id="ollama", model_name="real:7b")
+    real_entry = ModelEntry(
+        id="ollama/real", family="f", provider_id="ollama", model_name="real:7b"
+    )
     reg_path, state_path = _seed(tmp_path, monkeypatch, models=[real_entry])
     real_variant = model_entry_to_variant(real_entry)
 
@@ -278,18 +288,14 @@ def test_run_queued_ops_reports_unexpected_apply_exception_without_crashing(
         MagicMock(side_effect=RuntimeError("registry corrupted")),
     )
     with patch("modelman.main.ProviderRegistry.get", return_value=fake_provider):
-        failed = run_queued_ops(
-            QueuedOps(deletes={"ollama/x": model_entry_to_variant(entry)})
-        )
+        failed = run_queued_ops(QueuedOps(deletes={"ollama/x": model_entry_to_variant(entry)}))
 
     assert failed is True
     out = capsys.readouterr().out
     assert "unexpected error: registry corrupted" in out
 
 
-def test_run_queued_ops_builds_one_provider_instance_per_provider_id(
-    tmp_path, monkeypatch, capsys
-):
+def test_run_queued_ops_builds_one_provider_instance_per_provider_id(tmp_path, monkeypatch, capsys):
     """Two queued items on the same provider must construct that
     provider once, not once per item — matches the dedup-by-id pattern
     sync.py's _modeldir_providers already uses."""
@@ -319,12 +325,15 @@ def test_run_queued_ops_provider_constructor_keyerror_is_not_flag_only(
     cases apart; ProviderRegistry.get_class(provider_id) is None can."""
     entry = ModelEntry(id="ollama/x", family="f", provider_id="ollama", model_name="x:7b")
     reg_path, state_path = _seed(tmp_path, monkeypatch, models=[entry])
-    with patch(
-        "modelman.main.ProviderRegistry.get_class",
-        return_value=object,  # any non-None value: "a class IS registered"
-    ), patch(
-        "modelman.main.ProviderRegistry.get",
-        side_effect=KeyError("required_field"),
+    with (
+        patch(
+            "modelman.main.ProviderRegistry.get_class",
+            return_value=object,  # any non-None value: "a class IS registered"
+        ),
+        patch(
+            "modelman.main.ProviderRegistry.get",
+            side_effect=KeyError("required_field"),
+        ),
     ):
         failed = run_queued_ops(QueuedOps(ready={"ollama/x": True}))
 

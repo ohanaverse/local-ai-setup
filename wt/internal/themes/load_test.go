@@ -137,8 +137,8 @@ func TestLoad_MalformedTOML(t *testing.T) {
 	tmp := withTempDir(t)
 	for _, garbage := range []string{
 		"this is not toml",
-		"theme = solarized",  // unquoted
-		"[unclosed",          // unclosed bracket
+		"theme = solarized",   // unquoted
+		"[unclosed",           // unclosed bracket
 		"theme = \"solarized", // unclosed quote
 	} {
 		t.Run(garbage, func(t *testing.T) {

@@ -1,4 +1,4 @@
-.PHONY: help build install uninstall check lint format format-check test test-agents clean
+.PHONY: help build install uninstall check lint format format-check go-format-check test test-agents clean
 
 help:                   # Show available targets
 	@echo "Available targets:"
@@ -6,9 +6,10 @@ help:                   # Show available targets
 	@echo "  install   - Copy bin/* to ~/.local/bin/"
 	@echo "  uninstall - Remove installed scripts from ~/.local/bin/"
 	@echo "  lint      - Run shellcheck on bin/*-wt and scripts/agents-smoke.sh"
-	@echo "  format    - Run shfmt on bin/*-wt and scripts/agents-smoke.sh"
+	@echo "  format    - Run shfmt on bin/*-wt and scripts/agents-smoke.sh, and gofmt on the Go tree"
 	@echo "  format-check - Check shfmt formatting on bin/*-wt and scripts/agents-smoke.sh"
-	@echo "  check     - Run lint + format-check"
+	@echo "  go-format-check - Check gofmt formatting of the Go tree"
+	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
 	@echo "  test-agents - Run live one-shot agent smoke tests in both gateway modes (requires gateways/agent CLIs)"
 	@echo "  clean     - Remove build artifacts"
@@ -51,13 +52,22 @@ lint:                   # Run shellcheck
 	shellcheck $(SRCDIR)/*-wt scripts/agents-smoke.sh
 	@echo "Lint passed."
 
-format:                 # Run shfmt (write changes)
+format:                 # Run shfmt and gofmt (write changes)
 	@command -v shfmt >/dev/null 2>&1 || { echo "shfmt not installed, skipping format"; exit 0; }
 	shfmt -w -i 2 -ci $(SRCDIR)/*-wt scripts/agents-smoke.sh
+	gofmt -w .
 
 format-check:           # Check formatting without modifying
 	@command -v shfmt >/dev/null 2>&1 || { echo "shfmt not installed, skipping format check"; exit 0; }
 	shfmt -d -i 2 -ci $(SRCDIR)/*-wt scripts/agents-smoke.sh
+
+go-format-check:        # Fail if any Go file is not gofmt-clean
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt: these files need formatting (run 'make format'):"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 
 test-agents:            # Run live agent smoke tests
 	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }
@@ -68,6 +78,8 @@ check:                  # Run all quality checks
 	$(MAKE) lint
 	@echo "Running format check..."
 	$(MAKE) format-check
+	@echo "Running Go format check..."
+	$(MAKE) go-format-check
 
 test:                   # Run smoke tests
 	@echo "Smoke testing launcher flags..."

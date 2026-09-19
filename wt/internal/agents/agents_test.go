@@ -914,7 +914,6 @@ func TestSeederCapability(t *testing.T) {
 	}
 }
 
-
 // TestListEntries verifies the neutral agent-list builder merges configured
 // agents and registered drivers, deduplicates, classifies commands, and
 // reports issues. This is the shared helper that replaces near-identical

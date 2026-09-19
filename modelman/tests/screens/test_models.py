@@ -2304,7 +2304,9 @@ async def test_add_dialog_defaults_to_queued_move_over_registry_family(tmp_path,
 async def test_running_column_shows_dash_when_not_running(tmp_path, monkeypatch):
     # RUNNING column must default to "-" for a local model that has never
     # been started, so the operator can tell at a glance what's live.
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
 
     app = ModelmanApp()
@@ -2317,7 +2319,9 @@ async def test_running_column_shows_dash_when_not_running(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_action_toggle_running_confirms_then_starts_a_stopped_ready_model(tmp_path, monkeypatch):
+async def test_action_toggle_running_confirms_then_starts_a_stopped_ready_model(
+    tmp_path, monkeypatch
+):
     # 's' on a ready-but-stopped local model, with no other local model
     # running, must still show a confirm dialog (starting is disruptive —
     # every start/stop is confirmed, not just replacements) before calling
@@ -2328,7 +2332,9 @@ async def test_action_toggle_running_confirms_then_starts_a_stopped_ready_model(
     from modelman.providers import registry as prov_registry
     from modelman.screens.forms import ConfirmModal
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, running=False))
@@ -2378,7 +2384,9 @@ async def test_action_toggle_running_start_cancelled_does_not_start(tmp_path, mo
 
     from modelman.providers import registry as prov_registry
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, running=False))
@@ -2421,7 +2429,9 @@ async def test_action_toggle_running_confirms_then_stops_a_running_model(tmp_pat
     from modelman.providers import registry as prov_registry
     from modelman.screens.forms import ConfirmModal
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, running=True))
@@ -2470,7 +2480,9 @@ async def test_action_toggle_running_stop_cancelled_does_not_stop(tmp_path, monk
 
     from modelman.providers import registry as prov_registry
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, running=True))
@@ -2518,7 +2530,9 @@ async def test_action_toggle_running_busy_guard_blocks_reentrant_start(tmp_path,
     from modelman.providers import registry as prov_registry
     from modelman.screens.forms import ConfirmModal
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, running=False))
@@ -2567,7 +2581,9 @@ async def test_action_toggle_running_busy_guard_blocks_reentrant_start(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_action_toggle_running_accepts_non_local_model_on_local_provider(tmp_path, monkeypatch):
+async def test_action_toggle_running_accepts_non_local_model_on_local_provider(
+    tmp_path, monkeypatch
+):
     # Regression test for a review finding: action_toggle_running's local-
     # model gate computed `entry.location or provider.location` (a truthy-OR
     # of raw strings, checked with a single is_local_location() call) while
@@ -2623,7 +2639,9 @@ async def test_action_toggle_running_accepts_non_local_model_on_local_provider(t
 
 
 @pytest.mark.asyncio
-async def test_action_toggle_running_shows_confirm_dialog_when_others_running(tmp_path, monkeypatch):
+async def test_action_toggle_running_shows_confirm_dialog_when_others_running(
+    tmp_path, monkeypatch
+):
     # Starting a model while a different local model is already running must
     # not silently start a second one — the architecture note in the design
     # calls out that unlike ready/expose, start has an immediate side effect,
@@ -2634,14 +2652,20 @@ async def test_action_toggle_running_shows_confirm_dialog_when_others_running(tm
     from modelman.providers import registry as prov_registry
     from modelman.screens.forms import ConfirmModal
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     # "other" must also be a registered model, not just a state entry: the
     # reconcile worker's running-flag self-heal (Step 3a) only verifies ids
     # it can resolve back to a registry.models entry — an orphaned state-only
     # "running" flag would otherwise get cleared before 's' is pressed,
     # emptying `others` and skipping the confirm dialog entirely.
     other = ModelEntry(
-        id="ollama/other", family="ornith", provider_id="ollama", model_name="other", location="local"
+        id="ollama/other",
+        family="ornith",
+        provider_id="ollama",
+        model_name="other",
+        location="local",
     )
     reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model, other])
     state = StateStore()
@@ -2682,7 +2706,9 @@ async def test_start_toggle_preserves_in_session_reconciled_state(tmp_path, monk
     from modelman.local_control import StartResult
     from modelman.providers import registry as prov_registry
 
-    model = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local")
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
     # On disk: no path/size at all — a full reload would surface exactly this.
     save_state(StateStore(models={"ollama/a": ModelState(ready=True)}), state_path)
@@ -2749,8 +2775,12 @@ async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp
     from modelman.providers import registry as prov_registry
     from modelman.screens.forms import ConfirmModal
 
-    target = ModelEntry(id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local")
-    occupant = ModelEntry(id="omlx/b", family="ornith", provider_id="omlx", model_name="b", location="local")
+    target = ModelEntry(
+        id="omlx/a", family="ornith", provider_id="omlx", model_name="a", location="local"
+    )
+    occupant = ModelEntry(
+        id="omlx/b", family="ornith", provider_id="omlx", model_name="b", location="local"
+    )
     _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[target, occupant])
     state = StateStore()
     state.set("omlx/a", ModelState(ready=True, running=False))
@@ -2779,4 +2809,7 @@ async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp
         await pilot.pause()
         assert isinstance(app.screen, ConfirmModal)
         message = app.screen._message
-    assert "Starting this will also stop omlx/b, since omlx can only serve one model at a time." in message
+    assert (
+        "Starting this will also stop omlx/b, since omlx can only serve one model at a time."
+        in message
+    )

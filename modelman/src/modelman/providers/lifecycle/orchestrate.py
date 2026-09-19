@@ -127,7 +127,9 @@ def _stop_others(keep: str = "") -> None:
 
     _run_parallel(
         [
-            _run_job(backend.stop_and_wait, log_prefix="warning: ", exc_label=f"{backend.id} stop failed")
+            _run_job(
+                backend.stop_and_wait, log_prefix="warning: ", exc_label=f"{backend.id} stop failed"
+            )
             for backend in _distinct_backends(keep)
         ]
     )
@@ -157,7 +159,9 @@ def isolate(
     """
     backend = BACKENDS.get(provider_id)
     if backend is None:
-        return LifecycleResult(provider_id, model or "", "", False, f"unknown provider: {provider_id}")
+        return LifecycleResult(
+            provider_id, model or "", "", False, f"unknown provider: {provider_id}"
+        )
 
     started = False
     plan = None
@@ -295,7 +299,9 @@ def stop_all(keep: str = "") -> LifecycleResult:
     if keep:
         backend = BACKENDS.get(keep)
         if backend is None:
-            return LifecycleResult("stop-all", "", "", False, f"unknown provider for --keep: {keep}")
+            return LifecycleResult(
+                "stop-all", "", "", False, f"unknown provider for --keep: {keep}"
+            )
         keep_key = backend.occupancy_key
     _stop_others(keep_key)
     return LifecycleResult("stop-all", "", "", True, None)
@@ -324,13 +330,13 @@ def _restore_litellm() -> str | None:
     except OSError:
         pass
     if not launchd.LITELLM_PLIST.exists():
-        _log(f"{RESTORE_LOG_PREFIX} litellm not configured ({launchd.LITELLM_PLIST} missing); skipping")
+        _log(
+            f"{RESTORE_LOG_PREFIX} litellm not configured ({launchd.LITELLM_PLIST} missing); skipping"
+        )
         return None
     _log(f"{RESTORE_LOG_PREFIX} restarting litellm...")
     launchd.load(launchd.LITELLM_PLIST)
-    if not probe.wait_for_port_open(
-        launchd.LITELLM_HEALTH_URL, timeout=probe.RESTORE_WAIT_TIMEOUT
-    ):
+    if not probe.wait_for_port_open(launchd.LITELLM_HEALTH_URL, timeout=probe.RESTORE_WAIT_TIMEOUT):
         return f"litellm did not come back up ({launchd.LITELLM_HEALTH_URL})"
     return None
 
@@ -369,10 +375,14 @@ def restore() -> LifecycleResult:
     for backend in _distinct_backends():
         if backend.restore_action == "restart":
             jobs.append(
-                _run_job(functools.partial(_restart_step, backend), log_prefix=log_prefix, errors=errors)
+                _run_job(
+                    functools.partial(_restart_step, backend), log_prefix=log_prefix, errors=errors
+                )
             )
         elif backend.restore_action == "stop":
-            jobs.append(_run_job(functools.partial(_stop_quietly_step, backend), log_prefix=log_prefix))
+            jobs.append(
+                _run_job(functools.partial(_stop_quietly_step, backend), log_prefix=log_prefix)
+            )
     jobs.append(_run_job(_restore_litellm, log_prefix=log_prefix, errors=errors))
 
     _run_parallel(jobs)

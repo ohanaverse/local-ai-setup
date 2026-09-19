@@ -833,9 +833,9 @@ func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
 func TestSkipInPicker(t *testing.T) {
 	db := "main"
 	tests := []struct {
-		name    string
-		group   GroupKind
-		entry   Entry
+		name     string
+		group    GroupKind
+		entry    Entry
 		wantSkip bool
 	}{
 		{"bare local default", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "main", Path: ""}, true},

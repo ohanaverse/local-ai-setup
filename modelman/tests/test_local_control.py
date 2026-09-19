@@ -43,10 +43,15 @@ from modelman.state import ModelState, StateStore, load_state, locked_state, sav
 def _registry() -> Registry:
     return Registry(
         providers=[
-            ProviderEntry(id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")),
+            ProviderEntry(
+                id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")
+            ),
             ProviderEntry(id="omlx", name="oMLX", location="local", auth=AuthConfig(type="none")),
             ProviderEntry(
-                id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+                id="openrouter",
+                name="OpenRouter",
+                location="cloud",
+                auth=AuthConfig(type="api_key"),
             ),
             ProviderEntry(
                 id="llamacpp", name="llama.cpp", location="local", auth=AuthConfig(type="none")
@@ -454,8 +459,11 @@ def test_start_does_not_stop_a_different_provider(tmp_path):
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="model-a", direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True, error=None,
+            provider="omlx",
+            model="model-a",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         result = start_local_model(_registry(), "omlx/model-a", state_path)
     mock_stop_all.assert_not_called()
@@ -477,8 +485,11 @@ def test_start_replaces_same_provider_occupant(tmp_path):
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="model-b", direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True, error=None,
+            provider="omlx",
+            model="model-b",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(_registry(), "omlx/model-b", state_path)
     mock_stop_one.assert_called_once_with("omlx")
@@ -499,17 +510,18 @@ def test_start_replaces_same_provider_occupant_with_unrelated_provider_also_runn
     # correct implementation iterates provider_model_ids itself, so it can
     # never be distracted by an unrelated provider's running flag —
     # regardless of insertion/iteration order.
-    state_path = _state_path(
-        tmp_path, {"ollama/qwen3.8:27b-mlx": True, "omlx/model-a": True}
-    )
+    state_path = _state_path(tmp_path, {"ollama/qwen3.8:27b-mlx": True, "omlx/model-a": True})
     with (
         patch("modelman.local_control._probe_running", return_value=False),
         patch("modelman.local_control.isolate_provider") as mock_isolate,
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="model-b", direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True, error=None,
+            provider="omlx",
+            model="model-b",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(_registry(), "omlx/model-b", state_path)
     mock_stop_one.assert_called_once_with("omlx")
@@ -528,7 +540,9 @@ def test_start_replaces_omlx_6bit_occupant_when_starting_plain_omlx(tmp_path):
     # ever displace it to trigger a probe-based self-heal).
     registry = _registry()
     registry.providers.append(
-        ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none"))
+        ProviderEntry(
+            id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none")
+        )
     )
     registry.models.append(
         ModelEntry(
@@ -546,8 +560,11 @@ def test_start_replaces_omlx_6bit_occupant_when_starting_plain_omlx(tmp_path):
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="model-a", direct_url="http://localhost:8000/v1/chat/completions",
-            ok=True, error=None,
+            provider="omlx",
+            model="model-a",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(registry, "omlx/model-a", state_path)
     mock_stop_one.assert_called_once_with("omlx")
@@ -569,7 +586,9 @@ def test_start_replaces_mlx_lm_server_occupant_and_clears_its_flag(tmp_path):
 
     registry = _registry()
     registry.providers.append(
-        ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none"))
+        ProviderEntry(
+            id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none")
+        )
     )
     registry.models.append(
         ModelEntry(
@@ -598,8 +617,11 @@ def test_start_replaces_mlx_lm_server_occupant_and_clears_its_flag(tmp_path):
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="mlx_lm_server", model="org/target-b",
-            direct_url="http://localhost:8001/v1/chat/completions", ok=True, error=None,
+            provider="mlx_lm_server",
+            model="org/target-b",
+            direct_url="http://localhost:8001/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(registry, "mlx_lm_server/pairing-b", state_path)
     # mlx_lm_server self-replaces its occupant inside its own start
@@ -639,8 +661,11 @@ def test_start_replaces_mtplx_occupant_and_clears_its_flag(tmp_path):
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="mtplx", model="org/model-b",
-            direct_url="http://localhost:8003/v1/chat/completions", ok=True, error=None,
+            provider="mtplx",
+            model="org/model-b",
+            direct_url="http://localhost:8003/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(registry, "mtplx/org/model-b", state_path)
     # mtplx tears down its predecessor inside isolate_provider(..., solo=True)
@@ -699,7 +724,9 @@ def test_start_isolate_failure_leaves_mlx_lm_server_occupant_flagged(tmp_path):
 
     registry = _registry()
     registry.providers.append(
-        ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none"))
+        ProviderEntry(
+            id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none")
+        )
     )
     registry.models.append(
         ModelEntry(
@@ -728,7 +755,11 @@ def test_start_isolate_failure_leaves_mlx_lm_server_occupant_flagged(tmp_path):
         patch("modelman.local_control.stop_provider") as mock_stop_one,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="mlx_lm_server", model="", direct_url="", ok=False, error="port still answering"
+            provider="mlx_lm_server",
+            model="",
+            direct_url="",
+            ok=False,
+            error="port still answering",
         )
         with pytest.raises(LocalControlError, match="port still answering"):
             start_local_model(registry, "mlx_lm_server/pairing-b", state_path)
@@ -1045,9 +1076,7 @@ def test_clear_stale_running_flag_failed_unexpose_does_not_clobber_concurrent_wr
             fresh.models["ollama/a"] = replace(fresh.models["ollama/a"], exposed=False)
         raise OSError(28, "No space left on device")
 
-    with patch(
-        "modelman.local_control.unexpose_model", side_effect=_concurrent_write_then_fail
-    ):
+    with patch("modelman.local_control.unexpose_model", side_effect=_concurrent_write_then_fail):
         _clear_stale_running_flag("ollama/a", state_path, litellm_path)
 
     state = load_state(state_path)
@@ -1096,7 +1125,9 @@ def test_start_mlx_lm_server_resolves_pairing_args(tmp_path):
 
     registry = _registry()
     registry.providers.append(
-        ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none"))
+        ProviderEntry(
+            id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none")
+        )
     )
     registry.models.append(
         ModelEntry(
@@ -1111,8 +1142,11 @@ def test_start_mlx_lm_server_resolves_pairing_args(tmp_path):
     state_path = _state_path(tmp_path)
     with patch("modelman.local_control.isolate_provider") as mock_isolate:
         mock_isolate.return_value = IsolateResult(
-            provider="mlx_lm_server", model="org/target-repo", direct_url="http://localhost:8001/v1/chat/completions",
-            ok=True, error=None,
+            provider="mlx_lm_server",
+            model="org/target-repo",
+            direct_url="http://localhost:8001/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(registry, "mlx_lm_server/target-repo", state_path)
     mock_isolate.assert_called_once_with(
@@ -1128,7 +1162,9 @@ def test_start_broken_mlx_lm_server_pairing_fails_before_teardown(tmp_path):
 
     registry = _registry()
     registry.providers.append(
-        ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none"))
+        ProviderEntry(
+            id="mlx_lm_server", name="mlx-lm server", location="local", auth=AuthConfig(type="none")
+        )
     )
     registry.models.append(
         ModelEntry(
@@ -1185,7 +1221,12 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
     write would leave wt's local-model gate pointing at a stale model."""
     registry = _registry()
     registry.providers.append(
-        ProviderEntry(id="mtplx", name="MTPLX", location="local", auth=AuthConfig(type="none", base_url="http://localhost:8003/v1"))
+        ProviderEntry(
+            id="mtplx",
+            name="MTPLX",
+            location="local",
+            auth=AuthConfig(type="none", base_url="http://localhost:8003/v1"),
+        )
     )
     registry.models.append(
         ModelEntry(
@@ -1207,7 +1248,9 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
             ok=True,
             error=None,
         )
-        result = start_local_model(registry, "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", state_path)
+        result = start_local_model(
+            registry, "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", state_path
+        )
     mock_isolate.assert_called_once_with(
         "mtplx",
         "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
@@ -1218,9 +1261,10 @@ def test_start_mtplx_isolates_without_env_var(tmp_path):
     # (solo=True) — local_control must not also call stop_provider for it.
     mock_stop_one.assert_not_called()
     assert result.direct_url == "http://localhost:8003/v1/chat/completions"
-    assert load_state(state_path).get(
-        "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
-    ).running is True
+    assert (
+        load_state(state_path).get("mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality").running
+        is True
+    )
 
 
 def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
@@ -1232,8 +1276,15 @@ def test_start_unregistered_name_with_no_family_raises_needs_family(tmp_path):
     registry = _registry()
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
-    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]}
-    with _patch_provider_local_models(mapping), pytest.raises(DiscoveredModelNeedsFamily) as excinfo:
+    mapping = {
+        "ollama": [
+            {"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}
+        ]
+    }
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(DiscoveredModelNeedsFamily) as excinfo,
+    ):
         start_local_model(registry, "llama3.2:3b", registry_path=registry_path)
     assert excinfo.value.provider_id == "ollama"
     assert excinfo.value.variant_id == "llama3.2:3b"
@@ -1256,7 +1307,11 @@ def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_pa
     state_path = _state_path(tmp_path)
     litellm_path = tmp_path / "config.yaml"
     litellm_path.write_text("model_list: []\n")
-    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]}
+    mapping = {
+        "ollama": [
+            {"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}
+        ]
+    }
 
     with (
         _patch_provider_local_models(mapping),
@@ -1264,12 +1319,19 @@ def test_start_unregistered_name_with_family_registers_exposes_and_starts(tmp_pa
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="ollama", model="llama3.2:3b",
-            direct_url="http://localhost:11434/v1/chat/completions", ok=True, error=None,
+            provider="ollama",
+            model="llama3.2:3b",
+            direct_url="http://localhost:11434/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         result = start_local_model(
-            registry, "llama3.2:3b", state_path,
-            family="discovered", registry_path=registry_path, litellm_path=litellm_path,
+            registry,
+            "llama3.2:3b",
+            state_path,
+            family="discovered",
+            registry_path=registry_path,
+            litellm_path=litellm_path,
         )
 
     mock_stop.assert_not_called()  # ollama is flag-only, never stop-all'd on start
@@ -1306,7 +1368,9 @@ def test_start_unregistered_name_registry_write_failure_raises_local_control_err
     registry = _registry()
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
-    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]}
+    mapping = {
+        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
+    }
 
     with (
         _patch_provider_local_models(mapping),
@@ -1331,8 +1395,11 @@ def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_pa
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="omlx", name="oMLX", location="local",
-                model_dir=str(model_dir), auth=AuthConfig(type="none"),
+                id="omlx",
+                name="oMLX",
+                location="local",
+                model_dir=str(model_dir),
+                auth=AuthConfig(type="none"),
             )
         ],
     )
@@ -1348,12 +1415,19 @@ def test_start_discovers_and_registers_omlx_artifact_resolvable_afterward(tmp_pa
         patch("modelman.local_control._probe_running", return_value=False),
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="Qwen3.8-27B-4bit",
-            direct_url="http://localhost:8000/v1/chat/completions", ok=True, error=None,
+            provider="omlx",
+            model="Qwen3.8-27B-4bit",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         start_local_model(
-            registry, "Qwen3.8-27B-4bit", state_path,
-            family="qwen3.8", registry_path=registry_path, litellm_path=litellm_path,
+            registry,
+            "Qwen3.8-27B-4bit",
+            state_path,
+            family="qwen3.8",
+            registry_path=registry_path,
+            litellm_path=litellm_path,
         )
 
     inventory = inventory_local_models(load_registry(registry_path), load_state(state_path))
@@ -1378,7 +1452,10 @@ def test_start_unregistered_name_ambiguous_across_providers_raises(tmp_path):
         "ollama": [{"variant_id": "shared-name", "path": "ollama:shared-name", "size_bytes": None}],
         "mtplx": [{"variant_id": "shared-name", "path": "/mtplx/shared-name", "size_bytes": None}],
     }
-    with _patch_provider_local_models(mapping), pytest.raises(LocalControlError, match="multiple providers"):
+    with (
+        _patch_provider_local_models(mapping),
+        pytest.raises(LocalControlError, match="multiple providers"),
+    ):
         start_local_model(registry, "shared-name", registry_path=registry_path)
 
 
@@ -1391,8 +1468,12 @@ def test_start_native_name_resolves_existing_registered_model_without_reregister
     registry = _registry()
     registry.models.append(
         ModelEntry(
-            id="ollama/llama3.2:3b", family="discovered", provider_id="ollama",
-            model_name="llama3.2:3b", location="local", source="discovered",
+            id="ollama/llama3.2:3b",
+            family="discovered",
+            provider_id="ollama",
+            model_name="llama3.2:3b",
+            location="local",
+            source="discovered",
         )
     )
     registry_path = tmp_path / "registry.toml"
@@ -1415,9 +1496,14 @@ def _listing_registry() -> Registry:
     cloud model, for inventory_local_models tests."""
     return Registry(
         providers=[
-            ProviderEntry(id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")),
             ProviderEntry(
-                id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+                id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")
+            ),
+            ProviderEntry(
+                id="openrouter",
+                name="OpenRouter",
+                location="cloud",
+                auth=AuthConfig(type="api_key"),
             ),
         ],
         models=[
@@ -1507,11 +1593,16 @@ def test_inventory_downloaded_bucket_includes_size_and_running_marker():
     state = _listing_state(running_model="ollama/exposed-model")
     mapping = {
         "ollama": [
-            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 4_900_000_000},
+            {
+                "variant_id": "exposed-model",
+                "path": "ollama:exposed-model",
+                "size_bytes": 4_900_000_000,
+            },
         ]
     }
-    with _patch_provider_local_models(mapping), patch(
-        "modelman.local_control._probe_running", return_value=True
+    with (
+        _patch_provider_local_models(mapping),
+        patch("modelman.local_control._probe_running", return_value=True),
     ):
         inventory = inventory_local_models(registry, state)
     assert inventory.downloaded == [
@@ -1544,15 +1635,21 @@ def test_inventory_discovered_bucket_excludes_already_registered():
     mapping = {
         "ollama": [
             {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": 1},
-            {"variant_id": "brand-new-model", "path": "ollama:brand-new-model", "size_bytes": 2_000_000_000},
+            {
+                "variant_id": "brand-new-model",
+                "path": "ollama:brand-new-model",
+                "size_bytes": 2_000_000_000,
+            },
         ]
     }
     with _patch_provider_local_models(mapping):
         inventory = inventory_local_models(registry, state)
     assert inventory.discovered == [
         DiscoveredModel(
-            provider_id="ollama", variant_id="brand-new-model",
-            path="ollama:brand-new-model", size_bytes=2_000_000_000,
+            provider_id="ollama",
+            variant_id="brand-new-model",
+            path="ollama:brand-new-model",
+            size_bytes=2_000_000_000,
         )
     ]
 
@@ -1621,7 +1718,9 @@ def test_inventory_tolerates_a_provider_list_local_failure():
         inventory = inventory_local_models(registry, state)
     assert inventory.discovered == []
     assert inventory.not_downloaded == [
-        "ollama/exposed-model", "ollama/missing-model", "ollama/unexposed-model"
+        "ollama/exposed-model",
+        "ollama/missing-model",
+        "ollama/unexposed-model",
     ]
 
 
@@ -1632,7 +1731,9 @@ def test_inventory_skips_providers_with_no_registered_class():
     # silently contributing an empty (i.e. "nothing on disk") answer.
     registry = _listing_registry()
     registry.providers.append(
-        ProviderEntry(id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none"))
+        ProviderEntry(
+            id="omlx-6bit", name="oMLX 6-bit", location="local", auth=AuthConfig(type="none")
+        )
     )
     state = _listing_state()
     with _patch_provider_local_models({"ollama": []}):
@@ -1719,8 +1820,11 @@ def test_inventory_excludes_mlx_lm_server_artifacts_from_discovery(tmp_path):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="mlx_lm_server", name="mlx-lm server", location="local",
-                model_dir=str(model_dir), auth=AuthConfig(type="none"),
+                id="mlx_lm_server",
+                name="mlx-lm server",
+                location="local",
+                model_dir=str(model_dir),
+                auth=AuthConfig(type="none"),
             )
         ],
     )
@@ -1748,12 +1852,18 @@ def test_start_omlx_directory_basename_resolves_the_registered_full_repo_entry(t
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="mlx-community/Qwen3.8-27B-4bit",
-            direct_url="http://localhost:8000/v1/chat/completions", ok=True, error=None,
+            provider="omlx",
+            model="mlx-community/Qwen3.8-27B-4bit",
+            direct_url="http://localhost:8000/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         result = start_local_model(
-            registry, "Qwen3.8-27B-4bit", state_path,
-            registry_path=registry_path, litellm_path=litellm_path,
+            registry,
+            "Qwen3.8-27B-4bit",
+            state_path,
+            registry_path=registry_path,
+            litellm_path=litellm_path,
         )
 
     assert result.model_id == _OMLX_MODEL_ID
@@ -1780,8 +1890,11 @@ def test_find_discovered_omlx_basename_does_not_rediscover_registered_model(tmp_
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="omlx", model="mlx-community/Qwen3.8-27B-4bit",
-            direct_url=None, ok=True, error=None,
+            provider="omlx",
+            model="mlx-community/Qwen3.8-27B-4bit",
+            direct_url=None,
+            ok=True,
+            error=None,
         )
         # The full repo id must keep resolving too (registry-id lookup misses
         # it; the native-name match is what catches it).
@@ -1828,13 +1941,20 @@ def test_inventory_falls_back_to_cached_size_when_provider_reports_none():
     # already cached from an earlier reconcile, not "—".
     registry = _listing_registry()
     state = _listing_state()
-    state.set("ollama/exposed-model", ModelState(ready=True, exposed=True, size_bytes=4_900_000_000))
-    mapping = {"ollama": [{"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": None}]}
+    state.set(
+        "ollama/exposed-model", ModelState(ready=True, exposed=True, size_bytes=4_900_000_000)
+    )
+    mapping = {
+        "ollama": [
+            {"variant_id": "exposed-model", "path": "ollama:exposed-model", "size_bytes": None}
+        ]
+    }
     with _patch_provider_local_models(mapping):
         inventory = inventory_local_models(registry, state)
-    assert InventoryEntry(
-        model_id="ollama/exposed-model", running=False, size_bytes=4_900_000_000
-    ) in inventory.downloaded
+    assert (
+        InventoryEntry(model_id="ollama/exposed-model", running=False, size_bytes=4_900_000_000)
+        in inventory.downloaded
+    )
 
 
 def test_register_discovered_model_keeps_registry_and_state_when_expose_fails(tmp_path):
@@ -1847,7 +1967,9 @@ def test_register_discovered_model_keeps_registry_and_state_when_expose_fails(tm
     registry_path = tmp_path / "registry.toml"
     save_registry(registry, registry_path)
     state_path = _state_path(tmp_path)
-    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]}
+    mapping = {
+        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
+    }
 
     with (
         _patch_provider_local_models(mapping),
@@ -1855,8 +1977,11 @@ def test_register_discovered_model_keeps_registry_and_state_when_expose_fails(tm
         pytest.raises(LocalControlError, match="registered"),
     ):
         start_local_model(
-            registry, "llama3.2:3b", state_path,
-            family="discovered", registry_path=registry_path,
+            registry,
+            "llama3.2:3b",
+            state_path,
+            family="discovered",
+            registry_path=registry_path,
         )
 
     entry = load_registry(registry_path).model("ollama/llama3.2:3b")
@@ -1881,19 +2006,28 @@ def test_register_discovered_model_refuses_an_id_that_already_exists(tmp_path):
     with locked_registry(registry_path) as fresh:
         fresh.models.append(
             ModelEntry(
-                id="ollama/llama3.2:3b", family="other", provider_id="ollama",
-                model_name="llama3.2:3b", location="local", source="discovered",
+                id="ollama/llama3.2:3b",
+                family="other",
+                provider_id="ollama",
+                model_name="llama3.2:3b",
+                location="local",
+                source="discovered",
             )
         )
     state_path = _state_path(tmp_path)
-    mapping = {"ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]}
+    mapping = {
+        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
+    }
 
     with (
         _patch_provider_local_models(mapping),
         pytest.raises(LocalControlError, match="already registered"),
     ):
         start_local_model(
-            registry, "llama3.2:3b", state_path,
-            family="discovered", registry_path=registry_path,
+            registry,
+            "llama3.2:3b",
+            state_path,
+            family="discovered",
+            registry_path=registry_path,
         )
     assert [m.id for m in load_registry(registry_path).models].count("ollama/llama3.2:3b") == 1

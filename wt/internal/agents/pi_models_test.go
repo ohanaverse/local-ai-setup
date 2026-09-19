@@ -690,7 +690,6 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	}
 }
 
-
 // syncModels in direct mode must write a schema-valid block when it creates
 // a provider block that pi's catalog does not have yet (e.g. openrouter, the
 // first provider with a secret_ref): baseUrl/apiKey/api must all be

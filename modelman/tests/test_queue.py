@@ -929,7 +929,6 @@ def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypat
     assert state.get(model.id).exposed is False
 
 
-
 def test_apply_expose_queue_no_restart_when_empty(tmp_path, monkeypatch):
     from modelman.litellm import apply_expose_queue, save_litellm_config
     from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry

@@ -635,9 +635,7 @@ class ModelScreen(Screen[None]):
         to race it, since Textual cannot cancel a live `thread=True`
         worker (see action_back's force-quit dialog for the same
         constraint)."""
-        return any(
-            w.name in ("model-start", "model-stop") and w.is_running for w in self.workers
-        )
+        return any(w.name in ("model-start", "model-stop") and w.is_running for w in self.workers)
 
     def action_toggle_running(self) -> None:
         entry = self._current_entry()
@@ -742,10 +740,14 @@ class ModelScreen(Screen[None]):
         try:
             result = start_local_model(self.registry, model_id, self.state_path)
         except LocalControlError as exc:
-            self.app.call_from_thread(self.app.notify, f"Failed to start {model_id}: {exc}", severity="error")
+            self.app.call_from_thread(
+                self.app.notify, f"Failed to start {model_id}: {exc}", severity="error"
+            )
             return
         self._resync_running_flags()
-        message = f"{model_id} is already running." if result.already_running else f"Started {model_id}."
+        message = (
+            f"{model_id} is already running." if result.already_running else f"Started {model_id}."
+        )
         self.app.call_from_thread(self.app.notify, message)
         for warning in result.warnings:
             self.app.call_from_thread(self.app.notify, warning, severity="warning")
@@ -755,10 +757,14 @@ class ModelScreen(Screen[None]):
         try:
             result = stop_local_model(model_id, self.state_path)
         except LocalControlError as exc:
-            self.app.call_from_thread(self.app.notify, f"Failed to stop {model_id}: {exc}", severity="error")
+            self.app.call_from_thread(
+                self.app.notify, f"Failed to stop {model_id}: {exc}", severity="error"
+            )
             return
         self._resync_running_flags()
-        message = f"Stopped {model_id}." if result.stopped_model_id else f"{model_id} was not running."
+        message = (
+            f"Stopped {model_id}." if result.stopped_model_id else f"{model_id} was not running."
+        )
         self.app.call_from_thread(self.app.notify, message)
         for warning in result.warnings:
             self.app.call_from_thread(self.app.notify, warning, severity="warning")

@@ -27,7 +27,9 @@ def _stub_provider(local_models: list[dict]):
     stub.list_local.return_value = local_models
     stub.resolve_local.return_value = None
     stub.is_downloaded.side_effect = lambda spec, *a, **k: spec.get("name") in by_name
-    stub.size_of.side_effect = lambda spec, *a, **k: by_name.get(spec.get("name"), {}).get("size_bytes")
+    stub.size_of.side_effect = lambda spec, *a, **k: by_name.get(spec.get("name"), {}).get(
+        "size_bytes"
+    )
     return stub
 
 
@@ -42,14 +44,18 @@ def test_start_command_success_writes_marker(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
-    with patch("modelman.local_control.stop_all_local_providers"), patch(
-        "modelman.local_control.isolate_provider"
-    ) as mock_isolate:
+    with (
+        patch("modelman.local_control.stop_all_local_providers"),
+        patch("modelman.local_control.isolate_provider") as mock_isolate,
+    ):
         from modelman.benchmark.isolation import IsolateResult
 
         mock_isolate.return_value = IsolateResult(
-            provider="ollama", model="x", direct_url="http://localhost:11434/v1/chat/completions",
-            ok=True, error=None,
+            provider="ollama",
+            model="x",
+            direct_url="http://localhost:11434/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         result = runner.invoke(app, ["start", "ollama/x"])
     assert result.exit_code == 0, result.stdout
@@ -159,7 +165,9 @@ def test_start_command_no_args_lists_registered_downloaded_models(tmp_path, monk
         patch("modelman.local_control.ProviderRegistry.get_class", return_value=object),
         patch(
             "modelman.local_control.ProviderRegistry.get",
-            return_value=_stub_provider([{"variant_id": "x", "path": "ollama:x", "size_bytes": None}]),
+            return_value=_stub_provider(
+                [{"variant_id": "x", "path": "ollama:x", "size_bytes": None}]
+            ),
         ),
         patch("modelman.local_control._probe_running", return_value=False),
     ):
@@ -191,7 +199,9 @@ def test_start_command_no_args_indicates_running_model(tmp_path, monkeypatch):
         patch("modelman.local_control.ProviderRegistry.get_class", return_value=object),
         patch(
             "modelman.local_control.ProviderRegistry.get",
-            return_value=_stub_provider([{"variant_id": "x", "path": "ollama:x", "size_bytes": None}]),
+            return_value=_stub_provider(
+                [{"variant_id": "x", "path": "ollama:x", "size_bytes": None}]
+            ),
         ),
         patch("modelman.local_control._probe_running", return_value=True),
     ):
@@ -227,9 +237,7 @@ def test_start_command_no_args_shows_three_sections(tmp_path, monkeypatch):
         '[[models]]\nid = "ollama/y"\nfamily = "y"\nprovider_id = "ollama"\nmodel_name = "y"\n'
     )
     state_path = tmp_path / "modelman.toml"
-    state_path.write_text(
-        '[model_state."ollama/x"]\nready = true\nexposed = true\n'
-    )
+    state_path.write_text('[model_state."ollama/x"]\nready = true\nexposed = true\n')
     monkeypatch.setenv("MODELMAN_REGISTRY", str(registry_path))
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
 
@@ -285,7 +293,13 @@ def test_start_command_discovers_and_prompts_for_family(tmp_path, monkeypatch):
 
     def get(name, config):
         return _stub_provider(
-            [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 2_000_000_000}]
+            [
+                {
+                    "variant_id": "llama3.2:3b",
+                    "path": "ollama:llama3.2:3b",
+                    "size_bytes": 2_000_000_000,
+                }
+            ]
         )
 
     with (
@@ -295,8 +309,11 @@ def test_start_command_discovers_and_prompts_for_family(tmp_path, monkeypatch):
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="ollama", model="llama3.2:3b",
-            direct_url="http://localhost:11434/v1/chat/completions", ok=True, error=None,
+            provider="ollama",
+            model="llama3.2:3b",
+            direct_url="http://localhost:11434/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         result = runner.invoke(app, ["start", "llama3.2:3b"], input="general\n")
 
@@ -339,8 +356,11 @@ def test_start_command_empty_family_reprompts(tmp_path, monkeypatch):
         patch("modelman.local_control.isolate_provider") as mock_isolate,
     ):
         mock_isolate.return_value = IsolateResult(
-            provider="ollama", model="llama3.2:3b",
-            direct_url="http://localhost:11434/v1/chat/completions", ok=True, error=None,
+            provider="ollama",
+            model="llama3.2:3b",
+            direct_url="http://localhost:11434/v1/chat/completions",
+            ok=True,
+            error=None,
         )
         result = runner.invoke(app, ["start", "llama3.2:3b"], input="\ngeneral\n")
 
