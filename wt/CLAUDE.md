@@ -163,7 +163,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/localmodels/` | Local model inventory: `Inventory(cfg)` probes ollama (`/api/tags` + `/api/ps`, cloud `remote_host` entries excluded), omlx/mtplx (model-dir scan + `/v1/models`) and mlx_lm_server (running only) concurrently and returns registered + discovered entries with live `Running`; registry match keeps the registry id, else `config.DiscoveredModelID`. Status per family is `ok`/`partial` (ollama `/api/ps` failed, so Running is untrustworthy)/`unreachable`/`unsupported`. Never reads modelman's `running` flag. `localgate` delegates its `nameMatches`/`fetchModelIDs` here and (via `ResolveAll`) probes the same registry `auth.base_url` origins (`FamilyOrigin`). |
 | `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor (agent add/edit/delete) |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
-| `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildModelItems`, consumed by `wt smoke` |
+| `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildTable`, consumed by `wt smoke` |
 | `docs/superpowers/` | specs + plans |
 
 ## Config (Go)
@@ -315,18 +315,18 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
 - State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
 - The model picker marks the last-launched row with a `> ` prefix
-  (`buildModelItems` sets `marked` in `internal/tui/model_list.go`, value
+  (`renderTable` sets `marked` in `internal/tui/modeltable.go`, value
   from `rotation.Last()`; `Title()` composes the prefix — plain ASCII
   because Unicode geometric shapes are East Asian Ambiguous width and
   misalign CJK terminals); the cursor still lands on the rotation's
   next-to-use model.
 - The model picker's leftmost column shows a live "in use" session count
-  (issue #73): `buildModelItems` queries `refcount.Store.Counts` over the
-  same full-catalog IDs used for usage, in the same pass, and sets
+  (issue #73): `buildTable` queries `refcount.Store.Counts` over the
+  table's row IDs and sets
   `modelItem.ref`; `Title()` renders it as a 2-rune prefix ("`3 `" or two
   blank spaces, clamped at 9) *before* the rotation marker. See
   `internal/refcount`.
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and hand both the eligible slice and the full catalog to `enterModelPhase`. It builds the `familyOf` map from that full catalog, then `buildModelItems` (`internal/tui/model_list.go`) runs ONE `Store.Counts` pass over those full-catalog IDs and aggregates per-family totals in memory via `usage.AggregateByFamily`. That keeps family 30-day counts accurate even when `-T`/`-F` filters narrow the eligible slice, and avoids a second full-catalog walk per picker entry. It then sorts eligible models descending by family-then-model `CompositeScore` (a recency-weighted integer key) and renders each model as one compact line — the family name and its 30-day count lead every row; no divider/header rows, family context inline. The empty (unnamed "other") family renders `-` in the family column but still shows its true 30-day aggregate, matching the sort key.
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and hand both the eligible slice and the full catalog to `enterModelPhase`. `buildTable` (`internal/tui/modeltable.go`) then builds and sorts the rows (cloud plus running local by cost then 7-day usage, non-running local alphabetically) and renders them as an aligned table with per-model 1D/7D/30D usage cells; the header is the list title.
 
 ```bash
 go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
@@ -405,8 +405,8 @@ whatever routing mode is live right now, against whichever model you point it
 at. Read-only against modelman-owned state; never starts/stops local models
 or flips LiteLLM routing. With no model-id on a TTY, the interactive picker
 is `internal/tui.PickModel` — a standalone Bubble Tea program (not the main
-app's worktree→agent→model state machine) that reuses `buildModelItems` for
-the same decorated/sorted rows the agent flow's model picker renders, over
+app's worktree→agent→model state machine) that reuses `buildTable` for
+the same table rows the agent flow's model picker renders, over
 `smoke.Eligibility`'s unfiltered cross-agent union (never narrowed to one
 agent's supported providers, since here the eligible agents are derived
 *from* the chosen model rather than the reverse). Always-on, timestamped

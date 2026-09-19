@@ -12,28 +12,32 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
-// compactModelList builds the model picker list exactly the way production
-// enterModelPhase does: buildModelItems + ThemedListDelegate with
-// ShowDescription=false and Spacing 0. Tests use it instead of hand-rolling
-// list.New so filter/wrap/cursor assertions run against the real layout.
+// compactModelList builds a model picker list the way production does for the
+// selector table: buildTable rows (header as the list title, shared
+// styleTableTitle) + ThemedListDelegate with ShowDescription=false and
+// Spacing 0. Tests use it instead of hand-rolling list.New so
+// filter/wrap/cursor assertions run against the real layout.
 func compactModelList(t *testing.T, models []config.Model) list.Model {
 	t.Helper()
-	familyOf := make(map[string]string, len(models))
-	for _, m := range models {
-		familyOf[m.ID] = m.Family
-	}
-	items := buildModelItems(nil, "", models, familyOf, newUsageStore(), newRefcountStore(), "", nil)
+	tbl := buildTable(tableInput{models: models, usage: newUsageStore()}, newRefcountStore(), "")
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
-	listItems := make([]list.Item, len(items))
-	for i, it := range items {
+	listItems := make([]list.Item, len(tbl.items))
+	for i, it := range tbl.items {
 		listItems[i] = it
 	}
 	ml := list.New(listItems, delegate, 78, 22)
-	ml.Title = "Models"
+	ml.Title = tbl.header
+	styleTableTitle(&ml, themes.Default)
 	ml.SetShowStatusBar(false)
 	return ml
+}
+
+// tableItems builds picker items the way production does, for tests.
+func tableItems(t *testing.T, cfg *config.Config, agent string, models []config.Model, snap *localmodels.Snapshot) modelTable {
+	t.Helper()
+	return buildTable(tableInput{cfg: cfg, agent: agent, models: models, inventory: snap, usage: newUsageStore()}, newRefcountStore(), "")
 }
 
 // stubUsageStore swaps the newUsageStore seam to a Store rooted at a fresh
@@ -54,7 +58,7 @@ func stubUsageStore(t *testing.T) usage.Store {
 // stubRefcountStore swaps the newRefcountStore seam to a Store rooted at a
 // fresh temp directory, so tests that build the model picker through a path
 // that calls newRefcountStore() directly (rather than passing their own
-// Store into buildModelItems) never read the developer's real
+// Store into buildTable) never read the developer's real
 // ~/.config/agent-wt/refcount.jsonl — whose live "in use" counts would
 // otherwise make the ref column (and any assertion on it) depend on host
 // state. Mirrors stubUsageStore's isolation of usage.jsonl.

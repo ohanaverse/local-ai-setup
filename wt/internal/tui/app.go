@@ -19,7 +19,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
@@ -738,12 +737,7 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	}
 	ml := list.New(listItems, delegate, m.width-2, m.height-2)
 	ml.Title = tbl.header
-	// The header must sit flush with the row text: drop the default title
-	// padding/background so its first column starts where item text does.
-	ml.Styles.Title = lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	// The title bar adds its own left padding; clear it too, keeping the
-	// bottom spacing.
-	ml.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
+	styleTableTitle(&ml, m.theme)
 	ml.SetShowStatusBar(false)
 	m.models = ml
 

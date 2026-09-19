@@ -60,7 +60,7 @@ func singleModelList(m config.Model) list.Model {
 // for the given agent+tag, with the cursor on the globally rotated model.
 // Tests that exercise rotation, the list, or the View use this helper
 // instead of constructing model literals. It routes through the production
-// list-build path (buildModelItems, the same builder
+// list-build path (buildTable, the same builder
 // enterModelPhase uses) so tests exercise the compact, divider-free
 // item layout the picker actually renders. The usage counts come through
 // the newUsageStore seam so callers that stub the seam (or isolate
@@ -81,20 +81,10 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
-	// buildModelItems is the production list builder; family totals must
-	// come from the agent's full catalog, not just the tag-filtered slice.
-	fullCatalog, err := cfg.ModelsForAgent(agent)
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	familyOf := make(map[string]string, len(fullCatalog))
-	for _, m := range fullCatalog {
-		familyOf[m.ID] = m.Family
-	}
 	// Mirror production enterModelPhase: read the last-launched ID from
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
-	items := buildModelItems(nil, "", models, familyOf, newUsageStore(), newRefcountStore(), lastID, nil)
+	items := buildTable(tableInput{models: models, usage: newUsageStore()}, newRefcountStore(), lastID).items
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -121,15 +111,29 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		idIndex[it.model.ID] = i
 	}
 
-	// Position the cursor exactly like production enterModelPhase: the
-	// rotation's next-to-use model when present, else the first model row.
-	if next, ok := rotation.New().Next(cfg, agent, tag, ""); ok {
-		if idx, ok := idIndex[next.ID]; ok {
-			m.models.Select(idx)
+	// Position the cursor like production enterModelPhase: the rotation's
+	// next-to-use model among the table's launchable rows (in table order),
+	// else the first launchable row.
+	var launchable []config.Model
+	first := -1
+	for i, it := range items {
+		if it.blocked == "" {
+			launchable = append(launchable, it.model)
+			if first < 0 {
+				first = i
+			}
 		}
-	} else {
-		m.models.Select(0)
 	}
+	pos := 0
+	if first >= 0 {
+		pos = first
+	}
+	if next, ok := rotation.New().NextFromEligible(launchable, cfg); ok {
+		if idx, ok := idIndex[next.ID]; ok {
+			pos = idx
+		}
+	}
+	m.models.Select(pos)
 	return m
 }
 
@@ -655,7 +659,7 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 // TestPhaseModelWithListBuildsAndPositionsCursor asserts the test
 // helper populates m.models and positions the cursor on the rotation's
 // next-to-use model. The helper routes through the production list-build
-// path (buildModelItems, the same builder enterModelPhase uses),
+// path (buildTable, the same builder enterModelPhase uses),
 // so this is a smoke test of the shared infrastructure.
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
@@ -670,8 +674,10 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	if got := len(m.models.Items()); got != 2 {
 		t.Errorf("models items = %d, want 2", got)
 	}
-	if m.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1 (gemma4:14b)", m.models.Index())
+	// The table sorts rows itself, so assert on the model under the cursor
+	// rather than a hard-coded list position.
+	if got := selectedModelID(m); got != "ollama/gemma4:14b" {
+		t.Errorf("cursor on %q (index %d), want ollama/gemma4:14b", got, m.models.Index())
 	}
 }
 
@@ -759,8 +765,10 @@ func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 	// row and break the precondition assertion.
 	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	// No rotation state: the helper positions the cursor on the first
-	// model row, index 0.
+	// With no rotation state the cursor lands on the registry-first model,
+	// which the table may sort below the top row; pin it to the top row
+	// explicitly so the up/down assertions are about movement only.
+	m.models.Select(0)
 	if m.models.Index() != 0 {
 		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
 	}
@@ -928,7 +936,9 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 	dir := tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 
-	// Cursor is at the first model row (index 0) since no last-launched seed exists.
+	// Pin the cursor to the top row (with no last-launched seed the helper
+	// lands on the registry-first model, which the table may sort lower).
+	m.models.Select(0)
 	if m.models.Index() != 0 {
 		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
 	}

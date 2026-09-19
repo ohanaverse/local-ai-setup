@@ -4,20 +4,22 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // pickModel is a minimal standalone Bubble Tea program that shows the same
-// decorated, sorted model list buildModelItems produces for the main TUI's
-// agent flow, for callers (e.g. wt smoke) that need a one-off model pick
-// without the full worktree->agent->model->resume->launch state machine.
-// Unlike that flow, the list here is never scoped to a single agent, so its
-// survey segment is always empty (agent-specific) — see PickModel. A
-// per-row exception marker can still appear, though: passing a non-nil cfg
-// still runs buildModelItems' route-resolution branch, so "(litellm
-// required)"/"(unavailable)" can show; only "(via proxy)" is suppressed,
-// since ProtocolsFor("") returns nil and ResolveRoute's forced-through-proxy
-// path never triggers for an empty protocol requirement.
+// selector table buildTable produces for the main TUI's agent flow, for
+// callers (e.g. wt smoke) that need a one-off model pick without the full
+// worktree->agent->model->resume->launch state machine. Unlike that flow, the
+// list here is never scoped to a single agent, so its survey segment is
+// always empty (agent-specific) and undiscovered models are hidden (wt smoke
+// only shows the models it passes in). A per-row exception marker can still
+// appear: passing a non-nil cfg still runs buildTable's route-resolution
+// branch, so "(litellm required)"/"(unavailable)" can show; only
+// "(via proxy)" is suppressed, since ProtocolsFor("") returns nil and
+// ResolveRoute's forced-through-proxy path never triggers for an empty
+// protocol requirement.
 type pickModel struct {
 	list     list.Model
 	selected config.Model
@@ -25,26 +27,21 @@ type pickModel struct {
 	quitting bool
 }
 
-// newPickModel builds the picker's list from models via the same
-// buildModelItems the agent flow uses. cfg may be nil (buildModelItems skips
-// per-row route resolution in that case). The agent argument to
-// buildModelItems is "" and stats is nil since this list isn't scoped to one
-// agent. familyOf must map the FULL catalog, not just models (an eligible
-// subset — e.g. wt smoke's cross-agent union), so a family's 30-day total
-// reflects every model in it, matching buildModelItems' contract
-// (model_list.go's doc comment) and the agent flow's own picker. cfg.Models
-// is that full catalog; a nil cfg (picker-only tests) falls back to models
-// itself since there's nothing wider to draw from.
+// newPickModel builds the picker's list from models via the same buildTable
+// the agent flow uses. cfg may be nil (no inventory probe and no per-row route
+// resolution). The agent argument is "" and stats is nil since this list isn't
+// scoped to one agent; discovered (unregistered) local models are hidden.
 func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme) pickModel {
-	catalog := models
+	var snap *localmodels.Snapshot
 	if cfg != nil {
-		catalog = cfg.Models
+		s := runInventory(cfg)
+		snap = &s
 	}
-	familyOf := make(map[string]string, len(catalog))
-	for _, m := range catalog {
-		familyOf[m.ID] = m.Family
-	}
-	items := buildModelItems(cfg, "", models, familyOf, newUsageStore(), newRefcountStore(), "", nil)
+	tbl := buildTable(tableInput{
+		cfg: cfg, agent: "", models: models, inventory: snap, hideDiscovered: true,
+		usage: newUsageStore(),
+	}, newRefcountStore(), "")
+	items := tbl.items
 	delegate := ThemedListDelegate(theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -56,7 +53,8 @@ func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme)
 	// in this package use; the real program resizes via the WindowSizeMsg
 	// bubbletea sends immediately on start.
 	l := list.New(listItems, delegate, 80, 24)
-	l.Title = "Pick a model"
+	l.Title = tbl.header
+	styleTableTitle(&l, theme)
 	l.SetShowStatusBar(false)
 	return pickModel{list: l}
 }
@@ -107,9 +105,8 @@ func (m pickModel) View() string {
 	return m.list.View()
 }
 
-// PickModel runs a standalone Bubble Tea program showing a decorated, sorted
-// list of models — the same row format the wt agent flow's model picker
-// uses — and returns the user's selection. ok is false when the user
+// PickModel runs a standalone Bubble Tea program showing the selector
+// table — the same columns the wt agent flow's model picker uses — and returns the user's selection. ok is false when the user
 // canceled (Esc/q/Ctrl+C) rather than selecting a model. Unlike the agent
 // flow's picker, models is never filtered down to one agent's eligible set;
 // callers scoped to "any agent that can run this model" (e.g. wt smoke)
