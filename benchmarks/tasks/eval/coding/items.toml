@@ -1,0 +1,9 @@
+# EvalPlus dataset config for the coding category — no hand-authored items,
+# no rubric/judge. A suite's own [coding] block can override this per run
+# (see eval/suite.py's CodingConfig). No default `limit`: EvalPlus 0.3.1's
+# grading step requires every problem in the FULL dataset (164 for humaneval)
+# to have a sample before it computes pass@k, so a `limit` < 164 makes the
+# coding category fail with a CodingResult.error, not a score. Leave limit
+# unset, or set it to the full dataset size, for a real score. See
+# docs/guides/11-capability-eval-benchmark.md's Gotchas.
+dataset = "humaneval"

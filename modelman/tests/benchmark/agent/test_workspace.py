@@ -183,3 +183,51 @@ def test_rename_detected_when_diff_renames_is_enabled(tmp_path):
         assert "test_pkg.py" in changed_names
     finally:
         destroy_workspace(ws)
+
+
+def test_create_workspace_seeds_tests_init(tmp_path):
+    # The workspace's tests dir must be a REGULAR package (a seeded
+    # __init__.py): a regular package in cwd beats any same-named REGULAR
+    # package shipped in harness site-packages (e.g. evalplus ->
+    # stop-sequencer's stray top-level tests/__init__.py) by sys.path
+    # order, where a namespace-package portion would lose to it regardless
+    # of order. Seeding at create time — before the baseline commit —
+    # keeps gates 6/7 semantics intact: it is never a "new file" for
+    # gate 7 and can only be flagged tampered if the agent edits it.
+    ws = create_workspace(_task(), base_dir=tmp_path)
+    try:
+        init = ws.root / "tests" / "__init__.py"
+        assert init.is_file()
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=ws.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "tests/__init__.py" in result.stdout.splitlines()
+    finally:
+        destroy_workspace(ws)
+
+
+def test_create_workspace_does_not_seed_a_src_layout_root_as_a_package(tmp_path):
+    # With tests_dir="src/pkg/tests", `src` is a sys.path root, not a
+    # package: seeding src/__init__.py would change how the bundle's code
+    # imports and add a baseline file the judge sees in the diff. The
+    # packages below it (pkg, pkg/tests) are still seeded so the
+    # regular-package shadowing protection holds.
+    task = _task()
+    task = dataclasses.replace(
+        task,
+        gates_config={
+            **task.gates_config,
+            "build": {**task.gates_config["build"], "tests_dir": "src/pkg/tests"},
+        },
+    )
+    ws = create_workspace(task, base_dir=tmp_path)
+    try:
+        assert not (ws.root / "src" / "__init__.py").exists()
+        assert (ws.root / "src" / "pkg" / "__init__.py").is_file()
+        assert (ws.root / "src" / "pkg" / "tests" / "__init__.py").is_file()
+    finally:
+        destroy_workspace(ws)

@@ -126,10 +126,43 @@ def _is_build_artifact(name: str) -> bool:
     return name.endswith((".pyc", ".pyo")) or "__pycache__" in parts
 
 
+# Conventional source-root directory names: never seeded as packages.
+_SOURCE_ROOT_DIRS = frozenset({"src", "lib"})
+
+
 def create_workspace(task: TaskBundle, base_dir: Path | None = None) -> Workspace:
-    """Copy visible/ into a fresh temp dir, git init, commit as baseline."""
+    """Copy visible/ into a fresh temp dir, seed tests_dir as a REGULAR
+    package, git init, commit as baseline."""
     root = Path(tempfile.mkdtemp(prefix="agent-bench-", dir=str(base_dir) if base_dir else None))
     shutil.copytree(task.visible_dir, root, dirs_exist_ok=True)
+    # Seed tests_dir — and every parent directory in its path — as REGULAR
+    # packages (each with an __init__.py) before the baseline commit. The
+    # gate subprocesses run WITHOUT "-S" (no site-packages skip) so a
+    # bundle's tests can import third-party dependencies from the harness
+    # venv — and a regular package in cwd beats any same-named REGULAR
+    # package found in site-packages (e.g. evalplus -> stop-sequencer's
+    # stray top-level tests/__init__.py) by sys.path order, whereas a
+    # namespace-package portion loses to a regular package anywhere on
+    # sys.path regardless of order. Every ancestor needs the seed: with
+    # tests_dir="tests/sub", leaving tests/ itself a namespace portion
+    # would let site-packages' stray regular tests package shadow the
+    # whole chain anyway. Seeding here keeps gates 6/7 intact: baseline
+    # content is never a "new file" for gate 7, and it is only flagged
+    # tampered if the agent edits it.
+    tests_dir = task.gates_config.get("build", {}).get("tests_dir")
+    if tests_dir:
+        pkg_dir = root
+        for depth, part in enumerate(Path(tests_dir).parts):
+            pkg_dir = pkg_dir / part
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            # A leading src/ or lib/ is a sys.path root by convention
+            # (src-layout), never a package: seeding it would change how the
+            # bundle's own code imports and discovers, and add baseline files
+            # the judge then sees in the diff. The packages below it are
+            # still seeded, so the shadowing protection above is intact.
+            if depth == 0 and part in _SOURCE_ROOT_DIRS:
+                continue
+            (pkg_dir / "__init__.py").touch()
     _git(["init", "-q"], cwd=root)
     _git(["config", "user.email", "agent-bench@local"], cwd=root)
     _git(["config", "user.name", "agent-bench"], cwd=root)

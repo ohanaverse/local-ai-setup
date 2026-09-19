@@ -71,9 +71,24 @@ def _tests_module_prefix(tests_dir: str) -> str:
     return tests_dir.replace("/", ".").replace("\\", ".")
 
 
+# Every subprocess below runs WITHOUT "-S": site-packages stays on
+# sys.path, so a bundle's tests can import third-party dependencies
+# installed in the harness venv. The original problem "-S" solved —
+# the eval extra's evalplus -> stop-sequencer dependency ships a stray
+# top-level tests/__init__.py into site-packages, and a REGULAR package
+# anywhere on sys.path beats the workspace's namespace-package tests/
+# portion regardless of sys.path order, silently breaking dotted-name
+# test loading — is instead solved structurally: create_workspace seeds
+# an empty __init__.py into the workspace's tests_dir, making it a
+# REGULAR package too, and regular-vs-regular resolves by sys.path
+# order with cwd first. Best of both: no shadowing, no third-party
+# import breakage.
 def _import_check(root: Path, module_name: str) -> bool:
     result = subprocess.run(
-        [sys.executable, "-c", f"import {module_name}"], cwd=root, capture_output=True, text=True
+        [sys.executable, "-c", f"import {module_name}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
     )
     return result.returncode == 0
 
@@ -85,9 +100,11 @@ def _run_discover(root: Path, tests_dir: str) -> tuple[int, int, int] | None:
     failing test — unittest's own discover() already converts an import error
     in a test module into a failing pseudo-test, so only a subprocess-level
     crash needs this None case."""
-    # No top_level_dir: neither bundle puts an __init__.py in its tests dir, and
-    # discover(..., top_level_dir=".") then aborts with "Start directory is not
-    # importable", which would read as BROKEN_BUILD on every healthy run.
+    # No top_level_dir: discover(..., top_level_dir=".") aborts with "Start
+    # directory is not importable" when the start dir is not a package root,
+    # which would read as BROKEN_BUILD on a healthy run. (create_workspace now
+    # seeds an __init__.py into tests_dir, but a bundle-authored layout can
+    # still differ, so keep discovery relative to the start dir.)
     script = (
         "import json, sys, unittest\n"
         "suite = unittest.defaultTestLoader.discover(sys.argv[1])\n"

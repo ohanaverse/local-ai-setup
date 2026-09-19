@@ -8,7 +8,7 @@ from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.isolation import mlx_lm_server_pairing_args
 from modelman.benchmark.results import BenchmarkMetrics, BenchmarkRun, TargetResult
 from modelman.benchmark.runner import (
-    RunSavedButRestoreFailed,
+    WorkloadRunSavedButRestoreFailed,
     discover_targets,
     run_benchmark,
 )
@@ -39,7 +39,7 @@ class _FakeWorkload:
 
 def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
     """A completed run must be written to disk even when restore_providers
-    raises, and the failure must surface as RunSavedButRestoreFailed carrying
+    raises, and the failure must surface as WorkloadRunSavedButRestoreFailed carrying
     the run dir and the completed run."""
     import modelman.benchmark.runner as runner_module
 
@@ -70,7 +70,7 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "restore_providers", _fail_restore)
     monkeypatch.setattr(runner_module, "_run_route", _fake_route)
 
-    with pytest.raises(RunSavedButRestoreFailed) as excinfo:
+    with pytest.raises(WorkloadRunSavedButRestoreFailed) as excinfo:
         run_benchmark(registry, state, _FakeWorkload(), results_dir=tmp_path)
 
     exc = excinfo.value
@@ -88,7 +88,7 @@ def test_run_saved_but_restore_failed_carries_run_dir_and_run():
         started_at=datetime(2026, 1, 1, tzinfo=UTC),
         results=[],
     )
-    exc = RunSavedButRestoreFailed("boom", run_dir=Path("/tmp/x"), run=run)
+    exc = WorkloadRunSavedButRestoreFailed("boom", run_dir=Path("/tmp/x"), run=run)
     assert exc.run_dir == Path("/tmp/x")
     assert exc.run is run
     assert isinstance(exc, BenchmarkError)
@@ -183,9 +183,7 @@ def test_mlx_lm_server_pairing_args_normalizes_paths_but_not_repo_ids():
     # Both sources repo ids → forwarded verbatim.
     assert mlx_lm_server_pairing_args("m", None, "org/t", None, "org/d") == ("org/t", "org/d")
     # Both local paths → expanded and normalized.
-    got = mlx_lm_server_pairing_args(
-        "m", "~/models/t", None, "/models/d/", None
-    )
+    got = mlx_lm_server_pairing_args("m", "~/models/t", None, "/models/d/", None)
     assert got == (str(Path.home() / "models" / "t"), "/models/d")
     # Mixed: repo target + local_path draft.
     got = mlx_lm_server_pairing_args("m", None, "org/t", "./x/./draft", None)
@@ -388,8 +386,12 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
     registry = Registry(
         providers=[ProviderEntry(id="mtplx", name="MTPLX", location="local")],
         models=[
-            ModelEntry(id="mtplx/org/repo-1", family="f", provider_id="mtplx", model_name="org/repo-1"),
-            ModelEntry(id="mtplx/org/repo-2", family="f", provider_id="mtplx", model_name="org/repo-2"),
+            ModelEntry(
+                id="mtplx/org/repo-1", family="f", provider_id="mtplx", model_name="org/repo-1"
+            ),
+            ModelEntry(
+                id="mtplx/org/repo-2", family="f", provider_id="mtplx", model_name="org/repo-2"
+            ),
         ],
     )
     state = StateStore()

@@ -1,0 +1,2 @@
+[meta]
+intent = "Six excerpts across domains (changelog, README, on-call policy, API docs, design doc, security/onboarding doc) of varying structure (bulleted vs. prose vs. mixed), each with 2-4 specific facts a summary must preserve to be useful and at least one fact that's easy to drop or garble if skimmed."

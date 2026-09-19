@@ -1,0 +1,6 @@
+[[items]]
+id = "off-by-one"
+prompt = "Review this loop for correctness:\nfor i in range(len(items) + 1):\n    total += items[i]"
+
+[items.meta]
+seeded_issue = "range(len(items) + 1) reads one past the end"

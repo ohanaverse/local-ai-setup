@@ -22,8 +22,12 @@ from modelman.registry import DEFAULT_PROVIDER_IDS, Registry
 from modelman.state import StateStore
 
 
-class RunSavedButRestoreFailed(BenchmarkError):
+class WorkloadRunSavedButRestoreFailed(BenchmarkError):
     """Every row completed and is on disk; only putting the backends back failed.
+
+    Distinct from errors.RunSavedButRestoreFailed (the agent/eval benchmarks'
+    list-of-rows variant): this one carries the single workload `run`, and
+    sharing the name made it easy to catch or import the wrong class.
 
     Carries `run_dir` and the completed `run` so the CLI can still record the
     `--latest` pointer and report the row count. Without it, a host whose
@@ -91,8 +95,6 @@ def discover_targets(
             )
         )
     return targets
-
-
 
 
 def _run_route(
@@ -226,7 +228,7 @@ def run_benchmark(
     write_results(run, results_dir)
 
     if restore_error is not None:
-        raise RunSavedButRestoreFailed(
+        raise WorkloadRunSavedButRestoreFailed(
             f"providers failed to restore after the run (all results were saved "
             f"to {results_dir / run.run_id}): {restore_error}",
             run_dir=results_dir / run.run_id,

@@ -74,3 +74,20 @@ def test_load_task_missing_visible_dir_raises(tmp_path):
 
     with pytest.raises(BenchmarkError, match="visible"):
         load_task(bundle)
+
+
+@pytest.mark.parametrize("bad", ["../escape", "/abs/tests", "tests/../../x"])
+def test_load_task_tests_dir_escaping_workspace_raises(tmp_path, bad):
+    """create_workspace mkdirs every part of tests_dir under the workspace
+    root, so an absolute path or a '..' segment in a bundle's gates.toml would
+    create directories outside the sandbox. Reject at load time."""
+    bundle = tmp_path / "broken"
+    bundle.mkdir()
+    (bundle / "task.md").write_text("x", encoding="utf-8")
+    (bundle / "rubric.md").write_text("x", encoding="utf-8")
+    (bundle / "meta.toml").write_text("", encoding="utf-8")
+    (bundle / "gates.toml").write_text(f'[build]\ntests_dir = "{bad}"\n', encoding="utf-8")
+    (bundle / "visible").mkdir()
+
+    with pytest.raises(BenchmarkError, match="tests_dir"):
+        load_task(bundle)

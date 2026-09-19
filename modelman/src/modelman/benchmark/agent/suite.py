@@ -3,26 +3,26 @@
 from __future__ import annotations
 
 import itertools
-import os
-import plistlib
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from modelman.benchmark._routes import (  # noqa: F401 — only OPENROUTER_BASE_URL is re-export-only;
+    LITELLM_PLIST,  # LITELLM_PLIST/openrouter_key are used below (the noqa keeps them importable
+    OPENROUTER_BASE_URL,  # here for the patch-where-used seams the agent tests rely on)
+    openrouter_key,
+)
 from modelman.benchmark.agent.pidriver import DirectRouteConfig, RowConfig
 from modelman.benchmark.agent.task import TaskBundle
 from modelman.benchmark.errors import BenchmarkError
 from modelman.providers import lifecycle
 from modelman.registry import Registry
 
-LITELLM_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.litellm.proxy.plist"
-
 # What [judge].route accepts, and where the direct route goes. The gateway is
 # the default because it is already running and already holds a key pi uses;
 # "openrouter" exists because a local gateway carries no frontier model, and
 # the judge is the one role in this harness that requires one.
 JUDGE_ROUTES = ("litellm", "openrouter")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 @dataclass
@@ -190,25 +190,6 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         rows=_expand_rows(raw.get("rows", []), registry),
         repair_rounds=repair_rounds,
     )
-
-
-def openrouter_key(plist_path: Path = LITELLM_PLIST) -> str | None:
-    """The OpenRouter key, from the environment or the LiteLLM LaunchAgent.
-
-    Same two places preflight already looks; a judge on route=openrouter needs
-    the value, not just the knowledge that one exists."""
-    env_key = os.environ.get("OPENROUTER_API_KEY")
-    if env_key:
-        return env_key
-    if not plist_path.exists():
-        return None
-    try:
-        with plist_path.open("rb") as f:
-            data = plistlib.load(f)
-    except Exception:
-        return None
-    key = data.get("EnvironmentVariables", {}).get("OPENROUTER_API_KEY")
-    return str(key) if key else None
 
 
 def _openrouter_key_available(plist_path: Path) -> bool:

@@ -202,6 +202,10 @@ def test_judge_row_samples_greater_than_one_takes_median_per_dimension():
         "scope": 10,
         "coherence": 4,
     }
+    # total must stay consistent with the scores (parse_response enforces
+    # total == sum(scores)) — the median-combined total is recomputed from
+    # the combined scores, not taken from any sample's declared total.
+    low["total"] = sum(low["scores"].values())
     high = json.loads(VALID_RESPONSE)
     high["scores"] = {
         "root_cause": 30,
@@ -210,6 +214,7 @@ def test_judge_row_samples_greater_than_one_takes_median_per_dimension():
         "scope": 14,
         "coherence": 8,
     }
+    high["total"] = sum(high["scores"].values())
     transport = _FakeTransport([json.dumps(low), VALID_RESPONSE, json.dumps(high)])
     outcome = judge_row(transport, "prompt", temperature=0.0, samples=3, max_attempts=1)
     assert outcome.status == "scored"

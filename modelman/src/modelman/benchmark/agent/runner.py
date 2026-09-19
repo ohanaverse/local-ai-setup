@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from modelman.benchmark import isolation
+from modelman.benchmark._routes import litellm_credentials
 from modelman.benchmark.agent import judge, pidriver, report
 from modelman.benchmark.agent import suite as suite_module
 from modelman.benchmark.agent.gates import GatesReport
@@ -23,7 +24,8 @@ from modelman.benchmark.agent.gates import evaluate as evaluate_gates
 from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, preflight
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
-from modelman.benchmark.errors import BenchmarkError
+from modelman.benchmark.errors import BenchmarkError, RunSavedButRestoreFailed
+from modelman.benchmark.runmeta import git_sha
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -43,21 +45,6 @@ class RowRunResult:
     judge: judge.JudgeOutcome | None = None
     composite: int | None = None
     error: str | None = None
-
-
-class RunSavedButRestoreFailed(BenchmarkError):
-    """Every row completed and is on disk; only putting the backends back failed.
-
-    Carries `run_dir` and `results` so the CLI can still record the `--latest`
-    pointer and report the row count. Without it, a host whose llama.cpp
-    LaunchAgent cannot start — this one, since its GGUF no longer exists — turns a
-    finished, fully persisted sweep into an exit code with nothing to show for it,
-    and `agent show --latest` has no idea the run ever happened."""
-
-    def __init__(self, message: str, *, run_dir: Path, results: list[RowRunResult]) -> None:
-        super().__init__(message)
-        self.run_dir = run_dir
-        self.results = results
 
 
 def _row_dir(run_dir: Path, index: int, row: RowConfig, pass_number: int) -> Path:
@@ -125,17 +112,7 @@ def _build_judge_transport(
         return judge.LiteLLMJudgeTransport(
             base_url=suite_module.OPENROUTER_BASE_URL, api_key=key, model=model
         )
-    try:
-        live = json.loads(live_models_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        live = {}
-    litellm_entry = live.get("providers", {}).get("litellm", {})
-    api_key = litellm_entry.get("apiKey")
-    if not api_key:
-        raise BenchmarkError(
-            "no LiteLLM apiKey found in ~/.pi/agent/models.json for the judge transport"
-        )
-    base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
+    base_url, api_key = litellm_credentials(live_models_path)
     return judge.LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=judge_cfg.model)
 
 
@@ -270,18 +247,6 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
         return list(rows)
     wanted = set(row_filter)
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
-
-
-
-
-def _git_sha() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-        )
-        return result.stdout.strip() or "unknown"
-    except OSError:
-        return "unknown"
 
 
 def _pi_version() -> str:
@@ -617,7 +582,7 @@ def run_suite(
     report.write_run_toml(
         run_dir / "run.toml",
         _suite_to_dict(suite),
-        git_sha=_git_sha(),
+        git_sha=git_sha(),
         pi_version=_pi_version(),
     )
 

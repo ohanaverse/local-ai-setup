@@ -71,8 +71,17 @@ _RUNNER_SCRIPT = (
 
 
 def _run_test_module(root: Path, module_name: str) -> tuple[int, int, int]:
+    # "-S" is THIS HELPER's own protection, not a mirror of gates.py: gates
+    # runs its subprocesses WITHOUT -S (site-packages stays on sys.path so
+    # task bundles may import third-party deps) and relies on
+    # create_workspace's tests/__init__.py seeding (3abac0c) to keep a
+    # stray top-level tests/__init__.py in site-packages (e.g. evalplus ->
+    # stop-sequencer) from shadowing the workspace's tests. This test
+    # helper doesn't go through create_workspace's seeded chain for the
+    # baseline-worktree cases below (dest dirs hold bare tests/), so it
+    # keeps -S for the same shadowing defense.
     result = subprocess.run(
-        [sys.executable, "-c", _RUNNER_SCRIPT, module_name],
+        [sys.executable, "-S", "-c", _RUNNER_SCRIPT, module_name],
         cwd=root,
         capture_output=True,
         text=True,

@@ -1,0 +1,64 @@
+[[items]]
+id = "rate-limit-api"
+prompt = """
+Our public REST API (Node/Express) has no rate limiting. We're seeing
+occasional abuse from a small number of IPs hammering the /search endpoint.
+Write an implementation plan to add rate limiting. Do not write code --
+just the plan.
+"""
+[items.meta]
+reference_notes = "A solid plan names a concrete algorithm (token bucket/sliding window), picks a storage backend appropriate for a multi-instance deployment (Redis, not in-memory, if the service scales horizontally), covers response shape (429 + Retry-After), covers per-IP vs per-API-key limiting, and flags the risk of shared-NAT users being over-limited. A weak plan says 'add express-rate-limit middleware' with no further detail."
+
+[[items]]
+id = "sqlite-to-postgres"
+prompt = """
+A small internal tool currently stores its data in a single SQLite file.
+It's outgrowing SQLite (concurrent writers, growing dataset) and needs to
+move to Postgres. Write an implementation plan for the migration. Do not
+write code -- just the plan.
+"""
+[items.meta]
+reference_notes = "A solid plan covers: schema translation (SQLite type quirks), a data migration/backfill step with verification (row counts, spot checks), a cutover strategy (dual-write window, or downtime window, explicitly chosen and justified), rollback plan if the cutover fails, and connection/config changes. A weak plan just says 'export to postgres' with no cutover or rollback thinking."
+
+[[items]]
+id = "add-dark-mode"
+prompt = """
+A React web app has no dark mode. Users have asked for one. Write an
+implementation plan to add a dark mode toggle that persists across
+sessions. Do not write code -- just the plan.
+"""
+[items.meta]
+reference_notes = "A solid plan covers: a systematic theming approach -- design tokens/CSS variables, Tailwind dark-mode variants, or a theme provider -- rather than a page-by-page repaint, persistence mechanism (localStorage + respecting prefers-color-scheme as a default), where the toggle lives in the UI, and a check for any hardcoded colors that would break under the new theme. Scope discipline: it should not propose a full design-system rewrite when a toggle was asked for."
+
+[[items]]
+id = "flaky-test-suite"
+prompt = """
+A CI test suite has become flaky: about 1 in 20 runs fails on a test
+unrelated to the code change, and re-running usually passes. The team
+wants this fixed before it erodes trust in CI. Write an investigation +
+remediation plan. Do not write code -- just the plan.
+"""
+[items.meta]
+reference_notes = "A solid plan separates investigation from remediation: first, identify which specific tests flake and gather evidence (timing, shared state, external dependencies, test order sensitivity) before proposing a fix; considers common root causes (shared mutable fixtures, real network calls, race conditions, time-based assertions); proposes a way to track flake rate going forward, not just a one-time fix. A weak plan jumps straight to 'add retries' without investigating root cause."
+
+[[items]]
+id = "webhook-retry"
+prompt = """
+Our system sends webhooks to customer-provided URLs. Currently, if a
+webhook delivery fails (customer server is down, times out, or returns a
+5xx), we drop it silently. Customers want reliable delivery. Write an
+implementation plan to add retry logic. Do not write code -- just the plan.
+"""
+[items.meta]
+reference_notes = "A solid plan covers: retry policy (backoff strategy, max attempts, what counts as retryable vs. not -- e.g. a 4xx should probably not retry the same way a 5xx does), a dead-letter/failure-visibility mechanism so customers can see permanently-failed deliveries, idempotency considerations (the customer's endpoint may receive the same webhook twice), and ordering guarantees (or explicit lack thereof). A weak plan just says 'retry 3 times' with no backoff or idempotency thinking."
+
+[[items]]
+id = "deprecate-endpoint"
+prompt = """
+An old API endpoint (/v1/users/lookup) is used by a handful of external
+integration partners and needs to be deprecated in favor of /v2/users. You
+don't control the partners' code. Write a deprecation plan. Do not write
+code -- just the plan.
+"""
+[items.meta]
+reference_notes = "A solid plan covers: a communication timeline (advance notice, not a surprise cutoff), a way to detect who's still calling the old endpoint (usage metrics/logging) before removing it, a deprecation-warning mechanism (response header, or a grace-period behavior) rather than an instant hard cutover, and a concrete sunset date tied to actual usage dropping rather than an arbitrary one. A weak plan just says 'turn it off and tell people'."

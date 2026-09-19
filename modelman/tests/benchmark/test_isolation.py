@@ -15,7 +15,9 @@ from modelman.local_process import ProcessResult
 LIFECYCLE = "modelman.benchmark.isolation.lifecycle"
 
 
-def _ok(provider="ollama", model="ornith-1.5:35b", url="http://localhost:11434/v1/chat/completions"):
+def _ok(
+    provider="ollama", model="ornith-1.5:35b", url="http://localhost:11434/v1/chat/completions"
+):
     return ProcessResult(provider=provider, model=model, direct_url=url, ok=True, error=None)
 
 
@@ -57,7 +59,11 @@ def test_isolate_provider_forwards_extra_args():
     has a baked-in default, which mlx_lm_server deliberately has none of."""
     with patch(
         f"{LIFECYCLE}.isolate",
-        return_value=_ok("mlx_lm_server", "target-repo (+draft draft-repo)", "http://localhost:8001/v1/chat/completions"),
+        return_value=_ok(
+            "mlx_lm_server",
+            "target-repo (+draft draft-repo)",
+            "http://localhost:8001/v1/chat/completions",
+        ),
     ) as mock_isolate:
         result = isolate_provider("mlx_lm_server", "target-repo", "draft-repo")
     mock_isolate.assert_called_once_with(
@@ -127,7 +133,9 @@ def test_stop_provider_failure_raises():
     local_control relies on this to refuse to start a replacement model on a
     port the previous occupant still holds."""
     with (
-        patch(f"{LIFECYCLE}.stop", return_value=_fail("mtplx", "mtplx still listening on port 8003")),
+        patch(
+            f"{LIFECYCLE}.stop", return_value=_fail("mtplx", "mtplx still listening on port 8003")
+        ),
         pytest.raises(BenchmarkError, match="mtplx still listening on port 8003"),
     ):
         stop_provider("mtplx")
@@ -187,4 +195,7 @@ def test_supported_provider_ids_matches_the_backends_registry_documented_list():
     literal and backends/__init__.py's constant together (issue #79
     retired the old bash helper's own "Supported:" header comment, which
     used to need the same update)."""
-    assert frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"}) == isolation.SUPPORTED_PROVIDER_IDS
+    assert (
+        frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"})
+        == isolation.SUPPORTED_PROVIDER_IDS
+    )

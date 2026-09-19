@@ -4,7 +4,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from modelman.benchmark.results import BenchmarkRun
-from modelman.benchmark.runner import RunSavedButRestoreFailed
+from modelman.benchmark.runner import WorkloadRunSavedButRestoreFailed
 from modelman.main import app
 
 
@@ -27,7 +27,7 @@ def test_run_records_latest_even_when_restore_failed(tmp_path):
     )
 
     def _raise(*args, **kwargs):
-        raise RunSavedButRestoreFailed(
+        raise WorkloadRunSavedButRestoreFailed(
             f"providers failed to restore (saved to {run_dir}): llamacpp down",
             run_dir=run_dir,
             run=run,

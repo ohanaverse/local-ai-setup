@@ -46,6 +46,13 @@ def load_task(path: Path) -> TaskBundle:
         meta = tomllib.load(f)
 
     tests_dir = gates_config.get("build", {}).get("tests_dir")
+    if tests_dir is not None and (Path(tests_dir).is_absolute() or ".." in Path(tests_dir).parts):
+        # create_workspace mkdirs every part of tests_dir under the temp
+        # workspace root; an absolute path or ".." would escape it.
+        raise BenchmarkError(
+            f"task bundle {path} has gates.toml tests_dir={tests_dir!r} "
+            "(must be a relative path inside the workspace, no '..')"
+        )
     if tests_dir is not None and not Path(tests_dir).parts:
         # gates.py's tests_dir-prefix checks (gates 6/7) compare a file's
         # leading path parts against Path(tests_dir).parts; "." or "" both

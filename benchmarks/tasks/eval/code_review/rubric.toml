@@ -1,0 +1,7 @@
+verdicts = ["caught_it", "partial_catch", "missed_it"]
+
+[dimensions]
+bug_detection = 40
+false_positive_control = 20
+severity_judgment = 20
+actionability = 20

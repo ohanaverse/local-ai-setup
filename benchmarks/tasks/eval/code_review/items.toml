@@ -1,0 +1,92 @@
+[[items]]
+id = "off-by-one-slice"
+prompt = """
+Review this Python function for correctness issues:
+
+```python
+def last_n_items(items, n):
+    return items[len(items) - n - 1:]
+```
+"""
+[items.meta]
+seeded_issue = "Off-by-one: should be items[len(items) - n:] to return exactly the last n items; the '- 1' includes one extra element."
+
+[[items]]
+id = "sql-injection"
+prompt = """
+Review this Python function for correctness and security issues:
+
+```python
+def find_user(conn, username):
+    query = f"SELECT * FROM users WHERE username = '{username}'"
+    return conn.execute(query).fetchone()
+```
+"""
+[items.meta]
+seeded_issue = "SQL injection: username is interpolated directly into the query string instead of using a parameterized query. This is the primary issue; severity should be flagged as high/blocking, not a style nit."
+
+[[items]]
+id = "race-condition-counter"
+prompt = """
+Review this Python class for correctness issues in a multi-threaded context
+(it is documented as being shared across worker threads):
+
+```python
+class RequestCounter:
+    def __init__(self):
+        self.count = 0
+
+    def increment(self):
+        self.count = self.count + 1
+        return self.count
+```
+"""
+[items.meta]
+seeded_issue = "Race condition: increment() is not atomic (read-modify-write across three bytecode ops), so concurrent threads can lose updates. Needs a lock (threading.Lock) or an atomic primitive."
+
+[[items]]
+id = "resource-leak"
+prompt = """
+Review this Python function for correctness issues:
+
+```python
+import json
+
+def read_config(path):
+    f = open(path)
+    data = f.read()
+    return json.loads(data)
+```
+"""
+[items.meta]
+seeded_issue = "Resource leak: the file handle f is never closed (no with-statement, no f.close()), and if json.loads raises, the leak is guaranteed on every call path, not just the happy path."
+
+[[items]]
+id = "mutable-default-arg"
+prompt = """
+Review this Python function for correctness issues:
+
+```python
+def add_tag(tag, tags=[]):
+    tags.append(tag)
+    return tags
+```
+"""
+[items.meta]
+seeded_issue = "Mutable default argument: tags=[] is created once at function definition time and shared/mutated across all calls that don't pass their own list, causing tags to accumulate across unrelated calls."
+
+[[items]]
+id = "exception-swallowing"
+prompt = """
+Review this Python function for correctness issues:
+
+```python
+def parse_amount(raw):
+    try:
+        return float(raw)
+    except:
+        return 0
+```
+"""
+[items.meta]
+seeded_issue = "Bare except silently swallows every exception (including KeyboardInterrupt/SystemExit) and returns a default of 0, which is indistinguishable from a legitimately-parsed zero -- masking malformed input as a valid zero amount rather than surfacing or logging the parse failure."
