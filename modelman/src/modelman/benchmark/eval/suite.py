@@ -157,17 +157,33 @@ def load_suite(path: Path, registry: Registry) -> Suite:
     with path.open("rb") as f:
         raw = tomllib.load(f)
 
-    judge_raw = raw["judge"]
-    if judge_raw["route"] not in JUDGE_ROUTES:
+    # Missing top-level keys raise BenchmarkError, not KeyError: every other
+    # suite malformation (unknown model, duplicate label, unknown provider)
+    # surfaces as a clean one-line error the CLI catches, and a hand-written
+    # first suite missing [judge] or name must not be the one case that
+    # traceback instead.
+    judge_raw = raw.get("judge")
+    if not isinstance(judge_raw, dict):
+        raise BenchmarkError(f"suite {path.name} is missing the required [judge] table")
+    name = raw.get("name")
+    if not name:
+        raise BenchmarkError(f"suite {path.name} is missing the required name field")
+    judge_route = judge_raw.get("route")
+    if not judge_route:
+        raise BenchmarkError(f"suite {path.name} [judge] is missing the required route key")
+    if judge_route not in JUDGE_ROUTES:
         raise BenchmarkError(
-            f"[judge] route must be one of {list(JUDGE_ROUTES)}, got {judge_raw['route']!r}"
+            f"[judge] route must be one of {list(JUDGE_ROUTES)}, got {judge_route!r}"
         )
+    judge_model = judge_raw.get("model")
+    if not judge_model:
+        raise BenchmarkError(f"suite {path.name} [judge] is missing the required model key")
     judge = JudgeConfig(
-        model=judge_raw["model"],
-        temperature=judge_raw["temperature"],
+        model=judge_model,
+        temperature=judge_raw.get("temperature", 0.0),
         samples=judge_raw.get("samples", 1),
         max_attempts=judge_raw.get("max_attempts", 2),
-        route=judge_raw["route"],
+        route=judge_route,
     )
     coding_raw = raw.get("coding", {})
     coding = CodingConfig(dataset=coding_raw.get("dataset"), limit=coding_raw.get("limit"))
@@ -176,7 +192,7 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         for provider_id, cfg in raw.get("routes", {}).get("direct", {}).items()
     }
     return Suite(
-        name=raw["name"],
+        name=name,
         cooldown_s=raw.get("cooldown_s", 15.0),
         judge=judge,
         coding=coding,

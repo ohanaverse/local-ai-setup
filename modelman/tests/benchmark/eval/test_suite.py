@@ -98,6 +98,49 @@ def test_load_suite_rejects_unknown_model_even_with_explicit_provider(tmp_path):
         load_suite(_write(tmp_path, body), _registry())
 
 
+def test_load_suite_rejects_missing_judge_table_with_clean_error(tmp_path):
+    # A hand-written first suite that omits [judge] must fail with the same
+    # clean one-line BenchmarkError every other suite malformation produces
+    # (unknown model, duplicate label, unknown provider) — a raw
+    # KeyError traceback past the CLI's BenchmarkError catch would be the
+    # one hostile path in an otherwise uniform error surface.
+    body = SUITE_BODY.replace(
+        """[judge]
+model = "anthropic/claude-opus-5"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "openrouter"
+
+""",
+        "",
+    )
+    with pytest.raises(BenchmarkError, match=r"missing the required \[judge\] table"):
+        load_suite(_write(tmp_path, body), _registry())
+
+
+def test_load_suite_rejects_missing_name_with_clean_error(tmp_path):
+    # Same clean-error discipline for a missing top-level `name`: metrics
+    # and summaries identify the run by it, and a hand-edited suite that
+    # lost it should say so in one line, not KeyError: 'name'.
+    body = SUITE_BODY.replace('name = "eval-test"\n', "")
+    with pytest.raises(BenchmarkError, match="missing the required name field"):
+        load_suite(_write(tmp_path, body), _registry())
+
+
+def test_load_suite_rejects_judge_missing_model_or_route_with_clean_error(tmp_path):
+    # A [judge] table that lost a required key (hand-edit or merge-conflict
+    # resolution) must name the missing key in a clean error rather than
+    # dying on raw dict access mid-construction.
+    body = SUITE_BODY.replace('model = "anthropic/claude-opus-5"\n', "")
+    with pytest.raises(BenchmarkError, match=r"\[judge\] is missing the required model key"):
+        load_suite(_write(tmp_path, body), _registry())
+
+    body = SUITE_BODY.replace('route = "openrouter"\n', "")
+    with pytest.raises(BenchmarkError, match=r"\[judge\] is missing the required route key"):
+        load_suite(_write(tmp_path, body), _registry())
+
+
 def test_preflight_rejects_direct_row_missing_route_block(tmp_path):
     body = SUITE_BODY.replace("[routes.direct.omlx]\n", "").replace(
         'base_url = "http://localhost:8000/v1"\n', ""
