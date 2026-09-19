@@ -179,8 +179,9 @@ def test_download_flips_cancel_flag_when_interrupted(provider):
         "repo": "foo/bar",
         "files": ["model.gguf"],
     }
-    with patch("modelman.providers.llamacpp.snapshot_download", side_effect=KeyboardInterrupt), pytest.raises(
-        KeyboardInterrupt
+    with (
+        patch("modelman.providers.llamacpp.snapshot_download", side_effect=KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
     ):
         provider.download(variant)
     assert provider._cancel_requested is True

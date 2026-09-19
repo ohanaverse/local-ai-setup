@@ -94,8 +94,9 @@ def test_reconcile_model_state_resolves_path_via_path_of_before_list_local(monke
     panel. provider.path_of() (what `modelman sync` uses) resolves the real
     on-disk directory and must be consulted first; list_local() remains the
     fallback for providers that cannot resolve per-variant paths."""
-    models = [ModelEntry(id="mlx_lm_server/p", family="f", provider_id="ollama",
-                         model_name="p+draft-d")]
+    models = [
+        ModelEntry(id="mlx_lm_server/p", family="f", provider_id="ollama", model_name="p+draft-d")
+    ]
     reg, state, stub = _seed(monkeypatch, models=models)
     stub.is_downloaded.return_value = True
     stub.size_of.return_value = 7
@@ -143,9 +144,7 @@ def test_reconcile_model_state_marks_local_artifact_ready(monkeypatch):
     size_of, and list_local are never consulted."""
     models = [ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")]
     reg, state, stub = _seed(monkeypatch, models=models)
-    stub.resolve_local.return_value = [
-        {"variant_id": "a", "path": "ollama:a", "size_bytes": 12345}
-    ]
+    stub.resolve_local.return_value = [{"variant_id": "a", "path": "ollama:a", "size_bytes": 12345}]
 
     reconcile_model_state(models, reg, state)
 

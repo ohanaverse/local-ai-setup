@@ -198,9 +198,7 @@ def test_resolve_local_tagless_name_resolves_latest(mock_runner):
     )
     runner = mock_runner(returncode=0, stdout=stdout)
     p = OllamaProvider({})
-    results = p.resolve_local(
-        [{"id": "x", "provider": "ollama", "name": "gemma4"}], runner=runner
-    )
+    results = p.resolve_local([{"id": "x", "provider": "ollama", "name": "gemma4"}], runner=runner)
     assert results is not None
     assert results[0] is not None
     assert results[0]["size_bytes"] == 17 * 1024**3

@@ -46,7 +46,5 @@ def http_models_ids(url: str, timeout: float = 2.0) -> list[str]:
     if not isinstance(items, list):
         return []
     return [
-        item["id"]
-        for item in items
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
+        item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)
     ]

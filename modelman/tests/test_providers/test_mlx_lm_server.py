@@ -510,9 +510,7 @@ def test_delete_removes_orphaned_repo_side_when_local_path_dual_source(provider,
     assert (user_target / "model.safetensors").exists()
 
 
-def test_cleanup_partial_download_removes_orphaned_repo_side_on_dual_source(
-    provider, tmp_path
-):
+def test_cleanup_partial_download_removes_orphaned_repo_side_on_dual_source(provider, tmp_path):
     """The same dual-source repo-dir cleanup must apply to a cancelled
     download's partial-artifact removal."""
     md = tmp_path / "models"
@@ -603,9 +601,7 @@ def test_download_flips_cancel_flag_when_target_side_interrupted(provider):
         "draft_repo": "foo/draft",
     }
     with (
-        patch(
-            "modelman.providers.mlx_lm_server.snapshot_download", side_effect=KeyboardInterrupt
-        ),
+        patch("modelman.providers.mlx_lm_server.snapshot_download", side_effect=KeyboardInterrupt),
         pytest.raises(KeyboardInterrupt),
     ):
         provider.download(variant)

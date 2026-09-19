@@ -29,6 +29,7 @@ class _FakeResponse:
 def _runner(payload: dict[str, Any] | None = None, exc: Exception | None = None):
     def _run(_url: str, **_kwargs: Any) -> _FakeResponse:
         return _FakeResponse(payload=payload, exc=exc)
+
     return _run
 
 
@@ -38,7 +39,10 @@ def _seed_registry(tmp_path: Path, monkeypatch):
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+                id="openrouter",
+                name="OpenRouter",
+                location="cloud",
+                auth=AuthConfig(type="api_key"),
             )
         ],
         models=[
@@ -73,7 +77,9 @@ def test_refresh_prices_updates_registry_and_reports(tmp_path, monkeypatch):
 
 def test_refresh_prices_reports_api_error_and_exits(tmp_path, monkeypatch):
     _seed_registry(tmp_path, monkeypatch)
-    with patch("modelman.pricing._default_runner", side_effect=_runner(exc=RuntimeError("offline"))):
+    with patch(
+        "modelman.pricing._default_runner", side_effect=_runner(exc=RuntimeError("offline"))
+    ):
         result = CliRunner().invoke(app, ["refresh-prices"])
 
     assert result.exit_code == 1

@@ -13,7 +13,12 @@ def test_is_downloaded_checks_org_dash_dash_model_dir(tmp_path):
     missing (or vice versa)."""
     p = MTPLXProvider({"model_dir": str(tmp_path / "models")})
     (tmp_path / "models" / "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality").mkdir(parents=True)
-    (tmp_path / "models" / "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality" / "weights.safetensors").write_bytes(b"x")
+    (
+        tmp_path
+        / "models"
+        / "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"
+        / "weights.safetensors"
+    ).write_bytes(b"x")
     assert p.is_downloaded(_variant("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")) is True
     assert p.is_downloaded(_variant("Other/Model")) is False
 

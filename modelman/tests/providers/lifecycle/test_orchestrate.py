@@ -68,7 +68,9 @@ def test_isolate_unavailable_backend_fails_without_teardown():
     provider's binary/plist must not have every other local provider torn
     down on the way to discovering that."""
     with (
-        patch.object(BACKENDS["omlx"], "check_available", return_value="omlx binary not found on PATH"),
+        patch.object(
+            BACKENDS["omlx"], "check_available", return_value="omlx binary not found on PATH"
+        ),
         patch(f"{ORCH}._stop_others") as mock_stop_others,
         patch.object(BACKENDS["omlx"], "start") as mock_start,
     ):
@@ -605,7 +607,9 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
         patch.object(BACKENDS["ollama"], "restore") as mock_ollama_restore,
         patch.object(OMLX_4BIT, "restore") as mock_omlx_restore,
         patch.object(OMLX_6BIT, "restore") as mock_omlx6_restore,
-        patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None) as mock_mlx_stop,
+        patch.object(
+            BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None
+        ) as mock_mlx_stop,
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None) as mock_mtplx_stop,
         patch.object(BACKENDS["llamacpp"], "restore") as mock_llamacpp_restore,
         patch.object(BACKENDS["llamacpp"], "stop_and_wait") as mock_llamacpp_stop,
@@ -628,7 +632,9 @@ def test_restore_restart_failure_fails_the_aggregate():
     did not come back up is a real failure — the machine is left without a
     service the user expects to be running."""
     with (
-        patch.object(BACKENDS["ollama"], "restore", side_effect=LifecycleError("ollama did not come back up")),
+        patch.object(
+            BACKENDS["ollama"], "restore", side_effect=LifecycleError("ollama did not come back up")
+        ),
         patch.object(OMLX_4BIT, "restore"),
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
@@ -702,7 +708,9 @@ def test_restore_litellm_treats_an_http_error_status_as_up(tmp_path):
 
     plist = tmp_path / "local.litellm.proxy.plist"
     plist.write_text("")
-    http_401 = urllib.error.HTTPError("http://localhost:4000/v1/models", 401, "Unauthorized", {}, None)
+    http_401 = urllib.error.HTTPError(
+        "http://localhost:4000/v1/models", 401, "Unauthorized", {}, None
+    )
     with (
         patch(f"{ORCH}.launchd.LITELLM_PLIST", plist),
         patch(f"{ORCH}.urllib.request.urlopen", side_effect=http_401),

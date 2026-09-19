@@ -15,7 +15,7 @@ from modelman.litellm import (
     build_model_list_entry,
     ensure_litellm_settings,
     expose_model,
-is_cloud_effective,
+    is_cloud_effective,
     is_effectively_exposed,
     load_litellm_config,
     passes_ready_gate,
@@ -109,7 +109,9 @@ def test_build_entry_mtplx():
         ),
         _provider("mtplx", base_url="http://localhost:8003/v1"),
     )
-    assert entry["litellm_params"]["model"] == "openai/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    assert (
+        entry["litellm_params"]["model"] == "openai/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+    )
     assert entry["litellm_params"]["api_key"] == "not-needed"
     assert entry["litellm_params"]["api_base"] == "http://localhost:8003/v1"
 
@@ -1057,7 +1059,9 @@ def test_is_effectively_exposed_override_false_hides_non_native():
     state = StateStore()
     state.set("ollama/glm-5", ModelState(ready=False, exposed=True))
 
-    assert is_effectively_exposed(model, state, _registry("ollama"), exposed_override=False) is False
+    assert (
+        is_effectively_exposed(model, state, _registry("ollama"), exposed_override=False) is False
+    )
 
 
 def test_passes_ready_gate_local_ready():

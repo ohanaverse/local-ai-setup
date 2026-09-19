@@ -209,7 +209,9 @@ def test_stop_skips_signal_when_pid_identity_mismatches():
     whatever now holds that pid."""
     m = mock_open(read_data="1234")
     ps_mismatch = MagicMock(
-        return_value=MagicMock(returncode=0, stdout="/Applications/Safari.app/Contents/MacOS/Safari\n")
+        return_value=MagicMock(
+            returncode=0, stdout="/Applications/Safari.app/Contents/MacOS/Safari\n"
+        )
     )
     with (
         patch("builtins.open", m),

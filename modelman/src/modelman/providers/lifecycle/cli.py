@@ -146,9 +146,9 @@ def stop_all_cmd(
     _emit(
         result,
         json_output,
-        success_message=lambda r: f"stopped all local providers (kept {keep})"
-        if keep
-        else "stopped all local providers",
+        success_message=lambda r: (
+            f"stopped all local providers (kept {keep})" if keep else "stopped all local providers"
+        ),
     )
     raise typer.Exit(0 if result.ok else 1)
 
@@ -170,7 +170,9 @@ def list_cmd() -> None:
     for provider_id in sorted(lifecycle.BACKENDS):
         backend = lifecycle.BACKENDS[provider_id]
         status = "supported" if provider_id in lifecycle.SUPPORTED_PROVIDER_IDS else "retired-only"
-        occupancy = "" if backend.occupancy_key == provider_id else f" occupancy={backend.occupancy_key}"
+        occupancy = (
+            "" if backend.occupancy_key == provider_id else f" occupancy={backend.occupancy_key}"
+        )
         default_model = backend.default_model or "none"
         env_var = backend.env_var or "none"
         typer.echo(

@@ -177,9 +177,7 @@ def _ollama_loaded_names() -> list[str]:
     not `ollama list`'s downloaded-but-idle catalog. Empty on any failure:
     a down daemon has nothing loaded."""
     try:
-        result = _default_runner(
-            ["ollama", "ps"], capture_output=True, text=True, check=False
-        )
+        result = _default_runner(["ollama", "ps"], capture_output=True, text=True, check=False)
     except OSError:
         return []
     if result.returncode != 0:
@@ -531,8 +529,10 @@ def _discovered_models(
     """
     return [
         DiscoveredModel(
-            provider_id=provider_id, variant_id=variant_id,
-            path=local_model["path"], size_bytes=local_model.get("size_bytes"),
+            provider_id=provider_id,
+            variant_id=variant_id,
+            path=local_model["path"],
+            size_bytes=local_model.get("size_bytes"),
         )
         for (provider_id, variant_id), local_model in sorted(local_map.items())
         if not _registered_under_name(registry, provider_id, variant_id)
@@ -623,7 +623,9 @@ def _register_discovered_model(
         raise LocalControlError(f"failed to register {model_id}: {exc}") from exc
 
     try:
-        warnings = expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
+        warnings = expose_model(
+            registry, state, model_id, litellm_path or default_litellm_config_path()
+        )
     except ExposeError as exc:
         # The registry entry and its ready=true state are already persisted at
         # this point (both are prerequisites for exposing), so this leaves a
@@ -691,7 +693,9 @@ def _resolve_or_register(
         return native_matches[0], []
     if len(native_matches) > 1:
         ids = ", ".join(sorted(m.id for m in native_matches))
-        raise LocalControlError(f"{model_id!r} matches multiple registered models ({ids}) — use the full model id")
+        raise LocalControlError(
+            f"{model_id!r} matches multiple registered models ({ids}) — use the full model id"
+        )
 
     discovered = _find_discovered(registry, model_id)
     if not discovered:
@@ -704,7 +708,9 @@ def _resolve_or_register(
         )
     if family is None:
         match = discovered[0]
-        raise DiscoveredModelNeedsFamily(match.provider_id, match.variant_id, known_families(registry, state))
+        raise DiscoveredModelNeedsFamily(
+            match.provider_id, match.variant_id, known_families(registry, state)
+        )
     return _register_discovered_model(
         registry, state, discovered[0], family, registry_path, state_path, litellm_path
     )
@@ -748,7 +754,9 @@ def inventory_local_models(registry: Registry, state: StateStore) -> LocalModelI
         running = False
         if state.get(model.id).running:
             provider = providers_by_id.get(model.provider_id)
-            probe_origin = base_origin(provider.auth.base_url) if provider and provider.auth else None
+            probe_origin = (
+                base_origin(provider.auth.base_url) if provider and provider.auth else None
+            )
             running = _probe_running(model.provider_id, model.model_name, probe_origin)
         # A provider that can't size an artifact it confirms is present (no
         # size_of() implementation) must not regress the size modelman.toml
@@ -825,7 +833,9 @@ def _expose_for_start(
     by a concurrent process in the meantime.
     """
     try:
-        return True, expose_model(registry, state, model_id, litellm_path or default_litellm_config_path())
+        return True, expose_model(
+            registry, state, model_id, litellm_path or default_litellm_config_path()
+        )
     except (ExposeError, LiteLLMConfigError, OSError) as exc:
         if isinstance(exc, ExposeError) and "not ready" in str(exc):
             return False, [
@@ -910,7 +920,9 @@ def start_local_model(
 
     provider = _provider_entry(registry, model.provider_id)
     if not model_has_local_artifact(model, provider):
-        raise LocalControlError(f"{resolved_id} is a cloud model — modelman start only runs local models")
+        raise LocalControlError(
+            f"{resolved_id} is a cloud model — modelman start only runs local models"
+        )
 
     if model.provider_id not in SUPPORTED_PROVIDER_IDS:
         raise LocalControlError(
@@ -950,7 +962,9 @@ def start_local_model(
     already = fresh_state.get(resolved_id).running
     if already:
         if _probe_running(model.provider_id, model.model_name, probe_origin):
-            expose_ok, expose_warnings = _expose_for_start(registry, fresh_state, resolved_id, litellm_path)
+            expose_ok, expose_warnings = _expose_for_start(
+                registry, fresh_state, resolved_id, litellm_path
+            )
             if expose_ok:
                 try:
                     with locked_state(state_path) as fresh:
@@ -962,8 +976,10 @@ def start_local_model(
                         f"{resolved_id}'s exposed flag could not be persisted: {exc}"
                     ]
             return StartResult(
-                model_id=resolved_id, already_running=True,
-                warnings=registration_warnings + expose_warnings, other_running=other_running,
+                model_id=resolved_id,
+                already_running=True,
+                warnings=registration_warnings + expose_warnings,
+                other_running=other_running,
             )
         _clear_stale_running_flag(resolved_id, state_path, litellm_path)
 
@@ -999,7 +1015,9 @@ def start_local_model(
             raise LocalControlError(f"failed to start {resolved_id}: {exc}") from exc
         if not result.ok:
             _clear_stale_running_flag(resolved_id, state_path, litellm_path)
-            raise LocalControlError(f"failed to start {resolved_id}: {result.error or 'unknown error'}")
+            raise LocalControlError(
+                f"failed to start {resolved_id}: {result.error or 'unknown error'}"
+            )
         direct_url = result.direct_url or None
 
         if occupant is not None and model.provider_id not in _OMLX_PROVIDER_IDS:
@@ -1035,8 +1053,11 @@ def start_local_model(
             f"persisted: {exc} — wt's picker will not see it as running until this succeeds"
         ) from exc
     return StartResult(
-        model_id=resolved_id, already_running=False, direct_url=direct_url,
-        warnings=registration_warnings + expose_warnings, other_running=other_running,
+        model_id=resolved_id,
+        already_running=False,
+        direct_url=direct_url,
+        warnings=registration_warnings + expose_warnings,
+        other_running=other_running,
     )
 
 

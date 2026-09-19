@@ -43,7 +43,9 @@ def test_isolate_json_success_prints_exact_five_key_envelope():
     # parse stdout as JSON and expect EXACTLY these 5 keys — an extra key
     # (or a stray print polluting stdout) would silently break that
     # contract without any test ever exercising the real parse step.
-    result = LifecycleResult("ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None)
+    result = LifecycleResult(
+        "ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None
+    )
     with patch(f"{LIFECYCLE}.isolate", return_value=result) as mock_isolate:
         invoked = runner.invoke(app, ["provider", "isolate", "ollama", "llama3.2:3b", "--json"])
     assert invoked.exit_code == 0, invoked.stderr
@@ -76,7 +78,9 @@ def test_isolate_human_output_success_goes_to_stdout():
     # Without --json, a human line describing the isolated provider/model
     # is the whole contract — this is what a person watching the terminal
     # actually reads.
-    result = LifecycleResult("ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None)
+    result = LifecycleResult(
+        "ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None
+    )
     with patch(f"{LIFECYCLE}.isolate", return_value=result):
         invoked = runner.invoke(app, ["provider", "isolate", "ollama", "llama3.2:3b"])
     assert invoked.exit_code == 0
@@ -105,7 +109,9 @@ def test_isolate_forwards_draft_into_extra_args_second_slot():
     # did — silently fed the DRAFT repo id into the backend's target slot
     # and left the draft unset, so every --draft invocation failed with
     # "requires target+draft".
-    result = LifecycleResult("mlx_lm_server", "target-model", "http://localhost:8001/v1/chat/completions", True, None)
+    result = LifecycleResult(
+        "mlx_lm_server", "target-model", "http://localhost:8001/v1/chat/completions", True, None
+    )
     with patch(f"{LIFECYCLE}.isolate", return_value=result) as mock_isolate:
         invoked = runner.invoke(
             app, ["provider", "isolate", "mlx_lm_server", "target-model", "--draft", "draft-model"]
@@ -120,20 +126,22 @@ def test_isolate_without_draft_passes_empty_extra_args():
     # No --draft must mean NO placeholder at all — an ("",) tuple would be
     # indistinguishable from "a target was supplied positionally" for any
     # backend that reads extra_args[0] by length rather than truthiness.
-    result = LifecycleResult("mlx_lm_server", "target-model", "http://localhost:8001/v1/chat/completions", True, None)
+    result = LifecycleResult(
+        "mlx_lm_server", "target-model", "http://localhost:8001/v1/chat/completions", True, None
+    )
     with patch(f"{LIFECYCLE}.isolate", return_value=result) as mock_isolate:
         invoked = runner.invoke(app, ["provider", "isolate", "mlx_lm_server", "target-model"])
     assert invoked.exit_code == 0, invoked.stderr
-    mock_isolate.assert_called_once_with(
-        "mlx_lm_server", "target-model", extra_args=(), solo=False
-    )
+    mock_isolate.assert_called_once_with("mlx_lm_server", "target-model", extra_args=(), solo=False)
 
 
 def test_isolate_forwards_solo():
     # --solo must reach orchestrate.isolate() as solo=True — this is what
     # restricts teardown to the backend's own occupant (modelman start's
     # same-provider-only lifecycle) instead of full exclusivity.
-    result = LifecycleResult("ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None)
+    result = LifecycleResult(
+        "ollama", "llama3.2:3b", "http://localhost:11434/v1/chat/completions", True, None
+    )
     with patch(f"{LIFECYCLE}.isolate", return_value=result) as mock_isolate:
         invoked = runner.invoke(app, ["provider", "isolate", "ollama", "llama3.2:3b", "--solo"])
     assert invoked.exit_code == 0, invoked.stderr
