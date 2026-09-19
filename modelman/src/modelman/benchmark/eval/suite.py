@@ -185,6 +185,11 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         max_attempts=judge_raw.get("max_attempts", 2),
         route=judge_route,
     )
+    if judge.samples < 1 or judge.max_attempts < 1:
+        raise BenchmarkError(
+            f"suite {path.name} [judge] samples and max_attempts must be >= 1, got "
+            f"{judge.samples}/{judge.max_attempts}"
+        )
     coding_raw = raw.get("coding", {})
     coding = CodingConfig(dataset=coding_raw.get("dataset"), limit=coding_raw.get("limit"))
     routes_direct = {

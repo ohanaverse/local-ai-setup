@@ -7,6 +7,7 @@ grades and which instead uses items.toml to hold dataset/limit config).
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.judge_core import Rubric
 
 CODING_CATEGORY = "coding"
+_ITEM_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 @dataclass
@@ -92,6 +94,16 @@ def load_category(path: Path) -> Category:
     ]
     if not items:
         raise BenchmarkError(f"category {path} items.toml has no [[items]]")
+    # Ids become directory names and lookup keys: a duplicate silently
+    # overwrites artifacts and mis-pairs judging, and a path-like id escapes
+    # the category directory.
+    seen: set[str] = set()
+    for item in items:
+        if not _ITEM_ID_RE.fullmatch(item.id) or item.id in (".", ".."):
+            raise BenchmarkError(f"category {path} has invalid item id {item.id!r}")
+        if item.id in seen:
+            raise BenchmarkError(f"category {path} has duplicate item id {item.id!r}")
+        seen.add(item.id)
 
     return Category(
         name=name,

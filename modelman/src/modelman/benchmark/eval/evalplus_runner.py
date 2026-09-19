@@ -145,13 +145,28 @@ def run_coding_category(
         cmd = _build_command(
             dataset=dataset, base_url=base_url, model=model, limit=limit, workdir=tmp
         )
-        result = run_cmd(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            env={**os.environ, "OPENAI_API_KEY": api_key},
-        )
+        try:
+            result = run_cmd(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                env={**os.environ, "OPENAI_API_KEY": api_key},
+            )
+        except subprocess.TimeoutExpired:
+            return CodingResult(
+                dataset=dataset,
+                pass_at_1=None,
+                raw_output="",
+                error="evalplus timed out after 1800s",
+            )
+        except FileNotFoundError as exc:
+            return CodingResult(
+                dataset=dataset,
+                pass_at_1=None,
+                raw_output="",
+                error=f"evalplus not runnable (is the `eval` extra installed?): {exc}",
+            )
         if result.returncode != 0:
             return CodingResult(
                 dataset=dataset,

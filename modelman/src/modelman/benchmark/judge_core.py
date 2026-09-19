@@ -86,27 +86,33 @@ def _json_candidate(raw_text: str, rubric: Rubric) -> str:
     require one, while a rubric with verdicts=None never expects the key at
     all and must not require it."""
     answer_keys = _BASE_ANSWER_KEYS | ({"verdict"} if rubric.verdicts is not None else set())
-    fenced = _FENCE_RE.search(raw_text)
-    text = fenced.group(1) if fenced else raw_text
+    # Every fenced block is a candidate, then the raw reply: the first fence
+    # is not necessarily the answer (a rationale can quote a ```python
+    # snippet before an unfenced or later-fenced JSON answer, typical for
+    # code_review items). An answer-keyed dict anywhere beats any fallback.
+    candidates = [m.group(1) for m in _FENCE_RE.finditer(raw_text)] + [raw_text]
     decoder = json.JSONDecoder()
-    idx = 0
     fallback: str | None = None
-    while idx < len(text):
-        if text[idx] == "{":
-            try:
-                obj, end = decoder.raw_decode(text, idx)
-                if isinstance(obj, dict):
-                    if obj.keys() >= answer_keys:
-                        return text[idx:end]
-                    if fallback is None:
-                        fallback = text[idx:end]
-            except json.JSONDecodeError:
-                pass
-        idx += 1
+    for text in candidates:
+        idx = 0
+        while idx < len(text):
+            if text[idx] == "{":
+                try:
+                    obj, end = decoder.raw_decode(text, idx)
+                    if isinstance(obj, dict):
+                        if obj.keys() >= answer_keys:
+                            return text[idx:end]
+                        if fallback is None:
+                            fallback = text[idx:end]
+                except json.JSONDecodeError:
+                    pass
+            idx += 1
     return fallback if fallback is not None else raw_text
 
 
 def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
+    if not isinstance(raw_text, str):
+        raise JudgeContractError(f"response is not text: {type(raw_text).__name__}")
     try:
         data = json.loads(_json_candidate(raw_text, rubric))
     except json.JSONDecodeError as exc:
@@ -119,6 +125,8 @@ def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
         raise JudgeContractError(f"response missing keys: {missing}")
 
     scores = data["scores"]
+    if not isinstance(scores, dict):
+        raise JudgeContractError(f"scores must be an object, got {type(scores).__name__}")
     missing_dims = [d for d in rubric.dimensions if d not in scores]
     if missing_dims:
         raise JudgeContractError(f"scores missing dimensions: {missing_dims}")
@@ -143,11 +151,15 @@ def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
     if total != score_sum:
         raise JudgeContractError(f"total {total} does not equal the sum of scores {score_sum}")
 
+    flags = data.get("flags", [])
+    if not isinstance(flags, list):
+        raise JudgeContractError(f"flags must be a list, got {type(flags).__name__}")
+
     return JudgeScore(
         scores={d: scores[d] for d in rubric.dimensions},
         total=total,
         verdict=str(verdict),
-        flags=list(data.get("flags", [])),
+        flags=[str(f) for f in flags],
         rationale=str(data.get("rationale", "")),
         raw_text=raw_text,
     )
@@ -162,6 +174,8 @@ def judge_row(
     samples: int,
     max_attempts: int,
 ) -> JudgeOutcome:
+    if samples < 1 or max_attempts < 1:
+        raise ValueError(f"samples and max_attempts must be >= 1, got {samples}/{max_attempts}")
     collected: list[JudgeScore] = []
     attempts_used = 0
     last_error: str | None = None
@@ -211,7 +225,16 @@ class LiteLLMJudgeTransport:
     temperature. Generic enough to double as a row's own generation
     transport in the eval benchmark, not just the judge's."""
 
-    def __init__(self, base_url: str, api_key: str, model: str, *, retry_backoff_s: float = 2.0):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        retry_backoff_s: float = 2.0,
+        timeout_s: float = 120,
+    ):
+        self.timeout_s = timeout_s
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -237,7 +260,7 @@ class LiteLLMJudgeTransport:
                 "temperature": temperature,
                 "stream": False,
             },
-            timeout=120,
+            timeout=self.timeout_s,
         )
         if response.status_code >= 400:
             raise JudgeTransportError(
@@ -246,9 +269,17 @@ class LiteLLMJudgeTransport:
             )
         try:
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
             raise JudgeTransportError(
                 f"malformed 200 response from {self.base_url}/chat/completions: "
                 f"{type(exc).__name__}: {response.text[:200]}"
             ) from exc
+        # A 200 with content null (common for reasoning models that spend
+        # the budget on hidden thinking) is a failed call, not empty text.
+        if not isinstance(content, str):
+            raise JudgeTransportError(
+                f"200 response from {self.base_url}/chat/completions had non-text content: "
+                f"{type(content).__name__}"
+            )
+        return content

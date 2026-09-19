@@ -80,8 +80,13 @@ def _row_index(row: RowConfig) -> int:
     return row.suite_index
 
 
+# Local reasoning/planning generations can run well past the judge default.
+GENERATION_TIMEOUT_S = 900
+
+
 def _row_dir(run_dir: Path, index: int, row: RowConfig) -> Path:
-    return run_dir / f"{index:02d}--{row.label}"
+    # Labels are user-supplied; a path separator must not nest or escape.
+    return run_dir / f"{index:02d}--{row.label.replace('/', '_').replace(chr(92), '_')}"
 
 
 def _default_judge_transport_factory(judge_cfg) -> JudgeTransport:
@@ -318,7 +323,9 @@ def _run_row(
     judge-after-generation ordering rule."""
     model = registry.model(row.model_id)
     base_url, model_name, api_key = resolve_row_endpoint(row, model.model_name, suite.routes_direct)
-    row_transport = LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=model_name)
+    row_transport = LiteLLMJudgeTransport(
+        base_url=base_url, api_key=api_key, model=model_name, timeout_s=GENERATION_TIMEOUT_S
+    )
 
     results: dict[str, object] = {}
     for category in _row_categories(row, categories):
@@ -430,8 +437,6 @@ def run_suite(
                 # same way); none before the first row — it runs right
                 # after the group's isolation warmup, with nothing to
                 # settle from.
-                if row_position > 0:
-                    time.sleep(suite.cooldown_s)
                 try:
                     spec = _row_isolation_spec(row, registry)
                 except BenchmarkError as exc:
@@ -441,6 +446,9 @@ def run_suite(
                         )
                     )
                     continue
+                # Cloud rows (spec None) put no thermal load on this machine.
+                if row_position > 0 and spec is not None:
+                    time.sleep(suite.cooldown_s)
 
                 # spec None = a cloud model on a local provider's id (e.g. an
                 # ollama/*:cloud registry row): it hits a remote API through
@@ -449,9 +457,12 @@ def run_suite(
                 # daemon — skip isolation for it entirely, same cloud-row
                 # stance the agent benchmark takes.
                 if spec is not None and provider_id in ISOLATABLE_PROVIDERS and spec != prev_spec:
+                    # Set before the call: isolate_provider may stop other
+                    # providers and then fail (e.g. warmup timeout), and that
+                    # still needs restore_providers() in the finally.
+                    isolated_any = True
                     try:
                         isolation.isolate_provider(provider_id, *spec[0], env=spec[1])
-                        isolated_any = True
                     except BenchmarkError as exc2:
                         results.append(
                             RowRunResult(
@@ -507,14 +518,7 @@ def run_suite(
         # back from) exists, so `eval judge --run-id <id>` recovers the run
         # without regenerating anything. The post-judging persist below
         # rewrites the score-dependent artifacts with real scores.
-        for result in results:
-            report.write_row_artifacts(result)
-        (run_dir / "summary.md").write_text(
-            report.render_summary(run_id, results, registry, [c.name for c in categories]),
-            encoding="utf-8",
-        )
-        report.write_metrics_jsonl(run_dir / "metrics.jsonl", results)
-        report.write_run_toml(run_dir / "run.toml", suite, git_sha=_git_sha())
+        _persist_snapshot(run_dir, run_id, results, registry, categories, suite)
 
     # Phase 2 — judging, strictly AFTER restore_providers() (design spec
     # step 4): judge calls are cloud round-trips, and with the reference
@@ -558,6 +562,32 @@ def run_suite(
     return run_dir, results
 
 
+def _persist_snapshot(run_dir, run_id, results, registry, categories, suite) -> None:
+    """Best-effort snapshot write, called from run_suite's finally block.
+    Each step is guarded so one failing row (or a failing summary) neither
+    skips the remaining artifacts nor replaces an in-flight exception."""
+
+    def guarded(what: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:
+            print(f"warning: could not write {what}: {exc}", file=sys.stderr)
+
+    for result in results:
+        guarded(f"artifacts for {result.row.label}", lambda r=result: report.write_row_artifacts(r))
+    guarded(
+        "summary.md",
+        lambda: (run_dir / "summary.md").write_text(
+            report.render_summary(run_id, results, registry, [c.name for c in categories]),
+            encoding="utf-8",
+        ),
+    )
+    guarded("metrics.jsonl", lambda: report.write_metrics_jsonl(run_dir / "metrics.jsonl", results))
+    guarded(
+        "run.toml", lambda: report.write_run_toml(run_dir / "run.toml", suite, git_sha=_git_sha())
+    )
+
+
 def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> JudgeConfig:
     # run.toml is user-editable on disk: a hand-edit or a merge-conflict
     # resolution can drop [suite.judge] or mangle the TOML, and that must
@@ -569,7 +599,7 @@ def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> 
         with (run_dir / "run.toml").open("rb") as f:
             run_data = tomllib.load(f)
         judge_raw = run_data["suite"]["judge"]
-        return JudgeConfig(
+        config = JudgeConfig(
             model=judge_raw["model"],
             temperature=judge_raw["temperature"],
             samples=samples_override if samples_override is not None else judge_raw["samples"],
@@ -580,6 +610,12 @@ def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> 
         raise BenchmarkError(
             f"run.toml in {run_dir} is missing or malformed around [suite.judge]: {exc}"
         ) from exc
+    if config.samples < 1 or config.max_attempts < 1:
+        raise BenchmarkError(
+            f"judge samples and max_attempts must be >= 1, got "
+            f"{config.samples}/{config.max_attempts}"
+        )
+    return config
 
 
 def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
