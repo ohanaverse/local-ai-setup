@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Keeps the action pins in .github/workflows current. This matters most for
+  # setup-uv, which is pinned to an exact release (it publishes no floating
+  # major tag) and so never updates unless something bumps it.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      # Minor/patch bumps land as one PR. Major bumps are deliberately left out
+      # of the group so each gets its own PR and its own review (e.g. a setup-uv
+      # major that changes cache defaults).
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
