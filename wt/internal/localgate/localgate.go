@@ -37,8 +37,8 @@ var (
 	// modelman/providers/lifecycle/backends/mtplx.py. In Go the port numbers
 	// (8000/8001/8003) appear here AND as default origins in
 	// internal/localmodels/inventory.go; keep both in lockstep if any moves
-	// (localmodels prefers the registry's auth.base_url; localgate is
-	// hard-coded). The old bash duplicate, bin/lib/mtplx.sh, was deleted
+	// (both prefer the registry's auth.base_url — localgate via
+	// availableIn — and fall back to these defaults). The old bash duplicate, bin/lib/mtplx.sh, was deleted
 	// issue #79.
 	mtplxModelsURL = "http://localhost:8003/v1/models"
 )
@@ -85,7 +85,22 @@ func fetchModelIDs(url string) []string { return localmodels.FetchModelIDs(httpC
 // Unknown/unsupported providers return false — a flagged id naming a
 // provider this probe doesn't know about fails closed as "not running"
 // rather than reporting stale state as healthy.
-func Available(m config.Model) bool {
+func Available(m config.Model) bool { return availableIn(nil, m) }
+
+// modelsURL is the /v1/models URL for a family: the registry's auth.base_url
+// when cfg names one (matching localmodels.Inventory), else def.
+func modelsURL(cfg *config.Config, family, def string) string {
+	if cfg != nil {
+		if origin, ok := localmodels.FamilyOrigin(cfg, family); ok {
+			return origin + "/v1/models"
+		}
+	}
+	return def
+}
+
+// availableIn is Available with the registry consulted for probe origins, so
+// a non-default auth.base_url is probed here exactly as localmodels probes it.
+func availableIn(cfg *config.Config, m config.Model) bool {
 	switch m.ProviderID {
 	case "ollama":
 		// ollama is deliberately exempt from live verification. `modelman
@@ -103,7 +118,7 @@ func Available(m config.Model) bool {
 		// to modelman's own _probe_running for this one provider.
 		return true
 	case "omlx", "omlx-6bit":
-		for _, served := range fetchModelIDs(omlxModelsURL) {
+		for _, served := range fetchModelIDs(modelsURL(cfg, "omlx", omlxModelsURL)) {
 			if nameMatches(served, m.ModelName) {
 				return true
 			}
@@ -119,9 +134,9 @@ func Available(m config.Model) bool {
 		// started with (a local_path or repo id), which wt cannot
 		// reconstruct — its registry parser deliberately ignores the
 		// model's fetch/draft fields.
-		return len(fetchModelIDs(mlxLMServerModelsURL)) > 0
+		return len(fetchModelIDs(modelsURL(cfg, "mlx_lm_server", mlxLMServerModelsURL))) > 0
 	case "mtplx":
-		for _, served := range fetchModelIDs(mtplxModelsURL) {
+		for _, served := range fetchModelIDs(modelsURL(cfg, "mtplx", mtplxModelsURL)) {
 			if nameMatches(served, m.ModelName) {
 				return true
 			}
@@ -161,7 +176,7 @@ func ResolveAll(cfg *config.Config) []string {
 		if idx < 0 {
 			continue
 		}
-		if Available(cfg.Models[idx]) {
+		if availableIn(cfg, cfg.Models[idx]) {
 			verified = append(verified, id)
 		}
 	}

@@ -42,7 +42,8 @@ func ollamaModelNames(client *http.Client, url string) ([]string, error) {
 }
 
 // scanModelDirs lists the subdirectories of dir (symlinks to directories
-// included). A missing dir is "no models", not an error.
+// included), skipping dot-prefixed ones (.cache, .locks, .git — tool
+// bookkeeping, not models). A missing dir is "no models", not an error.
 func scanModelDirs(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -53,6 +54,9 @@ func scanModelDirs(dir string) ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
 		isDir := e.IsDir()
 		if !isDir && e.Type()&fs.ModeSymlink != 0 {
 			if st, err := os.Stat(filepath.Join(dir, e.Name())); err == nil && st.IsDir() {

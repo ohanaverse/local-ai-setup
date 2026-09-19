@@ -15,9 +15,12 @@ type Status string
 const (
 	// StatusOK means discovery succeeded. It does NOT imply the server is up:
 	// a stopped omlx/mtplx server with model dirs on disk reports ok with
-	// nothing running, and an ollama /api/ps failure leaves ollama ok with
 	// nothing running.
 	StatusOK Status = "ok"
+	// StatusPartial means discovery succeeded but live running-state could
+	// not be determined (ollama: /api/tags ok, /api/ps failed). Entries'
+	// Running flags are not trustworthy for this family.
+	StatusPartial Status = "partial"
 	// StatusUnreachable means discovery itself failed: for ollama, /api/tags
 	// failed (daemon down); for omlx/mtplx, the model-directory scan (or
 	// config.ExpandHome) failed. It is NOT a server-liveness signal.
@@ -75,10 +78,11 @@ func familyOf(providerID string) string {
 
 // source is one family's probe result.
 type source struct {
-	family    string
-	status    Status
-	artifacts []string // discovered names, provider spelling (mtplx: repo id form)
-	loaded    []string // names serving right now
+	family     string
+	status     Status
+	artifacts  []string // discovered names, provider spelling (mtplx: repo id form)
+	loaded     []string // names serving right now
+	registered int      // local registry models in this family
 }
 
 func (s *source) matchArtifact(artifact, modelName string) bool {
@@ -106,9 +110,18 @@ func (s *source) isRunning(name string) bool {
 			}
 		}
 	case "mlx_lm_server":
-		// One target+draft pairing per process, model loaded before serving:
-		// a non-empty /v1/models is already model-accurate.
-		return len(s.loaded) > 0
+		// One target+draft pairing per process. The served name is the
+		// target string the server was started with, which wt often cannot
+		// reconstruct, so try a name match first; failing that, a non-empty
+		// /v1/models identifies the model only if it is the family's sole
+		// registered one. With several registered pairings we cannot tell
+		// which is serving, so none is reported Running.
+		for _, l := range s.loaded {
+			if NameMatches(l, name) {
+				return true
+			}
+		}
+		return len(s.loaded) > 0 && s.registered == 1
 	}
 	return false
 }
@@ -116,23 +129,40 @@ func (s *source) isRunning(name string) bool {
 // familyOrigin is the probe origin for a family: the first registry provider
 // row of the family with an auth.base_url, else the default port.
 func familyOrigin(cfg *config.Config, family string) string {
-	ids, def := []string{family}, ""
+	o, _ := FamilyOrigin(cfg, family)
+	return o
+}
+
+// familyProviderIDs lists the registry provider ids that belong to a family.
+func familyProviderIDs(family string) []string {
+	if family == "omlx" {
+		return []string{"omlx", "omlx-6bit"}
+	}
+	return []string{family}
+}
+
+// FamilyOrigin is the probe origin for a family and whether it came from the
+// registry (the first provider row of the family with an auth.base_url) rather
+// than the default port. localgate uses it so both packages probe the same
+// server.
+func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistry bool) {
+	def := ""
 	switch family {
 	case "ollama":
 		def = config.OllamaBaseURL
 	case "omlx":
-		ids, def = []string{"omlx", "omlx-6bit"}, defaultOmlxOrigin
+		def = defaultOmlxOrigin
 	case "mtplx":
 		def = defaultMtplxOrigin
 	case "mlx_lm_server":
 		def = defaultMlxLMOrigin
 	}
-	for _, id := range ids {
+	for _, id := range familyProviderIDs(family) {
 		if p := cfg.ProviderByID(id); p != nil && p.Auth.BaseURL != "" {
-			return config.BaseOrigin(p.Auth.BaseURL)
+			return config.BaseOrigin(p.Auth.BaseURL), true
 		}
 	}
-	return def
+	return def, false
 }
 
 func probeFamily(cfg *config.Config, client *http.Client, family string) *source {
@@ -148,21 +178,22 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		s.artifacts = names
 		if loaded, err := ollamaModelNames(client, origin+"/api/ps"); err == nil {
 			s.loaded = loaded
+		} else {
+			s.status = StatusPartial
 		}
 	case "omlx", "mtplx":
 		s.loaded = FetchModelIDs(client, origin+"/v1/models")
-		p, def := cfg.ProviderByID(family), defaultOmlxDir
+		def := defaultOmlxDir
 		if family == "mtplx" {
 			def = defaultMtplxDir
 		}
-		// Directories are attributed to the "omlx" provider only; a config
-		// with just a hand-added omlx-6bit row does not scan.
-		if p == nil {
-			return s
-		}
-		dirSetting := p.ModelDir
-		if dirSetting == "" {
-			dirSetting = def
+		// A family with only an omlx-6bit row still scans (same server).
+		dirSetting := def
+		for _, id := range familyProviderIDs(family) {
+			if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
+				dirSetting = p.ModelDir
+				break
+			}
 		}
 		dir, err := config.ExpandHome(dirSetting)
 		if err != nil {
@@ -198,6 +229,23 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		seen[f] = true
 		families = append(families, f)
 	}
+	// A model can be local through its own location override while its
+	// provider row is not; its family still needs a probe.
+	registered := map[string]int{} // local registered models per family
+	for _, m := range cfg.Models {
+		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
+			continue
+		}
+		f := familyOf(m.ProviderID)
+		if f == "" {
+			continue
+		}
+		registered[f]++
+		if !seen[f] {
+			seen[f] = true
+			families = append(families, f)
+		}
+	}
 
 	results := make([]*source, len(families))
 	var wg sync.WaitGroup
@@ -214,6 +262,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 	sources := map[string]*source{}
 	for i, f := range families {
 		sources[f] = results[i]
+		results[i].registered = registered[f]
 		snap.Providers[f] = results[i].status
 	}
 

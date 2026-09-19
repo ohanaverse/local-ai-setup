@@ -300,3 +300,87 @@ func TestInventoryProbesProvidersConcurrently(t *testing.T) {
 		t.Errorf("inventory took %v, want < 1s (providers must probe concurrently)", elapsed)
 	}
 }
+
+// TestInventoryMlxLMServerAmbiguousWithMultipleModels verifies that when
+// several mlx_lm_server pairings are registered and the served name matches
+// none of them, no entry is reported Running — a bare non-empty /v1/models
+// cannot say which pairing is serving, and a wrong Running=true would make a
+// caller target the wrong model. A served name that does match one still wins.
+func TestInventoryMlxLMServerAmbiguousWithMultipleModels(t *testing.T) {
+	models := []config.Model{
+		{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "model-a"},
+		{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "model-b"},
+	}
+	run := func(served string) Snapshot {
+		srv := modelsServer(t, served)
+		return inventory(&config.Config{
+			Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+			Models:    models,
+		}, testClient)
+	}
+	for _, e := range run("/opaque/path").Entries {
+		if e.Running {
+			t.Errorf("%s Running with ambiguous served name", e.ModelID)
+		}
+	}
+	for _, e := range run("model-b").Entries {
+		if want := e.ModelID == "mlx_lm_server/b"; e.Running != want {
+			t.Errorf("%s Running=%v, want %v", e.ModelID, e.Running, want)
+		}
+	}
+}
+
+// TestInventoryModelLevelLocalOverrideIsProbed verifies a model that is local
+// only via its own location override (its provider row is cloud) still gets its
+// family probed, so it can read Running and its family appears in Providers.
+func TestInventoryModelLevelLocalOverrideIsProbed(t *testing.T) {
+	srv := modelsServer(t, "m1")
+	prov := localProvider("omlx", srv.URL, t.TempDir())
+	prov.Location = config.LocationCloud
+	cfg := &config.Config{
+		Providers: []config.Provider{prov},
+		Models:    []config.Model{{ID: "omlx/m1", ProviderID: "omlx", ModelName: "m1", Location: config.LocationLocal}},
+	}
+	snap := inventory(cfg, testClient)
+	if _, ok := snap.Providers["omlx"]; !ok {
+		t.Fatalf("omlx family not probed: %+v", snap.Providers)
+	}
+	if len(snap.Entries) != 1 || !snap.Entries[0].Running {
+		t.Errorf("entries = %+v, want one running", snap.Entries)
+	}
+}
+
+// TestInventoryOllamaPsFailureIsPartial verifies an /api/ps failure (tags ok)
+// reports StatusPartial rather than StatusOK, so consumers can tell "nothing
+// loaded" from "running state unknown".
+func TestInventoryOllamaPsFailureIsPartial(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"name":"qwen3:8b"}]}`))
+	})
+	mux.HandleFunc("/api/ps", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", 500) })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{Providers: []config.Provider{localProvider("ollama", srv.URL, "")}}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["ollama"] != StatusPartial {
+		t.Errorf("status = %q, want partial", snap.Providers["ollama"])
+	}
+	if len(snap.Entries) != 1 {
+		t.Errorf("entries = %+v, want discovery to still work", snap.Entries)
+	}
+}
+
+// TestInventoryOmlx6bitOnlyStillScansDefaultDir verifies a registry with only
+// an omlx-6bit row still scans the omlx model dir (same physical server): the
+// row's own model_dir is honoured and discovered dirs appear.
+func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "Some-Model-6bit")
+	srv := modelsServer(t)
+	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx-6bit", srv.URL, root)}}
+	snap := inventory(cfg, testClient)
+	if _, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Some-Model-6bit")); !ok {
+		t.Errorf("entries = %+v, want discovered Some-Model-6bit", snap.Entries)
+	}
+}

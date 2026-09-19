@@ -65,6 +65,10 @@ func TestScanModelDirs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".DS_Store"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Dot-directories (.cache, .locks) are tool bookkeeping, not models.
+	if err := os.Mkdir(filepath.Join(root, ".cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	target := t.TempDir()
 	if err := os.Symlink(target, filepath.Join(root, "linked")); err != nil {
 		t.Fatal(err)
