@@ -485,3 +485,13 @@ func TestRecordForUnregisteredModelAndPrune(t *testing.T) {
 		t.Errorf("counts = %+v, want {1 1 1} (49-day-old event pruned)", got)
 	}
 }
+
+// TestStoreInterfaceIncludesCountsForAgent is a compile-time guard that the
+// Store interface exposes per-agent counts, so the selector can take a Store
+// (and tests a mock) instead of the concrete StoreImpl.
+func TestStoreInterfaceIncludesCountsForAgent(t *testing.T) {
+	var s Store = NewStoreAt(t.TempDir())
+	if got := s.CountsForAgent("claude", []string{"m"}); got["m"] != (UsageCounts{}) {
+		t.Errorf("got %+v, want zero", got["m"])
+	}
+}

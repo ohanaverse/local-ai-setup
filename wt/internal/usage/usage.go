@@ -38,6 +38,7 @@ type Store interface {
 	Record(modelID string) error
 	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
+	CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts
 }
 
 // StoreImpl reads and appends to the usage history file.

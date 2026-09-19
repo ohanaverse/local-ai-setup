@@ -1092,3 +1092,37 @@ func TestDiscoveredModelID(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// TestExposedFlagIsRawModelmanFlag verifies ExposedFlag reports modelman.toml's
+// raw exposed flag — false for a local model with no flag even though
+// IsExposed treats every local model as exposed. The selector's EXPOSED
+// column must mirror modelman, not wt's catalog-membership predicate.
+func TestExposedFlagIsRawModelmanFlag(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{{ID: "omlx", Location: LocationLocal}},
+		Models:    []Model{{ID: "omlx/a", ProviderID: "omlx"}, {ID: "omlx/b", ProviderID: "omlx"}},
+	}
+	cfg.SetExposedForTest(map[string]ExposureEntry{"omlx/a": {Exposed: true}})
+	if !cfg.ExposedFlag("omlx/a") {
+		t.Error("omlx/a: want exposed")
+	}
+	if cfg.ExposedFlag("omlx/b") || cfg.ExposedFlag("missing") {
+		t.Error("unflagged/missing ids must not read as exposed")
+	}
+	if !cfg.IsExposed(cfg.Models[1]) {
+		t.Fatal("precondition: IsExposed treats local models as exposed")
+	}
+}
+
+// TestAgentSupportsProvider verifies the agent's supported_providers list is
+// the check, and an unknown agent supports nothing — the selector uses it to
+// decide which discovered models an agent may show.
+func TestAgentSupportsProvider(t *testing.T) {
+	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama", "omlx"}}}}
+	if !cfg.AgentSupportsProvider("claude", "omlx") {
+		t.Error("claude should support omlx")
+	}
+	if cfg.AgentSupportsProvider("claude", "mtplx") || cfg.AgentSupportsProvider("nope", "omlx") {
+		t.Error("unsupported provider / unknown agent must be false")
+	}
+}
