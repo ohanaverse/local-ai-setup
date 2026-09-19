@@ -194,37 +194,3 @@ func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[s
 	}
 	return out
 }
-
-// CompositeScore is a recency-weighted sort key for a UsageCounts bucket.
-// Each launch is counted exactly once, weighted by how fresh it is:
-// today's launches ≈3x, 1-7 days ≈1.5x, 8-30 days ≈1x. Expressed as
-// integer math (x2), 6*OneDay + 3*(SevenDay-OneDay) + 2*(ThirtyDay-SevenDay)
-// simplifies to 3*OneDay + SevenDay + 2*ThirtyDay.
-func CompositeScore(c UsageCounts) int {
-	return 3*c.OneDay + c.SevenDay + 2*c.ThirtyDay
-}
-
-// AggregateByFamily sums per-model usage counts into per-family buckets.
-// familyOf maps model IDs to their families; counts are the per-model counts
-// Store.Counts returned for those same IDs. Counts entries for IDs absent from
-// familyOf are ignored.
-//
-// Families are not pre-seeded: only families with at least one model whose
-// counts are non-zero appear as keys, so a missing family key means zero
-// usage. (Counts zero-fills every requested model ID, which is why the
-// zero-count skip is what enforces the contract here.)
-func AggregateByFamily(familyOf map[string]string, counts map[string]UsageCounts) map[string]UsageCounts {
-	out := map[string]UsageCounts{}
-	for id, family := range familyOf {
-		c := counts[id]
-		if c == (UsageCounts{}) {
-			continue
-		}
-		cur := out[family]
-		cur.OneDay += c.OneDay
-		cur.SevenDay += c.SevenDay
-		cur.ThirtyDay += c.ThirtyDay
-		out[family] = cur
-	}
-	return out
-}

@@ -21,8 +21,7 @@ func flowEnter(t *testing.T, m model, agent string) model {
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	models, _ := m.cfg.EligibleModels(agent, m.activeTags, m.activeFamily)
-	fullCatalog, _ := m.cfg.ModelsForAgent(agent)
-	got, _ := m.enterModelPhase(agent, models, fullCatalog, "code")
+	got, _ := m.enterModelPhase(agent, models, "code")
 	return got
 }
 
@@ -147,8 +146,7 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 		stubUsageStore(t)
 		stubRefcountStore(t)
 		models, _ := cfg.EligibleModels("claude", "", "")
-		full, _ := cfg.ModelsForAgent("claude")
-		return m.enterModelPhase("claude", models, full, "code")
+		return m.enterModelPhase("claude", models, "code")
 	}()
 	if cmd == nil {
 		t.Error("single launchable row: want launch cmd, got nil")
@@ -250,8 +248,7 @@ func TestPinnedPathTableReflectsRunningInventory(t *testing.T) {
 	stubRefcountStore(t)
 	m := model{cfg: cfg, agent: "claude", pinnedModel: "omlx/qwen3.8", selectedPath: t.TempDir(), width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	full, _ := cfg.ModelsForAgent("claude")
-	got, _ := m.enterModelPhase("claude", models, full, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 	idx := indexOfID(got, "omlx/qwen3.8")
 	if idx < 0 {
 		t.Fatalf("pinned row missing: %v", itemIDs(got))

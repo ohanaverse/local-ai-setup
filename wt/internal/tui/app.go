@@ -342,10 +342,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Agent: validate the model catalog for the agent + active
 				// filters (-T/-F), then build the picker list and position
-				// the cursor. FullCatalog is fetched ONCE here and reused by
-				// enterModelPhase — it needs the full catalog (for the
-				// cross-filter family-count map) and the eligible subset, so
-				// walking the registry twice per entry is avoided.
+				// the cursor. The full catalog is fetched ONCE here and
+				// narrowed in place by EligibleModelsIn, so the registry is
+				// walked once per entry.
 				firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
 				fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
 				if err != nil {
@@ -361,7 +360,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
 					return m, nil
 				}
-				return m.enterModelPhase(m.agent, models, fullCatalog, firstTag)
+				return m.enterModelPhase(m.agent, models, firstTag)
 			case phaseList:
 				if !m.ready {
 					return m, nil
@@ -646,7 +645,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
 			return m, nil
 		}
-		return m.enterModelPhase(m.agent, models, fullCatalog, firstTag)
+		return m.enterModelPhase(m.agent, models, firstTag)
 	}
 	// Unpinned: build the agent+command picker and hand off to phaseAgent.
 	// Clear any prior status so a stale error from a previous picker
@@ -672,15 +671,13 @@ var runInventory = localmodels.Inventory
 //
 // models is the agent's PRE-GATE eligible list; local models that are not
 // running appear as non-launchable rows (Enter shows a hint) rather than being
-// hidden. fullCatalog and firstTag are retained for callers; fullCatalog is no
-// longer needed since the table computes no family-count map.
+// hidden.
 //
 // A pinned model (-M) still goes through localgate.Apply so the TUI and the
 // non-TUI path agree on whether a pinned local model may launch. A mismatch
 // routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
 // Otherwise the only route-back is an empty table.
-func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model, firstTag string) (model, tea.Cmd) {
-	_ = fullCatalog
+func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
 	routeBack := func(status string) (model, tea.Cmd) {
@@ -698,6 +695,8 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	// The inventory is probed on both paths so the table's running state
 	// agrees with what launches (the pinned table can be shown again after a
 	// cancelled resume prompt).
+	// (The pinned path probes the inventory too, in addition to
+	// localgate.Apply: the table is shown again after a cancelled resume prompt.)
 	inv := runInventory(m.cfg)
 	snap := &inv
 	if m.pinnedModel != "" {
@@ -764,9 +763,15 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	if first >= 0 {
 		pos = first
 	}
-	if next, ok := rot.NextFromEligible(launchable, m.cfg); ok {
-		if idx, ok := idIndex[next.ID]; ok {
-			pos = idx
+	// Rotation positions the cursor only when the last-launched model is a
+	// registry model: with no rotation state (or a stale/discovered id that
+	// is never in cfg.Models) NextFromEligible would fall back to the
+	// registry-first model, so the first launchable row is used instead.
+	if lastID != "" && config.IndexModelByID(m.cfg.Models, lastID) >= 0 {
+		if next, ok := rot.NextFromEligible(launchable, m.cfg); ok {
+			if idx, ok := idIndex[next.ID]; ok {
+				pos = idx
+			}
 		}
 	}
 	m.models.Select(pos)

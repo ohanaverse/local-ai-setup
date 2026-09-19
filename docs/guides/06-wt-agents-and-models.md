@@ -185,7 +185,7 @@ Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Rec
 {"model_id":"ollama/glm-5.3-flash:cloud","timestamp":"2026-08-29T18:33:05.297099Z"}
 ```
 
-Family counts are not stored directly: the picker derives them at query time with one `Store.Counts` pass over the full catalog's model IDs, then maps each counted `model_id` to its `family` (from the registry) and aggregates in memory (`usage.AggregateByFamily`) — so no schema change and existing history stays valid. See `internal/usage` and [03-model-families](03-model-families.md).
+The picker reads per-model (and per-agent-pair) 1d/7d/30d counts from this file at query time via `Store.Counts` / `CountsForAgent` — no schema change, and existing history stays valid. See `internal/usage`.
 
 ## Verification
 

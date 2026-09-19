@@ -56,7 +56,6 @@ func TestRenderTableHeaderAndCells(t *testing.T) {
 func TestRenderTableColumnsAlign(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", nil, "")
 	runes := func(s string) []rune { return []rune(s) }
-	hdr := runes(tbl.header)
 	// header includes the 4-rune prefix (ref column + marker) that Title() adds to rows
 	col := func(name string) int { return len(runes(tbl.header[:strings.Index(tbl.header, name)])) }
 	line := func(i int) []rune { return runes(strings.Repeat(" ", 4) + tbl.items[i].line) }
@@ -72,7 +71,6 @@ func TestRenderTableColumnsAlign(t *testing.T) {
 	if got := string(line(3)[col("STATUS") : col("STATUS")+6]); got != "absent" {
 		t.Errorf("STATUS cell = %q", got)
 	}
-	_ = hdr
 }
 
 // TestRenderTableSurveySegmentTrailing verifies the survey segment is appended
@@ -126,5 +124,23 @@ func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
 	lite := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
 	if lite.items[0].exception != "(not in LiteLLM)" || lite.items[0].blocked == "" {
 		t.Errorf("litellm mode: exception=%q blocked=%q", lite.items[0].exception, lite.items[0].blocked)
+	}
+}
+
+// TestRenderTableDiscoveredLitellmUnconfigured verifies that a discovered row
+// under enabled-but-unconfigured LiteLLM (no URL/key) is labelled
+// "(litellm required)" and stays launchable: the "(not in LiteLLM)" block only
+// applies when the route resolves without error, so a config error must not be
+// masked by it.
+func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
+	row := tableRow{model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, location: config.LocationLocal, status: statusNew, running: true, discovered: true}
+	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
+	if tbl.items[0].exception != "(litellm required)" || tbl.items[0].blocked != "" {
+		t.Errorf("exception=%q blocked=%q, want (litellm required) and no block", tbl.items[0].exception, tbl.items[0].blocked)
 	}
 }

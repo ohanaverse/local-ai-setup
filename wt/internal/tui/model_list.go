@@ -38,14 +38,17 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // appends a per-row deviation note in Title() (e.g. "(via proxy)" for a
 // row protocol negotiation forces through LiteLLM, "(litellm required)" for
 // a row that needs litellm but modelman.toml's [litellm] url/api_key aren't
-// configured, "(unavailable)" for any other route resolution failure).
+// configured, "(not in LiteLLM)" for a discovered (registry-less) row whose route
+// would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
+// row is the table row the item renders; blocked, when non-empty, is the
+// hint Enter shows instead of launching (e.g. a non-running local model).
 type modelItem struct {
 	model     config.Model
 	line      string
 	marked    bool
 	ref       int
 	exception string
-	row       tableRow // table row this item renders (zero for legacy items)
+	row       tableRow // table row this item renders (rendered cells and header alignment)
 	blocked   string   // non-empty: Enter shows this instead of launching
 }
 

@@ -221,9 +221,9 @@ func TestWrapAroundNoOpWhenZeroOrOneVisibleItem(t *testing.T) {
 }
 
 // TestEnterModelPhaseCursorOnFirstModel verifies that entering the model
-// phase (no rotation history) lands the cursor on a model row — index 0 in
-// the compact, divider-free layout. (There are no divider rows to skip
-// anymore; this pins that the cursor starts on a launchable *modelItem.)
+// phase (no rotation history) lands the cursor on the first launchable row —
+// index 0, ollama/gemma4:14b in the id-sorted table — not the registry-first
+// model. Pins the cold-start position so rotation cannot displace it.
 func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
 	stubUsageStore(t)
 	tempStateDir(t)
@@ -247,11 +247,15 @@ func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EligibleModelsIn: %v", err)
 	}
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", got.phase)
 	}
-	if _, ok := got.models.Items()[got.models.Index()].(*modelItem); !ok {
+	it, ok := got.models.Items()[got.models.Index()].(*modelItem)
+	if !ok {
 		t.Fatalf("cursor at %d is %T; want a *modelItem", got.models.Index(), got.models.Items()[got.models.Index()])
+	}
+	if got.models.Index() != 0 || it.model.ID != "ollama/gemma4:14b" {
+		t.Errorf("cursor at %d on %q, want index 0 on ollama/gemma4:14b", got.models.Index(), it.model.ID)
 	}
 }

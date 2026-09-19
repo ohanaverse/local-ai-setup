@@ -216,7 +216,7 @@ update both sides or both CI jobs fail.
 - Local models (location resolves to `"local"`): always exposed here too — for the TUI picker, all configured and discovered local models are listed and launch-gated individually; for non-TUI launches, catalog membership is governed by the live-verified running gate below (`internal/localgate.Apply`/`FilterToRunningLocal`). A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
 - Cloud (and any model whose location doesn't resolve to local): `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`), unchanged from before.
 
-The model picker's EXPOSED column reads the raw modelman flag via `Config.ExposedFlag` — unlike `IsExposed`, this reads the flag as-is without location-based special-casing, so cloud-location models show their true exposure state while local models show modelman's via-flag visibility (which may differ from the running gate's result; see below).
+The model picker's EXPOSED column shows `Y` for native models (as modelman's own column does, unconditionally) and otherwise reads the raw modelman flag via `Config.ExposedFlag` — unlike `IsExposed`, it does no location-based special-casing, so cloud-location models show their true exposure state while local models show modelman's via-flag visibility (which may differ from the running gate's result; see below).
 
 This means wt's picker can now show a local model modelman's own TUI still renders `–` for in its EXPOSED column — that divergence is intentional for local models; `modelman start` keeps `exposed` in sync automatically so LiteLLM-forced routes (see the Agents table below) keep working without a separate manual expose step. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
 
@@ -300,15 +300,18 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   from `rotation.Last()`; `Title()` composes the prefix — plain ASCII
   because Unicode geometric shapes are East Asian Ambiguous width and
   misalign CJK terminals); the cursor still lands on the rotation's
-  next-to-use model.
+  next-to-use model. Rotation positions the cursor only when a last-launched
+  registry model exists; otherwise (fresh install, stale id, or a
+  last-launched discovered model) it lands on the first launchable table
+  row. Rotation never advances onto a discovered row.
 - The model picker's leftmost column shows a live "in use" session count
   (issue #73): `buildTable` queries `refcount.Store.Counts` over the
   table's row IDs and sets
   `modelItem.ref`; `Title()` renders it as a 2-rune prefix ("`3 `" or two
   blank spaces, clamped at 9) *before* the rotation marker. See
   `internal/refcount`.
-- **Picker table columns:** FAMILY, MODEL, LOC, STATUS, EXPOSED, RUNNING, COST, 1D, 7D, 30D, SURVEY (last column omitted for `wt smoke`'s `PickModel`, which has no agent context).
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). Usage tracking uses `usage.Store.CountsForAgent(agent, modelIDs)` for per-agent-model-pair counts; `wt smoke`'s picker uses model-level `Counts` since there's no agent context yet. The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and pass both to `enterModelPhase` (which now uses only the eligible slice for the table; the full catalog parameter is retained for compatibility). `buildTable` (`internal/tui/modeltable.go`) then builds and sorts the rows (cloud plus running local by cost then 7-day usage, non-running local alphabetically) and renders them as an aligned table with per-model 1D/7D/30D usage cells; the header is the list title.
+- **Picker table columns:** FAMILY, MODEL, LOC, STATUS, EXPOSED, RUNNING, COST, 1D, 7D, 30D, SURVEY (the SURVEY column is present but always empty for `wt smoke`'s `PickModel`, which has no agent context).
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). Usage tracking uses `usage.Store.CountsForAgent(agent, modelIDs)` for per-agent-model-pair counts; `wt smoke`'s picker uses model-level `Counts` since there's no agent context yet. The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and pass the eligible slice to `enterModelPhase`. `buildTable` (`internal/tui/modeltable.go`) then builds and sorts the rows (cloud plus running local by cost then 7-day usage, non-running local alphabetically) and renders them as an aligned table with per-model 1D/7D/30D usage cells; the header is the list title.
 
 ```bash
 go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group

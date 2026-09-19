@@ -38,9 +38,8 @@ func TestEnterModelPhaseNoMarkerShowsLocalModelsAsNonRunning(t *testing.T) {
 	cfg := gateTestConfig()
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	items := got.models.Items()
 	if len(items) != 2 {
@@ -71,9 +70,8 @@ func TestEnterModelPhaseRunningLocalModelIsLaunchable(t *testing.T) {
 	cfg := gateTestConfig()
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	if len(got.models.Items()) != 2 {
 		t.Fatalf("got %d items, want 2 (cloud + running local)", len(got.models.Items()))
@@ -114,9 +112,8 @@ func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 	cfg.ExposeAllForTest()
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, cmd := m.enterModelPhase("claude", models, "code")
 
 	if got.fatalErr != nil || cmd != nil {
 		t.Fatalf("fatalErr = %v, cmd = %v; want neither (no quit)", got.fatalErr, cmd)
@@ -149,9 +146,8 @@ func TestEnterModelPhasePinnedStaleLocalModelRejected(t *testing.T) {
 	cfg.SetLocalRunningForTest("") // nothing running
 	m := model{cfg: cfg, width: 80, height: 24, pinnedModel: "omlx/qwen3.8"}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	if got.phase != phaseAgent {
 		t.Fatalf("phase = %v, want phaseAgent", got.phase)
@@ -171,9 +167,8 @@ func TestEnterModelPhasePinnedNotInEligibleRoutesBack(t *testing.T) {
 	cfg.SetLocalRunningForTest("") // nothing running (irrelevant to this pin's failure)
 	m := model{cfg: cfg, width: 80, height: 24, pinnedModel: "claude/missing"}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	if got.phase != phaseAgent {
 		t.Fatalf("phase = %v, want phaseAgent", got.phase)

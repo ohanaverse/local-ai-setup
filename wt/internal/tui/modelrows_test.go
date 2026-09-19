@@ -180,3 +180,20 @@ func TestNotLaunchableHint(t *testing.T) {
 		t.Errorf("discovered hint = %q", h)
 	}
 }
+
+// TestBuildRowsNativeModelIsExposedWithoutFlag pins that a native model
+// (Anthropic-direct, provider auth.type "native") shows EXPOSED without any
+// modelman.toml flag, matching modelman's own EXPOSED column, which reports
+// native rows as exposed unconditionally. A regression here would make wt's
+// picker disagree with modelman for native rows.
+func TestBuildRowsNativeModelIsExposedWithoutFlag(t *testing.T) {
+	cfg := rowsTestCfg()
+	models := []config.Model{{ID: "openrouter/native", ProviderID: "openrouter", ModelName: "native", Native: true}}
+	rows := buildRows(tableInput{cfg: cfg, agent: "claude", models: models, usage: usage.NewStoreAt(t.TempDir())})
+	if len(rows) != 1 || !rows[0].exposed {
+		t.Fatalf("native row = %+v, want exposed=true with no flag set", rows)
+	}
+	if cfg.ExposedFlag("openrouter/native") {
+		t.Fatal("test premise broken: flag must be unset")
+	}
+}

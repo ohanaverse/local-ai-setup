@@ -81,7 +81,7 @@ glyphs misalign CJK terminals):
 |---|---|
 | LOC | `cloud`, `local` |
 | STATUS | `ok` (on disk, or cloud), `absent` (configured local, not on disk), `new` (discovered, unregistered) |
-| EXPOSED | `Y` when modelman.toml's `exposed` flag (legacy `litellm_exposed` ORed) is set, else `-`; discovered rows `-` |
+| EXPOSED | `Y` when modelman.toml's `exposed` flag (legacy `litellm_exposed` ORed) is set, or for native models (as modelman does), else `-`; discovered rows `-` |
 | RUNNING | `run` or `-` (live, from `Inventory`) |
 | COST | existing three-price format; `-` for discovered/no data |
 | 1D 7D 30D | `usage.CountsForAgent` for the chosen agent-model pair; model-level `Counts` when no agent (`wt smoke`) |

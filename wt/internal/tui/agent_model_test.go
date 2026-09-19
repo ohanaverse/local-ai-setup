@@ -128,9 +128,13 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if first >= 0 {
 		pos = first
 	}
-	if next, ok := rotation.New().NextFromEligible(launchable, cfg); ok {
-		if idx, ok := idIndex[next.ID]; ok {
-			pos = idx
+	// Rotation positions the cursor only when the last-launched model is a
+	// registry model; otherwise the first launchable row stays selected.
+	if lastID != "" && config.IndexModelByID(cfg.Models, lastID) >= 0 {
+		if next, ok := rotation.New().NextFromEligible(launchable, cfg); ok {
+			if idx, ok := idIndex[next.ID]; ok {
+				pos = idx
+			}
 		}
 	}
 	m.models.Select(pos)
@@ -823,10 +827,11 @@ func TestNoRKeyInModelPhase(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryNoLastStartsAtZero asserts the picker lands
-// the cursor on the first model row (index 1) when no rotation state
-// exists. Index 0 is the leading family divider the family-aware builder
-// inserts. This is the cold-start path: fresh user, fresh state file.
+// TestSelectedEntryNoLastStartsAtZero asserts the picker lands the cursor on
+// the first launchable table row (index 0, ollama/gemma4:14b) when no
+// rotation state exists: rotation positions the cursor only when a
+// last-launched registry model exists, so a fresh install must not jump to
+// the registry-first model. This is the cold-start path.
 // PR 2 added a phaseAgent step between worktree selection and the model
 // picker, so the test now drives both transitions to reach phaseModel.
 func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
@@ -838,40 +843,39 @@ func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
-	// No rotation state: the cursor lands on the rotation's first pick
-	// (registry-first ollama/gemma4:9b), which the id-sorted table puts at
-	// index 1.
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:9b" {
-		t.Errorf("cursor on %q, want ollama/gemma4:9b (rotation's first pick)", got)
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" || gotModel.models.Index() != 0 {
+		t.Errorf("cursor on %q at index %d, want ollama/gemma4:14b at 0 (first launchable row)", got, gotModel.models.Index())
 	}
 }
 
 // TestSelectedEntryPositionsAfterLast asserts the picker lands
-// the cursor on the model after the one returned by rotation.Last.
+// the cursor on the model after the one returned by rotation.Last. The last
+// id is gemma4:14b, whose registry-next (gemma4:design) is NOT the first
+// launchable row, so the test fails if rotation positioning is skipped.
 // Every picker entry is "one past where we left off" because the
 // rotation is global — rotation.Last reads the global state file
 // and rotation.FirstAfter advances past it. PR 2 added a phaseAgent
 // step, so the test drives both transitions to reach phaseModel.
 func TestSelectedEntryPositionsAfterLast(t *testing.T) {
 	dir := tempStateDir(t)
-	seedState(t, dir, "ollama/gemma4:9b")
+	seedState(t, dir, "ollama/gemma4:14b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
-	// testConfig has two code models: gemma4:9b and gemma4:14b. Last launched
-	// was gemma4:9b, so the next-to-show must be gemma4:14b. List index is 1.
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
-		t.Errorf("cursor on %q, want ollama/gemma4:14b (after gemma4:9b)", got)
+	// Registry order is 9b, 14b, design. Last launched was gemma4:14b, so the
+	// next-to-show is gemma4:design (not the first table row, 14b).
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:design" {
+		t.Errorf("cursor on %q, want ollama/gemma4:design (after gemma4:14b)", got)
 	}
 }
 
 // TestSelectedEntryLastMissingFallsBackToZero asserts the
-// picker lands on the first model row (index 1) when the saved
-// rotation.Last model is no longer in the snapshot (config changed since
-// last launch). Index 0 is the leading family divider. PR 2 added a
+// picker lands on the first launchable row (ollama/gemma4:14b) when the saved
+// rotation.Last model is no longer in the registry (config changed since
+// last launch). PR 2 added a
 // phaseAgent step, so the test drives both transitions to reach
 // phaseModel.
 func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
@@ -884,8 +888,27 @@ func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:9b" {
-		t.Errorf("cursor on %q, want ollama/gemma4:9b (rotation's first pick)", got)
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
+		t.Errorf("cursor on %q, want ollama/gemma4:14b (first launchable row)", got)
+	}
+}
+
+// TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow asserts a
+// last-launched id that belongs to a discovered (non-registry) model leaves
+// the cursor on the first launchable row. Such ids are never in cfg.Models, so
+// without the registry guard NextFromEligible would jump to the registry-first
+// model (gemma4:9b) instead.
+func TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow(t *testing.T) {
+	dir := tempStateDir(t)
+	seedState(t, dir, config.DiscoveredModelID("omlx", "Some-Unregistered-4bit"))
+	stubUsageStore(t)
+	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
+	gotModel := drivePhaseAgentEnter(t, m, "claude")
+	if gotModel.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
+	}
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" || gotModel.models.Index() != 0 {
+		t.Errorf("cursor on %q at index %d, want ollama/gemma4:14b at 0", got, gotModel.models.Index())
 	}
 }
 
@@ -1083,34 +1106,33 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m = drivePhaseAgentEnter(t, m, "claude")
-	// No state: rotation suggests registry-first gemma4:9b (table index 1).
-	if got := selectedModelID(m); got != "ollama/gemma4:9b" {
-		t.Fatalf("entry 1: cursor on %q, want ollama/gemma4:9b", got)
+	// No state: the cursor starts on the first launchable table row, 14b.
+	if got := selectedModelID(m); got != "ollama/gemma4:14b" {
+		t.Fatalf("entry 1: cursor on %q, want ollama/gemma4:14b", got)
 	}
 
-	// User navigates up to index 0 — manual pick of gemma4:14b (differs
-	// from the rotation's suggestion).
+	// User navigates down to gemma4:9b — a manual pick that differs from the
+	// initial suggestion.
 	// (Capture the returned model so the cursor advance sticks; m.models
 	// is a value field, so the in-place update inside Update() doesn't
 	// propagate unless we use the result.)
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = got.(model)
-	if sel := selectedModelID(m); sel != "ollama/gemma4:14b" {
-		t.Fatalf("after Up: cursor on %q, want ollama/gemma4:14b", sel)
+	if sel := selectedModelID(m); sel != "ollama/gemma4:9b" {
+		t.Fatalf("after Down: cursor on %q, want ollama/gemma4:9b", sel)
 	}
 
-	// Commit the launch of gemma4:14b (the manual pick) via the shared
+	// Commit the launch of gemma4:9b (the manual pick) via the shared
 	// commit point. Discard the returned tea.Cmd so nothing execs.
 	m.launchModel = m.models.Items()[m.models.Index()].(*modelItem).model
 	m, _ = m.launchAndRecord(exec.Command("true"))
 
-	// Picker entry 2: last-launched is gemma4:14b (the manual pick).
-	// PR 3b: the picker shows all 3 testConfig models, so the next
-	// entry advances to gemma4:design (index 2), not wrapping to 0.
+	// Picker entry 2: last-launched is gemma4:9b (the manual pick); the
+	// rotation's next in registry order is gemma4:14b.
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m2 = drivePhaseAgentEnter(t, m2, "claude")
-	if got := selectedModelID(m2); got != "ollama/gemma4:design" {
-		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:design (next after manual pick gemma4:14b)", got)
+	if got := selectedModelID(m2); got != "ollama/gemma4:14b" {
+		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:14b (next after manual pick gemma4:9b)", got)
 	}
 }
 
@@ -1131,7 +1153,7 @@ func TestPinnedModelValidSkipsPicker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EligibleModelsIn: %v", err)
 	}
-	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, cmd := m.enterModelPhase("claude", models, "code")
 	if cmd == nil {
 		t.Fatal("expected a launch cmd (pinned model valid, picker skipped), got nil")
 	}
@@ -1155,7 +1177,7 @@ func TestPinnedModelInvalidShowsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EligibleModelsIn: %v", err)
 	}
-	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, cmd := m.enterModelPhase("claude", models, "code")
 	if cmd != nil {
 		t.Errorf("expected nil cmd (pinned model invalid), got %v", cmd)
 	}
