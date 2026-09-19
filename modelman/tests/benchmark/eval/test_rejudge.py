@@ -682,9 +682,12 @@ def test_rejudge_run_keeps_existing_judge_json_when_rejudge_fails(tmp_path):
         def complete(self, prompt: str, *, temperature: float) -> str:
             return "not json"
 
-    rejudge_run(
+    outcomes = rejudge_run(
         run_dir,
         [category],
         judge_transport_factory=lambda judge_cfg: _GarbageTransport(),
     )
     assert judge_path.read_text(encoding="utf-8") == original
+    # The reported outcome must show the retained score (77), not the failed
+    # attempt's None, so the console agrees with the rebuilt summary.
+    assert [o["total"] for o in outcomes] == [77]

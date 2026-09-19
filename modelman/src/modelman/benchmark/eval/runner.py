@@ -886,6 +886,16 @@ def _reconstruct_run_results(
     return results
 
 
+def _retained_total(judge_path: Path) -> float | None:
+    """The combined total in an existing judge.json, or None if it has none
+    (or is unreadable/malformed — the reconstruct pass warns about those)."""
+    data = _load_json_artifact(judge_path)
+    if not isinstance(data, dict):
+        return None
+    combined = data.get("combined")
+    return combined.get("total") if isinstance(combined, dict) else None
+
+
 def rejudge_run(
     run_dir: Path,
     categories: list[Category],
@@ -943,6 +953,7 @@ def rejudge_run(
                     max_attempts=judge_cfg.max_attempts,
                 )
                 judge_path = item_dir / "judge.json"
+                total = outcome.combined.total if outcome.combined else None
                 if outcome.status == "judge_fail" and judge_path.is_file():
                     # Never overwrite an existing judge.json with a failed
                     # re-judge (e.g. a transient judge outage): the earlier
@@ -951,6 +962,10 @@ def rejudge_run(
                         f"warning: rejudge failed for {judge_path}; keeping existing judge.json",
                         file=sys.stderr,
                     )
+                    # Report the score that is actually retained, not the
+                    # failed attempt's None — otherwise the console says the
+                    # item lost its score while the rebuilt summary keeps it.
+                    total = _retained_total(judge_path)
                 else:
                     judge_path.write_text(json.dumps(asdict(outcome), indent=2), encoding="utf-8")
                 outcomes.append(
@@ -958,7 +973,7 @@ def rejudge_run(
                         "row": row_dir.name,
                         "category": category.name,
                         "item": item.id,
-                        "total": outcome.combined.total if outcome.combined else None,
+                        "total": total,
                     }
                 )
 
