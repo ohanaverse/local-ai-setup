@@ -2,6 +2,7 @@
 table via locked_state, never touch model_state or restart the proxy — a
 routing toggle that also restarted the shared LiteLLM service would turn a
 config change into a brief service outage for every other user of it."""
+
 from typer.testing import CliRunner
 
 from modelman.main import app
@@ -83,9 +84,7 @@ def test_litellm_commands_never_restart_proxy(tmp_path, monkeypatch):
     state_path = tmp_path / "modelman.toml"
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda *a, **k: calls.append(1)
-    )
+    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda *a, **k: calls.append(1))
     runner.invoke(app, ["litellm", "on"])
     runner.invoke(app, ["litellm", "off"])
     runner.invoke(app, ["litellm", "set", "--url", "http://x", "--api-key", "k"])

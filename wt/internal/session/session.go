@@ -83,5 +83,3 @@ func RelativeTime(t time.Time) string {
 		return fmt.Sprintf("%dw ago", int(d.Hours()/24/7))
 	}
 }
-
-

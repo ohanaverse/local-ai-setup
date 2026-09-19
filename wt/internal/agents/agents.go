@@ -127,9 +127,9 @@ type Seeder interface {
 // their own list.Item / bubbletea item type.
 type AgentListEntry struct {
 	Name       string
-	Command    bool // true for commands like shell (no model layer)
-	Configured bool // present in config.toml
-	Installed  bool // binary found on PATH (always true for commands)
+	Command    bool   // true for commands like shell (no model layer)
+	Configured bool   // present in config.toml
+	Installed  bool   // binary found on PATH (always true for commands)
 	Issue      string // human-readable launch blocker ("" if ready)
 }
 

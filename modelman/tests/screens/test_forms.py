@@ -2364,7 +2364,9 @@ async def test_modelform_edit_shows_pricing_timestamp_when_set():
         "repo": "foo/bar",
         "files": ["q4.gguf"],
     }
-    form = ModelForm(providers=["llamacpp"], variant=variant, pricing_updated_at="2026-09-09T14:32:00+00:00")
+    form = ModelForm(
+        providers=["llamacpp"], variant=variant, pricing_updated_at="2026-09-09T14:32:00+00:00"
+    )
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2376,7 +2378,9 @@ async def test_modelform_edit_shows_pricing_timestamp_when_set():
 
 @pytest.mark.asyncio
 async def test_modelform_submit_carries_quantization():
-    form = ModelForm(providers=["ollama"], default_provider="ollama", families=["ornith"], family="ornith")
+    form = ModelForm(
+        providers=["ollama"], default_provider="ollama", families=["ornith"], family="ornith"
+    )
     dismissed: list = []
     app = ModelmanApp()
     async with app.run_test() as pilot:
@@ -2396,9 +2400,7 @@ async def test_modelform_submit_carries_quantization():
 async def test_confirm_exit_dialog_shows_price_reminder_when_requested():
     from modelman.screens.forms import ConfirmExitDialog
 
-    modal = ConfirmExitDialog(
-        ready=[], deletes=[], exposes=[], moves=[], show_price_reminder=True
-    )
+    modal = ConfirmExitDialog(ready=[], deletes=[], exposes=[], moves=[], show_price_reminder=True)
     app = ModelmanApp()
     async with app.run_test() as pilot:
         await pilot.pause()

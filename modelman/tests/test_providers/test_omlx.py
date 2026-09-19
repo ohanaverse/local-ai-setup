@@ -182,8 +182,9 @@ def test_download_flips_cancel_flag_when_interrupted(provider):
         "name": "x-mlx",
         "repo": "foo/bar",
     }
-    with patch("modelman.providers.omlx.snapshot_download", side_effect=KeyboardInterrupt), pytest.raises(
-        KeyboardInterrupt
+    with (
+        patch("modelman.providers.omlx.snapshot_download", side_effect=KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
     ):
         provider.download(variant)
     assert provider._cancel_requested is True
@@ -315,7 +316,12 @@ def test_is_downloaded_local_path_true(tmp_path):
     local_dir.mkdir()
     (local_dir / "config.json").write_text("{}")
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
-    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(local_dir),
+    }
     assert provider.is_downloaded(variant) is True
 
 
@@ -339,7 +345,12 @@ def test_download_local_path_is_noop_and_returns_path(tmp_path):
     local_dir = tmp_path / "my-custom-dwq-model"
     local_dir.mkdir()
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
-    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(local_dir),
+    }
     with patch("modelman.providers.omlx.snapshot_download") as mock_dl:
         path = provider.download(variant)
         mock_dl.assert_not_called()
@@ -365,7 +376,12 @@ def test_size_of_local_path_sums_dir(tmp_path):
     (local_dir / "a.safetensors").write_bytes(b"a" * 50)
     (local_dir / "b.safetensors").write_bytes(b"b" * 30)
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
-    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(local_dir),
+    }
     assert provider.size_of(variant) == 80
 
 
@@ -392,7 +408,12 @@ def test_path_of_local_path_returns_dir(tmp_path):
     local_dir.mkdir()
     (local_dir / "config.json").write_text("{}")
     provider = OMLXProvider({"model_dir": str(tmp_path / "models")})
-    variant: VariantSpec = {"id": "x", "provider": "omlx", "name": "x", "local_path": str(local_dir)}
+    variant: VariantSpec = {
+        "id": "x",
+        "provider": "omlx",
+        "name": "x",
+        "local_path": str(local_dir),
+    }
     assert provider.path_of(variant) == str(local_dir)
 
 

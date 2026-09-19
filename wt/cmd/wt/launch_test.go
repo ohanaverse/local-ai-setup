@@ -867,4 +867,3 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 		t.Error("emitPriceNotice was invoked for a command agent (m.ID == \"\")")
 	}
 }
-

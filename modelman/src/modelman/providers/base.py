@@ -84,9 +84,7 @@ class Provider(ABC):
     @abstractmethod
     def list_local(self) -> list[LocalModel]: ...
 
-    def resolve_local(
-        self, variants: list[VariantSpec]
-    ) -> list[LocalModel | None] | None:
+    def resolve_local(self, variants: list[VariantSpec]) -> list[LocalModel | None] | None:
         """Resolve several variants in one pass: presence, on-disk path, and
         size for each, positionally aligned with `variants`.
 

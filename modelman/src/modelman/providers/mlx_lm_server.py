@@ -96,12 +96,7 @@ class MLXLMServerProvider(Provider):
         draft = self._draft_dir(variant)
         if target is None or draft is None:
             return False
-        return (
-            target.is_dir()
-            and any(target.iterdir())
-            and draft.is_dir()
-            and any(draft.iterdir())
-        )
+        return target.is_dir() and any(target.iterdir()) and draft.is_dir() and any(draft.iterdir())
 
     def _download_side(
         self,

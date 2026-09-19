@@ -77,14 +77,14 @@ var ErrLitellmUnconfigured = errors.New("litellm routing required but not config
 // resolved once by ResolveRoute so drivers stop knowing about specific
 // providers (e.g. ollama) or transports.
 type Route struct {
-	BaseOrigin string   // scheme://host:port, no wire-path suffix
+	BaseOrigin string // scheme://host:port, no wire-path suffix
 	APIKey     string
 	ModelRef   string   // m.ID via the proxy, m.ModelName direct — a property of the endpoint's own catalog
 	Display    string   // m.ModelName, for catalog "name" fields
 	ProviderID string   // registry provider id; meaningful only when !Litellm
 	Protocol   Protocol // chosen common protocol, meaningful only when !Litellm
 	Litellm    bool
-	Forced     bool     // true if litellm was required regardless of the on/off setting (Task 5)
+	Forced     bool // true if litellm was required regardless of the on/off setting (Task 5)
 }
 
 // providerByID returns the provider with the given id and whether it was found.
@@ -205,11 +205,11 @@ func intersectProtocols(a, b []Protocol) []Protocol {
 
 // Provider is a source of models with connection info.
 type Provider struct {
-	ID       string     `toml:"id"`
-	Name     string     `toml:"name"`
-	Location Location   `toml:"location,omitempty"`
+	ID        string     `toml:"id"`
+	Name      string     `toml:"name"`
+	Location  Location   `toml:"location,omitempty"`
 	Protocols []Protocol `toml:"protocols,omitempty"`
-	Auth     AuthConfig `toml:"auth"`
+	Auth      AuthConfig `toml:"auth"`
 }
 
 // EffectiveProtocols returns the provider's declared protocols, defaulting
@@ -272,7 +272,7 @@ type Model struct {
 	Tags       []string  `toml:"tags"`             // e.g. ["code", "design"]
 	Source     Source    `toml:"source,omitempty"` // curated or discovered
 	Cost       ModelCost `toml:"cost,omitempty"`
-	Native     bool      `toml:"-"`                // derived: provider auth.type == "native"; not persisted
+	Native     bool      `toml:"-"` // derived: provider auth.type == "native"; not persisted
 }
 
 // ── Agent ─────────────────────────────────────────────────
@@ -290,11 +290,11 @@ type Agent struct {
 // wt-owned config.toml; Providers + Models come from modelman-owned
 // registry.toml and are never persisted by wt (see Save).
 type Config struct {
-	DefaultTag string          `toml:"default_tag"`
-	Providers  []Provider      `toml:"providers"`
-	Models     []Model         `toml:"models"`
-	Agents     []Agent         `toml:"agents"`
-	litellm    LitellmState   `toml:"-"` // from modelman.toml
+	DefaultTag string                   `toml:"default_tag"`
+	Providers  []Provider               `toml:"providers"`
+	Models     []Model                  `toml:"models"`
+	Agents     []Agent                  `toml:"agents"`
+	litellm    LitellmState             `toml:"-"` // from modelman.toml
 	exposed    map[string]ExposureEntry `toml:"-"` // from modelman.toml
 	// runningLocal is the set of local model ids modelman's per-model
 	// `running` flag names (UNVERIFIED — internal/localgate probes each

@@ -46,8 +46,8 @@ func TestCountsSlidingWindows(t *testing.T) {
 		id   string
 		when time.Time
 	}{
-		{"m", fixed.Add(-30 * time.Minute)},     // 1d, 7d, 30d
-		{"m", fixed.Add(-26 * time.Hour)},     // 7d, 30d
+		{"m", fixed.Add(-30 * time.Minute)},    // 1d, 7d, 30d
+		{"m", fixed.Add(-26 * time.Hour)},      // 7d, 30d
 		{"m", fixed.Add(-10 * 24 * time.Hour)}, // 30d
 		{"m", fixed.Add(-40 * 24 * time.Hour)}, // none
 	}

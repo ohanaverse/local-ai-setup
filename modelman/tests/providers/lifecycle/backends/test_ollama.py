@@ -222,9 +222,7 @@ def test_restore_no_ops_when_already_up():
     """restore() must not touch launchd at all when ollama already answers
     its health check — a no-op restart would be pointless churn."""
     with (
-        patch(
-            "modelman.providers.lifecycle.backends.base.urllib.request.urlopen"
-        ) as mock_urlopen,
+        patch("modelman.providers.lifecycle.backends.base.urllib.request.urlopen") as mock_urlopen,
         patch("modelman.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
         patch("modelman.providers.lifecycle.backends.base.wait_for_port_open") as mock_wait,
     ):

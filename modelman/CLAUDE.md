@@ -32,7 +32,7 @@ The project uses `uv` for packaging and dependency management. Python 3.13 is re
 - **Other subcommands:** `uv run modelman migrate`, `uv run modelman sync`, `uv run modelman expose <model_id>`, `uv run modelman unexpose <model_id>`, `uv run modelman litellm status|on|off|set`, `uv run modelman start <model_id>`, `uv run modelman stop <model_id>` / `uv run modelman stop --all` (bare `stop` is a usage error — see `local_control.py` below), `uv run modelman provider isolate/stop/stop-all/restore/list` (the lower-level per-provider lifecycle CLI issue #79 ported from bash — see the "Provider lifecycle" bullet below)
 - **Run all tests:** `make test`
 - **Run a single test:** `uv run pytest tests/path/to/test.py::test_name`
-- **Lint / format / typecheck:** `make lint`, `make format`, `make typecheck` (or `make check` to run lint+typecheck together)
+- **Lint / format / typecheck:** `make lint`, `make format`, `make format-check`, `make typecheck` (or `make check` to run all the non-mutating checks: lint + `ruff format --check` + typecheck)
 - **Run everything:** `make all` (format + test + check)
 - **Clean caches:** `make clean`
 - **Build a wheel:** `uv build`
@@ -256,7 +256,7 @@ reach by accident and can lead to analyzing or mutating the wrong branch.
 - **MagicMock provider stubs:** optional `Provider` capabilities (`resolve_local`, `path_of`) auto-exist as truthy mocks — set `stub.resolve_local.return_value = None` (or a well-formed, length-aligned list) when testing code that branches on them; reconcile treats a non-list/misaligned batch result as "no batch support" and falls back to the per-model path.
 - **Ruff bugbear B905 is enforced:** `zip()` needs an explicit `strict=` (usually `strict=True`); a bare `zip()` passes some focused checks but fails `make lint`.
 - **mypy catches what pytest can't:** reusing a local variable name for two different types across mutually-exclusive early-return branches of the same function (e.g. two `if`/return blocks in one Typer command) type-checks fine to a human and passes every test, but `mypy` flags it as an incompatible reassignment. A per-task `pytest`-only run will miss this — always run `make check` before calling a task done, not just before the final task.
-- **`ruff format` reflows every file it touches, not just yours.** Running it with no path (or on `src/`) will rewrite unrelated files' line-wrapping; if you then `git add` only your own files, the rest sits as stray uncommitted noise. Prefer `ruff format <specific-file>` or `ruff format --check` when verifying a small change, and check `git status --short` before committing.
+- **`src/` and `tests/` are `ruff format`-clean and CI enforces it (`make check` runs `ruff format --check`).** Run `make format` before committing; unformatted files fail CI. Bare `ruff format` (no path) also covers non-`src`/`tests` dirs, which `make format` does not — scope it to `src/ tests/`. If a formatter run ever turns `except (A, B):` into `except A, B:`, that's the known ruff bug: exclude the file via `[tool.ruff.format].extend-exclude`.
 
 ## Important implementation notes
 

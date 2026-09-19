@@ -465,7 +465,9 @@ class PendingChanges:
                     self.registry.families.append(
                         FamilyEntry(name=f, display_name=legacy.display_name if legacy else None)
                     )
-                elif family_entry.display_name is None and legacy is not None and legacy.display_name:
+                elif (
+                    family_entry.display_name is None and legacy is not None and legacy.display_name
+                ):
                     family_entry.display_name = legacy.display_name
                 self.state.forget_family(f)
                 self._forgotten_families.add(f)
@@ -613,9 +615,7 @@ class PendingChanges:
                 if not target and self.state.get(model_id).exposed:
                     self.exposes = [(mid, t) for mid, t in self.exposes if mid != model_id]
                     if provider is None:
-                        self.state.set(
-                            model_id, replace(self.state.get(model_id), exposed=False)
-                        )
+                        self.state.set(model_id, replace(self.state.get(model_id), exposed=False))
                         self._touched_model_ids.add(model_id)
                     else:
                         self.exposes.append((model_id, False))

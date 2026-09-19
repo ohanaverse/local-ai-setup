@@ -27,12 +27,15 @@ class _FakeResponse:
 def _runner(payload: dict[str, Any] | None = None, exc: Exception | None = None):
     def _run(_url: str, **_kwargs: Any) -> _FakeResponse:
         return _FakeResponse(payload=payload, exc=exc)
+
     return _run
 
 
 def _make_registry(*models: ModelEntry) -> Registry:
     providers = [
-        ProviderEntry(id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")),
+        ProviderEntry(
+            id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+        ),
         ProviderEntry(id="ollama", name="Ollama", location="local", auth=AuthConfig(type="none")),
         ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")),
     ]
@@ -116,7 +119,10 @@ def test_refresh_prices_matches_cloud_provider_as_well_as_model_location():
     registry = Registry(
         providers=[
             ProviderEntry(
-                id="openrouter", name="OpenRouter", location="cloud", auth=AuthConfig(type="api_key")
+                id="openrouter",
+                name="OpenRouter",
+                location="cloud",
+                auth=AuthConfig(type="api_key"),
             ),
             ProviderEntry(
                 id="claude", name="Claude", location="cloud", auth=AuthConfig(type="none")
@@ -153,7 +159,9 @@ def test_refresh_prices_skips_native_providers():
     Otherwise every agent would emit a daily 'No OpenRouter match' warning."""
     registry = Registry(
         providers=[
-            ProviderEntry(id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")),
+            ProviderEntry(
+                id="claude", name="Claude", location="cloud", auth=AuthConfig(type="native")
+            ),
         ],
         models=[
             ModelEntry(
@@ -192,7 +200,11 @@ def test_refresh_prices_missing_cache_price_becomes_none():
             model_name="openai/gpt-4o",
         ),
     )
-    payload = {"data": [{"id": "openai/gpt-4o", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]}
+    payload = {
+        "data": [
+            {"id": "openai/gpt-4o", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+        ]
+    }
     refresh_prices(registry, runner=_runner(payload))
 
     cost = registry.model("openrouter/gpt-4o").cost
@@ -220,7 +232,11 @@ def test_refresh_prices_preserves_manual_cache_and_subscription_pricing():
         ),
     )
     # API reports only prompt/completion — no input_cache_read, no subscription.
-    payload = {"data": [{"id": "openai/gpt-4o", "pricing": {"prompt": "0.000003", "completion": "0.000012"}}]}
+    payload = {
+        "data": [
+            {"id": "openai/gpt-4o", "pricing": {"prompt": "0.000003", "completion": "0.000012"}}
+        ]
+    }
     result = refresh_prices(registry, runner=_runner(payload))
 
     assert result.updated == 1
@@ -249,7 +265,11 @@ def test_refresh_prices_overwrites_cache_when_api_reports_it():
         "data": [
             {
                 "id": "openai/gpt-4o",
-                "pricing": {"prompt": "0.000001", "completion": "0.000002", "input_cache_read": "0.0000005"},
+                "pricing": {
+                    "prompt": "0.000001",
+                    "completion": "0.000002",
+                    "input_cache_read": "0.0000005",
+                },
             }
         ]
     }

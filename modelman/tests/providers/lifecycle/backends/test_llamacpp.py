@@ -53,7 +53,9 @@ def test_check_available_returns_message_when_plist_missing():
     PATH binary) is what "installed" means here."""
     with patch(f"{MODULE}.launchd.LLAMACPP_PLIST") as mock_plist:
         mock_plist.exists.return_value = False
-        mock_plist.__str__ = lambda self: "/Users/x/Library/LaunchAgents/local.llamacpp.server.plist"
+        mock_plist.__str__ = lambda self: (
+            "/Users/x/Library/LaunchAgents/local.llamacpp.server.plist"
+        )
         reason = LLAMACPP.check_available()
     assert reason == (
         "llamacpp service not configured: "

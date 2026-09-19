@@ -121,9 +121,7 @@ def _merge_api_cost(existing: Cost | None, api: Cost) -> Cost:
     )
 
 
-def apply_prices(
-    registry: Registry, api_by_id: dict[str, dict[str, Any]]
-) -> RefreshResult:
+def apply_prices(registry: Registry, api_by_id: dict[str, dict[str, Any]]) -> RefreshResult:
     """Apply already-fetched OpenRouter pricing to cloud models in
     ``registry``, mutating ``registry.models`` in place.
 

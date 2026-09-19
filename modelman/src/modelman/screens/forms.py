@@ -1338,8 +1338,7 @@ class ConfirmForceQuitDialog(ModelmanModal[bool]):
             for description in self._operations:
                 yield Label(f"  … {description}")
             yield Label(
-                "Quitting won't stop this — modelman may take a while to "
-                "return to the shell."
+                "Quitting won't stop this — modelman may take a while to return to the shell."
             )
             warning = "Force quitting abandons it immediately."
             if self._pending_changes:
@@ -1361,4 +1360,3 @@ class ConfirmForceQuitDialog(ModelmanModal[bool]):
 
     def action_answer(self, value: bool) -> None:
         self.dismiss(value)
-

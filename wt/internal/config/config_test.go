@@ -919,7 +919,6 @@ func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
 	}
 }
 
-
 // TestMigrateDropsLegacyGatewayBlock: a config.toml written before this
 // feature still has [gateway]. Once GatewayConfig is deleted from Config,
 // the struct simply can't round-trip that block — Save must not
