@@ -119,18 +119,35 @@ def run_cmd(
         # Print each selected row with its FULL-suite index — --row N
         # selects by full-suite position (run_suite matches the same way),
         # so renumbering the filtered list here would show "01" for a row
-        # the user selected as 3 and defeat the dry run's purpose.
+        # the user selected as 3 and defeat the dry run's purpose. Rows
+        # whose own `categories` is disjoint from the --category selection
+        # print as skipped — the real run skips them the same way (a
+        # notice to stderr, never a silent zero-category execution).
         for i, r in enumerate(loaded_suite.rows, start=1):
             if not row or r.label in set(row) or str(i) in set(row):
                 row_categories = r.categories or [c.name for c in categories]
+                overlap = [c for c in row_categories if c in {cat.name for cat in categories}]
+                note = "" if overlap else "  (skipped: no category overlap with selection)"
                 typer.echo(
                     f"{i:02d}  {r.label}  model={r.model_id}  route={r.route}  "
-                    f"categories={row_categories}"
+                    f"categories={row_categories}{note}"
                 )
+        skipped = [
+            r
+            for r in rows
+            if not (
+                set(r.categories or [c.name for c in categories]) & {cat.name for cat in categories}
+            )
+        ]
         typer.echo(
-            f"{len(rows)} of {len(loaded_suite.rows)} row(s), {len(categories)} categorie(s) "
-            "resolved, dry run — nothing executed"
+            f"{len(rows) - len(skipped)} of {len(loaded_suite.rows)} row(s), "
+            f"{len(categories)} categorie(s) resolved, dry run — nothing executed"
         )
+        if skipped:
+            typer.echo(
+                f"note: {len(skipped)} row(s) would be skipped: "
+                + ", ".join(r.label for r in skipped)
+            )
         return
 
     try:

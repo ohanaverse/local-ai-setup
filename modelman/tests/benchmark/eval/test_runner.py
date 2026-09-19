@@ -442,6 +442,76 @@ def test_row_dirs_from_a_filtered_run_keep_suite_indexes(
 @patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
 @patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
 @patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_skips_rows_disjoint_from_the_category_selection(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path, capsys
+):
+    # A row whose own `categories =` is disjoint from the runner's category
+    # set (a valid --category value that row doesn't declare) must be
+    # skipped with a notice rather than run with zero categories: running
+    # it would isolate a provider, produce an empty row directory, an
+    # all-N/A matrix row with no anomaly, and a metrics.jsonl line with
+    # "categories": {} — the silent-empty failure mode the surrounding
+    # guards were added to prevent. The sibling row that DOES overlap runs
+    # normally.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    # Two rows: row1 declares only `coding` (disjoint — skipped), row2 has
+    # no categories override (inherits the full set — runs). The single-row
+    # all-disjoint case is covered separately by the raises test.
+    suite = _suite()
+    suite.rows = [
+        RowConfig(
+            label="row1",
+            model_id="ollama/a",
+            route="litellm",
+            provider_id="ollama",
+            categories=["coding"],
+        ),
+        RowConfig(label="row2", model_id="ollama/a", route="litellm", provider_id="ollama"),
+    ]
+    run_dir, results = run_suite(
+        suite,
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: object(),
+    )
+    # The disjoint row was skipped, not run: no results, no row directory,
+    # no isolation (nothing left to isolate), and a notice on stderr.
+    assert [r.row.label for r in results] == ["row2"]
+    assert not (run_dir / "01--row1").exists()
+    assert (run_dir / "02--row2").is_dir()
+    mock_isolation.isolate_provider.assert_called_once()
+    err = capsys.readouterr().err
+    assert "skipping row 'row1'" in err
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_raises_when_no_row_overlaps_the_category_selection(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # When EVERY selected row is disjoint from the category set, the run must
+    # fail loudly (BenchmarkError → CLI exits 1) rather than create a run
+    # dir, write empty artifacts, and repoint eval_last_run at an empty run.
+    mock_isolation.isolate_provider.side_effect = AssertionError("must not isolate")
+
+    with pytest.raises(BenchmarkError, match="no rows remain after category scoping"):
+        run_suite(
+            _multi_provider_suite(),
+            _multi_provider_registry(),
+            [],
+            results_dir=tmp_path,
+            judge_transport_factory=lambda judge_cfg: object(),
+        )
+    mock_isolation.isolate_provider.assert_not_called()
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
 def test_run_suite_reisolates_when_the_model_changes_within_a_provider_group(
     mock_isolation, mock_resolve, mock_run_judged, tmp_path
 ):

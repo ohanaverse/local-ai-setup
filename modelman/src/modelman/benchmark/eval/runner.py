@@ -303,6 +303,27 @@ def run_suite(
     judge_transport_factory=None,
 ) -> tuple[Path, list[RowRunResult]]:
     rows = _select_rows(suite.rows, row_filter)
+    # A row whose own `categories` is disjoint from the runner's category
+    # set (CLI --category scoping, or a --category value valid overall but
+    # absent from that row's own list) must be SKIPPED with a notice, not
+    # run with zero categories: running it would isolate a provider and
+    # produce an empty row directory, an all-N/A matrix row with no
+    # anomaly, and a metrics.jsonl line with "categories": {} — the exact
+    # silent-empty failure mode the surrounding guards reject. This is
+    # deliberately a skip, not a suite rejection: one row legitimately
+    # scoped to coding does not block a --category reasoning run of the
+    # rest of the suite.
+    skipped: list[RowConfig] = [row for row in rows if not _row_categories(row, categories)]
+    rows = [row for row in rows if _row_categories(row, categories)]
+    for row in skipped:
+        print(
+            f"skipping row {row.label!r}: no categories overlap with the selection", file=sys.stderr
+        )
+    if not rows:
+        raise BenchmarkError(
+            "no rows remain after category scoping: every selected row's "
+            "`categories` is disjoint from the requested category set"
+        )
     # The judge transport hard-requires an API key (LiteLLM or OpenRouter);
     # build it only when at least one selected row will run a judged
     # category, so a coding-only EvalPlus run stays purely local.

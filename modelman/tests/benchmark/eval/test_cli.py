@@ -206,6 +206,68 @@ categories = ["coding", "mini_review"]
     assert "coding" in result.stdout
 
 
+@patch("modelman.benchmark.eval.cli.load_registry")
+def test_run_cmd_dry_run_notes_rows_disjoint_from_the_category_selection(
+    mock_load_registry, tmp_path
+):
+    # A --category value valid overall but disjoint from a row's own
+    # `categories =` must not silently run that row with zero categories:
+    # the dry run (the guide's recommended pre-check) marks the row as
+    # skipped and reports the would-run count, matching what run_suite
+    # actually does at execution time. Without this, the exact scenario —
+    # `--category doc_summary` against a row declaring ["coding",
+    # "reasoning"] — isolated a provider and produced an empty row dir, an
+    # all-N/A matrix row with no anomaly, and "categories": {} in
+    # metrics.jsonl.
+    from modelman.registry import ModelEntry, ProviderEntry, Registry
+
+    mock_load_registry.return_value = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        """
+name = "t"
+[judge]
+model = "j"
+temperature = 0.0
+samples = 1
+max_attempts = 1
+route = "litellm"
+
+[[rows]]
+model = "ollama/a"
+route = "litellm"
+categories = ["coding"]
+
+[[rows]]
+model = "ollama/a"
+route = "litellm"
+""",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(FIXTURE_CATEGORIES),
+            "--category",
+            "mini_review",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0
+    # Row 1 (coding-only) is marked skipped in both the per-row line and
+    # the trailing note; row 2 (no override) runs.
+    assert "(skipped: no category overlap with selection)" in result.stdout
+    assert "1 of 2 row(s)" in result.stdout
+    assert "1 row(s) would be skipped" in result.stdout
+
+
 _SUITE_BODY = """
 name = "t"
 [judge]
