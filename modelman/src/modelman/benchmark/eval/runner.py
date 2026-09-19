@@ -402,6 +402,19 @@ def run_suite(
     preflight(suite, registry, rows=rows, judge_route_active=needs_judge)
 
     results_dir = results_dir or DEFAULT_RESULTS_DIR
+    # Build the judge transport BEFORE generation (it was previously built
+    # lazily right before _judge_all): its factory hard-fails on a missing
+    # LiteLLM/OpenRouter key, and with judging now strictly post-restore a
+    # lazy build would surface that only after paying for the whole
+    # generation sweep. LiteLLMJudgeTransport.__init__ only stores strings
+    # — no connection is made until the first judge call, well after
+    # restore — so building early restores the fail-fast without
+    # reintroducing the judge-before-restore ordering bug. Built before the
+    # run directory is created too: a factory failure then leaves no empty,
+    # never-recorded eval-<ts> directory behind (they piled up across retries).
+    judge_transport: JudgeTransport | None = None
+    if needs_judge:
+        judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
     # One-second resolution: a second run started in the same second must
     # get its own directory, not silently merge into the first's.
     base_id = "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -419,17 +432,6 @@ def run_suite(
     results: list[RowRunResult] = []
     isolated_any = False
     restore_error: str | None = None
-    # Build the judge transport BEFORE generation (it was previously built
-    # lazily right before _judge_all): its factory hard-fails on a missing
-    # LiteLLM/OpenRouter key, and with judging now strictly post-restore a
-    # lazy build would surface that only after paying for the whole
-    # generation sweep. LiteLLMJudgeTransport.__init__ only stores strings
-    # — no connection is made until the first judge call, well after
-    # restore — so building early restores the fail-fast without
-    # reintroducing the judge-before-restore ordering bug.
-    judge_transport: JudgeTransport | None = None
-    if needs_judge:
-        judge_transport = (judge_transport_factory or _default_judge_transport_factory)(suite.judge)
     # Everything from isolation through the row loop is wrapped in a
     # try/finally: a failed restore, or any per-row failure that somehow
     # isn't caught by the narrower try/except below, must never skip the

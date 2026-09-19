@@ -989,3 +989,24 @@ def test_run_suite_reisolates_after_a_failed_isolation_of_a_different_spec(
     )
     assert mock_isolation.isolate_provider.call_count == 3
     assert [r.error is not None for r in results] == [False, True, False]
+
+
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_leaves_no_run_directory_when_judge_transport_fails(mock_isolation, tmp_path):
+    # The judge transport factory hard-fails on a missing API key. It must
+    # run before the eval-<ts> directory is created; otherwise every failed
+    # attempt leaves an empty, never-recorded run directory behind, and
+    # they accumulate across retries.
+    def failing_factory(suite):
+        raise BenchmarkError("no judge api key")
+
+    with pytest.raises(BenchmarkError, match="no judge api key"):
+        run_suite(
+            _suite(),
+            _registry(),
+            [_mini_review_category()],
+            results_dir=tmp_path,
+            judge_transport_factory=failing_factory,
+        )
+
+    assert list(tmp_path.glob("eval-*")) == []
