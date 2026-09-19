@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -191,5 +195,68 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsBlockedRows(t *testing.T) {
 		if it.(*modelItem).blocked == "" {
 			t.Errorf("%s launchable, want blocked", it.(*modelItem).model.ID)
 		}
+	}
+}
+
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// TestModelPickerViewHeaderAlignsWithRows renders the real list view and
+// checks the header's FAMILY and MODEL columns start at the same rune offset
+// as the first row's family and model id. String-level checks on Title/line
+// miss list padding (TitleBar) that shifts the header relative to the rows.
+func TestModelPickerViewHeaderAlignsWithRows(t *testing.T) {
+	got := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24}, "claude")
+	first := got.models.Items()[0].(*modelItem)
+	var header, row string
+	for _, ln := range strings.Split(ansiRE.ReplaceAllString(got.models.View(), ""), "\n") {
+		if strings.Contains(ln, "FAMILY") && header == "" {
+			header = ln
+		}
+		if strings.Contains(ln, first.model.ID) && row == "" {
+			row = ln
+		}
+	}
+	if header == "" || row == "" {
+		t.Fatalf("header/row not found in view:\n%s", got.models.View())
+	}
+	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	if off(header, "MODEL") != off(row, first.model.ID) {
+		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, first.model.ID), header, row)
+	}
+	if off(header, "FAMILY") != off(row, first.model.Family) {
+		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, first.model.Family), header, row)
+	}
+}
+
+// TestPinnedPathTableReflectsRunningInventory verifies that on the -M path the
+// table's local rows use the live inventory: a running local model must be a
+// launchable row (blocked == ""), so cancelling the resume prompt and pressing
+// Enter does not falsely claim it is not running.
+func TestPinnedPathTableReflectsRunningInventory(t *testing.T) {
+	requireBinary(t, "claude")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
+	}))
+	defer srv.Close()
+	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true},
+	}})
+	cfg := gateTestConfig()
+	cfg.SetLocalRunningForTest("omlx/qwen3.8")
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	m := model{cfg: cfg, agent: "claude", pinnedModel: "omlx/qwen3.8", selectedPath: t.TempDir(), width: 80, height: 24}
+	models, _ := cfg.EligibleModels("claude", "", "")
+	full, _ := cfg.ModelsForAgent("claude")
+	got, _ := m.enterModelPhase("claude", models, full, "code")
+	idx := indexOfID(got, "omlx/qwen3.8")
+	if idx < 0 {
+		t.Fatalf("pinned row missing: %v", itemIDs(got))
+	}
+	if b := got.models.Items()[idx].(*modelItem).blocked; b != "" {
+		t.Errorf("running pinned row blocked = %q, want launchable", b)
 	}
 }

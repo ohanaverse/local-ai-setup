@@ -696,7 +696,11 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	}
 
 	// A -M pin keeps localgate's flag+probe verdict.
-	var snap *localmodels.Snapshot
+	// The inventory is probed on both paths so the table's running state
+	// agrees with what launches (the pinned table can be shown again after a
+	// cancelled resume prompt).
+	inv := runInventory(m.cfg)
+	snap := &inv
 	if m.pinnedModel != "" {
 		gate := localgate.Apply(m.cfg, models, m.pinnedModel)
 		if gate.PinnedRejected != nil {
@@ -706,9 +710,6 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
 		}
 		models = gate.Eligible
-	} else {
-		s := runInventory(m.cfg)
-		snap = &s
 	}
 
 	// One Rotation for both the marker and the cursor (each New() scans the
@@ -740,6 +741,9 @@ func (m model) enterModelPhase(agent string, models, fullCatalog []config.Model,
 	// The header must sit flush with the row text: drop the default title
 	// padding/background so its first column starts where item text does.
 	ml.Styles.Title = lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	// The title bar adds its own left padding; clear it too, keeping the
+	// bottom spacing.
+	ml.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 	ml.SetShowStatusBar(false)
 	m.models = ml
 
