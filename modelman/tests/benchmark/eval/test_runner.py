@@ -263,6 +263,46 @@ def test_run_suite_preserves_earlier_category_results_when_a_later_category_fail
     assert (row_dir / "error.txt").is_file()
 
 
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_continues_to_later_categories_after_an_earlier_one_fails(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # A failure (e.g. one 900s ReadTimeout) in the FIRST category of a row
+    # must not skip the row's remaining categories: they still run and their
+    # results are kept, and the error names the category that failed. Before
+    # this, _run_row raised on the first failure and every later category
+    # showed ISOLATION_ERROR although isolation was fine.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_generate.side_effect = [
+        JudgeTransportError("first category exploded"),
+        _fake_category_result(50.0),
+    ]
+    other_category = Category(
+        name="other_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="p", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+
+    _run_dir, results = run_suite(
+        _suite(),
+        _registry(),
+        [_mini_review_category(), other_category],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+
+    assert mock_generate.call_count == 2
+    assert results[0].error is not None
+    assert "mini_review: " in results[0].error
+    assert "first category exploded" in results[0].error
+    assert "other_review" in results[0].category_results
+    assert "mini_review" not in results[0].category_results
+
+
 def _fake_category_result(score: float):
     from modelman.benchmark.eval.judged_runner import CategoryRowResult, ItemResult
 

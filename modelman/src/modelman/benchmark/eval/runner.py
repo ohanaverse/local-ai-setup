@@ -245,11 +245,12 @@ def _select_row_dirs(row_dirs: list[Path], row_filter: list[str]) -> list[Path]:
 
 
 class _RowCategoryFailed(Exception):
-    """Internal signal from _run_row: a category's dispatch raised partway
-    through the row, but earlier categories in the same row already
-    finished. Carries whatever category_results were collected before the
-    failure so run_suite can persist that partial (possibly API-billed)
-    work instead of discarding it along with the exception."""
+    """Internal signal from _run_row: one or more categories' dispatch
+    raised, but every category was still attempted. Carries whatever
+    category_results were collected (completed and partial) so run_suite
+    can persist that possibly API-billed work instead of discarding it
+    along with the exception. The message joins one `category: error`
+    entry per failed category."""
 
     def __init__(self, message: str, *, partial_results: dict[str, object]) -> None:
         super().__init__(message)
@@ -333,6 +334,12 @@ def _run_row(
     )
 
     results: dict[str, object] = {}
+    # A failure in one category must not forfeit the row's remaining
+    # categories (one 900s ReadTimeout or a content:null reply in
+    # `reasoning` would otherwise leave planning/coding/... unrun). Failures
+    # are collected and raised together after the loop so run_suite still
+    # gets every completed/partial category alongside the error.
+    failures: list[str] = []
     for category in _row_categories(row, categories):
         try:
             if category.name == CODING_CATEGORY:
@@ -356,9 +363,11 @@ def _run_row(
             # are any — an empty category would just be noise on disk).
             if exc.partial.items:
                 results[category.name] = exc.partial
-            raise _RowCategoryFailed(str(exc), partial_results=results) from exc
+            failures.append(f"{category.name}: {exc}")
         except Exception as exc:
-            raise _RowCategoryFailed(str(exc), partial_results=results) from exc
+            failures.append(f"{category.name}: {exc}")
+    if failures:
+        raise _RowCategoryFailed("; ".join(failures), partial_results=results)
     return results
 
 
