@@ -371,7 +371,7 @@ func TestInventoryOllamaPsFailureIsPartial(t *testing.T) {
 	}
 }
 
-// TestInventoryOmlx6bitOnlyStillScansDefaultDir verifies a registry with only
+// TestInventoryOmlx6bitOnlyStillScansDir verifies a registry with only
 // an omlx-6bit row still scans the omlx model dir (same physical server): the
 // row's own model_dir is honoured and discovered dirs appear.
 func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {
