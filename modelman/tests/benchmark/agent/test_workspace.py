@@ -208,3 +208,26 @@ def test_create_workspace_seeds_tests_init(tmp_path):
         assert "tests/__init__.py" in result.stdout.splitlines()
     finally:
         destroy_workspace(ws)
+
+
+def test_create_workspace_does_not_seed_a_src_layout_root_as_a_package(tmp_path):
+    # With tests_dir="src/pkg/tests", `src` is a sys.path root, not a
+    # package: seeding src/__init__.py would change how the bundle's code
+    # imports and add a baseline file the judge sees in the diff. The
+    # packages below it (pkg, pkg/tests) are still seeded so the
+    # regular-package shadowing protection holds.
+    task = _task()
+    task = dataclasses.replace(
+        task,
+        gates_config={
+            **task.gates_config,
+            "build": {**task.gates_config["build"], "tests_dir": "src/pkg/tests"},
+        },
+    )
+    ws = create_workspace(task, base_dir=tmp_path)
+    try:
+        assert not (ws.root / "src" / "__init__.py").exists()
+        assert (ws.root / "src" / "pkg" / "__init__.py").is_file()
+        assert (ws.root / "src" / "pkg" / "tests" / "__init__.py").is_file()
+    finally:
+        destroy_workspace(ws)

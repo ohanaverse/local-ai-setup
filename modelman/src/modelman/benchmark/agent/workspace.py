@@ -126,6 +126,10 @@ def _is_build_artifact(name: str) -> bool:
     return name.endswith((".pyc", ".pyo")) or "__pycache__" in parts
 
 
+# Conventional source-root directory names: never seeded as packages.
+_SOURCE_ROOT_DIRS = frozenset({"src", "lib"})
+
+
 def create_workspace(task: TaskBundle, base_dir: Path | None = None) -> Workspace:
     """Copy visible/ into a fresh temp dir, seed tests_dir as a REGULAR
     package, git init, commit as baseline."""
@@ -148,9 +152,16 @@ def create_workspace(task: TaskBundle, base_dir: Path | None = None) -> Workspac
     tests_dir = task.gates_config.get("build", {}).get("tests_dir")
     if tests_dir:
         pkg_dir = root
-        for part in Path(tests_dir).parts:
+        for depth, part in enumerate(Path(tests_dir).parts):
             pkg_dir = pkg_dir / part
             pkg_dir.mkdir(parents=True, exist_ok=True)
+            # A leading src/ or lib/ is a sys.path root by convention
+            # (src-layout), never a package: seeding it would change how the
+            # bundle's own code imports and discovers, and add baseline files
+            # the judge then sees in the diff. The packages below it are
+            # still seeded, so the shadowing protection above is intact.
+            if depth == 0 and part in _SOURCE_ROOT_DIRS:
+                continue
             (pkg_dir / "__init__.py").touch()
     _git(["init", "-q"], cwd=root)
     _git(["config", "user.email", "agent-bench@local"], cwd=root)
