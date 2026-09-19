@@ -28,9 +28,12 @@ def _partial_suffix(value: object) -> str:
     if not isinstance(value, CategoryRowResult) or value.score_100 is None:
         return ""
     scored = sum(1 for item in value.items if item.score_100 is not None)
-    if scored == len(value.items):
+    # expected_items covers items never generated (aborted category), which
+    # are absent from value.items altogether.
+    total = max(value.expected_items or 0, len(value.items))
+    if scored == total:
         return ""
-    return f" ({scored}/{len(value.items)} items)"
+    return f" ({scored}/{total} items)"
 
 
 def _family_of(model_id: str, registry: Registry) -> str:

@@ -263,3 +263,24 @@ def test_partially_judged_category_is_marked_and_ranked_below_a_complete_one():
     assert "95.0 (1/5 items)" in summary
     leaderboard = summary.split("## Per-category leaderboard")[1].split("## Anomalies")[0]
     assert leaderboard.index("full") < leaderboard.index("partial")
+
+
+def test_category_aborted_mid_generation_is_marked_partial():
+    # A category whose generation aborted after 1 of 5 items keeps only that
+    # one item; if that item scores fully, scored == len(items) and the
+    # score used to read as a complete run. expected_items must expose the
+    # 4 items that were never generated, or the leaderboard misranks it.
+    item = _judged_result(95.0).items[0]
+    aborted = RowRunResult(
+        row=RowConfig(
+            label="aborted", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"
+        ),
+        row_dir=Path("/tmp/a"),
+        category_results={
+            "doc_summary": CategoryRowResult(
+                category="doc_summary", items=[item], score_100=95.0, expected_items=5
+            )
+        },
+    )
+    summary = render_summary("test-run", [aborted], _registry(), ["doc_summary"])
+    assert "95.0 (1/5 items)" in summary

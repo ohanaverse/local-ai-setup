@@ -40,6 +40,11 @@ class CategoryRowResult:
     category: str
     items: list[ItemResult]
     score_100: float | None
+    # How many items the category defines, when known. A category aborted
+    # mid-generation keeps only the items produced so far, so len(items)
+    # alone would read a truncated run as complete. None = unknown (falls
+    # back to len(items)).
+    expected_items: int | None = None
 
 
 class CategoryGenerationError(Exception):
@@ -92,13 +97,21 @@ def generate_category(
             raise CategoryGenerationError(
                 str(exc),
                 partial=CategoryRowResult(
-                    category=category.name, items=item_results, score_100=None
+                    category=category.name,
+                    items=item_results,
+                    score_100=None,
+                    expected_items=len(category.items),
                 ),
             ) from exc
         item_results.append(
             ItemResult(item_id=item.id, response_text=response_text, judge=None, score_100=None)
         )
-    return CategoryRowResult(category=category.name, items=item_results, score_100=None)
+    return CategoryRowResult(
+        category=category.name,
+        items=item_results,
+        score_100=None,
+        expected_items=len(category.items),
+    )
 
 
 def judge_category(

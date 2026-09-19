@@ -693,7 +693,9 @@ def _load_json_artifact(path: Path) -> object | None:
         return None
 
 
-def _reconstruct_category_result(category_dir: Path) -> object | None:
+def _reconstruct_category_result(
+    category_dir: Path, expected_items: int | None = None
+) -> object | None:
     """Rebuild a CodingResult or CategoryRowResult from one row's on-disk
     category directory, reading whatever judge.json/score.json currently
     say (i.e. post-rejudge for anything rejudge_run just rewrote).
@@ -792,7 +794,10 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
     scored = [r.score_100 for r in item_results if r.score_100 is not None]
     score_100 = round(mean(scored), 2) if scored else None
     return judged_runner.CategoryRowResult(
-        category=category_dir.name, items=item_results, score_100=score_100
+        category=category_dir.name,
+        items=item_results,
+        score_100=score_100,
+        expected_items=expected_items,
     )
 
 
@@ -818,7 +823,9 @@ def _row_index_from_dir_name(dir_name: str) -> int | None:
     return int(prefix) if prefix.isdigit() else None
 
 
-def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
+def _reconstruct_run_results(
+    run_dir: Path, categories: list[Category] | None = None
+) -> list[RowRunResult]:
     """Rebuild the whole run's RowRunResult list from on-disk artifacts —
     used after rejudge_run rewrites judge.json files, so summary.md/
     metrics.jsonl/score.json can be regenerated to match instead of going
@@ -838,6 +845,10 @@ def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
     error and every category whose artifacts survived — a failure never
     costs already-computed results."""
     meta = _read_metrics_row_meta(run_dir)
+    # Item counts per category, so a category that was aborted mid-generation
+    # still reads as partial after reconstruction (only its generated item
+    # directories exist on disk).
+    expected = {c.name: len(c.items) for c in categories or []}
     results: list[RowRunResult] = []
     for row_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
         # A row directory always holds error.txt and/or category
@@ -862,7 +873,7 @@ def _reconstruct_run_results(run_dir: Path) -> list[RowRunResult]:
         error_text = error_path.read_text(encoding="utf-8") if error_path.is_file() else None
         category_results: dict[str, object] = {}
         for category_dir in sorted(p for p in row_dir.iterdir() if p.is_dir()):
-            result = _reconstruct_category_result(category_dir)
+            result = _reconstruct_category_result(category_dir, expected.get(category_dir.name))
             if result is not None:
                 category_results[category_dir.name] = result
         results.append(
@@ -953,7 +964,7 @@ def rejudge_run(
     # rewritten above (plus untouched categories' existing files), then
     # re-render summary.md/metrics.jsonl for the whole run so `eval show`
     # reflects the rejudge instead of silently serving stale numbers.
-    results = _reconstruct_run_results(run_dir)
+    results = _reconstruct_run_results(run_dir, categories)
     for result in results:
         for name, cat_result in result.category_results.items():
             if isinstance(cat_result, judged_runner.CategoryRowResult):
