@@ -87,7 +87,8 @@ glyphs misalign CJK terminals):
 | 1D 7D 30D | `usage.CountsForAgent` for the chosen agent-model pair; model-level `Counts` when no agent (`wt smoke`) |
 | SURVEY | existing trailing `FormatPickerSegment` segment (already uses `✓`/`⚠`), per agent-model pair |
 
-Discovered rows show family `-`. Requires a new read-only config accessor for
+Discovered rows show family `-`. The old trailing `[tags]` cell is dropped
+(tags are not in the column list; `-T` still filters). Requires a new read-only config accessor for
 the raw exposed flag (local models are always "exposed" to `IsExposed`, so the
 predicate cannot supply the column).
 
@@ -96,14 +97,20 @@ predicate cannot supply the column).
 - A running row with a resolvable route launches through the existing launch
   path. That includes running discovered models; stats record under
   `DiscoveredModelID` (#110).
-- A non-running row does not launch: status line, e.g. `not running — start it
-  with modelman start <id>`, until sub-project 4 adds auto-start.
+- A non-running local row does not launch: status line, e.g. `not running —
+  start it with modelman start <id>`, until sub-project 4 adds auto-start.
+  Exception: a pulled ollama model stays launchable even when not loaded
+  (ollama's daemon loads on demand, and sub-project 3 must not regress launching
+  models started flag-only by `modelman start`). RUNNING still shows `-` for
+  it; only launch gating differs.
 - A discovered model is not in LiteLLM's `model_list`. With LiteLLM routing on
   or a forced route, a discovered row gets an exception note (`(not in
   LiteLLM)`) and cannot be selected; it works in direct mode.
-- The `Inventory` probe runs as a `tea.Cmd` behind a "probing local
-  providers…" state (a dead provider can take ~2s), not synchronously in the
-  update loop.
+- The `Inventory` probe runs synchronously inside `enterModelPhase`, as the
+  existing `localgate.Apply` probes already do (probes run concurrently with a
+  2s cap; a refused localhost connection is instant). A `tea.Cmd` + probing
+  phase was rejected: it adds a phase and rewrites every `enterModelPhase`
+  test for no regression fixed. Revisit if the picker ever feels slow.
 - The non-TUI path and `-M` pin validation keep using `localgate`, unchanged.
 - `wt smoke`'s `PickModel` uses the same row builder with no agent: model-level
   counts, blank per-agent columns.
