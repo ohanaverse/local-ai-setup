@@ -29,12 +29,14 @@ type UsageCounts struct {
 // event is one line in the usage JSONL file.
 type event struct {
 	ModelID   string    `json:"model_id"`
+	Agent     string    `json:"agent,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
 // Store is an interface for recording and querying model-launch history.
 type Store interface {
 	Record(modelID string) error
+	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
 }
 
@@ -58,7 +60,11 @@ func (s *StoreImpl) path() string {
 // now is overridable for tests.
 var now = time.Now
 
-// Record appends one launch event for modelID atomically, first dropping
+// Record appends a launch event with no agent attribution. Prefer RecordFor;
+// Record remains for callers that only know the model.
+func (s *StoreImpl) Record(modelID string) error { return s.RecordFor("", modelID) }
+
+// RecordFor appends one launch event for agent+modelID atomically, first dropping
 // any existing events older than retentionWindow so the file doesn't grow
 // unbounded — only the trailing 30-day window is ever read by Counts.
 //
@@ -68,8 +74,8 @@ var now = time.Now
 // the same config dir) so neither's just-recorded event is silently dropped
 // by the other's later rename. The sidecar pattern keeps the lock attached
 // to the file's location while the target file is renamed freely.
-func (s *StoreImpl) Record(modelID string) error {
-	e := event{ModelID: modelID, Timestamp: now().UTC()}
+func (s *StoreImpl) RecordFor(agent, modelID string) error {
+	e := event{ModelID: modelID, Agent: agent, Timestamp: now().UTC()}
 	line, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -125,7 +131,19 @@ func pruneOlderThan(data []byte, asOf time.Time, window time.Duration) ([]byte, 
 	return out, nil
 }
 
-// Counts returns 1d/7d/30d counts for each model in modelIDs, zero-filling
+// Counts returns 1d/7d/30d counts per model across all agents (including
+// legacy agent-less events). See countsWhere for semantics.
+func (s *StoreImpl) Counts(modelIDs []string) map[string]UsageCounts {
+	return s.countsWhere(modelIDs, func(event) bool { return true })
+}
+
+// CountsForAgent is Counts scoped to one agent. Events without an agent
+// (legacy lines, or Record) never match, and an empty agent matches nothing.
+func (s *StoreImpl) CountsForAgent(agent string, modelIDs []string) map[string]UsageCounts {
+	return s.countsWhere(modelIDs, func(ev event) bool { return agent != "" && ev.Agent == agent })
+}
+
+// countsWhere returns 1d/7d/30d counts for each model in modelIDs, zero-filling
 // every requested ID (a missing file or a model with no recent events reads
 // as zero counts).
 //
@@ -134,7 +152,7 @@ func pruneOlderThan(data []byte, asOf time.Time, window time.Duration) ([]byte, 
 // are returned with no error — a truncated read only skews displayed
 // numbers. Record's prune path is where scan errors are surfaced, because
 // there the result overwrites the on-disk history.
-func (s *StoreImpl) Counts(modelIDs []string) map[string]UsageCounts {
+func (s *StoreImpl) countsWhere(modelIDs []string, match func(event) bool) map[string]UsageCounts {
 	want := map[string]bool{}
 	for _, id := range modelIDs {
 		want[id] = true
@@ -157,7 +175,7 @@ func (s *StoreImpl) Counts(modelIDs []string) map[string]UsageCounts {
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			continue
 		}
-		if !want[ev.ModelID] {
+		if !want[ev.ModelID] || !match(ev) {
 			continue
 		}
 		age := today.Sub(ev.Timestamp.UTC())
