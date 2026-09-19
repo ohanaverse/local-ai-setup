@@ -359,6 +359,19 @@ def run_pi_process(
                 stderr_chunks.append(remaining)
     stderr_tail = b"".join(stderr_chunks).decode("utf-8", errors="replace")[-2000:]
 
+    # Close the pipes so their fds don't linger until GC (one pair leaked per
+    # row otherwise, plus a ResourceWarning). stderr is only read above, on this
+    # thread. stdout is closed only once the reader thread has finished: if a
+    # grandchild kept the pipe open past the bounded join, the reader is still
+    # blocked in it and closing under it can hang, so leave that one to the
+    # daemon thread, which ends with the pipe.
+    if proc.stderr is not None:
+        with contextlib.suppress(Exception):
+            proc.stderr.close()
+    if proc.stdout is not None and not reader.is_alive():
+        with contextlib.suppress(Exception):
+            proc.stdout.close()
+
     if exit_code is None:
         exit_code = proc.returncode
 

@@ -9,6 +9,7 @@ exactly as the spec's Route resolution section states them.
 """
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -246,6 +247,31 @@ def test_run_pi_process_completes_normally(tmp_path):
     assert any(e["type"] == "message_end" for e in events)
     # real pi writes the transcript into --session-dir; gate 1 needs that proof
     assert any(p.suffix == ".jsonl" for p in tmp_path.rglob("*.jsonl"))
+
+
+def test_run_pi_process_closes_the_child_pipes(tmp_path, monkeypatch):
+    # After a normal run both the stdout and stderr pipes must be closed, not
+    # left for the garbage collector. Otherwise every row of a benchmark suite
+    # leaks a pair of file descriptors and emits a ResourceWarning, which is
+    # what a long multi-row run would exhaust first. Popen is wrapped to keep a
+    # handle on the child, since run_pi_process never returns it.
+    procs: list[subprocess.Popen] = []
+    real_popen = subprocess.Popen
+
+    class _RecordingPopen(real_popen):  # type: ignore[type-arg,misc]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            procs.append(self)
+
+    monkeypatch.setattr(subprocess, "Popen", _RecordingPopen)
+
+    run_pi_process(
+        _fake_agent_cmd(tmp_path), workspace_path=tmp_path, timeout_seconds=10, poll_interval=0.01
+    )
+
+    assert len(procs) == 1
+    assert procs[0].stdout is not None and procs[0].stdout.closed
+    assert procs[0].stderr is not None and procs[0].stderr.closed
 
 
 def test_run_pi_process_ignores_the_user_message_end_when_checking_for_a_reply(tmp_path):
