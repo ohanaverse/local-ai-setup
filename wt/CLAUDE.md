@@ -213,7 +213,7 @@ update both sides or both CI jobs fail.
 
 **Exposure predicate (2026-09-15 local-model visibility design):** wt's `IsExposed` decides Stage-1 (tag/family/provider) catalog membership:
 - Native models (provider `auth.type = "native"`): always exposed.
-- Local models (location resolves to `"local"`): always exposed here too — catalog membership for local models is governed entirely by the live-verified running gate below (`internal/localgate.Apply`/`FilterToRunningLocal`), not by `exposed`/`ready`. A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
+- Local models (location resolves to `"local"`): always exposed here too — for the TUI picker, all configured and discovered local models are listed and launch-gated individually; for non-TUI launches, catalog membership is governed by the live-verified running gate below (`internal/localgate.Apply`/`FilterToRunningLocal`). A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
 - Cloud (and any model whose location doesn't resolve to local): `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`), unchanged from before.
 
 The model picker's EXPOSED column reads the raw modelman flag via `Config.ExposedFlag` — unlike `IsExposed`, this reads the flag as-is without location-based special-casing, so cloud-location models show their true exposure state while local models show modelman's via-flag visibility (which may differ from the running gate's result; see below).
@@ -227,7 +227,7 @@ This means wt's picker can now show a local model modelman's own TUI still rende
 > registry by creating default entries for reconcilable providers.)
 
 **Lazy:** `newApp()` only loads config. wt never shells out for discovery;
-`-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`. `localmodels.Inventory` performs HTTP and filesystem discovery only (still no subprocess) and is not yet wired into a launch path (sub-project 3 consumes it).
+`-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`. `localmodels.Inventory` performs HTTP and filesystem discovery only (still no subprocess) and is called by both `enterModelPhase` (TUI picker, pinned and non-pinned models) and `PickModel` (standalone picker for `wt smoke`) to show live local-model status.
 
 > **Fixture gotcha.** `Dir()` and `RegistryPath()` both honor `XDG_CONFIG_HOME`
 > (and `RegistryPath()` also honors `MODELMAN_REGISTRY`) but write to
@@ -240,31 +240,9 @@ This means wt's picker can now show a local model modelman's own TUI still rende
 
 ## Local-model gate (multi-model design, 2026-09-14)
 
-wt offers cloud models plus every LOCAL model that is both flagged
-`running` in modelman-owned `modelman.toml` and confirmed by a live
-probe right now — replacing issue #65's single-marker,
-one-model-at-a-time gate. The TUI model picker now **lists all configured and discovered local models** — running and non-running alike — showing STATUS/RUNNING columns live from `localmodels.Inventory` (never the modelman flag); it gates launch via `tableRow.launchable` (true for running models, or a pulled ollama model since ollama loads on demand), and shows a non-launchable hint for other non-running rows. A discovered model under LiteLLM routing shows `(not in LiteLLM)` and cannot be selected.
+**TUI model picker:** Lists all configured and discovered local models — running and non-running alike — showing STATUS/RUNNING columns live from `localmodels.Inventory` (never the modelman flag). Launch is gated via `tableRow.launchable()` (true for running models, or a pulled ollama model since ollama loads on demand), and a non-launchable hint is shown for other non-running rows. A discovered model under LiteLLM routing shows `(not in LiteLLM)` and cannot be selected. A pinned model (`-M`) still goes through `localgate.Apply`; if the pin is not in the verified-running set, the TUI routes back to the agent picker with the gate error.
 
-The gate policy for non-TUI launches (and the `-M` pin validation on both paths) lives in ONE place —
-`internal/localgate.Apply` — shared by `cmd/wt/resolve.go`'s
-`resolveModel` (non-TUI) and the model pin check, so
-the two paths cannot diverge. Apply reads modelman-owned
-`modelman.toml`'s per-model `running` flags (`internal/config`'s
-`Config.RunningLocalModelIDs()`/`LocalGateActive()`), verifies each one
-with `internal/localgate.ResolveAll`'s probes — ollama is exempt from live
-verification (the flag is trusted unconditionally since `modelman start` for
-ollama is flag-only with no warmup, and an `ollama ps` check would read the
-model as not-loaded on the very first probe after start, self-clearing the
-flag); omlx/omlx-6bit via a name-checked `/v1/models` — 4-bit and 6-bit
-variants share port 8000 and differ exactly in the variant tail; mlx_lm_server
-via a non-empty `/v1/models`, exact names unreconstructable since one process
-serves one target+draft pairing; mtplx via a name-checked `/v1/models` on port
-8003 — then rejects a
-`-M` pin naming a local model that isn't among the verified set, and
-narrows the list with `Config.FilterToRunningLocal`, which fails closed
-on unresolvable locations (a registry data gap drops the model rather
-than keeping a possibly-local one). Callers map the outcome to their own
-UX:
+**Non-TUI launches and `-M` pin validation:** The gate policy lives in ONE place — `internal/localgate.Apply` — called by `cmd/wt/resolve.go`'s `resolveModel` (non-TUI) and by `enterModelPhase` (TUI's `-M` pin check only). Apply reads modelman-owned `modelman.toml`'s per-model `running` flags (`internal/config`'s `Config.RunningLocalModelIDs()`/`LocalGateActive()`), verifies each one with `internal/localgate.ResolveAll`'s probes — ollama is exempt from live verification (the flag is trusted unconditionally since `modelman start` for ollama is flag-only with no warmup, and an `ollama ps` check would read the model as not-loaded on the very first probe after start, self-clearing the flag); omlx/omlx-6bit via a name-checked `/v1/models` — 4-bit and 6-bit variants share port 8000 and differ exactly in the variant tail; mlx_lm_server via a non-empty `/v1/models`, exact names unreconstructable since one process serves one target+draft pairing; mtplx via a name-checked `/v1/models` on port 8003 — then rejects a `-M` pin naming a local model that isn't among the verified set, and (for non-TUI) narrows the eligible list with `Config.FilterToRunningLocal`, which fails closed on unresolvable locations (a registry data gap drops the model rather than keeping a possibly-local one). Non-TUI callers map the outcome to their own UX:
 
 - No flags set → cloud models only.
 - One or more verified flags → cloud models plus every verified-running
@@ -282,8 +260,7 @@ UX:
   none verified running) → a gate-specific error ("all of agent X's
   eligible models are local and no local model is running — start one
   with `modelman start <id>`"), not the generic "no models match"
-  wording; the TUI likewise routes back to the agent picker instead of
-  showing a silent empty model list.
+  wording; the non-TUI path propagates this error to its caller.
 
 `LocalGateActive()` is true only for a `Config` built by `Load()`
 (production); a hand-built `Config{}` literal — the shape nearly every
@@ -330,7 +307,8 @@ Global rotation — the Go equivalent of bash `--code`/`--design`. Each successf
   `modelItem.ref`; `Title()` renders it as a 2-rune prefix ("`3 `" or two
   blank spaces, clamped at 9) *before* the rotation marker. See
   `internal/refcount`.
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and pass both to `enterModelPhase` (which now uses only the eligible slice for the table; the full catalog parameter is retained for compatibility). `buildTable` (`internal/tui/modeltable.go`) then builds and sorts the rows (cloud plus running local by cost then 7-day usage, non-running local alphabetically) and renders them as an aligned table with per-model 1D/7D/30D usage cells; the header is the list title.
+- **Picker table columns:** FAMILY, MODEL, LOC, STATUS, EXPOSED, RUNNING, COST, 1D, 7D, 30D, SURVEY (last column omitted for `wt smoke`'s `PickModel`, which has no agent context).
+- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). Usage tracking uses `usage.Store.CountsForAgent(agent, modelIDs)` for per-agent-model-pair counts; `wt smoke`'s picker uses model-level `Counts` since there's no agent context yet. The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and pass both to `enterModelPhase` (which now uses only the eligible slice for the table; the full catalog parameter is retained for compatibility). `buildTable` (`internal/tui/modeltable.go`) then builds and sorts the rows (cloud plus running local by cost then 7-day usage, non-running local alphabetically) and renders them as an aligned table with per-model 1D/7D/30D usage cells; the header is the list title.
 
 ```bash
 go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
