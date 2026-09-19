@@ -45,6 +45,7 @@ from modelman.benchmark.judge_core import (
     LiteLLMJudgeTransport,
     judge_row,
 )
+from modelman.local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -116,19 +117,62 @@ def _row_categories(row: RowConfig, categories: list[Category]) -> list[Category
     return [c for c in categories if c.name in wanted]
 
 
-def _isolation_extra_args(row: RowConfig) -> tuple[str, ...]:
+def _row_isolation_spec(
+    row: RowConfig, registry: Registry
+) -> tuple[tuple[str, ...], dict[str, str] | None] | None:
+    """(extra_args, env) for isolating `row`'s provider with the ROW'S model
+    loaded, or None when the row needs no isolation at all.
+
+    Mirrors `modelman start`'s in-process pattern (local_control.py):
+    mlx_lm_server/mtplx take positional model args, ollama/omlx name their
+    model through the LLM_ISOLATE_*_MODEL env dict — isolate_provider's only
+    channel for them, since their backends' resolve() reads extra_args as
+    absent. Without it, warmup loads the backend's baked-in default (ornith)
+    instead of the row's model: direct-route omlx rows then 404 against the
+    still-loaded default (single-model-per-daemon), and ollama rows lazily
+    stack the row's model on top of the warmed default, breaking the
+    one-model-at-a-time isolation invariant this call exists to enforce.
+
+    The warm name must be the name the row's own requests will use, so the
+    warmed weights and the benchmarked weights agree: `direct_model` when the
+    row sets one (omlx rows need the basename the daemon serves, not the
+    org-prefixed registry model_name), else the registry model_name (ollama
+    tags, omlx via litellm — both spellings live-verified against the oMLX
+    daemon 2026-09-18).
+
+    None = a cloud model on a local provider's id (e.g. an `ollama/*:cloud`
+    registry row): its requests go to a remote API, so it contends with
+    nothing on this machine — and naming a model would make warmup POST a
+    cloud model name at the local daemon and fail after the 600s timeout.
+    Skip isolation for it, the same cloud-row stance the agent benchmark
+    takes."""
     if row.provider_id == "mlx_lm_server":
-        return isolation.mlx_lm_server_pairing_args(
-            row.model_id,
-            row.target_local_path,
-            row.target_repo,
-            row.draft_local_path,
-            row.draft_repo,
+        return (
+            isolation.mlx_lm_server_pairing_args(
+                row.model_id,
+                row.target_local_path,
+                row.target_repo,
+                row.draft_local_path,
+                row.draft_repo,
+            ),
+            None,
         )
     if row.provider_id == "mtplx":
         assert row.mtplx_model_name is not None
-        return (row.mtplx_model_name,)
-    return ()
+        return (row.mtplx_model_name,), None
+    if row.provider_id in _ENV_VAR_BY_PROVIDER:
+        try:
+            entry = registry.model(row.model_id)
+        except KeyError:
+            # Unreachable in practice (suite load/preflight already resolved
+            # the model), but an isolate call must never be what crashes the
+            # sweep — fall back to the provider's default-warm behavior.
+            return (), None
+        if entry.location == "cloud":
+            return None
+        warm_name = row.direct_model or entry.model_name
+        return (), {_ENV_VAR_BY_PROVIDER[row.provider_id]: warm_name}
+    return (), None
 
 
 def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[RowConfig]:
@@ -294,7 +338,12 @@ def run_suite(
         for provider_id, group in itertools.groupby(
             sorted(rows, key=lambda r: (r.provider_id, r.model_id)), key=lambda r: r.provider_id
         ):
-            prev_extra: tuple[str, ...] | None = None
+            # The isolation key is the full (extra_args, env) spec, not just
+            # extra_args: two ollama/omlx rows on the same provider but
+            # different models now carry different env dicts and must
+            # re-isolate between them (the single-model-per-daemon case
+            # mlx_lm_server has always had via its pairing args).
+            prev_spec: tuple[tuple[str, ...], dict[str, str] | None] | None = None
             for row_position, row in enumerate(group):
                 # Thermal settling between rows within a provider group
                 # (agent/runner.py honors cooldown_s between passes the
@@ -304,7 +353,7 @@ def run_suite(
                 if row_position > 0:
                     time.sleep(suite.cooldown_s)
                 try:
-                    extra_args = _isolation_extra_args(row)
+                    spec = _row_isolation_spec(row, registry)
                 except BenchmarkError as exc:
                     results.append(
                         RowRunResult(
@@ -313,9 +362,15 @@ def run_suite(
                     )
                     continue
 
-                if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
+                # spec None = a cloud model on a local provider's id (e.g. an
+                # ollama/*:cloud registry row): it hits a remote API through
+                # LiteLLM, contends with nothing on this machine, and naming
+                # a model would make warmup POST a cloud name at the local
+                # daemon — skip isolation for it entirely, same cloud-row
+                # stance the agent benchmark takes.
+                if spec is not None and provider_id in ISOLATABLE_PROVIDERS and spec != prev_spec:
                     try:
-                        isolation.isolate_provider(provider_id, *extra_args)
+                        isolation.isolate_provider(provider_id, *spec[0], env=spec[1])
                         isolated_any = True
                     except BenchmarkError as exc2:
                         results.append(
@@ -326,7 +381,7 @@ def run_suite(
                             )
                         )
                         continue
-                    prev_extra = extra_args
+                    prev_spec = spec
 
                 row_dir = _row_dir(run_dir, _row_index(row), row)
                 try:

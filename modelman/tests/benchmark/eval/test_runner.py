@@ -14,7 +14,13 @@ import pytest
 from modelman.benchmark.errors import BenchmarkError
 from modelman.benchmark.eval.category import Category, Item
 from modelman.benchmark.eval.runner import RunSavedButRestoreFailed, run_suite
-from modelman.benchmark.eval.suite import CodingConfig, JudgeConfig, RowConfig, Suite
+from modelman.benchmark.eval.suite import (
+    CodingConfig,
+    DirectRouteConfig,
+    JudgeConfig,
+    RowConfig,
+    Suite,
+)
 from modelman.benchmark.judge_core import JudgeOutcome, JudgeScore, JudgeTransportError, Rubric
 from modelman.registry import ModelEntry, ProviderEntry, Registry
 
@@ -109,7 +115,14 @@ def test_run_suite_isolates_once_per_provider_group_and_restores(
         judge_transport_factory=lambda suite: object(),
     )
 
-    mock_isolation.isolate_provider.assert_called_once_with("ollama")
+    # The isolate call must NAME the row's model via the env dict (the only
+    # in-process channel for ollama/omlx — their backends' resolve() ignores
+    # positional extra_args). Without it, warmup loads the backend's baked-in
+    # default (ornith) while the row benchmarks its own model, breaking the
+    # one-model-at-a-time invariant isolation exists to enforce.
+    mock_isolation.isolate_provider.assert_called_once_with(
+        "ollama", env={"LLM_ISOLATE_OLLAMA_MODEL": "a"}
+    )
     mock_isolation.restore_providers.assert_called_once()
     assert len(results) == 1
     assert results[0].category_results["mini_review"].score_100 == 50.0
@@ -424,3 +437,137 @@ def test_row_dirs_from_a_filtered_run_keep_suite_indexes(
         judge_transport_factory=lambda judge_cfg: object(),
     )
     assert sorted(r.row_dir.name for r in results) == ["01--row1", "03--row3"]
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_reisolates_when_the_model_changes_within_a_provider_group(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # Benchmark isolation is one-model-at-a-time even on multi-tenant ollama:
+    # two ollama rows with DIFFERENT models must re-isolate between them
+    # (the env dict is part of the isolation key, exactly as mlx_lm_server's
+    # pairing args always were). Without the re-isolation, the second row's
+    # requests would run while the first row's model is still resident —
+    # two models in GPU/RAM, breaking the invariant the isolation call
+    # exists to enforce.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "m", "sk-x")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    suite = _suite()
+    suite.rows = [
+        RowConfig(label="r1", model_id="ollama/a", route="litellm", provider_id="ollama"),
+        RowConfig(label="r2", model_id="ollama/b", route="litellm", provider_id="ollama"),
+    ]
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
+        ],
+    )
+    run_suite(
+        suite,
+        registry,
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: object(),
+    )
+    assert mock_isolation.isolate_provider.call_args_list == [
+        call("ollama", env={"LLM_ISOLATE_OLLAMA_MODEL": "a"}),
+        call("ollama", env={"LLM_ISOLATE_OLLAMA_MODEL": "b"}),
+    ]
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_direct_model_name_wins_over_registry_model_name_for_warmup(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # An omlx direct-route row names `direct_model` because the daemon serves
+    # the repo BASENAME while the registry model_name is org-prefixed; the
+    # warm name must follow the same rule, or the warmed weights and the
+    # benchmarked weights desynchronize (warmup POSTs a name the daemon
+    # resolves differently from what the row's requests actually use).
+    mock_resolve.return_value = ("http://localhost:8000/v1", "Qwen3.8-27B-4bit", "ollama")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    suite = _suite()
+    suite.routes_direct = {"omlx": DirectRouteConfig(base_url="http://localhost:8000/v1")}
+    suite.rows[0] = RowConfig(
+        label="row1",
+        model_id="omlx/m",
+        route="direct",
+        provider_id="omlx",
+        direct_model="Qwen3.8-27B-4bit",
+    )
+    registry = Registry(
+        providers=[ProviderEntry(id="omlx", name="oMLX", location="local")],
+        models=[
+            ModelEntry(
+                id="omlx/m",
+                family="f",
+                provider_id="omlx",
+                model_name="mlx-community/Qwen3.8-27B-4bit",
+            )
+        ],
+    )
+    run_suite(
+        suite,
+        registry,
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: object(),
+    )
+    mock_isolation.isolate_provider.assert_called_once_with(
+        "omlx", env={"LLM_ISOLATE_OMLX_4BIT_MODEL": "Qwen3.8-27B-4bit"}
+    )
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.run_judged_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_cloud_rows_skip_isolation(
+    mock_isolation, mock_resolve, mock_run_judged, tmp_path
+):
+    # A cloud model on a local provider's id (the shipped eval-sweep.toml's
+    # `ollama/glm-5.3-flash:cloud` row) reaches a remote API through the
+    # LiteLLM proxy — it contends with nothing on this machine, and isolating
+    # its provider id would warm the local daemon's default model for
+    # minutes to no effect. Cloud rows must skip isolation entirely (and
+    # still restore nothing they never stopped).
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/glm-5.3-flash:cloud", "sk-x")
+    mock_run_judged.return_value = _fake_category_result(50.0)
+
+    suite = _suite()
+    suite.rows[0] = RowConfig(
+        label="row1",
+        model_id="ollama/glm-5.3-flash:cloud",
+        route="litellm",
+        provider_id="ollama",
+    )
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[
+            ModelEntry(
+                id="ollama/glm-5.3-flash:cloud",
+                family="f",
+                provider_id="ollama",
+                model_name="glm-5.3-flash:cloud",
+                location="cloud",
+            )
+        ],
+    )
+    run_dir, results = run_suite(
+        suite,
+        registry,
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda judge_cfg: object(),
+    )
+    mock_isolation.isolate_provider.assert_not_called()
+    mock_isolation.restore_providers.assert_not_called()
+    assert results[0].category_results["mini_review"].score_100 == 50.0
+    assert (run_dir / "01--row1" / "mini_review" / "i1" / "response.txt").is_file()
