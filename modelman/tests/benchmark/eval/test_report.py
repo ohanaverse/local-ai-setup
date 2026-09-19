@@ -211,3 +211,55 @@ def test_write_metrics_jsonl_writes_one_line_per_row(tmp_path):
     record = json.loads(lines[0])
     assert record["label"] == "a"
     assert record["categories"]["doc_summary"] == 80.0
+
+
+def test_render_summary_escapes_pipes_and_newlines_in_table_cells():
+    # Error text and labels are free-form: a `|` would add a column and a
+    # newline would end the row, corrupting the summary tables. Both must
+    # be neutralized so every table line keeps its column count.
+    row = RowRunResult(
+        row=RowConfig(
+            label="a|b", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"
+        ),
+        row_dir=Path("/tmp/a"),
+        category_results={},
+        error="boom | bad\nsecond line",
+    )
+    summary = render_summary("test-run", [row], _registry(), ["doc_summary"])
+    assert "a\\|b" in summary
+    assert "boom \\| bad second line" in summary
+    anomaly_line = next(line for line in summary.splitlines() if "ISOLATION_ERROR: boom" in line)
+    assert anomaly_line.count("|") - anomaly_line.count("\\|") == 3
+
+
+def test_partially_judged_category_is_marked_and_ranked_below_a_complete_one():
+    # A category where only 1 of 5 items survived judging has a score that
+    # is a mean over the survivor; it must be flagged in the matrix and must
+    # not outrank a row that scored every item, even at a higher number.
+    def result(scores: list[float | None]) -> CategoryRowResult:
+        items = []
+        for i, score in enumerate(scores):
+            base = _judged_result(score).items[0]
+            base.item_id = f"i{i}"
+            items.append(base)
+        scored = [s for s in scores if s is not None]
+        return CategoryRowResult(
+            category="doc_summary", items=items, score_100=sum(scored) / len(scored)
+        )
+
+    partial = RowRunResult(
+        row=RowConfig(
+            label="partial", model_id="ollama/qwen-27b", route="litellm", provider_id="ollama"
+        ),
+        row_dir=Path("/tmp/p"),
+        category_results={"doc_summary": result([95.0, None, None, None, None])},
+    )
+    full = RowRunResult(
+        row=RowConfig(label="full", model_id="ollama/other", route="litellm", provider_id="ollama"),
+        row_dir=Path("/tmp/f"),
+        category_results={"doc_summary": result([88.0] * 5)},
+    )
+    summary = render_summary("test-run", [partial, full], _registry(), ["doc_summary"])
+    assert "95.0 (1/5 items)" in summary
+    leaderboard = summary.split("## Per-category leaderboard")[1].split("## Anomalies")[0]
+    assert leaderboard.index("full") < leaderboard.index("partial")

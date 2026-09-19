@@ -15,6 +15,24 @@ from modelman.benchmark.eval.suite import Suite
 from modelman.registry import Registry
 
 
+def _md(text: object) -> str:
+    """Make free text safe for one markdown table cell: a `|` would add a
+    column and a newline would end the row, corrupting the table."""
+    return str(text).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _partial_suffix(value: object) -> str:
+    """' (k/n items)' when a judged category's score rests on only some of
+    its items (the rest judge_fail/unjudged), else ''. The score is then a
+    mean over the survivors and must not read as comparable to a full run."""
+    if not isinstance(value, CategoryRowResult) or value.score_100 is None:
+        return ""
+    scored = sum(1 for item in value.items if item.score_100 is not None)
+    if scored == len(value.items):
+        return ""
+    return f" ({scored}/{len(value.items)} items)"
+
+
 def _family_of(model_id: str, registry: Registry) -> str:
     try:
         return registry.model(model_id).family
@@ -36,7 +54,7 @@ def _cell(value: object) -> str:
         return "EVALPLUS_ERROR" if value.error else "N/A"
     if isinstance(value, CategoryRowResult):
         if value.score_100 is not None:
-            return f"{value.score_100:.1f}"
+            return f"{value.score_100:.1f}{_partial_suffix(value)}"
         # Distinguish "never judged" (the judge phase was interrupted —
         # recoverable via `eval judge --latest`, which re-judges from the
         # persisted response.txt) from "judged and the judge failed"
@@ -53,7 +71,7 @@ def _capability_matrix(results: list, registry: Registry, category_names: list[s
     sep = "|---|---|---|" + "---|" * len(category_names)
     lines = [header, sep]
     for r in sorted(results, key=lambda r: (_family_of(r.row.model_id, registry), r.row.label)):
-        family = _family_of(r.row.model_id, registry)
+        family = _md(_family_of(r.row.model_id, registry))
         # A row can have an error AND partial category_results (a later
         # category failed after earlier ones already scored) — render the
         # categories that actually ran, and ISOLATION_ERROR only for the
@@ -64,7 +82,9 @@ def _capability_matrix(results: list, registry: Registry, category_names: list[s
             else ("ISOLATION_ERROR" if r.error else _cell(None))
             for name in category_names
         ]
-        lines.append(f"| {family} | {r.row.label} | {r.row.route} | " + " | ".join(cells) + " |")
+        lines.append(
+            f"| {family} | {_md(r.row.label)} | {_md(r.row.route)} | " + " | ".join(cells) + " |"
+        )
     return "\n".join(lines)
 
 
@@ -88,9 +108,18 @@ def _leaderboard(results: list, category_names: list[str]) -> str:
             score = _score_of(r, name)
             if score is not None:
                 pairs.append((r, score))
-        scored = sorted(pairs, key=lambda pair: -pair[1])
+        # Rows scored on every item rank ahead of partially judged ones: a
+        # mean over one surviving item must not outrank a full 5/5 run.
+        scored = sorted(
+            pairs,
+            key=lambda pair: (
+                bool(_partial_suffix(pair[0].category_results.get(name))),
+                -pair[1],
+            ),
+        )
         for rank, (r, score) in enumerate(scored[:3], start=1):
-            lines.append(f"| {name} | {rank} | {r.row.label} | {score:.1f} |")
+            suffix = _partial_suffix(r.category_results.get(name))
+            lines.append(f"| {name} | {rank} | {_md(r.row.label)} | {score:.1f}{suffix} |")
         if not scored:
             lines.append(f"| {name} | — | — | no scored rows |")
     return "\n".join(lines)
@@ -100,7 +129,7 @@ def _anomalies(results: list, category_names: list[str]) -> str:
     lines = ["| label | anomaly |", "|---|---|"]
     for r in results:
         if r.error:
-            lines.append(f"| {r.row.label} | ISOLATION_ERROR: {r.error[:200]} |")
+            lines.append(f"| {_md(r.row.label)} | ISOLATION_ERROR: {_md(r.error[:200])} |")
         # Not an `elif`/`continue` — a row can carry an error alongside
         # partial category_results, and those completed categories still
         # deserve their own judge_fail/evalplus-error anomaly rows.
@@ -109,11 +138,13 @@ def _anomalies(results: list, category_names: list[str]) -> str:
             if isinstance(value, CategoryRowResult):
                 for item in value.items:
                     if item.judge is None:
-                        lines.append(f"| {r.row.label} | UNJUDGED ({name}/{item.item_id}) |")
+                        lines.append(f"| {_md(r.row.label)} | UNJUDGED ({name}/{item.item_id}) |")
                     elif item.judge.status == "judge_fail":
-                        lines.append(f"| {r.row.label} | JUDGE_FAIL ({name}/{item.item_id}) |")
+                        lines.append(f"| {_md(r.row.label)} | JUDGE_FAIL ({name}/{item.item_id}) |")
             if isinstance(value, CodingResult) and value.error:
-                lines.append(f"| {r.row.label} | evalplus error ({name}): {value.error[:150]} |")
+                lines.append(
+                    f"| {_md(r.row.label)} | evalplus error ({name}): {_md(value.error[:150])} |"
+                )
     if len(lines) == 2:
         lines.append("| — | none |")
     return "\n".join(lines)

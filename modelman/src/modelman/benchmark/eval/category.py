@@ -124,7 +124,9 @@ def load_category(path: Path) -> Category:
             )
         meta = raw.get("meta", {})
         if not isinstance(meta, dict):
-            raise BenchmarkError(f"category {path} items.toml [[items]] #{index} meta must be a table")
+            raise BenchmarkError(
+                f"category {path} items.toml [[items]] #{index} meta must be a table"
+            )
         items.append(Item(id=raw["id"], prompt=raw["prompt"], meta=meta))
     if not items:
         raise BenchmarkError(f"category {path} items.toml has no [[items]]")

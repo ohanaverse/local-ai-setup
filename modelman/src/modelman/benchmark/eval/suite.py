@@ -206,7 +206,9 @@ def load_suite(path: Path, registry: Registry) -> Suite:
     # raise a bare TypeError from `"3" < 1`.
     for key, value in (("samples", judge.samples), ("max_attempts", judge.max_attempts)):
         if isinstance(value, bool) or not isinstance(value, int):
-            raise BenchmarkError(f"suite {path.name} [judge] {key} must be an integer, got {value!r}")
+            raise BenchmarkError(
+                f"suite {path.name} [judge] {key} must be an integer, got {value!r}"
+            )
     if not isinstance(judge.temperature, int | float) or isinstance(judge.temperature, bool):
         raise BenchmarkError(
             f"suite {path.name} [judge] temperature must be a number, got {judge.temperature!r}"
