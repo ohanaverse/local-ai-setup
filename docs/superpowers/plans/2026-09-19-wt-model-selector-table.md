@@ -420,10 +420,16 @@ type tableInput struct {
 }
 
 func buildRows(in tableInput) []tableRow {
+	// Only REGISTERED entries describe a configured model. A discovered
+	// entry may share an id with a registry row by construction
+	// (DiscoveredModelID is provider/artifact); it must never overwrite the
+	// registered entry's Artifact/Running.
 	byID := map[string]localmodels.Entry{}
 	if in.inventory != nil {
 		for _, e := range in.inventory.Entries {
-			byID[e.ModelID] = e
+			if e.Registered {
+				byID[e.ModelID] = e
+			}
 		}
 	}
 	rows := make([]tableRow, 0, len(in.models))
@@ -716,7 +722,7 @@ func TestRenderTableBlockedAndMarkers(t *testing.T) {
 // LiteLLM routing is on, but fine in direct mode.
 func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}}},
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
 	}
 	row := tableRow{model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, location: config.LocationLocal, status: statusNew, running: true, discovered: true}
@@ -732,7 +738,7 @@ func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
 	}
 }
 ```
-(`SetLitellmForTest` may not exist: the implementer must find how existing tests enable LiteLLM on a `Config` — see `TestBuildModelItemsLitellmRequiredLabel` / `ViaProxyLabelUnaffected` in `model_list_test.go` — and use that mechanism; if no setter exists, use whatever helper those tests use to build a litellm-on config. Do not add production code just for this test.)
+(The direct-mode half needs a resolvable direct route, hence the provider's `Auth.BaseURL` above; if `ResolveRoute` needs more fixture data than that, add it — never relax the assertion. `SetLitellmForTest` may not exist: the implementer must find how existing tests enable LiteLLM on a `Config` — see `TestBuildModelItemsLitellmRequiredLabel` / `ViaProxyLabelUnaffected` in `model_list_test.go` — and use that mechanism; if no setter exists, use whatever helper those tests use to build a litellm-on config. Do not add production code just for this test.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -858,8 +864,12 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			padRunes(flag(r.exposed, "Y"), 7), padRunes(flag(r.running, "run"), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 		}, sep)
+		// The last padded column would leave trailing spaces; keep them only
+		// when the survey segment follows (so it stays column-aligned).
 		if seg := survey.FormatPickerSegment(r.stats); seg != "" {
 			line += sep + seg
+		} else {
+			line = strings.TrimRight(line, " ")
 		}
 		it := &modelItem{model: r.model, line: line, marked: lastID != "" && r.model.ID == lastID, ref: refs[r.model.ID], row: r}
 		if !r.launchable() {
@@ -868,7 +878,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		if cfg != nil {
 			route, err := cfg.ResolveRoute(r.model, agents.ProtocolsFor(agent))
 			switch {
-			case r.discovered && (err != nil || route.Litellm || route.Forced):
+			case r.discovered && err == nil && (route.Litellm || route.Forced):
 				// A discovered model is not in LiteLLM's model_list: routing
 				// it through the proxy cannot work, so it is unselectable.
 				it.exception = "(not in LiteLLM)"
