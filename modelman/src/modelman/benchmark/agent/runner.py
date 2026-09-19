@@ -249,8 +249,6 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
-
-
 def _pi_version() -> str:
     try:
         result = subprocess.run(["pi", "--version"], capture_output=True, text=True, check=False)

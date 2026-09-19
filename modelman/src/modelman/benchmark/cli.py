@@ -13,7 +13,7 @@ from modelman.benchmark.eval.cli import eval_app
 from modelman.benchmark.results import BenchmarkRun
 from modelman.benchmark.runner import (
     DEFAULT_RESULTS_DIR,
-    RunSavedButRestoreFailed,
+    WorkloadRunSavedButRestoreFailed,
     run_benchmark,
 )
 from modelman.benchmark.workloads import get_workload, list_workloads
@@ -85,7 +85,7 @@ def run_cmd(
             routes=routes,
             results_dir=results_dir,
         )
-    except RunSavedButRestoreFailed as exc:
+    except WorkloadRunSavedButRestoreFailed as exc:
         _record_latest(exc.run, exc.run_dir)
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from None

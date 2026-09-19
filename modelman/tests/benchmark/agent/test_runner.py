@@ -111,9 +111,7 @@ def _hermetic_preflight(monkeypatch):
     # glob instead (binaries.resolve_mlx_lm_bin), so it needs its own stub —
     # the Cellar glob matches on dev Macs but not on CI.
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
-    monkeypatch.setattr(
-        lifecycle.BACKENDS["mlx_lm_server"], "check_available", lambda: None
-    )
+    monkeypatch.setattr(lifecycle.BACKENDS["mlx_lm_server"], "check_available", lambda: None)
 
 
 def test_run_suite_isolates_once_per_provider_group(tmp_path, monkeypatch):
@@ -175,9 +173,8 @@ def test_run_suite_reisolates_mlx_lm_server_between_pairings(tmp_path, monkeypat
         ],
     )
 
-    body = (
-        _suite_toml(MINI_DRIFT, models='["mlx_lm_server/pair1", "mlx_lm_server/pair2"]')
-        .replace("[routes.direct.ollama]", "[routes.direct.mlx_lm_server]", 1)
+    body = _suite_toml(MINI_DRIFT, models='["mlx_lm_server/pair1", "mlx_lm_server/pair2"]').replace(
+        "[routes.direct.ollama]", "[routes.direct.mlx_lm_server]", 1
     )
     # _suite_toml's route block only contains one ollama section; swap it once.
     suite = load_suite(_write_suite(tmp_path, body), registry)
@@ -745,9 +742,7 @@ def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_
 
 def _mlx_lm_registry() -> Registry:
     return Registry(
-        providers=[
-            ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")
-        ],
+        providers=[ProviderEntry(id="mlx_lm_server", name="mlx-lm server", location="local")],
         models=[
             ModelEntry(
                 id="mlx_lm_server/pair",

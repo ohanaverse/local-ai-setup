@@ -59,9 +59,8 @@ def test_parse_response_skips_a_scores_total_decoy_for_a_verdict_rubric():
     # For a rubric that declares a closed verdict set, the disambiguation
     # must require "verdict" too, or the decoy wins the `>=` superset check
     # and the real, verdict-bearing answer later in the text is never read.
-    raw = (
-        'Restating the schema: {"scores": {"a": 0, "b": 0}, "total": 0}\n'
-        + json.dumps({"scores": {"a": 50, "b": 30}, "total": 80, "verdict": "good"})
+    raw = 'Restating the schema: {"scores": {"a": 0, "b": 0}, "total": 0}\n' + json.dumps(
+        {"scores": {"a": 50, "b": 30}, "total": 80, "verdict": "good"}
     )
     score = parse_response(raw, VERDICT_RUBRIC)
     assert score.total == 80
@@ -185,7 +184,6 @@ def test_litellm_transport_fail_fast_on_read_timeout_does_not_retry(monkeypatch)
     with pytest.raises(JudgeTransportError, match="timed out"):
         transport.complete("p", temperature=0.0)
     assert len(calls) == 1
-
 
 
 def test_judge_row_two_sample_median_rounds_half_up():

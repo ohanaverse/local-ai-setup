@@ -36,7 +36,9 @@ def test_litellm_credentials_defaults_base_url_when_unspecified(tmp_path):
     # models.json may omit baseUrl (pi writes only what it needs); the
     # canonical local gateway default must apply, not a None/blank base_url.
     live_path = tmp_path / "models.json"
-    live_path.write_text(json.dumps({"providers": {"litellm": {"apiKey": "sk-x"}}}), encoding="utf-8")
+    live_path.write_text(
+        json.dumps({"providers": {"litellm": {"apiKey": "sk-x"}}}), encoding="utf-8"
+    )
     assert litellm_credentials(live_path) == ("http://localhost:4000/v1", "sk-x")
 
 
