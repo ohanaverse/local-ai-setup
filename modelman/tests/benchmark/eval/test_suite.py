@@ -68,6 +68,9 @@ categories = ["coding"]
 
 
 def test_load_suite_expands_rows_and_categories(tmp_path):
+    # Happy path: a full suite TOML expands into rows carrying the per-row category
+    # scope and direct_model override, plus the suite-level coding config — the shape
+    # every run/dry-run consumes.
     suite = load_suite(_write(tmp_path, SUITE_BODY), _registry())
     assert suite.name == "eval-test"
     assert suite.coding.dataset == "humaneval"
@@ -79,6 +82,8 @@ def test_load_suite_expands_rows_and_categories(tmp_path):
 
 
 def test_load_suite_rejects_unknown_model(tmp_path):
+    # A row naming a model absent from the registry must fail at load time with a clean
+    # BenchmarkError rather than mid-run after providers were isolated.
     body = SUITE_BODY.replace('model = "ollama/a"', 'model = "ollama/nope"')
     with pytest.raises(BenchmarkError, match="unknown model"):
         load_suite(_write(tmp_path, body), _registry())
@@ -142,6 +147,8 @@ def test_load_suite_rejects_judge_missing_model_or_route_with_clean_error(tmp_pa
 
 
 def test_preflight_rejects_direct_row_missing_route_block(tmp_path):
+    # A route=direct row needs a [routes.direct.<provider>] base_url; preflight must
+    # catch its absence before any isolation work is paid for.
     body = SUITE_BODY.replace("[routes.direct.omlx]\n", "").replace(
         'base_url = "http://localhost:8000/v1"\n', ""
     )
@@ -151,6 +158,8 @@ def test_preflight_rejects_direct_row_missing_route_block(tmp_path):
 
 
 def test_resolve_row_endpoint_direct_route_uses_direct_model_override():
+    # Direct routing sends the row's direct_model (omlx knows only the basename, not the
+    # registry id) to the configured base_url; sending the registry name would 404.
     row = RowConfig(
         label="r", model_id="omlx/b", route="direct", provider_id="omlx", direct_model="server-name"
     )
@@ -163,6 +172,8 @@ def test_resolve_row_endpoint_direct_route_uses_direct_model_override():
 
 
 def test_resolve_row_endpoint_litellm_route_reads_live_models_json(tmp_path):
+    # LiteLLM routing reads base URL and key from the live pi models.json and sends the
+    # full registry id (the LiteLLM model_list is keyed on it).
     live_path = tmp_path / "models.json"
     live_path.write_text(
         json.dumps(

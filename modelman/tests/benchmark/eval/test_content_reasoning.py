@@ -11,6 +11,9 @@ CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks"
 
 
 def test_reasoning_category_loads_and_sums_to_100():
+    # The shipped reasoning content must load, weigh to 100 and have unique item ids
+    # (ids become directory names, so a duplicate would overwrite another item's
+    # artifacts).
     category = load_category(CATEGORY_ROOT / "reasoning")
     assert category.rubric is not None
     assert sum(category.rubric.dimensions.values()) == 100

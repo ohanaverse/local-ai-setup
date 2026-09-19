@@ -9,6 +9,9 @@ CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks"
 
 
 def test_doc_summary_category_loads_and_sums_to_100():
+    # The shipped doc_summary content must load and weigh to 100 with real excerpts:
+    # a stub-length prompt would make summarization trivially easy and every model
+    # would tie.
     category = load_category(CATEGORY_ROOT / "doc_summary")
     assert category.rubric is not None
     assert sum(category.rubric.dimensions.values()) == 100

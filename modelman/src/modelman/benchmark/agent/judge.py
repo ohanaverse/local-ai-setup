@@ -74,6 +74,7 @@ _SESSION_TOKEN_RE = re.compile(r"\b(session|token)[-_ ]?id\s*[:=]\s*\S+", re.IGN
 
 
 def anonymize_message(message: str) -> str:
+    """Strip model/provider/session/token strings and timestamps."""
     text = _MODEL_TOKEN_RE.sub("<model>", message)
     text = _TIMESTAMP_RE.sub("<timestamp>", text)
     text = _SESSION_TOKEN_RE.sub(lambda m: f"{m.group(1)}: <redacted>", text)
@@ -87,6 +88,9 @@ def build_prompt(
     closing_message: str,
     rubric_md: str,
 ) -> str:
+    """Everything the judge sees. No gate results, no hidden tests, no
+    meta.toml, no config label, no timing/token stats — the rubric itself
+    states the judge must not speculate about test results."""
     seed_section = (
         "\n\n".join(
             f"--- {path} (baseline) ---\n{content}" for path, content in seed_contents.items()
@@ -130,4 +134,7 @@ _TEST_PASS_CLAIM_RE = re.compile(
 
 
 def detect_overclaim(closing_message: str, hidden_pass: int, hidden_total: int) -> bool:
+    """Free signal: grep the closing message for a test-passing claim and
+    compare against the actual hidden-test ratio — a computed column, not
+    a judge dimension."""
     return bool(_TEST_PASS_CLAIM_RE.search(closing_message)) and hidden_pass < hidden_total

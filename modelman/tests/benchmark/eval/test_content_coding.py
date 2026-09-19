@@ -9,6 +9,9 @@ CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks"
 
 
 def test_coding_category_loads_with_dataset_and_limit():
+    # The shipped coding config must be a rubric-less category naming a real EvalPlus
+    # dataset; the runner dispatches on rubric=None, so a stray rubric would send
+    # coding through the judge path.
     category = load_category(CATEGORY_ROOT / "coding")
     assert category.name == CODING_CATEGORY
     assert category.rubric is None

@@ -9,6 +9,8 @@ CATEGORY_ROOT = Path(__file__).parent.parent.parent.parent.parent / "benchmarks"
 
 
 def test_planning_category_loads_and_sums_to_100():
+    # The shipped planning content must load and weigh to 100 with enough items for a
+    # stable median; a broken rubric.toml would otherwise only surface mid-sweep.
     category = load_category(CATEGORY_ROOT / "planning")
     assert category.rubric is not None
     assert sum(category.rubric.dimensions.values()) == 100
