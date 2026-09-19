@@ -460,6 +460,103 @@ def test_reconstruct_skips_malformed_evalplus_result_json(tmp_path):
     assert _reconstruct_category_result(category_dir) is None
 
 
+def test_reconstruct_skips_wellformed_but_reshaped_judge_json(tmp_path):
+    # A judge.json that parses as JSON but no longer matches JudgeScore's
+    # fields (a hand edit, or a file written by a newer/older modelman)
+    # must be skipped with a warning — not crash the whole rejudge with a
+    # raw TypeError escaping judge_cmd's BenchmarkError-only catch, which
+    # would silently abandon rows already re-judged in this invocation.
+    from modelman.benchmark.eval.runner import _reconstruct_run_results
+
+    run_dir = tmp_path
+    category_dir = run_dir / "01--row1" / "mini_review"
+    good_judge = {
+        "status": "scored",
+        "combined": {
+            "scores": {"a": 90},
+            "total": 90,
+            "verdict": "",
+            "flags": [],
+            "rationale": "",
+            "raw_text": "",
+        },
+        "attempts_used": 1,
+    }
+    for name, judge_body in (
+        ("i1", json.dumps(good_judge)),
+        # Well-formed JSON, but "combined" carries a field JudgeScore
+        # doesn't have and lacks one it requires.
+        (
+            "i2",
+            json.dumps({"status": "scored", "combined": {"unexpected": True}, "attempts_used": 1}),
+        ),
+    ):
+        item_dir = category_dir / name
+        item_dir.mkdir(parents=True)
+        (item_dir / "response.txt").write_text("response", encoding="utf-8")
+        (item_dir / "judge.json").write_text(judge_body, encoding="utf-8")
+    (run_dir / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "label": "row1",
+                "row_dir": "01--row1",
+                "model_id": "ollama/a",
+                "route": "litellm",
+                "error": None,
+                "categories": {"mini_review": 90},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    results = _reconstruct_run_results(run_dir)
+    assert len(results) == 1
+    cat = results[0].category_results["mini_review"]
+    # Only the healthy item reconstructs; the reshaped one is skipped.
+    assert [i.item_id for i in cat.items] == ["i1"]
+
+
+def test_reconstruct_skips_wellformed_but_reshaped_evalplus_result_json(tmp_path):
+    # Same tolerance on the coding side: an evalplus_result.json whose
+    # keys don't match CodingResult's current fields (e.g. a future
+    # version adds one) must degrade the category to None, not raise
+    # TypeError through CodingResult(**data).
+    from modelman.benchmark.eval.runner import _reconstruct_category_result
+
+    category_dir = tmp_path / "coding"
+    category_dir.mkdir()
+    (category_dir / "evalplus_result.json").write_text(
+        json.dumps({"dataset": "humaneval", "pass_at_1": 0.5, "brand_new_field": 1}),
+        encoding="utf-8",
+    )
+    assert _reconstruct_category_result(category_dir) is None
+
+
+def test_judge_config_from_run_toml_malformed_toml_raises_clean_error(tmp_path):
+    # run.toml is user-editable on disk: a hand-edit or merge-conflict
+    # resolution can drop [suite.judge] or mangle the TOML, and that must
+    # surface as the clean BenchmarkError every other malformation in the
+    # judge command path produces — judge_cmd catches only BenchmarkError
+    # and FileNotFoundError, so raw KeyError/TOMLDecodeError would escape
+    # as a traceback to the user.
+    from modelman.benchmark.eval.runner import _judge_config_from_run_toml
+
+    # Missing [suite.judge] entirely
+    run_dir = tmp_path / "run1"
+    run_dir.mkdir()
+    (run_dir / "run.toml").write_text('[run]\ngit_sha = "abc"\n', encoding="utf-8")
+    with pytest.raises(BenchmarkError, match="missing or malformed around"):
+        _judge_config_from_run_toml(run_dir, samples_override=None)
+
+    # Malformed TOML
+    run_dir = tmp_path / "run2"
+    run_dir.mkdir()
+    (run_dir / "run.toml").write_text("[suite\nbroken", encoding="utf-8")
+    with pytest.raises(BenchmarkError, match="missing or malformed around"):
+        _judge_config_from_run_toml(run_dir, samples_override=None)
+
+
 def test_rejudge_row_index_resolves_to_the_same_row_run_selected(tmp_path):
     # `judge --row N` must resolve to the SAME row `run --row N` selected:
     # run numbers row dirs by SUITE position while execution order (sorted

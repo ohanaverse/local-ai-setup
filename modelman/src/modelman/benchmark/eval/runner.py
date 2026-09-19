@@ -461,16 +461,27 @@ def run_suite(
 
 
 def _judge_config_from_run_toml(run_dir: Path, samples_override: int | None) -> JudgeConfig:
-    with (run_dir / "run.toml").open("rb") as f:
-        run_data = tomllib.load(f)
-    judge_raw = run_data["suite"]["judge"]
-    return JudgeConfig(
-        model=judge_raw["model"],
-        temperature=judge_raw["temperature"],
-        samples=samples_override if samples_override is not None else judge_raw["samples"],
-        max_attempts=judge_raw["max_attempts"],
-        route=judge_raw["route"],
-    )
+    # run.toml is user-editable on disk: a hand-edit or a merge-conflict
+    # resolution can drop [suite.judge] or mangle the TOML, and that must
+    # surface as the same clean BenchmarkError every other malformation in
+    # the judge command path produces — judge_cmd catches only BenchmarkError
+    # and FileNotFoundError, so a raw KeyError/TOMLDecodeError would escape
+    # as a traceback.
+    try:
+        with (run_dir / "run.toml").open("rb") as f:
+            run_data = tomllib.load(f)
+        judge_raw = run_data["suite"]["judge"]
+        return JudgeConfig(
+            model=judge_raw["model"],
+            temperature=judge_raw["temperature"],
+            samples=samples_override if samples_override is not None else judge_raw["samples"],
+            max_attempts=judge_raw["max_attempts"],
+            route=judge_raw["route"],
+        )
+    except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
+        raise BenchmarkError(
+            f"run.toml in {run_dir} is missing or malformed around [suite.judge]: {exc}"
+        ) from exc
 
 
 def _read_metrics_row_meta(run_dir: Path) -> dict[str, dict]:
@@ -523,7 +534,14 @@ def _load_json_artifact(path: Path) -> object | None:
 def _reconstruct_category_result(category_dir: Path) -> object | None:
     """Rebuild a CodingResult or CategoryRowResult from one row's on-disk
     category directory, reading whatever judge.json/score.json currently
-    say (i.e. post-rejudge for anything rejudge_run just rewrote)."""
+    say (i.e. post-rejudge for anything rejudge_run just rewrote).
+
+    Well-formed JSON whose shape no longer matches the dataclass (a
+    hand-edited judge.json, or a file written by a newer/older modelman
+    with different fields) is tolerated the same way malformed JSON is —
+    a stderr warning and a skip — per _load_json_artifact's documented
+    contract that one corrupted artifact must not crash the whole
+    rejudge."""
     coding_path = category_dir / "evalplus_result.json"
     if coding_path.is_file():
         data = _load_json_artifact(coding_path)
@@ -531,7 +549,12 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
             # None (malformed) or well-formed JSON of the wrong shape —
             # either way this category reconstructs as empty, not a crash.
             return None
-        return evalplus_runner.CodingResult(**data)
+        try:
+            return evalplus_runner.CodingResult(**data)
+        except TypeError as exc:
+            # Unexpected/missing keys vs the current CodingResult fields.
+            print(f"warning: skipping malformed artifact: {coding_path}: {exc}", file=sys.stderr)
+            return None
 
     item_results: list[judged_runner.ItemResult] = []
     for item_dir in sorted(p for p in category_dir.iterdir() if p.is_dir()):
@@ -549,7 +572,15 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
             print(f"warning: skipping malformed artifact: {judge_path}", file=sys.stderr)
             continue
         combined_data = judge_data.get("combined")
-        combined = JudgeScore(**combined_data) if combined_data else None
+        combined: JudgeScore | None = None
+        if combined_data:
+            try:
+                combined = JudgeScore(**combined_data)
+            except TypeError as exc:
+                # Unexpected/missing keys vs the current JudgeScore fields —
+                # skip the item's score rather than crashing the rejudge.
+                print(f"warning: skipping malformed artifact: {judge_path}: {exc}", file=sys.stderr)
+                continue
         outcome = JudgeOutcome(
             status=judge_data["status"],
             samples=[],
