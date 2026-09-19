@@ -137,3 +137,24 @@ def test_judge_row_returns_judge_fail_after_exhausting_attempts():
     )
     assert outcome.status == "judge_fail"
     assert outcome.combined is None
+
+
+def test_litellm_transport_does_not_retry_read_timeouts(monkeypatch):
+    # A read timeout already consumed the full timeout_s (900s for row
+    # generation); retrying would double the stall on a looping model, so it
+    # must fail on the first attempt. Other request errors still retry once.
+    import requests
+
+    from modelman.benchmark.judge_core import JudgeTransportError, LiteLLMJudgeTransport
+
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append(1)
+        raise requests.ReadTimeout("slow")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    transport = LiteLLMJudgeTransport("http://x", "k", "m", retry_backoff_s=0)
+    with pytest.raises(JudgeTransportError, match="timed out"):
+        transport.complete("p", temperature=0.0)
+    assert len(calls) == 1

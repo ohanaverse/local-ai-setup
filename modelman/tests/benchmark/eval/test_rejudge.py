@@ -439,9 +439,11 @@ def test_reconstruct_skips_malformed_judge_json(tmp_path):
     results = _reconstruct_run_results(run_dir)
     assert len(results) == 1
     cat = results[0].category_results["mini_review"]
-    # Only the healthy item reconstructs; its score stands in for the
-    # category rather than the whole reconstruction dying.
-    assert [i.item_id for i in cat.items] == ["i1"]
+    # The corrupted item is kept as UNJUDGED (judge=None) rather than dropped,
+    # so the category mean cannot silently exclude it; the healthy item's
+    # score still stands and rejudge_run can re-score the unjudged one.
+    assert [i.item_id for i in cat.items] == ["i1", "i2"]
+    assert cat.items[1].judge is None
     assert cat.score_100 == 90.0
 
 
@@ -513,8 +515,9 @@ def test_reconstruct_skips_wellformed_but_reshaped_judge_json(tmp_path):
     results = _reconstruct_run_results(run_dir)
     assert len(results) == 1
     cat = results[0].category_results["mini_review"]
-    # Only the healthy item reconstructs; the reshaped one is skipped.
-    assert [i.item_id for i in cat.items] == ["i1"]
+    # The reshaped item is kept as UNJUDGED, not dropped from the category.
+    assert [i.item_id for i in cat.items] == ["i1", "i2"]
+    assert cat.items[1].judge is None
 
 
 def test_reconstruct_skips_wellformed_but_reshaped_evalplus_result_json(tmp_path):
@@ -657,3 +660,31 @@ def test_rejudge_selection_error_surfaces_before_transport_construction(tmp_path
         rejudge_run(
             run_dir, [category], row_filter=["no-such"], judge_transport_factory=_boom_factory
         )
+
+
+def test_rejudge_run_keeps_existing_judge_json_when_rejudge_fails(tmp_path):
+    # A failed re-judge (transient judge outage) must not overwrite a valid,
+    # already-paid-for judge.json with a judge_fail outcome — that would
+    # silently turn a good score into JUDGE_FAIL.
+    run_dir = _seed_run(tmp_path)
+    judge_path = run_dir / "01--row1" / "mini_review" / "i1" / "judge.json"
+    original = json.dumps({"status": "scored", "combined": {"total": 77}, "attempts_used": 1})
+    judge_path.write_text(original, encoding="utf-8")
+    category = Category(
+        name="mini_review",
+        path=Path("."),
+        items=[Item(id="i1", prompt="review this", meta={})],
+        rubric=Rubric(dimensions={"a": 100}),
+        rubric_md="score a (100)",
+    )
+
+    class _GarbageTransport:
+        def complete(self, prompt: str, *, temperature: float) -> str:
+            return "not json"
+
+    rejudge_run(
+        run_dir,
+        [category],
+        judge_transport_factory=lambda judge_cfg: _GarbageTransport(),
+    )
+    assert judge_path.read_text(encoding="utf-8") == original

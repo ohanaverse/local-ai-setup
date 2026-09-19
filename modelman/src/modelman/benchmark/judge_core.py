@@ -243,6 +243,13 @@ class LiteLLMJudgeTransport:
     def complete(self, prompt: str, *, temperature: float) -> str:
         try:
             return self._post(prompt, temperature)
+        except requests.ReadTimeout as exc:
+            # A read timeout already burned the full timeout_s (900s for
+            # row generation); retrying would double the stall on a model
+            # that is likely looping, so fail immediately.
+            raise JudgeTransportError(
+                f"transport timed out after {self.timeout_s}s: {exc}"
+            ) from exc
         except requests.RequestException:
             time.sleep(self.retry_backoff_s)
             try:

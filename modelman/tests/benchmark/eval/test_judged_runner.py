@@ -157,3 +157,28 @@ def test_build_judge_prompt_truncates_oversized_responses():
     short = _build_judge_prompt(CATEGORY.items[0], CATEGORY, "short response")
     assert "short response" in short
     assert "[TRUNCATED]" not in short
+
+
+def test_generate_category_failure_carries_items_generated_so_far():
+    # A generation call failing on item 2 must not discard item 1's response:
+    # generate_category raises CategoryGenerationError carrying the partial
+    # category, so the runner can persist the finished (slow, possibly
+    # API-billed) work instead of losing every item in the category.
+    import pytest
+
+    from modelman.benchmark.eval.judged_runner import CategoryGenerationError
+
+    class _FlakyTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, prompt: str, *, temperature: float) -> str:
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("timeout on item 2")
+            return "first answer"
+
+    with pytest.raises(CategoryGenerationError, match="timeout on item 2") as excinfo:
+        generate_category(CATEGORY, _FlakyTransport(), temperature=0.0)
+    assert [i.item_id for i in excinfo.value.partial.items] == ["i1"]
+    assert excinfo.value.partial.items[0].response_text == "first answer"

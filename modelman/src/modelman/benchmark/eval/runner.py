@@ -163,7 +163,10 @@ def _row_isolation_spec(
             None,
         )
     if row.provider_id == "mtplx":
-        assert row.mtplx_model_name is not None
+        if row.mtplx_model_name is None:
+            # BenchmarkError (not assert) so run_suite degrades this one row
+            # to an error result instead of aborting the whole sweep.
+            raise BenchmarkError(f"mtplx row {row.label!r} has no model_name in the registry")
         return (row.mtplx_model_name,), None
     if row.provider_id in _ENV_VAR_BY_PROVIDER:
         try:
@@ -346,6 +349,12 @@ def _run_row(
                 results[category.name] = judged_runner.generate_category(
                     category, row_transport, temperature=0.0
                 )
+        except judged_runner.CategoryGenerationError as exc:
+            # Keep the items generated before the failure (only when there
+            # are any — an empty category would just be noise on disk).
+            if exc.partial.items:
+                results[category.name] = exc.partial
+            raise _RowCategoryFailed(str(exc), partial_results=results) from exc
         except Exception as exc:
             raise _RowCategoryFailed(str(exc), partial_results=results) from exc
     return results
@@ -446,8 +455,10 @@ def run_suite(
                         )
                     )
                     continue
-                # Cloud rows (spec None) put no thermal load on this machine.
-                if row_position > 0 and spec is not None:
+                # Only rows that actually load a local provider put thermal
+                # load on this machine: cloud rows (spec None) and providers
+                # outside ISOLATABLE_PROVIDERS (e.g. openrouter) do not.
+                if row_position > 0 and spec is not None and provider_id in ISOLATABLE_PROVIDERS:
                     time.sleep(suite.cooldown_s)
 
                 # spec None = a cloud model on a local provider's id (e.g. an
@@ -710,13 +721,25 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
                 )
             )
             continue
+        # An unreadable or reshaped judge.json keeps its item as UNJUDGED
+        # (judge=None) instead of dropping it: dropping would let the
+        # category mean silently exclude it and show a clean score, whereas
+        # UNJUDGED surfaces in summary.md and rejudge_run re-scores it from
+        # the response on the next pass.
+        unjudged = judged_runner.ItemResult(
+            item_id=item_dir.name, response_text=response_text, judge=None, score_100=None
+        )
         judge_data = _load_json_artifact(judge_path)
         if judge_data is None:
+            item_results.append(unjudged)
             continue
         if not isinstance(judge_data, dict) or "status" not in judge_data:
             # Well-formed JSON but not a judge.json shape (e.g. someone
             # parked a list there); same tolerance as a malformed file.
-            print(f"warning: skipping malformed artifact: {judge_path}", file=sys.stderr)
+            print(
+                f"warning: malformed artifact, treating as unjudged: {judge_path}", file=sys.stderr
+            )
+            item_results.append(unjudged)
             continue
         combined_data = judge_data.get("combined")
         combined: JudgeScore | None = None
@@ -725,8 +748,12 @@ def _reconstruct_category_result(category_dir: Path) -> object | None:
                 combined = JudgeScore(**combined_data)
             except TypeError as exc:
                 # Unexpected/missing keys vs the current JudgeScore fields —
-                # skip the item's score rather than crashing the rejudge.
-                print(f"warning: skipping malformed artifact: {judge_path}: {exc}", file=sys.stderr)
+                # treat the item as unjudged rather than crashing the rejudge.
+                print(
+                    f"warning: malformed artifact, treating as unjudged: {judge_path}: {exc}",
+                    file=sys.stderr,
+                )
+                item_results.append(unjudged)
                 continue
         outcome = JudgeOutcome(
             status=judge_data["status"],
@@ -885,9 +912,17 @@ def rejudge_run(
                     samples=judge_cfg.samples,
                     max_attempts=judge_cfg.max_attempts,
                 )
-                (item_dir / "judge.json").write_text(
-                    json.dumps(asdict(outcome), indent=2), encoding="utf-8"
-                )
+                judge_path = item_dir / "judge.json"
+                if outcome.status == "judge_fail" and judge_path.is_file():
+                    # Never overwrite an existing judge.json with a failed
+                    # re-judge (e.g. a transient judge outage): the earlier
+                    # result was paid for and is still the best score.
+                    print(
+                        f"warning: rejudge failed for {judge_path}; keeping existing judge.json",
+                        file=sys.stderr,
+                    )
+                else:
+                    judge_path.write_text(json.dumps(asdict(outcome), indent=2), encoding="utf-8")
                 outcomes.append(
                     {
                         "row": row_dir.name,

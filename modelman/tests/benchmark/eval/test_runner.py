@@ -807,3 +807,85 @@ def test_run_suite_rejudge_transport_failure_is_contained_per_category(
     assert results[0].category_results["mini_review"].score_100 == 70.0
     assert results[0].category_results["other_review"].score_100 is None
     assert "JUDGE_FAIL" in (run_dir / "summary.md").read_text()
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_persists_items_generated_before_a_mid_category_failure(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # A generation failure on item N of a category must keep items 1..N-1 on
+    # disk as UNJUDGED responses (rejudge-recoverable) alongside the row's
+    # error, rather than dropping the whole category's finished work.
+    from modelman.benchmark.eval.judged_runner import (
+        CategoryGenerationError,
+        CategoryRowResult,
+        ItemResult,
+    )
+
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    partial = CategoryRowResult(
+        category="mini_review",
+        items=[ItemResult(item_id="i1", response_text="kept", judge=None, score_100=None)],
+        score_100=None,
+    )
+    mock_generate.side_effect = CategoryGenerationError("item 2 timed out", partial=partial)
+
+    run_dir, results = run_suite(
+        _suite(),
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+
+    assert "item 2 timed out" in results[0].error
+    row_dir = run_dir / "01--row1"
+    assert (row_dir / "mini_review" / "i1" / "response.txt").read_text() == "kept"
+    assert (row_dir / "error.txt").is_file()
+
+
+def test_row_isolation_spec_mtplx_without_model_name_raises_benchmark_error():
+    # A malformed mtplx row (no registry model_name) must surface as a
+    # BenchmarkError — which run_suite converts into a per-row error — not an
+    # AssertionError, which would abort the whole sweep mid-run.
+    from modelman.benchmark.eval.runner import _row_isolation_spec
+
+    row = RowConfig(label="m", model_id="mtplx/x", route="litellm", provider_id="mtplx")
+    with pytest.raises(BenchmarkError, match="model_name"):
+        _row_isolation_spec(row, _registry())
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_skips_cooldown_for_non_isolatable_provider_rows(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # Rows on a provider that never loads a local model (e.g. openrouter) put
+    # no thermal load on this machine, so cooldown_s must not idle between
+    # them — otherwise a 10-row cloud sweep wastes minutes sleeping.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "x", "sk-x")
+    mock_generate.return_value = _fake_category_result(50.0)
+    registry = Registry(
+        providers=[ProviderEntry(id="openrouter", name="OR", location="cloud")],
+        models=[
+            ModelEntry(id="openrouter/a", family="f", provider_id="openrouter", model_name="a")
+        ],
+    )
+    suite = _suite()
+    suite.cooldown_s = 5
+    suite.rows = [
+        RowConfig(label=f"r{i}", model_id="openrouter/a", route="litellm", provider_id="openrouter")
+        for i in range(3)
+    ]
+    with patch("modelman.benchmark.eval.runner.time.sleep") as mock_sleep:
+        run_suite(
+            suite,
+            registry,
+            [_mini_review_category()],
+            results_dir=tmp_path,
+            judge_transport_factory=lambda suite: object(),
+        )
+    mock_sleep.assert_not_called()

@@ -42,6 +42,16 @@ class CategoryRowResult:
     score_100: float | None
 
 
+class CategoryGenerationError(Exception):
+    """A generation call failed partway through a category. `partial` holds
+    the items generated before the failure (empty items list if the first
+    call failed)."""
+
+    def __init__(self, message: str, *, partial: CategoryRowResult) -> None:
+        super().__init__(message)
+        self.partial = partial
+
+
 def _build_judge_prompt(item: Item, category: Category, response_text: str) -> str:
     meta_note = item.meta.get("reference_notes") or item.meta.get("seeded_issue") or ""
     meta_section = (
@@ -72,15 +82,22 @@ def generate_category(
     interrupted judge phase leaves this row's slow, possibly API-billed
     generation work on disk as rejudge-recoverable UNJUDGED items."""
     assert category.rubric is not None, "generate_category is not for the coding category"
-    item_results = [
-        ItemResult(
-            item_id=item.id,
-            response_text=row_transport.complete(item.prompt, temperature=temperature),
-            judge=None,
-            score_100=None,
+    item_results: list[ItemResult] = []
+    for item in category.items:
+        try:
+            response_text = row_transport.complete(item.prompt, temperature=temperature)
+        except Exception as exc:
+            # Hand back what already finished: those responses are slow,
+            # possibly API-billed work the caller persists as UNJUDGED items.
+            raise CategoryGenerationError(
+                str(exc),
+                partial=CategoryRowResult(
+                    category=category.name, items=item_results, score_100=None
+                ),
+            ) from exc
+        item_results.append(
+            ItemResult(item_id=item.id, response_text=response_text, judge=None, score_100=None)
         )
-        for item in category.items
-    ]
     return CategoryRowResult(category=category.name, items=item_results, score_100=None)
 
 
