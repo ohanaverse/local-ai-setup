@@ -7,6 +7,8 @@ the value, matching the real `evalplus==0.3.1` output confirmed live in
 Task 12 (`cprint(f"{k}:\\t{v:.3f}", ...)` in evalplus/evaluate.py).
 """
 
+from pathlib import Path
+
 from modelman.benchmark.eval.evalplus_runner import (
     _build_command,
     _parse_pass_at_1,
@@ -188,3 +190,75 @@ def test_failure_message_keeps_the_stderr_tail():
     )
     assert result.error is not None
     assert "the real error" in result.error
+
+
+def test_timeout_is_configurable_and_reported():
+    # The whole-run timeout must be overridable (a full humaneval sweep on a
+    # local model outlasts any small fixed cap) and the error must name the
+    # value actually used so a timeout is diagnosable.
+    import subprocess
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    result = run_coding_category(
+        base_url="http://x/v1",
+        model="m",
+        api_key="k",
+        dataset="humaneval",
+        limit=None,
+        timeout_s=7200,
+        run_cmd=fake_run,
+    )
+    assert seen["timeout"] == 7200
+    assert result.error == "evalplus timed out after 7200s"
+
+
+def test_default_runner_kills_the_whole_process_group_on_timeout():
+    # A timeout must kill grandchildren too (EvalPlus's multiprocessing
+    # workers), not just the direct child, or they can hold the pipes open
+    # and outlive the run. The child here spawns a sleeping grandchild and
+    # prints its pid; after the timeout that grandchild must be dead.
+    import os
+    import subprocess
+    import sys
+
+    # The pid is only readable from a live stream, so run the child through
+    # a pidfile instead of stdout (stdout is discarded on TimeoutExpired).
+    import tempfile
+    import time
+
+    from modelman.benchmark.eval.evalplus_runner import _run_in_process_group
+
+    with tempfile.NamedTemporaryFile("r") as pidfile:
+        script = (
+            "import subprocess, time;"
+            "p = subprocess.Popen(['sleep', '60']);"
+            f"open({pidfile.name!r}, 'w').write(str(p.pid));"
+            "time.sleep(60)"
+        )
+        try:
+            _run_in_process_group([sys.executable, "-c", script], timeout=2, text=True)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("expected TimeoutExpired")
+        grandchild = int(Path(pidfile.name).read_text())
+
+    # Poll: a killed orphan can linger briefly as a zombie until reaped, and
+    # os.kill(pid, 0) still "succeeds" on one — so ask ps for its state.
+    def alive() -> bool:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(grandchild)], capture_output=True, text=True
+        ).stdout.strip()
+        return bool(state) and not state.startswith("Z")
+
+    for _ in range(50):
+        if not alive():
+            return
+        time.sleep(0.1)
+    os.kill(grandchild, 9)
+    raise AssertionError("grandchild survived the timeout")

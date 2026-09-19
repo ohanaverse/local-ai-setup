@@ -358,6 +358,7 @@ def _run_row(
                     api_key=api_key,
                     dataset=dataset,
                     limit=limit,
+                    timeout_s=suite.coding.timeout_s,
                 )
             else:
                 results[category.name] = judged_runner.generate_category(
@@ -501,6 +502,11 @@ def run_suite(
                     try:
                         isolation.isolate_provider(provider_id, *spec[0], env=spec[1])
                     except BenchmarkError as exc2:
+                        # The failed isolation may have stopped or replaced
+                        # the loaded model, so the next row with this same
+                        # spec must re-isolate instead of trusting a stale
+                        # "already loaded" marker.
+                        prev_spec = None
                         results.append(
                             RowRunResult(
                                 row=row,
@@ -542,20 +548,25 @@ def run_suite(
                     # isolated/stopped.
                     results.append(RowRunResult(row=row, row_dir=row_dir, error=str(exc3)))
     finally:
-        if isolated_any:
-            try:
-                isolation.restore_providers()
-            except BenchmarkError as exc:
-                restore_error = str(exc)
-
-        # Persist the full run snapshot BEFORE judging (agent/runner.py's
-        # ordering): a crash or interrupt during the judge phase still
-        # leaves every response on disk — judged categories render as
-        # UNJUDGED, and run.toml (which rejudge_run reads its judge config
-        # back from) exists, so `eval judge --run-id <id>` recovers the run
-        # without regenerating anything. The post-judging persist below
-        # rewrites the score-dependent artifacts with real scores.
-        _persist_snapshot(run_dir, run_id, results, registry, categories, suite)
+        try:
+            if isolated_any:
+                try:
+                    isolation.restore_providers()
+                except BenchmarkError as exc:
+                    restore_error = str(exc)
+        finally:
+            # Nested so a non-Benchmark exception or Ctrl-C during restore
+            # still persists the sweep's responses (the point of this
+            # finally block).
+            #
+            # Persist the full run snapshot BEFORE judging (agent/runner.py's
+            # ordering): a crash or interrupt during the judge phase still
+            # leaves every response on disk — judged categories render as
+            # UNJUDGED, and run.toml (which rejudge_run reads its judge config
+            # back from) exists, so `eval judge --run-id <id>` recovers the run
+            # without regenerating anything. The post-judging persist below
+            # rewrites the score-dependent artifacts with real scores.
+            _persist_snapshot(run_dir, run_id, results, registry, categories, suite)
 
     # Phase 2 — judging, strictly AFTER restore_providers() (design spec
     # step 4): judge calls are cloud round-trips, and with the reference

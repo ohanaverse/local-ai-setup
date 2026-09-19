@@ -51,6 +51,7 @@ class JudgeConfig:
 class CodingConfig:
     dataset: str | None = None
     limit: int | None = None
+    timeout_s: int | None = None
 
 
 @dataclass
@@ -219,7 +220,20 @@ def load_suite(path: Path, registry: Registry) -> Suite:
             f"{judge.samples}/{judge.max_attempts}"
         )
     coding_raw = raw.get("coding", {})
-    coding = CodingConfig(dataset=coding_raw.get("dataset"), limit=coding_raw.get("limit"))
+    coding = CodingConfig(
+        dataset=coding_raw.get("dataset"),
+        limit=coding_raw.get("limit"),
+        timeout_s=coding_raw.get("timeout_s"),
+    )
+    if coding.timeout_s is not None and (
+        isinstance(coding.timeout_s, bool)
+        or not isinstance(coding.timeout_s, int)
+        or coding.timeout_s < 1
+    ):
+        raise BenchmarkError(
+            f"suite {path.name} [coding] timeout_s must be a positive integer, "
+            f"got {coding.timeout_s!r}"
+        )
     routes_direct: dict[str, DirectRouteConfig] = {}
     for provider_id, cfg in raw.get("routes", {}).get("direct", {}).items():
         if not isinstance(cfg, dict) or not cfg.get("base_url"):

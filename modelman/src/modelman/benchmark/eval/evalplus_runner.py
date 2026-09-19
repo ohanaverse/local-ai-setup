@@ -41,8 +41,10 @@ already applies to a model's diff via gates.py.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import signal
 import subprocess
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
@@ -67,6 +69,35 @@ class CodingResult:
     pass_at_1: float | None
     raw_output: str
     error: str | None = None
+
+
+# Whole-run budget (generation + grading are one subprocess). Full humaneval
+# is 164 sequential greedy generations; a local reasoning model at 10-30s per
+# problem needs 27-80 minutes, so the old 1800s cap discarded every completed
+# generation. Overridable per suite via [coding] timeout_s.
+DEFAULT_TIMEOUT_S = 4 * 3600
+
+
+def _run_in_process_group(cmd, *, timeout, **kwargs):
+    """subprocess.run that puts the child in its own session and, on
+    timeout, kills the whole process group. Plain subprocess.run kills only
+    the direct child, so EvalPlus's multiprocessing workers outlive it and
+    can keep the output pipes open past the timeout."""
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        **{k: v for k, v in kwargs.items() if k in ("text", "env")},
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _build_command(
@@ -135,7 +166,8 @@ def run_coding_category(
     api_key: str,
     dataset: str,
     limit: int | None,
-    run_cmd=subprocess.run,
+    timeout_s: int | None = None,
+    run_cmd=_run_in_process_group,
 ) -> CodingResult:
     """Invoke EvalPlus against the row's resolved OpenAI-compatible endpoint
     and parse its pass@1 result. Runs in a scratch directory per call so
@@ -150,7 +182,7 @@ def run_coding_category(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=1800,
+                timeout=timeout_s or DEFAULT_TIMEOUT_S,
                 env={**os.environ, "OPENAI_API_KEY": api_key},
             )
         except subprocess.TimeoutExpired:
@@ -158,7 +190,7 @@ def run_coding_category(
                 dataset=dataset,
                 pass_at_1=None,
                 raw_output="",
-                error="evalplus timed out after 1800s",
+                error=f"evalplus timed out after {timeout_s or DEFAULT_TIMEOUT_S}s",
             )
         except FileNotFoundError as exc:
             return CodingResult(

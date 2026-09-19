@@ -286,3 +286,16 @@ def test_load_suite_rejects_wrongly_typed_fields_with_clean_errors(tmp_path):
     for key, body in bad_bodies.items():
         with pytest.raises(BenchmarkError, match=key):
             load_suite(_write(tmp_path, body), _registry())
+
+
+def test_load_suite_reads_and_validates_coding_timeout(tmp_path):
+    # [coding] timeout_s lets a suite lengthen the whole-run EvalPlus budget;
+    # it must round-trip when valid and be a clean BenchmarkError when not.
+    ok = load_suite(
+        _write(tmp_path, SUITE_BODY.replace("limit = 5", "timeout_s = 9000")), _registry()
+    )
+    assert ok.coding.timeout_s == 9000
+    with pytest.raises(BenchmarkError, match="timeout_s"):
+        load_suite(
+            _write(tmp_path, SUITE_BODY.replace("limit = 5", 'timeout_s = "9"')), _registry()
+        )

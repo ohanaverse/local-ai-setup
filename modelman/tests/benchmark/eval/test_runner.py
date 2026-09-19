@@ -929,3 +929,63 @@ def test_run_suite_skips_cooldown_for_non_isolatable_provider_rows(
             judge_transport_factory=lambda suite: object(),
         )
     mock_sleep.assert_not_called()
+
+
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_persists_snapshot_even_when_restore_raises_a_non_benchmark_error(
+    mock_isolation, mock_resolve, mock_generate, tmp_path
+):
+    # restore_providers() failing with something other than BenchmarkError
+    # (or a Ctrl-C landing during it) must still write the sweep's responses
+    # and summary — persisting them is the whole reason the finally block
+    # exists, and the old except clause only covered BenchmarkError.
+    mock_isolation.restore_providers.side_effect = RuntimeError("restore blew up")
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_generate.return_value = _fake_category_result(50.0)
+
+    with pytest.raises(RuntimeError, match="restore blew up"):
+        run_suite(
+            _suite(),
+            _registry(),
+            [_mini_review_category()],
+            results_dir=tmp_path,
+            judge_transport_factory=lambda suite: object(),
+        )
+    (run_dir,) = [p for p in tmp_path.iterdir() if p.name.startswith("eval-")]
+    assert (run_dir / "summary.md").is_file()
+    assert (run_dir / "01--row1" / "mini_review" / "i1" / "response.txt").is_file()
+
+
+@patch("modelman.benchmark.eval.runner._row_isolation_spec")
+@patch("modelman.benchmark.eval.runner.judged_runner.generate_category")
+@patch("modelman.benchmark.eval.runner.resolve_row_endpoint")
+@patch("modelman.benchmark.eval.runner.isolation")
+def test_run_suite_reisolates_after_a_failed_isolation_of_a_different_spec(
+    mock_isolation, mock_resolve, mock_generate, mock_spec, tmp_path
+):
+    # Rows X, Y, X' (X' has the same isolation spec as X): if Y's isolation
+    # fails after tearing down or replacing the loaded model, X' must
+    # isolate again rather than being treated as "already loaded" and
+    # benchmarked against a dead or wrong backend.
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_generate.return_value = _fake_category_result(50.0)
+    specs = {"x": (("a",), None), "y": (("b",), None), "x2": (("a",), None)}
+    mock_spec.side_effect = lambda row, registry: specs[row.label]
+    mock_isolation.isolate_provider.side_effect = [None, BenchmarkError("warmup failed"), None]
+    suite = _suite()
+    suite.rows = [
+        RowConfig(label=label, model_id="ollama/a", route="litellm", provider_id="ollama")
+        for label in ("x", "y", "x2")
+    ]
+
+    _, results = run_suite(
+        suite,
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+    assert mock_isolation.isolate_provider.call_count == 3
+    assert [r.error is not None for r in results] == [False, True, False]
