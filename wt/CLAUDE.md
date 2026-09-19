@@ -130,7 +130,7 @@ make help                            # list Makefile targets
 
 Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `check` (shellcheck lint + shfmt format-check + `go-format-check`, a `gofmt -l` gate that wt-ci also runs; `make format` writes both shell and Go).
 
-Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,localgate,smoke}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
+Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,localgate,localmodels,smoke}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
@@ -160,6 +160,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
 | `internal/localgate/` | multi-model local-running gate (2026-09-14 design): probes every flagged model (except ollama, which trusts the flag) + shared Apply policy |
+| `internal/localmodels/` | Local model inventory: `Inventory(cfg)` probes ollama (`/api/tags` + `/api/ps`, cloud `remote_host` entries excluded), omlx/mtplx (model-dir scan + `/v1/models`) and mlx_lm_server (running only) concurrently and returns registered + discovered entries with live `Running`; registry match keeps the registry id, else `config.DiscoveredModelID`. Never reads modelman's `running` flag. `localgate` delegates its `nameMatches`/`fetchModelIDs` here. |
 | `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor (agent add/edit/delete) |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
 | `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildModelItems`, consumed by `wt smoke` |
@@ -198,10 +199,11 @@ wt loads it read-only via `config.Load` (fail-closed: missing/malformed
 registry is an error; seed with `modelman migrate`) and joins it in memory
 with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
 persists wt-owned fields only — wt never writes providers/models. Extra
-registry fields (model_info, fetch, model_dir, auth secret_ref/base_url)
-are ignored by wt's parser; `cost` IS decoded (`config.ModelCost` in
-`internal/config/config.go`) and rendered as per-token + subscription
-pricing columns in the model picker (`internal/tui/model_list.go`).
+registry fields `model_info` and `fetch` are ignored by wt's parser; `cost`,
+`model_dir` (`Provider.ModelDir`), and `auth.base_url` (`Auth.BaseURL`) are
+decoded (`config.ModelCost` in `internal/config/config.go`) and the cost is
+rendered as per-token + subscription pricing columns in the model picker
+(`internal/tui/model_list.go`).
 
 **Read-side schemas are pinned by contract fixtures.** `docs/contracts/registry.sample.toml`
 and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
@@ -222,7 +224,7 @@ This means wt's picker can now show a local model modelman's own TUI still rende
 > registry by creating default entries for reconcilable providers.)
 
 **Lazy:** `newApp()` only loads config. wt never shells out for discovery;
-`-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`.
+`-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`. `localmodels.Inventory` performs HTTP and filesystem discovery only (still no subprocess) and is not yet wired into a launch path (sub-project 3 consumes it).
 
 > **Fixture gotcha.** `Dir()` and `RegistryPath()` both honor `XDG_CONFIG_HOME`
 > (and `RegistryPath()` also honors `MODELMAN_REGISTRY`) but write to
