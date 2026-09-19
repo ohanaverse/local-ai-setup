@@ -74,9 +74,13 @@ func expandHome(path string) (string, error) {
 	return filepath.Join(home, path[2:]), nil
 }
 
+// ExpandHome expands a leading "~" or "~/" in path against the user's home
+// directory; other paths are returned unchanged.
+func ExpandHome(path string) (string, error) { return expandHome(path) }
+
 // loadRegistry decodes modelman-owned registry.toml into providers and
-// models. Registry fields wt doesn't consume (cost, model_info, fetch, and
-// model_dir) are ignored by the decoder; auth fields are parsed into the
+// models. Registry fields wt doesn't consume (model_info and fetch) are
+// ignored by the decoder; model_dir and auth fields are parsed into the
 // provider data, and auth.type drives Model.Native — the single source of
 // truth for native-ness, consumed by driver dispatch and resume-skip.
 //

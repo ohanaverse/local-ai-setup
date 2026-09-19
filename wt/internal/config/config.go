@@ -210,6 +210,9 @@ type Provider struct {
 	Location  Location   `toml:"location,omitempty"`
 	Protocols []Protocol `toml:"protocols,omitempty"`
 	Auth      AuthConfig `toml:"auth"`
+	// ModelDir is the registry's model_dir (e.g. "~/.omlx/models"): where a
+	// filesystem-backed provider keeps its models. Read-only; not expanded.
+	ModelDir string `toml:"model_dir,omitempty"`
 }
 
 // EffectiveProtocols returns the provider's declared protocols, defaulting

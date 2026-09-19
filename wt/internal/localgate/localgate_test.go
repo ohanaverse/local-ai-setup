@@ -504,3 +504,24 @@ func TestLocalModelVisibilityIgnoresExposedFlag(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveAllHonoursRegistryBaseURL verifies the gate probes the registry's
+// auth.base_url (as localmodels.Inventory does) instead of the hard-coded
+// default port, so the two packages never disagree about the same server.
+func TestResolveAllHonoursRegistryBaseURL(t *testing.T) {
+	srv := httptest.NewServer(modelsHandler("m1"))
+	defer srv.Close()
+	// Default URL points nowhere; only the registry base_url can succeed.
+	defer SetOmlxProbeURLForTest("http://127.0.0.1:1/v1/models")()
+	m := config.Model{ID: "omlx/m1", ProviderID: "omlx", ModelName: "m1"}
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Auth: config.AuthConfig{BaseURL: srv.URL + "/v1"}}},
+		Models:    []config.Model{m},
+	}
+	if !availableIn(cfg, m) {
+		t.Error("availableIn ignored registry auth.base_url")
+	}
+	if Available(m) {
+		t.Error("Available (no cfg) should use the default URL")
+	}
+}
