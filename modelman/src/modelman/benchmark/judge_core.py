@@ -120,9 +120,8 @@ def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
     if not isinstance(data, dict):
         raise JudgeContractError("response is not a JSON object")
 
-    missing = [k for k in ("scores", "total") if k not in data]
-    if missing:
-        raise JudgeContractError(f"response missing keys: {missing}")
+    if "scores" not in data:
+        raise JudgeContractError("response missing keys: ['scores']")
 
     scores = data["scores"]
     if not isinstance(scores, dict):
@@ -136,20 +135,22 @@ def parse_response(raw_text: str, rubric: Rubric) -> JudgeScore:
             raise JudgeContractError(f"invalid score for {dim}: {value!r}")
 
     verdict = data.get("verdict", "")
-    if rubric.verdicts is not None and verdict not in rubric.verdicts:
-        raise JudgeContractError(f"unknown verdict: {verdict!r}")
+    if rubric.verdicts is not None:
+        # isinstance guard first: a list/dict verdict is unhashable, so the
+        # `in` check on a tuple/set of verdicts must not see one.
+        if not isinstance(verdict, str) or verdict not in rubric.verdicts:
+            raise JudgeContractError(f"unknown verdict: {verdict!r}")
+    elif verdict is not None and not isinstance(verdict, str):
+        raise JudgeContractError(f"verdict must be a string, got {verdict!r}")
+    verdict = verdict or ""
 
-    # `total` is part of the strict contract, same as the per-dimension
-    # scores: a non-int (which int() would silently coerce from "90" or
-    # crash on for a dict) and a total that disagrees with the declared
-    # scores are both malformed replies, and JudgeContractError is what
-    # judge_row's retry loop catches.
-    total = data["total"]
-    score_sum = sum(scores[d] for d in rubric.dimensions)
-    if isinstance(total, bool) or not isinstance(total, int):
-        raise JudgeContractError(f"total must be an int, got {total!r}")
-    if total != score_sum:
-        raise JudgeContractError(f"total {total} does not equal the sum of scores {score_sum}")
+    # The judge's own `total` is ignored: the validated per-dimension
+    # scores are the source of truth, and an LLM's arithmetic (or a
+    # "90.0" / "90" spelling) is not worth failing an otherwise good reply
+    # over — identical retries at the same temperature would just fail the
+    # same way. Deriving it also means a fabricated total can never inflate
+    # the score.
+    total = sum(scores[d] for d in rubric.dimensions)
 
     flags = data.get("flags", [])
     if not isinstance(flags, list):
@@ -233,8 +234,10 @@ class LiteLLMJudgeTransport:
         *,
         retry_backoff_s: float = 2.0,
         timeout_s: float = 120,
+        fail_fast_on_read_timeout: bool = False,
     ):
         self.timeout_s = timeout_s
+        self.fail_fast_on_read_timeout = fail_fast_on_read_timeout
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -244,9 +247,17 @@ class LiteLLMJudgeTransport:
         try:
             return self._post(prompt, temperature)
         except requests.ReadTimeout as exc:
+            if not self.fail_fast_on_read_timeout:
+                time.sleep(self.retry_backoff_s)
+                try:
+                    return self._post(prompt, temperature)
+                except requests.RequestException as retry_exc:
+                    raise JudgeTransportError(
+                        f"judge transport failed after retry: {retry_exc}"
+                    ) from retry_exc
             # A read timeout already burned the full timeout_s (900s for
             # row generation); retrying would double the stall on a model
-            # that is likely looping, so fail immediately.
+            # that is likely looping, so generation transports fail fast.
             raise JudgeTransportError(
                 f"transport timed out after {self.timeout_s}s: {exc}"
             ) from exc

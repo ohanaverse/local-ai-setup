@@ -76,28 +76,32 @@ class _StubTransport:
         return self.replies.pop(0)
 
 
-def test_parse_response_rejects_non_int_total():
-    # `total` must be a true int: a numeric string ("90") must not be
-    # silently coerced by int(), and a non-numeric value must raise
-    # JudgeContractError (which judge_row retries) instead of a raw
-    # ValueError/TypeError that escaped the retry loop and failed the
-    # whole category.
-    for bad in ("90", 90.5, None, {"v": 90}, [90]):
+def test_parse_response_derives_total_from_scores():
+    # The judge's own `total` (float, string, wrong sum, missing) must not
+    # fail an otherwise valid reply: identical retries would fail the same
+    # way and the row would show N/A. The total is recomputed from the
+    # validated per-dimension scores, which also means a fabricated total
+    # can never inflate the score.
+    for bad in ("90", 90.0, 999, 80, None, {"v": 90}, [90]):
         raw = json.dumps({"scores": {"x": 40, "y": 30, "z": 20}, "total": bad})
-        with pytest.raises(JudgeContractError, match="total"):
-            parse_response(raw, NO_VERDICT_RUBRIC)
+        assert parse_response(raw, NO_VERDICT_RUBRIC).total == 90
+    raw = json.dumps({"scores": {"x": 40, "y": 30, "z": 20}})
+    assert parse_response(raw, NO_VERDICT_RUBRIC).total == 90
 
 
-def test_parse_response_rejects_total_not_matching_score_sum():
-    # The declared total must equal the sum of the declared scores — a
-    # fabricated total (999 when scores sum to 90) would otherwise inflate
-    # the category score. Covers both directions (over and under).
-    raw = json.dumps({"scores": {"a": 60, "b": 30}, "total": 999, "verdict": "good"})
-    with pytest.raises(JudgeContractError, match="total"):
-        parse_response(raw, VERDICT_RUBRIC)
-    raw2 = json.dumps({"scores": {"a": 60, "b": 30}, "total": 80, "verdict": "good"})
-    with pytest.raises(JudgeContractError, match="total"):
-        parse_response(raw2, VERDICT_RUBRIC)
+def test_parse_response_rejects_unhashable_verdict():
+    # A list/dict verdict used to raise a bare TypeError (unhashable in the
+    # `in` check) that escaped judge_row's retry loop and aborted the whole
+    # sweep; it must be a JudgeContractError so the row retries/judge_fails.
+    for bad in (["good"], {"v": "good"}, 3):
+        raw = json.dumps({"scores": {"a": 60, "b": 30}, "total": 90, "verdict": bad})
+        with pytest.raises(JudgeContractError, match="verdict"):
+            parse_response(raw, VERDICT_RUBRIC)
+        with pytest.raises(JudgeContractError, match="verdict"):
+            parse_response(
+                json.dumps({"scores": {"x": 40, "y": 30, "z": 20}, "verdict": bad}),
+                NO_VERDICT_RUBRIC,
+            )
 
 
 def test_judge_row_combines_multiple_samples_by_median():
@@ -139,10 +143,10 @@ def test_judge_row_returns_judge_fail_after_exhausting_attempts():
     assert outcome.combined is None
 
 
-def test_litellm_transport_does_not_retry_read_timeouts(monkeypatch):
-    # A read timeout already consumed the full timeout_s (900s for row
-    # generation); retrying would double the stall on a looping model, so it
-    # must fail on the first attempt. Other request errors still retry once.
+def test_litellm_transport_retries_read_timeouts_by_default(monkeypatch):
+    # The judge transport (120s timeout) must retry a read timeout once with
+    # backoff like any other request error — a slow judge otherwise loses
+    # one of its judge_row attempts to a single transient stall.
     import requests
 
     from modelman.benchmark.judge_core import JudgeTransportError, LiteLLMJudgeTransport
@@ -155,6 +159,30 @@ def test_litellm_transport_does_not_retry_read_timeouts(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     transport = LiteLLMJudgeTransport("http://x", "k", "m", retry_backoff_s=0)
+    with pytest.raises(JudgeTransportError, match="after retry"):
+        transport.complete("p", temperature=0.0)
+    assert len(calls) == 2
+
+
+def test_litellm_transport_fail_fast_on_read_timeout_does_not_retry(monkeypatch):
+    # A generation transport (900s timeout) opts out of the retry: a read
+    # timeout already burned the full timeout_s, and retrying would double
+    # the stall on a model that is likely looping.
+    import requests
+
+    from modelman.benchmark.judge_core import JudgeTransportError, LiteLLMJudgeTransport
+
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append(1)
+        raise requests.ReadTimeout("slow")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    transport = LiteLLMJudgeTransport(
+        "http://x", "k", "m", retry_backoff_s=0, fail_fast_on_read_timeout=True
+    )
     with pytest.raises(JudgeTransportError, match="timed out"):
         transport.complete("p", temperature=0.0)
     assert len(calls) == 1
+

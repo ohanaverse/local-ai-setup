@@ -327,7 +327,9 @@ def _run_row(
     model = registry.model(row.model_id)
     base_url, model_name, api_key = resolve_row_endpoint(row, model.model_name, suite.routes_direct)
     row_transport = LiteLLMJudgeTransport(
-        base_url=base_url, api_key=api_key, model=model_name, timeout_s=GENERATION_TIMEOUT_S
+        base_url=base_url, api_key=api_key, model=model_name,
+        timeout_s=GENERATION_TIMEOUT_S,
+        fail_fast_on_read_timeout=True,
     )
 
     results: dict[str, object] = {}
