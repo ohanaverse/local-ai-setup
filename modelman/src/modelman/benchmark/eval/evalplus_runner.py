@@ -46,7 +46,9 @@ import os
 import re
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from tempfile import TemporaryDirectory
 
 _PASS_AT_1_RE = re.compile(r"pass@1(?!\d)[^\d]*([\d.]+)", re.IGNORECASE)
@@ -100,10 +102,24 @@ def _run_in_process_group(cmd, *, timeout, **kwargs):
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+EVALPLUS_SCRIPT = "evalplus.evaluate"
+
+
+def _evalplus_executable() -> str:
+    """The `evalplus.evaluate` console script from the SAME environment as the
+    running interpreter, else the bare name (PATH lookup).
+
+    Under `uv run` the venv's bin/ is on PATH so the bare name resolves, but
+    an installed `modelman` shim (make install) runs without the venv's bin/
+    on PATH — the script sits next to sys.executable regardless."""
+    sibling = Path(sys.executable).parent / EVALPLUS_SCRIPT
+    return str(sibling) if sibling.is_file() else EVALPLUS_SCRIPT
+
+
 def _build_command(
     *, dataset: str, base_url: str, model: str, limit: int | None, workdir: str
 ) -> list[str]:
-    # Bare console-script name (resolved via PATH), not `uvx --from evalplus`:
+    # Console script (next to this interpreter, else via PATH), not `uvx --from evalplus`:
     # modelman itself runs via `uv run` from within its own venv, which puts
     # that venv's bin/ (containing evalplus.evaluate once `uv sync --extra
     # eval` has run) first on PATH — the same resolution `uv run --extra eval
@@ -114,7 +130,7 @@ def _build_command(
     # local code execution (EvalPlus runs model-generated code), so `uvx`
     # would let anyone trigger a live EvalPlus run without it.
     cmd = [
-        "evalplus.evaluate",
+        _evalplus_executable(),
         "--dataset",
         dataset,
         "--backend",

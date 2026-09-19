@@ -80,7 +80,7 @@ def test_build_command_uses_installed_console_script_not_uvx():
         limit=None,
         workdir="/tmp/x",
     )
-    assert cmd[0] == "evalplus.evaluate"
+    assert Path(cmd[0]).name == "evalplus.evaluate"
     assert "uvx" not in cmd
 
 
@@ -262,3 +262,19 @@ def test_default_runner_kills_the_whole_process_group_on_timeout():
         time.sleep(0.1)
     os.kill(grandchild, 9)
     raise AssertionError("grandchild survived the timeout")
+
+
+def test_build_command_prefers_script_beside_the_running_interpreter(tmp_path, monkeypatch):
+    # An installed modelman shim runs without its venv's bin/ on PATH, so a
+    # bare `evalplus.evaluate` raised FileNotFoundError and every coding row
+    # reported "evalplus not runnable". The script next to sys.executable
+    # must be used when it exists.
+    import sys
+
+    script = tmp_path / "evalplus.evaluate"
+    script.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    cmd = _build_command(
+        dataset="humaneval", base_url="http://x/v1", model="m", limit=None, workdir="/tmp/x"
+    )
+    assert cmd[0] == str(script)
