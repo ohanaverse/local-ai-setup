@@ -638,14 +638,17 @@ func TestResumeDefaultIsStartFresh(t *testing.T) {
 // phaseAgent Enter handler builds m.models and positions the cursor.
 func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 	dir := tempStateDir(t)
-	// State: next_index=1, last=ollama/gemma4:9b. Next() returns models[1]
-	// (= gemma4:14b). List index is 1 because dividers are gone.
+	// State: last=ollama/gemma4:9b. The rotation's next-to-use is gemma4:14b.
+	// The selector table sorts equal-cost rows by id (14b, 9b, design), so
+	// 14b sits at list index 0 — assert on the selected model, not a
+	// registry-order index.
+	stubUsageStore(t)
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
-	if gotModel.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1", gotModel.models.Index())
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
+		t.Errorf("cursor on %q (index %d), want ollama/gemma4:14b", got, gotModel.models.Index())
 	}
 }
 
@@ -680,7 +683,7 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 // instead of what was just used.
 func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 	dir := tempStateDir(t)
-	stubUsageStore(t) // hermetic usage counts: stable sort = registry order
+	stubUsageStore(t) // hermetic usage counts: stable sort
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
@@ -701,11 +704,12 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 			markerIdx = i
 		}
 	}
-	if markerIdx != 0 {
-		t.Errorf("marker row = %d, want 0 (ollama/gemma4:9b)", markerIdx)
+	// The table sorts equal-cost rows by id: 14b (0), 9b (1), design (2).
+	if markerIdx != 1 {
+		t.Errorf("marker row = %d, want 1 (ollama/gemma4:9b)", markerIdx)
 	}
-	if gotModel.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1 (rotation-next row ollama/gemma4:14b)", gotModel.models.Index())
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
+		t.Errorf("cursor on %q, want rotation-next row ollama/gemma4:14b", got)
 	}
 }
 
@@ -819,14 +823,18 @@ func TestNoRKeyInModelPhase(t *testing.T) {
 // picker, so the test now drives both transitions to reach phaseModel.
 func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
 	tempStateDir(t) // isolates state; file doesn't exist
+	stubUsageStore(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
-	if gotModel.models.Index() != 0 {
-		t.Errorf("cursor index = %d, want 0", gotModel.models.Index())
+	// No rotation state: the cursor lands on the rotation's first pick
+	// (registry-first ollama/gemma4:9b), which the id-sorted table puts at
+	// index 1.
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:9b" {
+		t.Errorf("cursor on %q, want ollama/gemma4:9b (rotation's first pick)", got)
 	}
 }
 
@@ -847,8 +855,8 @@ func TestSelectedEntryPositionsAfterLast(t *testing.T) {
 	}
 	// testConfig has two code models: gemma4:9b and gemma4:14b. Last launched
 	// was gemma4:9b, so the next-to-show must be gemma4:14b. List index is 1.
-	if gotModel.models.Index() != 1 {
-		t.Errorf("cursor index = %d, want 1 (after gemma4:9b)", gotModel.models.Index())
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
+		t.Errorf("cursor on %q, want ollama/gemma4:14b (after gemma4:9b)", got)
 	}
 }
 
@@ -861,14 +869,15 @@ func TestSelectedEntryPositionsAfterLast(t *testing.T) {
 func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/removed:cloud")
+	stubUsageStore(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
 	if gotModel.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
 	}
-	if gotModel.models.Index() != 0 {
-		t.Errorf("cursor index = %d, want 0", gotModel.models.Index())
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:9b" {
+		t.Errorf("cursor on %q, want ollama/gemma4:9b (rotation's first pick)", got)
 	}
 }
 
@@ -1021,8 +1030,8 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	// positioned at "next-to-use".
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m = drivePhaseAgentEnter(t, m, "claude")
-	if m.models.Index() != 1 {
-		t.Fatalf("entry 1: cursor = %d, want 1 (gemma4:14b)", m.models.Index())
+	if got := selectedModelID(m); got != "ollama/gemma4:14b" {
+		t.Fatalf("entry 1: cursor on %q, want ollama/gemma4:14b", got)
 	}
 
 	// Commit the launch of gemma4:14b (the highlighted model) via the
@@ -1040,8 +1049,10 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	// so "next" from gemma4:14b (index 1) is gemma4:design (index 2).
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m2 = drivePhaseAgentEnter(t, m2, "claude")
-	if m2.models.Index() != 2 {
-		t.Errorf("entry 2: cursor = %d, want 2 (next after gemma4:14b in 3-item snapshot)", m2.models.Index())
+	// (Sort order shifts with the launch just recorded — the table orders by
+	// 7-day usage — so assert on the selected model, not an index.)
+	if got := selectedModelID(m2); got != "ollama/gemma4:design" {
+		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:design (next after gemma4:14b in 3-item snapshot)", got)
 	}
 }
 
@@ -1062,18 +1073,20 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m = drivePhaseAgentEnter(t, m, "claude")
-	if m.models.Index() != 0 {
-		t.Fatalf("entry 1: cursor = %d, want 0", m.models.Index())
+	// No state: rotation suggests registry-first gemma4:9b (table index 1).
+	if got := selectedModelID(m); got != "ollama/gemma4:9b" {
+		t.Fatalf("entry 1: cursor on %q, want ollama/gemma4:9b", got)
 	}
 
-	// User navigates down to index 1 — manual pick of gemma4:14b.
+	// User navigates up to index 0 — manual pick of gemma4:14b (differs
+	// from the rotation's suggestion).
 	// (Capture the returned model so the cursor advance sticks; m.models
 	// is a value field, so the in-place update inside Update() doesn't
 	// propagate unless we use the result.)
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = got.(model)
-	if m.models.Index() != 1 {
-		t.Fatalf("after Down: cursor = %d, want 1 (gemma4:14b)", m.models.Index())
+	if sel := selectedModelID(m); sel != "ollama/gemma4:14b" {
+		t.Fatalf("after Up: cursor on %q, want ollama/gemma4:14b", sel)
 	}
 
 	// Commit the launch of gemma4:14b (the manual pick) via the shared
@@ -1086,8 +1099,8 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	// entry advances to gemma4:design (index 2), not wrapping to 0.
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m2 = drivePhaseAgentEnter(t, m2, "claude")
-	if m2.models.Index() != 2 {
-		t.Errorf("entry 2: cursor = %d, want 2 (next after manual pick gemma4:14b)", m2.models.Index())
+	if got := selectedModelID(m2); got != "ollama/gemma4:design" {
+		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:design (next after manual pick gemma4:14b)", got)
 	}
 }
 
@@ -1112,8 +1125,8 @@ func TestPinnedModelValidSkipsPicker(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a launch cmd (pinned model valid, picker skipped), got nil")
 	}
-	if got.models.Index() != 0 {
-		t.Errorf("cursor index = %d, want 0", got.models.Index())
+	if sel := selectedModelID(got); sel != "ollama/gemma4:9b" {
+		t.Errorf("selected %q, want the pinned ollama/gemma4:9b", sel)
 	}
 }
 

@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"os"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -63,4 +65,30 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 	newRefcountStore = func() refcount.Store { return store }
 	t.Cleanup(func() { newRefcountStore = old })
 	return store
+}
+
+// TestMain stubs the live-provider inventory so no test in this package ever
+// probes the developer's real ollama/omlx/mtplx servers or reads their model
+// directories. Tests that need local rows call stubInventory.
+func TestMain(m *testing.M) {
+	runInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	os.Exit(m.Run())
+}
+
+// stubInventory makes enterModelPhase see snap for the duration of a test.
+func stubInventory(t *testing.T, snap localmodels.Snapshot) {
+	t.Helper()
+	old := runInventory
+	runInventory = func(*config.Config) localmodels.Snapshot { return snap }
+	t.Cleanup(func() { runInventory = old })
+}
+
+// selectedModelID returns the ID of the model under the picker cursor, so
+// cursor assertions stay valid regardless of the table's sort order.
+func selectedModelID(m model) string {
+	it, ok := m.models.SelectedItem().(*modelItem)
+	if !ok {
+		return ""
+	}
+	return it.model.ID
 }
