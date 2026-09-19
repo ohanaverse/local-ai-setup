@@ -188,3 +188,28 @@ func TestPickModelViewHeaderAlignsWithRows(t *testing.T) {
 		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, "gemma4"), header, row)
 	}
 }
+
+// TestNewPickModelHidesDiscoveredRows verifies wt smoke's picker only shows the
+// models it was given: an unregistered (discovered) local model present in the
+// live inventory must not appear as a row. Without hideDiscovered, smoke would
+// offer models it has not verified as eligible for any agent.
+func TestNewPickModelHidesDiscoveredRows(t *testing.T) {
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true},
+		{ProviderID: "omlx", ModelID: "omlx/stray", Artifact: "stray", Registered: false, Running: true},
+	}})
+	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
+	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
+
+	pm := newPickModel(cfg, models, themes.Default)
+
+	var ids []string
+	for _, it := range pm.list.Items() {
+		ids = append(ids, it.(*modelItem).model.ID)
+	}
+	if len(ids) != 1 || ids[0] != "omlx/a" {
+		t.Errorf("items = %v, want only the passed model omlx/a (discovered omlx/stray must be hidden)", ids)
+	}
+}
