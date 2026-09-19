@@ -14,6 +14,7 @@ from modelman.benchmark.eval.runner import (
     RunSavedButRestoreFailed,
     rejudge_run,
     run_suite,
+    select_rows,
 )
 from modelman.benchmark.eval.suite import load_suite
 from modelman.registry import load_registry
@@ -135,23 +136,14 @@ def run_cmd(
         )
         raise typer.Exit(1)
 
-    rows = loaded_suite.rows
-    if row:
-        wanted_rows = set(row)
-        rows = [
-            r
-            for i, r in enumerate(rows, start=1)
-            if r.label in wanted_rows or str(i) in wanted_rows
-        ]
-        # Same failure the real run raises (run_suite's _select_rows): a
-        # dry run must not exit 0 for a --row that a real run rejects.
-        if not rows:
-            typer.echo(
-                f"error: --row {', '.join(sorted(wanted_rows))} matched no suite rows "
-                f"(known: {', '.join(r.label for r in loaded_suite.rows)})",
-                err=True,
-            )
-            raise typer.Exit(1)
+    # The runner's own selector, so a dry run resolves --row (and fails on a
+    # --row matching nothing) exactly the way the real run will. It also
+    # stamps each row's full-suite position on `suite_index`.
+    try:
+        rows = select_rows(loaded_suite.rows, row or None)
+    except BenchmarkError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     if dry_run:
         # Print each selected row with its FULL-suite index — --row N
@@ -161,15 +153,15 @@ def run_cmd(
         # whose own `categories` is disjoint from the --category selection
         # print as skipped — the real run skips them the same way (a
         # notice to stderr, never a silent zero-category execution).
-        for i, r in enumerate(loaded_suite.rows, start=1):
-            if not row or r.label in set(row) or str(i) in set(row):
-                row_categories = r.categories or [c.name for c in categories]
-                overlap = [c for c in row_categories if c in {cat.name for cat in categories}]
-                note = "" if overlap else "  (skipped: no category overlap with selection)"
-                typer.echo(
-                    f"{i:02d}  {r.label}  model={r.model_id}  route={r.route}  "
-                    f"categories={row_categories}{note}"
-                )
+        selected_names = {cat.name for cat in categories}
+        for r in rows:
+            row_categories = r.categories or [c.name for c in categories]
+            overlap = [c for c in row_categories if c in selected_names]
+            note = "" if overlap else "  (skipped: no category overlap with selection)"
+            typer.echo(
+                f"{r.suite_index:02d}  {r.label}  model={r.model_id}  route={r.route}  "
+                f"categories={row_categories}{note}"
+            )
         skipped = [
             r
             for r in rows

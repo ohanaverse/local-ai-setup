@@ -24,7 +24,8 @@ from modelman.benchmark.agent.gates import evaluate as evaluate_gates
 from modelman.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, preflight
 from modelman.benchmark.agent.task import TaskBundle, load_task
 from modelman.benchmark.agent.workspace import create_workspace, destroy_workspace
-from modelman.benchmark.errors import BenchmarkError
+from modelman.benchmark.errors import BenchmarkError, RunSavedButRestoreFailed
+from modelman.benchmark.runmeta import git_sha
 from modelman.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -44,21 +45,6 @@ class RowRunResult:
     judge: judge.JudgeOutcome | None = None
     composite: int | None = None
     error: str | None = None
-
-
-class RunSavedButRestoreFailed(BenchmarkError):
-    """Every row completed and is on disk; only putting the backends back failed.
-
-    Carries `run_dir` and `results` so the CLI can still record the `--latest`
-    pointer and report the row count. Without it, a host whose llama.cpp
-    LaunchAgent cannot start — this one, since its GGUF no longer exists — turns a
-    finished, fully persisted sweep into an exit code with nothing to show for it,
-    and `agent show --latest` has no idea the run ever happened."""
-
-    def __init__(self, message: str, *, run_dir: Path, results: list[RowRunResult]) -> None:
-        super().__init__(message)
-        self.run_dir = run_dir
-        self.results = results
 
 
 def _row_dir(run_dir: Path, index: int, row: RowConfig, pass_number: int) -> Path:
@@ -263,16 +249,6 @@ def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[Ro
     return [r for i, r in enumerate(rows, start=1) if r.label in wanted or str(i) in wanted]
 
 
-
-
-def _git_sha() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-        )
-        return result.stdout.strip() or "unknown"
-    except OSError:
-        return "unknown"
 
 
 def _pi_version() -> str:
@@ -608,7 +584,7 @@ def run_suite(
     report.write_run_toml(
         run_dir / "run.toml",
         _suite_to_dict(suite),
-        git_sha=_git_sha(),
+        git_sha=git_sha(),
         pi_version=_pi_version(),
     )
 

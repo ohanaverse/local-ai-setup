@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import subprocess
 import sys
 import time
 import tomllib
@@ -28,7 +27,7 @@ from modelman.benchmark._routes import (
     litellm_credentials,
     openrouter_key,
 )
-from modelman.benchmark.errors import BenchmarkError
+from modelman.benchmark.errors import BenchmarkError, RunSavedButRestoreFailed
 from modelman.benchmark.eval import evalplus_runner, judged_runner, report
 from modelman.benchmark.eval.category import CODING_CATEGORY, Category
 from modelman.benchmark.eval.suite import (
@@ -45,6 +44,7 @@ from modelman.benchmark.judge_core import (
     LiteLLMJudgeTransport,
     judge_row,
 )
+from modelman.benchmark.runmeta import git_sha
 from modelman.local_process import ENV_VAR_BY_PROVIDER as _ENV_VAR_BY_PROVIDER
 from modelman.registry import Registry
 
@@ -59,16 +59,6 @@ class RowRunResult:
     row_dir: Path
     category_results: dict[str, object] = field(default_factory=dict)
     error: str | None = None
-
-
-class RunSavedButRestoreFailed(BenchmarkError):
-    """Every row completed and is on disk; only putting the backends back
-    failed. Carries run_dir/results so the CLI can still record --latest."""
-
-    def __init__(self, message: str, *, run_dir: Path, results: list[RowRunResult]) -> None:
-        super().__init__(message)
-        self.run_dir = run_dir
-        self.results = results
 
 
 def _row_index(row: RowConfig) -> int:
@@ -103,16 +93,6 @@ def _default_judge_transport_factory(judge_cfg) -> JudgeTransport:
         return LiteLLMJudgeTransport(base_url=OPENROUTER_BASE_URL, api_key=key, model=model)
     base_url, api_key = litellm_credentials(LIVE_PI_MODELS_PATH)
     return LiteLLMJudgeTransport(base_url=base_url, api_key=api_key, model=judge_cfg.model)
-
-
-def _git_sha() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-        )
-        return result.stdout.strip() or "unknown"
-    except OSError:
-        return "unknown"
 
 
 def _row_categories(row: RowConfig, categories: list[Category]) -> list[Category]:
@@ -183,7 +163,7 @@ def _row_isolation_spec(
     return (), None
 
 
-def _select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[RowConfig]:
+def select_rows(rows: list[RowConfig], row_filter: list[str] | None) -> list[RowConfig]:
     # Stash each row's 1-based SUITE position on the RowConfig so run_suite
     # can number its row directories by it (see _row_index): rows execute
     # sorted by (provider, model) for isolation grouping, so on any
@@ -386,7 +366,7 @@ def run_suite(
     results_dir: Path | None = None,
     judge_transport_factory=None,
 ) -> tuple[Path, list[RowRunResult]]:
-    rows = _select_rows(suite.rows, row_filter)
+    rows = select_rows(suite.rows, row_filter)
     # A row whose own `categories` is disjoint from the runner's category
     # set (CLI --category scoping, or a --category value valid overall but
     # absent from that row's own list) must be SKIPPED with a notice, not
@@ -632,7 +612,7 @@ def _persist_snapshot(run_dir, run_id, results, registry, categories, suite) -> 
     )
     guarded("metrics.jsonl", lambda: report.write_metrics_jsonl(run_dir / "metrics.jsonl", results))
     guarded(
-        "run.toml", lambda: report.write_run_toml(run_dir / "run.toml", suite, git_sha=_git_sha())
+        "run.toml", lambda: report.write_run_toml(run_dir / "run.toml", suite, git_sha=git_sha())
     )
 
 

@@ -68,7 +68,7 @@ class RowConfig:
     draft_repo: str | None = None
     mtplx_model_name: str | None = None
     # 1-based position of the row within the suite's [[rows]] list. Set at
-    # load time (and re-stamped by runner._select_rows over whatever list it
+    # load time (and re-stamped by runner.select_rows over whatever list it
     # was handed, so it also holds for hand-built suites in tests); runner
     # numbers each run's row directories by it so `judge --row N` resolves
     # to the same row `run --row N` selected even though execution order
@@ -302,7 +302,7 @@ def preflight(
 ) -> None:
     """Fail fast on what the SELECTED rows would actually hit mid-run.
 
-    `rows` defaults to the full suite; run_suite passes its post-_select_rows
+    `rows` defaults to the full suite; run_suite passes its post-select_rows
     selection so a scoped run (--row/--category) is never blocked by an
     unselected row's provider being down, a missing direct-route block, or a
     missing openrouter key.
