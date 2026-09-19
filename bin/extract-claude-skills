@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+r"""Extract embedded markdown blocks from Claude Code version binaries.
+
+Claude Code ships as a Mach-O executable with skill prompts and instructions
+embedded as JavaScript template literal strings. This script extracts those
+blocks, cleans up JS artifacts, and writes them as separate markdown files.
+
+Usage:
+    bin/extract-claude-skills [version]
+
+If no version is given, extracts from all available versions.
+"""
+
+import hashlib
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+CLAUDE_VERSIONS_DIR = Path.home() / ".local" / "share" / "claude" / "versions"
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "docs" / "superpowers" / "claude-embedded"
+
+# Minimum markdown density: fraction of lines that look like markdown
+MD_DENSITY_THRESHOLD = 0.30
+
+# Minimum block length in characters to be worth extracting
+MIN_BLOCK_LENGTH = 500
+
+# ── Data types ───────────────────────────────────────────────────────────────
+
+@dataclass
+class ExtractedBlock:
+    """A single extracted markdown block."""
+    content: str
+    version: str
+    source_offset: int
+    category: str = ""
+    content_hash: str = field(init=False)
+
+    def __post_init__(self):
+        # Sanitize: remove any remaining surrogates
+        self.content = "".join(
+            c for c in self.content
+            if not (0xD800 <= ord(c) <= 0xDFFF)
+        )
+        self.content_hash = hashlib.sha256(self.content.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass
+class VersionInfo:
+    """Metadata about a Claude Code version binary."""
+    version: str
+    path: Path
+    file_hash: str = field(init=False)
+    blocks: list[ExtractedBlock] = field(default_factory=list)
+
+    def __post_init__(self):
+        self.file_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()[:16]
+
+
+# ── Template literal extraction ──────────────────────────────────────────────
+
+def extract_template_literals(data: bytes) -> list[tuple[int, str]]:
+    """Extract all backtick-delimited template literal strings from raw binary data.
+
+    Handles escaped backticks (\\`) inside strings.
+    Returns list of (byte_offset, string_content) tuples.
+    """
+    results = []
+    text = data.decode("utf-8", errors="replace")
+    i = 0
+    length = len(text)
+
+    while i < length:
+        pos = text.find("`", i)
+        if pos == -1:
+            break
+
+        j = pos + 1
+        content_chars = []
+        while j < length:
+            ch = text[j]
+            if ch == "\\" and j + 1 < length and text[j + 1] == "`":
+                content_chars.append("`")
+                j += 2
+                continue
+            elif ch == "`":
+                break
+            else:
+                content_chars.append(ch)
+                j += 1
+
+        if j >= length:
+            i = pos + 1
+            continue
+
+        content = "".join(content_chars)
+        results.append((pos, content))
+        i = j + 1
+
+    return results
+
+
+def is_markdown_rich(text: str) -> bool:
+    """Check if text has sufficient markdown-like content."""
+    lines = text.split("\n")
+    if len(lines) < 3:
+        return False
+
+    md_lines = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            md_lines += 1
+            continue
+        if (stripped.startswith("#") or
+            stripped.startswith(("**", "* ", "*\n")) or
+            stripped.startswith(("- ", "+ ")) or
+            stripped.startswith("`") or
+            stripped.startswith("```") or
+            stripped.startswith("> ") or
+            stripped.startswith("---")):
+            md_lines += 1
+
+    density = md_lines / len(lines)
+    return density >= MD_DENSITY_THRESHOLD
+
+
+def extract_unicode_escapes(text: str) -> str:
+    r"""Replace backslash-u-XXXX sequences with actual Unicode characters.
+
+    Handles surrogate pairs (high surrogate followed by low surrogate)
+    by combining them into a single character. Unpaired surrogates are dropped.
+    """
+    def replace_unicode(m):
+        code_point = int(m.group(1), 16)
+        return chr(code_point)
+    result = re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode, text)
+
+    # Fix surrogate pairs in decoded text
+    output = []
+    i = 0
+    while i < len(result):
+        cp = ord(result[i])
+        if 0xD800 <= cp <= 0xDBFF and i + 1 < len(result):
+            low_cp = ord(result[i + 1])
+            if 0xDC00 <= low_cp <= 0xDFFF:
+                combined = 0x10000 + (cp - 0xD800) * 0x400 + (low_cp - 0xDC00)
+                output.append(chr(combined))
+                i += 2
+                continue
+        output.append(result[i])
+        i += 1
+
+    result = "".join(output)
+    result = "".join(c for c in result if not (0xD800 <= ord(c) <= 0xDFFF))
+    return result
+
+
+def strip_js_artifacts(text: str) -> str:
+    """Remove JavaScript variable references and syntax artifacts."""
+    # Remove ${...} variable references
+    text = re.sub(r"\$\{[^}]*\}", "", text)
+
+    # Clean up excessive blank lines
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+
+    # Remove trailing JS syntax
+    text = text.rstrip()
+    if text.endswith("};"):
+        text = text[:-2].rstrip()
+    elif text.endswith(","):
+        text = text[:-1].rstrip()
+
+    return text
+
+
+def extract_blocks_from_version(version_info: VersionInfo) -> list[ExtractedBlock]:
+    """Extract all markdown-rich template literal blocks from a version binary."""
+    data = version_info.path.read_bytes()
+    literals = extract_template_literals(data)
+    blocks = []
+
+    for offset, content in literals:
+        if len(content) < MIN_BLOCK_LENGTH:
+            continue
+
+        content = extract_unicode_escapes(content)
+
+        if not is_markdown_rich(content):
+            continue
+
+        cleaned = strip_js_artifacts(content)
+
+        if len(cleaned) < MIN_BLOCK_LENGTH:
+            continue
+
+        # Classify
+        category = classify_block(cleaned)
+
+        # Skip uncategorized blocks — they're mostly JS code fragments
+        if category == "uncategorized":
+            continue
+
+        blocks.append(ExtractedBlock(
+            content=cleaned,
+            version=version_info.version,
+            source_offset=offset,
+            category=category,
+        ))
+
+    return blocks
+
+
+# ── Classification ───────────────────────────────────────────────────────────
+
+def classify_block(text: str) -> str:
+    """Classify a block into a category based on its content."""
+    text = text.lower()
+
+    # Check for specific patterns
+    if ("code-review" in text and ("finding" in text or "diff" in text or "bug" in text)):
+        return "code-review"
+    elif ("pull request" in text and ("review" in text or "diff" in text)):
+        return "code-review"
+    elif ("finder angle" in text or "independent finder" in text):
+        return "code-review"
+    elif ("memory" in text and ("save" in text or "recall" in text or "remember" in text)):
+        return "memory"
+    elif ("git commit" in text or ("commit message" in text and "message" in text)):
+        return "commit-skill"
+    elif ("debug" in text and ("debug logging" in text or "debug session" in text or "debug log" in text)):
+        return "debug-skill"
+    elif ("doctor" in text or ("health check" in text) or ("diagnose" in text and "setup" in text)):
+        return "doctor"
+    elif ("skill.md" in text and ("create" in text or "writing" in text)):
+        return "skill-creation"
+    elif ("hook" in text and ("prompt" in text or "attachment" in text or "configuration" in text)):
+        return "hooks"
+    elif ("config" in text and ("describe" in text or "config.set" in text)):
+        return "config"
+    elif ("plugin" in text and ("install" in text or "marketplace" in text)):
+        return "plugins"
+    elif ("permission" in text and ("rule" in text or "allow" in text or "deny" in text)):
+        return "permissions"
+    elif ("slash" in text and ("/" in text[:200]) and ("command" in text)):
+        return "slash-commands"
+    elif ("chart" in text or ("visualization" in text) or ("data viz" in text)):
+        return "charts"
+    elif ("claude design" in text):
+        return "claude-design"
+    elif ("cowork" in text):
+        return "cowork"
+    elif ("prompt" in text and ("context" in text or "attachment" in text) and not ("hook" in text)):
+        return "prompts"
+    elif ("transcript" in text and ("session" in text or "log" in text)):
+        return "transcripts"
+    elif ("usage" in text and ("counter" in text or "skillusage" in text)):
+        return "usage-tracking"
+    elif ("mcp" in text.lower() and ("server" in text or "tool" in text)):
+        return "mcp"
+    elif ("agent" in text and ("definition" in text or "agent.md" in text)):
+        return "agents"
+    elif ("skill" in text and ("render" in text or "card" in text or "search" in text)):
+        return "skills"
+    elif ("claude.md" in text or ("claude md" in text)):
+        return "claude-md"
+    else:
+        return "uncategorized"
+
+
+# ── Output ────────────────────────────────────────────────────────────────────
+
+def deduplicate_blocks(all_blocks: list[ExtractedBlock]) -> list[ExtractedBlock]:
+    """Deduplicate blocks by content hash, keeping the latest version."""
+    seen = {}
+    for block in all_blocks:
+        if block.content_hash not in seen:
+            seen[block.content_hash] = block
+        else:
+            existing_ver = seen[block.content_hash].version
+            if block.version > existing_ver:
+                seen[block.content_hash] = block
+    return list(seen.values())
+
+
+def generate_filename(block: ExtractedBlock, index: int, seen: set) -> str:
+    """Generate a filename for an extracted block, handling collisions."""
+    category = block.category or "uncategorized"
+
+    # Try to find a meaningful phrase from the content
+    lines = block.content.split("\n")
+    slug = ""
+
+    # Look for the first line that starts with a heading or has bold text
+    for line in lines[:20]:
+        stripped = line.strip()
+        # Skip JS artifacts and short lines
+        if not stripped or len(stripped) < 10:
+            continue
+        # Skip lines that are mostly code-like
+        if stripped.startswith("${") or stripped.startswith("function") or stripped.startswith("var "):
+            continue
+        # Use the first meaningful line
+        slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
+        if slug and len(slug) > 5:
+            break
+
+    if not slug or len(slug) > 80:
+        slug = f"block-{index:03d}"
+
+    # Handle filename collisions
+    base = f"{category}-{slug}.md"
+    if base in seen:
+        # Append content hash suffix for uniqueness
+        slug = f"{slug}-{block.content_hash[:6]}"
+        base = f"{category}-{slug}.md"
+
+    seen.add(base)
+    return base
+
+
+def write_block(block: ExtractedBlock, output_dir: Path, filename: str) -> Path:
+    """Write a single block to the output directory."""
+    filepath = output_dir / filename
+    header = f"""<!--
+  Extracted from Claude Code v{block.version}
+  Source offset: {block.source_offset}
+  Content hash: {block.content_hash}
+  Category: {block.category}
+  Auto-generated — do not edit manually
+-->
+
+"""
+    filepath.write_text(header + block.content, encoding="utf-8")
+    return filepath
+
+
+def write_version_manifest(versions: list[VersionInfo], output_dir: Path) -> None:
+    """Write a manifest.json with version metadata."""
+    manifest = {
+        "generated": "auto-extract",
+        "versions": [
+            {
+                "version": v.version,
+                "file_hash": v.file_hash,
+                "block_count": len(v.blocks),
+            }
+            for v in versions
+        ],
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def discover_versions() -> list[VersionInfo]:
+    """Discover all Claude Code versions on the system."""
+    if not CLAUDE_VERSIONS_DIR.exists():
+        print(f"Error: {CLAUDE_VERSIONS_DIR} does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    versions = []
+    for entry in sorted(CLAUDE_VERSIONS_DIR.iterdir()):
+        if entry.is_file():
+            versions.append(VersionInfo(version=entry.name, path=entry))
+    return versions
+
+
+def main():
+    target_version = sys.argv[1] if len(sys.argv) > 1 else None
+
+    all_versions = discover_versions()
+    if not all_versions:
+        print("No Claude Code versions found", file=sys.stderr)
+        sys.exit(1)
+
+    if target_version:
+        versions = [v for v in all_versions if v.version == target_version]
+        if not versions:
+            print(f"Version {target_version} not found", file=sys.stderr)
+            print(f"Available: {', '.join(v.version for v in all_versions)}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        versions = all_versions
+
+    all_blocks: list[ExtractedBlock] = []
+    for vi in versions:
+        print(f"Extracting from v{vi.version}...")
+        try:
+            vi.blocks = extract_blocks_from_version(vi)
+        except Exception as e:
+            print(f"  ERROR extracting from v{vi.version}: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            continue
+        all_blocks.extend(vi.blocks)
+        print(f"  Found {len(vi.blocks)} markdown-rich blocks")
+
+    if not all_blocks:
+        print("No markdown-rich blocks found in any version")
+        sys.exit(0)
+
+    unique_blocks = deduplicate_blocks(all_blocks)
+    print(f"\n{len(all_blocks)} total blocks → {len(unique_blocks)} unique (after dedup)")
+
+    # Count categories
+    cats = {}
+    for b in unique_blocks:
+        cats[b.category] = cats.get(b.category, 0) + 1
+    for cat, count in sorted(cats.items(), key=lambda x: -x[1]):
+        print(f"  {cat}: {count}")
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Remove old files
+    for f in OUTPUT_DIR.glob("*.md"):
+        f.unlink()
+
+    written = 0
+    seen_filenames = set()
+    for i, block in enumerate(unique_blocks):
+        filename = generate_filename(block, i, seen_filenames)
+        filepath = write_block(block, OUTPUT_DIR, filename)
+        written += 1
+        print(f"  {filename} ({len(block.content)} chars)")
+
+    write_version_manifest(versions, OUTPUT_DIR)
+
+    print(f"\nWrote {written} blocks to {OUTPUT_DIR}")
+    print(f"Manifest: {OUTPUT_DIR / 'manifest.json'}")
+
+
+if __name__ == "__main__":
+    main()
