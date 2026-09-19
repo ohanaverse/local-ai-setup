@@ -6,10 +6,12 @@ on:
     paths:
       - "wt/**"
       - "docs/contracts/**"
+      - ".github/workflows/wt-ci.yml"
   pull_request:
     paths:
       - "wt/**"
       - "docs/contracts/**"
+      - ".github/workflows/wt-ci.yml"
 
 jobs:
   test:

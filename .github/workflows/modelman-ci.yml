@@ -6,10 +6,12 @@ on:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - ".github/workflows/modelman-ci.yml"
   pull_request:
     paths:
       - "modelman/**"
       - "docs/contracts/**"
+      - ".github/workflows/modelman-ci.yml"
 
 jobs:
   test:
