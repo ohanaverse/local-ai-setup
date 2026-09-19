@@ -50,6 +50,8 @@ type modelItem struct {
 	marked    bool
 	ref       int
 	exception string
+	row       tableRow // table row this item renders (zero for legacy items)
+	blocked   string   // non-empty: Enter shows this instead of launching
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
