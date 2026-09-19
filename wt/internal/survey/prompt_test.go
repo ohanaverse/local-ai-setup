@@ -98,6 +98,23 @@ func TestPromptRunTaskTrimsWhitespace(t *testing.T) {
 	}
 }
 
+// TestPromptRunUnregisteredModel verifies the survey records a verdict for a
+// model that exists in no registry (a discovered on-disk model): the store
+// keys on the id string only, so surveys work for every agent-model pair.
+func TestPromptRunUnregisteredModel(t *testing.T) {
+	withTTY(t, true)
+	store := NewStoreAt(t.TempDir())
+	id := config.DiscoveredModelID("omlx", "Qwen3.8-27B-4bit")
+	m := config.Model{ID: id, ProviderID: "omlx", ModelName: "Qwen3.8-27B-4bit"}
+	var out bytes.Buffer
+	PromptRun(strings.NewReader("y\n4\n5\nsmoke\n"), &out, store, "claude", m)
+
+	events := store.Events()
+	if len(events) != 1 || events[0].ModelID != id || events[0].Agent != "claude" {
+		t.Fatalf("Events() = %+v, want one claude event for %q", events, id)
+	}
+}
+
 // TestPromptRunNoFlowStopsAfterQ1 verifies "n" records a failed verdict and
 // never prompts for ratings — a failed run has nothing to rate. The task
 // question still applies to the n-flow, so its input carries a task line.

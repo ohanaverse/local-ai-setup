@@ -1080,3 +1080,15 @@ func TestFilterToRunningLocalUnresolvableLocationDropped(t *testing.T) {
 		t.Fatalf("got %v, want only claude/opus", got)
 	}
 }
+
+// TestDiscoveredModelID pins the stat-id format for on-disk models with no
+// registry entry: usage/survey history is keyed on this string, so changing
+// it silently orphans every recorded discovered-model launch.
+func TestDiscoveredModelID(t *testing.T) {
+	if got := DiscoveredModelID("omlx", "Qwen3.8-27B-4bit"); got != "omlx/Qwen3.8-27B-4bit" {
+		t.Errorf("got %q", got)
+	}
+	if got := DiscoveredModelID("mtplx", "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"); got != "mtplx/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality" {
+		t.Errorf("got %q", got)
+	}
+}
