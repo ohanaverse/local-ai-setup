@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import typer
@@ -23,8 +24,26 @@ eval_app = typer.Typer(
     "code_review/doc_summary), single-turn, coding graded by EvalPlus."
 )
 
-DEFAULT_CATEGORIES_ROOT = Path("benchmarks/tasks/eval")
-DEFAULT_SUITES_DIR = Path("benchmarks/suites")
+
+def _repo_relative(default: str) -> Path:
+    """Anchor a repo-relative default to the checkout this file lives in, so
+    the CLI works from any cwd; fall back to the bare relative path when
+    the package is installed outside a checkout."""
+    anchored = Path(__file__).resolve().parents[5] / default
+    return anchored if anchored.exists() else Path(default)
+
+
+DEFAULT_CATEGORIES_ROOT = _repo_relative("benchmarks/tasks/eval")
+DEFAULT_SUITES_DIR = _repo_relative("benchmarks/suites")
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _run_dir_for(results_dir: Path, run_id: str) -> Path:
+    """results_dir/run_id, refusing ids that could escape results_dir."""
+    if not _RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+        typer.echo(f"error: invalid --run-id {run_id!r}", err=True)
+        raise typer.Exit(1)
+    return results_dir / run_id
 
 
 def _load_all_categories(root: Path) -> list:
@@ -124,6 +143,15 @@ def run_cmd(
             for i, r in enumerate(rows, start=1)
             if r.label in wanted_rows or str(i) in wanted_rows
         ]
+        # Same failure the real run raises (run_suite's _select_rows): a
+        # dry run must not exit 0 for a --row that a real run rejects.
+        if not rows:
+            typer.echo(
+                f"error: --row {', '.join(sorted(wanted_rows))} matched no suite rows "
+                f"(known: {', '.join(r.label for r in loaded_suite.rows)})",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     if dry_run:
         # Print each selected row with its FULL-suite index — --row N
@@ -204,7 +232,7 @@ def show_cmd(
             raise typer.Exit(1)
         md_path = Path(run_dir_str) / "summary.md"
     else:
-        md_path = results_dir / str(run_id) / "summary.md"
+        md_path = _run_dir_for(results_dir, str(run_id)) / "summary.md"
     if not md_path.exists():
         typer.echo(f"error: results not found: {md_path}", err=True)
         raise typer.Exit(1)
@@ -231,9 +259,12 @@ def judge_cmd(
             raise typer.Exit(1)
         target_dir = Path(run_dir_str)
     else:
-        target_dir = results_dir / str(run_id)
+        target_dir = _run_dir_for(results_dir, str(run_id))
 
     categories = _load_all_categories(root)
+    if not categories:
+        typer.echo(f"error: no categories found under {root} (check --root)", err=True)
+        raise typer.Exit(1)
     registry = load_registry()
     try:
         outcomes = rejudge_run(

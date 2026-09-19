@@ -172,7 +172,7 @@ def run_coding_category(
                 dataset=dataset,
                 pass_at_1=None,
                 raw_output=result.stdout + result.stderr,
-                error=f"evalplus exited {result.returncode}: {result.stderr[:300]}",
+                error=f"evalplus exited {result.returncode}: {result.stderr[-300:]}",
             )
         pass_at_1 = _parse_pass_at_1(result.stdout)
         if pass_at_1 is None:

@@ -389,3 +389,71 @@ def test_list_categories_cmd_malformed_category_is_a_clean_error(tmp_path):
     assert result.exit_code == 1
     assert "error:" in result.output
     assert "Traceback" not in result.output
+
+
+@patch("modelman.benchmark.eval.cli.load_registry")
+def test_run_cmd_dry_run_rejects_row_filter_matching_nothing(mock_load_registry, tmp_path):
+    # A --row that matches no suite row makes a real run exit 1; the dry run
+    # must fail the same way, or it would give false confidence that a typo'd
+    # --row selection is fine before an expensive sweep.
+    from modelman.registry import ModelEntry, ProviderEntry, Registry
+
+    mock_load_registry.return_value = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    suite_path = tmp_path / "suite.toml"
+    suite_path.write_text(
+        'name = "t"\n[judge]\nmodel = "j"\nroute = "litellm"\n'
+        '[[rows]]\nmodel = "ollama/a"\nroute = "litellm"\n',
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        eval_app,
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--root",
+            str(FIXTURE_CATEGORIES),
+            "--row",
+            "nonexistent",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "matched no suite rows" in result.output
+
+
+def test_show_and_judge_reject_path_traversal_run_ids(tmp_path):
+    # --run-id is joined onto results_dir, so `../x` would read (show) or
+    # re-judge (judge) a directory outside the results tree; it must be
+    # refused before any path is touched.
+    for command in ("show", "judge"):
+        result = runner.invoke(
+            eval_app, [command, "--run-id", "../x", "--results-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 1
+        assert "invalid --run-id" in result.output
+
+
+def test_judge_cmd_rejects_empty_category_root(tmp_path):
+    # `run` already refuses a --root with no categories; `judge` needs the
+    # same guard or a typo'd --root silently re-judges nothing.
+    (tmp_path / "eval-x").mkdir()
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    result = runner.invoke(
+        eval_app,
+        [
+            "judge",
+            "--run-id",
+            "eval-x",
+            "--root",
+            str(empty_root),
+            "--results-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "no categories found" in result.output

@@ -186,3 +186,20 @@ def test_litellm_transport_fail_fast_on_read_timeout_does_not_retry(monkeypatch)
         transport.complete("p", temperature=0.0)
     assert len(calls) == 1
 
+
+
+def test_judge_row_two_sample_median_rounds_half_up():
+    # An even sample count gives a .5 median; round() would apply banker's
+    # rounding (2.5 -> 2, 3.5 -> 4), scoring identical judge splits
+    # differently by parity. Half-up keeps combined scores consistent.
+    from modelman.benchmark.judge_core import judge_row
+
+    replies = [
+        json.dumps({"scores": {"x": 2, "y": 3, "z": 0}, "total": 5}),
+        json.dumps({"scores": {"x": 3, "y": 4, "z": 0}, "total": 7}),
+    ]
+    outcome = judge_row(
+        _StubTransport(replies), "p", NO_VERDICT_RUBRIC, temperature=0.0, samples=2, max_attempts=1
+    )
+    assert outcome.combined is not None
+    assert outcome.combined.scores == {"x": 3, "y": 4, "z": 0}

@@ -11,6 +11,7 @@ diff-specific (anonymization, overclaim detection) to itself.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -205,8 +206,11 @@ def judge_row(
     if len(collected) == 1:
         combined = collected[0]
     else:
+        # floor(x + 0.5), not round(): an even sample count can give a .5
+        # median, and round() would send 2.5 -> 2 but 3.5 -> 4.
         combined_scores = {
-            dim: round(median(s.scores[dim] for s in collected)) for dim in rubric.dimensions
+            dim: math.floor(median(s.scores[dim] for s in collected) + 0.5)
+            for dim in rubric.dimensions
         }
         combined = JudgeScore(
             scores=combined_scores,

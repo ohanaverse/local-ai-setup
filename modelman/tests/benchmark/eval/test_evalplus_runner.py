@@ -168,3 +168,23 @@ def test_run_coding_category_regex_boundary_avoids_pass_at_n_false_positive():
     )
     assert result.pass_at_1 == 0.732
     assert result.error is None
+
+
+def test_failure_message_keeps_the_stderr_tail():
+    # A Python traceback puts the actual error on its LAST lines; the failure
+    # message must keep the tail of stderr, not the uninformative head.
+    stderr = "HEAD-NOISE " * 100 + "ValueError: the real error"
+
+    def fake_run(cmd, **kwargs):
+        return _FakeCompletedProcess(1, "", stderr)
+
+    result = run_coding_category(
+        base_url="http://x/v1",
+        model="m",
+        api_key="k",
+        dataset="humaneval",
+        limit=1,
+        run_cmd=fake_run,
+    )
+    assert result.error is not None
+    assert "the real error" in result.error

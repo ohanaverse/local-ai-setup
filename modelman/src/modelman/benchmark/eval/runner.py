@@ -300,7 +300,10 @@ def _judge_all(
                 # retry) marks the whole category judge_fail — this keeps
                 # the sweep alive instead of one dead route aborting every
                 # remaining row's scoring.
-                cat_result.score_100 = None
+                # Keep the mean of items that did score before the failure
+                # (None only when none did) rather than discarding them.
+                scored = [i.score_100 for i in cat_result.items if i.score_100 is not None]
+                cat_result.score_100 = round(sum(scored) / len(scored), 2) if scored else None
                 for item_result in cat_result.items:
                     if item_result.judge is None:
                         item_result.judge = JudgeOutcome(
@@ -418,9 +421,19 @@ def run_suite(
     preflight(suite, registry, rows=rows, judge_route_active=needs_judge)
 
     results_dir = results_dir or DEFAULT_RESULTS_DIR
-    run_id = "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    run_dir = results_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # One-second resolution: a second run started in the same second must
+    # get its own directory, not silently merge into the first's.
+    base_id = "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    run_id = base_id
+    suffix = 1
+    while True:
+        run_dir = results_dir / run_id
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            suffix += 1
+            run_id = f"{base_id}-{suffix}"
 
     results: list[RowRunResult] = []
     isolated_any = False
