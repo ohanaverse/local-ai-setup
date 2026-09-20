@@ -79,17 +79,17 @@ which makes "no start was begun" a property of the state instead of of timing.
 
 ## Tasks
 
-- [ ] **Task 1: add `waitStartCalls`** next to `stubStartModel`/`recvStart` in
+- [x] **Task 1: add `waitStartCalls`** next to `stubStartModel`/`recvStart` in
       `start_flow_test.go`, with the what/why comment above (every `Test*`/helper
       carries one — `wt/CLAUDE.md`).
-- [ ] **Task 2: migrate the five assertions** to `waitStartCalls(t, calls, n)` before
+- [x] **Task 2: migrate the five assertions** to `waitStartCalls(t, calls, n)` before
       the existing `if calls.len() != n` check, keeping the check (it still catches an
       over-call) and never weakening a message.
-- [ ] **Task 3: strengthen the two `want 0` sites** with `got.start == nil`.
-- [ ] **Task 4: verify** — `GOMAXPROCS=1 go test ./internal/tui -count=20` (must be
+- [x] **Task 3: strengthen the two `want 0` sites** with `got.start == nil`.
+- [x] **Task 4: verify** — `GOMAXPROCS=1 go test ./internal/tui -count=20` (must be
       green; this is the reproduction), then `go build ./... && go vet ./... &&
       go test ./... && go test -race ./internal/tui -count=1 && gofmt -l .` from `wt/`.
-- [ ] **Task 5: commit + push** — `fix(tui): wait for the engine goroutine before
+- [x] **Task 5: commit + push** — `fix(tui): wait for the engine goroutine before
       asserting it was called`.
 
 ## Why this is worth its own commit
@@ -98,3 +98,18 @@ A test that fails on CI but passes locally teaches the team to ignore CI. The
 `GOMAXPROCS=1` reproduction makes the fix verifiable rather than hopeful: the fix is
 demonstrated by a run that goes from 5 failures to 0, and the same command is the
 regression guard for anyone adding another call-count assertion.
+
+### Done
+
+Committed as `fix(tui): wait for the engine goroutine before asserting it was called`
+plus the plan itself. Reproduction and proof:
+
+- *Before:* `GOMAXPROCS=1 go test ./internal/tui -count=1` → 5 failing tests
+  (`TestEnterOnStartRowBeginsStart`, `TestReplaceConfirmProceedReissuesStartWithAllowReplace`,
+  `TestKeysDuringStartCancelThenOnlyCtrlCQuits` ×3 subtests, `TestStaleStartMessagesIgnored`,
+  `TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold`).
+- *After:* the same command green, at `-count=5` and `-count=30` on the affected set.
+- The barrier's own failure mode was verified with a throwaway test: an unreached count
+  fails in 2.00s with `startModel calls = 0, want 1` rather than hanging.
+- `go build ./... && go vet ./... && go test ./... && go test -race ./internal/tui` all
+  green; `gofmt -l .` prints nothing.
