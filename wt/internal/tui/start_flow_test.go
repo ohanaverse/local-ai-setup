@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -127,6 +128,32 @@ func recvStart(t *testing.T, m model) tea.Msg {
 	}
 }
 
+// waitStartCalls blocks until startModel has been called n times, failing the
+// test if that count is not reached in time. The engine runs in the goroutine
+// runStart spawns, so a test that asserts on what the engine did must wait for
+// it to have done it: reading startCalls straight after the key that began the
+// run asserts about a goroutine the test never synchronized with, which passes
+// on a fast machine and fails on a 2-core CI runner (GOMAXPROCS=1 reproduces
+// it every time). Recording happens at the top of stubStartModel, before
+// runStart sends anything on m.start.ch, so a test that already drains a
+// message is synchronized by that drain and does not need this — but a test
+// that goes on to drain the channel itself cannot use recvStart as the barrier
+// without consuming a message it still needs.
+func waitStartCalls(t *testing.T, calls *startCalls, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.len() < n {
+		if time.Now().After(deadline) {
+			// A timeout means the engine was never called, so report it as the
+			// assertion failure it is rather than letting the test hang.
+			t.Fatalf("startModel calls = %d, want %d", calls.len(), n)
+		}
+		// Yield rather than sleep: under GOMAXPROCS=1 a tight spin without a
+		// scheduling point can starve the goroutine being waited on.
+		runtime.Gosched()
+	}
+}
+
 // updateMsg feeds msg to m.Update and returns the converted model, so flow
 // tests stay on the concrete type.
 func updateMsg(m model, msg tea.Msg) (model, tea.Cmd) {
@@ -157,6 +184,7 @@ func TestEnterOnStartRowBeginsStart(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("beginStart returned a nil cmd; the flow would never report")
 	}
+	waitStartCalls(t, calls, 1)
 	if calls.len() != 1 {
 		t.Fatalf("startModel calls = %d, want 1", calls.len())
 	}
@@ -265,6 +293,7 @@ func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 	if got.phase != phaseStarting {
 		t.Fatalf("phase = %v, want phaseStarting (the replace start is in flight)", got.phase)
 	}
+	waitStartCalls(t, calls, 2)
 	if calls.len() != 2 {
 		t.Fatalf("startModel calls = %d, want 2", calls.len())
 	}
@@ -345,6 +374,7 @@ func TestKeysDuringStartCancelThenOnlyCtrlCQuits(t *testing.T) {
 			if v := got.View(); !strings.Contains(v, "Cancelling") {
 				t.Errorf("view after cancel press = %q, want it to say Cancelling", v)
 			}
+			waitStartCalls(t, calls, 1)
 			if calls.len() != 1 {
 				t.Errorf("startModel calls = %d, want 1 (cancel does not re-issue)", calls.len())
 			}
@@ -579,6 +609,7 @@ func TestStaleStartMessagesIgnored(t *testing.T) {
 	if got.phase != phaseStarting {
 		t.Errorf("stale done message moved the phase to %v", got.phase)
 	}
+	waitStartCalls(t, calls, 1)
 	if calls.len() != 1 {
 		t.Errorf("startModel calls = %d, want 1", calls.len())
 	}
@@ -691,6 +722,7 @@ func TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold(t *testing.T) {
 	if got.phase != phaseStarting {
 		t.Errorf("phase = %v, want phaseStarting (a start, not the ollama-check/launch path)", got.phase)
 	}
+	waitStartCalls(t, calls, 1)
 	if calls.len() != 1 {
 		t.Errorf("startModel calls = %d, want 1", calls.len())
 	}
@@ -731,6 +763,12 @@ func TestEndToEndAbsentRowIsBlocked(t *testing.T) {
 	if !strings.Contains(got.status, "not on disk") {
 		t.Errorf("status = %q, want the not-on-disk reason", got.status)
 	}
+	// A blocked row never begins a start, so there is no call to wait for:
+	// asserting the state a start would have produced makes "no start was
+	// begun" a property of the picker rather than of timing.
+	if got.start != nil {
+		t.Error("a blocked row must not leave a start in flight")
+	}
 	if calls.len() != 0 {
 		t.Errorf("startModel calls = %d, want 0", calls.len())
 	}
@@ -767,6 +805,11 @@ func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 	items := got.models.Items()
 	if len(items) != 1 || !items[0].(*modelItem).start {
 		t.Errorf("row start = %v (items = %d), want a single start row", items[0].(*modelItem).start, len(items))
+	}
+	// As in TestEndToEndAbsentRowIsBlocked: a start that never began cannot be
+	// waited for, so assert the absent start state as well as the count.
+	if got.start != nil {
+		t.Error("the shortcut must not leave a start in flight")
 	}
 	if calls.len() != 0 {
 		t.Errorf("startModel calls = %d, want 0", calls.len())
