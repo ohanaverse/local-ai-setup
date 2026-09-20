@@ -79,6 +79,10 @@ func TestMain(m *testing.M) {
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
 	}
+	// Post-exit seams: no test may rewrite the real refcount file or offer to
+	// stop the developer's running models.
+	releaseSession = func() {}
+	runStopPhase = func(*config.Config) {}
 	os.Exit(m.Run())
 }
 
