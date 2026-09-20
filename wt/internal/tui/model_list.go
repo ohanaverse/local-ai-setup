@@ -40,15 +40,19 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // a row that needs litellm but modelman.toml's [litellm] url/api_key aren't
 // configured, "(not in LiteLLM)" for a discovered (registry-less) row whose route
 // would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
-// blocked, when non-empty, is the hint Enter shows instead of launching
-// (e.g. a non-running local model).
+// blocked, when non-empty, is the hint the agent flow's model phase shows
+// on Enter instead of launching (e.g. a non-running local model). It is the
+// agent flow only that honors it: PickModel (wt smoke's standalone picker)
+// selects the highlighted row unconditionally, since its rows come from a
+// cross-agent eligible union where choosing a row this flow would refuse is
+// a legitimate diagnostic choice.
 type modelItem struct {
 	model     config.Model
 	line      string
 	marked    bool
 	ref       int
 	exception string
-	blocked   string // non-empty: Enter shows this instead of launching
+	blocked   string // non-empty: the agent flow's Enter shows this instead of launching
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps

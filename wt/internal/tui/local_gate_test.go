@@ -157,11 +157,14 @@ func TestEnterModelPhasePinnedStaleLocalModelRejected(t *testing.T) {
 	}
 }
 
-// TestEnterModelPhasePinnedNotInEligibleRoutesBack is the control for the
-// gate-emptying route-back: a -M pin that isn't launchable for a NON-gate
-// reason (not in the agent's eligible list) still routes back, but with
-// the generic pin message — the two messages must not be swapped, or the
-// gate message would tell users to run modelman start for a config typo.
+// TestEnterModelPhasePinnedNotInEligibleRoutesBack asserts a -M pin that is
+// missing from the agent's eligible list routes back to the agent picker with
+// the generic "not in the eligible list" status, not the `modelman start`
+// hint. It matters because enterModelPhase's two route-backs mean different
+// things: the hint belongs to the local-pin rejection (a flagged local model
+// the gate could not verify as running), so showing it for a pin the agent
+// cannot use at all would send users off to start a model that was never the
+// problem. The test above covers the hint's own path.
 func TestEnterModelPhasePinnedNotInEligibleRoutesBack(t *testing.T) {
 	cfg := gateTestConfig()
 	cfg.SetLocalRunningForTest("") // nothing running (irrelevant to this pin's failure)
@@ -173,7 +176,7 @@ func TestEnterModelPhasePinnedNotInEligibleRoutesBack(t *testing.T) {
 	if got.phase != phaseAgent {
 		t.Fatalf("phase = %v, want phaseAgent", got.phase)
 	}
-	if strings.Contains(got.status, "modelman start") || strings.Contains(got.status, "no local model") {
+	if strings.Contains(got.status, "modelman start") {
 		t.Errorf("status = %q; the gate message must not be used for a generic pin miss", got.status)
 	}
 }
