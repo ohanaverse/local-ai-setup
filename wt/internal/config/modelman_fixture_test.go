@@ -44,13 +44,10 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Fatalf("loadModelmanState() error: %v", err)
 	}
 
-	if !models["ollama/contract-fixture:local"].Running {
-		t.Error("expected ollama/contract-fixture:local to have running=true")
-	}
-	if models["ollama/contract-fixture:subscription"].Running {
-		t.Error("expected ollama/contract-fixture:subscription to have running=false (default)")
-	}
-
+	// The fixture's per-model `running` key is deliberately NOT asserted
+	// here: wt stopped parsing it when the local-running gate retired —
+	// the key stays in the file (modelman owns it) and is ignored on read
+	// (pinned by TestLoadModelmanStateIgnoresRunningFlag).
 	if !models["ollama/contract-fixture:subscription"].Exposed {
 		t.Error("expected ollama/contract-fixture:subscription to be exposed")
 	}

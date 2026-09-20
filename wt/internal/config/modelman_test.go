@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -126,23 +127,17 @@ downloaded = true
 	}
 }
 
-// TestLoadModelmanStateReadsRunningFlag asserts that loadModelmanState
-// decodes each model_state entry's per-model `running` flag (the 2026-09-14
-// multi-model local lifecycle design): a missing key defaults to false, and
-// `running = true` decodes to Running = true. A regression here would break
-// FilterToRunningLocal's ability to keep a launchable local model.
-func TestLoadModelmanStateReadsRunningFlag(t *testing.T) {
+// TestLoadModelmanStateIgnoresRunningFlag verifies modelman.toml's per-model
+// `running` key no longer affects what wt loads: the file still carries it
+// (modelman owns it), but wt decides running state from the live inventory.
+// It matters because reading the flag was the mechanism by which a crashed or
+// externally-stopped model could be shown as available — the drift this
+// sub-project removes.
+func TestLoadModelmanStateIgnoresRunningFlag(t *testing.T) {
 	dir := t.TempDir()
 	writeModelmanState(t, dir, `
-[model_state]
-
-[model_state."ollama/no-running-key"]
+[model_state."omlx/qwen3.8"]
 exposed = true
-ready = true
-
-[model_state."ollama/running-true"]
-exposed = true
-ready = true
 running = true
 `)
 
@@ -150,11 +145,17 @@ running = true
 	if err != nil {
 		t.Fatalf("loadModelmanState() error = %v", err)
 	}
-	if got := exposed["ollama/no-running-key"].Running; got {
-		t.Errorf("exposed[ollama/no-running-key].Running = %v, want false (default)", got)
+	cfg := &Config{}
+	cfg.SetExposedForTest(exposed)
+	if !cfg.ExposedFlag("omlx/qwen3.8") {
+		t.Error("exposed = false, want true: the exposed key must still be read")
 	}
-	if got := exposed["ollama/running-true"].Running; !got {
-		t.Errorf("exposed[ollama/running-true].Running = %v, want true", got)
+
+	// Structural guard: the parse must not reintroduce a Running field. The
+	// TOML above carries running = true, so a re-added field would silently
+	// read it again — nothing else in the tree would fail.
+	if _, ok := reflect.TypeOf(ExposureEntry{}).FieldByName("Running"); ok {
+		t.Error("ExposureEntry has a Running field; wt must not read modelman's per-model running flag")
 	}
 }
 
@@ -163,8 +164,9 @@ running = true
 // classes (2026-09-15 local-model-visibility design): native models are
 // always exposed at this Stage-1 check; LOCAL models are always exposed
 // here too, regardless of their modelman.toml `exposed`/`ready` flags —
-// their real picker visibility is decided separately by the live-verified
-// running gate (internal/localgate), not by this predicate; cloud models
+// their real picker visibility is decided downstream by the live inventory
+// (internal/localmodels) through internal/catalog's row rules, not by this
+// predicate; cloud models
 // still require modelman.toml's `exposed` flag (legacy `litellm_exposed`
 // still read as a fallback).
 func TestLoadModelExposureAcrossNativeLocalCloud(t *testing.T) {
@@ -251,7 +253,7 @@ ready = false
 		t.Errorf("ollama/exposed (local model) must be exposed (2026-09-15: local models bypass exposed flag)")
 	}
 	if !cfg.IsExposed(byID["ollama/unexposed"]) {
-		t.Errorf("ollama/unexposed (local model, exposed=false) must still be exposed (2026-09-15: local models bypass exposed flag — running gate is Stage-2)")
+		t.Errorf("ollama/unexposed (local model, exposed=false) must still be exposed (2026-09-15: local models bypass exposed flag — visibility is governed by the live model inventory (internal/localmodels), not this predicate)")
 	}
 }
 
@@ -362,9 +364,9 @@ func TestModelmanPathExpandsTildeInXDG(t *testing.T) {
 // TestIsExposedPredicate implements the exposure rule (2026-09-15 local-
 // model visibility design): native OR local OR (exposed AND (ready OR
 // cloud location)). Local models bypass the exposed/ready check entirely
-// here — their catalog membership is governed solely by the live-verified
-// running gate (internal/localgate), pinned end-to-end by
-// TestLocalModelVisibilityIgnoresExposedFlag in internal/localgate. Cloud
+// here — their catalog membership is decided by the live model inventory
+// (internal/localmodels), not by these flags; internal/catalog is the
+// policy owner of the row rules. Cloud
 // location may be inherited from the provider even when the model row
 // omits its own `location` key.
 func TestIsExposedPredicate(t *testing.T) {
@@ -450,7 +452,8 @@ tags = ["code"]
 	// Native model: always exposed regardless of flag
 	// Local model with flag+ready: exposed (unchanged)
 	// Local model with flag+not-ready: exposed too (2026-09-15: local
-	//   models bypass the ready gate — running-verification is the real gate)
+	//   models bypass the ready gate — visibility is governed by the live
+	//   model inventory (internal/localmodels), not these flags)
 	// Local model with exposed=false: exposed too (bypasses the exposed
 	//   flag itself, not just ready)
 	// Cloud model with flag (no ready key): exposed
@@ -498,8 +501,8 @@ exposed = true
 	}{
 		{"native-provider/native-model", true, "native models are always exposed"},
 		{"ollama/local-flag-ready", true, "local models are exposed to wt regardless of the exposed/ready flags"},
-		{"ollama/local-flag-not-ready", true, "local models bypass the ready gate — visibility is governed by the running probe, not this predicate"},
-		{"ollama/local-flag-unexposed", true, "local models bypass the exposed flag entirely — visibility is governed by the running probe, not this predicate"},
+		{"ollama/local-flag-not-ready", true, "local models bypass the ready gate — visibility is governed by the live model inventory (internal/localmodels), not this predicate"},
+		{"ollama/local-flag-unexposed", true, "local models bypass the exposed flag entirely — visibility is governed by the live model inventory (internal/localmodels), not this predicate"},
 		{"openrouter/cloud-flag", true, "cloud location exempts from ready gate"},
 		{"openrouter/cloud-inherited", true, "cloud location inherited from provider exempts from ready gate"},
 	}
