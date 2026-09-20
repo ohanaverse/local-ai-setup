@@ -137,29 +137,30 @@ func (m model) handleStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	return m, nil
 }
 
-// handleStartMsg processes the start flow's messages; ok is false for
-// messages that are not the flow's.
-func (m model) handleStartMsg(msg tea.Msg) (model, tea.Cmd, bool) {
+// handleStartMsg processes the start flow's messages. Its callers route only
+// startStageMsg/startTickMsg/startDoneMsg here, so every type it can receive is
+// one it handles; a message whose id no longer matches m.start is a stale
+// message from a superseded run and is dropped.
+func (m model) handleStartMsg(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startStageMsg:
 		if m.start == nil || msg.id != m.start.id {
-			return m, nil, true
+			return m, nil
 		}
 		m.start.stage = msg.stage
-		return m, waitForStart(m.start.ch), true
+		return m, waitForStart(m.start.ch)
 	case startTickMsg:
 		if m.start == nil || msg.id != m.start.id || m.phase != phaseStarting {
-			return m, nil, true
+			return m, nil
 		}
-		return m, startTick(msg.id), true
+		return m, startTick(msg.id)
 	case startDoneMsg:
 		if m.start == nil || msg.id != m.start.id {
-			return m, nil, true
+			return m, nil
 		}
-		nm, cmd := m.finishStart(msg)
-		return nm, cmd, true
+		return m.finishStart(msg)
 	}
-	return m, nil, false
+	return m, nil
 }
 
 func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {

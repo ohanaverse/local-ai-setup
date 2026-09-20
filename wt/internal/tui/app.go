@@ -176,9 +176,9 @@ func (m model) openNewWorktreePrompt() model {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startStageMsg, startTickMsg, startDoneMsg:
-		if nm, cmd, ok := m.handleStartMsg(msg); ok {
-			return nm, cmd
-		}
+		// The case list is exactly the set handleStartMsg handles, so it
+		// always has something to say.
+		return m.handleStartMsg(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -453,9 +453,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if highlighted.start {
 					// A start row: run the model through the lifecycle engine
-					// instead of launching (checked before the blocked hint: a
-					// start row is actionable, and until Task 4's flip the legacy
-					// hint is still rendered on exactly these rows).
+					// instead of launching. start and blocked are mutually
+					// exclusive — renderTable sets exactly one per row, and its
+					// discovered-row case clears start before setting blocked —
+					// so this order is a guard, not a precedence rule.
 					return m.beginStart(highlighted, false)
 				}
 				if highlighted.blocked != "" {
