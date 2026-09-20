@@ -461,6 +461,12 @@ func (c *Config) validate() []error {
 			errs = append(errs, fmt.Errorf("duplicate model id %q", m.ID))
 		}
 		modelIDs[m.ID] = true
+		if m.ModelName == "" {
+			// The lifecycle engine matches a start target against a provider's
+			// reported names by this field; an empty one matches nothing, so the
+			// model would look permanently stopped and warm the empty name.
+			errs = append(errs, fmt.Errorf("model %q: model_name is required (run 'modelman sync' to repair the registry)", m.ID))
+		}
 		if !provIDs[m.ProviderID] {
 			errs = append(errs, fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID))
 		} else if _, err := c.ResolveLocation(m); err != nil {

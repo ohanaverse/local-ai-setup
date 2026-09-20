@@ -1126,3 +1126,23 @@ func TestAgentSupportsProvider(t *testing.T) {
 		t.Error("unsupported provider / unknown agent must be false")
 	}
 }
+
+// TestValidate_ModelNameRequired verifies a model with an id but no model_name
+// is rejected. model_name is the provider-side name the lifecycle engine
+// matches against what a provider reports as running; an empty one makes every
+// match fail, so a start would warm the empty name for the full 600s budget
+// and then fail with no explanation of the real cause.
+func TestValidate_ModelNameRequired(t *testing.T) {
+	cfg := &Config{
+		DefaultTag: "code",
+		Providers:  []Provider{{ID: "ollama", Name: "Ollama", Location: "local"}},
+		Models:     []Model{{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama"}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected an error for a model with no model_name")
+	}
+	if !strings.Contains(err.Error(), "model_name") {
+		t.Errorf("Validate() = %v, want an error naming model_name", err)
+	}
+}
