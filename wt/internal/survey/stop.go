@@ -60,8 +60,9 @@ func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
 		if !e.Running || !lifecycle.CanStop(e.ProviderID) {
 			continue
 		}
-		// A family whose probe failed reports Running it could not confirm.
-		if st, ok := snap.Providers[localmodels.Family(e.ProviderID)]; ok && st != localmodels.StatusOK {
+		// A family whose probe failed reports Running it could not confirm —
+		// shared with the start/occupant paths so the rule cannot drift.
+		if !lifecycle.ProbeTrusted(snap, localmodels.Family(e.ProviderID)) {
 			continue
 		}
 		cands = append(cands, e)

@@ -443,3 +443,33 @@ func TestStopUsesInjectedEnv(t *testing.T) {
 		t.Errorf("stop(ghost) = %v, want *UnsupportedError", err)
 	}
 }
+
+// TestProbeTrustedStatuses pins the exported probe-trust rule: a family the
+// inventory never mentioned counts as trusted (nothing is being started into
+// it, and hand-built snapshots carry no status map), StatusOK counts as trusted,
+// and every other status does not. The stop picker calls this directly now, so a
+// consumer that read it backwards would offer a model whose Running flag no
+// probe ever confirmed — and on a single-model provider, stopping that row takes
+// down whatever is actually loaded.
+func TestProbeTrustedStatuses(t *testing.T) {
+	cases := []struct {
+		name   string
+		status localmodels.Status
+		absent bool
+		want   bool
+	}{
+		{"absent key", "", true, true},
+		{"ok", localmodels.StatusOK, false, true},
+		{"partial", localmodels.StatusPartial, false, false},
+		{"unreachable", localmodels.StatusUnreachable, false, false},
+	}
+	for _, c := range cases {
+		snap := localmodels.Snapshot{}
+		if !c.absent {
+			snap.Providers = map[string]localmodels.Status{"ollama": c.status}
+		}
+		if got := ProbeTrusted(snap, "ollama"); got != c.want {
+			t.Errorf("%s: ProbeTrusted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

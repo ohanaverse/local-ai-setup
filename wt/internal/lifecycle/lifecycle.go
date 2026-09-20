@@ -101,12 +101,18 @@ func sameModel(family, a, b string) bool {
 	return localmodels.NameMatches(a, b)
 }
 
-// probeTrusted reports whether snap's Running flags for family were produced by
+// ProbeTrusted reports whether snap's Running flags for family were produced by
 // a probe that could actually determine them. An absent status counts as
 // trusted: inventory registers a family's key whenever this config has a local
 // provider or model for it, so an absent key means nothing is being started
 // into that family — and hand-built snapshots in tests carry no status map.
-func probeTrusted(snap localmodels.Snapshot, family string) bool {
+//
+// Exported because the post-exit stop picker (internal/survey) filters its
+// candidates by this same rule: it must not offer a model whose running state
+// no probe confirmed, or on a single-model provider it would stop whatever is
+// actually loaded rather than the row the user ticked. Keeping one
+// implementation is the point — a tightened rule here must reach both paths.
+func ProbeTrusted(snap localmodels.Snapshot, family string) bool {
 	st, ok := snap.Providers[family]
 	if !ok {
 		return true
@@ -116,7 +122,7 @@ func probeTrusted(snap localmodels.Snapshot, family string) bool {
 
 // isRunning reports whether live Inventory already shows the target serving.
 func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
-	if !probeTrusted(snap, family) {
+	if !ProbeTrusted(snap, family) {
 		return false
 	}
 	for _, en := range snap.Entries {
@@ -149,7 +155,7 @@ func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 	if b := backendsByFamily[family]; b == nil || !b.singleModel() {
 		return localmodels.Entry{}, false
 	}
-	if !probeTrusted(snap, family) {
+	if !ProbeTrusted(snap, family) {
 		return localmodels.Entry{}, false
 	}
 	for _, en := range snap.Entries {
@@ -177,7 +183,7 @@ func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family st
 	if occ, ok := Occupant(t, snap); ok {
 		return occ, true, false
 	}
-	if probeTrusted(snap, family) {
+	if ProbeTrusted(snap, family) {
 		return localmodels.Entry{}, false, false
 	}
 	ids, known := e.liveServed(ctx, cfg, family)
