@@ -48,6 +48,14 @@ type Entry struct {
 	ModelID    string // registry id when registered, else config.DiscoveredModelID(ProviderID, Artifact)
 	Registered bool
 	Running    bool // serving right now (live probe only)
+	// ArtifactKnown reports whether the probe actually determined this entry's
+	// artifact presence. False means unknown, NOT missing: the family's
+	// discovery failed (StatusUnreachable, so artifacts was never populated) or
+	// the family cannot enumerate artifacts at all (mlx_lm_server). A consumer
+	// must not read a false ArtifactKnown plus an empty Artifact as "the model
+	// isn't there" — a transient probe failure would then hide a model that is
+	// pulled and launchable.
+	ArtifactKnown bool
 }
 
 // Snapshot is one inventory round. Providers is keyed by provider family
@@ -93,6 +101,15 @@ func (s *source) matchArtifact(artifact, modelName string) bool {
 		return NameMatches(artifact, modelName)
 	}
 	return false
+}
+
+// knowsArtifacts reports whether this family's probe could enumerate what is
+// pulled or on disk. False for mlx_lm_server (one target+draft pairing per
+// process, and the served name is not reconstructable) and for a probe that
+// failed outright (StatusUnreachable), in which case artifacts was never
+// populated — so an empty Artifact carries no information either way.
+func (s *source) knowsArtifacts() bool {
+	return s.family != "mlx_lm_server" && s.status != StatusUnreachable
 }
 
 func (s *source) isRunning(name string) bool {
@@ -273,6 +290,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		}
 		e := Entry{ProviderID: m.ProviderID, ModelID: m.ID, Registered: true}
 		if src := sources[familyOf(m.ProviderID)]; src != nil {
+			e.ArtifactKnown = src.knowsArtifacts()
 			for _, a := range src.artifacts {
 				key := src.family + "\x00" + a
 				if !consumed[key] && src.matchArtifact(a, m.ModelName) {
@@ -296,10 +314,11 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				continue
 			}
 			snap.Entries = append(snap.Entries, Entry{
-				ProviderID: f,
-				Artifact:   a,
-				ModelID:    config.DiscoveredModelID(f, a),
-				Running:    src.isRunning(a),
+				ProviderID:    f,
+				Artifact:      a,
+				ModelID:       config.DiscoveredModelID(f, a),
+				Running:       src.isRunning(a),
+				ArtifactKnown: true,
 			})
 		}
 	}

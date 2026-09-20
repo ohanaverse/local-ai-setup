@@ -593,6 +593,30 @@ func (c *Config) IsExposed(m Model) bool {
 	return st.Ready
 }
 
+// ExposedFlag reports modelman's raw `exposed` flag for the model id (legacy
+// litellm_exposed ORed in at load). Unlike IsExposed it never treats local
+// models as always exposed, so it is what a table mirroring modelman's EXPOSED
+// column should read.
+func (c *Config) ExposedFlag(id string) bool {
+	st, ok := c.exposed[id]
+	return ok && st.Exposed
+}
+
+// AgentSupportsProvider reports whether the named agent lists providerID in
+// supported_providers. An unknown agent supports nothing.
+func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {
+	a, err := c.AgentByName(agentName)
+	if err != nil {
+		return false
+	}
+	for _, pid := range a.SupportedProviders {
+		if pid == providerID {
+			return true
+		}
+	}
+	return false
+}
+
 // FilterToRunningLocal narrows models to those launchable under the
 // multi-model local lifecycle (2026-09-14 design): cloud and native
 // models pass through unchanged; a local model is kept only when its id

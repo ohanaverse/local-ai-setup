@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -30,12 +30,17 @@ func (s *mockStore) Record(modelID string) error {
 
 func (s *mockStore) RecordFor(agent, modelID string) error { return nil }
 
-// TestModelItemLineFormat verifies the compact one-line model rendering:
-// family column, 30-day family count, model ID, location, per-model
-// 1d/7d/30d counts, per-token and subscription pricing, and optional tag
-// list. The marker prefix is not part of .line — it is composed in Title().
-// A regression here would make the picker either unreadable or misleading
-// about which model is selected.
+func (s *mockStore) CountsForAgent(agent string, ids []string) map[string]usage.UsageCounts {
+	return s.Counts(ids)
+}
+
+// TestModelItemLineFormat verifies the selector table's one-line model
+// rendering: header columns, then per row the family, model ID, location,
+// status, exposed/running flags, cost cell, and the separate 1D/7D/30D usage
+// cells (tags are no longer shown). Rows are ordered by the table's sort
+// (cloud first, then non-running local alphabetically). The marker prefix is
+// not part of .line — it is composed in Title(). A regression here would make
+// the picker either unreadable or misleading about which model is selected.
 func TestModelItemLineFormat(t *testing.T) {
 	store := &mockStore{
 		counts: map[string]usage.UsageCounts{
@@ -48,7 +53,7 @@ func TestModelItemLineFormat(t *testing.T) {
 	tests := []struct {
 		name     string
 		models   []config.Model
-		expected []string
+		expected []string // space-joined cells per row, in sorted order
 	}{
 		{
 			name: "mixed families and tags",
@@ -57,14 +62,12 @@ func TestModelItemLineFormat(t *testing.T) {
 				{ID: "m2", Family: "fam-a", ProviderID: "p1", Location: "local", Tags: []string{}},
 				{ID: "m1", Family: "fam-a", ProviderID: "p1", Location: "local", Tags: []string{"t1", "t2"}},
 			},
-			// Sort order should be m3 (fam30d:300), then m2, m1 (fam30d:33).
-			// Within fam-a, m2 (composite 30+20+10=60) > m1 (composite 3+2+1=6).
-			// The line starts directly at the family column (no marker prefix —
-			// that lives in Title()).
+			// Group 1 (cloud) sorts before group 2 (non-running local, by id):
+			// m3, then m1, m2. No cost data renders "-"; usage is per model.
 			expected: []string{
-				fmt.Sprintf("%-5s  %3d  %-2s  %-5s  %-11s  %-1s [%s]", "fam-b", 300, "m3", "cloud", "100/200/300", "-", "t3"),
-				fmt.Sprintf("%-5s  %3d  %-2s  %-5s  %-11s  %-1s", "fam-a", 33, "m2", "local", "10/20/30", "-"),
-				fmt.Sprintf("%-5s  %3d  %-2s  %-5s  %-11s  %-1s [%s]", "fam-a", 33, "m1", "local", "1/2/3", "-", "t1,t2"),
+				"fam-b m3 cloud ok - - - 100 200 300",
+				"fam-a m1 local ok - - - 1 2 3",
+				"fam-a m2 local ok - - - 10 20 30",
 			},
 		},
 		{
@@ -72,30 +75,25 @@ func TestModelItemLineFormat(t *testing.T) {
 			models: []config.Model{
 				{ID: "m1", Family: "", ProviderID: "p1", Location: "local", Tags: []string{}},
 			},
-			// famWidth: 0, but empty family renders as "-".
-			// fam30d still reflects the empty-family aggregate (3), so a
-			// launch under the "" family is not shown as 0 next to the sort.
+			// An empty family renders as "-".
 			expected: []string{
-				fmt.Sprintf("%-0s  %3d  %-2s  %-5s  %-11s  %-1s", "-", 3, "m1", "local", "1/2/3", "-"),
+				"- m1 local ok - - - 1 2 3",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// We need to use the production sortModelsByUsage but without the actual file system.
-			// buildModelItems (Phase 1) will take the store.
-			familyOf := make(map[string]string, len(tt.models))
-			for _, m := range tt.models {
-				familyOf[m.ID] = m.Family
+			tbl := buildTable(tableInput{models: tt.models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
+			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL LOC STATUS EXPOSED RUNNING COST 1D 7D 30D SURVEY"; got != want {
+				t.Errorf("header = %q, want %q", got, want)
 			}
-			items := buildModelItems(nil, "", tt.models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
-			if len(items) != len(tt.expected) {
-				t.Fatalf("expected %d items, got %d", len(tt.expected), len(items))
+			if len(tbl.items) != len(tt.expected) {
+				t.Fatalf("expected %d items, got %d", len(tt.expected), len(tbl.items))
 			}
-			for i, it := range items {
-				if it.line != tt.expected[i] {
-					t.Errorf("item %d: expected %q, got %q", i, tt.expected[i], it.line)
+			for i, it := range tbl.items {
+				if got := strings.Join(strings.Fields(it.line), " "); got != tt.expected[i] {
+					t.Errorf("item %d: expected %q, got %q", i, tt.expected[i], got)
 				}
 			}
 		})

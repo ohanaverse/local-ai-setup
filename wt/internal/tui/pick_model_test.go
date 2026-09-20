@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -128,29 +129,87 @@ func TestPickModelQTypesIntoFilterInsteadOfQuitting(t *testing.T) {
 	}
 }
 
-// TestNewPickModelFamilyTotalsCoverFullCatalog asserts that a family's
-// 30-day usage total (embedded in each row's line) reflects every model in
-// cfg's full catalog, not just the narrower eligible slice this picker
-// renders — matching buildModelItems' contract and the agent flow's picker.
-// Without this, wt smoke's picker would show a lower family total (and could
-// sort differently) than the main wt picker for the exact same family,
-// whenever a family has models that aren't currently eligible.
-func TestNewPickModelFamilyTotalsCoverFullCatalog(t *testing.T) {
-	store := stubUsageStore(t)
+// TestNewPickModelUsesTableHeaderAndRunningState verifies wt smoke's picker
+// shows the same column header as the agent flow and reads RUNNING from the live
+// inventory (a running local model shows "run"), with no per-agent counts since
+// the list is not scoped to one agent. Without it the two pickers would drift
+// and smoke would show stale or missing running state.
+func TestNewPickModelUsesTableHeaderAndRunningState(t *testing.T) {
+	stubUsageStore(t)
 	stubRefcountStore(t)
-	eligible := config.Model{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"}
-	ineligible := config.Model{ID: "ollama/gemma4:14b", ModelName: "gemma4:14b", ProviderID: "ollama", Family: "gemma4"}
-	// Record usage against the model that is NOT in the eligible slice this
-	// picker renders — only the full catalog (cfg.Models) knows about it.
-	if err := store.Record(ineligible.ID); err != nil {
-		t.Fatalf("Record: %v", err)
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true},
+	}})
+	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
+	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
+
+	pm := newPickModel(cfg, models, themes.Default)
+
+	if !strings.Contains(pm.list.Title, "RUNNING") {
+		t.Errorf("title = %q, want the table header (with RUNNING)", pm.list.Title)
 	}
-	cfg := &config.Config{Models: []config.Model{eligible, ineligible}}
+	items := pm.list.Items()
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if line := items[0].(*modelItem).line; !strings.Contains(line, "run") {
+		t.Errorf("line = %q, want it to show the running state (run)", line)
+	}
+}
 
-	m := newPickModel(cfg, []config.Model{eligible}, themes.Default)
+// TestPickModelViewHeaderAlignsWithRows renders the standalone picker's real
+// list view and checks the header's FAMILY and MODEL columns start at the same
+// rune offset as the first row's cells. Both the title style and the list's
+// TitleBar padding must be cleared (shared styleTableTitle helper), otherwise
+// the header shifts relative to the rows in wt smoke's picker.
+func TestPickModelViewHeaderAlignsWithRows(t *testing.T) {
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	models := []config.Model{{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"}}
+	pm := newPickModel(nil, models, themes.Default)
 
-	item := m.list.Items()[0].(*modelItem)
-	if !strings.Contains(item.line, "  1  ") {
-		t.Errorf("line = %q, want it to include the family's 30-day total (1) from the ineligible sibling model", item.line)
+	var header, row string
+	for _, ln := range strings.Split(ansiRE.ReplaceAllString(pm.View(), ""), "\n") {
+		if strings.Contains(ln, "FAMILY") && header == "" {
+			header = ln
+		}
+		if strings.Contains(ln, "ollama/gemma4:9b") && row == "" {
+			row = ln
+		}
+	}
+	if header == "" || row == "" {
+		t.Fatalf("header/row not found in view:\n%s", pm.View())
+	}
+	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	if off(header, "MODEL") != off(row, "ollama/gemma4:9b") {
+		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, "ollama/gemma4:9b"), header, row)
+	}
+	if off(header, "FAMILY") != off(row, "gemma4") {
+		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, "gemma4"), header, row)
+	}
+}
+
+// TestNewPickModelHidesDiscoveredRows verifies wt smoke's picker only shows the
+// models it was given: an unregistered (discovered) local model present in the
+// live inventory must not appear as a row. Without hideDiscovered, smoke would
+// offer models it has not verified as eligible for any agent.
+func TestNewPickModelHidesDiscoveredRows(t *testing.T) {
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true},
+		{ProviderID: "omlx", ModelID: "omlx/stray", Artifact: "stray", Registered: false, Running: true},
+	}})
+	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
+	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
+
+	pm := newPickModel(cfg, models, themes.Default)
+
+	var ids []string
+	for _, it := range pm.list.Items() {
+		ids = append(ids, it.(*modelItem).model.ID)
+	}
+	if len(ids) != 1 || ids[0] != "omlx/a" {
+		t.Errorf("items = %v, want only the passed model omlx/a (discovered omlx/stray must be hidden)", ids)
 	}
 }

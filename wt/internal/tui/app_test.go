@@ -1198,8 +1198,8 @@ func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 // above. This is the isTyping() half of the PR-review finding covering
 // mishandled filter keystrokes in the model picker.
 func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
-	// Isolate the usage store: buildModelItems scans it for the family-usage
-	// sort.
+	// Isolate the usage store: buildTable scans it for the usage
+	// counts.
 	stubUsageStore(t)
 	models := []config.Model{
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
@@ -1233,7 +1233,7 @@ func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
 // via launchAndRecord, could commit rotation/usage state for) whatever
 // model happened to be highlighted underneath the filter overlay.
 func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
-	stubUsageStore(t) // buildModelItems scans the usage store
+	stubUsageStore(t) // buildTable scans the usage store
 	models := []config.Model{
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
@@ -1270,7 +1270,7 @@ func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
 // before bubbles/list's own filter input ever saw them. A query like
 // "kimi" would silently drop its leading "k". Flagged in PR #82 review.
 func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
-	stubUsageStore(t) // buildModelItems scans the usage store
+	stubUsageStore(t) // buildTable scans the usage store
 	models := []config.Model{
 		{ID: "ollama/kimi", ModelName: "kimi", ProviderID: "ollama"},
 		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
@@ -1302,7 +1302,7 @@ func TestModelPickerFilterReceivesJKKeys(t *testing.T) {
 // wrap by default. Locks down the wrap-around behavior added in PR #82,
 // which previously had no direct test (flagged in review).
 func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
-	stubUsageStore(t) // buildModelItems scans the usage store
+	stubUsageStore(t) // buildTable scans the usage store
 	models := []config.Model{
 		{ID: "ollama/a", ModelName: "a", ProviderID: "ollama"},
 		{ID: "ollama/b", ModelName: "b", ProviderID: "ollama"},
@@ -1328,7 +1328,7 @@ func TestModelPickerWrapsFromTopToBottom(t *testing.T) {
 // wrap-around behavior added in PR #82, which previously had no direct
 // test (flagged in review).
 func TestModelPickerWrapsFromBottomToTop(t *testing.T) {
-	stubUsageStore(t) // buildModelItems scans the usage store
+	stubUsageStore(t) // buildTable scans the usage store
 	models := []config.Model{
 		{ID: "ollama/a", ModelName: "a", ProviderID: "ollama"},
 		{ID: "ollama/b", ModelName: "b", ProviderID: "ollama"},

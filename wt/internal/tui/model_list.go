@@ -1,18 +1,13 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
-	"sort"
-	"strings"
-	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -43,13 +38,21 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // appends a per-row deviation note in Title() (e.g. "(via proxy)" for a
 // row protocol negotiation forces through LiteLLM, "(litellm required)" for
 // a row that needs litellm but modelman.toml's [litellm] url/api_key aren't
-// configured, "(unavailable)" for any other route resolution failure).
+// configured, "(not in LiteLLM)" for a discovered (registry-less) row whose route
+// would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
+// blocked, when non-empty, is the hint the agent flow's model phase shows
+// on Enter instead of launching (e.g. a non-running local model). It is the
+// agent flow only that honors it: PickModel (wt smoke's standalone picker)
+// selects the highlighted row unconditionally, since its rows come from a
+// cross-agent eligible union where choosing a row this flow would refuse is
+// a legitimate diagnostic choice.
 type modelItem struct {
 	model     config.Model
 	line      string
 	marked    bool
 	ref       int
 	exception string
+	blocked   string // non-empty: the agent flow's Enter shows this instead of launching
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
@@ -131,152 +134,14 @@ func formatPerToken(cost config.ModelCost) string {
 	return fmt.Sprintf("%s %s %s", in, cache, out)
 }
 
-// sortModelsByUsage sorts models in place (stable) descending by family
-// composite score, then family first-occurrence order, then model composite
-// score. Same-family models end up adjacent and higher-usage families float
-// to the top. familyCounts and modelCounts come from usage.Store (missing
-// entries read as zero). The first-occurrence tie-break is what guarantees
-// adjacency: relying on sort.SliceStable's stability alone only preserves
-// registry order on a score tie, and the registry does not list one
-// family's models contiguously — without this key, a tie (e.g. every score
-// 0 on a fresh install with no usage.jsonl) would split a family's models
-// across two non-adjacent runs, producing a duplicate divider header for it.
-// First-occurrence (rather than alphabetical) keeps the pre-existing visible
-// order for the common single-score-tier case and avoids a surprise
-// reordering where the empty "other" family would otherwise sort first.
-func sortModelsByUsage(models []config.Model, familyCounts, modelCounts map[string]usage.UsageCounts) {
-	firstSeen := make(map[string]int, len(models))
-	for i, m := range models {
-		if _, ok := firstSeen[m.Family]; !ok {
-			firstSeen[m.Family] = i
-		}
-	}
-	sort.SliceStable(models, func(i, j int) bool {
-		fi := usage.CompositeScore(familyCounts[models[i].Family])
-		fj := usage.CompositeScore(familyCounts[models[j].Family])
-		if fi != fj {
-			return fi > fj
-		}
-		if models[i].Family != models[j].Family {
-			return firstSeen[models[i].Family] < firstSeen[models[j].Family]
-		}
-		return usage.CompositeScore(modelCounts[models[i].ID]) >
-			usage.CompositeScore(modelCounts[models[j].ID])
-	})
-}
-
-// buildModelItems returns usage-sorted items for the model picker,
-// computing a compact one-line representation for each model that
-// includes family context and usage counts. familyOf maps the FULL
-// catalog's model IDs to families so family totals are accurate even
-// when tags or families narrow the eligible slice. refStore supplies the
-// live "in use" session count (issue #73) rendered as Title()'s leading
-// ref column; it is queried over the same full-catalog IDs as the usage
-// counts, in the same pass. cfg and agent drive the per-row exception
-// marker: a row whose agent×provider protocol intersection is empty is
-// forced through LiteLLM ("(via proxy)"); a row whose route fails to
-// resolve specifically because litellm is needed (forced or chosen) but
-// modelman.toml's [litellm] url/api_key aren't configured is marked
-// "(litellm required)" (config.ErrLitellmUnconfigured); any other route
-// resolution failure (unknown provider, direct-mode provider with no
-// auth.base_url) is marked "(unavailable)" — all resolved with the same
-// ResolveRoute call BuildLaunchCmd uses, so the picker never disagrees
-// with what a launch would actually do. A nil cfg skips resolution
-// (exception stays empty), which keeps picker-only tests cheap.
-func buildModelItems(cfg *config.Config, agent string, models []config.Model, familyOf map[string]string, s usage.Store, refStore refcount.Store, lastID string, stats map[string]survey.Stats) []*modelItem {
-	// We need per-model and per-family counts for the line format.
-	// Count over the full catalog (familyOf's keys), not just the
-	// eligible subset, so a family's 30-day total includes launches of
-	// models that are currently filtered out.
-	catalogIDs := make([]string, 0, len(familyOf))
-	for id := range familyOf {
-		catalogIDs = append(catalogIDs, id)
-	}
-	modelCounts := s.Counts(catalogIDs)
-	familyCounts := usage.AggregateByFamily(familyOf, modelCounts)
-
-	// One Counts pass over the same full-catalog IDs used for usage, so a
-	// filtered (-T/-F) picker still shows accurate "in use" counts for
-	// every row it renders.
-	refCounts := refStore.Counts(catalogIDs)
-
-	// Sort the models in place.
-	sortModelsByUsage(models, familyCounts, modelCounts)
-
-	// Compute max widths for alignment.
-	// Widths are measured in runes so single-byte characters such as the
-	// hyphen used for absent prices do not throw off fmt.Sprintf padding.
-	// The marker prefix is composed in Title() outside this measurement —
-	// see markerMarked for why it must stay plain ASCII.
-	famWidth := 0
-	idWidth := 0
-	ptWidth := 0
-	perToken := make([]string, len(models))
-	for i, m := range models {
-		if w := utf8.RuneCountInString(m.Family); w > famWidth {
-			famWidth = w
-		}
-		if w := utf8.RuneCountInString(m.ID); w > idWidth {
-			idWidth = w
-		}
-		perToken[i] = formatPerToken(m.Cost)
-		if w := utf8.RuneCountInString(perToken[i]); w > ptWidth {
-			ptWidth = w
-		}
-	}
-
-	items := make([]*modelItem, 0, len(models))
-	for i, m := range models {
-		fam := m.Family
-		famDisp := fam
-		if fam == "" {
-			famDisp = "-"
-		}
-		// Always read the aggregate, including for the empty ("other")
-		// family — AggregateByFamily sums launches under the "" key, so
-		// `fam30d` must match the family's CompositeScore sort key rather
-		// than hardcode 0. famDisp alone distinguishes the unnamed bucket.
-		fam30d := familyCounts[fam].ThirtyDay
-
-		c := modelCounts[m.ID]
-		countsStr := fmt.Sprintf("%d/%d/%d", c.OneDay, c.SevenDay, c.ThirtyDay)
-
-		line := fmt.Sprintf("%-*s  %3d  %-*s  %-5s  %-*s  %-*s",
-			famWidth, famDisp, fam30d, idWidth, m.ID, string(m.Location), 11, countsStr,
-			ptWidth, perToken[i])
-
-		if len(m.Tags) > 0 {
-			line += fmt.Sprintf(" [%s]", strings.Join(m.Tags, ","))
-		}
-		// Survey segment always appended last so it never shifts any
-		// existing column; omitted entirely when there's nothing answered
-		// (FormatPickerSegment returns "" in that case).
-		if st, ok := stats[m.ID]; ok {
-			if seg := survey.FormatPickerSegment(st); seg != "" {
-				line += " " + seg
-			}
-		}
-
-		item := &modelItem{
-			model:  m,
-			line:   line,
-			marked: lastID != "" && m.ID == lastID,
-			ref:    refCounts[m.ID],
-		}
-		if cfg != nil {
-			route, err := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
-			switch {
-			case errors.Is(err, config.ErrLitellmUnconfigured):
-				item.exception = "(litellm required)"
-			case err != nil:
-				item.exception = "(unavailable)"
-			case route.Forced:
-				item.exception = "(via proxy)"
-			}
-		}
-		items = append(items, item)
-	}
-	return items
+// styleTableTitle styles a list whose Title is the selector table's header so
+// it sits flush with the row text. Bubbles pads the title and its title bar by
+// default; both must be cleared (keeping the bottom spacing) or the header
+// columns shift relative to the rows. Shared by every table-backed list so the
+// agent-flow picker and wt smoke's PickModel cannot drift.
+func styleTableTitle(l *list.Model, theme themes.Theme) {
+	l.Styles.Title = lipgloss.NewStyle().Foreground(theme.Token(themes.TokenDim))
+	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)
 }
 
 // clampModelSelection guards against bubbles v1.0.0 leaving

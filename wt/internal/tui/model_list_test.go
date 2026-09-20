@@ -37,14 +37,14 @@ func TestPhaseModelViewRendersStatus(t *testing.T) {
 
 // TestModelItemDescriptionEmptyCountsInLine verifies the compact one-line
 // view: Description() is empty (the delegate's description row renders
-// nothing) and the 1d/7d/30d counts live on the Title() line instead.
+// nothing) and the 1D/7D/30D counts live on the Title() line as separate cells.
 func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 	store := &mockStore{
 		counts: map[string]usage.UsageCounts{
 			"ollama/gemma4:9b": {OneDay: 2, SevenDay: 5, ThirtyDay: 10},
 		},
 	}
-	items := buildModelItems(nil, "", []config.Model{
+	items := buildTable(tableInput{models: []config.Model{
 		{
 			ID:         "ollama/gemma4:9b",
 			ProviderID: "ollama",
@@ -52,7 +52,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-	}, map[string]string{"ollama/gemma4:9b": "gemma4"}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+	}, usage: store}, refcount.NewStoreAt(t.TempDir()), "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -60,22 +60,24 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 	if desc := it.Description(); desc != "" {
 		t.Errorf("Description() = %q, want empty (compact view; counts render on the line)", desc)
 	}
-	for _, want := range []string{"gemma4", "2/5/10", "ollama/gemma4:9b"} {
+	for _, want := range []string{"gemma4", "ollama/gemma4:9b"} {
 		if !strings.Contains(it.Title(), want) {
 			t.Errorf("Title() %q missing %q", it.Title(), want)
 		}
 	}
-	// The model has no cost data, so the per-token pricing column renders
-	// as a hyphen and still lives on the compact Title() line.
-	if !strings.Contains(it.Title(), "  -") {
-		t.Errorf("Title() %q missing absent pricing markers", it.Title())
+	// The model has no cost data, so the COST cell renders as a hyphen and the
+	// usage cells (1D 7D 30D) follow it on the compact Title() line.
+	fields := strings.Fields(it.Title())
+	if tail := strings.Join(fields[len(fields)-4:], " "); tail != "- 2 5 10" {
+		t.Errorf("Title() %q tail = %q, want absent-cost marker then 1D/7D/30D cells %q", it.Title(), tail, "- 2 5 10")
 	}
 }
 
-// TestModelItemLinePricingAfterUsageCounts verifies that per-token
-// pricing is appended to the compact model line right after the 1d/7d/30d
-// usage counts, formatted as " 0.1000  0.0500  0.2000" (matching
-// modelman's COST column formatting).
+// TestModelItemLinePricingAfterUsageCounts verifies the COST cell renders
+// per-token pricing as " 0.1000  0.0500  0.2000" (matching modelman's COST
+// formatting), that an unpriced row gets the "-" placeholder instead, and that
+// the COST column sits before the 1D/7D/30D usage cells in both header and row
+// (the table's column order; the old line put pricing after the counts).
 func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	in := 0.10
@@ -102,35 +104,33 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 			Tags:       []string{"code"},
 		},
 	}
-	items := buildModelItems(nil, "", models, map[string]string{
-		"priced":   "test",
-		"unpriced": "test",
-	}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+	tbl := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
+	items := tbl.items
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
-
-	pricedLine := items[0].Title()
-	for _, want := range []string{"0/0/0", " 0.1000  0.0500  0.2000"} {
-		if !strings.Contains(pricedLine, want) {
-			t.Errorf("priced line %q missing %q", pricedLine, want)
-		}
+	byID := map[string]*modelItem{}
+	for _, it := range items {
+		byID[it.model.ID] = it
 	}
 
-	countsIdx := strings.Index(pricedLine, "0/0/0")
-	ptIdx := strings.Index(pricedLine, " 0.1000  0.0500  0.2000")
-	if countsIdx == -1 || ptIdx == -1 {
-		t.Errorf("expected segments missing from %q", pricedLine)
+	const price = " 0.1000  0.0500  0.2000"
+	pricedLine := byID["priced"].Title()
+	if !strings.Contains(pricedLine, price) {
+		t.Errorf("priced line %q missing %q", pricedLine, price)
 	}
-	if ptIdx < countsIdx {
-		t.Errorf("per-token pricing appears before usage counts in %q", pricedLine)
+	// Usage cells follow the cost cell: 0, 0, 0 after the price.
+	ptIdx := strings.Index(pricedLine, price)
+	if rest := strings.Fields(pricedLine[ptIdx+len(price):]); strings.Join(rest, " ") != "0 0 0" {
+		t.Errorf("priced line %q: cells after the price = %q, want the 1D/7D/30D counts %q", pricedLine, rest, "0 0 0")
+	}
+	if strings.Index(tbl.header, "COST") > strings.Index(tbl.header, "1D") {
+		t.Errorf("header %q: COST should come before the 1D usage column", tbl.header)
 	}
 
-	unpricedLine := items[1].Title()
-	unpricedCountsIdx := strings.Index(unpricedLine, "0/0/0")
-	unpricedDashIdx := strings.Index(unpricedLine, "-")
-	if unpricedCountsIdx == -1 || unpricedDashIdx == -1 || unpricedDashIdx < unpricedCountsIdx {
-		t.Errorf("unpriced line %q missing pricing markers after usage counts", unpricedLine)
+	unpricedLine := byID["unpriced"].Title()
+	if fields := strings.Fields(unpricedLine); strings.Join(fields[len(fields)-4:], " ") != "- 0 0 0" {
+		t.Errorf("unpriced line %q missing the absent-cost marker before the usage counts", unpricedLine)
 	}
 	if strings.Contains(unpricedLine, "0.1000") {
 		t.Errorf("unpriced line %q unexpectedly contains a price", unpricedLine)
@@ -138,8 +138,8 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 }
 
 // TestModelItemLinePartialPerTokenPricing verifies that when a model has
-// input and output per-token prices but no cache price, the per-token
-// segment renders a 7-dash placeholder for the missing cache slot:
+// input and output per-token prices but no cache price, the COST cell
+// renders a 7-dash placeholder for the missing cache slot:
 // " 0.5000 -------  1.0000" (matching modelman's COST column formatting;
 // the extra space before "1.0000" is the leading-space padding of its
 // single-digit integer part).
@@ -160,7 +160,7 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 			},
 		},
 	}
-	items := buildModelItems(nil, "", models, map[string]string{"partial": "test"}, store, refcount.NewStoreAt(t.TempDir()), "", nil)
+	items := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -170,45 +170,43 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsMarksLastLaunchedRow verifies that exactly one row —
+// TestBuildTableMarksLastLaunchedRow verifies that exactly one row —
 // the model matching the rotation's last-launched ID — carries the "> "
 // marker prefix in Title() and every other row a blank 2-rune prefix, so
 // the marker pins the "where I left off" row without shifting any columns
 // (all titles stay rune-equal in length). It also pins the inverse
 // contract: .line and FilterValue() stay unprefixed, so fuzzy matching and
 // any .line consumer never see marker state.
-func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
+func TestBuildTableMarksLastLaunchedRow(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
-	familyOf := map[string]string{
-		"ollama/gemma4:9b":  "gemma4",
-		"ollama/gemma4:14b": "gemma4",
-	}
-	items := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "ollama/gemma4:14b", nil)
+	items := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "ollama/gemma4:14b").items
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
-	// Equal scores + stable sort = registry order: 9b first, 14b second.
-	// With the leading ref column, the marker sits at columns 3–4; strip
-	// the 2-rune ref prefix before asserting the marker shape.
-	for i, want := range []bool{false, true} {
-		title := items[i].Title()
+	// Row order is the table's sort (non-running local rows alphabetical), so
+	// look rows up by id rather than position. With the leading ref column,
+	// the marker sits at columns 3–4; strip the 2-rune ref prefix before
+	// asserting the marker shape.
+	for _, it := range items {
+		want := it.model.ID == "ollama/gemma4:14b"
+		title := it.Title()
 		if len(title) < 4 {
-			t.Fatalf("row %d title %q too short to hold ref column + marker", i, title)
+			t.Fatalf("row %s title %q too short to hold ref column + marker", it.model.ID, title)
 		}
 		afterRef := title[2:]
 		if got := strings.HasPrefix(afterRef, markerMarked); got != want {
-			t.Errorf("row %d (%q): marker prefix = %v, want %v", i, title, got, want)
+			t.Errorf("row %s (%q): marker prefix = %v, want %v", it.model.ID, title, got, want)
 		}
 		if got := strings.HasPrefix(afterRef, markerBlank); got != !want {
-			t.Errorf("row %d (%q): blank prefix = %v, want %v", i, title, got, !want)
+			t.Errorf("row %s (%q): blank prefix = %v, want %v", it.model.ID, title, got, !want)
 		}
 		// The marker must not leak into the line the filter scores.
-		if got := items[i].line; got != items[i].FilterValue() || strings.HasPrefix(got, markerMarked) || strings.HasPrefix(got, markerBlank) {
-			t.Errorf("row %d: line/FilterValue %q must be identical and unprefixed", i, got)
+		if got := it.line; got != it.FilterValue() || strings.HasPrefix(got, markerMarked) || strings.HasPrefix(got, markerBlank) {
+			t.Errorf("row %s: line/FilterValue %q must be identical and unprefixed", it.model.ID, got)
 		}
 	}
 	wantLen := utf8.RuneCountInString(items[0].Title())
@@ -217,19 +215,19 @@ func TestBuildModelItemsMarksLastLaunchedRow(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsAppendsSurveySegment verifies the survey stats
-// segment is appended last on the line — after the usage counts, pricing,
-// and [tags] — so it never shifts any existing column.
-func TestBuildModelItemsAppendsSurveySegment(t *testing.T) {
+// TestBuildTableAppendsSurveySegment verifies the survey stats segment is
+// the last cell on the line, after the 1D/7D/30D usage counts, so it never
+// shifts any existing column. (Tags are no longer rendered, so the old
+// "after [tags]" check is replaced by "after the usage cells".)
+func TestBuildTableAppendsSurveySegment(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal, Tags: []string{"code"}},
 	}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
 	stats := map[string]survey.Stats{
 		"ollama/gemma4:9b": {Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39},
 	}
-	items := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", stats)
+	items := buildTable(tableInput{models: models, usage: store, stats: stats}, refcount.NewStoreAt(t.TempDir()), "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -238,23 +236,23 @@ func TestBuildModelItemsAppendsSurveySegment(t *testing.T) {
 	if !strings.HasSuffix(line, wantSeg) {
 		t.Fatalf("line = %q, want it to end with %q", line, wantSeg)
 	}
-	if idx := strings.Index(line, "[code]"); idx == -1 || idx > strings.Index(line, wantSeg) {
-		t.Fatalf("line = %q, want the survey segment after [tags]", line)
+	fields := strings.Fields(line)
+	if got := strings.Join(fields[len(fields)-7:len(fields)-4], " "); got != "0 0 0" {
+		t.Fatalf("line = %q, want the 1D/7D/30D cells %q immediately before the survey segment, got %q", line, "0 0 0", got)
 	}
 }
 
-// TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered verifies a model
-// with zero answered surveys renders no segment at all — existing lines
-// (models never surveyed) stay byte-identical whether stats is nil or an
-// explicit zero-value entry.
-func TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
+// TestBuildTableOmitsSurveySegmentWhenNoAnswered verifies a model with zero
+// answered surveys renders no segment at all — existing lines (models never
+// surveyed) stay byte-identical whether stats is nil or an explicit
+// zero-value entry.
+func TestBuildTableOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	withoutStats := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", nil)
-	withZeroStats := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), "", map[string]survey.Stats{"ollama/gemma4:9b": {}})
+	withoutStats := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "").items
+	withZeroStats := buildTable(tableInput{models: models, usage: store, stats: map[string]survey.Stats{"ollama/gemma4:9b": {}}}, refcount.NewStoreAt(t.TempDir()), "").items
 	if withoutStats[0].line != withZeroStats[0].line {
 		t.Fatalf("nil stats map produced %q, zero-value stats entry produced %q, want identical", withoutStats[0].line, withZeroStats[0].line)
 	}
@@ -263,35 +261,33 @@ func TestBuildModelItemsOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsNoMarkerWithoutLastLaunched verifies that an empty
+// TestBuildTableNoMarkerWithoutLastLaunched verifies that an empty
 // last-launched ID (no rotation.state) or an ID outside the eligible slice
 // (different agent, -T/-F filter, deleted model) leaves every row unmarked —
 // the picker must not fabricate a "last used" signal.
-func TestBuildModelItemsNoMarkerWithoutLastLaunched(t *testing.T) {
+func TestBuildTableNoMarkerWithoutLastLaunched(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
 	for _, lastID := range []string{"", "ollama/gone"} {
-		items := buildModelItems(nil, "", models, familyOf, store, refcount.NewStoreAt(t.TempDir()), lastID, nil)
+		items := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), lastID).items
 		for i, it := range items {
-			if strings.HasPrefix(it.Title(), markerMarked) {
+			if it.marked || strings.HasPrefix(it.Title(), markerMarked) {
 				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())
 			}
 		}
 	}
 }
 
-// TestBuildModelItemsRefColumnBlankWhenUnused verifies a model with zero
+// TestBuildTableRefColumnBlankWhenUnused verifies a model with zero
 // live sessions renders no ref digit — Title()'s 4-rune prefix stays two
 // blank ref-column spaces followed by the (also blank) marker.
-func TestBuildModelItemsRefColumnBlankWhenUnused(t *testing.T) {
+func TestBuildTableRefColumnBlankWhenUnused(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	refStore := refcount.NewStoreAt(t.TempDir())
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(nil, "", models, familyOf, store, refStore, "", nil)
+	items := buildTable(tableInput{models: models, usage: store}, refStore, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -300,10 +296,10 @@ func TestBuildModelItemsRefColumnBlankWhenUnused(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsRefColumnRendersDigit verifies a model with N live
+// TestBuildTableRefColumnRendersDigit verifies a model with N live
 // sessions (1 <= N <= 9) renders that exact digit as the first rune of
 // Title(), ahead of the marker prefix.
-func TestBuildModelItemsRefColumnRendersDigit(t *testing.T) {
+func TestBuildTableRefColumnRendersDigit(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	dir := t.TempDir()
 	refStore := refcount.NewStoreAt(dir)
@@ -313,8 +309,7 @@ func TestBuildModelItemsRefColumnRendersDigit(t *testing.T) {
 		}
 	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(nil, "", models, familyOf, store, refStore, "", nil)
+	items := buildTable(tableInput{models: models, usage: store}, refStore, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -323,10 +318,10 @@ func TestBuildModelItemsRefColumnRendersDigit(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsRefColumnClampsAtNine verifies a model with more than
+// TestBuildTableRefColumnClampsAtNine verifies a model with more than
 // 9 live sessions still renders a single "9" — the design's fixed-width
 // column would misalign if a two-digit count were ever rendered.
-func TestBuildModelItemsRefColumnClampsAtNine(t *testing.T) {
+func TestBuildTableRefColumnClampsAtNine(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	dir := t.TempDir()
 	refStore := refcount.NewStoreAt(dir)
@@ -336,8 +331,7 @@ func TestBuildModelItemsRefColumnClampsAtNine(t *testing.T) {
 		}
 	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(nil, "", models, familyOf, store, refStore, "", nil)
+	items := buildTable(tableInput{models: models, usage: store}, refStore, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -346,11 +340,11 @@ func TestBuildModelItemsRefColumnClampsAtNine(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsRefColumnBeforeMarker verifies the ref digit and the
+// TestBuildTableRefColumnBeforeMarker verifies the ref digit and the
 // last-launched marker compose correctly when both apply to the same row —
 // "1 > " — matching the design's table (ref column, then the rotation
 // marker, then the line).
-func TestBuildModelItemsRefColumnBeforeMarker(t *testing.T) {
+func TestBuildTableRefColumnBeforeMarker(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	dir := t.TempDir()
 	refStore := refcount.NewStoreAt(dir)
@@ -358,8 +352,7 @@ func TestBuildModelItemsRefColumnBeforeMarker(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	familyOf := map[string]string{"ollama/gemma4:9b": "gemma4"}
-	items := buildModelItems(nil, "", models, familyOf, store, refStore, "ollama/gemma4:9b", nil)
+	items := buildTable(tableInput{models: models, usage: store}, refStore, "ollama/gemma4:9b").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -386,15 +379,15 @@ var (
 	openrouterTestModel = config.Model{ID: "openrouter/qwen/qwen3.8-27b", ModelName: "qwen/qwen3.8-27b", ProviderID: "openrouter", Location: config.LocationCloud}
 )
 
-// TestBuildModelItemsMarksOnlyDeviatingRows: the picker must stay quiet
+// TestBuildTableMarksOnlyDeviatingRows: the picker must stay quiet
 // for rows whose transport matches the current mode, and mark only rows
 // that deviate (forced through the proxy) or cannot launch — a per-row
 // transport column on every row would be noise when transport is uniform,
-// and asserting against buildModelItems directly avoids coupling this
+// and asserting against buildTable directly avoids coupling this
 // test to lipgloss border/padding output (wt/CLAUDE.md).
-func TestBuildModelItemsMarksOnlyDeviatingRows(t *testing.T) {
+func TestBuildTableMarksOnlyDeviatingRows(t *testing.T) {
 	cfg := directOnlyTestConfig()
-	items := buildModelItems(cfg, "codex", []config.Model{ollamaTestModel, openrouterTestModel}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	items := buildTable(tableInput{cfg: cfg, agent: "codex", models: []config.Model{ollamaTestModel, openrouterTestModel}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
 
 	var ollamaItem, openrouterItem modelItem
 	for _, it := range items {
@@ -413,15 +406,15 @@ func TestBuildModelItemsMarksOnlyDeviatingRows(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsLitellmRequiredLabel: claude only speaks anthropic, so
+// TestBuildTableLitellmRequiredLabel: claude only speaks anthropic, so
 // claude+openrouter forces a litellm route. When modelman.toml's [litellm]
 // url/api_key are unset (directOnlyTestConfig leaves them zero-valued), the
 // row must say "(litellm required)" — not the generic "(unavailable)" —
 // because the fix is specifically "configure litellm", distinct from a
 // genuinely broken pairing.
-func TestBuildModelItemsLitellmRequiredLabel(t *testing.T) {
+func TestBuildTableLitellmRequiredLabel(t *testing.T) {
 	cfg := directOnlyTestConfig()
-	items := buildModelItems(cfg, "claude", []config.Model{openrouterTestModel}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	items := buildTable(tableInput{cfg: cfg, agent: "claude", models: []config.Model{openrouterTestModel}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -430,14 +423,14 @@ func TestBuildModelItemsLitellmRequiredLabel(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsUnavailableLabelForUnknownProvider: a route failure
+// TestBuildTableUnavailableLabelForUnknownProvider: a route failure
 // unrelated to litellm configuration (here, an unknown provider id) must
 // keep the generic "(unavailable)" label — only the litellm-unconfigured
 // case gets the more specific message.
-func TestBuildModelItemsUnavailableLabelForUnknownProvider(t *testing.T) {
+func TestBuildTableUnavailableLabelForUnknownProvider(t *testing.T) {
 	cfg := directOnlyTestConfig()
 	m := config.Model{ID: "ghost/x", ModelName: "x", ProviderID: "ghost"}
-	items := buildModelItems(cfg, "claude", []config.Model{m}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	items := buildTable(tableInput{cfg: cfg, agent: "claude", models: []config.Model{m}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -446,13 +439,13 @@ func TestBuildModelItemsUnavailableLabelForUnknownProvider(t *testing.T) {
 	}
 }
 
-// TestBuildModelItemsViaProxyLabelUnaffected: once litellm is properly
+// TestBuildTableViaProxyLabelUnaffected: once litellm is properly
 // configured, a forced pairing keeps the existing "(via proxy)" label — the
 // new litellm-required label must only apply to the unconfigured case.
-func TestBuildModelItemsViaProxyLabelUnaffected(t *testing.T) {
+func TestBuildTableViaProxyLabelUnaffected(t *testing.T) {
 	cfg := directOnlyTestConfig()
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	items := buildModelItems(cfg, "claude", []config.Model{openrouterTestModel}, nil, &mockStore{}, refcount.NewStoreAt(t.TempDir()), "", nil)
+	items := buildTable(tableInput{cfg: cfg, agent: "claude", models: []config.Model{openrouterTestModel}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}

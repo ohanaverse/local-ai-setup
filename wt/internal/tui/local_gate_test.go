@@ -1,13 +1,11 @@
 package tui
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 func gateTestConfig() *config.Config {
@@ -29,65 +27,73 @@ func gateTestConfig() *config.Config {
 	return cfg
 }
 
-// TestEnterModelPhaseNoMarkerHidesLocalModels asserts the picker-filter
-// half of issue #65's gate: with no [local].running_model marker (the
-// gate active but empty), a local model is not offered — only cloud
-// models appear, matching "no marker → cloud only, by construction" in
-// the design doc.
-func TestEnterModelPhaseNoMarkerHidesLocalModels(t *testing.T) {
+// TestEnterModelPhaseNoMarkerShowsLocalModelsAsNonRunning asserts the
+// selector-table replacement of the old gate's hiding: with an empty
+// inventory (nothing running) the configured local model still appears, as a
+// non-launchable row whose Enter hint says how to start it, next to the cloud
+// model. Hiding it (the old behavior) is what the table exists to fix.
+func TestEnterModelPhaseNoMarkerShowsLocalModelsAsNonRunning(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
 	cfg := gateTestConfig()
-	cfg.SetLocalRunningForTest("") // gate active, nothing running
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	items := got.models.Items()
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1 (cloud model only)", len(items))
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2 (cloud + non-running local)", len(items))
 	}
-	if items[0].(*modelItem).model.ID != "claude/opus" {
-		t.Errorf("got model %q, want claude/opus", items[0].(*modelItem).model.ID)
+	byID := map[string]*modelItem{}
+	for _, it := range items {
+		byID[it.(*modelItem).model.ID] = it.(*modelItem)
+	}
+	if byID["claude/opus"] == nil || byID["claude/opus"].blocked != "" {
+		t.Errorf("claude/opus must be a launchable row, got %+v", byID["claude/opus"])
+	}
+	if l := byID["omlx/qwen3.8"]; l == nil || l.blocked == "" {
+		t.Errorf("omlx/qwen3.8 must be a blocked (non-running) row, got %+v", l)
 	}
 }
 
-// TestEnterModelPhaseVerifiedMarkerShowsLocalModel asserts that once the
-// marker names a model that verifies as actually running (an
-// httptest.Server standing in for omlx's /v1/models probe), it appears in
-// the picker alongside cloud models.
-func TestEnterModelPhaseVerifiedMarkerShowsLocalModel(t *testing.T) {
-	// The probe is name-checked: /v1/models must report the marked model's
-	// own id, not merely respond 200.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
-	}))
-	defer srv.Close()
-	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
-
+// TestEnterModelPhaseRunningLocalModelIsLaunchable asserts that an inventory
+// reporting a configured local model as running makes its row launchable
+// (blocked == ""), alongside the cloud row. The inventory replaces the old
+// httptest probe stand-in: running-state now comes from localmodels.
+func TestEnterModelPhaseRunningLocalModelIsLaunchable(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true},
+	}})
 	cfg := gateTestConfig()
-	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	if len(got.models.Items()) != 2 {
-		t.Fatalf("got %d items, want 2 (cloud + verified running local)", len(got.models.Items()))
+		t.Fatalf("got %d items, want 2 (cloud + running local)", len(got.models.Items()))
+	}
+	for _, it := range got.models.Items() {
+		if mi := it.(*modelItem); mi.blocked != "" {
+			t.Errorf("%s blocked = %q, want launchable", mi.model.ID, mi.blocked)
+		}
 	}
 }
 
-// TestEnterModelPhaseDriftedMarkerDropsOnlyThatModel asserts the
-// 2026-09-14 multi-model relaxation: a marker that fails its availability
-// probe no longer quits the whole TUI program (the old single-marker
-// "stale marker is fatal" behavior) — the flagged-but-unverified local
-// model is simply excluded from the picker, while other eligible cloud
-// models still appear normally alongside each other.
-func TestEnterModelPhaseDriftedMarkerDropsOnlyThatModel(t *testing.T) {
-	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
-
+// TestEnterModelPhaseMixedRunningState asserts that with one local model
+// running and another not, the running one is launchable and the other is
+// blocked — a non-running model neither hides the running one nor quits the
+// program (the old "drifted marker" concern, now expressed as row state).
+func TestEnterModelPhaseMixedRunningState(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true},
+		{ProviderID: "omlx", Artifact: "other", ModelID: "omlx/other", Registered: true},
+	}})
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
@@ -96,38 +102,38 @@ func TestEnterModelPhaseDriftedMarkerDropsOnlyThatModel(t *testing.T) {
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
-			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Family: "sonnet", Tags: []string{"code"}},
 			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
+			{ID: "omlx/other", ProviderID: "omlx", ModelName: "other", Family: "other", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"claude", "omlx"}},
 		},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, cmd := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, cmd := m.enterModelPhase("claude", models, "code")
 
-	if got.fatalErr != nil {
-		t.Fatalf("fatalErr = %v, want nil (a drifted flag must not quit the program)", got.fatalErr)
-	}
-	if cmd != nil {
-		t.Fatalf("cmd = %v, want nil (no tea.Quit)", cmd)
+	if got.fatalErr != nil || cmd != nil {
+		t.Fatalf("fatalErr = %v, cmd = %v; want neither (no quit)", got.fatalErr, cmd)
 	}
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", got.phase)
 	}
-	items := got.models.Items()
-	if len(items) != 2 {
-		t.Fatalf("got %d items, want 2 (both cloud models; the unverified local model is excluded)", len(items))
+	blocked := map[string]string{}
+	for _, it := range got.models.Items() {
+		mi := it.(*modelItem)
+		blocked[mi.model.ID] = mi.blocked
 	}
-	for _, it := range items {
-		if it.(*modelItem).model.ID == "omlx/qwen3.8" {
-			t.Errorf("unverified local model omlx/qwen3.8 appeared in the picker")
-		}
+	if len(blocked) != 3 {
+		t.Fatalf("got %d items, want 3", len(blocked))
+	}
+	if blocked["omlx/qwen3.8"] != "" {
+		t.Errorf("running omlx/qwen3.8 blocked = %q, want launchable", blocked["omlx/qwen3.8"])
+	}
+	if blocked["omlx/other"] == "" {
+		t.Errorf("non-running omlx/other must be blocked")
 	}
 }
 
@@ -140,9 +146,8 @@ func TestEnterModelPhasePinnedStaleLocalModelRejected(t *testing.T) {
 	cfg.SetLocalRunningForTest("") // nothing running
 	m := model{cfg: cfg, width: 80, height: 24, pinnedModel: "omlx/qwen3.8"}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	if got.phase != phaseAgent {
 		t.Fatalf("phase = %v, want phaseAgent", got.phase)
@@ -152,61 +157,26 @@ func TestEnterModelPhasePinnedStaleLocalModelRejected(t *testing.T) {
 	}
 }
 
-// TestEnterModelPhaseGateEmptiedRoutesBack asserts finding #6's TUI half:
-// when the gate empties an otherwise-non-empty eligible list (every
-// eligible model was local, nothing running), the picker must not show as
-// a silent empty screen — enterModelPhase routes back to the agent picker
-// with a status message pointing at `modelman start`, so the screen the
-// user lands on explains the fix instead of looking like an empty list.
-func TestEnterModelPhaseGateEmptiedRoutesBack(t *testing.T) {
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Providers: []config.Provider{
-			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
-		},
-		Models: []config.Model{
-			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
-	}
-	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("") // gate active, nothing running — gate empties the list
-	m := model{cfg: cfg, width: 80, height: 24}
-	models, _ := cfg.EligibleModels("pi", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("pi")
-
-	got, cmd := m.enterModelPhase("pi", models, fullCatalog, "code")
-
-	if got.phase != phaseAgent {
-		t.Fatalf("phase = %v, want phaseAgent (routed back, not an empty model picker)", got.phase)
-	}
-	if !strings.Contains(got.status, "no local model is running") ||
-		!strings.Contains(got.status, "modelman start") {
-		t.Errorf("status = %q, want the gate-specific message naming `modelman start`", got.status)
-	}
-	if cmd != nil {
-		t.Errorf("cmd = %v, want nil (route-back does not quit the program)", cmd)
-	}
-}
-
-// TestEnterModelPhasePinnedNotInEligibleRoutesBack is the control for the
-// gate-emptying route-back: a -M pin that isn't launchable for a NON-gate
-// reason (not in the agent's eligible list) still routes back, but with
-// the generic pin message — the two messages must not be swapped, or the
-// gate message would tell users to run modelman start for a config typo.
+// TestEnterModelPhasePinnedNotInEligibleRoutesBack asserts a -M pin that is
+// missing from the agent's eligible list routes back to the agent picker with
+// the generic "not in the eligible list" status, not the `modelman start`
+// hint. It matters because enterModelPhase's two route-backs mean different
+// things: the hint belongs to the local-pin rejection (a local model the gate
+// could not verify as running), so showing it for a pin the agent
+// cannot use at all would send users off to start a model that was never the
+// problem. The test above covers the hint's own path.
 func TestEnterModelPhasePinnedNotInEligibleRoutesBack(t *testing.T) {
 	cfg := gateTestConfig()
 	cfg.SetLocalRunningForTest("") // nothing running (irrelevant to this pin's failure)
 	m := model{cfg: cfg, width: 80, height: 24, pinnedModel: "claude/missing"}
 	models, _ := cfg.EligibleModels("claude", "", "")
-	fullCatalog, _ := cfg.ModelsForAgent("claude")
 
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 
 	if got.phase != phaseAgent {
 		t.Fatalf("phase = %v, want phaseAgent", got.phase)
 	}
-	if strings.Contains(got.status, "modelman start") || strings.Contains(got.status, "no local model") {
+	if strings.Contains(got.status, "modelman start") {
 		t.Errorf("status = %q; the gate message must not be used for a generic pin miss", got.status)
 	}
 }

@@ -1,15 +1,12 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // drainFilterMatches recursively executes cmd (and any nested tea.BatchMsg)
@@ -69,204 +66,6 @@ func modelFamilies() []config.Model {
 		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4"},
 		{ID: "ollama/qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 		{ID: "ollama/loose", ProviderID: "ollama", Family: ""},
-	}
-}
-
-// familyOfFor returns the full familyOf map for modelFamilies().
-func familyOfFor() map[string]string {
-	return map[string]string{
-		"ollama/gemma4:9b":   "gemma4",
-		"ollama/gemma4:14b":  "gemma4",
-		"ollama/qwen3.8:27b": "qwen3.8",
-		"ollama/loose":       "",
-	}
-}
-
-// TestSortModelsByUsageGroupsByFamilyScoreThenModelScore verifies the sort
-// key: family composite desc, then model composite desc within a family.
-func TestSortModelsByUsageGroupsByFamilyScoreThenModelScore(t *testing.T) {
-	models := modelFamilies()
-	familyCounts := map[string]usage.UsageCounts{
-		"gemma4":  {ThirtyDay: 10}, // composite 20
-		"qwen3.8": {ThirtyDay: 5},  // composite 10
-		"":        {ThirtyDay: 1},  // composite 2
-	}
-	modelCounts := map[string]usage.UsageCounts{
-		"ollama/gemma4:9b":   {ThirtyDay: 6}, // composite 12
-		"ollama/gemma4:14b":  {ThirtyDay: 4}, // composite 8
-		"ollama/qwen3.8:27b": {ThirtyDay: 5}, // composite 10
-		"ollama/loose":       {ThirtyDay: 1}, // composite 2
-	}
-	sortModelsByUsage(models, familyCounts, modelCounts)
-
-	var families []string
-	for _, m := range models {
-		families = append(families, m.Family)
-	}
-	if got := strings.Join(families, ","); got != "gemma4,gemma4,qwen3.8," {
-		t.Fatalf("family order = %q, want %q", got, "gemma4,gemma4,qwen3.8,")
-	}
-	if models[0].ID != "ollama/gemma4:9b" || models[1].ID != "ollama/gemma4:14b" {
-		t.Fatalf("gemma4 models not internally sorted by model score: %s, %s", models[0].ID, models[1].ID)
-	}
-	if models[2].ID != "ollama/qwen3.8:27b" {
-		t.Fatalf("third model = %s, want qwen3.8", models[2].ID)
-	}
-}
-
-// TestSortModelsByUsageKeepsTiedFamiliesAdjacent verifies that when two
-// families have equal composite scores (the common case: a fresh install
-// with no usage history, where every score is 0), the sort still groups each
-// family's models adjacently instead of leaving them interleaved in whatever
-// order the registry lists them. Without a tie-break beyond composite score,
-// sort.SliceStable's stability preserves registry order on a tie, and the
-// real registry.toml interleaves families (e.g. gemma4 models are not
-// contiguous) — so the compact picker's leftmost family column would
-// alternate between families row to row instead of grouping visually, and
-// the old divider layout would have emitted a duplicate "◈ gemma4" header
-// split across two non-adjacent runs. The tie-break is each family's
-// first-occurrence position in the input slice, so ties resolve to registry
-// order at the family level (gemma4 first, since it appears first) while
-// still keeping every family's models contiguous.
-func TestSortModelsByUsageKeepsTiedFamiliesAdjacent(t *testing.T) {
-	// Registry order interleaves gemma4 and qwen3.8; both families and all
-	// models are tied at zero usage (fresh install).
-	models := []config.Model{
-		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
-		{ID: "ollama/qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
-		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4"},
-	}
-	sortModelsByUsage(models, nil, nil)
-
-	var families []string
-	for _, m := range models {
-		families = append(families, m.Family)
-	}
-	// gemma4 appears first in the input, so its tie-break wins; both its
-	// models must be contiguous rather than split around qwen3.8.
-	if got := strings.Join(families, ","); got != "gemma4,gemma4,qwen3.8" {
-		t.Fatalf("family order = %q, want gemma4,gemma4,qwen3.8 (tied families kept adjacent, in first-occurrence order)", got)
-	}
-}
-
-// TestAdjacentModelsShareFamilyColumn verifies the compact picker keeps the
-// family-grouping invariant without divider rows: adjacent same-family
-// models carry the same leftmost family column on their line (the family
-// column is what the deleted divider headers used to communicate).
-func TestAdjacentModelsShareFamilyColumn(t *testing.T) {
-	stubUsageStore(t) // all-zero usage: registry order preserved
-
-	items := buildModelItems(nil, "", modelFamilies(), familyOfFor(), newUsageStore(), refcount.NewStoreAt(t.TempDir()), "", nil)
-	if len(items) != 4 {
-		t.Fatalf("got %d items, want 4", len(items))
-	}
-	famCol := func(line string) string {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			t.Fatalf("line %q has no family column", line)
-		}
-		return fields[0]
-	}
-	// With all scores tied at zero, items[0] and items[1] are the gemma4
-	// pair in registry order; both lines must lead with the same family.
-	if got := famCol(items[0].line); got != "gemma4" {
-		t.Fatalf("items[0] family column = %q, want gemma4", got)
-	}
-	if got := famCol(items[1].line); got != "gemma4" {
-		t.Fatalf("items[1] family column = %q, want gemma4 (adjacent rows of the same family share the family column)", got)
-	}
-}
-
-// TestBuildModelItemsFamilyColumnShowsFamilyTotal verifies the family 30d
-// column aggregates usage across the family's models, not just the row's own
-// model: only gemma4:14b has a recorded launch, but every gemma4 row's
-// family column must show the family total (1).
-func TestBuildModelItemsFamilyColumnShowsFamilyTotal(t *testing.T) {
-	store := stubUsageStore(t)
-	if err := store.Record("ollama/gemma4:14b"); err != nil {
-		t.Fatalf("seed usage event: %v", err)
-	}
-
-	models := []config.Model{
-		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
-		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4"},
-	}
-	items := buildModelItems(nil, "", models, familyOfFor(), store, refcount.NewStoreAt(t.TempDir()), "", nil)
-	if len(items) != 2 {
-		t.Fatalf("got %d items, want 2", len(items))
-	}
-	for _, it := range items {
-		fields := strings.Fields(it.line)
-		if len(fields) < 2 {
-			t.Fatalf("line %q too short to hold a family column + 30d count", it.line)
-		}
-		if fields[0] != "gemma4" || fields[1] != "1" {
-			t.Fatalf("line = %q, want family column %q with 30d aggregate %q (family total must include sibling launches)", it.line, "gemma4", "1")
-		}
-	}
-}
-
-// TestBuildModelItemsFamilyCountsUseFullCatalog verifies the compact picker
-// derives family totals from the FULL catalog, not just the eligible subset:
-// the eligible list contains only gemma4:9b, but the usage store records a
-// launch for gemma4:14b (same family, filtered out by -T/-F narrowing), and
-// the rendered family 30d count must still include that event. This pins the
-// invariant that family counts come from the full-catalog familyOf mapping —
-// the same reason buildModelItems runs ONE Counts pass over familyOf's keys
-// and aggregates per family instead of counting only the eligible slice.
-func TestBuildModelItemsFamilyCountsUseFullCatalog(t *testing.T) {
-	store := stubUsageStore(t)
-	if err := store.Record("ollama/gemma4:14b"); err != nil {
-		t.Fatalf("seed usage event: %v", err)
-	}
-
-	// Eligible list is narrowed to one of the two gemma4 models;
-	// familyOf still maps the full catalog.
-	models := []config.Model{
-		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
-	}
-	items := buildModelItems(nil, "", models, familyOfFor(), store, refcount.NewStoreAt(t.TempDir()), "", nil)
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
-	}
-	fields := strings.Fields(items[0].line)
-	if len(fields) < 2 {
-		t.Fatalf("line %q too short to hold a family column + 30d count", items[0].line)
-	}
-	if fields[0] != "gemma4" || fields[1] != "1" {
-		t.Fatalf("line = %q, want family column %q with 30d aggregate %q (family total must include the non-eligible gemma4:14b launch)", items[0].line, "gemma4", "1")
-	}
-}
-
-// TestBuildModelItemsEmptyFamilyShowsAggregate pins the empty-family column:
-// a launch under the "" (unnamed "other") family must render its true 30d
-// aggregate, not a hardcoded 0. This guards the invariant that the row's
-// fam30d display matches the CompositeScore the sort uses to rank it — a
-// regression here would show an empty-family model ranked by family usage
-// while a 0 sat in its family column, contradicting named families.
-func TestBuildModelItemsEmptyFamilyShowsAggregate(t *testing.T) {
-	store := stubUsageStore(t)
-	if err := store.Record("ollama/loose"); err != nil {
-		t.Fatalf("seed usage event: %v", err)
-	}
-
-	items := buildModelItems(nil, "", modelFamilies(), familyOfFor(), store, refcount.NewStoreAt(t.TempDir()), "", nil)
-	if len(items) != 4 {
-		t.Fatalf("got %d items, want 4", len(items))
-	}
-	// The empty family's composite (2*ThirtyDay=2) beats the zero-usage named
-	// families, so loose sorts first; its "-" family column must still carry
-	// the empty-family 30d aggregate.
-	loose := items[0]
-	if loose.model.Family != "" || loose.model.ID != "ollama/loose" {
-		t.Fatalf("first sorted row = id %q family %q, want ollama/loose with empty family", loose.model.ID, loose.model.Family)
-	}
-	fields := strings.Fields(loose.line)
-	if len(fields) < 2 {
-		t.Fatalf("line %q too short to hold family column + 30d count", loose.line)
-	}
-	if fields[0] != "-" || fields[1] != "1" {
-		t.Fatalf("line = %q, want family column %q with empty-family 30d aggregate %q", loose.line, "-", "1")
 	}
 }
 
@@ -380,8 +179,11 @@ func TestWrapAroundStaysValidAfterFilterApplied(t *testing.T) {
 	if !ok {
 		t.Fatalf("after 'k' at filtered index 0: SelectedItem() = %v (%T), want a valid *modelItem (wrap landed on the filtered view's last row)", m.models.SelectedItem(), m.models.SelectedItem())
 	}
-	if item.model.ID != "ollama/loose" {
-		t.Errorf("wrapped to %q, want ollama/loose (last row of the 4-model set)", item.model.ID)
+	// The table sorts rows itself, so the last row is whatever the list's
+	// final item is (not a hard-coded id).
+	all := m.models.Items()
+	if want := all[len(all)-1].(*modelItem).model.ID; item.model.ID != want {
+		t.Errorf("wrapped to %q, want %q (last row of the 4-model set)", item.model.ID, want)
 	}
 }
 
@@ -419,9 +221,9 @@ func TestWrapAroundNoOpWhenZeroOrOneVisibleItem(t *testing.T) {
 }
 
 // TestEnterModelPhaseCursorOnFirstModel verifies that entering the model
-// phase (no rotation history) lands the cursor on a model row — index 0 in
-// the compact, divider-free layout. (There are no divider rows to skip
-// anymore; this pins that the cursor starts on a launchable *modelItem.)
+// phase (no rotation history) lands the cursor on the first launchable row —
+// index 0, ollama/gemma4:14b in the id-sorted table — not the registry-first
+// model. Pins the cold-start position so rotation cannot displace it.
 func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
 	stubUsageStore(t)
 	tempStateDir(t)
@@ -445,11 +247,15 @@ func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EligibleModelsIn: %v", err)
 	}
-	got, _ := m.enterModelPhase("claude", models, fullCatalog, "code")
+	got, _ := m.enterModelPhase("claude", models, "code")
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel", got.phase)
 	}
-	if _, ok := got.models.Items()[got.models.Index()].(*modelItem); !ok {
+	it, ok := got.models.Items()[got.models.Index()].(*modelItem)
+	if !ok {
 		t.Fatalf("cursor at %d is %T; want a *modelItem", got.models.Index(), got.models.Items()[got.models.Index()])
+	}
+	if got.models.Index() != 0 || it.model.ID != "ollama/gemma4:14b" {
+		t.Errorf("cursor at %d on %q, want index 0 on ollama/gemma4:14b", got.models.Index(), it.model.ID)
 	}
 }

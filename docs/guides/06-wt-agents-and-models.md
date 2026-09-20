@@ -65,7 +65,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
   tag   : code
   ```
 
-  The tag slot defaults to `default_tag = "code"` (see §6) unless `-T` narrows it. Each model renders as one compact line — `family  <fam-30d>  <provider/model>  <location>  <1d/7d/30d> [tags]` — with the family name and its 30-day launch count leading the row and tags shown only when present; there are no separate family header rows. Rows are sorted descending by family usage, then model usage (a recency-weighted composite: today ≈3×, 1–7d ≈1.5×, 8–30d ≈1×), so the families you rely on most float to the top. After `/`, typing a family name (or any part of a model ID) narrows the list. The cursor still starts on the rotation's next model (see §5).
+  The tag slot shows the **first** tag of the effective set — under `-T code,design` it reads `tag   : code` while the list holds the union of both tags — and falls back to `default_tag = "code"` (see §6) when no `-T` was given; `-T` narrows the list itself to models carrying any of its tags. Models are one table row each, with the header rendered as the list title: `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D  30D  SURVEY`. Rows are sorted cost-ascending (output price, then input price; local and subscription-only models count as $0, and a model with no price data sorts last within that group), then by 7-day usage ascending, then by id; non-running local models form a second group, sorted by id. STATUS is `ok`, `absent` (the provider answered and does not have the model), `unknown` (the probe could not tell — a failed local probe, a model it has no entry for, or a non-running `mlx_lm_server` row), or `new` (discovered, not in the registry); RUNNING is `run` while a model is serving. Note that the list is **not** filtered by `default_tag` — only an explicit `-T`/`-F` narrows it, and only those hide discovered (unregistered) rows. After `/`, typing a family name (or any part of a model ID) narrows the list. The cursor still starts on the rotation's next model (see §5).
 - **On the model screen:** `j`/`k`/arrows navigate (with wrap-around), `enter` launches, `q` quits, `esc` pops back. Footer reads `[↑/↓] navigate   [enter] launch   [q] quit`.
 - **Session resume:** for agents with resume (claude, opencode) the picker offers to resume the newest session or go fresh; `esc`/cancel returns to the model screen without launching or advancing rotation.
 - **There is no `d` tag-toggle key.** Use `-T code` / `-T design` instead; picker footer is `[↑/↓] navigate [enter] launch [q] quit`.
@@ -185,7 +185,7 @@ Every launch appends one line to `~/.config/agent-wt/usage.jsonl` (`Rotation.Rec
 {"model_id":"ollama/glm-5.3-flash:cloud","timestamp":"2026-08-29T18:33:05.297099Z"}
 ```
 
-Family counts are not stored directly: the picker derives them at query time with one `Store.Counts` pass over the full catalog's model IDs, then maps each counted `model_id` to its `family` (from the registry) and aggregates in memory (`usage.AggregateByFamily`) — so no schema change and existing history stays valid. See `internal/usage` and [03-model-families](03-model-families.md).
+The picker reads per-model (and per-agent-pair) 1d/7d/30d counts from this file at query time via `Store.Counts` / `CountsForAgent` — no schema change, and existing history stays valid. See `internal/usage`.
 
 ## Verification
 

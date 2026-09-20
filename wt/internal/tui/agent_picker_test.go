@@ -113,8 +113,9 @@ func TestBuildAgentListOrdering(t *testing.T) {
 // testConfig() shape.
 func TestPhaseModelHonorsFilters(t *testing.T) {
 	// Isolate both state seams the picker entry reads: the usage store (via
-	// the newUsageStore seam — the family-usage sort would otherwise rank
-	// fixture models by the host's real usage.jsonl) and rotation state (via
+	// the newUsageStore seam — usage.jsonl counts feed the 1d/7d/30d columns
+	// and the 7d-usage tie-break, so the host's real file would otherwise
+	// skew fixture rows) and rotation state (via
 	// XDG_CONFIG_HOME — enterModelPhase positions the cursor from the host's
 	// real rotation.state without it).
 	tempStateDir(t)
