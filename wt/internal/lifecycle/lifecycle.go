@@ -267,3 +267,10 @@ func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, mode
 	}
 	return b.stopModel(ctx, e, cfg, modelName)
 }
+
+// CanStop reports whether wt has a stop backend for providerID's family, so a
+// picker never offers a model (e.g. one on mlx_lm_server) that StopModel would
+// refuse with *UnsupportedError.
+func CanStop(providerID string) bool {
+	return backendsByFamily[localmodels.Family(providerID)] != nil
+}

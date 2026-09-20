@@ -80,3 +80,17 @@ func TestStopModelUnsupportedProvider(t *testing.T) {
 		t.Fatalf("err = %v, want *UnsupportedError", err)
 	}
 }
+
+// TestCanStop verifies CanStop is true exactly for the families wt has a stop
+// backend for (including the omlx-6bit alias) and false for mlx_lm_server and
+// unknown ids, keeping the post-exit picker from offering unstoppable models.
+func TestCanStop(t *testing.T) {
+	for id, want := range map[string]bool{
+		"ollama": true, "omlx": true, "omlx-6bit": true, "mtplx": true,
+		"mlx_lm_server": false, "anthropic": false,
+	} {
+		if got := CanStop(id); got != want {
+			t.Errorf("CanStop(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
