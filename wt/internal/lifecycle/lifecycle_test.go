@@ -351,3 +351,26 @@ func TestOccupantIgnoresUntrustworthySnapshot(t *testing.T) {
 		t.Error("Occupant must not report an occupant from an untrustworthy probe")
 	}
 }
+
+// TestStopUsesInjectedEnv verifies Stop's provider dispatch runs through the
+// injectable env, mirroring Start/start. Without this seam the exported stop
+// path — which replacement depends on — cannot be tested, so a stop that
+// reports success while the model stays loaded would ship unnoticed.
+func TestStopUsesInjectedEnv(t *testing.T) {
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{}, true, &calls)
+	cfg := &config.Config{}
+
+	if err := stop(context.Background(), e, cfg, "omlx"); err != nil {
+		t.Fatalf("stop(omlx) = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"stop"}) {
+		t.Errorf("calls = %v, want [stop]", calls)
+	}
+
+	err := stop(context.Background(), e, cfg, "ghost")
+	var unsupported *UnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Errorf("stop(ghost) = %v, want *UnsupportedError", err)
+	}
+}

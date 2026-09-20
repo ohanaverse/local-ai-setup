@@ -234,7 +234,12 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // Stop stops the provider's running model (used for replacement; wt has no
 // user-facing stop command). A no-op for multi-tenant ollama.
 func Stop(ctx context.Context, cfg *config.Config, providerID string) error {
-	e := defaultEnv()
+	return stop(ctx, defaultEnv(), cfg, providerID)
+}
+
+// stop is Stop's injectable core, the same shape Start/start uses so tests can
+// drive the real dispatch without a live provider.
+func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) error {
 	b := e.backends[localmodels.Family(providerID)]
 	if b == nil {
 		return &UnsupportedError{ProviderID: providerID}
