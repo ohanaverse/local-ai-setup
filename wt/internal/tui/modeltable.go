@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -54,7 +55,7 @@ func buildTable(in tableInput, refs refcount.Store, lastID string) modelTable {
 	if refs != nil {
 		ids := make([]string, len(rows))
 		for i, r := range rows {
-			ids[i] = r.model.ID
+			ids[i] = r.Model.ID
 		}
 		refCounts = refs.Counts(ids)
 	}
@@ -71,20 +72,20 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
 	wS := len("STATUS")
 	for i, r := range rows {
-		fam[i] = r.model.Family
+		fam[i] = r.Model.Family
 		if fam[i] == "" {
 			fam[i] = "-"
 		}
 		cost[i] = "-"
-		if !r.discovered {
-			cost[i] = formatPerToken(r.model.Cost)
+		if !r.Discovered {
+			cost[i] = formatPerToken(r.Model.Cost)
 		}
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])
-		idW = maxRunes(idW, r.model.ID)
+		idW = maxRunes(idW, r.Model.ID)
 		costW = maxRunes(costW, cost[i])
 		w1, w7, w30 = maxRunes(w1, c1[i]), maxRunes(w7, c7[i]), maxRunes(w30, c30[i])
-		wS = maxRunes(wS, string(r.status))
+		wS = maxRunes(wS, string(r.Status))
 	}
 	const sep = "  "
 	header := strings.Repeat(" ", rowPrefixWidth) + strings.Join([]string{
@@ -95,13 +96,13 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 
 	items := make([]*modelItem, 0, len(rows))
 	for i, r := range rows {
-		loc := string(r.location)
+		loc := string(r.Location)
 		if loc == "" {
 			loc = "-"
 		}
 		line := strings.Join([]string{
-			padRunes(fam[i], famW), padRunes(r.model.ID, idW), padRunes(loc, 5), padRunes(string(r.status), wS),
-			padRunes(flag(r.exposed, "Y"), 7), padRunes(flag(r.running, "run"), 7), padRunes(cost[i], costW),
+			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(loc, 5), padRunes(string(r.Status), wS),
+			padRunes(flag(r.Exposed, "Y"), 7), padRunes(flag(r.Running, "run"), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 		}, sep)
 		// The last padded column would leave trailing spaces; keep them only
@@ -111,21 +112,21 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		} else {
 			line = strings.TrimRight(line, " ")
 		}
-		it := &modelItem{model: r.model, line: line, marked: lastID != "" && r.model.ID == lastID, ref: refs[r.model.ID]}
-		switch r.action() {
-		case actionBlock:
-			it.blocked = r.blockReason()
-		case actionStart:
+		it := &modelItem{model: r.Model, line: line, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID]}
+		switch r.Action() {
+		case catalog.ActionBlock:
+			it.blocked = r.BlockReason()
+		case catalog.ActionStart:
 			it.start = true
 		}
 		if cfg != nil {
-			route, err := cfg.ResolveRoute(r.model, agents.ProtocolsFor(agent))
+			route, err := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(agent))
 			switch {
-			case r.discovered && err == nil && (route.Litellm || route.Forced):
+			case r.Discovered && err == nil && (route.Litellm || route.Forced):
 				// A discovered model is not in LiteLLM's model_list: routing
 				// it through the proxy cannot work, so it is unselectable.
 				it.exception = "(not in LiteLLM)"
-				it.blocked = "discovered model " + r.model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
+				it.blocked = "discovered model " + r.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
 				it.start = false
 			case err != nil:
 				it.exception = "(unavailable)"

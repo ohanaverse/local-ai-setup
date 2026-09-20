@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -27,7 +28,7 @@ func rowsTestCfg() *config.Config {
 func rowIDs(rows []tableRow) []string {
 	ids := make([]string, len(rows))
 	for i, r := range rows {
-		ids[i] = r.model.ID
+		ids[i] = r.Model.ID
 	}
 	return ids
 }
@@ -59,10 +60,10 @@ func TestBuildRowsCountsAreAgentScoped(t *testing.T) {
 // running models must come first.
 func TestSortRowsTwoGroups(t *testing.T) {
 	cloud := func(id string, in, out *float64, sub *float64) tableRow {
-		return tableRow{location: config.LocationCloud, model: config.Model{ID: id, Cost: config.ModelCost{InputPricePerMillion: in, OutputPricePerMillion: out, SubscriptionPrice: sub}}}
+		return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id, Cost: config.ModelCost{InputPricePerMillion: in, OutputPricePerMillion: out, SubscriptionPrice: sub}}}}
 	}
 	local := func(id string, running bool, sevenDay int) tableRow {
-		return tableRow{location: config.LocationLocal, running: running, model: config.Model{ID: id}, counts: usage.UsageCounts{SevenDay: sevenDay}}
+		return tableRow{Row: catalog.Row{Location: config.LocationLocal, Running: running, Model: config.Model{ID: id}}, counts: usage.UsageCounts{SevenDay: sevenDay}}
 	}
 	rows := []tableRow{
 		local("z-off", false, 0),

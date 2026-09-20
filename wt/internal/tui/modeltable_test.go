@@ -4,17 +4,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 func tableTestRows() []tableRow {
 	return []tableRow{
-		{model: config.Model{ID: "openrouter/cheap", Family: "kimi", Cost: config.ModelCost{InputPricePerMillion: f64(0.5), OutputPricePerMillion: f64(2)}},
-			location: config.LocationCloud, status: statusOK, exposed: true, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
-		{model: config.Model{ID: "omlx/Qwen3.8-27B-4bit", Family: "qwen"}, location: config.LocationLocal, status: statusOK, running: true},
-		{model: config.Model{ID: "omlx/disc", ProviderID: "omlx"}, location: config.LocationLocal, status: statusNew, discovered: true},
-		{model: config.Model{ID: "omlx/gone", ProviderID: "omlx", Family: "qwen"}, location: config.LocationLocal, status: statusAbsent},
+		{Row: catalog.Row{Model: config.Model{ID: "openrouter/cheap", Family: "kimi", Cost: config.ModelCost{InputPricePerMillion: f64(0.5), OutputPricePerMillion: f64(2)}},
+			Location: config.LocationCloud, Status: catalog.StatusOK, Exposed: true}, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
+		{Row: catalog.Row{Model: config.Model{ID: "omlx/Qwen3.8-27B-4bit", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusOK, Running: true}},
+		{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx"}, Location: config.LocationLocal, Status: catalog.StatusNew, Discovered: true}},
+		{Row: catalog.Row{Model: config.Model{ID: "omlx/gone", ProviderID: "omlx", Family: "qwen"}, Location: config.LocationLocal, Status: catalog.StatusAbsent}},
 	}
 }
 
@@ -120,7 +121,7 @@ func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
 	}
-	row := tableRow{model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, location: config.LocationLocal, status: statusNew, running: true, discovered: true}
+	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusNew, Running: true, Discovered: true}}
 
 	direct := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
 	if direct.items[0].blocked != "" || direct.items[0].exception != "" {
@@ -144,7 +145,7 @@ func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
 		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
-	row := tableRow{model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, location: config.LocationLocal, status: statusNew, running: true, discovered: true}
+	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusNew, Running: true, Discovered: true}}
 	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
 	if tbl.items[0].exception != "(litellm required)" || tbl.items[0].blocked != "" {
 		t.Errorf("exception=%q blocked=%q, want (litellm required) and no block", tbl.items[0].exception, tbl.items[0].blocked)
@@ -167,7 +168,7 @@ func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
 // for. Keep the two concerns on one row.
 func TestRenderTableUnknownStatusAligns(t *testing.T) {
 	rows := tableTestRows()
-	rows[1].status = statusUnknown // running omlx row: widest status, non-empty RUNNING
+	rows[1].Status = catalog.StatusUnknown // running omlx row: widest status, non-empty RUNNING
 	tbl := renderTable(rows, nil, "", nil, "")
 	col := func(name string) int { return len([]rune(tbl.header[:strings.Index(tbl.header, name)])) }
 	line := func(i int) []rune { return []rune(strings.Repeat(" ", 4) + tbl.items[i].line) }
@@ -190,7 +191,7 @@ func TestRenderTableStartRowNotStartableWhenRouteUnresolvable(t *testing.T) {
 		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
-	row := tableRow{model: config.Model{ID: "omlx/x", ProviderID: "omlx", ModelName: "x", Location: config.LocationLocal}, location: config.LocationLocal, status: statusOK}
+	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/x", ProviderID: "omlx", ModelName: "x", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusOK}}
 	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
 	it := tbl.items[0]
 	if it.start || it.blocked == "" || it.exception != "(litellm required)" {

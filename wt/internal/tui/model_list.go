@@ -43,7 +43,7 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // blocked, when non-empty, is the hint the agent flow's model phase shows on
 // Enter instead of launching or starting: a local model that is not on disk,
 // a local provider wt has no lifecycle backend for, or a discovered row whose
-// route would go through LiteLLM (see rowAction/blockReason). A non-running
+// route would go through LiteLLM (see catalog.Row Action/BlockReason). A non-running
 // local model is deliberately NOT one of these — it is a start row. It is the
 // agent flow only that honors it: PickModel (wt smoke's standalone picker)
 // selects the highlighted row unconditionally, since its rows come from a
