@@ -145,17 +145,27 @@ func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
 	}
 }
 
-// TestRenderTableUnknownStatusAligns verifies a 7-rune "unknown" cell widens the
-// STATUS column for the whole table rather than pushing every later column out
-// of line — the header and the rows must agree, or RUNNING and COST start
+// TestRenderTableUnknownStatusAligns verifies a 7-rune "unknown" cell widens
+// the STATUS column for the whole table rather than pushing every later column
+// out of line — the header and the rows must agree, or RUNNING and COST start
 // rendering under the wrong headings.
+//
+// The asserted row is deliberately BOTH the widest-status row and one whose
+// later cells are non-empty. padRunes pads but never truncates, so a hardcoded
+// narrow STATUS width leaves the row's cell at 7 runes while the header's stays
+// at 6: the header is the narrow side and every row drifts one rune right. Only
+// a row carrying the widest status AND something in the following column can
+// expose that drift. An earlier version of this test asserted on the running
+// row while marking a *different* row unknown — it passed with the width
+// computation fully reverted, so it did not catch the regression it was named
+// for. Keep the two concerns on one row.
 func TestRenderTableUnknownStatusAligns(t *testing.T) {
 	rows := tableTestRows()
-	rows[3].status = statusUnknown
+	rows[1].status = statusUnknown // running omlx row: widest status, non-empty RUNNING
 	tbl := renderTable(rows, nil, "", nil, "")
 	col := func(name string) int { return len([]rune(tbl.header[:strings.Index(tbl.header, name)])) }
 	line := func(i int) []rune { return []rune(strings.Repeat(" ", 4) + tbl.items[i].line) }
-	if got := string(line(3)[col("STATUS") : col("STATUS")+7]); got != "unknown" {
+	if got := string(line(1)[col("STATUS") : col("STATUS")+7]); got != "unknown" {
 		t.Errorf("STATUS cell = %q, want unknown", got)
 	}
 	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
