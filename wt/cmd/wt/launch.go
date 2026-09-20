@@ -25,17 +25,10 @@ func realEmitPriceNotice() {
 	agents.PrintPriceNotice()
 }
 
-// releaseSession is a seam for tests: production drops this wt process's own
-// refcount entry once the agent has exited, so the post-exit stop picker does
-// not count the finished session as a user of its model. Best-effort, like
-// every refcount write.
-var releaseSession = realReleaseSession
-
-func realReleaseSession() {
-	if err := refcount.NewStore().Release(os.Getpid()); err != nil {
-		fmt.Fprintf(os.Stderr, "note: refcount state not released: %v\n", err)
-	}
-}
+// releaseSession is a seam for tests: production releases this wt process's own
+// refcount entry (survey.ReleaseSession) so the post-exit stop picker does not
+// count the finished session as a user of its model. Best-effort.
+var releaseSession = survey.ReleaseSession
 
 // runStopPicker is a seam for tests: production offers to stop running local
 // models no other wt session uses (issue #115); tests swap it so nothing

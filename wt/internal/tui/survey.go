@@ -1,12 +1,10 @@
 package tui
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -46,13 +44,7 @@ func realRunStopPhase(cfg *config.Config) {
 	survey.Picker(os.Stdin, os.Stdout, cfg)
 }
 
-// releaseSession is a seam for tests: production drops this wt process's own
-// refcount entry once the agent has exited, so the stop picker does not count
-// the finished session as a user of its model. Best-effort.
-var releaseSession = realReleaseSession
-
-func realReleaseSession() {
-	if err := refcount.NewStore().Release(os.Getpid()); err != nil {
-		fmt.Fprintf(os.Stderr, "note: refcount state not released: %v\n", err)
-	}
-}
+// releaseSession is a seam for tests: production releases this wt process's own
+// refcount entry (survey.ReleaseSession) so the post-exit stop picker does not
+// count the finished session as a user of its model. Best-effort.
+var releaseSession = survey.ReleaseSession

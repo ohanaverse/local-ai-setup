@@ -39,6 +39,20 @@ func defaultStopDeps() stopDeps {
 	}
 }
 
+// ReleaseSession drops this wt process's own refcount entry, best-effort: a
+// failure warns on stderr but never fails the exit path, since the next
+// launch's Sweep prunes a dead pid's entry anyway. One implementation for both
+// post-exit paths (cmd/wt's runAgentCmd and internal/tui's
+// printPendingSummaryAndSurvey), which used to carry identical copies of this
+// function and its warning string. Call it BEFORE Picker: the picker offers
+// only models no live session uses, so wt's own entry would otherwise always
+// count the model this session just used as in use.
+func ReleaseSession() {
+	if err := refcount.NewStore().Release(os.Getpid()); err != nil {
+		fmt.Fprintf(os.Stderr, "note: refcount state not released: %v\n", err)
+	}
+}
+
 // Picker offers to stop running local models that no live wt session is
 // using (issue #115). It prints nothing and returns immediately when stdin is
 // not a TTY or when no such model exists. The caller must release wt's own
