@@ -686,7 +686,13 @@ var runInventory = localmodels.Inventory
 // (EligibleModelsIn only filters when a tag set is present) while the
 // header still names the rotation group.
 //
-// Otherwise the only route-back is an empty table.
+// models must be non-empty: buildRows emits one row per model, so an empty
+// table is only possible from an empty input, and both callers (the phaseAgent
+// Enter path and proceedFromSelectedPath's pinned-agent path) already guard
+// len(models) == 0 with their own status message. A future caller must do the
+// same — there is no empty-table branch here to catch it.
+//
+// The only route-back is a rejected -M pin.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
@@ -740,9 +746,6 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
 		usage:          newUsageStore(), stats: surveyStats,
 	}, newRefcountStore(), lastID)
-	if len(tbl.items) == 0 {
-		return routeBack(fmt.Sprintf("no models for agent %q — edit your config", agent))
-	}
 
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
