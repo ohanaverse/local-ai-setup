@@ -5,8 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -89,6 +92,22 @@ func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
 	return out
 }
 
+// stopSignalCtx is a test seam: production uses realStopSignalCtx. It mirrors
+// cmd/wt/start.go's startSignalCtx, in the var/realfunc shape wt/CLAUDE.md
+// documents for new seams.
+var stopSignalCtx = realStopSignalCtx
+
+// realStopSignalCtx returns a context cancelled by Ctrl+C or SIGTERM. The
+// picker's stops run after the agent has exited, so nothing above it is
+// watching for those signals any more: without a context of its own, a wedged
+// `ollama stop`/`omlx stop`/`mtplx stop` would block a session that has already
+// finished its agent, with no way out but killing the terminal. Cancelling is
+// deliberately not fatal — the stop in flight is killed, the rest are skipped,
+// and wt still prints its summary.
+func realStopSignalCtx() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	offered := stoppable(cfg, d)
 	if len(offered) == 0 {
@@ -104,8 +123,19 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	if len(selected) == 0 {
 		return
 	}
+	// These stops run after the agent has exited, so this path owns the only
+	// Ctrl+C handling left — see realStopSignalCtx.
+	ctx, cancel := stopSignalCtx()
+	defer cancel()
 	stoppedFamily := map[string]bool{}
 	for _, i := range selected {
+		if ctx.Err() != nil {
+			// Ctrl+C landed while a stop was in flight (or before the first
+			// one): complete the current line and stop offering the rest
+			// rather than starting stops nobody is waiting for.
+			fmt.Fprintln(w, "cancelled")
+			break
+		}
 		e := offered[i]
 		fmt.Fprintf(w, "Stopping %s... ", e.ModelID)
 		fam := localmodels.Family(e.ProviderID)
@@ -116,7 +146,7 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 				continue
 			}
 		}
-		if err := d.stop(context.Background(), cfg, e.ProviderID, e.ModelName); err != nil {
+		if err := d.stop(ctx, cfg, e.ProviderID, e.ModelName); err != nil {
 			fmt.Fprintf(w, "failed: %v\n", err)
 			continue
 		}

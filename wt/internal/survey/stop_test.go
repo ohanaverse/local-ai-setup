@@ -18,6 +18,14 @@ type stopHarness struct {
 	counts map[string]int
 	stops  []string // "provider|modelName"
 	failOn string   // modelName whose stop fails
+	// cancelOn names a modelName whose stop cancels the picker's context, so a
+	// test can simulate Ctrl+C arriving while that stop was in flight; cancel is
+	// the CancelFunc for the context the test installed via stopSignalCtx.
+	cancelOn string
+	cancel   context.CancelFunc
+	// ctxSeen is the context the picker handed to the first stop, so a test can
+	// prove it is cancellable — context.Background() has a nil Done channel.
+	ctxSeen context.Context
 }
 
 func (h *stopHarness) deps() stopDeps {
@@ -30,8 +38,14 @@ func (h *stopHarness) deps() stopDeps {
 			}
 			return out
 		},
-		stop: func(_ context.Context, _ *config.Config, provider, name string) error {
+		stop: func(ctx context.Context, _ *config.Config, provider, name string) error {
+			if h.ctxSeen == nil {
+				h.ctxSeen = ctx
+			}
 			h.stops = append(h.stops, provider+"|"+name)
+			if h.cancel != nil && name == h.cancelOn {
+				h.cancel()
+			}
 			if name == h.failOn {
 				return errors.New("boom")
 			}
@@ -187,5 +201,39 @@ func TestStopPickerFlushesTTYOnEveryReadExit(t *testing.T) {
 	runStopPicker(strings.NewReader("\n"), &bytes.Buffer{}, &config.Config{}, h.deps())
 	if flushes != 0 {
 		t.Errorf("nothing offered: flushes = %d, want 0", flushes)
+	}
+}
+
+// TestStopPickerStopIsCancellable verifies the picker's stops run on a
+// cancellable context, and that cancelling it abandons the remaining models
+// instead of starting more stops. These stops happen after the agent has exited,
+// so this is the only Ctrl+C handling left on the path: on a non-cancellable
+// context a wedged provider CLI would block the session with no way out.
+func TestStopPickerStopIsCancellable(t *testing.T) {
+	prev := stopSignalCtx
+	t.Cleanup(func() { stopSignalCtx = prev })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+
+	h := &stopHarness{
+		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/a", "a"),
+			runningEntry("ollama", "ollama/b", "b"),
+		}},
+		cancelOn: "a",
+		cancel:   cancel,
+	}
+	var out bytes.Buffer
+	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+
+	if h.ctxSeen == nil || h.ctxSeen.Done() == nil {
+		t.Error("stop ran on a context with no cancellation path (context.Background)")
+	}
+	if len(h.stops) != 1 || h.stops[0] != "ollama|a" {
+		t.Fatalf("stops = %v, want only the first: the second must not start after a cancel", h.stops)
+	}
+	if !strings.Contains(out.String(), "cancelled") {
+		t.Errorf("output = %q, want a cancelled line", out.String())
 	}
 }
