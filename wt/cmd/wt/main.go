@@ -298,6 +298,9 @@ func rootCmd() *cobra.Command {
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
+			// --replace is a process-wide launch mode: resolveModel's start
+			// path reads it, and the TUI receives it as an argument.
+			allowReplace, _ = cmd.Flags().GetBool("replace")
 
 			// Launch paths require a valid config. The `wt config` subcommand
 			// bypasses this so it can repair a broken config.toml. Command
@@ -360,6 +363,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("worktree", "W", "", "Use/create worktree for branch")
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
+	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")

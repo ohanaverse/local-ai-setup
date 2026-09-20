@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -16,18 +15,10 @@ import (
 // verdict stub it with their own snapshot.
 var probeInventory = localmodels.Inventory
 
-// startModel is the non-TUI start seam: production starts the pinned local
-// model through Task 5's startForLaunch driver. Until Task 5 wires it, the
-// stub fails closed — nothing may silently start a real model process.
-var startModel = func(*config.Config, catalog.Row, bool) error {
-	return errors.New("startModel: no start driver wired yet (Task 5)")
-}
-
 // allowReplace is the process-wide --replace mode: set once from the root
 // command's flag and read here. It is not a parameter because it is CLI mode
 // state, not per-launch state — threading it through launchFiltered (and its
 // dozen test call sites) would be churn for a flag only this function reads.
-// (Declared here so this task stands alone; Task 5 fills in the flag wiring.)
 var allowReplace bool
 
 // errCommandAgent is the sentinel returned by resolveModel when the
