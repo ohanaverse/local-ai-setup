@@ -150,12 +150,34 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		return fmt.Errorf("cancelled before %s started: %w", id, err)
 	}
 
+	// ask races the prompt against ctx: the read on /dev/tty cannot be
+	// interrupted, and the signal handler swallows Ctrl+C, so without the race
+	// Ctrl+C at the y/N prompt would only cancel ctx and leave the read
+	// blocked until Enter. The abandoned read goroutine dies with the process.
+	ask := func(question string) (bool, error) {
+		type answer struct {
+			ok  bool
+			err error
+		}
+		ch := make(chan answer, 1)
+		go func() {
+			ok, err := askReplace(question)
+			ch <- answer{ok, err}
+		}()
+		select {
+		case a := <-ch:
+			return a.ok, a.err
+		case <-ctx.Done():
+			return false, fmt.Errorf("cancelled before %s started: %w", id, ctx.Err())
+		}
+	}
+
 	var occ *lifecycle.OccupiedError
 	var unk *lifecycle.OccupancyUnknownError
 	switch {
 	case errors.As(err, &occ):
 		if !allowReplace {
-			ok, perr := askReplace(fmt.Sprintf("%s is running; stop it and start %s?", occ.Occupant.ModelID, id))
+			ok, perr := ask(fmt.Sprintf("%s is running; stop it and start %s?", occ.Occupant.ModelID, id))
 			if perr != nil {
 				return perr
 			}
@@ -166,7 +188,7 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		fmt.Fprintf(osStderr, "wt: replacing %s\n", occ.Occupant.ModelID)
 	case errors.As(err, &unk):
 		if !allowReplace {
-			ok, perr := askReplace(fmt.Sprintf("cannot tell whether %s at %s is already serving a model; replace it with %s?", unk.ProviderID, unk.Origin, id))
+			ok, perr := ask(fmt.Sprintf("cannot tell whether %s at %s is already serving a model; replace it with %s?", unk.ProviderID, unk.Origin, id))
 			if perr != nil {
 				return perr
 			}
@@ -176,7 +198,7 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		}
 		fmt.Fprintf(osStderr, "wt: replacing whatever %s is serving at %s\n", unk.ProviderID, unk.Origin)
 	default:
-		return err
+		return startFailure(id, err)
 	}
 
 	opts.AllowReplace = true
@@ -188,8 +210,23 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 		return fmt.Errorf("cancelled before %s started: %w", id, err)
 	}
 	// Replace was already granted; anything that fails now is a different
-	// failure — report it as-is rather than prompting again.
-	return err
+	// failure — report it rather than prompting again.
+	return startFailure(id, err)
+}
+
+// startError carries the shared one-line wording while keeping the engine's
+// typed error on the chain, so callers can still errors.As it.
+type startError struct {
+	msg string
+	err error
+}
+
+func (e *startError) Error() string { return e.msg }
+func (e *startError) Unwrap() error { return e.err }
+
+// startFailure words a failed start the way the TUI does.
+func startFailure(id string, err error) error {
+	return &startError{msg: lifecycle.StartErrorMessage(id, err), err: err}
 }
 
 // askReplace resolves a replacement question: with a TTY it asks on

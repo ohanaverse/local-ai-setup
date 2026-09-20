@@ -332,3 +332,51 @@ func readSome(t *testing.T, r *os.File) string {
 	n, _ := r.Read(buf[:])
 	return string(buf[:n])
 }
+
+// TestStartForLaunchCtrlCAbortsReplacePrompt verifies Ctrl+C while the y/N
+// prompt is blocked aborts the start immediately. The prompt's terminal read
+// cannot be interrupted and the signal handler swallows SIGINT, so without the
+// ctx race the user would have to press Enter and then Ctrl+C a second time.
+func TestStartForLaunchCtrlCAbortsReplacePrompt(t *testing.T) {
+	cancel := stubSignals(t)
+	oldTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	t.Cleanup(func() { stdinTTY = oldTTY })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	oldConfirm := confirmReplace
+	confirmReplace = func(string) (bool, error) {
+		cancel()
+		<-release // a terminal read that never returns until Enter
+		return false, nil
+	}
+	t.Cleanup(func() { confirmReplace = oldConfirm })
+	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	replaces := stubLifecycleStart(t, []error{occ})
+
+	err := startForLaunch(&config.Config{}, startTestRow(), false)
+	if err == nil || !strings.Contains(err.Error(), "cancelled before omlx/qwen3.8") {
+		t.Fatalf("err = %v, want a cancellation naming the model", err)
+	}
+	if len(*replaces) != 1 {
+		t.Errorf("engine calls = %v, want 1 (no retry after Ctrl+C)", *replaces)
+	}
+}
+
+// TestStartForLaunchFailureUsesSharedWording verifies a down daemon is worded
+// like the TUI's status line, not as a raw engine error, while the typed cause
+// stays on the error chain. The two start paths must not drift.
+func TestStartForLaunchFailureUsesSharedWording(t *testing.T) {
+	stubSignals(t)
+	down := &lifecycle.DaemonDownError{Provider: "omlx", Origin: "http://localhost:8000"}
+	stubLifecycleStart(t, []error{down})
+
+	err := startForLaunch(&config.Config{}, startTestRow(), true)
+	want := lifecycle.StartErrorMessage("omlx/qwen3.8", down)
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if !errors.Is(err, error(down)) {
+		t.Errorf("err = %v, want DaemonDownError still on the chain", err)
+	}
+}
