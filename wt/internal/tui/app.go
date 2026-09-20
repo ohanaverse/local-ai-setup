@@ -660,7 +660,11 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 }
 
 // runInventory is a test seam: production probes the live local providers.
-var runInventory = localmodels.Inventory
+var runInventory = realRunInventory
+
+// realRunInventory is the production implementation of the runInventory seam: a
+// live probe of every local provider.
+func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmodels.Inventory(cfg) }
 
 // enterModelPhase builds the selector table for the agent and either
 // transitions to phaseModel or, when exactly one launchable row exists, skips

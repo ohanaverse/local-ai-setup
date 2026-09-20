@@ -11,7 +11,11 @@ import (
 // installed is a test seam wrapping agents.Installed. Production code uses
 // the real PATH lookup; tests override it to control the installed state
 // deterministically without depending on the host's installed binaries.
-var installed = agents.Installed
+var installed = realInstalled
+
+// realInstalled is the production implementation of the installed seam: a real
+// PATH lookup.
+func realInstalled(bin string) bool { return agents.Installed(bin) }
 
 // agentItem is one row in the phaseAgent picker. command distinguishes
 // agents (require model layer) from commands (launch directly). issue is a
