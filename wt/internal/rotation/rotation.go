@@ -77,16 +77,20 @@ func cfgHasModels(cfg *config.Config) bool {
 // for agent under the given tags/family filters. It computes the eligible
 // list via cfg.EligibleModels and delegates to NextFromEligible.
 //
-// WARNING: cfg.EligibleModels does NOT apply the local-model running gate
-// (internal/localgate.Apply/FilterToRunningLocal) — since the 2026-09-15
-// local-model-visibility design, a local model is Stage-1 "exposed"
-// unconditionally, so Next's candidate set can include every local model
-// registered for the agent regardless of whether it's actually running.
-// Today Next has no production caller — cmd/wt/launch.go and
-// internal/tui/app.go both call NextFromEligible directly with an
-// already-gated slice — but any future caller of Next itself must run its
-// result (or the eligible slice fed to it) through localgate.Apply first,
-// or use NextFromEligible with a pre-gated slice instead.
+// Rotation never launches on its own authority: the non-TUI rotation
+// fallback picks only from the launchable list resolveModel returns —
+// cloud rows, or local rows the live probe reports as running — so an
+// auto-launched rotation pick can never target a server that is not up.
+// The TUI also calls NextFromEligible, but only to position the picker
+// cursor, on a slice that also includes start rows; Enter there drives
+// the visible start flow, so nothing starts unasked. Starting a local
+// model is the user's decision (-M pin, or Enter on a start row), never
+// rotation's. Next itself computes the eligible list via
+// cfg.EligibleModels (exposure and tag/family filters only, no running
+// check), so it has no production caller: launch callers
+// (cmd/wt/launch.go) hand NextFromEligible a slice resolved from live
+// rows instead, and a future auto-launch caller must do the same rather
+// than call Next.
 func (r *Rotation) Next(cfg *config.Config, agent, tags, family string) (config.Model, bool) {
 	if !cfgHasModels(cfg) {
 		return config.Model{}, false
@@ -99,8 +103,9 @@ func (r *Rotation) Next(cfg *config.Config, agent, tags, family string) (config.
 }
 
 // NextFromEligible is the rotation core without the expensive
-// cfg.EligibleModels call. The caller (launchFilteredImpl) already has the
-// eligible slice from resolveModel, so this avoids computing it twice.
+// cfg.EligibleModels call. Callers already hold the eligible slice
+// (launchFilteredImpl from resolveModel; the TUI from its table rows), so
+// this avoids recomputing it.
 func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config) (config.Model, bool) {
 	if len(eligible) == 0 || !cfgHasModels(cfg) {
 		return config.Model{}, false

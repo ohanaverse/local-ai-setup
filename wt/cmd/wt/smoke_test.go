@@ -54,8 +54,8 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 // stubSmokeProbe makes smoke.Eligibility (which resolveSmokeModel calls)
 // see snap instead of probing live: cmd/wt cannot assign internal/smoke's
 // package-private seam, so internal/smoke exposes SetSmokeProbeForTest for
-// exactly this — the same cross-package test-hook pattern
-// config.SetLocalRunningForTest uses.
+// exactly this — the same package-level seam-and-restore pattern as
+// cmd/wt's own probeInventory seam in resolve.go.
 func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
 	t.Helper()
 	t.Cleanup(smoke.SetSmokeProbeForTest(snap))

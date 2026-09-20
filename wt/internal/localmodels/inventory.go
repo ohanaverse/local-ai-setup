@@ -170,8 +170,9 @@ func familyProviderIDs(family string) []string {
 
 // FamilyOrigin is the probe origin for a family and whether it came from the
 // registry (the first provider row of the family with an auth.base_url) rather
-// than the default port. localgate uses it so both packages probe the same
-// server.
+// than the default port. The inventory probe and internal/lifecycle's
+// start/stop flows both resolve origins through it, so they always describe
+// the same server.
 func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistry bool) {
 	def := ""
 	switch family {
