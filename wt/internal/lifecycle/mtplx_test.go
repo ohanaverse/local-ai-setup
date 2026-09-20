@@ -317,3 +317,83 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 		t.Errorf("logTail on a missing file = %q, want empty", got)
 	}
 }
+
+// TestLogTailClampsWhatArrivedAfterTheSizeWasSampled pins the clamp: the one
+// guarantee that exists to make logTail's "at most max bytes" promise true even
+// when more bytes arrive between sampling the size and reading. It matters
+// because a failed start reads this tail to explain itself, and the log is
+// shared with modelman and appended by a live subprocess — so "more arrived
+// after the stat" is reachable exactly when the tail is read.
+//
+// A regular file cannot reach the clamp: when the file is longer than max the
+// seek already leaves exactly max bytes, so len(b) > max is false (which is why
+// the boundary cases above cannot pin it). A FIFO can — it reports size 0, so
+// the seek guard is skipped and the whole payload comes back. That is the
+// append race made deterministic rather than simulated: without the clamp these
+// assertions return all 4100 bytes, with it the last max. The writer closes, so
+// ReadAll sees EOF — no sleeps and no timing dependence.
+//
+// Note what this does NOT pin: the bounded read. A logTail that read the whole
+// file and then clamped would pass, since the clamp is the behaviour under
+// test; only the returned value's guarantee is asserted here.
+func TestLogTailClampsWhatArrivedAfterTheSizeWasSampled(t *testing.T) {
+	dir := t.TempDir()
+	content := append(bytes.Repeat([]byte("A"), 4096), []byte("TAIL")...)
+
+	// fifoTail makes one logTail call over a fresh FIFO carrying content, and
+	// returns what logTail gave back plus any error from the writing end. Each
+	// call needs its own FIFO: logTail's open blocks until a writer opens, and
+	// that writer must close to give the read a clean EOF. The writer's error
+	// travels on a channel so the test never reads a variable the goroutine
+	// writes (-race).
+	n := 0
+	fifoTail := func(max int) (string, error) {
+		t.Helper()
+		n++ // unique per call: two calls must never share a path
+		fifo := filepath.Join(dir, fmt.Sprintf("log-%d-%d.fifo", max, n))
+		if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+			// A name collision is a bug in this fixture, not an environment
+			// limit. Skipping on it would hide the only pin on the clamp, and
+			// hide it green: CI runs `go test ./...` non-verbose, where a SKIP
+			// prints nothing.
+			if errors.Is(err, syscall.EEXIST) {
+				t.Fatalf("FIFO %s already exists: fixture names must be unique per call", fifo)
+			}
+			t.Skipf("cannot create a FIFO in this environment: %v", err)
+		}
+		werr := make(chan error, 1)
+		go func() {
+			// Blocks until logTail opens the read end, which is what lets this
+			// writer run at all: if logTail's open were to fail, this goroutine
+			// would stay blocked and the receive below would never return, so
+			// the error check after the read is unreachable for that case.
+			w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+			if err == nil {
+				_, err = w.Write(content)
+				_ = w.Close()
+			}
+			werr <- err
+		}()
+		// Operands evaluate left to right: read first, then collect the error.
+		return pidProcess{name: "mtplx", logfile: fifo}.logTail(max), <-werr
+	}
+
+	// max < the payload: the clamp must keep the last max bytes of what it read.
+	got, werr := fifoTail(4)
+	if werr != nil {
+		t.Fatalf("writing the FIFO failed: %v", werr)
+	}
+	if got != "TAIL" {
+		t.Errorf("logTail(4) over a FIFO = %q, want %q: the clamp must keep the last max bytes of what was read", got, "TAIL")
+	}
+
+	// max == 0: the clamp must hand back nothing, not the 4100 bytes it read.
+	// An off-by-one in the clamp's index fails here too.
+	got, werr = fifoTail(0)
+	if werr != nil {
+		t.Fatalf("writing the FIFO failed: %v", werr)
+	}
+	if got != "" {
+		t.Errorf("logTail(0) over a FIFO = %d bytes, want empty: the clamp must never hand back everything it read", len(got))
+	}
+}
