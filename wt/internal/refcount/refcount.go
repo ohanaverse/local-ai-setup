@@ -133,6 +133,38 @@ func (s *StoreImpl) Sweep() error {
 	})
 }
 
+// Release drops every entry recorded for pid. A wt session calls it once its
+// agent has exited, so the post-exit model-stopping picker does not count wt's
+// own finished session as a user of the model (the entry would otherwise live
+// until Sweep finds this pid dead). A missing file is a no-op; corrupt lines
+// are dropped, as in Sweep.
+func (s *StoreImpl) Release(pid int) error {
+	return s.withLock(func() error {
+		data, err := os.ReadFile(s.path())
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		var out []byte
+		scanner := bufio.NewScanner(bytes.NewReader(data))
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			var e entry
+			if err := json.Unmarshal(line, &e); err != nil || e.Pid == pid {
+				continue
+			}
+			out = append(out, line...)
+			out = append(out, '\n')
+		}
+		if err := scanner.Err(); err != nil {
+			return err
+		}
+		return config.WriteFileAtomic(s.path(), out, 0o600)
+	})
+}
+
 // Counts returns the live-session count per model in modelIDs, zero-filling
 // every requested ID. It is a pure read: liveness is only re-checked by
 // Sweep, not here, so a caller that wants fresh counts must have swept
