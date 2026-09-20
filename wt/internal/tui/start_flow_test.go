@@ -478,6 +478,62 @@ func TestStartFailureRefreshesTable(t *testing.T) {
 	}
 }
 
+// TestSuccessfulStartThenFailedLaunchRefreshesTable verifies that when a model
+// starts successfully but the launch built afterwards fails, the picker is
+// rebuilt from a fresh inventory. The model is loaded and serving by then, so
+// the table built before the attempt still reports RUNNING="-" — the user
+// cannot tell the start worked, and nothing re-probes until some later start
+// fails. The launch is made to fail the way launch_lifecycle_test.go does it,
+// with an agent no driver is registered for.
+func TestSuccessfulStartThenFailedLaunchRefreshesTable(t *testing.T) {
+	// The first probe is the table built before the start: the model is not
+	// loaded yet, so its row does not show run. Every later probe reports what
+	// the successful start produced.
+	probes := 0
+	old := runInventory
+	runInventory = func(*config.Config) localmodels.Snapshot {
+		probes++
+		return localmodels.Snapshot{Entries: []localmodels.Entry{{
+			ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8",
+			Registered: true, Running: probes > 1,
+		}}}
+	}
+	t.Cleanup(func() { runInventory = old })
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+
+	m := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	if probes != 1 {
+		t.Fatalf("precondition: probes = %d after entering the model phase, want 1", probes)
+	}
+	// The start does not consult the agent; only the launch built after it
+	// does, and an unregistered agent makes launchAgent fail.
+	m.agent = "not-a-real-agent"
+
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, refreshCmd := updateMsg(got, recvStart(t, got))
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel after the launch failed", got.phase)
+	}
+	if !strings.Contains(got.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch failure", got.status)
+	}
+	if refreshCmd == nil {
+		t.Fatal("the failed launch returned a nil cmd, so the picker was never re-probed")
+	}
+
+	got = drainCmds(t, got, refreshCmd)
+	if probes != 2 {
+		t.Errorf("runInventory calls = %d, want 2 (the failed launch refreshes the table)", probes)
+	}
+	idx := indexOfID(got, "omlx/qwen3.8")
+	if idx < 0 {
+		t.Fatalf("omlx/qwen3.8 row missing after the refresh: %v", itemIDs(got))
+	}
+	if line := got.models.Items()[idx].(*modelItem).line; !runningCell(line) {
+		t.Errorf("row %q does not show run after a successful start — the table still lies about RUNNING", line)
+	}
+}
+
 // TestStaleStartMessagesIgnored verifies start messages carrying a run id
 // that does not match the in-flight start change nothing — a late message
 // from a cancelled run must not overwrite the current flow's stage or

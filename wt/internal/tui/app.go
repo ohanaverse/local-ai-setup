@@ -993,6 +993,12 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 // proceedToLaunch checks for a prior session and either launches the agent
 // directly or transitions to the resume prompt. It is the shared flow used
 // by both the phaseModel enter handler and the ollama warning proceed choice.
+// Every path that bails back to the picker re-probes the table: this is reached
+// from the start flow, where the table was built before the attempt, so a start
+// that succeeded and then failed to launch would otherwise leave the picker
+// claiming RUNNING="-" for a model that is loaded and serving. The probe is
+// deferred to a command, so paying for it on the paths that did not start
+// anything costs nothing on the update loop.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.current is gone; m.models is the
@@ -1000,7 +1006,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	highlighted, ok := m.models.SelectedItem().(*modelItem)
 	if !ok {
 		m.status = "no model selected"
-		return m, nil
+		return m.refreshTable()
 	}
 	// Capture the model so launchAndRecord records exactly this pick in
 	// both the no-session and resume paths, without re-reading the picker.
@@ -1016,7 +1022,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 			sess, err = r.LatestSession(m.selectedPath)
 			if err != nil {
 				m.status = "session check failed: " + err.Error()
-				return m, nil
+				return m.refreshTable()
 			}
 		}
 	}
@@ -1024,7 +1030,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 		if err != nil {
 			m.status = "launch failed: " + err.Error()
-			return m, nil
+			return m.refreshTable()
 		}
 		return m.launchAndRecord(cmd)
 	}
