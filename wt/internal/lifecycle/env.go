@@ -40,7 +40,7 @@ func defaultEnv() *env {
 		lookPath:       exec.LookPath,
 		run:            runCommand,
 		inventory:      localmodels.Inventory,
-		backends:       map[string]backend{},
+		backends:       map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}},
 		mtplxProc:      pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"},
 		pollInterval:   time.Second,
 		warmupTimeout:  600 * time.Second,
