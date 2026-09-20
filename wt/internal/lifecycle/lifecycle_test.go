@@ -189,3 +189,23 @@ func TestTypedErrorMessages(t *testing.T) {
 		}
 	}
 }
+
+// TestOccupantDerivesSingleModelFromBackendRegistry verifies Occupant's
+// single-model rule comes from the same registry defaultEnv builds, for every
+// registered family. A backend that is startable (singleModel true) while
+// Occupant reports no occupant is exactly the state in which a running model
+// gets replaced with no confirmation — the trap a hand-maintained family list
+// leaves for the next backend.
+func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
+	if len(defaultEnv().backends) != len(backendsByFamily) {
+		t.Fatalf("defaultEnv registers %d backends, backendsByFamily has %d — they must not drift",
+			len(defaultEnv().backends), len(backendsByFamily))
+	}
+	for family, b := range backendsByFamily {
+		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
+		_, ok := Occupant(Target{ProviderID: family, ModelName: "wanted"}, snap)
+		if ok != b.singleModel() {
+			t.Errorf("family %s: Occupant reported an occupant=%v but singleModel()=%v", family, ok, b.singleModel())
+		}
+	}
+}

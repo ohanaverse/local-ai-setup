@@ -97,12 +97,24 @@ func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
 	return false
 }
 
+// backendsByFamily is the single source of truth for which providers wt can
+// start and which of them serve one model at a time. defaultEnv copies it, and
+// Occupant reads it (Occupant has no *env). Keeping these two in agreement used
+// to be manual — Occupant held its own hardcoded family list — so a new
+// single-model backend could be startable while Occupant still reported no
+// occupant, replacing a running model without a confirmation.
+var backendsByFamily = map[string]backend{
+	"ollama": ollamaBackend{},
+	"omlx":   omlxBackend{},
+	"mtplx":  mtplxBackend{},
+}
+
 // Occupant reports the running model that starting t would replace: none for
 // ollama (multi-tenant) or unsupported providers; on omlx/omlx-6bit (one
 // domain) and mtplx, any running model of the family other than t itself.
 func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 	family := localmodels.Family(t.ProviderID)
-	if family != "omlx" && family != "mtplx" {
+	if b := backendsByFamily[family]; b == nil || !b.singleModel() {
 		return localmodels.Entry{}, false
 	}
 	for _, en := range snap.Entries {
