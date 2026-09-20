@@ -6,6 +6,7 @@ package localmodels
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -29,17 +30,30 @@ func OllamaNameMatches(have, want string) bool {
 }
 
 // FetchModelIDs GETs an OpenAI-compatible /v1/models endpoint and returns the
-// ids of the models the server is serving; nil on any failure (connection
-// refused, timeout, non-2xx, non-JSON body) — nil reads as "nothing serving",
-// never as "unknown".
+// ids the server is serving, or nil on any failure. Because nil cannot
+// distinguish "nothing is serving" from "could not ask", callers that need
+// that distinction must use FetchModelIDsErr instead.
 func FetchModelIDs(client *http.Client, url string) []string {
-	resp, err := client.Get(url)
+	ids, err := FetchModelIDsErr(client, url)
 	if err != nil {
 		return nil
 	}
+	return ids
+}
+
+// FetchModelIDsErr is FetchModelIDs with the failure mode preserved. A non-nil
+// error means the server gave no usable answer (refused connection, timeout,
+// non-2xx, undecodable body), so an empty id list must not be read as "nothing
+// is serving". A nil error with zero ids means the server answered and is
+// serving nothing.
+func FetchModelIDsErr(client *http.Client, url string) ([]string, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil
+		return nil, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
 	}
 	var body struct {
 		Data []struct {
@@ -47,7 +61,7 @@ func FetchModelIDs(client *http.Client, url string) []string {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil
+		return nil, fmt.Errorf("GET %s: %w", url, err)
 	}
 	ids := make([]string, 0, len(body.Data))
 	for _, d := range body.Data {
@@ -55,5 +69,5 @@ func FetchModelIDs(client *http.Client, url string) []string {
 			ids = append(ids, d.ID)
 		}
 	}
-	return ids
+	return ids, nil
 }

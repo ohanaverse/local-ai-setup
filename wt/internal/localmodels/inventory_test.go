@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -426,5 +428,118 @@ func TestInventoryArtifactKnownReflectsProbeOutcome(t *testing.T) {
 	}, testClient)
 	if e, ok := byModelID(mlx, "mlx_lm_server/x"); !ok || e.ArtifactKnown {
 		t.Errorf("mlx_lm_server entry = %+v ok=%v, want ArtifactKnown=false", e, ok)
+	}
+}
+
+// TestInventoryEntriesCarryProviderSideModelName verifies every entry exposes
+// the provider-side name (registered: the registry model_name; discovered: the
+// artifact name). The lifecycle engine matches a start target against running
+// entries by this name, and an entry with only a registry id cannot be compared.
+func TestInventoryEntriesCarryProviderSideModelName(t *testing.T) {
+	srv := ollamaServer(t, []string{"gemma4:9b", "other:1b"}, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("ollama", srv.URL, "")},
+		Models:    []config.Model{{ID: "ollama/gemma", ProviderID: "ollama", ModelName: "gemma4:9b"}},
+	}
+	snap := inventory(cfg, testClient)
+	reg, _ := byModelID(snap, "ollama/gemma")
+	if reg.ModelName != "gemma4:9b" {
+		t.Errorf("registered ModelName = %q, want gemma4:9b", reg.ModelName)
+	}
+	disc, _ := byModelID(snap, config.DiscoveredModelID("ollama", "other:1b"))
+	if disc.ModelName != "other:1b" {
+		t.Errorf("discovered ModelName = %q, want other:1b", disc.ModelName)
+	}
+}
+
+// TestFamilyExported verifies the exported Family maps provider ids to probe
+// families, with omlx-6bit sharing omlx's family and unknown ids returning "" —
+// the lifecycle engine uses it to decide which backend and occupancy domain a
+// target belongs to.
+func TestFamilyExported(t *testing.T) {
+	cases := map[string]string{"ollama": "ollama", "omlx": "omlx", "omlx-6bit": "omlx", "mtplx": "mtplx", "mlx_lm_server": "mlx_lm_server", "llamacpp": "", "": ""}
+	for id, want := range cases {
+		if got := Family(id); got != want {
+			t.Errorf("Family(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// TestInventoryOmlxProbeFailureIsPartial verifies an unanswerable /v1/models
+// leaves the omlx family StatusPartial rather than StatusOK-with-no-models.
+// The lifecycle engine reads that status to decide whether Running can be
+// trusted; reporting OK would let it treat a stalled daemon as empty and
+// replace the model that daemon is serving.
+func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "some-model")
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer down.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("omlx", down.URL, dir)},
+		Models:    []config.Model{{ID: "omlx/some-model", ProviderID: "omlx", ModelName: "some-model"}},
+	}
+	snap := inventory(cfg, testClient)
+	if got := snap.Providers["omlx"]; got != StatusPartial {
+		t.Errorf("omlx status with an unusable /v1/models = %q, want %q", got, StatusPartial)
+	}
+	// The model-dir scan still succeeded, so artifacts remain trustworthy.
+	if en, ok := byModelID(snap, "omlx/some-model"); !ok || !en.ArtifactKnown {
+		t.Errorf("probe failure must not make artifact discovery untrustworthy: %+v ok=%v", en, ok)
+	}
+}
+
+// TestInventoryOmlxEmptyAnswerIsOK verifies a server that answers with an
+// empty model list is StatusOK, not StatusPartial. That case is "nothing is
+// loaded", which must start normally without a confirmation prompt.
+func TestInventoryOmlxEmptyAnswerIsOK(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "some-model")
+	up := modelsServer(t) // answers {"data":[]}
+	defer up.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("omlx", up.URL, dir)},
+		Models:    []config.Model{{ID: "omlx/some-model", ProviderID: "omlx", ModelName: "some-model"}},
+	}
+	if got := inventory(cfg, testClient).Providers["omlx"]; got != StatusOK {
+		t.Errorf("omlx status with an empty model list = %q, want %q", got, StatusOK)
+	}
+}
+
+// TestFamilyOriginPortAgreesWithOrigin verifies the port returned alongside an
+// origin is the port that origin actually addresses, including when a registry
+// base_url omits one. A caller passing the port to a command line while the
+// origin says something else spawns a server on one port and polls another,
+// which shows up as a full-length timeout instead of a failure.
+func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
+	// No port in the registry value: the family default must be applied to the
+	// origin too, not just to the returned port.
+	bare := &config.Config{Providers: []config.Provider{localProvider("mtplx", "http://localhost", "")}}
+	origin, port, err := FamilyOriginPort(bare, "mtplx")
+	if err != nil {
+		t.Fatalf("FamilyOriginPort: %v", err)
+	}
+	if origin != "http://localhost:8003" || port != 8003 {
+		t.Errorf("bare origin: origin=%q port=%d, want http://localhost:8003 and 8003", origin, port)
+	}
+	if u, err := url.Parse(origin); err != nil || u.Port() != strconv.Itoa(port) {
+		t.Errorf("origin %q does not address the returned port %d", origin, port)
+	}
+
+	// An explicit port wins, and is preserved in the origin.
+	explicit := &config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1:9123", "")}}
+	origin, port, err = FamilyOriginPort(explicit, "mtplx")
+	if err != nil {
+		t.Fatalf("FamilyOriginPort: %v", err)
+	}
+	if origin != "http://127.0.0.1:9123" || port != 9123 {
+		t.Errorf("explicit origin: origin=%q port=%d, want http://127.0.0.1:9123 and 9123", origin, port)
+	}
+
+	// The registry-free default still resolves to the family default.
+	if origin, port, err = FamilyOriginPort(&config.Config{}, "omlx"); err != nil || port != 8000 {
+		t.Errorf("default omlx: origin=%q port=%d err=%v, want 8000 and no error", origin, port, err)
 	}
 }

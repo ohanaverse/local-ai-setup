@@ -1,8 +1,12 @@
 package localmodels
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,13 +17,14 @@ import (
 type Status string
 
 const (
-	// StatusOK means discovery succeeded. It does NOT imply the server is up:
-	// a stopped omlx/mtplx server with model dirs on disk reports ok with
-	// nothing running.
+	// StatusOK means discovery succeeded AND the family's live probe answered.
+	// A stopped omlx/mtplx server therefore does NOT report ok: its failed
+	// /v1/models is partial, whether the cause is a dead server or a bad answer.
 	StatusOK Status = "ok"
 	// StatusPartial means discovery succeeded but live running-state could
-	// not be determined (ollama: /api/tags ok, /api/ps failed). Entries'
-	// Running flags are not trustworthy for this family.
+	// not be determined (ollama: /api/tags ok, /api/ps failed; omlx/mtplx:
+	// the model-dir scan succeeded, /v1/models failed). Entries' Running
+	// flags are not trustworthy for this family.
 	StatusPartial Status = "partial"
 	// StatusUnreachable means discovery itself failed: for ollama, /api/tags
 	// failed (daemon down); for omlx/mtplx, the model-directory scan (or
@@ -46,6 +51,7 @@ type Entry struct {
 	ProviderID string // registry provider id (omlx-6bit rows keep theirs); the family id for discovered entries
 	Artifact   string // pulled/on-disk name in the provider's spelling; "" for a registered model not found on disk
 	ModelID    string // registry id when registered, else config.DiscoveredModelID(ProviderID, Artifact)
+	ModelName  string // provider-side name: the registry model_name when registered, else the artifact name
 	Registered bool
 	Running    bool // serving right now (live probe only)
 	// ArtifactKnown reports whether the probe actually determined this entry's
@@ -83,6 +89,10 @@ func familyOf(providerID string) string {
 	}
 	return ""
 }
+
+// Family maps a registry provider id to its probe family ("omlx-6bit" shares
+// "omlx"); "" when wt has no probe for it.
+func Family(providerID string) string { return familyOf(providerID) }
 
 // source is one family's probe result.
 type source struct {
@@ -182,6 +192,48 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 	return def, false
 }
 
+// FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
+// that must hand a numeric port to a command line as well as dial the origin.
+// When the origin carries no port the family default is applied to the origin
+// itself, not only to the returned number, so the two can never describe
+// different servers.
+func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
+	origin, _ := FamilyOrigin(cfg, family)
+	u, err := url.Parse(origin)
+	if err != nil {
+		return "", 0, fmt.Errorf("origin %q: %w", origin, err)
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return "", 0, fmt.Errorf("origin %q: bad port %q", origin, p)
+		}
+		return origin, n, nil
+	}
+	def, ok := defaultPortFor(family)
+	if !ok {
+		return "", 0, fmt.Errorf("origin %q has no port and family %q has no default", origin, family)
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(def))
+	return u.String(), def, nil
+}
+
+// defaultPortFor is the port a family's default origin uses, so a registry base
+// url that omits a port resolves to the same server the defaults describe.
+func defaultPortFor(family string) (int, bool) {
+	switch family {
+	case "ollama":
+		return 11434, true
+	case "omlx":
+		return 8000, true
+	case "mtplx":
+		return 8003, true
+	case "mlx_lm_server":
+		return 8001, true
+	}
+	return 0, false
+}
+
 func probeFamily(cfg *config.Config, client *http.Client, family string) *source {
 	s := &source{family: family, status: StatusOK}
 	origin := familyOrigin(cfg, family)
@@ -199,7 +251,16 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.status = StatusPartial
 		}
 	case "omlx", "mtplx":
-		s.loaded = FetchModelIDs(client, origin+"/v1/models")
+		// A failed /v1/models must not read as "nothing is loaded": for a
+		// single-model family that turns an unanswerable probe into permission to
+		// replace a model that may well be serving. StatusPartial records the same
+		// "Running flags are not trustworthy" state ollama already uses for a
+		// failed /api/ps.
+		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
+		if err != nil {
+			s.status = StatusPartial
+		}
+		s.loaded = loaded
 		def := defaultOmlxDir
 		if family == "mtplx" {
 			def = defaultMtplxDir
@@ -288,7 +349,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
 			continue
 		}
-		e := Entry{ProviderID: m.ProviderID, ModelID: m.ID, Registered: true}
+		e := Entry{ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName, Registered: true}
 		if src := sources[familyOf(m.ProviderID)]; src != nil {
 			e.ArtifactKnown = src.knowsArtifacts()
 			for _, a := range src.artifacts {
@@ -317,6 +378,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				ProviderID:    f,
 				Artifact:      a,
 				ModelID:       config.DiscoveredModelID(f, a),
+				ModelName:     a,
 				Running:       src.isRunning(a),
 				ArtifactKnown: true,
 			})
