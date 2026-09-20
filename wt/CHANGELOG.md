@@ -4,12 +4,14 @@
 
 ### Changed
 
-- The model picker is now an aligned table with the header rendered as the
-  list title: `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D
-  30D  SURVEY`. Rows are sorted cost-ascending (output price, then input
-  price; local and subscription-only models count as $0, and a model with no
-  price data sorts last), then by 7-day usage ascending; non-running local
-  models form a second group sorted by id. The previous compact one-liner
+- The model picker is now an aligned table whose header is rendered as the list
+  title:
+  `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D  30D  SURVEY`
+  Rows are sorted cost-ascending (output price, then input price; local and
+  subscription-only models count as $0, and a model with no price data sorts
+  last within that group), then by 7-day usage ascending, then by id;
+  non-running local models form a second group sorted by id. The previous
+  compact one-liner
   (`family  <fam-30d>  <provider/model>  <location>  <1d/7d/30d> [tags]`) and
   its family divider header rows are gone — including the per-family 30-day
   count column, so there are no inline `[tags]` either. Navigation indices are
@@ -56,9 +58,9 @@
   map. (The map and its column are gone with the compact layout.)
 - A configured local model now reads `unknown` rather than `absent` when the
   probe could not determine whether its artifact is present — a failed ollama
-  probe, or any `mlx_lm_server` row, whose target+draft pairing is not
-  discoverable. `absent` is reserved for a provider that answered and does not
-  have the model. Previously a transient daemon hiccup made every configured
+  probe, or any non-running `mlx_lm_server` row, whose target+draft pairing is
+  not discoverable. `absent` is reserved for a provider that answered and does
+  not have the model. Previously a transient daemon hiccup made every configured
   ollama model unlaunchable in the TUI even though the same model launched
   fine through `-M` and the non-TUI path.
 
