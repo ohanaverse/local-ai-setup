@@ -57,14 +57,17 @@ func needsModelPicker(agent, pinned string) bool {
 // resolveModelForLaunch wraps resolveModel with a "resolved" boolean so
 // callers can short-circuit on a single resolvable model (auto-launch)
 // without conflating "model is empty" with "error". A resolved return value
-// (true, model, eligible, nil) means launchFiltered would have a unique model
+// (true, model, launchable, nil) means launchFiltered would have a unique model
 // to use. A non-resolved return (false, zero, _, _) means the caller should
 // fall through to the picker. err is non-nil only when resolveModel itself
 // failed; the auto-launch path treats any error as "not resolved".
 //
-// The eligible list is returned so the caller can hand it to launchFiltered
-// without recomputing it (the auto-launch path would otherwise call
-// EligibleModels twice: once here and once inside launchFiltered).
+// The list returned is the LAUNCHABLE list (cloud models plus local models
+// already running — see resolveModel), not the raw eligible list, so the
+// caller can hand it to launchFiltered without recomputing it (the
+// auto-launch path would otherwise call EligibleModels twice: once here and
+// once inside launchFiltered) and rotation can never land on a local model
+// that is not up.
 func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, []config.Model, error) {
 	m, eligible, err := resolveModel(agent, cfg, tags, family, pinned)
 	if err != nil {

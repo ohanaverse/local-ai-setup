@@ -12,6 +12,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
@@ -442,6 +443,18 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	cfg.ExposeAllForTest()
 
+	// The model must be launchable under live-truth semantics: the stubbed
+	// probe reports it registered and serving, so the row is a launch row
+	// and resolveModel hands it to launchFiltered — the point here is the
+	// litellm-mode skip of the ollama availability check, which only runs
+	// once resolution succeeds.
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
+
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
 		t.Fatalf("launchFiltered in litellm mode: %v", err)
 	}
@@ -486,6 +499,18 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 	// litellm via the protocol mismatch, not the toggle.
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
 	cfg.ExposeAllForTest()
+
+	// The model must be launchable under live-truth semantics: the stubbed
+	// probe reports it registered and serving, so the row is a launch row
+	// and resolveModel hands it to launchFiltered — the point here is the
+	// route-forced litellm skip of the ollama availability check, which
+	// only runs once resolution succeeds.
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
 
 	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil); err != nil {
 		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)

@@ -2,15 +2,11 @@ package main
 
 import (
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // TestResolveModel covers the non-TUI model resolution path used after
@@ -36,8 +32,8 @@ func TestResolveModel(t *testing.T) {
 	}
 	cfg.ExposeAllForTest()
 
-	// resolveModel errors on any ambiguous eligible list rather than
-	// falling back to defaultModel. launch.go calls resolveModel and
+	// resolveModel errors on an ambiguous LAUNCHABLE list rather than
+	// falling back to any single model. launch.go calls resolveModel and
 	// handles the error via rotation.
 
 	tests := []struct {
@@ -50,11 +46,13 @@ func TestResolveModel(t *testing.T) {
 		wantErr bool
 	}{
 		{"single match", "claude", "", "", "", "claude/opus", false},
-		{"pinned in eligible", "pi", "", "", "claude/opus", "claude/opus", false},
+		{"pinned cloud in eligible", "pi", "", "", "claude/opus", "claude/opus", false},
 		{"pinned not in eligible", "pi", "", "", "ollama/missing", "", true},
 		{"pinned wrong provider for agent", "claude", "", "", "ollama/gemma4:9b", "", true},
-		{"multiple no pin errors", "pi", "", "", "", "", true},
-		{"tag filter narrows to one", "pi", "code", "gemma4", "", "ollama/gemma4:9b", false},
+		// Two local rows are startable, not launchable: they do not make the
+		// choice ambiguous, and rotation must never pick one.
+		{"only cloud rows are launchable", "pi", "", "", "", "claude/opus", false},
+		{"all-local list needs a pin", "pi", "code", "gemma4", "", "", true},
 		{"empty eligible errors", "claude", "design", "", "", "", true},
 		{"unknown agent", "nope", "", "", "", "", true},
 	}
@@ -81,193 +79,315 @@ func TestResolveModel(t *testing.T) {
 	}
 }
 
-// TestResolveModelReturnsEligible verifies resolveModel returns the full
-// eligible list even when it returns an error, so callers can reuse it
-// instead of calling cfg.EligibleModels a second time.
-func TestResolveModelReturnsEligible(t *testing.T) {
+// TestResolveModelReturnsLaunchable verifies resolveModel returns the
+// launchable list even when it errors, so callers can reuse it instead of
+// calling cfg.EligibleModels a second time. Returning the raw eligible list
+// would let rotation pick a non-running local model.
+func TestResolveModelReturnsLaunchable(t *testing.T) {
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama"}},
+		Providers: []config.Provider{{ID: "openrouter", Location: config.LocationCloud}},
 		Models: []config.Model{
-			{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}},
-			{ID: "ollama/design", ProviderID: "ollama", Tags: []string{"design"}},
+			{ID: "openrouter/a", ProviderID: "openrouter", Tags: []string{"code"}},
+			{ID: "openrouter/b", ProviderID: "openrouter", Tags: []string{"code"}},
 		},
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter"}}},
 	}
 	cfg.ExposeAllForTest()
 
-	m, eligible, err := resolveModel("claude", cfg, "", "", "")
+	m, launchable, err := resolveModel("claude", cfg, "", "", "")
 	if err == nil {
 		t.Fatal("expected multiple-models error")
 	}
 	if m.ID != "" {
 		t.Errorf("model = %q, want zero", m.ID)
 	}
-	if len(eligible) != 2 {
-		t.Fatalf("eligible = %d, want 2", len(eligible))
+	if len(launchable) != 2 {
+		t.Fatalf("launchable = %d, want 2", len(launchable))
 	}
 }
 
-// TestResolveModelNoMarkerHidesLocalModels asserts issue #65's picker-
-// filter half for the non-TUI path: with the gate active and no marker,
-// resolveModel treats every local model as ineligible — only cloud models
-// can be auto-selected or listed.
-func TestResolveModelNoMarkerHidesLocalModels(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+// TestResolveModelRunningLocalModelIsLaunchable verifies a local model the
+// live probe reports as running resolves without any start: the row is a
+// launch row, so the launch proceeds directly. This is the replacement for
+// the retired localgate probe test — the verdict now comes from the same
+// inventory the picker shows.
+func TestResolveModelRunningLocalModelIsLaunchable(t *testing.T) {
+	calls := stubStartDriver(t, nil)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Artifact: "qwen3.8", ModelName: "qwen3.8", Registered: true, Running: true},
 		},
-		Models: []config.Model{
-			{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}},
-			{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"claude", "ollama"}}},
-	}
-	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("") // gate active, nothing running
-
-	m, _, err := resolveModel("pi", cfg, "", "", "")
-	if err != nil {
-		t.Fatalf("resolveModel() error = %v, want nil (single eligible cloud model)", err)
-	}
-	if m.ID != "claude/opus" {
-		t.Errorf("got %q, want claude/opus", m.ID)
-	}
-}
-
-// TestResolveModelVerifiedMarkerAllowsLocalModel asserts a verified marker
-// makes the marked local model eligible again.
-func TestResolveModelVerifiedMarkerAllowsLocalModel(t *testing.T) {
-	// The probe is name-checked: /v1/models must report the marked model's
-	// own id, not merely respond 200.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
-	}))
-	defer srv.Close()
-	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
-
+	})
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 
 	m, _, err := resolveModel("pi", cfg, "", "", "")
 	if err != nil || m.ID != "omlx/qwen3.8" {
-		t.Errorf("resolveModel() = (%v, %v), want (omlx/qwen3.8, nil)", m, err)
+		t.Fatalf("resolveModel() = (%v, %v), want (omlx/qwen3.8, nil)", m, err)
+	}
+	if calls.called {
+		t.Error("a running model must not be started")
 	}
 }
 
-// TestResolveModelDriftedMarkerDoesNotBlockUnrelatedLaunch asserts the
-// 2026-09-14 multi-model relaxation: a flagged-but-unverified local model
-// no longer blocks every launch through the agent (the old single-marker
-// "stale marker is fatal" behavior) — it is simply excluded from
-// consideration. Here the flagged model (omlx/qwen3.8) isn't even in this
-// agent's eligible list, so resolveModel must resolve normally instead of
-// erroring.
-func TestResolveModelDriftedMarkerDoesNotBlockUnrelatedLaunch(t *testing.T) {
-	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")() // nothing listens here
-
+// TestResolveModelPinOnIdleLocalStartsIt verifies -M pinning a configured
+// local model that is not running starts it through the driver and returns
+// the model, so `wt -A pi -M omlx/qwen3.8` works without a separate
+// `modelman start`. It must NOT pass replace: a plain pin never opts into
+// stopping a running model.
+func TestResolveModelPinOnIdleLocalStartsIt(t *testing.T) {
+	allowReplace = false
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Artifact: "qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true},
+		},
+	})
+	calls := stubStartDriver(t, nil)
 	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
-		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}}},
-		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 
-	m, _, err := resolveModel("claude", cfg, "", "", "")
-	if err != nil {
-		t.Fatalf("resolveModel() error = %v, want nil (a drifted flag for an unrelated model must not block this launch)", err)
+	m, _, err := resolveModel("pi", cfg, "", "", "omlx/qwen3.8")
+	if err != nil || m.ID != "omlx/qwen3.8" {
+		t.Fatalf("resolveModel() = (%v, %v), want (omlx/qwen3.8, nil)", m, err)
 	}
-	if m.ID != "claude/opus" {
-		t.Errorf("resolveModel() model = %q, want claude/opus", m.ID)
+	if !calls.called {
+		t.Fatal("the start driver was not called for a non-running pinned local model")
+	}
+	if calls.row.Model.ID != "omlx/qwen3.8" || calls.row.Model.ModelName != "qwen3.8" {
+		t.Errorf("start request row = %+v, want omlx/qwen3.8", calls.row.Model)
+	}
+	if calls.replace {
+		t.Error("a plain pin must not pass replace, or it could stop a running model unasked")
 	}
 }
 
-// TestResolveModelPinnedStaleLocalModelRejected asserts the pinned-model
-// guard: -M pinning a local model that is not the currently-running one
-// gets the specific "start it in modelman" message, not the generic
-// "not in the eligible list" one.
-func TestResolveModelPinnedStaleLocalModelRejected(t *testing.T) {
-	// The running marker (ollama/b) must verify as available so the
-	// pinned-model guard (not the stale-marker path) fires — a fake
-	// `ollama` binary on PATH lists b as running.
-	fakeBin := t.TempDir()
-	fakeOllama := filepath.Join(fakeBin, "ollama")
-	if err := os.WriteFile(fakeOllama, []byte("#!/bin/sh\necho \"NAME    ID    SIZE    MODIFIED\"\necho \"b   abc   5.0 GB   2 days ago\"\n"), 0o755); err != nil {
-		t.Fatalf("write fake ollama: %v", err)
-	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
-		Models: []config.Model{
-			{ID: "ollama/a", ProviderID: "ollama", ModelName: "a", Family: "a", Tags: []string{"code"}},
-			{ID: "ollama/b", ProviderID: "ollama", ModelName: "b", Family: "b", Tags: []string{"code"}},
+// TestResolveModelPinOnDiscoveredLocalStartsIt verifies the pin is looked up
+// among ALL rows, discovered ones included: a running-state model on disk
+// with no registry entry can be started by pinning its discovered id, which
+// is the whole point of the live-row lookup.
+func TestResolveModelPinOnDiscoveredLocalStartsIt(t *testing.T) {
+	disc := config.DiscoveredModelID("mtplx", "on-disk")
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "mtplx", ModelID: disc, Artifact: "on-disk", ModelName: "on-disk"},
 		},
-		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
+	})
+	calls := stubStartDriver(t, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mtplx"}}},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("ollama/b") // b is running, pin a
 
-	_, _, err := resolveModel("pi", cfg, "", "", "ollama/a")
-	var notRunning *localgate.NotRunningError
-	if !errors.As(err, &notRunning) {
-		t.Fatalf("err = %v, want *localgate.NotRunningError", err)
+	m, _, err := resolveModel("pi", cfg, "", "", disc)
+	if err != nil || m.ID != disc {
+		t.Fatalf("resolveModel() = (%v, %v), want (%s, nil)", m, err, disc)
 	}
-	if notRunning.ModelID != "ollama/a" {
-		t.Errorf("NotRunningError.ModelID = %q, want ollama/a", notRunning.ModelID)
+	if !calls.called || calls.row.Model.ModelName != "on-disk" {
+		t.Errorf("start request = %+v, want the discovered artifact on-disk", calls.row.Model)
 	}
 }
 
-// TestResolveModelGateEmptiedListGivesGateMessage asserts the empty-after-
-// gate error (issue #65, finding #6's non-TUI half): when the gate empties
-// a non-empty eligible list (all models local, none running), resolveModel
-// must produce the gate-specific "start one with modelman start" message —
-// NOT the generic "no models match" wording, which would send the operator
-// hunting for a -T/-F/config problem that isn't there.
-func TestResolveModelGateEmptiedListGivesGateMessage(t *testing.T) {
+// TestResolveModelPinOnAbsentLocalReportsReason verifies pinning a local
+// model the probe confirmed is missing on disk fails with the pull/download
+// message and starts nothing: the engine would otherwise wait out its warmup
+// on a model that is not there.
+func TestResolveModelPinOnAbsentLocalReportsReason(t *testing.T) {
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
+		},
+	})
+	calls := stubStartDriver(t, nil)
 	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
-		},
-		Models: []config.Model{
-			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("") // gate active, nothing running — gate empties the list
 
-	_, eligible, err := resolveModel("pi", cfg, "", "", "")
+	_, launchable, err := resolveModel("pi", cfg, "", "", "omlx/gone")
+	if err == nil || !strings.Contains(err.Error(), "not on disk") {
+		t.Errorf("err = %v, want the not-on-disk message", err)
+	}
+	// The contract: callers reuse this list instead of recomputing it, and
+	// rotation must never see a start row, so an error path still returns
+	// it empty (nothing is running in this fixture).
+	if len(launchable) != 0 {
+		t.Errorf("launchable = %d models, want 0", len(launchable))
+	}
+	if calls.called {
+		t.Error("an absent model must not reach the start driver")
+	}
+}
+
+// TestResolveModelPinOnNoEngineProviderReportsReason verifies pinning a local
+// model whose provider wt cannot start (mlx_lm_server) reports the
+// `modelman start` hint instead of silently doing nothing — the user needs to
+// know which tool owns that provider's lifecycle.
+func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", Registered: true, ArtifactKnown: true},
+		},
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mlx_lm_server"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	_, _, err := resolveModel("pi", cfg, "", "", "mlx_lm_server/p")
+	if err == nil || !strings.Contains(err.Error(), "modelman start mlx_lm_server/p") {
+		t.Errorf("err = %v, want the modelman start hint", err)
+	}
+}
+
+// TestResolveModelAllLocalGivesPinMessage asserts the empty-launchable error:
+// when every eligible model is local and none is running, resolveModel must
+// say a pin would start one — NOT the generic "no models match" wording,
+// which would send the operator hunting for a -T/-F/config problem that is
+// not there. It also asserts the launchable list is still returned.
+func TestResolveModelAllLocalGivesPinMessage(t *testing.T) {
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true}},
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	_, launchable, err := resolveModel("pi", cfg, "", "", "")
 	if err == nil {
-		t.Fatal("expected an error when the gate empties the eligible list")
+		t.Fatal("expected an error when nothing is launchable")
 	}
-	if !strings.Contains(err.Error(), "no local model is running") ||
-		!strings.Contains(err.Error(), "modelman start") {
-		t.Errorf("err = %q, want the gate-specific message naming modelman start", err)
-	}
-	// The eligible list is the post-filter (empty) list, matching what
-	// callers get on every other error path, and the generic "no models
-	// match" wording must not leak out.
-	if len(eligible) != 0 {
-		t.Errorf("eligible = %d models, want 0 (the gate-filtered list is returned)", len(eligible))
+	if !strings.Contains(err.Error(), "no cloud or running local model") || !strings.Contains(err.Error(), "wt -M <id>") {
+		t.Errorf("err = %q, want the pin-the-model message", err)
 	}
 	if strings.Contains(err.Error(), "no models match") {
-		t.Errorf("err = %q; generic no-match wording must not be used for a gate-emptied list", err)
+		t.Errorf("err = %q; generic no-match wording must not be used here", err)
+	}
+	if len(launchable) != 0 {
+		t.Errorf("launchable = %d models, want 0", len(launchable))
 	}
 }
 
-// TestResolveModelNoMatchKeepsGenericMessage is the control for the gate-
-// emptied case: with the gate inactive (no marker, hand-built cfg), an
-// empty eligible list still gets the pre-existing generic "no models
-// match" error — the gate message only appears when the gate was what
-// emptied the list.
+// TestResolveModelFiltersHideDiscoveredRows verifies -T/-F drop discovered
+// rows on the non-TUI path, exactly as the picker does: a running discovered
+// model must not be auto-launched (or be launchable) when the operator asked
+// for tags/family, because a discovered row carries no tags the filter could
+// have matched.
+func TestResolveModelFiltersHideDiscoveredRows(t *testing.T) {
+	disc := config.DiscoveredModelID("mtplx", "stray")
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "mtplx", ModelID: disc, Artifact: "stray", ModelName: "stray", Running: true},
+		},
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "mtplx/registered", ProviderID: "mtplx", ModelName: "registered", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mtplx"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	m, launchable, err := resolveModel("pi", cfg, "code", "", "")
+	if err == nil {
+		t.Fatalf("resolveModel() = (%v, %v), want an error: the running discovered row must be hidden by -T", m.ID, launchable)
+	}
+	if !strings.Contains(err.Error(), "no cloud or running local model") {
+		t.Errorf("err = %q, want the pin-the-model wording", err)
+	}
+	if len(launchable) != 0 {
+		t.Errorf("launchable = %d models, want 0 (the discovered row is filtered out)", len(launchable))
+	}
+}
+
+// TestResolveModelStartFailurePropagates verifies a start-driver failure is
+// returned as resolveModel's error rather than swallowed: the caller must
+// abort the launch with the engine's own message (daemon down, port busy,
+// occupancy unknown, …) instead of running the agent against nothing.
+func TestResolveModelStartFailurePropagates(t *testing.T) {
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/q", Artifact: "q", Registered: true, ArtifactKnown: true}},
+	})
+	boom := errors.New("omlx is not answering at http://localhost:8000")
+	stubStartDriver(t, boom)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	m, launchable, err := resolveModel("pi", cfg, "", "", "omlx/q")
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the driver's error", err)
+	}
+	// Same contract as the other error paths: callers reuse this list
+	// instead of recomputing it, and rotation must never see a start row —
+	// the pinned model failed to start and nothing else is running, so it
+	// comes back empty.
+	if len(launchable) != 0 {
+		t.Errorf("launchable = %d models, want 0", len(launchable))
+	}
+	if m.ID != "" {
+		t.Errorf("model = %q, want zero on a failed start", m.ID)
+	}
+}
+
+// TestResolveModelReplaceFlagReachesDriver verifies --replace is passed
+// through to the driver, which is what lets a non-interactive caller opt into
+// stopping a running occupant. Without it every occupied provider would need
+// a TTY prompt, breaking scripted launches.
+func TestResolveModelReplaceFlagReachesDriver(t *testing.T) {
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/q", Artifact: "q", Registered: true, ArtifactKnown: true}},
+	})
+	calls := stubStartDriver(t, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.ExposeAllForTest()
+
+	allowReplace = true
+	t.Cleanup(func() { allowReplace = false })
+
+	if _, _, err := resolveModel("pi", cfg, "", "", "omlx/q"); err != nil {
+		t.Fatalf("resolveModel() error = %v", err)
+	}
+	if !calls.replace {
+		t.Error("--replace must reach the driver's allowReplace argument")
+	}
+}
+
+// TestResolveModelNoMatchKeepsGenericMessage is the control for the
+// all-local case: with no models at all matching the filters, an empty
+// eligible list still gets the pre-existing generic "no models match" error.
 func TestResolveModelNoMatchKeepsGenericMessage(t *testing.T) {
+	stubProbeInventory(t, localmodels.Snapshot{})
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "ollama", Auth: config.AuthConfig{Type: "none"}}},
 		Models:    []config.Model{{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}}},

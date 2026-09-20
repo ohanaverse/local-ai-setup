@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 )
@@ -401,17 +401,18 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("MODELMAN_REGISTRY", "")
 
-	// The one-local-model-at-a-time gate (issue #65) is active for a
-	// Load()-built Config, so the local ollama model must be marked
-	// running AND verify as available (a fake `ollama` binary on PATH
-	// stands in for the real daemon) or it is filtered out of the
-	// eligible list and the auto-launch short-circuit never fires.
-	fakeBin := t.TempDir()
-	fakeOllama := filepath.Join(fakeBin, "ollama")
-	if err := os.WriteFile(fakeOllama, []byte("#!/bin/sh\necho \"NAME    ID    SIZE    MODIFIED\"\necho \"gemma4:9b   abc   5.0 GB   2 days ago\"\n"), 0o755); err != nil {
-		t.Fatalf("write fake ollama: %v", err)
-	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Running state is live truth now: the localgate flag-and-probe dance
+	// this test used to perform (modelman running flag + a fake `ollama`
+	// binary on PATH) is gone. resolveModel consults the local-model
+	// inventory directly, so the stub probe must report the model serving
+	// or the row is a start row, not a launch row, and the auto-launch
+	// short-circuit never fires.
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", Artifact: "gemma4:9b", ModelName: "gemma4:9b", Registered: true, Running: true},
+		},
+	})
 
 	// Write a minimal config with one ollama model so resolveModel returns
 	// a single eligible entry, triggering the auto-launch short-circuit.
@@ -435,11 +436,12 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 		t.Fatalf("write registry: %v", err)
 	}
 	// Expose the ollama model through the LiteLLM gateway so the
-	// auto-launch short-circuit sees it as eligible, and mark it as
-	// running (2026-09-14 multi-model design's per-model `running` flag)
-	// so the gate keeps it in the list.
+	// auto-launch short-circuit sees it as eligible. The modelman per-model
+	// `running` flag is deliberately left false: wt decides running state
+	// from the live inventory probe (stubbed above), never from
+	// modelman-owned state.
 	if err := os.WriteFile(filepath.Join(regDir, "modelman.toml"),
-		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\nrunning = true\n"),
+		[]byte("[model_state.\"ollama/gemma4:9b\"]\nlitellm_exposed = true\nready = true\n"),
 		0o644); err != nil {
 		t.Fatalf("write modelman state: %v", err)
 	}
@@ -705,31 +707,23 @@ func TestRunLaunchPath(t *testing.T) {
 	}
 }
 
-// TestResolveModelForLaunchDriftedMarkerResolvesNormally asserts the
-// 2026-09-14 multi-model relaxation on the "no agent pinned" fast path
-// (runLaunchPath's resolveModelForLaunch call): a flagged-but-unverified
-// local model that isn't part of the agent's eligible list must not stop
-// resolveModelForLaunch from resolving the launch normally. This replaces
-// the old "any stale marker is fatal for every launch through the agent"
-// behavior — with multiple models, one drifted flag must not block a
-// launch that doesn't need it.
-func TestResolveModelForLaunchDriftedMarkerResolvesNormally(t *testing.T) {
-	defer localgate.SetOmlxProbeURLForTest("http://127.0.0.1:1")()
-
+// TestResolveModelForLaunchCloudOnlyResolves verifies the auto-launch
+// short-circuit still fires for a cloud-only config, so `wt -A claude` with
+// one eligible model launches without a picker. The old drifted-marker test
+// this replaces asserted gate semantics that no longer exist.
+func TestResolveModelForLaunchCloudOnlyResolves(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
-		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", Family: "opus", Tags: []string{"code"}}},
+		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 
-	resolved, m, eligible, err := resolveModelForLaunch("claude", cfg, "", "", "")
+	resolved, m, _, err := resolveModelForLaunch("claude", cfg, "", "", "")
 	if err != nil {
 		t.Fatalf("resolveModelForLaunch error = %v, want nil", err)
 	}
 	if !resolved || m.ID != "claude/opus" {
 		t.Errorf("resolveModelForLaunch() = (resolved=%v, m=%v), want (true, claude/opus)", resolved, m)
 	}
-	_ = eligible
 }
