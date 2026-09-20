@@ -34,19 +34,22 @@ const (
 )
 
 // PromptRun runs the up-to-four-question post-session survey against r/w,
-// records the answer via store, and prints the accumulated stats. It is a
-// no-op when stdin is not a TTY (non-interactive launch) or when m.ID == ""
-// (command agents like shell have no model to survey) — the single guard
-// both the TUI and non-TUI launch paths rely on.
-func PromptRun(r io.Reader, w io.Writer, store Store, agent string, m config.Model) {
-	if !stdinTTY() || m.ID == "" {
-		return
+// records the answer via store, and returns the accumulated after-survey
+// stats block for the caller to print (it does not print it, so the launch
+// paths can order it after the model-stopping picker and summary). It is a
+// no-op returning "" when stdin is not a TTY (non-interactive launch), when
+// m.ID == "" (command agents like shell have no model to survey), or when
+// the model is native (issue #116) — the single guard both the TUI and
+// non-TUI launch paths rely on.
+func PromptRun(r io.Reader, w io.Writer, store Store, agent string, m config.Model) string {
+	if !stdinTTY() || m.ID == "" || m.Native {
+		return ""
 	}
 	scanner := bufio.NewScanner(r)
 
 	verdict, ok := promptWorked(scanner, w)
 	if !ok {
-		return // reader exhausted (e.g. closed pipe); nothing to record
+		return "" // reader exhausted (e.g. closed pipe); nothing to record
 	}
 
 	var e Event
@@ -72,10 +75,10 @@ func PromptRun(r io.Reader, w io.Writer, store Store, agent string, m config.Mod
 
 	if err := store.Record(e); err != nil {
 		fmt.Fprintf(os.Stderr, "wt: survey not saved: %v\n", err)
-		return
+		return ""
 	}
 	fmt.Fprintln(w, "survey saved")
-	fmt.Fprintln(w, FormatAfterSurvey(store.Events(), agent, m.ID, now().UTC()))
+	return FormatAfterSurvey(store.Events(), agent, m.ID, now().UTC())
 }
 
 // promptWorked runs Q1's reprompt loop. The bool return is false only when
