@@ -1,15 +1,12 @@
 package tui
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -51,7 +48,7 @@ func TestEnterModelPhaseShowsNonRunningAndDiscoveredRows(t *testing.T) {
 		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true},
 		{ProviderID: "omlx", Artifact: "extra", ModelID: config.DiscoveredModelID("omlx", "extra")},
 	}})
-	got := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24}, "claude")
+	got := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
 
 	ids := itemIDs(got)
 	for _, want := range []string{"claude/opus", "omlx/qwen3.8", config.DiscoveredModelID("omlx", "extra")} {
@@ -65,7 +62,7 @@ func TestEnterModelPhaseShowsNonRunningAndDiscoveredRows(t *testing.T) {
 // model list's title (so it renders above the rows) and starts with the
 // FAMILY heading after the 4-rune row prefix.
 func TestEnterModelPhaseHeaderIsListTitle(t *testing.T) {
-	got := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24}, "claude")
+	got := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
 	if !strings.HasPrefix(got.models.Title, "    FAMILY") {
 		t.Errorf("Title = %q, want 4 spaces then FAMILY", got.models.Title)
 	}
@@ -88,11 +85,11 @@ func TestEnterModelPhaseHidesDiscoveredWhenFiltered(t *testing.T) {
 	}})
 	disc := config.DiscoveredModelID("omlx", "extra")
 
-	unfiltered := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24}, "claude")
+	unfiltered := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
 	if indexOfID(unfiltered, disc) < 0 {
 		t.Fatalf("control: discovered row absent without filter: %v", itemIDs(unfiltered))
 	}
-	filtered := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24, activeTags: "code"}, "claude")
+	filtered := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24, activeTags: "code"}, "claude")
 	if indexOfID(filtered, disc) >= 0 {
 		t.Errorf("discovered row present with -T filter: %v", itemIDs(filtered))
 	}
@@ -174,7 +171,7 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // as the first row's family and model id. String-level checks on Title/line
 // miss list padding (TitleBar) that shifts the header relative to the rows.
 func TestModelPickerViewHeaderAlignsWithRows(t *testing.T) {
-	got := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24}, "claude")
+	got := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
 	first := got.models.Items()[0].(*modelItem)
 	var header, row string
 	for _, ln := range strings.Split(ansiRE.ReplaceAllString(got.models.View(), ""), "\n") {
@@ -203,22 +200,15 @@ func TestModelPickerViewHeaderAlignsWithRows(t *testing.T) {
 // Enter does not falsely claim it is not running.
 func TestPinnedPathTableReflectsRunningInventory(t *testing.T) {
 	requireBinary(t, "claude")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"qwen3.8"}]}`))
-	}))
-	defer srv.Close()
-	defer localgate.SetOmlxProbeURLForTest(srv.URL)()
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true},
 	}})
-	cfg := gateTestConfig()
+	cfg := modelTestConfig()
 	// The pinned model launches at once when its route resolves, which would
 	// leave no table to inspect. Strip the fixture's routing so the launch bails
 	// back to the picker, the state this test was written against.
 	cfg.SetLitellmForTest(config.LitellmState{})
 	cfg.Providers[1].Protocols, cfg.Providers[1].Auth.BaseURL = nil, ""
-	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 	tempStateDir(t)
 	stubUsageStore(t)
 	stubRefcountStore(t)

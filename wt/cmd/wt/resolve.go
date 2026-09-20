@@ -28,8 +28,8 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 
 // resolveModel computes the single model to launch for a non-TUI flow and
 // returns the LAUNCHABLE list (cloud models plus local models already
-// running) so callers do not recompute it and rotation can never land on a
-// local model that is not up.
+// running, minus discovered rows the picker refuses) so callers do not
+// recompute it and rotation can never land on a local model that is not up.
 // agent is the resolved agent name (from -A; main routes unpinned launches
 // through the agent picker, so launchFiltered never sees an empty agent).
 // tags and family are the -T/-F flag values (comma-delimited).
@@ -67,7 +67,7 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		// filter cannot describe.
 		HideDiscovered: tags != "" || family != "",
 	})
-	launchable := launchableModels(rows)
+	launchable := launchableModels(cfg, agent, rows)
 
 	// A -M pin is looked up among ALL rows, discovered ones included: the
 	// launch path accepts a model the registry does not name.
@@ -75,6 +75,14 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		row, ok := catalog.Find(rows, pinned)
 		if !ok {
 			return config.Model{}, launchable, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
+		}
+		// The picker's route switch decides a row's fate wherever it appears —
+		// launch, start, or block — not just on the start path: a discovered
+		// model the table shows as unselectable must refuse a pin too, and it
+		// must do so BEFORE startModel runs, which under --replace may stop a
+		// running occupant for a launch that then fails at ResolveRoute.
+		if reason := pickerBlockedReason(cfg, agent, row); reason != "" {
+			return config.Model{}, launchable, fmt.Errorf("%s", reason)
 		}
 		switch row.Action() {
 		case catalog.ActionLaunch:
@@ -102,16 +110,41 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	return m, launchable, err
 }
 
+// pickerBlockedReason mirrors renderTable's route decoration for a single
+// row and returns the reason the picker refuses it, or "" when the row is
+// usable. The switch order matches renderTable's exactly: the discovered
+// case wins over the route-error case, and a launch row with an unresolvable
+// route stays usable (the picker leaves it selectable and reports the error
+// on Enter). Keeping this next to resolveModel is what lets the non-TUI path
+// make the same decisions the table displays.
+func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) string {
+	route, err := cfg.ResolveRoute(row.Model, agents.ProtocolsFor(agent))
+	switch {
+	case row.Discovered && err == nil && (route.Litellm || route.Forced):
+		return "discovered model " + row.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
+	case err != nil && row.Action() == catalog.ActionStart:
+		return row.Model.ID + " cannot be launched: " + err.Error()
+	}
+	return ""
+}
+
 // launchableModels narrows rows to the models a launch can use right now:
-// cloud rows plus local rows the probe reports as running. A start row is
+// cloud rows plus local rows the probe reports as running — minus discovered
+// rows the picker would refuse (a discovered model routed through LiteLLM is
+// unselectable there, so rotation must never pick it either). A start row is
 // deliberately excluded — rotation and auto-resolution must never start a
-// server, only a -M pin may.
-func launchableModels(rows []catalog.Row) []config.Model {
+// server, only a -M pin may. A launch row whose route errors stays in: the
+// picker keeps such rows selectable too and reports the failure on Enter.
+func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []config.Model {
 	var out []config.Model
 	for _, r := range rows {
-		if r.Action() == catalog.ActionLaunch {
-			out = append(out, r.Model)
+		if r.Action() != catalog.ActionLaunch {
+			continue
 		}
+		if r.Discovered && pickerBlockedReason(cfg, agent, r) != "" {
+			continue
+		}
+		out = append(out, r.Model)
 	}
 	return out
 }

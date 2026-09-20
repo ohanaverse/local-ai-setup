@@ -23,7 +23,8 @@ import (
 var version = "0.1.0"
 
 // tuiRun is the entry point for the interactive TUI. It is a package-level
-// variable so tests can stub it out (the real tui.Run requires a TTY).
+// variable so tests can stub it (see TestWorktreeWithAgentWithoutModelShowsModelPicker)
+// instead of opening a real /dev/tty.
 var tuiRun = tui.Run
 
 // sweepRefcounts is a seam for tests: production sweeps the live-session
@@ -121,7 +122,7 @@ func runLaunchPath(
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
 	if launchPath == "" {
-		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
@@ -134,7 +135,7 @@ func runLaunchPath(
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
 		}
-		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
 	}
 
 	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil)

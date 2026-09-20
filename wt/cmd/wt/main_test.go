@@ -204,7 +204,7 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
 		gotAgent = agent
 		gotPinned = pinned
 		return nil
@@ -281,7 +281,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
 		gotAgent = agent
 		gotPinned = pinned
 		return nil
@@ -513,7 +513,7 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 
 	var called bool
 	oldTuiRun := tuiRun
-	tuiRun = func(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
 		called = true
 		return nil
 	}
@@ -661,7 +661,7 @@ func TestRunLaunchPath(t *testing.T) {
 			oldSweep := sweepRefcounts
 			var gotPath string
 			var gotTUI, gotLaunch, gotGuard, gotSweep bool
-			tuiRun = func(bool, string, string, string, string, []string, themes.Theme, string, *config.Config) error {
+			tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config) error {
 				gotTUI = true
 				gotPath = c.launchPath
 				return nil

@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
@@ -1163,36 +1162,6 @@ func TestPinnedModelValidSkipsPicker(t *testing.T) {
 	}
 	if sel := selectedModelID(got); sel != "ollama/gemma4:9b" {
 		t.Errorf("selected %q, want the pinned ollama/gemma4:9b", sel)
-	}
-}
-
-// TestPinnedModelRejectedSkipsInventoryProbe verifies a rejected -M pin routes
-// back to the agent picker without probing the local inventory. The pin is
-// judged by localgate's own flag+probe verdict, so the inventory snapshot only
-// feeds a table the user never sees — probing first makes a bad pin wait on a
-// synchronous network round against every local provider.
-func TestPinnedModelRejectedSkipsInventoryProbe(t *testing.T) {
-	tempStateDir(t)
-	cfg := testConfig()
-	probed := false
-	old := runInventory
-	runInventory = func(*config.Config) localmodels.Snapshot { probed = true; return localmodels.Snapshot{} }
-	t.Cleanup(func() { runInventory = old })
-
-	m := model{cfg: cfg, pinnedModel: "ollama/missing", width: 80, height: 24}
-	fullCatalog, err := cfg.ModelsForAgent("claude")
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "", "")
-	if err != nil {
-		t.Fatalf("EligibleModelsIn: %v", err)
-	}
-	if _, cmd := m.enterModelPhase("claude", models, "code"); cmd != nil {
-		t.Errorf("expected nil cmd (pin rejected), got %v", cmd)
-	}
-	if probed {
-		t.Error("inventory was probed for a rejected pin whose table is never rendered")
 	}
 }
 
