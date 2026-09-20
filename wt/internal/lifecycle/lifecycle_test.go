@@ -3,9 +3,12 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -44,6 +47,24 @@ func running(provider, id, name string) localmodels.Entry {
 // containsFold reports whether s contains sub, case-insensitively.
 func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
+}
+
+// modelsServing is an OpenAI-compatible /v1/models server reporting the given
+// ids (none when called with no arguments).
+func modelsServing(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	body := `{"data":[`
+	for i, id := range ids {
+		if i > 0 {
+			body += ","
+		}
+		body += `{"id":"` + id + `"}`
+	}
+	body += `]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	return srv
 }
 
 // TestOccupantRules verifies who a start would replace: nobody for ollama
@@ -181,6 +202,7 @@ func TestTypedErrorMessages(t *testing.T) {
 		{&DaemonDownError{Provider: "ollama", Origin: "http://localhost:11434"}, "http://localhost:11434"},
 		{&BinaryMissingError{Binary: "mtplx"}, "mtplx"},
 		{&PortBusyError{Port: 8003}, "8003"},
+		{&OccupancyUnknownError{ProviderID: "omlx", Origin: "http://localhost:8000"}, "omlx"},
 		{&UnsupportedError{ProviderID: "mlx_lm_server"}, "mlx_lm_server"},
 	}
 	for _, tc := range cases {
@@ -207,5 +229,125 @@ func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
 		if ok != b.singleModel() {
 			t.Errorf("family %s: Occupant reported an occupant=%v but singleModel()=%v", family, ok, b.singleModel())
 		}
+	}
+}
+
+// TestStartRefusesWhenListenerStalls verifies a single-model provider whose
+// /v1/models accepts the connection and then stalls produces
+// *OccupancyUnknownError and touches nothing. This is the silent-eviction case:
+// the daemon is up and serving a model, but the probe cannot see it, so
+// starting would replace it with no confirmation.
+func TestStartRefusesWhenListenerStalls(t *testing.T) {
+	stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+	}))
+	defer stall.Close()
+
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", stall.URL)
+
+	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
+	var unknown *OccupancyUnknownError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("start with a stalled listener = %v, want *OccupancyUnknownError", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) while the occupant was unknown", calls)
+	}
+}
+
+// TestStartProceedsWhenProviderIsDown verifies a definitively-down provider
+// still starts with no confirmation. This is the ordinary cold start for
+// omlx/mtplx: making a refused connection count as indeterminate would demand
+// AllowReplace for every normal start, which is worse than the bug.
+func TestStartProceedsWhenProviderIsDown(t *testing.T) {
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", "http://"+freeAddr(t))
+
+	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
+		t.Fatalf("start with the provider down = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"start:b"}) {
+		t.Errorf("calls = %v, want [start:b]", calls)
+	}
+}
+
+// TestStartFindsOccupantTheSnapshotMissed verifies the live re-probe catches a
+// model the inventory snapshot could not report, and returns the ordinary
+// *OccupiedError for it. Falling through to a start here is the eviction.
+func TestStartFindsOccupantTheSnapshotMissed(t *testing.T) {
+	serving := modelsServing(t, "a")
+	defer serving.Close()
+
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", serving.URL)
+
+	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
+	var occ *OccupiedError
+	if !errors.As(err, &occ) {
+		t.Fatalf("start over a live occupant = %v, want *OccupiedError", err)
+	}
+	if !containsFold(occ.Occupant.ModelID, "a") {
+		t.Errorf("occupant = %q, want the model the server reports (a)", occ.Occupant.ModelID)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) without AllowReplace", calls)
+	}
+}
+
+// TestStartProceedsWhenServerReportsNoModel verifies a server that answers with
+// an empty model list is started into normally. It answered, so it is neither
+// unknown nor occupied.
+func TestStartProceedsWhenServerReportsNoModel(t *testing.T) {
+	empty := modelsServing(t)
+	defer empty.Close()
+
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", empty.URL)
+
+	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
+		t.Fatalf("start against an idle server = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"start:b"}) {
+		t.Errorf("calls = %v, want [start:b]", calls)
+	}
+}
+
+// TestStartUsesSnapshotWhenProbeIsTrustworthy verifies a trustworthy snapshot
+// still decides occupancy on its own, so the common path costs no extra HTTP
+// request and the existing Occupant rules keep governing.
+func TestStartUsesSnapshotWhenProbeIsTrustworthy(t *testing.T) {
+	var calls []string
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries:   []localmodels.Entry{running("omlx", "omlx/a", "a")},
+	}
+	e := fakeEnv(snap, true, &calls)
+	cfg := provCfg("omlx", "http://"+freeAddr(t)) // no listener: a live probe must not be consulted
+
+	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
+	var occ *OccupiedError
+	if !errors.As(err, &occ) {
+		t.Fatalf("start with a trustworthy snapshot showing an occupant = %v, want *OccupiedError", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) without AllowReplace", calls)
+	}
+}
+
+// TestOccupantIgnoresUntrustworthySnapshot verifies Occupant does not claim
+// "no occupant" from a probe it knows failed. Its contract is that the caller
+// may act on a false result, so it must not answer from untrustworthy data.
+func TestOccupantIgnoresUntrustworthySnapshot(t *testing.T) {
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial},
+		Entries:   []localmodels.Entry{running("omlx", "omlx/a", "a")},
+	}
+	if _, ok := Occupant(Target{ProviderID: "omlx", ModelName: "b"}, snap); ok {
+		t.Error("Occupant must not report an occupant from an untrustworthy probe")
 	}
 }

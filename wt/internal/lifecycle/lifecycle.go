@@ -60,6 +60,16 @@ func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
 }
 
+// OccupancyUnknownError means the provider's live state could not be
+// determined: its server accepted a connection but did not give a usable
+// answer, so starting could replace a model that is still running. Nothing was
+// touched.
+type OccupancyUnknownError struct{ ProviderID, Origin string }
+
+func (e *OccupancyUnknownError) Error() string {
+	return fmt.Sprintf("cannot tell whether %s at %s is already serving a model — confirm before replacing it", e.ProviderID, e.Origin)
+}
+
 // UnsupportedError means wt has no lifecycle backend for the provider.
 type UnsupportedError struct{ ProviderID string }
 
@@ -87,8 +97,24 @@ func sameModel(family, a, b string) bool {
 	return localmodels.NameMatches(a, b)
 }
 
+// probeTrusted reports whether snap's Running flags for family were produced by
+// a probe that could actually determine them. An absent status counts as
+// trusted: inventory registers a family's key whenever this config has a local
+// provider or model for it, so an absent key means nothing is being started
+// into that family — and hand-built snapshots in tests carry no status map.
+func probeTrusted(snap localmodels.Snapshot, family string) bool {
+	st, ok := snap.Providers[family]
+	if !ok {
+		return true
+	}
+	return st == localmodels.StatusOK
+}
+
 // isRunning reports whether live Inventory already shows the target serving.
 func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
+	if !probeTrusted(snap, family) {
+		return false
+	}
 	for _, en := range snap.Entries {
 		if en.Running && localmodels.Family(en.ProviderID) == family && sameModel(family, en.ModelName, t.ModelName) {
 			return true
@@ -111,10 +137,15 @@ var backendsByFamily = map[string]backend{
 
 // Occupant reports the running model that starting t would replace: none for
 // ollama (multi-tenant) or unsupported providers; on omlx/omlx-6bit (one
-// domain) and mtplx, any running model of the family other than t itself.
+// domain) and mtplx, any running model of the family other than t itself. It
+// also reports none when the snapshot's probe for the family failed, because a
+// caller acting on that false would replace a model it never saw.
 func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 	family := localmodels.Family(t.ProviderID)
 	if b := backendsByFamily[family]; b == nil || !b.singleModel() {
+		return localmodels.Entry{}, false
+	}
+	if !probeTrusted(snap, family) {
 		return localmodels.Entry{}, false
 	}
 	for _, en := range snap.Entries {
@@ -129,10 +160,41 @@ func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 	return localmodels.Entry{}, false
 }
 
+// resolveOccupant decides whether starting t would replace a running model of a
+// single-model family. It prefers the snapshot, which is free, and re-probes
+// the server only when the snapshot's probe could not be trusted — the case
+// that used to read as "no occupant" and let a start evict the running model.
+// unknown reports that even the re-probe could not tell; the caller must then
+// require AllowReplace.
+func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family string, t Target, snap localmodels.Snapshot) (occ localmodels.Entry, has, unknown bool) {
+	if b := e.backends[family]; b == nil || !b.singleModel() {
+		return localmodels.Entry{}, false, false
+	}
+	if occ, ok := Occupant(t, snap); ok {
+		return occ, true, false
+	}
+	if probeTrusted(snap, family) {
+		return localmodels.Entry{}, false, false
+	}
+	ids, known := e.liveServed(ctx, cfg, family)
+	if !known {
+		return localmodels.Entry{}, false, true
+	}
+	for _, id := range ids {
+		if sameModel(family, id, t.ModelName) {
+			continue // the target itself is already served: not an occupant
+		}
+		return localmodels.Entry{ProviderID: t.ProviderID, ModelID: id, ModelName: id, Running: true}, true, false
+	}
+	return localmodels.Entry{}, false, false
+}
+
 // Start starts t. It is a no-op when live Inventory shows t already running,
 // returns *OccupiedError (touching nothing) when it would replace a running
-// model and opts.AllowReplace is false, and otherwise stops the occupant (if
-// any) and runs the provider's start sequence.
+// model and opts.AllowReplace is false, returns *OccupancyUnknownError
+// (touching nothing) when its server accepted a connection but could not say
+// what it is serving, and otherwise stops the occupant (if any) and runs the
+// provider's start sequence.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
 	return start(ctx, defaultEnv(), cfg, t, opts)
 }
@@ -152,15 +214,18 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
-	if b.singleModel() {
-		if occ, ok := Occupant(t, snap); ok {
-			if !opts.AllowReplace {
-				return &OccupiedError{Occupant: occ}
-			}
-			report(StageStoppingOccupant)
-			if err := b.stop(ctx, e, cfg); err != nil {
-				return fmt.Errorf("stopping %s before starting %s: %w", occ.ModelID, t.ModelName, err)
-			}
+	if occ, has, unknown := e.resolveOccupant(ctx, cfg, family, t, snap); unknown {
+		if !opts.AllowReplace {
+			origin, _ := localmodels.FamilyOrigin(cfg, family)
+			return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
+		}
+	} else if has {
+		if !opts.AllowReplace {
+			return &OccupiedError{Occupant: occ}
+		}
+		report(StageStoppingOccupant)
+		if err := b.stop(ctx, e, cfg); err != nil {
+			return fmt.Errorf("stopping %s before starting %s: %w", occ.ModelID, t.ModelName, err)
 		}
 	}
 	return b.start(ctx, e, cfg, t, report)

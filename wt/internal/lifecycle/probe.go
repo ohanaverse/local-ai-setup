@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -171,4 +172,33 @@ func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) bool 
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	return err == nil && chatCompletionMarker.Match(body)
+}
+
+// liveServed asks a single-model provider's server directly what it is serving,
+// and reports whether that answer can be trusted.
+//
+// known is false only when the server failed to give a usable answer — it
+// accepted the connection and stalled, or answered with a non-2xx or
+// undecodable body. A refused or reset connection is NOT unknown: it means
+// nothing is listening, so known is true with no ids, and an ordinary cold
+// start proceeds without a confirmation. Collapsing those two cases either
+// refuses every cold start or permits the silent replacement this exists to
+// prevent.
+func (e *env) liveServed(ctx context.Context, cfg *config.Config, family string) (ids []string, known bool) {
+	origin, _ := localmodels.FamilyOrigin(cfg, family)
+	modelsURL := origin + "/v1/models"
+	responded, timedOut := e.probe(ctx, modelsURL, e.prebindTimeout)
+	switch {
+	case responded:
+		ids, err := localmodels.FetchModelIDsErr(e.probeClient, modelsURL)
+		if err != nil {
+			return nil, false
+		}
+		return ids, true
+	case timedOut:
+		return nil, false
+	default:
+		// Connection refused/reset: definitively nothing listening.
+		return nil, true
+	}
 }
