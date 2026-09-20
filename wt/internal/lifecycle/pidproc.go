@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -82,14 +83,28 @@ func (s *spawned) kill() {
 	_ = os.Remove(s.p.pidfile)
 }
 
-// logTail returns up to max trailing bytes of the log ("" when unreadable).
+// logTail returns up to max trailing bytes of the log ("" when unreadable). It
+// seeks from the end instead of reading the file: the log is append-only and
+// shared with modelman, so it grows without bound, and a failed start must not
+// read all of it to show a 512-byte tail.
 func (p pidProcess) logTail(max int) string {
-	b, err := os.ReadFile(p.logfile)
+	f, err := os.Open(p.logfile)
 	if err != nil {
 		return ""
 	}
-	if len(b) > max {
-		b = b[len(b)-max:]
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	if size := fi.Size(); size > int64(max) {
+		if _, err := f.Seek(size-int64(max), io.SeekStart); err != nil {
+			return ""
+		}
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return ""
 	}
 	return string(b)
 }

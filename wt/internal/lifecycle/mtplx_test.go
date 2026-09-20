@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -263,5 +264,32 @@ func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
 	}
 	if port != 8003 {
 		t.Errorf("port = %d, want 8003", port)
+	}
+}
+
+// TestLogTailReadsOnlyTheTail verifies logTail returns the last max bytes of a
+// log, and nothing when the file is missing. The mtplx log is append-only and
+// shared with modelman, so it grows across every start; a failed start must not
+// depend on the whole file fitting in memory to show a 512-byte tail.
+func TestLogTailReadsOnlyTheTail(t *testing.T) {
+	dir := t.TempDir()
+	p := pidProcess{
+		name:    "mtplx",
+		pidfile: filepath.Join(dir, "mtplx.pid"),
+		logfile: filepath.Join(dir, "mtplx.log"),
+	}
+	content := append(bytes.Repeat([]byte("A"), 4096), []byte("TAIL")...)
+	if err := os.WriteFile(p.logfile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.logTail(4); got != "TAIL" {
+		t.Errorf("logTail(4) = %q, want %q", got, "TAIL")
+	}
+	if got := p.logTail(1 << 20); got != string(content) {
+		t.Errorf("logTail larger than the file = %d bytes, want all %d", len(got), len(content))
+	}
+	missing := pidProcess{logfile: filepath.Join(dir, "nope.log")}
+	if got := missing.logTail(8); got != "" {
+		t.Errorf("logTail on a missing file = %q, want empty", got)
 	}
 }
