@@ -83,10 +83,13 @@ func (s *spawned) kill() {
 	_ = os.Remove(s.p.pidfile)
 }
 
-// logTail returns up to max trailing bytes of the log ("" when unreadable). It
+// logTail returns up to the last max bytes of the log ("" when unreadable). It
 // seeks from the end instead of reading the file: the log is append-only and
 // shared with modelman, so it grows without bound, and a failed start must not
-// read all of it to show a 512-byte tail.
+// read all of it to show a 512-byte tail. The value it returns is then clamped to
+// at most max bytes, because the subprocess may append between the stat and the
+// read — without the clamp the returned string can exceed max and the guarantee
+// above would not hold exactly when it matters (a failed start).
 func (p pidProcess) logTail(max int) string {
 	f, err := os.Open(p.logfile)
 	if err != nil {
@@ -105,6 +108,9 @@ func (p pidProcess) logTail(max int) string {
 	b, err := io.ReadAll(f)
 	if err != nil {
 		return ""
+	}
+	if len(b) > max {
+		b = b[len(b)-max:]
 	}
 	return string(b)
 }

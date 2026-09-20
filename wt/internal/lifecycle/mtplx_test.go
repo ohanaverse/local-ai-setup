@@ -252,25 +252,36 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 // TestMtplxEndpointPortMatchesModelsURL verifies the port mtplx is spawned with
 // and the URL it is polled at come from one resolution. When they diverge the
 // spawn succeeds and the wait then times out for the full load budget before
-// killing the server it just started.
+// killing the server it just started. The registry host is one the fallback
+// cannot produce, so this passes only through the portless resolution path: if
+// that path (and defaultPortFor) went away, the fallback's localhost origin
+// would show up here instead of the registry's host and fail the test.
 func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
-	cfg := provCfg("mtplx", "http://localhost") // registry value with no port
+	cfg := provCfg("mtplx", "http://127.0.0.1") // registry value with no port
 	origin, modelsURL, port := mtplxEndpoint(cfg)
-	if origin != "http://localhost:8003" {
-		t.Errorf("origin = %q, want http://localhost:8003", origin)
+	if origin != "http://127.0.0.1:8003" {
+		t.Errorf("origin = %q, want http://127.0.0.1:8003", origin)
 	}
-	if modelsURL != "http://localhost:8003/v1/models" {
-		t.Errorf("modelsURL = %q, want http://localhost:8003/v1/models", modelsURL)
+	if modelsURL != "http://127.0.0.1:8003/v1/models" {
+		t.Errorf("modelsURL = %q, want http://127.0.0.1:8003/v1/models", modelsURL)
 	}
 	if port != 8003 {
 		t.Errorf("port = %d, want 8003", port)
 	}
 }
 
-// TestLogTailReadsOnlyTheTail verifies logTail returns the last max bytes of a
-// log, and nothing when the file is missing. The mtplx log is append-only and
-// shared with modelman, so it grows across every start; a failed start must not
-// depend on the whole file fitting in memory to show a 512-byte tail.
+// TestLogTailReadsOnlyTheTail verifies logTail returns up to the last max bytes
+// of a log, and nothing when the file is missing. The mtplx log is append-only
+// and shared with modelman, so it grows across every start; a failed start must
+// not depend on the whole file fitting in memory to show a 512-byte tail. The
+// boundary cases below pin the behaviour at the edges: max == size must return
+// all N bytes (at equality the `>`-vs-`>=` choice is behaviourally identical, so
+// this pins the boundary result rather than discriminating that operator), max
+// == 0 must return nothing rather than the whole file, and a zero-byte log must
+// come back empty without panicking. These pin the boundary *result*, not the
+// clamp: when the file is longer than max the seek already lands max bytes from
+// the end, so the clamp body runs only if the log grew between the stat and the
+// read.
 func TestLogTailReadsOnlyTheTail(t *testing.T) {
 	dir := t.TempDir()
 	p := pidProcess{
@@ -287,6 +298,19 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 	}
 	if got := p.logTail(1 << 20); got != string(content) {
 		t.Errorf("logTail larger than the file = %d bytes, want all %d", len(got), len(content))
+	}
+	if got := p.logTail(len(content)); got != string(content) {
+		t.Errorf("logTail(exactly the file size) = %d bytes, want all %d", len(got), len(content))
+	}
+	if got := p.logTail(0); got != "" {
+		t.Errorf("logTail(0) = %q, want empty (never the whole file)", got)
+	}
+	emptyFile := filepath.Join(dir, "empty.log")
+	if err := os.WriteFile(emptyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := (pidProcess{logfile: emptyFile}).logTail(8); got != "" {
+		t.Errorf("logTail on an empty file = %q, want empty", got)
 	}
 	missing := pidProcess{logfile: filepath.Join(dir, "nope.log")}
 	if got := missing.logTail(8); got != "" {

@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -214,20 +215,58 @@ func TestTypedErrorMessages(t *testing.T) {
 
 // TestOccupantDerivesSingleModelFromBackendRegistry verifies Occupant's
 // single-model rule comes from the same registry defaultEnv builds, for every
-// registered family. A backend that is startable (singleModel true) while
-// Occupant reports no occupant is exactly the state in which a running model
-// gets replaced with no confirmation — the trap a hand-maintained family list
-// leaves for the next backend.
+// registered family. The map comparison is the structural half: it pins the
+// registry's *contents* — which family maps to which backend — against an
+// independent literal spelled out below, not merely its size, so the swap class
+// it catches is a family whose entry was replaced by another with the same count
+// (e.g. "mtplx": omlxBackend{}), the edit that would otherwise run mtplx's start
+// through the omlx backend with nothing in the package noticing. Comparing
+// against the other map could not see that: defaultEnv clones backendsByFamily,
+// so both sides would move together. The per-family loop below is the behavioral
+// half — a backend that is startable (singleModel true) while Occupant reports no
+// occupant is exactly the state in which a running model gets replaced with no
+// confirmation, the trap a hand-maintained family list leaves for the next
+// backend.
+//
+// maps.Equal compares interface values with ==, so a backend struct that gained
+// a non-comparable field (a slice, map or func) would make this guard panic
+// rather than fail. All three backends are empty structs today, so it is safe;
+// a new backend must stay comparable for this guard to work.
 func TestOccupantDerivesSingleModelFromBackendRegistry(t *testing.T) {
-	if len(defaultEnv().backends) != len(backendsByFamily) {
-		t.Fatalf("defaultEnv registers %d backends, backendsByFamily has %d — they must not drift",
-			len(defaultEnv().backends), len(backendsByFamily))
+	if !maps.Equal(defaultEnv().backends, map[string]backend{
+		"ollama": ollamaBackend{},
+		"omlx":   omlxBackend{},
+		"mtplx":  mtplxBackend{},
+	}) {
+		t.Fatalf("defaultEnv's backends must be the registry wt can start: ollama, omlx and mtplx, each with its own backend")
 	}
 	for family, b := range backendsByFamily {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
 		_, ok := Occupant(Target{ProviderID: family, ModelName: "wanted"}, snap)
 		if ok != b.singleModel() {
 			t.Errorf("family %s: Occupant reported an occupant=%v but singleModel()=%v", family, ok, b.singleModel())
+		}
+	}
+}
+
+// TestOccupantUnregisteredFamilyHasNoOccupant verifies Occupant reports no
+// occupant for a family wt has no backend for, even when the snapshot carries a
+// running model of that very family that would otherwise be the target's
+// occupant. This is the arm that keeps a provider wt cannot start from reporting
+// a phantom occupant, and it is the one arm Task 3's registry lookup introduced.
+// "mlx_lm_server" is single-model in reality and deliberately has no backend
+// entry: start would return *UnsupportedError, so there is nothing wt could
+// replace. Do not "fix" that with a backend entry — the picker would then offer
+// a start wt cannot perform.
+func TestOccupantUnregisteredFamilyHasNoOccupant(t *testing.T) {
+	for _, id := range []string{"ghost", "mlx_lm_server"} {
+		snap := localmodels.Snapshot{Entries: []localmodels.Entry{
+			running("omlx", "omlx/other", "other"),  // an unrelated family
+			running(id, id+"/occupant", "occupant"), // this family: the occupant if the guard were gone
+		}}
+		occ, ok := Occupant(Target{ProviderID: id, ModelName: "wanted"}, snap)
+		if ok {
+			t.Errorf("%s: Occupant = %+v, want no occupant — wt has no backend for this family, so there is nothing to replace", id, occ)
 		}
 	}
 }
@@ -251,6 +290,32 @@ func TestStartRefusesWhenListenerStalls(t *testing.T) {
 	var unknown *OccupancyUnknownError
 	if !errors.As(err, &unknown) {
 		t.Fatalf("start with a stalled listener = %v, want *OccupancyUnknownError", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("start touched the provider (%v) while the occupant was unknown", calls)
+	}
+}
+
+// TestStartRefusesWhenServerAnswersUnusably verifies a single-model provider
+// whose /v1/models answers but cannot give a usable answer (here: 500 to
+// everything) produces *OccupancyUnknownError and touches nothing. probe counts
+// any HTTP response as "responded", so a server that is up while its model list
+// errors is indeterminate rather than empty; reading it as "no occupant" would
+// silently replace a running model, exactly like the stalled-listener case.
+func TestStartRefusesWhenServerAnswersUnusably(t *testing.T) {
+	unusable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer unusable.Close()
+
+	var calls []string
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	cfg := provCfg("omlx", unusable.URL)
+
+	err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{})
+	var unknown *OccupancyUnknownError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("start against a server that answers 500 = %v, want *OccupancyUnknownError", err)
 	}
 	if len(calls) != 0 {
 		t.Errorf("start touched the provider (%v) while the occupant was unknown", calls)

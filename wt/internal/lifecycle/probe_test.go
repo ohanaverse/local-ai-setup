@@ -181,13 +181,22 @@ func TestWarmupSendsOneTokenChatAndWaitsForCompletion(t *testing.T) {
 }
 
 // TestWarmupRejectsNon2xx verifies a non-2xx answer is not accepted as a
-// successful warmup even when its body carries the chat.completion marker.
-// Accepting it reports a model as resident when it is not, so the caller's
-// "ready to use" assumption is wrong on the very next request.
+// successful warmup even when its body carries the chat.completion marker, and
+// that a non-2xx does not abandon the warmup: the loop retries at least once
+// more. Accepting a non-2xx reports a model as resident when it is not, so the
+// caller's "ready to use" assumption is wrong on the very next request; and a
+// provider whose server is still booting answers 503 for a while, so giving up on
+// the first one would turn every normal cold start into a spurious failure. The
+// POST counter is what pins that retry: an error substring matches on the first
+// attempt too. It pins "retried after the first non-2xx", not retry-to-the-
+// deadline (a two-attempt cap would satisfy it); the exact retry count is pinned
+// by TestWarmupSendsOneTokenChatAndWaitsForCompletion, whose second POST succeeds.
 func TestWarmupRejectsNon2xx(t *testing.T) {
 	e := testEnv()
+	var posts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			atomic.AddInt32(&posts, 1)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 			return
@@ -198,5 +207,11 @@ func TestWarmupRejectsNon2xx(t *testing.T) {
 
 	if err := e.warmup(context.Background(), srv.URL, "m", srv.URL, e.warmupTimeout); err == nil {
 		t.Error("warmup must fail on a non-2xx response carrying a chat.completion body")
+	}
+	// The test env's 300ms window with a 5ms poll interval gives ~60 attempts,
+	// and the GET health poll always answers 200, so the loop always reaches the
+	// POST: >= 2 cannot flake.
+	if got := atomic.LoadInt32(&posts); got < 2 {
+		t.Errorf("posts = %d, want >= 2: the loop must retry the non-2xx instead of failing on the first attempt", got)
 	}
 }
