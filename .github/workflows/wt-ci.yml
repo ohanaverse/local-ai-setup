@@ -39,3 +39,13 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+      # The same suite on a single P. A test that asserts on something a spawned
+      # goroutine did is ordered correctly only by luck of the runner's core
+      # count: the tui start flow's startModel call-count assertions passed on a
+      # many-core dev machine and failed on CI. macos-latest's core count is not
+      # ours to choose, so pin the worst case here instead of depending on it.
+      # -count=1 is load-bearing: `go test`'s cache does not account for
+      # GOMAXPROCS (verified — a single-core run after a parallel one reports
+      # "(cached)"), so without it this step replays the step above and guards
+      # nothing.
+      - run: GOMAXPROCS=1 go test -count=1 ./...
