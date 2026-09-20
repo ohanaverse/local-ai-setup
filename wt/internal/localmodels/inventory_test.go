@@ -384,3 +384,47 @@ func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {
 		t.Errorf("entries = %+v, want discovered Some-Model-6bit", snap.Entries)
 	}
 }
+
+// TestInventoryArtifactKnownReflectsProbeOutcome verifies ArtifactKnown
+// distinguishes "the provider answered and does not have this model" from "the
+// probe could not tell". An unreachable family and mlx_lm_server (which cannot
+// enumerate artifacts at all) must both report false, while a probe that
+// answered reports true even when it found nothing. A consumer that reads an
+// empty Artifact as "missing" without this flag hides every configured ollama
+// model behind a transient daemon hiccup.
+func TestInventoryArtifactKnownReflectsProbeOutcome(t *testing.T) {
+	// The ollama daemon is down: nothing was discovered, and that is NOT the
+	// same as "the model is not pulled".
+	dead := ollamaServer(t, nil, nil)
+	deadURL := dead.URL
+	dead.Close()
+	down := inventory(&config.Config{
+		Providers: []config.Provider{localProvider("ollama", deadURL, "")},
+		Models:    []config.Model{{ID: "ollama/x:1b", ProviderID: "ollama", ModelName: "x:1b"}},
+	}, testClient)
+	if st := down.Providers["ollama"]; st != StatusUnreachable {
+		t.Fatalf("probe status = %q, want unreachable", st)
+	}
+	if e, ok := byModelID(down, "ollama/x:1b"); !ok || e.ArtifactKnown {
+		t.Errorf("unreachable ollama entry = %+v ok=%v, want ArtifactKnown=false", e, ok)
+	}
+
+	// The probe DID answer and found nothing: the model is genuinely absent.
+	up := inventory(&config.Config{
+		Providers: []config.Provider{localProvider("ollama", ollamaServer(t, []string{"other:1b"}, nil).URL, "")},
+		Models:    []config.Model{{ID: "ollama/gone:7b", ProviderID: "ollama", ModelName: "gone:7b"}},
+	}, testClient)
+	if e, ok := byModelID(up, "ollama/gone:7b"); !ok || !e.ArtifactKnown || e.Artifact != "" {
+		t.Errorf("answered entry = %+v ok=%v, want ArtifactKnown=true with empty Artifact", e, ok)
+	}
+
+	// mlx_lm_server serves one target+draft pairing per process and wt cannot
+	// reconstruct the served name, so its registered rows are always unknown.
+	mlx := inventory(&config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", modelsServer(t, "/some/target/path").URL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}, testClient)
+	if e, ok := byModelID(mlx, "mlx_lm_server/x"); !ok || e.ArtifactKnown {
+		t.Errorf("mlx_lm_server entry = %+v ok=%v, want ArtifactKnown=false", e, ok)
+	}
+}
