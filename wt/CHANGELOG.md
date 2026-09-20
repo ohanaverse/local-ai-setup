@@ -4,13 +4,16 @@
 
 ### Changed
 
-- Model picker rows are now compact one-liners: each row renders as
-  `family  <fam-30d>  <provider/model>  <location>  <1d/7d/30d> [tags]`,
-  with the family name leading every row. The multi-line card layout and
-  the family divider header rows are gone — family context is inline on
-  each row. Typing a family name (or any part of a model ID) into the
-  picker's `/` filter narrows the list. Navigation indices are dense
-  (0..n-1); up at the first row wraps to the last and down at the last
+- The model picker is now an aligned table with the header rendered as the
+  list title: `FAMILY  MODEL  LOC  STATUS  EXPOSED  RUNNING  COST  1D  7D
+  30D  SURVEY`. Rows are sorted cost-ascending (output price, then input
+  price; local and subscription-only models count as $0, and a model with no
+  price data sorts last), then by 7-day usage ascending; non-running local
+  models form a second group sorted by id. The previous compact one-liner
+  (`family  <fam-30d>  <provider/model>  <location>  <1d/7d/30d> [tags]`) and
+  its family divider header rows are gone — including the per-family 30-day
+  count column, so there are no inline `[tags]` either. Navigation indices are
+  dense (0..n-1); up at the first row wraps to the last and down at the last
   wraps to the first.
 
 ### Breaking changes
@@ -47,20 +50,17 @@
 
 ### Fixed
 
-- Family 30-day counts in the compact model picker are now aggregated
-  from the agent's full catalog (`cfg.ModelsForAgent`) instead of only the
-  `-T`/`-F`-filtered eligible subset. This restores the invariant that a
-  family's usage total includes launches of models currently hidden by
-  tag/family filters, which the previous family-divider layout guaranteed.
-<<<<<<< HEAD
-- The empty (unnamed "other") family's 30-day count is shown alongside its
-  `-` family column, matching the family sort key instead of a hardcoded 0.
-- The model picker (TUI) now fetches the agent's full catalog once and
-  filters it in place via `cfg.EligibleModelsIn`, sharing a single traversal
-  with `EligibleModels` instead of re-scanning the catalog to build the
-  family-count map.
-=======
->>>>>>> origin/main
+- The model picker (TUI) fetches the agent's full catalog once and filters it
+  in place via `cfg.EligibleModelsIn`, sharing a single traversal with
+  `EligibleModels` instead of re-scanning the catalog to build a family-count
+  map. (The map and its column are gone with the compact layout.)
+- A configured local model now reads `unknown` rather than `absent` when the
+  probe could not determine whether its artifact is present — a failed ollama
+  probe, or any `mlx_lm_server` row, whose target+draft pairing is not
+  discoverable. `absent` is reserved for a provider that answered and does not
+  have the model. Previously a transient daemon hiccup made every configured
+  ollama model unlaunchable in the TUI even though the same model launched
+  fine through `-M` and the non-TUI path.
 
 ### Removed
 
