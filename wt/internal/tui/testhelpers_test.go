@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -67,9 +70,14 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 
 // TestMain stubs the live-provider inventory so no test in this package ever
 // probes the developer's real ollama/omlx/mtplx servers or reads their model
-// directories. Tests that need local rows call stubInventory.
+// directories, and stubs startModel so no test can start a real model
+// process. Tests that need local rows call stubInventory; tests that exercise
+// the start flow call stubStartModel.
 func TestMain(m *testing.M) {
 	runInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
+		return errors.New("startModel not stubbed in this test")
+	}
 	os.Exit(m.Run())
 }
 

@@ -36,12 +36,14 @@ import (
 type phase int
 
 const (
-	phaseList        phase = iota // worktree list (lesson 13)
-	phaseAgent                    // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
-	phaseModel                    // agent+model picker (lesson 14 + lesson 15 merged)
-	phaseResume                   // resume prompt (lesson 16)
-	phaseOllamaWarn               // confirm before launching with unavailable ollama model
-	phaseNewWorktree              // create-new-worktree prompt
+	phaseList           phase = iota // worktree list (lesson 13)
+	phaseAgent                       // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
+	phaseModel                       // agent+model picker (lesson 14 + lesson 15 merged)
+	phaseResume                      // resume prompt (lesson 16)
+	phaseOllamaWarn                  // confirm before launching with unavailable ollama model
+	phaseNewWorktree                 // create-new-worktree prompt
+	phaseStarting                    // a start runs through the lifecycle engine, with live progress
+	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -98,6 +100,14 @@ type model struct {
 
 	// ollama availability warning
 	ollamaWarnModel list.Model // confirmation choices for unavailable model
+
+	// start-on-select flow (2026-09-20): Enter on a start row runs the model
+	// through the lifecycle engine with live progress; the replace-confirm
+	// dialog appears when Start reports the provider's single slot occupied
+	// (or unknowable) and AllowReplace was false.
+	start    *startState   // in-flight start (phaseStarting); nil when idle
+	startRun int           // monotonically increasing run id; stale messages are dropped by id
+	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
 
 	// new-worktree prompt (this lesson)
 	newInput         textinput.Model
@@ -161,6 +171,10 @@ func (m model) openNewWorktreePrompt() model {
 // Update handles messages and returns the new state plus optional commands.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case startStageMsg, startTickMsg, startDoneMsg:
+		if nm, cmd, ok := m.handleStartMsg(msg); ok {
+			return nm, cmd
+		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.ready {
@@ -174,6 +188,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.phase == phaseResume {
 			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
+		}
+		if m.phase == phaseReplaceConfirm {
+			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
 		}
 		if m.phase == phaseNewWorktree {
 			m.newInput.Width = msg.Width - 4
@@ -260,6 +277,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = phaseList
 		return m, loadEntriesCmd()
 	case tea.KeyMsg:
+		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
+		// further press quits; every other key is ignored (before the picker
+		// wrap-around below, which must not move the cursor mid-start).
+		if m.phase == phaseStarting && m.start != nil {
+			return m.handleStartKey(msg)
+		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
 		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
@@ -313,6 +336,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn {
+				m.phase = phaseModel
+				m.status = ""
+				return m, nil
+			}
+			if m.phase == phaseReplaceConfirm {
 				m.phase = phaseModel
 				m.status = ""
 				return m, nil
@@ -412,6 +440,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !ok {
 					return m, nil
 				}
+				if highlighted.start {
+					// A start row: run the model through the lifecycle engine
+					// instead of launching (checked before the blocked hint: a
+					// start row is actionable, and until Task 4's flip the legacy
+					// hint is still rendered on exactly these rows).
+					return m.beginStart(highlighted, false)
+				}
 				if highlighted.blocked != "" {
 					m.status = highlighted.blocked
 					return m, nil
@@ -476,6 +511,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 				}
+			case phaseReplaceConfirm:
+				if item, ok := m.replace.choices.SelectedItem().(choiceItem); ok {
+					switch item.choice {
+					case replaceCancelChoice:
+						m.phase = phaseModel
+						return m, nil
+					case replaceProceedChoice:
+						return m.beginStart(m.replace.item, true)
+					}
+				}
 			case phaseNewWorktree:
 				if m.creating {
 					// A create is already in flight; ignore the second Enter
@@ -527,6 +572,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ollamaWarnModel, cmd = m.ollamaWarnModel.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseReplaceConfirm && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.replace.choices, cmd = m.replace.choices.Update(msg)
+		return m, cmd
+	}
 	if m.phase == phaseNewWorktree && m.width > 0 && m.height > 0 {
 		var cmd tea.Cmd
 		m.newInput, cmd = m.newInput.Update(msg)
@@ -563,6 +613,18 @@ func (m model) View() string {
 			return "ollama availability warning (waiting for window size)"
 		}
 		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
+	}
+	if m.phase == phaseStarting {
+		if m.width <= 0 || m.height <= 0 {
+			return "start progress (waiting for window size)"
+		}
+		return m.startingView()
+	}
+	if m.phase == phaseReplaceConfirm {
+		if m.width <= 0 || m.height <= 0 {
+			return "replace confirm (waiting for window size)"
+		}
+		return m.replace.choices.View() + "\n[enter] choose   [esc] back"
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {

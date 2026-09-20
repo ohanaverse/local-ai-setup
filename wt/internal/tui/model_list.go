@@ -53,6 +53,7 @@ type modelItem struct {
 	ref       int
 	exception string
 	blocked   string // non-empty: the agent flow's Enter shows this instead of launching
+	start     bool   // Enter starts the model through the lifecycle engine
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
