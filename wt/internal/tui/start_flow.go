@@ -193,41 +193,13 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	case errors.As(msg.err, &unk):
 		title = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
 	default:
-		return back(startErrorMessage(st.item.model.ID, msg.err))
+		return back(lifecycle.StartErrorMessage(st.item.model.ID, msg.err))
 	}
 	choices := list.New(buildReplaceChoices(), ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	choices.Title = title
 	m.replace = &replaceState{item: st.item, choices: choices}
 	m.phase = phaseReplaceConfirm
 	return m, nil
-}
-
-// startErrorMessage is the picker status line for a failed start.
-func startErrorMessage(id string, err error) string {
-	var down *lifecycle.DaemonDownError
-	var bin *lifecycle.BinaryMissingError
-	var busy *lifecycle.PortBusyError
-	switch {
-	case errors.As(err, &down):
-		return fmt.Sprintf("%s is not answering at %s — start it first", down.Provider, down.Origin)
-	case errors.As(err, &bin), errors.As(err, &busy):
-		return err.Error()
-	}
-	return fmt.Sprintf("failed to start %s: %v", id, err)
-}
-
-func stageLabel(s lifecycle.Stage) string {
-	switch s {
-	case lifecycle.StageStoppingOccupant:
-		return "stopping the running model"
-	case lifecycle.StageStarting:
-		return "starting the server"
-	case lifecycle.StageWaiting:
-		return "waiting for the model to load"
-	case lifecycle.StageWarming:
-		return "warming the model"
-	}
-	return "starting"
 }
 
 func (m model) startingView() string {
@@ -238,5 +210,5 @@ func (m model) startingView() string {
 		return fmt.Sprintf("Cancelling %s… (%s)\n\nwaiting for the server to stop\n\n[ctrl+c] quit wt",
 			m.start.item.model.ID, elapsed)
 	}
-	return fmt.Sprintf("Starting %s — %s (%s)\n\n[esc] cancel", m.start.item.model.ID, stageLabel(m.start.stage), elapsed)
+	return fmt.Sprintf("Starting %s — %s (%s)\n\n[esc] cancel", m.start.item.model.ID, lifecycle.StageLabel(m.start.stage), elapsed)
 }

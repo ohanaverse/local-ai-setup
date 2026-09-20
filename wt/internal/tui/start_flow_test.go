@@ -433,32 +433,6 @@ func TestKeysDuringStartIgnoreOtherKeys(t *testing.T) {
 	}
 }
 
-// TestStartErrorsMapToMessages verifies each engine failure produces the
-// status line the spec promises: a down daemon names the origin, the
-// engine's own typed errors are shown verbatim, and anything else is
-// prefixed with the model — a user must be able to tell what to fix.
-func TestStartErrorsMapToMessages(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		id   string
-		want []string // substrings the status must contain
-	}{
-		{"daemon down", &lifecycle.DaemonDownError{Provider: "omlx", Origin: "http://localhost:8000"}, "omlx/q", []string{"is not answering at", "http://localhost:8000"}},
-		{"binary missing", &lifecycle.BinaryMissingError{Binary: "omlx"}, "omlx/q", []string{"omlx"}},
-		{"port busy", &lifecycle.PortBusyError{Port: 8000}, "omlx/q", []string{"8000"}},
-		{"generic", errors.New("boom"), "omlx/q", []string{"failed to start omlx/q: boom"}},
-	}
-	for _, tc := range cases {
-		got := startErrorMessage(tc.id, tc.err)
-		for _, want := range tc.want {
-			if !strings.Contains(got, want) {
-				t.Errorf("%s: status = %q, want it to contain %q", tc.name, got, want)
-			}
-		}
-	}
-}
-
 // TestStartFailureRefreshesTable verifies a failed start rebuilds the table
 // from a fresh inventory (one more probe) and returns to the picker with the
 // failure in the status line — a replace can stop the occupant and then
