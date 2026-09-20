@@ -69,6 +69,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	fam := make([]string, len(rows))
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
+	wS := len("STATUS")
 	for i, r := range rows {
 		fam[i] = r.model.Family
 		if fam[i] == "" {
@@ -83,10 +84,11 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		idW = maxRunes(idW, r.model.ID)
 		costW = maxRunes(costW, cost[i])
 		w1, w7, w30 = maxRunes(w1, c1[i]), maxRunes(w7, c7[i]), maxRunes(w30, c30[i])
+		wS = maxRunes(wS, string(r.status))
 	}
 	const sep = "  "
 	header := strings.Repeat(" ", rowPrefixWidth) + strings.Join([]string{
-		padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", 6),
+		padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
 		padRunes("EXPOSED", 7), padRunes("RUNNING", 7), padRunes("COST", costW),
 		padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
 	}, sep)
@@ -98,7 +100,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			loc = "-"
 		}
 		line := strings.Join([]string{
-			padRunes(fam[i], famW), padRunes(r.model.ID, idW), padRunes(loc, 5), padRunes(string(r.status), 6),
+			padRunes(fam[i], famW), padRunes(r.model.ID, idW), padRunes(loc, 5), padRunes(string(r.status), wS),
 			padRunes(flag(r.exposed, "Y"), 7), padRunes(flag(r.running, "run"), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 		}, sep)

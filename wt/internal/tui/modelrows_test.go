@@ -73,7 +73,7 @@ func TestBuildRowsMarksAbsentAndRespectsAgentAndFilters(t *testing.T) {
 	cfg := rowsTestCfg()
 	models := []config.Model{{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone"}}
 	inv := &localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true},
+		{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
 		{ProviderID: "mtplx", ModelID: "mtplx/x", Artifact: "x"},      // claude does not support mtplx
 		{ProviderID: "ollama", ModelID: "omlx/gone", Artifact: "dup"}, // id collision with a row
 		{ProviderID: "ollama", ModelID: "ollama/ok", Artifact: "ok"},
@@ -195,5 +195,67 @@ func TestBuildRowsNativeModelIsExposedWithoutFlag(t *testing.T) {
 	}
 	if cfg.ExposedFlag("openrouter/native") {
 		t.Fatal("test premise broken: flag must be unset")
+	}
+}
+
+// TestBuildRowsUnknownLocalStatus verifies the three-way artifact rule: a probe
+// that answered and found nothing reads "absent" (and blocks an ollama launch,
+// since the daemon would not have the model), a probe that could not tell reads
+// "unknown" (and must NOT block — the non-TUI path trusts an ollama flag through
+// a probe failure, so a transient daemon hiccup must not make the TUI refuse to
+// launch a model that is actually pulled), and a row serving right now never
+// reads absent even when its artifact could not be resolved (mlx_lm_server,
+// whose target+draft pairing is not discoverable).
+func TestBuildRowsUnknownLocalStatus(t *testing.T) {
+	cfg := rowsTestCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mlx_lm_server", Location: config.LocationLocal})
+	models := []config.Model{
+		{ID: "ollama/unknown", ProviderID: "ollama", ModelName: "unknown", Location: config.LocationLocal},
+		{ID: "omlx/nope", ProviderID: "omlx", ModelName: "nope", Location: config.LocationLocal},
+		{ID: "mlx_lm_server/serving", ProviderID: "mlx_lm_server", ModelName: "serving", Location: config.LocationLocal},
+	}
+	inv := &localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{
+			"ollama": localmodels.StatusUnreachable, "omlx": localmodels.StatusOK,
+		},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/unknown", Registered: true},
+			{ProviderID: "omlx", ModelID: "omlx/nope", Registered: true, ArtifactKnown: true},
+			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/serving", Registered: true, Running: true},
+		},
+	}
+	rows := buildRows(tableInput{cfg: cfg, agent: "claude", models: models, inventory: inv, usage: usage.NewStoreAt(t.TempDir())})
+	byID := map[string]tableRow{}
+	for _, r := range rows {
+		byID[r.model.ID] = r
+	}
+	if got := byID["ollama/unknown"].status; got != statusUnknown {
+		t.Errorf("unreachable ollama status = %q, want unknown", got)
+	}
+	if !byID["ollama/unknown"].launchable() {
+		t.Error("an ollama row whose probe failed must stay launchable (fail open)")
+	}
+	if got := byID["omlx/nope"].status; got != statusAbsent {
+		t.Errorf("answered omlx status = %q, want absent", got)
+	}
+	if byID["omlx/nope"].launchable() {
+		t.Error("an absent non-running omlx row must not launch")
+	}
+	if got := byID["mlx_lm_server/serving"].status; got != statusOK {
+		t.Errorf("running mlx_lm_server status = %q, want ok", got)
+	}
+}
+
+// TestBuildRowsLocalModelMissingFromSnapshot verifies a local registry model
+// with no inventory entry at all (an unresolvable location, or a family wt has
+// no probe for) reads "unknown" rather than "absent": nothing was discovered
+// about it, so calling it missing would be a guess.
+func TestBuildRowsLocalModelMissingFromSnapshot(t *testing.T) {
+	cfg := rowsTestCfg()
+	models := []config.Model{{ID: "omlx/unprobed", ProviderID: "omlx", ModelName: "unprobed", Location: config.LocationLocal}}
+	inv := &localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK}}
+	rows := buildRows(tableInput{cfg: cfg, agent: "claude", models: models, inventory: inv, usage: usage.NewStoreAt(t.TempDir())})
+	if rows[0].status != statusUnknown {
+		t.Errorf("status = %q, want unknown", rows[0].status)
 	}
 }

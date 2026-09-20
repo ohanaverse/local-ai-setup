@@ -14,9 +14,10 @@ import (
 type rowStatus string
 
 const (
-	statusOK     rowStatus = "ok"     // on disk (local) or simply available (cloud)
-	statusAbsent rowStatus = "absent" // configured local model with no artifact
-	statusNew    rowStatus = "new"    // discovered, unregistered
+	statusOK      rowStatus = "ok"      // on disk (local) or simply available (cloud)
+	statusAbsent  rowStatus = "absent"  // the provider answered and does not have this model
+	statusUnknown rowStatus = "unknown" // local model whose presence the probe could not determine
+	statusNew     rowStatus = "new"     // discovered, unregistered
 )
 
 // tableRow is one line of the selector table before rendering.
@@ -33,8 +34,11 @@ type tableRow struct {
 
 // tableInput gathers everything buildRows needs. models is the agent's
 // PRE-GATE eligible list (exposed cloud + every configured local model,
-// already filtered by agent/-T/-F); inventory is nil when no local probe ran
-// (running/absent are then unknown: locals read as not running, status ok).
+// already filtered by agent/-T/-F); inventory is nil when no local probe ran,
+// in which case no local row is assessed at all: locals read as not running
+// with status ok. When inventory is set, a local row's status is ok, absent
+// (the probe answered and found no artifact), unknown (it could not tell), or
+// new (discovered, unregistered).
 type tableInput struct {
 	cfg            *config.Config
 	agent          string
@@ -69,12 +73,21 @@ func buildRows(in tableInput) []tableRow {
 		}
 		r := tableRow{model: m, location: loc, status: statusOK}
 		if loc == config.LocationLocal && in.inventory != nil {
-			if e, ok := byID[m.ID]; ok {
-				r.running = e.Running
-				if e.Artifact == "" {
-					r.status = statusAbsent
-				}
-			} else {
+			e, ok := byID[m.ID]
+			switch {
+			case !ok:
+				// No registered entry: the probe skipped this model (an
+				// unresolvable location) or its family has no probe at all.
+				// Nothing was discovered about it, so presence is unknown.
+				r.status = statusUnknown
+			case e.Running:
+				// Serving right now, so nothing about the row is missing.
+				// Checked before the artifact tests because a running
+				// mlx_lm_server row never has a resolved artifact.
+				r.running = true
+			case !e.ArtifactKnown:
+				r.status = statusUnknown
+			case e.Artifact == "":
 				r.status = statusAbsent
 			}
 		}

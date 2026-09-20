@@ -144,3 +144,21 @@ func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
 		t.Errorf("exception=%q blocked=%q, want (litellm required) and no block", tbl.items[0].exception, tbl.items[0].blocked)
 	}
 }
+
+// TestRenderTableUnknownStatusAligns verifies a 7-rune "unknown" cell widens the
+// STATUS column for the whole table rather than pushing every later column out
+// of line — the header and the rows must agree, or RUNNING and COST start
+// rendering under the wrong headings.
+func TestRenderTableUnknownStatusAligns(t *testing.T) {
+	rows := tableTestRows()
+	rows[3].status = statusUnknown
+	tbl := renderTable(rows, nil, "", nil, "")
+	col := func(name string) int { return len([]rune(tbl.header[:strings.Index(tbl.header, name)])) }
+	line := func(i int) []rune { return []rune(strings.Repeat(" ", 4) + tbl.items[i].line) }
+	if got := string(line(3)[col("STATUS") : col("STATUS")+7]); got != "unknown" {
+		t.Errorf("STATUS cell = %q, want unknown", got)
+	}
+	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
+		t.Errorf("RUNNING cell = %q (column drift after a widened STATUS)", got)
+	}
+}
