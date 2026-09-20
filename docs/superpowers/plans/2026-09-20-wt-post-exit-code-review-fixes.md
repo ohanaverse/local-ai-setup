@@ -534,13 +534,20 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ---
 
-### Task 5: sync the two living docs
+### Task 5: sync the living docs
 
-Finding 6. `wt/CLAUDE.md` documents the new order correctly (line 66), but the two files that document the *user-visible* flow still describe the pre-change behavior: `wt/docs/wt-agents/README.md:142` says the survey runs "immediately after the summary line" (it runs before it) and never mentions the picker; `wt/docs/wt-stats.md` omits the native-model skip and says the stats block prints "right after answering" (it prints after the stop picker and the summary). The original plan's T7 item asked for exactly this grep, so the drift is a known gap rather than a new one.
+Finding 6, plus one gap routed here from Task 2's review. `wt/CLAUDE.md` documents the new post-exit *order* correctly (line 66), but three living files are stale on other points:
+
+- `wt/docs/wt-agents/README.md:142` says the survey runs "immediately after the summary line" (it runs before it) and never mentions the picker.
+- `wt/docs/wt-stats.md` omits the native-model skip and says the stats block prints "right after answering" (it prints after the stop picker and the summary).
+- `wt/CLAUDE.md:120-124` enumerates the package-level test seams by name and lists `flushTTY` but not `stopSignalCtx`, the seam Task 2 added to `internal/survey`.
+
+The original plan's T7 item asked for exactly this class of grep, so the first two are a known gap rather than a new one. The third is a **Ruling** taken on Task 2's review: the reviewer flagged it as outside Task 2's file scope and asked the controller to route it, and a seam-list refresh is living-doc sync — this task's deliverable — so it lands here rather than in a fix round reaching outside its task. Cost if wrong: one doc line in the wrong commit.
 
 **Files:**
 - Modify: `wt/docs/wt-agents/README.md` (the paragraph at 142-147)
 - Modify: `wt/docs/wt-stats.md` (lines 48-49, 59-62, 64-66)
+- Modify: `wt/CLAUDE.md` (the seam list at line 123)
 
 **Interfaces:**
 - Consumes: nothing (docs only).
@@ -622,19 +629,30 @@ windows — after the stop picker and the summary line, so the interactive
 prompts cannot scroll them away.
 ```
 
-- [ ] **Step 4: Verify the docs**
+- [ ] **Step 4: Add the new seam to the seam list**
+
+In `wt/CLAUDE.md`, add `stopSignalCtx` to the parenthesized list of package-level var seams at line 123, immediately after `flushTTY` — both are `internal/survey` seams, so keep them adjacent. The sentence ends:
+
+```markdown
+`newUsageStore`, `flushTTY`, `stopSignalCtx`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`) — production code calls the var, tests swap it.
+```
+
+Change nothing else in the paragraph. `stopSignalCtx` is a plain package-level var seam of exactly the shape the paragraph already describes (`var x = realX`, production code calls the var, tests swap it), so one name in the list is the whole change; the prose that follows about `internal/lifecycle`'s `env` struct is a different convention and is untouched.
+
+- [ ] **Step 5: Verify the docs**
 
 Run: `cd .. && make check-links` (from the worktree root — the link checker covers `wt/docs` and the READMEs), then:
 
 ```bash
 grep -rn "Immediately after the summary line\|Right after answering" wt/docs docs/guides wt/CLAUDE.md
+grep -n "stopSignalCtx" wt/CLAUDE.md
 ```
-Expected: `make check-links` passes; the grep prints nothing.
+Expected: `make check-links` passes; the first grep prints nothing; the second prints exactly one hit (the seam list at line 123).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add wt/docs/wt-agents/README.md wt/docs/wt-stats.md
+git add wt/docs/wt-agents/README.md wt/docs/wt-stats.md wt/CLAUDE.md
 git commit -m "docs(wt): document the real post-exit order and the native-model survey skip - completes plan item #5
 
 The agent reference still put the survey after the summary line and never
