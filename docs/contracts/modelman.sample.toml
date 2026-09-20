@@ -1,7 +1,9 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (exposed and ready flags, plus each local model's per-model
-# `running` flag, to filter the model picker).
+# read-only (the `exposed` and `ready` flags and the `[litellm]` routing
+# table, to filter the model picker; wt does NOT read the per-model
+# `running` flag — running state comes from wt's live probes of the
+# providers).
 #
 # Read by:
 #   - wt/internal/config/modelman_fixture_test.go (Go)
@@ -17,14 +19,15 @@
 # wt-local-model-visibility design
 # (docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md):
 # wt treats every local model as always exposed at this check, regardless
-# of its `exposed`/`ready` flags — real local-model visibility in wt's
-# picker is governed separately by the live-verified `running` gate, not
-# by `exposed`/`ready` at all. Cloud and native models are unchanged: both
+# of its `exposed`/`ready` flags — what wt offers for a local model comes
+# from its live probes of the providers (STATUS/RUNNING rows), not from
+# this file's flags. Cloud and native models are unchanged: both
 # tools still apply the same rule to them.
 # - Local model with exposed=true, ready=false → NOT exposed per
 #   modelman's own predicate; wt's Stage-1 check treats it as exposed
-#   anyway (local models always pass Stage-1) — its actual visibility in
-#   wt's picker depends only on whether it's running, not on this row.
+#   anyway (local models always pass Stage-1) — wt lists every local
+#   model and decides launch/start/block from its own live probes, not
+#   from this row.
 # - Cloud model with exposed=true (no ready key) → exposed on both sides.
 #
 # The DATA rows below are unaffected by this divergence: the tests that
@@ -35,8 +38,10 @@
 # correctly regardless of which exposure rule is current.
 #
 # Local-model running state (multi-model local lifecycle design,
-# 2026-09-14): each model_state entry carries its own `running` flag,
-# verified live by both readers before being trusted — see
+# 2026-09-14): each model_state entry carries its own `running` flag.
+# It is modelman-owned: modelman writes it and verifies it with a live
+# probe before trusting it. wt does NOT read it (wt stopped parsing it)
+# — wt probes the providers itself. See
 # docs/superpowers/specs/2026-09-14-local-model-lifecycle-design.md.
 # The single [local].running_model marker (issue #65) is retired.
 
@@ -88,8 +93,8 @@ litellm_exposed = true
 # check no longer applies this gate to local models at all (2026-09-15
 # design) — it reads this row's raw .Exposed/.Ready fields in the fixture
 # test but does not derive an IsExposed() value from them for a local
-# model; the model's real visibility in wt's picker is decided solely by
-# the separate live-verified `running` gate.
+# model; what wt offers for a local model is decided by its own live
+# probes of the provider, never by a flag in this file.
 [model_state."ollama/contract-fixture:local-not-ready"]
 ready = false
 disk_path = "ollama:contract-fixture:local-not-ready"

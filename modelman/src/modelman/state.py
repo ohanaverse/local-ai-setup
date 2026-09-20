@@ -1,10 +1,10 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
 Owner: modelman (the only writer). wt reads this file read-only — the
-`exposed` flags, to filter its model picker to models actually served
-through LiteLLM, plus each local model's `running` flag, which it
-verifies with its own live probe before offering that model (see
-wt/internal/config/modelman.go and wt/internal/localgate; the shared
+`exposed` and `ready` flags and the `[litellm]` routing table, to filter
+its model picker. wt does NOT read the per-model `running` flag: running
+state comes from wt's own live probes of the providers (see
+wt/internal/config/modelman.go; the shared
 contract fixture is docs/contracts/modelman.sample.toml). See registry.py for the
 canonical, shared model/provider/family definitions this state is keyed
 against, and

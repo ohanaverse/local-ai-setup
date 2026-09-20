@@ -20,8 +20,8 @@ wt smoke <model-id> --json
 ```
 
 - `model-id` — a registry model id (`provider/name`). Omitted → interactive
-  picker over every currently eligible model (cloud-exposed, or local and
-  live-verified-running), using the same decorated, sorted list (family,
+  picker over every currently eligible model (cloud, or local and running
+  per the live probe), using the same decorated, sorted list (family,
   usage, cost, tags, rotation marker) the `wt` agent flow's model picker
   renders — unlike that flow, the list here is never narrowed to one
   agent's supported providers, since `wt smoke` picks the model first and
@@ -37,11 +37,12 @@ wt smoke <model-id> --json
 
 ## Eligibility
 
-An agent is eligible for a model when the model's provider is in the
-agent's `supported_providers` **and** the model passes the same
-exposure/local-running-gate checks a real launch would (`Config.EligibleModels`
-+ `internal/localgate.Apply`) — the exact rules `wt`'s own launch path
-applies, not a separate matrix.
+An agent is eligible for a model when selecting it would launch: the
+model's provider is in the agent's `supported_providers` and the row is a
+launch row — cloud models plus local models the live probe reports as
+running (`smoke.Eligibility` walks the same `catalog` rows a real launch
+consults). `wt smoke` never starts or stops anything — starting a model to
+check it is the launch path's job, not the doctor's.
 
 ## Progress (stderr)
 

@@ -5,7 +5,7 @@
 script is NOT deleted by this port (`bin/mlx-quantize` still sources it
 directly), so this Python copy must be kept in lockstep by comment with
 the bash original (same convention as `MTPLX_PORT` being duplicated in
-`wt/internal/localgate/localgate.go`).
+`wt/internal/localmodels/inventory.go`).
 """
 
 from __future__ import annotations
