@@ -94,3 +94,10 @@ Detection: extract the family (first component before `/` in `m.ID`), compare to
 
 - **`wt/internal/lifecycle/backends.go`** — add `Stop(modelID)` to each backend:
   - `ollamaBackend.Stop`, `omlxBackend.Stop`, `mtplxBackend.Stop`
+
+## Revisions (2026-09-20, after plan review)
+
+- **Native detection** uses the existing `config.Model.Native` field (registry-derived, `auth.type == "native"`); the `IsNativeModel` helper and `m.ID` splitting described above are dropped.
+- **Refcount-zero filter** (issue #115) is enforced: the picker lists only running local models whose `refcount` count is 0. wt releases its own pid's refcount entry (`refcount.Release`) before the picker, since that entry otherwise lives until the pid dies.
+- **Picker UI** for this iteration is line-typed (numbers toggle, `all`/`none`, Enter confirms, `q`/`esc` skips); the arrow-key UI is a follow-up.
+- **Files:** stop dispatch lives in `wt/internal/lifecycle/{lifecycle,ollama,omlx,mtplx}.go` (not `backends.go`/`agents/launch.go`, which don't exist); non-TUI reorder is in `wt/cmd/wt/launch.go`, TUI in `wt/internal/tui/{launch,app,survey}.go`.
