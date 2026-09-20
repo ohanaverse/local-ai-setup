@@ -84,6 +84,10 @@ type backend interface {
 	singleModel() bool
 	// stop stops the provider's current occupant and waits for it to release its port.
 	stop(ctx context.Context, e *env, cfg *config.Config) error
+	// stopModel stops the one named model (provider-side name). Multi-tenant
+	// providers unload just that model; single-model providers stop their
+	// only occupant, so modelName is informational there.
+	stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error
 	// start runs everything from spawn through warmup for t, reporting stages.
 	start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error
 }
@@ -245,4 +249,21 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 		return &UnsupportedError{ProviderID: providerID}
 	}
 	return b.stop(ctx, e, cfg)
+}
+
+// StopModel stops one running model (modelName is the provider-side name) for
+// the post-exit stop picker. On ollama it unloads just that model; on
+// single-model providers (omlx, mtplx) it stops the provider's sole occupant.
+// The caller must only pass a model live Inventory reported running.
+func StopModel(ctx context.Context, cfg *config.Config, providerID, modelName string) error {
+	return stopModel(ctx, defaultEnv(), cfg, providerID, modelName)
+}
+
+// stopModel is StopModel's injectable core, the same shape as stop/start.
+func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, modelName string) error {
+	b := e.backends[localmodels.Family(providerID)]
+	if b == nil {
+		return &UnsupportedError{ProviderID: providerID}
+	}
+	return b.stopModel(ctx, e, cfg, modelName)
 }

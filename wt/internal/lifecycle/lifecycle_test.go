@@ -27,6 +27,10 @@ func (f *fakeBackend) stop(ctx context.Context, e *env, cfg *config.Config) erro
 	*f.calls = append(*f.calls, "stop")
 	return f.stopErr
 }
+func (f *fakeBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
+	*f.calls = append(*f.calls, "stopModel:"+modelName)
+	return f.stopErr
+}
 func (f *fakeBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
 	*f.calls = append(*f.calls, "start:"+t.ModelName)
 	report(StageStarting)

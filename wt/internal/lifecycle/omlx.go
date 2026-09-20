@@ -57,3 +57,9 @@ func (omlxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
 	}
 	return nil
 }
+
+// stopModel: omlx serves one model at a time, so stopping its occupant is
+// stopping the daemon's model.
+func (b omlxBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, _ string) error {
+	return b.stop(ctx, e, cfg)
+}
