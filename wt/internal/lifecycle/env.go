@@ -55,7 +55,5 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-// TEMPORARY stubs, replaced by the real types in Tasks 3 and 5.
-type backend interface{}
-
+// TEMPORARY stub, replaced by the real type in Task 5.
 type pidProcess struct{ name, pidfile, logfile string }
