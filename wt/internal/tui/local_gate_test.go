@@ -13,7 +13,7 @@ func gateTestConfig() *config.Config {
 		DefaultTag: "code",
 		Providers: []config.Provider{
 			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
@@ -24,13 +24,14 @@ func gateTestConfig() *config.Config {
 		},
 	}
 	cfg.ExposeAllForTest()
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	return cfg
 }
 
 // TestEnterModelPhaseNoMarkerShowsLocalModelsAsNonRunning asserts the
 // selector-table replacement of the old gate's hiding: with an empty
 // inventory (nothing running) the configured local model still appears, as a
-// non-launchable row whose Enter hint says how to start it, next to the cloud
+// start row (Enter runs it through the lifecycle engine), next to the cloud
 // model. Hiding it (the old behavior) is what the table exists to fix.
 func TestEnterModelPhaseNoMarkerShowsLocalModelsAsNonRunning(t *testing.T) {
 	tempStateDir(t)
@@ -52,8 +53,8 @@ func TestEnterModelPhaseNoMarkerShowsLocalModelsAsNonRunning(t *testing.T) {
 	if byID["claude/opus"] == nil || byID["claude/opus"].blocked != "" {
 		t.Errorf("claude/opus must be a launchable row, got %+v", byID["claude/opus"])
 	}
-	if l := byID["omlx/qwen3.8"]; l == nil || l.blocked == "" {
-		t.Errorf("omlx/qwen3.8 must be a blocked (non-running) row, got %+v", l)
+	if l := byID["omlx/qwen3.8"]; l == nil || !l.start || l.blocked != "" {
+		t.Errorf("omlx/qwen3.8 must be a start row (not running), got start=%v blocked=%q", l.start, l.blocked)
 	}
 }
 
@@ -84,9 +85,9 @@ func TestEnterModelPhaseRunningLocalModelIsLaunchable(t *testing.T) {
 }
 
 // TestEnterModelPhaseMixedRunningState asserts that with one local model
-// running and another not, the running one is launchable and the other is
-// blocked — a non-running model neither hides the running one nor quits the
-// program (the old "drifted marker" concern, now expressed as row state).
+// running and another not, the running one is a launch row and the other is
+// a start row — a non-running model neither hides the running one nor quits
+// the program (the old "drifted marker" concern, now expressed as row state).
 func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 	tempStateDir(t)
 	stubUsageStore(t)
@@ -98,7 +99,7 @@ func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 		DefaultTag: "code",
 		Providers: []config.Provider{
 			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
@@ -110,6 +111,7 @@ func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 		},
 	}
 	cfg.ExposeAllForTest()
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
 
@@ -122,18 +124,20 @@ func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 		t.Fatalf("phase = %v, want phaseModel", got.phase)
 	}
 	blocked := map[string]string{}
+	starts := map[string]bool{}
 	for _, it := range got.models.Items() {
 		mi := it.(*modelItem)
 		blocked[mi.model.ID] = mi.blocked
+		starts[mi.model.ID] = mi.start
 	}
 	if len(blocked) != 3 {
 		t.Fatalf("got %d items, want 3", len(blocked))
 	}
-	if blocked["omlx/qwen3.8"] != "" {
-		t.Errorf("running omlx/qwen3.8 blocked = %q, want launchable", blocked["omlx/qwen3.8"])
+	if blocked["omlx/qwen3.8"] != "" || starts["omlx/qwen3.8"] {
+		t.Errorf("running omlx/qwen3.8 must be a plain launch row: blocked = %q start = %v", blocked["omlx/qwen3.8"], starts["omlx/qwen3.8"])
 	}
-	if blocked["omlx/other"] == "" {
-		t.Errorf("non-running omlx/other must be blocked")
+	if !starts["omlx/other"] || blocked["omlx/other"] != "" {
+		t.Errorf("non-running omlx/other must be a start row: start = %v blocked = %q", starts["omlx/other"], blocked["omlx/other"])
 	}
 }
 

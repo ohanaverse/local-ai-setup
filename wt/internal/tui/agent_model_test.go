@@ -303,12 +303,15 @@ func TestModelScreenMKeyIsNoOp(t *testing.T) {
 
 // TestViewModelPhase asserts the model-phase View renders the picker list
 // with the agent and tag in the header and the keybind hints in the footer.
+// The Enter hint is pinned whole ([enter] launch or start): a bare
+// "[enter] launch" substring would still match a footer that never mentions
+// starting, which is the drift this asserts against.
 func TestViewModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
 	view := m.View()
-	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[↑/↓] navigate", "[enter] launch"} {
+	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[↑/↓] navigate", "[enter] launch or start"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q in:\n%s", want, view)
 		}

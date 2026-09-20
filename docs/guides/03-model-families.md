@@ -138,7 +138,7 @@ wt --help
   -A, --agent string           Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)
 ```
 
-Model-picker screen keys (footer, current source): `[↑/↓] navigate   [enter] launch   [q] quit`. The header shows `agent : <agent>` / `tag   : <slot-tag>`, where the slot tag is the first `-T` value or `default_tag` from `~/.config/agent-wt/config.toml` — it labels the rotation slot, not necessarily an active filter (with no `-T`, `default_tag = "code"` is displayed while *all* agent-eligible models are listed). The picker cursor starts on the model **after** the last-launched one and `enter` launches + advances the rotation; there is no `r` re-roll key.
+Model-picker screen keys (footer, current source): `[↑/↓] navigate   [enter] launch or start   [q] quit` — a non-running local row is *started* through the lifecycle engine, and the rotation advances on the launch that follows (see [06-wt-agents-and-models](06-wt-agents-and-models.md) §2). The header shows `agent : <agent>` / `tag   : <slot-tag>`, where the slot tag is the first `-T` value or `default_tag` from `~/.config/agent-wt/config.toml` — it labels the rotation slot, not necessarily an active filter (with no `-T`, `default_tag = "code"` is displayed while *all* agent-eligible models are listed). The picker cursor starts on the model **after** the last-launched one and `enter` launches + advances the rotation; there is no `r` re-roll key.
 
 ### 5. Rotation behavior
 

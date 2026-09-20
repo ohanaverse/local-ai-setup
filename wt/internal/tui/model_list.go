@@ -40,8 +40,11 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // a row that needs litellm but modelman.toml's [litellm] url/api_key aren't
 // configured, "(not in LiteLLM)" for a discovered (registry-less) row whose route
 // would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
-// blocked, when non-empty, is the hint the agent flow's model phase shows
-// on Enter instead of launching (e.g. a non-running local model). It is the
+// blocked, when non-empty, is the hint the agent flow's model phase shows on
+// Enter instead of launching or starting: a local model that is not on disk,
+// a local provider wt has no lifecycle backend for, or a discovered row whose
+// route would go through LiteLLM (see rowAction/blockReason). A non-running
+// local model is deliberately NOT one of these — it is a start row. It is the
 // agent flow only that honors it: PickModel (wt smoke's standalone picker)
 // selects the highlighted row unconditionally, since its rows come from a
 // cross-agent eligible union where choosing a row this flow would refuse is
@@ -52,7 +55,8 @@ type modelItem struct {
 	marked    bool
 	ref       int
 	exception string
-	blocked   string // non-empty: the agent flow's Enter shows this instead of launching
+	blocked   string // non-empty: the agent flow's Enter shows this instead of launching or starting
+	start     bool   // Enter starts the model through the lifecycle engine
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
@@ -176,7 +180,11 @@ func (m *model) phaseModelView() string {
 	if m.cfg != nil && m.cfg.IsLitellm() {
 		mode = "LiteLLM: on"
 	}
-	footer := dimStyle.Render(fmt.Sprintf("\n%s\n[↑/↓] navigate   [enter] launch   [q] quit", mode))
+	// Enter's effect depends on the highlighted row — launch for a cloud or
+	// already-running row, start through the lifecycle engine for a
+	// non-running local one — so the hint names both rather than claiming
+	// Enter always launches.
+	footer := dimStyle.Render(fmt.Sprintf("\n%s\n[↑/↓] navigate   [enter] launch or start   [q] quit", mode))
 	body := header + m.models.View() + footer
 	// A launch/config/session/ollama error set on the model phase must be
 	// visible; phaseModelView previously dropped m.status, making a failed

@@ -36,12 +36,14 @@ import (
 type phase int
 
 const (
-	phaseList        phase = iota // worktree list (lesson 13)
-	phaseAgent                    // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
-	phaseModel                    // agent+model picker (lesson 14 + lesson 15 merged)
-	phaseResume                   // resume prompt (lesson 16)
-	phaseOllamaWarn               // confirm before launching with unavailable ollama model
-	phaseNewWorktree              // create-new-worktree prompt
+	phaseList           phase = iota // worktree list (lesson 13)
+	phaseAgent                       // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
+	phaseModel                       // agent+model picker (lesson 14 + lesson 15 merged)
+	phaseResume                      // resume prompt (lesson 16)
+	phaseOllamaWarn                  // confirm before launching with unavailable ollama model
+	phaseNewWorktree                 // create-new-worktree prompt
+	phaseStarting                    // a start runs through the lifecycle engine, with live progress
+	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 )
 
 // resumeModel holds the resume-prompt state for phaseResume (lesson 16).
@@ -67,6 +69,19 @@ type model struct {
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
+	// tableModels is the (post-gate) model list the picker's table was built
+	// from, captured in enterModelPhase; refreshTable re-probes the inventory
+	// and rebuilds the table from exactly these models.
+	tableModels []config.Model
+	// pendingSelect is the model id a table refresh wants the cursor on. It is
+	// resolved against the rebuilt list inside the refresh message's handler,
+	// so a rebuild cannot silently move the user's cursor to another model.
+	pendingSelect string
+	// refreshGen numbers the picker's table: enterModelPhase, refreshTable and
+	// beginStart each bump it, and a tableRefreshedMsg is applied only when it
+	// carries the current value, so a slow probe from a superseded refresh or an
+	// earlier picker session cannot overwrite a newer table.
+	refreshGen int
 
 	// agent+command picker (PR 2): user picks an agent or command before the
 	// model screen. Built from buildAgentList in selectedEntryMsg; rebuilt when
@@ -94,6 +109,14 @@ type model struct {
 
 	// ollama availability warning
 	ollamaWarnModel list.Model // confirmation choices for unavailable model
+
+	// start-on-select flow (2026-09-20): Enter on a start row runs the model
+	// through the lifecycle engine with live progress; the replace-confirm
+	// dialog appears when Start reports the provider's single slot occupied
+	// (or unknowable) and AllowReplace was false.
+	start    *startState   // in-flight start (phaseStarting); nil when idle
+	startRun int           // monotonically increasing run id; stale messages are dropped by id
+	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
 
 	// new-worktree prompt (this lesson)
 	newInput         textinput.Model
@@ -157,6 +180,17 @@ func (m model) openNewWorktreePrompt() model {
 // Update handles messages and returns the new state plus optional commands.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case startStageMsg, startTickMsg, startDoneMsg:
+		// The case list is exactly the set handleStartMsg handles, so it
+		// always has something to say.
+		return m.handleStartMsg(msg)
+	case tableRefreshedMsg:
+		// A refresh can land after the user moved on (a second start, a quit);
+		// only the picker it was built for should absorb it.
+		if m.phase != phaseModel || msg.gen != m.refreshGen {
+			return m, nil
+		}
+		return m, m.applyRefreshedTable(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.ready {
@@ -170,6 +204,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.phase == phaseResume {
 			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
+		}
+		if m.phase == phaseReplaceConfirm {
+			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
 		}
 		if m.phase == phaseNewWorktree {
 			m.newInput.Width = msg.Width - 4
@@ -256,6 +293,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = phaseList
 		return m, loadEntriesCmd()
 	case tea.KeyMsg:
+		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
+		// further press quits; every other key is ignored (before the picker
+		// wrap-around below, which must not move the cursor mid-start).
+		if m.phase == phaseStarting && m.start != nil {
+			return m.handleStartKey(msg)
+		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
 		// which resets the cursor to index 0 via GoToStart) so "j"/"k"
@@ -309,6 +352,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn {
+				m.phase = phaseModel
+				m.status = ""
+				return m, nil
+			}
+			if m.phase == phaseReplaceConfirm {
 				m.phase = phaseModel
 				m.status = ""
 				return m, nil
@@ -408,6 +456,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !ok {
 					return m, nil
 				}
+				if highlighted.start {
+					// A start row: run the model through the lifecycle engine
+					// instead of launching. start and blocked are mutually
+					// exclusive — renderTable sets exactly one per row, and its
+					// discovered-row case clears start before setting blocked —
+					// so this order is a guard, not a precedence rule.
+					return m.beginStart(highlighted, false)
+				}
 				if highlighted.blocked != "" {
 					m.status = highlighted.blocked
 					return m, nil
@@ -472,6 +528,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 				}
+			case phaseReplaceConfirm:
+				if item, ok := m.replace.choices.SelectedItem().(choiceItem); ok {
+					switch item.choice {
+					case replaceCancelChoice:
+						m.phase = phaseModel
+						return m, nil
+					case replaceProceedChoice:
+						return m.beginStart(m.replace.item, true)
+					}
+				}
 			case phaseNewWorktree:
 				if m.creating {
 					// A create is already in flight; ignore the second Enter
@@ -523,6 +589,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ollamaWarnModel, cmd = m.ollamaWarnModel.Update(msg)
 		return m, cmd
 	}
+	if m.phase == phaseReplaceConfirm && m.width > 0 && m.height > 0 {
+		var cmd tea.Cmd
+		m.replace.choices, cmd = m.replace.choices.Update(msg)
+		return m, cmd
+	}
 	if m.phase == phaseNewWorktree && m.width > 0 && m.height > 0 {
 		var cmd tea.Cmd
 		m.newInput, cmd = m.newInput.Update(msg)
@@ -559,6 +630,18 @@ func (m model) View() string {
 			return "ollama availability warning (waiting for window size)"
 		}
 		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
+	}
+	if m.phase == phaseStarting {
+		if m.width <= 0 || m.height <= 0 {
+			return "start progress (waiting for window size)"
+		}
+		return m.startingView()
+	}
+	if m.phase == phaseReplaceConfirm {
+		if m.width <= 0 || m.height <= 0 {
+			return "replace confirm (waiting for window size)"
+		}
+		return m.replace.choices.View() + "\n[enter] choose   [esc] back"
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
@@ -735,21 +818,18 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		}
 		models = gate.Eligible
 	}
+	m.tableModels = models
+	m.refreshGen++
 
 	inv := runInventory(m.cfg)
 	snap := &inv
 
 	// One Rotation for both the marker and the cursor (each New() scans the
-	// config dir). A missing rotation.state yields "".
+	// config dir). A missing rotation.state yields "". tableFor also reads it
+	// for the marker; the cursor logic below reuses rot so the config dir is
+	// scanned once.
 	rot := rotation.New()
-	lastID, _ := rot.Last()
-	// Agent-scoped 30-day survey stats, one Events() read for the picker.
-	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
-	tbl := buildTable(tableInput{
-		cfg: m.cfg, agent: agent, models: models, inventory: snap,
-		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
-		usage:          newUsageStore(), stats: surveyStats,
-	}, newRefcountStore(), lastID)
+	tbl, lastID := m.tableFor(agent, models, snap, rot)
 
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
@@ -773,13 +853,14 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m.proceedToLaunch()
 	}
 
-	// Cursor: the rotation's next-to-use model among launchable rows,
-	// otherwise the first launchable row, otherwise the top.
-	var launchable []config.Model
+	// Cursor: the rotation's next-to-use model among actionable rows
+	// (launch or start — anything without a hint), otherwise the first
+	// actionable row, otherwise the top.
+	var actionable []config.Model
 	first := -1
 	for i, it := range tbl.items {
 		if it.blocked == "" {
-			launchable = append(launchable, it.model)
+			actionable = append(actionable, it.model)
 			if first < 0 {
 				first = i
 			}
@@ -794,7 +875,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	// is never in cfg.Models) NextFromEligible would fall back to the
 	// registry-first model, so the first launchable row is used instead.
 	if lastID != "" && config.IndexModelByID(m.cfg.Models, lastID) >= 0 {
-		if next, ok := rot.NextFromEligible(launchable, m.cfg); ok {
+		if next, ok := rot.NextFromEligible(actionable, m.cfg); ok {
 			if idx, ok := idIndex[next.ID]; ok {
 				pos = idx
 			}
@@ -802,16 +883,134 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	}
 	m.models.Select(pos)
 
-	if len(tbl.items) == 1 && tbl.items[0].blocked == "" {
+	// The single-row shortcut launches only: a lone start row must show the
+	// picker and wait for Enter, never start a server unasked.
+	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
 	return m, nil
 }
 
+// tableFor builds the selector table for agent from models and an inventory
+// snapshot, returning the table and the rotation's last-launched id. It is
+// the exact table build enterModelPhase performs (rotation last id from rot,
+// agent-scoped survey stats, one usage + refcount store read), shared with
+// refreshTable so a rebuilt table matches the original in every column.
+func (m model) tableFor(agent string, models []config.Model, snap *localmodels.Snapshot, rot *rotation.Rotation) (modelTable, string) {
+	lastID, _ := rot.Last()
+	// Agent-scoped 30-day survey stats, one Events() read for the picker.
+	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
+	tbl := buildTable(tableInput{
+		cfg: m.cfg, agent: agent, models: models, inventory: snap,
+		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
+		usage:          newUsageStore(), stats: surveyStats,
+	}, newRefcountStore(), lastID)
+	return tbl, lastID
+}
+
+// tableRefreshedMsg carries a rebuilt model table back from
+// refreshTable's command, which runs the live inventory probe off the update
+// loop.
+type tableRefreshedMsg struct {
+	items  []list.Item
+	header string
+	sel    string // model id the cursor should land on, when it still exists
+	gen    int    // refreshGen when the probe was issued; stale messages are dropped
+}
+
+// refreshTable re-probes the live inventory and rebuilds the model list,
+// keeping the cursor on the same model id when it still exists. Used after a
+// start attempt that returns to the picker: a replace can stop the occupant and
+// then fail, and the table built before the attempt would be lying about
+// RUNNING. The probe itself runs in the returned command, never inline: it
+// dials ollama, omlx/mtplx and mlx_lm_server with multi-second per-request
+// timeouts, and this path is reached by every failed or cancelled start, so
+// probing here would freeze the picker on each retry. A no-op before any table
+// was built.
+func (m model) refreshTable() (model, tea.Cmd) {
+	if len(m.tableModels) == 0 {
+		return m, nil
+	}
+	sel := ""
+	if it, ok := m.models.SelectedItem().(*modelItem); ok {
+		sel = it.model.ID
+	}
+	m.refreshGen++
+	gen := m.refreshGen
+	// The command captures only the values tableFor reads (cfg and the active
+	// -T/-F filters), never the live model: the goroutine must not touch it,
+	// and copying the whole struct would pin its lists and inputs for the
+	// duration of the probe.
+	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily}
+	agent, models := m.agent, m.tableModels
+	return m, func() tea.Msg {
+		inv := runInventory(src.cfg)
+		tbl, _ := src.tableFor(agent, models, &inv, rotation.New())
+		items := make([]list.Item, len(tbl.items))
+		for i, it := range tbl.items {
+			items[i] = it
+		}
+		return tableRefreshedMsg{items: items, header: tbl.header, sel: sel, gen: gen}
+	}
+}
+
+// resolvePendingSelect puts the cursor back on pendingSelect's model when that
+// id is still on screen, and clears the field either way: the model may have
+// left the inventory, and a stale id must not capture the cursor later. The
+// rebuilt rows are re-sorted (a stopped occupant leaves the running group), so
+// the old numeric index is not trustworthy with or without a filter. While the
+// user is mid-typing (Filtering) the cursor is theirs to drive.
+func (m *model) resolvePendingSelect() {
+	if m.pendingSelect == "" {
+		return
+	}
+	if m.models.FilterState() != list.Filtering {
+		for i, it := range m.models.VisibleItems() {
+			if mi, ok := it.(*modelItem); ok && mi.model.ID == m.pendingSelect {
+				m.models.Select(i)
+				break
+			}
+		}
+	}
+	m.pendingSelect = ""
+}
+
+// applyRefreshedTable installs a rebuilt table on the picker. SetItems clears
+// filteredItems whenever a filter is applied, and its returned command is the
+// only thing that would repopulate them — discarding it leaves the list with no
+// visible rows at all, which strands the user on an empty picker (the view
+// renders "No items.", Enter does nothing, and the "esc clear filter" its own
+// help bar advertises is consumed by the app's esc chain and quits wt).
+// Re-applying the same text rather than forwarding that command re-derives the
+// matches synchronously and also recomputes pagination, which bubbles only does
+// while the user is typing — so the rows, the page bounds and the cursor are
+// all correct by the end of this update. The user's filter is preserved either
+// way.
+func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
+	cmd := m.models.SetItems(msg.items)
+	m.models.Title = msg.header
+	if m.models.FilterState() == list.FilterApplied {
+		m.models.SetFilterText(m.models.FilterInput.Value())
+		cmd = nil // SetFilterText already repopulated the matches
+	}
+	// Otherwise (no filter, or the user is mid-typing) the command SetItems
+	// returned is forwarded as-is: with the list unfiltered there is nothing to
+	// repopulate, and while Filtering it feeds the input's own machinery.
+	m.pendingSelect = msg.sel
+	m.resolvePendingSelect()
+	return cmd
+}
+
 // proceedToLaunch checks for a prior session and either launches the agent
 // directly or transitions to the resume prompt. It is the shared flow used
 // by both the phaseModel enter handler and the ollama warning proceed choice.
+// Every path that bails back to the picker re-probes the table: this is reached
+// from the start flow, where the table was built before the attempt, so a start
+// that succeeded and then failed to launch would otherwise leave the picker
+// claiming RUNNING="-" for a model that is loaded and serving. The probe is
+// deferred to a command, so paying for it on the paths that did not start
+// anything costs nothing on the update loop.
 func (m model) proceedToLaunch() (model, tea.Cmd) {
 	// The highlighted list item is what gets launched, regardless
 	// of any other state. m.current is gone; m.models is the
@@ -819,7 +1018,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 	highlighted, ok := m.models.SelectedItem().(*modelItem)
 	if !ok {
 		m.status = "no model selected"
-		return m, nil
+		return m.refreshTable()
 	}
 	// Capture the model so launchAndRecord records exactly this pick in
 	// both the no-session and resume paths, without re-reading the picker.
@@ -835,7 +1034,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 			sess, err = r.LatestSession(m.selectedPath)
 			if err != nil {
 				m.status = "session check failed: " + err.Error()
-				return m, nil
+				return m.refreshTable()
 			}
 		}
 	}
@@ -843,7 +1042,7 @@ func (m model) proceedToLaunch() (model, tea.Cmd) {
 		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
 		if err != nil {
 			m.status = "launch failed: " + err.Error()
-			return m, nil
+			return m.refreshTable()
 		}
 		return m.launchAndRecord(cmd)
 	}

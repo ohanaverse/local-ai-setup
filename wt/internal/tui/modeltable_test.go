@@ -13,8 +13,8 @@ func tableTestRows() []tableRow {
 		{model: config.Model{ID: "openrouter/cheap", Family: "kimi", Cost: config.ModelCost{InputPricePerMillion: f64(0.5), OutputPricePerMillion: f64(2)}},
 			location: config.LocationCloud, status: statusOK, exposed: true, counts: usage.UsageCounts{OneDay: 1, SevenDay: 12, ThirtyDay: 340}},
 		{model: config.Model{ID: "omlx/Qwen3.8-27B-4bit", Family: "qwen"}, location: config.LocationLocal, status: statusOK, running: true},
-		{model: config.Model{ID: "omlx/disc"}, location: config.LocationLocal, status: statusNew, discovered: true},
-		{model: config.Model{ID: "omlx/gone", Family: "qwen"}, location: config.LocationLocal, status: statusAbsent},
+		{model: config.Model{ID: "omlx/disc", ProviderID: "omlx"}, location: config.LocationLocal, status: statusNew, discovered: true},
+		{model: config.Model{ID: "omlx/gone", ProviderID: "omlx", Family: "qwen"}, location: config.LocationLocal, status: statusAbsent},
 	}
 }
 
@@ -87,16 +87,22 @@ func TestRenderTableSurveySegmentTrailing(t *testing.T) {
 	}
 }
 
-// TestRenderTableBlockedAndMarkers verifies items carry the not-launchable
-// hint for a non-running omlx row, mark the last-launched row, and pick up
-// the in-use ref count.
+// TestRenderTableBlockedAndMarkers verifies a non-running omlx row is a
+// start row, an absent row is blocked with the not-on-disk reason, only the
+// last-launched row is marked, and the in-use ref count is picked up.
 func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", map[string]int{"openrouter/cheap": 2}, "omlx/Qwen3.8-27B-4bit")
 	if tbl.items[0].blocked != "" || tbl.items[1].blocked != "" {
 		t.Error("cloud and running rows must not be blocked")
 	}
-	if tbl.items[2].blocked == "" || tbl.items[3].blocked == "" {
-		t.Error("non-running omlx rows must carry a hint")
+	if tbl.items[2].blocked != "" || !tbl.items[2].start {
+		t.Errorf("discovered non-running omlx row: start = %v blocked = %q, want a start row with no hint", tbl.items[2].start, tbl.items[2].blocked)
+	}
+	if tbl.items[3].blocked == "" || tbl.items[3].start {
+		t.Errorf("absent omlx row: start = %v blocked = %q, want blocked and not startable", tbl.items[3].start, tbl.items[3].blocked)
+	}
+	if !strings.Contains(tbl.items[3].blocked, "not on disk") {
+		t.Errorf("absent row blocked = %q, want the not-on-disk reason", tbl.items[3].blocked)
 	}
 	if !tbl.items[1].marked || tbl.items[0].marked {
 		t.Error("only the last-launched row is marked")
@@ -122,8 +128,8 @@ func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	lite := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
-	if lite.items[0].exception != "(not in LiteLLM)" || lite.items[0].blocked == "" {
-		t.Errorf("litellm mode: exception=%q blocked=%q", lite.items[0].exception, lite.items[0].blocked)
+	if lite.items[0].exception != "(not in LiteLLM)" || lite.items[0].blocked == "" || lite.items[0].start {
+		t.Errorf("litellm mode: exception=%q blocked=%q start=%v", lite.items[0].exception, lite.items[0].blocked, lite.items[0].start)
 	}
 }
 
@@ -170,5 +176,24 @@ func TestRenderTableUnknownStatusAligns(t *testing.T) {
 	}
 	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
 		t.Errorf("RUNNING cell = %q (column drift after a widened STATUS)", got)
+	}
+}
+
+// TestRenderTableStartRowNotStartableWhenRouteUnresolvable verifies a
+// non-running local row whose route cannot resolve (LiteLLM on but
+// unconfigured) is blocked instead of startable. Starting it would spawn the
+// server — and possibly stop another model via replace — only for the launch to
+// fail at ResolveRoute afterwards.
+func TestRenderTableStartRowNotStartableWhenRouteUnresolvable(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
+	row := tableRow{model: config.Model{ID: "omlx/x", ProviderID: "omlx", ModelName: "x", Location: config.LocationLocal}, location: config.LocationLocal, status: statusOK}
+	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
+	it := tbl.items[0]
+	if it.start || it.blocked == "" || it.exception != "(litellm required)" {
+		t.Errorf("start=%v blocked=%q exception=%q, want a blocked, non-startable row", it.start, it.blocked, it.exception)
 	}
 }
