@@ -311,7 +311,7 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -341,7 +341,7 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -377,7 +377,7 @@ func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -861,7 +861,7 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, nil); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if !called {
@@ -893,7 +893,7 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	os.Stdout = w
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, nil); err != nil {
 		w.Close()
 		os.Stdout = old
 		t.Fatalf("runAgentCmd() error: %v", err)
@@ -929,10 +929,71 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "shell", config.Model{}); err != nil {
+	if err := runAgentCmd(cmd, "shell", config.Model{}, nil); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if called {
 		t.Error("emitPriceNotice was invoked for a command agent (m.ID == \"\")")
+	}
+}
+
+// TestRunAgentCmdPostExitOrder verifies the non-TUI post-exit order: the
+// session's refcount entry is released, then the stop picker runs, then the
+// summary line, then the pricing notice (issues #115/#116). Release must
+// precede the picker or the just-used model always counts as in use; the
+// summary and notice must follow the interactive steps so the prompts do not
+// scroll them away.
+func TestRunAgentCmdPostExitOrder(t *testing.T) {
+	prevNotice, prevRelease, prevPicker := emitPriceNotice, releaseSession, runStopPicker
+	t.Cleanup(func() { emitPriceNotice, releaseSession, runStopPicker = prevNotice, prevRelease, prevPicker })
+
+	var order []string
+	releaseSession = func() { order = append(order, "release") }
+	runStopPicker = func(*config.Config) { order = append(order, "picker") }
+	emitPriceNotice = func() { order = append(order, "notice") }
+
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, nil)
+	w.Close()
+	os.Stdout = old
+	if runErr != nil {
+		t.Fatalf("runAgentCmd: %v", runErr)
+	}
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "wt: claude · ollama/qwen3.8 ·") {
+		t.Errorf("stdout = %q, want the summary line", string(out))
+	}
+	if got := strings.Join(order, ","); got != "release,picker,notice" {
+		t.Errorf("order = %s, want release,picker,notice", got)
+	}
+}
+
+// TestRunAgentCmdCommandAgentSkipsStopPicker verifies command agents (shell,
+// m.ID == "") never offer to stop models: they launched none, so the picker
+// would be noise after every shell session.
+func TestRunAgentCmdCommandAgentSkipsStopPicker(t *testing.T) {
+	prev := runStopPicker
+	t.Cleanup(func() { runStopPicker = prev })
+	called := false
+	runStopPicker = func(*config.Config) { called = true }
+
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, nil); err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	if called {
+		t.Error("stop picker ran for a command agent")
 	}
 }

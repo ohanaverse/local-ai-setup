@@ -20,6 +20,10 @@ func TestMain(m *testing.M) {
 	startModel = func(*config.Config, catalog.Row, bool) error {
 		return errors.New("startModel not stubbed in this test")
 	}
+	// Post-exit seams: no test may rewrite the real refcount file or offer to
+	// stop the developer's running models.
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) {}
 	os.Exit(m.Run())
 }
 
