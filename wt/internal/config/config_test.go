@@ -1142,7 +1142,7 @@ func TestValidate_ModelNameRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a model with no model_name")
 	}
-	if !strings.Contains(err.Error(), "model_name") {
+	if !strings.Contains(err.Error(), "model_name is required") {
 		t.Errorf("Validate() = %v, want an error naming model_name", err)
 	}
 }

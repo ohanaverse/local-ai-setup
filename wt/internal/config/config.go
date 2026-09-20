@@ -465,7 +465,7 @@ func (c *Config) validate() []error {
 			// The lifecycle engine matches a start target against a provider's
 			// reported names by this field; an empty one matches nothing, so the
 			// model would look permanently stopped and warm the empty name.
-			errs = append(errs, fmt.Errorf("model %q: model_name is required (run 'modelman sync' to repair the registry)", m.ID))
+			errs = append(errs, fmt.Errorf("model %q: model_name is required (add model_name to this registry.toml entry)", m.ID))
 		}
 		if !provIDs[m.ProviderID] {
 			errs = append(errs, fmt.Errorf("model %q: unknown provider %q", m.ID, m.ProviderID))
