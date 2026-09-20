@@ -67,6 +67,10 @@ type model struct {
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
+	// tableModels is the (post-gate) model list the picker's table was built
+	// from, captured in enterModelPhase; refreshTable re-probes the inventory
+	// and rebuilds the table from exactly these models.
+	tableModels []config.Model
 
 	// agent+command picker (PR 2): user picks an agent or command before the
 	// model screen. Built from buildAgentList in selectedEntryMsg; rebuilt when
@@ -735,21 +739,17 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		}
 		models = gate.Eligible
 	}
+	m.tableModels = models
 
 	inv := runInventory(m.cfg)
 	snap := &inv
 
 	// One Rotation for both the marker and the cursor (each New() scans the
-	// config dir). A missing rotation.state yields "".
+	// config dir). A missing rotation.state yields "". tableFor also reads it
+	// for the marker; the cursor logic below reuses rot so the config dir is
+	// scanned once.
 	rot := rotation.New()
-	lastID, _ := rot.Last()
-	// Agent-scoped 30-day survey stats, one Events() read for the picker.
-	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
-	tbl := buildTable(tableInput{
-		cfg: m.cfg, agent: agent, models: models, inventory: snap,
-		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
-		usage:          newUsageStore(), stats: surveyStats,
-	}, newRefcountStore(), lastID)
+	tbl, lastID := m.tableFor(agent, models, snap, rot)
 
 	delegate := ThemedListDelegate(m.theme)
 	delegate.ShowDescription = false
@@ -807,6 +807,54 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	}
 	m.phase = phaseModel
 	return m, nil
+}
+
+// tableFor builds the selector table for agent from models and an inventory
+// snapshot, returning the table and the rotation's last-launched id. It is
+// the exact table build enterModelPhase performs (rotation last id from rot,
+// agent-scoped survey stats, one usage + refcount store read), shared with
+// refreshTable so a rebuilt table matches the original in every column.
+func (m model) tableFor(agent string, models []config.Model, snap *localmodels.Snapshot, rot *rotation.Rotation) (modelTable, string) {
+	lastID, _ := rot.Last()
+	// Agent-scoped 30-day survey stats, one Events() read for the picker.
+	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
+	tbl := buildTable(tableInput{
+		cfg: m.cfg, agent: agent, models: models, inventory: snap,
+		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
+		usage:          newUsageStore(), stats: surveyStats,
+	}, newRefcountStore(), lastID)
+	return tbl, lastID
+}
+
+// refreshTable re-probes the live inventory and rebuilds the model list in
+// place, keeping the cursor on the same model id when it still exists. Used
+// after a start attempt that returns to the picker: a replace can stop the
+// occupant and then fail, and the table built before the attempt would be
+// lying about RUNNING. A no-op before any table was built.
+func (m model) refreshTable() model {
+	if len(m.tableModels) == 0 {
+		return m
+	}
+	sel := ""
+	if it, ok := m.models.SelectedItem().(*modelItem); ok {
+		sel = it.model.ID
+	}
+	inv := runInventory(m.cfg)
+	tbl, _ := m.tableFor(m.agent, m.tableModels, &inv, rotation.New())
+	items := make([]list.Item, len(tbl.items))
+	idx := -1
+	for i, it := range tbl.items {
+		items[i] = it
+		if it.model.ID == sel {
+			idx = i
+		}
+	}
+	m.models.SetItems(items)
+	m.models.Title = tbl.header
+	if idx >= 0 {
+		m.models.Select(idx)
+	}
+	return m
 }
 
 // proceedToLaunch checks for a prior session and either launches the agent
