@@ -835,13 +835,14 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m.proceedToLaunch()
 	}
 
-	// Cursor: the rotation's next-to-use model among launchable rows,
-	// otherwise the first launchable row, otherwise the top.
-	var launchable []config.Model
+	// Cursor: the rotation's next-to-use model among actionable rows
+	// (launch or start — anything without a hint), otherwise the first
+	// actionable row, otherwise the top.
+	var actionable []config.Model
 	first := -1
 	for i, it := range tbl.items {
 		if it.blocked == "" {
-			launchable = append(launchable, it.model)
+			actionable = append(actionable, it.model)
 			if first < 0 {
 				first = i
 			}
@@ -856,7 +857,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	// is never in cfg.Models) NextFromEligible would fall back to the
 	// registry-first model, so the first launchable row is used instead.
 	if lastID != "" && config.IndexModelByID(m.cfg.Models, lastID) >= 0 {
-		if next, ok := rot.NextFromEligible(launchable, m.cfg); ok {
+		if next, ok := rot.NextFromEligible(actionable, m.cfg); ok {
 			if idx, ok := idIndex[next.ID]; ok {
 				pos = idx
 			}
@@ -864,7 +865,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	}
 	m.models.Select(pos)
 
-	if len(tbl.items) == 1 && tbl.items[0].blocked == "" {
+	// The single-row shortcut launches only: a lone start row must show the
+	// picker and wait for Enter, never start a server unasked.
+	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel

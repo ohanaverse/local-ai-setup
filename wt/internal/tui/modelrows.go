@@ -233,23 +233,3 @@ func (r tableRow) blockReason() string {
 	}
 	return (&localgate.NotRunningError{ModelID: r.model.ID}).Error()
 }
-
-// launchable reports whether Enter may launch the row now: cloud always; a
-// running local row; and a pulled ollama model even when not loaded, because
-// ollama's daemon loads models on demand (and modelman starts ollama models
-// flag-only, so gating them would regress launching them).
-func (r tableRow) launchable() bool {
-	if r.location != config.LocationLocal || r.running {
-		return true
-	}
-	return r.model.ProviderID == "ollama" && r.status != statusAbsent
-}
-
-// notLaunchableHint is the status line shown when Enter lands on a row that
-// cannot launch yet.
-func (r tableRow) notLaunchableHint() string {
-	if r.discovered {
-		return fmt.Sprintf("%s is not running — start it with the %s CLI", r.model.ID, r.model.ProviderID)
-	}
-	return (&localgate.NotRunningError{ModelID: r.model.ID}).Error()
-}

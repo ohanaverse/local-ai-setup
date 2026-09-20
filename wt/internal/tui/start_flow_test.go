@@ -531,3 +531,159 @@ func TestStartingViewShowsStageAndElapsed(t *testing.T) {
 		t.Errorf("cancelling view %q must say Cancelling", v)
 	}
 }
+
+// e2eStubStartModel is a startModel fake for end-to-end tests: it records the
+// call and reports a successful start.
+func e2eStubStartModel(t *testing.T) *startCalls {
+	t.Helper()
+	return stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
+		return nil
+	})
+}
+
+// TestEndToEndNonRunningOmlxRowStartsThenLaunches drives the real path —
+// stubbed inventory to enterModelPhase to Enter to the (stubbed) engine — to
+// verify a non-running omlx row is a start row (start == true, no hint), that
+// Enter begins a start, and that success proceeds to launch. This is the
+// behavior the whole plan exists for.
+func TestEndToEndNonRunningOmlxRowStartsThenLaunches(t *testing.T) {
+	requireBinary(t, "claude")
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true},
+	}})
+	calls := e2eStubStartModel(t)
+
+	got := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(got, "omlx/qwen3.8")
+	if idx < 0 {
+		t.Fatalf("no omlx row in %v", itemIDs(got))
+	}
+	it := got.models.Items()[idx].(*modelItem)
+	if !it.start || it.blocked != "" {
+		t.Fatalf("row start = %v blocked = %q, want a start row with no hint", it.start, it.blocked)
+	}
+
+	got.models.Select(idx)
+	next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(model)
+	if got.phase != phaseStarting || cmd == nil {
+		t.Fatalf("phase = %v cmd = %v, want phaseStarting with a cmd", got.phase, cmd)
+	}
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.launchModel.ID != "omlx/qwen3.8" {
+		t.Errorf("launchModel.ID = %q, want the started row's id", got.launchModel.ID)
+	}
+	if calls.len() != 1 || !calls.at(0).opts.AllowReplace == true {
+		if calls.len() != 1 {
+			t.Errorf("startModel calls = %d, want 1", calls.len())
+		}
+	}
+}
+
+// TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold verifies a pulled,
+// not-loaded ollama row is a start row — the old launch exception is gone —
+// and Enter begins a start through the engine instead of an ollama check and
+// a cold launch.
+func TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold(t *testing.T) {
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "ollama", Artifact: "gemma4:9b", ModelID: "ollama/gemma4:9b", Registered: true, ArtifactKnown: true},
+	}})
+	calls := e2eStubStartModel(t)
+
+	got := flowEnter(t, model{cfg: startCfg("ollama", "ollama/gemma4:9b", "gemma4:9b"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(got, "ollama/gemma4:9b")
+	if idx < 0 {
+		t.Fatalf("no ollama row in %v", itemIDs(got))
+	}
+	it := got.models.Items()[idx].(*modelItem)
+	if !it.start || it.blocked != "" {
+		t.Fatalf("row start = %v blocked = %q, want a start row", it.start, it.blocked)
+	}
+
+	got.models.Select(idx)
+	next, _ := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(model)
+	if got.phase != phaseStarting {
+		t.Errorf("phase = %v, want phaseStarting (a start, not the ollama-check/launch path)", got.phase)
+	}
+	if calls.len() != 1 {
+		t.Errorf("startModel calls = %d, want 1", calls.len())
+	}
+}
+
+// TestEndToEndAbsentRowIsBlocked verifies an absent omlx row carries the
+// "not on disk" hint, is not a start row, and Enter shows the status without
+// calling the engine — starting a model that is not there would just wait
+// out the warmup timeout.
+func TestEndToEndAbsentRowIsBlocked(t *testing.T) {
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true},
+	}})
+	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
+		t.Error("startModel must not be called for an absent row")
+		return errors.New("must not start")
+	})
+
+	got := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(got, "omlx/qwen3.8")
+	if idx < 0 {
+		t.Fatalf("no omlx row in %v", itemIDs(got))
+	}
+	it := got.models.Items()[idx].(*modelItem)
+	if it.start {
+		t.Error("absent row must not be a start row")
+	}
+	if !strings.Contains(it.blocked, "not on disk") {
+		t.Errorf("blocked = %q, want the not-on-disk reason", it.blocked)
+	}
+
+	got.models.Select(idx)
+	next, _ := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(model)
+	if got.phase != phaseModel {
+		t.Errorf("phase = %v, want phaseModel (stays on the picker)", got.phase)
+	}
+	if !strings.Contains(got.status, "not on disk") {
+		t.Errorf("status = %q, want the not-on-disk reason", got.status)
+	}
+	if calls.len() != 0 {
+		t.Errorf("startModel calls = %d, want 0", calls.len())
+	}
+}
+
+// TestSingleRowShortcutDoesNotFireForStartRow verifies the one-row
+// auto-launch shortcut does NOT fire for a start row: a lone non-running
+// local model must show the picker and wait for Enter, not silently start a
+// server the user never asked for.
+func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
+	local := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
+		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	local.ExposeAllForTest()
+	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
+		t.Error("enterModelPhase must not auto-start a lone start row")
+		return errors.New("no auto-start")
+	})
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	m := model{cfg: local, width: 80, height: 24}
+	models, _ := local.EligibleModels("pi", "", "")
+	got, cmd := m.enterModelPhase("pi", models, "code")
+	if got.phase != phaseModel {
+		t.Errorf("phase = %v, want phaseModel (no auto-launch for a start row)", got.phase)
+	}
+	if cmd != nil {
+		t.Errorf("cmd = %v, want nil (no auto-launch, no auto-start)", cmd)
+	}
+	items := got.models.Items()
+	if len(items) != 1 || !items[0].(*modelItem).start {
+		t.Errorf("row start = %v (items = %d), want a single start row", items[0].(*modelItem).start, len(items))
+	}
+	if calls.len() != 0 {
+		t.Errorf("startModel calls = %d, want 0", calls.len())
+	}
+}

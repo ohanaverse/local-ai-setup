@@ -80,36 +80,6 @@ func TestEnterModelPhaseHeaderIsListTitle(t *testing.T) {
 	}
 }
 
-// TestEnterOnNonRunningRowShowsHintAndDoesNotLaunch verifies Enter on a
-// non-running omlx row sets the start hint in m.status and leaves the phase at
-// phaseModel (no launch, no rotation/usage write).
-func TestEnterOnNonRunningRowShowsHintAndDoesNotLaunch(t *testing.T) {
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true},
-	}})
-	got := flowEnter(t, model{cfg: gateTestConfig(), width: 80, height: 24}, "claude")
-	if got.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", got.phase)
-	}
-	idx := indexOfID(got, "omlx/qwen3.8")
-	if idx < 0 {
-		t.Fatalf("no omlx row in %v", itemIDs(got))
-	}
-	got.models.Select(idx)
-
-	next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := next.(model)
-	if nm.phase != phaseModel {
-		t.Errorf("phase = %v, want phaseModel", nm.phase)
-	}
-	if cmd != nil {
-		t.Errorf("cmd = %v, want nil (no launch)", cmd)
-	}
-	if !strings.Contains(nm.status, "modelman start") {
-		t.Errorf("status = %q, want the modelman start hint", nm.status)
-	}
-}
-
 // TestEnterModelPhaseHidesDiscoveredWhenFiltered verifies -T/-F (activeTags /
 // activeFamily) drop discovered rows, which have no tags or family.
 func TestEnterModelPhaseHidesDiscoveredWhenFiltered(t *testing.T) {
@@ -166,11 +136,11 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 	}
 }
 
-// TestEnterModelPhaseAllLocalNoneRunningShowsBlockedRows replaces the old
-// gate-emptied route-back test: when every eligible model is local and none is
-// running, the picker now shows the table with every row blocked instead of
-// routing back to the agent picker.
-func TestEnterModelPhaseAllLocalNoneRunningShowsBlockedRows(t *testing.T) {
+// TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows replaces the old
+// gate-emptied route-back test: when every eligible model is local and none
+// is running, the picker now shows the table with every row startable (Enter
+// runs the engine) instead of routing back to the agent picker.
+func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 	local := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
@@ -190,8 +160,9 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsBlockedRows(t *testing.T) {
 		t.Fatalf("items = %d, want 2", len(items))
 	}
 	for _, it := range items {
-		if it.(*modelItem).blocked == "" {
-			t.Errorf("%s launchable, want blocked", it.(*modelItem).model.ID)
+		mi := it.(*modelItem)
+		if !mi.start || mi.blocked != "" {
+			t.Errorf("%s: start = %v blocked = %q, want a startable row", mi.model.ID, mi.start, mi.blocked)
 		}
 	}
 }

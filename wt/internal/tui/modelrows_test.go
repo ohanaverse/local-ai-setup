@@ -145,42 +145,6 @@ func TestSortRowsTwoGroups(t *testing.T) {
 	}
 }
 
-// TestLaunchableRules verifies which rows Enter may launch: cloud always; a
-// running local row; a pulled ollama model even when not loaded (ollama loads
-// on demand) — but not an absent ollama model, and not a non-running omlx row.
-func TestLaunchableRules(t *testing.T) {
-	cases := []struct {
-		name string
-		row  tableRow
-		want bool
-	}{
-		{"cloud", tableRow{location: config.LocationCloud}, true},
-		{"running local", tableRow{location: config.LocationLocal, running: true, model: config.Model{ProviderID: "omlx"}}, true},
-		{"idle ollama pulled", tableRow{location: config.LocationLocal, status: statusOK, model: config.Model{ProviderID: "ollama"}}, true},
-		{"idle ollama discovered", tableRow{location: config.LocationLocal, status: statusNew, model: config.Model{ProviderID: "ollama"}}, true},
-		{"absent ollama", tableRow{location: config.LocationLocal, status: statusAbsent, model: config.Model{ProviderID: "ollama"}}, false},
-		{"idle omlx", tableRow{location: config.LocationLocal, status: statusOK, model: config.Model{ProviderID: "omlx"}}, false},
-	}
-	for _, tc := range cases {
-		if got := tc.row.launchable(); got != tc.want {
-			t.Errorf("%s: launchable = %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-// TestNotLaunchableHint verifies the status text names the fix: `modelman
-// start <id>` for a configured model, the provider CLI for a discovered one.
-func TestNotLaunchableHint(t *testing.T) {
-	reg := tableRow{model: config.Model{ID: "omlx/a", ProviderID: "omlx"}}
-	if h := reg.notLaunchableHint(); !strings.Contains(h, "modelman start omlx/a") {
-		t.Errorf("registered hint = %q", h)
-	}
-	disc := tableRow{discovered: true, model: config.Model{ID: "omlx/d", ProviderID: "omlx"}}
-	if h := disc.notLaunchableHint(); !strings.Contains(h, "omlx/d") || strings.Contains(h, "modelman start") {
-		t.Errorf("discovered hint = %q", h)
-	}
-}
-
 // TestBuildRowsNativeModelIsExposedWithoutFlag pins that a native model
 // (Anthropic-direct, provider auth.type "native") shows EXPOSED without any
 // modelman.toml flag, matching modelman's own EXPOSED column, which reports
@@ -199,13 +163,13 @@ func TestBuildRowsNativeModelIsExposedWithoutFlag(t *testing.T) {
 }
 
 // TestBuildRowsUnknownLocalStatus verifies the three-way artifact rule: a probe
-// that answered and found nothing reads "absent" (and blocks an ollama launch,
-// since the daemon would not have the model), a probe that could not tell reads
-// "unknown" (and must NOT block — the non-TUI path trusts an ollama flag through
-// a probe failure, so a transient daemon hiccup must not make the TUI refuse to
-// launch a model that is actually pulled), and a row serving right now never
-// reads absent even when its artifact could not be resolved (mlx_lm_server,
-// whose target+draft pairing is not discoverable).
+// that answered and found nothing reads "absent" (and the row is blocked: the
+// engine would wait out its warmup on a model that is not there), a probe that
+// could not tell reads "unknown" (and stays startable — the non-TUI path trusts
+// an ollama flag through a probe failure, so a transient daemon hiccup must not
+// make the TUI refuse to start a model that is actually pulled), and a row
+// serving right now never reads absent even when its artifact could not be
+// resolved (mlx_lm_server, whose target+draft pairing is not discoverable).
 func TestBuildRowsUnknownLocalStatus(t *testing.T) {
 	cfg := rowsTestCfg()
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mlx_lm_server", Location: config.LocationLocal})
@@ -232,14 +196,14 @@ func TestBuildRowsUnknownLocalStatus(t *testing.T) {
 	if got := byID["ollama/unknown"].status; got != statusUnknown {
 		t.Errorf("unreachable ollama status = %q, want unknown", got)
 	}
-	if !byID["ollama/unknown"].launchable() {
-		t.Error("an ollama row whose probe failed must stay launchable (fail open)")
+	if got := byID["ollama/unknown"].action(); got != actionStart {
+		t.Errorf("unreachable ollama action = %v, want actionStart (fail open)", got)
 	}
 	if got := byID["omlx/nope"].status; got != statusAbsent {
 		t.Errorf("answered omlx status = %q, want absent", got)
 	}
-	if byID["omlx/nope"].launchable() {
-		t.Error("an absent non-running omlx row must not launch")
+	if got := byID["omlx/nope"].action(); got != actionBlock {
+		t.Errorf("an absent non-running omlx row must be blocked, got action %v", got)
 	}
 	if got := byID["mlx_lm_server/serving"].status; got != statusOK {
 		t.Errorf("running mlx_lm_server status = %q, want ok", got)

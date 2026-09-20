@@ -112,8 +112,11 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			line = strings.TrimRight(line, " ")
 		}
 		it := &modelItem{model: r.model, line: line, marked: lastID != "" && r.model.ID == lastID, ref: refs[r.model.ID]}
-		if !r.launchable() {
-			it.blocked = r.notLaunchableHint()
+		switch r.action() {
+		case actionBlock:
+			it.blocked = r.blockReason()
+		case actionStart:
+			it.start = true
 		}
 		if cfg != nil {
 			route, err := cfg.ResolveRoute(r.model, agents.ProtocolsFor(agent))
@@ -123,6 +126,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 				// it through the proxy cannot work, so it is unselectable.
 				it.exception = "(not in LiteLLM)"
 				it.blocked = "discovered model " + r.model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
+				it.start = false
 			case errors.Is(err, config.ErrLitellmUnconfigured):
 				it.exception = "(litellm required)"
 			case err != nil:
