@@ -246,6 +246,59 @@ func TestBuildRowsUnknownLocalStatus(t *testing.T) {
 	}
 }
 
+// TestRowActionRules verifies what Enter does per row kind: cloud and running
+// local rows launch; a non-running local row of a provider wt can start
+// (ollama, omlx, mtplx) starts — including a pulled ollama model, a discovered
+// row and an unknown-presence row; an absent row and a provider with no start
+// engine (mlx_lm_server) are blocked. Getting this wrong either launches a dead
+// model or hides one wt could have started.
+func TestRowActionRules(t *testing.T) {
+	local := func(provider string, status rowStatus, running, discovered bool) tableRow {
+		return tableRow{location: config.LocationLocal, status: status, running: running, discovered: discovered, model: config.Model{ID: provider + "/x", ProviderID: provider}}
+	}
+	cases := []struct {
+		name string
+		row  tableRow
+		want rowAction
+	}{
+		{"cloud", tableRow{location: config.LocationCloud}, actionLaunch},
+		{"running omlx", local("omlx", statusOK, true, false), actionLaunch},
+		{"idle omlx on disk", local("omlx", statusOK, false, false), actionStart},
+		{"idle mtplx discovered", local("mtplx", statusNew, false, true), actionStart},
+		{"idle ollama pulled", local("ollama", statusOK, false, false), actionStart},
+		{"idle ollama unknown presence", local("ollama", statusUnknown, false, false), actionStart},
+		{"absent omlx", local("omlx", statusAbsent, false, false), actionBlock},
+		{"absent ollama", local("ollama", statusAbsent, false, false), actionBlock},
+		{"mlx_lm_server has no start engine", local("mlx_lm_server", statusOK, false, false), actionBlock},
+		{"omlx-6bit shares omlx's engine", local("omlx-6bit", statusOK, false, false), actionStart},
+	}
+	for _, tc := range cases {
+		if got := tc.row.action(); got != tc.want {
+			t.Errorf("%s: action = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestBlockReasonNamesTheFix verifies the status text for a blocked row names
+// what to do: pull/download for an absent model, `modelman start <id>` for a
+// provider wt cannot start, and "" for rows that are not blocked.
+func TestBlockReasonNamesTheFix(t *testing.T) {
+	absent := tableRow{location: config.LocationLocal, status: statusAbsent, model: config.Model{ID: "omlx/a", ProviderID: "omlx"}}
+	if h := absent.blockReason(); !strings.Contains(h, "omlx/a") || !strings.Contains(h, "not on disk") {
+		t.Errorf("absent reason = %q", h)
+	}
+	mlx := tableRow{location: config.LocationLocal, status: statusOK, model: config.Model{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server"}}
+	if h := mlx.blockReason(); !strings.Contains(h, "modelman start mlx_lm_server/p") {
+		t.Errorf("mlx_lm_server reason = %q", h)
+	}
+	if h := (tableRow{location: config.LocationCloud}).blockReason(); h != "" {
+		t.Errorf("cloud reason = %q, want empty", h)
+	}
+	if h := (tableRow{location: config.LocationLocal, status: statusOK, model: config.Model{ProviderID: "omlx"}}).blockReason(); h != "" {
+		t.Errorf("startable row reason = %q, want empty", h)
+	}
+}
+
 // TestBuildRowsLocalModelMissingFromSnapshot verifies a local registry model
 // with no inventory entry at all (an unresolvable location, or a family wt has
 // no probe for) reads "unknown" rather than "absent": nothing was discovered

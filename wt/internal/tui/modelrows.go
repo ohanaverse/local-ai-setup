@@ -194,6 +194,46 @@ func sortRows(rows []tableRow) {
 	})
 }
 
+// rowAction is what Enter does on a row.
+type rowAction int
+
+const (
+	actionLaunch rowAction = iota // cloud row, or a local model that is already running
+	actionStart                   // a local model wt can start (its provider has a lifecycle backend)
+	actionBlock                   // cannot proceed; blockReason says why
+)
+
+// action reports what Enter does on r. A non-running local row is startable
+// when its provider has a lifecycle backend (ollama, omlx/omlx-6bit, mtplx)
+// and the model is not known to be missing from disk.
+func (r tableRow) action() rowAction {
+	if r.location != config.LocationLocal || r.running {
+		return actionLaunch
+	}
+	switch localmodels.Family(r.model.ProviderID) {
+	case "ollama", "omlx", "mtplx":
+		if r.status == statusAbsent {
+			return actionBlock
+		}
+		return actionStart
+	}
+	return actionBlock
+}
+
+// blockReason is the status line for an actionBlock row ("" otherwise): a
+// model missing from disk needs pulling; a provider wt cannot start needs
+// modelman.
+func (r tableRow) blockReason() string {
+	if r.action() != actionBlock {
+		return ""
+	}
+	switch localmodels.Family(r.model.ProviderID) {
+	case "ollama", "omlx", "mtplx":
+		return fmt.Sprintf("%s is not on disk — pull or download it first", r.model.ID)
+	}
+	return (&localgate.NotRunningError{ModelID: r.model.ID}).Error()
+}
+
 // launchable reports whether Enter may launch the row now: cloud always; a
 // running local row; and a pulled ollama model even when not loaded, because
 // ollama's daemon loads models on demand (and modelman starts ollama models
