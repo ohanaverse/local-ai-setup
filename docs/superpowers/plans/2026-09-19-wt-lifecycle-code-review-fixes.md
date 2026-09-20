@@ -14,7 +14,7 @@
 
 - Wt writes nothing to modelman-owned state (`modelman.toml` flags, LiteLLM config) and never restarts the LiteLLM proxy.
 - `Start` never replaces silently: with a *known* occupant and `Options.AllowReplace == false` it returns `*OccupiedError` before touching anything. Where the live state cannot be determined, it returns the new `*OccupancyUnknownError` instead — also before touching anything.
-- **`Start` must never require confirmation for an ordinary cold start.** A provider that is definitively *down* (connection refused/reset, no listener) has no occupant and must start normally without `AllowReplace`. Only a *stalled* listener (accepted the connection, then failed to answer) is indeterminate. This distinction is the whole point of Task 1 and Task 4 — do not collapse it.
+- **`Start` must never require confirmation for an ordinary cold start.** A provider that is definitively *down* (connection refused/reset, no listener) has no occupant and must start normally without `AllowReplace`. Only a listener that *accepts the connection and then fails to give a usable answer* — it stalls, or it answers non-2xx or undecodably — is indeterminate. This distinction is the whole point of Task 1 and Task 4 — do not collapse it.
 - Occupancy remains: none for ollama (multi-tenant); `omlx` and `omlx-6bit` are one domain; mtplx = any running mtplx model other than the target. Unsupported providers get `*UnsupportedError`.
 - Ports/origins come from `localmodels.FamilyOrigin` (registry `auth.base_url`, else the family default). After Task 6 the numeric port passed to a command line comes from `localmodels.FamilyOriginPort`, so origin and port can never disagree.
 - Ollama: daemon must answer `GET <origin>/api/tags`, else `*DaemonDownError`; wt does NOT kickstart the ollama daemon.
@@ -250,7 +250,7 @@ Verified safe before writing this task: every `[[models]]` block in `docs/contra
 
 **Interfaces:**
 - Consumes: existing `validate()` error-collection shape.
-- Produces: a new `validate()` error, `model %q: model_name is required (run 'modelman sync' to repair the registry)`, surfaced by `Validate()` at `cmd/wt/app.go:27` and by `ValidateAll()` in the config editor.
+- Produces: a new `validate()` error, `model %q: model_name is required (add model_name to this registry.toml entry)`, surfaced by `Validate()` at `cmd/wt/app.go:27` and by `ValidateAll()` in the config editor.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -292,7 +292,7 @@ In `config.go`, inside the `// Models` loop, after the `modelIDs[m.ID] = true` l
 			// The lifecycle engine matches a start target against a provider's
 			// reported names by this field; an empty one matches nothing, so the
 			// model would look permanently stopped and warm the empty name.
-			errs = append(errs, fmt.Errorf("model %q: model_name is required (run 'modelman sync' to repair the registry)", m.ID))
+			errs = append(errs, fmt.Errorf("model %q: model_name is required (add model_name to this registry.toml entry)", m.ID))
 		}
 ```
 
@@ -405,7 +405,7 @@ git commit -m "refactor(lifecycle): derive single-model occupancy from the backe
 
 **Finding #1 (behaviour).** With the omlx daemon up and serving A but its `/v1/models` slow or failing, every entry reads `Running == false`, so `isRunning` and `Occupant` report no occupant, `Start(..., AllowReplace: false)` returns no error, and `omlxBackend.start` finds the port answering, skips `omlx start`, and warms B into the same daemon — unloading A without confirmation. mtplx has a `PortBusyError` backstop for this; omlx has none.
 
-**Chosen policy (user decision):** re-probe live, then fail closed. **Refined during design:** `!known` means *the listener accepted the connection and then failed to answer*. A refused connection means the provider is definitively down, which is the ordinary cold start and must proceed with no confirmation. `env.probe` (`probe.go:28`) already returns exactly this three-way signal.
+**Chosen policy (user decision):** re-probe live, then fail closed. **Refined during design:** `!known` means *the listener accepted the connection and then failed to give a usable answer* — it stalled, or it answered non-2xx or undecodably. A refused connection means the provider is definitively down, which is the ordinary cold start and must proceed with no confirmation. `env.probe` (`probe.go:28`) already returns exactly this three-way signal.
 
 **Files:**
 - Modify: `wt/internal/lifecycle/probe.go` (add `liveServed`)
@@ -629,8 +629,9 @@ Add `probeTrusted` next to `isRunning`:
 ```go
 // probeTrusted reports whether snap's Running flags for family were produced by
 // a probe that could actually determine them. An absent status counts as
-// trusted: StatusUnsupported (mlx_lm_server) is not a single-model family, and
-// hand-built snapshots in tests carry no status map.
+// trusted: inventory registers a family's key whenever this config has a local
+// provider or model for it, so an absent key means nothing is being started
+// into that family — and hand-built snapshots in tests carry no status map.
 func probeTrusted(snap localmodels.Snapshot, family string) bool {
 	st, ok := snap.Providers[family]
 	if !ok {
@@ -1074,7 +1075,7 @@ git commit -m "fix(lifecycle): reject non-2xx warmup responses - completes plan 
 
 **Interfaces:**
 - Consumes: existing `pidProcess.logfile`, callers `pidproc.go:53` and `mtplx.go:62`.
-- Produces: no API change; `logTail` reads at most `max` bytes.
+- Produces: no API change; `logTail` seeks to the last `max` bytes and returns them (clamped to `max`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1117,8 +1118,6 @@ Add `"bytes"`, `"os"`, `"path/filepath"` to `mtplx_test.go`'s imports if absent.
 
 Run: `cd wt && go test ./internal/lifecycle -run TestLogTailReadsOnlyTheTail -v`
 Expected: **PASS against the current implementation.** The old `os.ReadFile`-then-slice returns the same bytes, so this test does not fail first — the defect is memory, not output. Write it as a regression pin for the returned bytes, then do Step 3 to make the resource property real.
-
-**Note on what this test proves:** it pins the returned bytes, not the memory profile. The seek is a resource property visible in the diff rather than in an assertion — do not add a timing or allocation assertion for it, which would be flaky.
 
 - [ ] **Step 3: Seek to the tail**
 
@@ -1209,7 +1208,7 @@ git commit -m "docs(lifecycle): document indeterminate occupancy and honest prob
 
 - [ ] `cd wt && gofmt -l . && go vet ./... && go test ./...` — all clean.
 - [ ] From the monorepo root: `make test-all` — lint + modelman + wt, the same gate CI runs.
-- [ ] Re-read the seven findings and confirm each has a task: #1 → Tasks 1 + 4; #2 → Task 6; #3 → Tasks 1 (root) + 2 (guard); #4 → Task 7; #5 → Task 3; #6 → Task 8; #7 → Task 5.
+- [ ] Re-read the seven findings and confirm each has a task: #1 → Tasks 1 + 4; #2 → Task 6; #3 → Task 2; #4 → Task 7; #5 → Task 3; #6 → Task 8; #7 → Task 5.
 - [ ] Confirm the two invariants by inspection, since they are the reason this plan exists:
   - a cold start (`providers` down) never returns `*OccupancyUnknownError` — `TestStartProceedsWhenProviderIsDown`;
   - a stalled listener never reaches `b.start` without `AllowReplace` — `TestStartRefusesWhenListenerStalls`.
