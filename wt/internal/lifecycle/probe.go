@@ -171,7 +171,16 @@ func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) bool 
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return err == nil && chatCompletionMarker.Match(body)
+	if err != nil {
+		return false
+	}
+	// A non-2xx answer is not a warmup, even when its body echoes a
+	// chat.completion marker: the ported probe raises HTTPError here and
+	// retries. Accepting it reports a model as resident that is not.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	return chatCompletionMarker.Match(body)
 }
 
 // liveServed asks a single-model provider's server directly what it is serving,

@@ -179,3 +179,24 @@ func TestWarmupSendsOneTokenChatAndWaitsForCompletion(t *testing.T) {
 		t.Errorf("never-completes err = %v, want warm-up failure", err)
 	}
 }
+
+// TestWarmupRejectsNon2xx verifies a non-2xx answer is not accepted as a
+// successful warmup even when its body carries the chat.completion marker.
+// Accepting it reports a model as resident when it is not, so the caller's
+// "ready to use" assumption is wrong on the very next request.
+func TestWarmupRejectsNon2xx(t *testing.T) {
+	e := testEnv()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	if err := e.warmup(context.Background(), srv.URL, "m", srv.URL, e.warmupTimeout); err == nil {
+		t.Error("warmup must fail on a non-2xx response carrying a chat.completion body")
+	}
+}
