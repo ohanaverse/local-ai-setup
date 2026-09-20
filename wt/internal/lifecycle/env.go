@@ -40,7 +40,7 @@ func defaultEnv() *env {
 		lookPath:       exec.LookPath,
 		run:            runCommand,
 		inventory:      localmodels.Inventory,
-		backends:       map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}},
+		backends:       map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}, "mtplx": mtplxBackend{}},
 		mtplxProc:      pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"},
 		pollInterval:   time.Second,
 		warmupTimeout:  600 * time.Second,
@@ -54,6 +54,3 @@ func defaultEnv() *env {
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
-
-// TEMPORARY stub, replaced by the real type in Task 5.
-type pidProcess struct{ name, pidfile, logfile string }
