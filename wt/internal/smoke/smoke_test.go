@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // smokeFixtureConfig builds a small multi-agent, multi-provider config:
@@ -18,8 +19,11 @@ import (
 // its own native provider, and shell is deliberately included as an Agent
 // entry (with a provider it would otherwise match) to prove EligibleAgents
 // excludes it via IsCommand rather than relying on it being absent from
-// config.toml.
-func smokeFixtureConfig() *config.Config {
+// config.toml. The probe is stubbed to an empty snapshot, so the local
+// model reads as not-running unless a test says otherwise.
+func smokeFixtureConfig(t *testing.T) *config.Config {
+	t.Helper()
+	stubSmokeProbe(t, localmodels.Snapshot{})
 	cfg := &config.Config{
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
@@ -39,10 +43,31 @@ func smokeFixtureConfig() *config.Config {
 		},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("ollama/qwen3.8:27b-mlx")
 	return cfg
 }
 
+// smokeRunningSnapshot is the live-probe answer that makes the fixture's
+// ollama model a running row.
+func smokeRunningSnapshot() localmodels.Snapshot {
+	return localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "qwen3.8:27b-mlx", ModelID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	}
+}
+
+// stubSmokeProbe swaps the smoke package's live-probe seam so no test
+// touches a real ollama/omlx/mtplx server or reads a real model directory.
+func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
+	t.Helper()
+	old := smokeProbe
+	smokeProbe = func(*config.Config) localmodels.Snapshot { return snap }
+	t.Cleanup(func() { smokeProbe = old })
+}
+
+// findModel returns the fixture's registry model for id, failing the test
+// when the fixture lacks it.
 func findModel(t *testing.T, cfg *config.Config, id string) config.Model {
 	t.Helper()
 	idx := config.IndexModelByID(cfg.Models, id)
@@ -58,7 +83,8 @@ func findModel(t *testing.T, cfg *config.Config, id string) config.Model {
 // matching provider in this fixture — proving the exclusion comes from
 // agents.IsCommand, not from shell simply being absent.
 func TestEligibleAgentsExcludesShellAndMatchesProviders(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
+	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe must report the model running
 	m := findModel(t, cfg, "ollama/qwen3.8:27b-mlx")
 	got := EligibleAgents(cfg, m)
 	want := []string{"claude", "codex"}
@@ -72,7 +98,7 @@ func TestEligibleAgentsExcludesShellAndMatchesProviders(t *testing.T) {
 // for a model under another provider, mirroring agents-smoke.sh's comment
 // that agy's driver ignores whatever model is passed.
 func TestEligibleAgentsAgyNarrowedToNative(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	m := findModel(t, cfg, "agy/native")
 	got := EligibleAgents(cfg, m)
 	want := []string{"agy"}
@@ -84,7 +110,7 @@ func TestEligibleAgentsAgyNarrowedToNative(t *testing.T) {
 // TestEligibleAgentsCloudModel asserts a cloud model is only eligible for
 // the agent(s) whose supported_providers list that provider.
 func TestEligibleAgentsCloudModel(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	m := findModel(t, cfg, "openrouter/glm-5.3-flash")
 	got := EligibleAgents(cfg, m)
 	want := []string{"claude"}
@@ -97,7 +123,8 @@ func TestEligibleAgentsCloudModel(t *testing.T) {
 // candidate list is the union (deduped, sorted by id) of every model
 // eligible for at least one non-command agent.
 func TestAllEligibleModelsUnionsAcrossAgents(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
+	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe must report the model running
 	got := AllEligibleModels(cfg)
 	var ids []string
 	for _, m := range got {
@@ -106,6 +133,88 @@ func TestAllEligibleModelsUnionsAcrossAgents(t *testing.T) {
 	want := []string{"agy/native", "ollama/qwen3.8:27b-mlx", "openrouter/glm-5.3-flash"}
 	if !slices.Equal(ids, want) {
 		t.Fatalf("AllEligibleModels ids = %v, want %v", ids, want)
+	}
+}
+
+// TestEligibilityExcludesIdleLocalModels verifies a configured local model the
+// live probe did not report as running is not eligible. It matters because wt
+// smoke must never advertise a model a launch would refuse — the whole point
+// of moving eligibility onto live rows.
+func TestEligibilityExcludesIdleLocalModels(t *testing.T) {
+	cfg := smokeFixtureConfig(t) // fixture probes an empty snapshot: nothing is running
+	models, _ := Eligibility(cfg)
+	for _, m := range models {
+		if m.ID == "ollama/qwen3.8:27b-mlx" {
+			t.Errorf("idle local model reported eligible: %+v", m)
+		}
+	}
+}
+
+// TestEligibilityIncludesRunningLocalModel verifies a local model the probe
+// reports as running IS eligible, so the smoke list reflects what can actually
+// serve a request right now rather than what is merely configured.
+func TestEligibilityIncludesRunningLocalModel(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	stubSmokeProbe(t, smokeRunningSnapshot()) // live truth: the probe reports the model running
+	got := AllEligibleModels(cfg)
+	var found bool
+	for _, m := range got {
+		if m.ID == "ollama/qwen3.8:27b-mlx" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("running local model not eligible: %+v", got)
+	}
+}
+
+// TestEligibilityIncludesDiscoveredRunningModel verifies a running model that
+// is not in the registry — discovered from the provider's own model directory
+// — is eligible. It matters because the non-TUI path now accepts a -M pin
+// naming a discovered model, so smoke would otherwise under-report exactly the
+// models a launch would accept.
+func TestEligibilityIncludesDiscoveredRunningModel(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	disc := config.DiscoveredModelID("ollama", "extra")
+	stubSmokeProbe(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "extra", ModelID: disc, ModelName: "extra", Running: true},
+		},
+	})
+	models, _ := Eligibility(cfg)
+	var found bool
+	for _, m := range models {
+		if m.ID == disc {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("running discovered model not eligible: %+v", models)
+	}
+}
+
+// TestEligibilityExcludesDiscoveredUnderLitellm verifies a discovered running
+// model routed through LiteLLM is NOT eligible. It matters because the picker
+// makes such a row unselectable (internal/tui/modeltable.go) and the CLI
+// refuses it (pickerBlockedReason) — the gateway's model_list has no entry for
+// a model wt discovered on disk — so advertising it would break smoke's
+// contract that a model it reports eligible is a model a real launch accepts.
+func TestEligibilityExcludesDiscoveredUnderLitellm(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	disc := config.DiscoveredModelID("ollama", "extra")
+	stubSmokeProbe(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "extra", ModelID: disc, ModelName: "extra", Running: true},
+		},
+	})
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	models, _ := Eligibility(cfg)
+	for _, m := range models {
+		if m.ID == disc {
+			t.Errorf("discovered model routed through LiteLLM reported eligible: %+v", m)
+		}
 	}
 }
 

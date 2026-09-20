@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
@@ -21,8 +22,19 @@ import (
 // smokeFixtureConfig builds a one-agent, two-model config: one model is
 // exposed and running (eligible), the other is registered but never
 // exposed/running (not eligible) — enough to exercise resolveSmokeModel's
-// three outcomes (eligible / registered-but-ineligible / unknown).
-func smokeFixtureConfig() *config.Config {
+// three outcomes (eligible / registered-but-ineligible / unknown). Eligibility
+// now reads live inventory rows, so the probe is stubbed with qwen3.8:27b-mlx
+// running — that is what makes it eligible while not-eligible:x, absent from
+// the snapshot, stays a start row no launch can use — and no test here probes
+// this machine's real servers.
+func smokeFixtureConfig(t *testing.T) *config.Config {
+	t.Helper()
+	stubSmokeProbe(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "qwen3.8:27b-mlx", ModelID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	})
 	cfg := &config.Config{
 		Providers: []config.Provider{
 			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
@@ -36,14 +48,23 @@ func smokeFixtureConfig() *config.Config {
 		},
 	}
 	cfg.ExposeAllForTest()
-	cfg.SetLocalRunningForTest("ollama/qwen3.8:27b-mlx") // "not-eligible" stays flagged off
 	return cfg
+}
+
+// stubSmokeProbe makes smoke.Eligibility (which resolveSmokeModel calls)
+// see snap instead of probing live: cmd/wt cannot assign internal/smoke's
+// package-private seam, so internal/smoke exposes SetSmokeProbeForTest for
+// exactly this — the same cross-package test-hook pattern
+// config.SetLocalRunningForTest uses.
+func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
+	t.Helper()
+	t.Cleanup(smoke.SetSmokeProbeForTest(snap))
 }
 
 // TestResolveSmokeModelPinnedEligible asserts a pinned id already in the
 // eligible set resolves directly, with no TTY/picker interaction.
 func TestResolveSmokeModelPinnedEligible(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	m, eligible, err := resolveSmokeModel(cfg, themes.Default, "ollama/qwen3.8:27b-mlx")
 	if err != nil {
 		t.Fatalf("resolveSmokeModel: %v", err)
@@ -61,7 +82,7 @@ func TestResolveSmokeModelPinnedEligible(t *testing.T) {
 // running) gets a specific "not eligible" message, distinct from
 // "unknown model".
 func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	_, _, err := resolveSmokeModel(cfg, themes.Default, "ollama/not-eligible:x")
 	if err == nil || !strings.Contains(err.Error(), "not currently eligible") {
 		t.Fatalf("err = %v, want a not-currently-eligible message", err)
@@ -71,7 +92,7 @@ func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 // TestResolveSmokeModelUnknown asserts a pinned id absent from the
 // registry entirely gets "unknown model".
 func TestResolveSmokeModelUnknown(t *testing.T) {
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	_, _, err := resolveSmokeModel(cfg, themes.Default, "ollama/does-not-exist")
 	if err == nil || !strings.Contains(err.Error(), "unknown model") {
 		t.Fatalf("err = %v, want unknown model error", err)
@@ -86,7 +107,7 @@ func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
 	stdinTTY = func() bool { return false }
 	defer func() { stdinTTY = old }()
 
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err == nil || !strings.Contains(err.Error(), "needs a TTY") {
 		t.Fatalf("err = %v, want a TTY-required message", err)
@@ -118,7 +139,7 @@ func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {
 	}
 	defer func() { pickModelTUI = oldPick }()
 
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	m, eligible, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err != nil {
 		t.Fatalf("resolveSmokeModel: %v", err)
@@ -145,7 +166,7 @@ func TestResolveSmokeModelInteractiveCanceled(t *testing.T) {
 	}
 	defer func() { pickModelTUI = oldPick }()
 
-	cfg := smokeFixtureConfig()
+	cfg := smokeFixtureConfig(t)
 	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err == nil || !strings.Contains(err.Error(), "canceled") {
 		t.Fatalf("err = %v, want a canceled-picker message", err)

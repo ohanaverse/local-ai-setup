@@ -15,8 +15,9 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // Status is a row's classification.
@@ -40,20 +41,40 @@ type RowResult struct {
 	Err      error
 }
 
-// Eligibility runs a single localgate probe round and walks the agent×model
-// eligibility rules once, returning both the union of eligible models
-// (AllEligibleModels' answer) and, per model id, the sorted list of eligible
-// agents (EligibleAgents' answer) — the same membership (provider support)
-// and exposure/local-running-gate rules wt's own launch path applies via
-// Config.EligibleModels and localgate.Apply, so a model wt smoke reports
-// eligible is a model a real `wt -A <agent> -M <id>` launch would accept.
-// wt smoke's command layer calls this once per invocation and derives both
-// answers from the result, instead of calling EligibleAgents and
-// AllEligibleModels back to back, which would each pay their own probe
-// round (localgate.ResolveAll does a live HTTP probe, up to 2s per flagged
-// non-ollama local model).
+// smokeProbe is a test seam over the live inventory, so no test in this
+// package probes a real provider.
+var smokeProbe = localmodels.Inventory
+
+// SetSmokeProbeForTest makes Eligibility read snap instead of the live
+// inventory and returns the func restoring the real seam. internal/smoke's
+// own tests assign smokeProbe directly; this hook exists for another
+// package's tests — cmd/wt's smoke tests exercise this package's Eligibility
+// through resolveSmokeModel and cannot assign an unexported var from there —
+// mirroring internal/config's Set...ForTest setters, the codebase's
+// convention for cross-package test state. Tests only.
+func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
+	old := smokeProbe
+	smokeProbe = func(*config.Config) localmodels.Snapshot { return snap }
+	return func() { smokeProbe = old }
+}
+
+// Eligibility takes ONE live inventory snapshot and walks the same catalog
+// rows the picker and the non-TUI launch path read, returning both the
+// deduped, id-sorted union of eligible models (AllEligibleModels' answer)
+// and, per model id, the sorted list of eligible agents (EligibleAgents'
+// answer). A model is eligible when selecting it would launch: a cloud row,
+// or a local row the probe reports as running — plus discovered running
+// rows, which a -M pin can launch — minus discovered rows routed through
+// LiteLLM, which the picker makes unselectable and the CLI refuses. Because
+// the rows are the same ones a real launch consults, wt smoke cannot
+// advertise a model a real `wt -A <agent> -M <id>` launch would refuse, and
+// it never starts or stops anything — starting a model to check it is the
+// launch path's job, not the doctor's. wt smoke's command layer calls this
+// once per invocation and derives both answers from the result, instead of
+// calling EligibleAgents and AllEligibleModels back to back, which would
+// each pay their own inventory round.
 func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[string][]string) {
-	verified := localgate.ResolveAll(cfg)
+	snap := smokeProbe(cfg)
 	agentsForModel = map[string][]string{}
 	seen := map[string]bool{}
 	for _, a := range cfg.Agents {
@@ -64,13 +85,37 @@ func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[
 		if err != nil {
 			continue
 		}
-		running := cfg.FilterToRunningLocal(eligible, verified)
-		for _, m := range running {
-			if !seen[m.ID] {
-				seen[m.ID] = true
-				models = append(models, m)
+		rows := catalog.Build(catalog.Input{
+			Config: cfg,
+			Agent:  a.Name,
+			Models: eligible,
+			// A discovered running model is one a -M pin can launch, so
+			// smoke reports it; discovered non-running rows stay out, since
+			// their action is start, not launch.
+			Inventory:      &snap,
+			HideDiscovered: false,
+		})
+		for _, r := range rows {
+			// A discovered row routed through LiteLLM is unselectable in the
+			// picker (internal/tui/modeltable.go's discovered+LiteLLM rule)
+			// and refused by the CLI's pickerBlockedReason case 1 — the
+			// gateway's model_list has no entry for a model wt discovered on
+			// disk. Smoke mirrors that rule so its contract holds: a model it
+			// reports eligible is a model a real launch would accept. Launch
+			// rows whose route ERRORS stay eligible, like the picker's
+			// selectable "(unavailable)" rows that report on Enter.
+			if r.Discovered {
+				if route, err := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name)); err == nil && (route.Litellm || route.Forced) {
+					continue
+				}
 			}
-			agentsForModel[m.ID] = append(agentsForModel[m.ID], a.Name)
+			if r.Action() == catalog.ActionLaunch {
+				if !seen[r.Model.ID] {
+					seen[r.Model.ID] = true
+					models = append(models, r.Model)
+				}
+				agentsForModel[r.Model.ID] = append(agentsForModel[r.Model.ID], a.Name)
+			}
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
@@ -84,7 +129,7 @@ func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[
 // eligible to launch model m. A thin Eligibility wrapper for callers that
 // only need one model's agent list; callers that also need
 // AllEligibleModels in the same invocation should call Eligibility directly
-// to share one probe round instead of calling both wrappers.
+// to share one inventory snapshot instead of calling both wrappers.
 func EligibleAgents(cfg *config.Config, m config.Model) []string {
 	_, agentsForModel := Eligibility(cfg)
 	return agentsForModel[m.ID]
