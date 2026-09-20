@@ -79,10 +79,13 @@ func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool,
 
 // launchFiltered is the wired-up launch path used by main.go for every
 // non-TUI launch (-w, --cwd, and outside-a-repo passthrough). It resolves
-// the eligible model list (via cfg.EligibleModels), pins the model when -M
-// is provided, and otherwise advances through the eligible list using the
-// per-slot rotation state (agent+tag+family). For a pinned match or a
-// single eligible model, no rotation is consulted. Command agents (shell,
+// the eligible model list (via cfg.EligibleModels), resolves the -M pin
+// against all rows (a start row is started before this point), and
+// otherwise advances through the eligible list using the per-slot
+// rotation state (agent+tag+family). For a pinned match or a single
+// eligible model, no rotation is consulted. A -M pin on a start row
+// was already started by resolveModel before this point — launchFiltered
+// only ever sees the launch decision. Command agents (shell,
 // etc.) bypass the model layer but still run in worktreePath — they route
 // through buildFilteredCmd so the same worktree-path threading that
 // TestBuildFilteredCmdCommandAgentUsesWorktree locks down is on the launch
@@ -115,7 +118,11 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
-	// it; otherwise resolveModel computes it (and returns it for rotation).
+	// it: the precomputed eligible a caller passes is the LAUNCHABLE list
+	// resolveModel returned, so any -M pin was already resolved against all
+	// rows (and a pinned start already ran) before this point — there is no
+	// pinned branch here. Otherwise resolveModel computes it (and returns it
+	// for rotation).
 	// nil (not len == 0) signals "not precomputed" so a caller that legitimately
 	// passes an empty-but-non-nil slice isn't silently recomputed against.
 	var m config.Model
@@ -123,7 +130,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if eligible == nil {
 		m, eligible, err = resolveModel(agent, cfg, tags, family, pinned)
 	} else {
-		m, err = resolveModelFromEligible(agent, eligible, pinned)
+		m, err = resolveModelFromEligible(agent, eligible)
 	}
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate

@@ -20,7 +20,8 @@ from .registry import ProviderRegistry
 # truth inside modelman: lifecycle/ (server management), registry.py
 # (the provider template's auth.base_url), and local_control.py (probe
 # fallback) all import from here. The bash (bin/lib/mtplx.sh) and Go
-# (wt/internal/localgate) sides each keep their own single in-file
+# (wt/internal/localmodels — see FamilyOrigin's default-port table)
+# sides each keep their own single in-file
 # constant — cross-language sharing happens through registry.toml's
 # auth.base_url, not imports.
 MTPLX_PORT = 8003

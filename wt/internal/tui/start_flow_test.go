@@ -433,32 +433,6 @@ func TestKeysDuringStartIgnoreOtherKeys(t *testing.T) {
 	}
 }
 
-// TestStartErrorsMapToMessages verifies each engine failure produces the
-// status line the spec promises: a down daemon names the origin, the
-// engine's own typed errors are shown verbatim, and anything else is
-// prefixed with the model — a user must be able to tell what to fix.
-func TestStartErrorsMapToMessages(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		id   string
-		want []string // substrings the status must contain
-	}{
-		{"daemon down", &lifecycle.DaemonDownError{Provider: "omlx", Origin: "http://localhost:8000"}, "omlx/q", []string{"is not answering at", "http://localhost:8000"}},
-		{"binary missing", &lifecycle.BinaryMissingError{Binary: "omlx"}, "omlx/q", []string{"omlx"}},
-		{"port busy", &lifecycle.PortBusyError{Port: 8000}, "omlx/q", []string{"8000"}},
-		{"generic", errors.New("boom"), "omlx/q", []string{"failed to start omlx/q: boom"}},
-	}
-	for _, tc := range cases {
-		got := startErrorMessage(tc.id, tc.err)
-		for _, want := range tc.want {
-			if !strings.Contains(got, want) {
-				t.Errorf("%s: status = %q, want it to contain %q", tc.name, got, want)
-			}
-		}
-	}
-}
-
 // TestStartFailureRefreshesTable verifies a failed start rebuilds the table
 // from a fresh inventory (one more probe) and returns to the picker with the
 // failure in the status line — a replace can stop the occupant and then
@@ -814,5 +788,28 @@ func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 	}
 	if calls.len() != 0 {
 		t.Errorf("startModel calls = %d, want 0", calls.len())
+	}
+}
+
+// TestReplaceFlagOnlyCoversThePinnedRow verifies --replace grants AllowReplace
+// to the -M pinned row only: Enter on any other start row still starts with
+// AllowReplace false, so the occupied dialog appears. --replace is documented
+// as a -M option; letting it silently stop a running model for an arbitrary
+// row the user browsed to would be a surprise.
+func TestReplaceFlagOnlyCoversThePinnedRow(t *testing.T) {
+	requireBinary(t, "claude")
+	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+	m.allowReplace = true
+	m.pinnedModel = "ollama/other"
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+
+	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+	if got.start != nil && got.start.cancel != nil {
+		t.Cleanup(got.start.cancel)
+	}
+	waitStartCalls(t, calls, 1)
+
+	if calls.at(0).opts.AllowReplace {
+		t.Error("a non-pinned row must not inherit --replace")
 	}
 }

@@ -23,7 +23,8 @@ import (
 var version = "0.1.0"
 
 // tuiRun is the entry point for the interactive TUI. It is a package-level
-// variable so tests can stub it out (the real tui.Run requires a TTY).
+// variable so tests can stub it (see TestWorktreeWithAgentWithoutModelShowsModelPicker)
+// instead of opening a real /dev/tty.
 var tuiRun = tui.Run
 
 // sweepRefcounts is a seam for tests: production sweeps the live-session
@@ -57,14 +58,17 @@ func needsModelPicker(agent, pinned string) bool {
 // resolveModelForLaunch wraps resolveModel with a "resolved" boolean so
 // callers can short-circuit on a single resolvable model (auto-launch)
 // without conflating "model is empty" with "error". A resolved return value
-// (true, model, eligible, nil) means launchFiltered would have a unique model
+// (true, model, launchable, nil) means launchFiltered would have a unique model
 // to use. A non-resolved return (false, zero, _, _) means the caller should
 // fall through to the picker. err is non-nil only when resolveModel itself
 // failed; the auto-launch path treats any error as "not resolved".
 //
-// The eligible list is returned so the caller can hand it to launchFiltered
-// without recomputing it (the auto-launch path would otherwise call
-// EligibleModels twice: once here and once inside launchFiltered).
+// The list returned is the LAUNCHABLE list (cloud models plus local models
+// already running — see resolveModel), not the raw eligible list, so the
+// caller can hand it to launchFiltered without recomputing it (the
+// auto-launch path would otherwise call EligibleModels twice: once here and
+// once inside launchFiltered) and rotation can never land on a local model
+// that is not up.
 func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, []config.Model, error) {
 	m, eligible, err := resolveModel(agent, cfg, tags, family, pinned)
 	if err != nil {
@@ -118,7 +122,7 @@ func runLaunchPath(
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
 	if launchPath == "" {
-		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
@@ -131,7 +135,7 @@ func runLaunchPath(
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
 		}
-		return tuiRun(yolo(cmd), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
+		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg)
 	}
 
 	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil)
@@ -295,6 +299,9 @@ func rootCmd() *cobra.Command {
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
+			// --replace is a process-wide launch mode: resolveModel's start
+			// path reads it, and the TUI receives it as an argument.
+			allowReplace, _ = cmd.Flags().GetBool("replace")
 
 			// Launch paths require a valid config. The `wt config` subcommand
 			// bypasses this so it can repair a broken config.toml. Command
@@ -357,6 +364,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("worktree", "W", "", "Use/create worktree for branch")
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
+	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")

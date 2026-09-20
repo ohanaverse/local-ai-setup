@@ -21,7 +21,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
@@ -69,8 +68,8 @@ type model struct {
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
-	// tableModels is the (post-gate) model list the picker's table was built
-	// from, captured in enterModelPhase; refreshTable re-probes the inventory
+	// tableModels is the model list the picker's table was built from,
+	// captured in enterModelPhase; refreshTable re-probes the inventory
 	// and rebuilds the table from exactly these models.
 	tableModels []config.Model
 	// pendingSelect is the model id a table refresh wants the cursor on. It is
@@ -93,6 +92,7 @@ type model struct {
 	selectedPath string   // worktree path chosen in lesson 13
 	prePath      string   // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
 	yolo         bool     // pass skip-permissions flag to the agent
+	allowReplace bool     // --replace mode: the -M start path may stop a running occupant without the dialog
 	extraArgs    []string // user passthrough args after --
 	initialAgent string   // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
 	pinnedModel  string   // model from --model flag; "" = no model pinned (model picker is shown)
@@ -129,10 +129,10 @@ type model struct {
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
 	// error, matching the non-TUI path's exit-with-message behavior
-	// (cmd/wt/main.go's runLaunchPath). As of the 2026-09-14 multi-model
-	// local gate redesign, localgate.Apply never returns a fatal error
-	// (see enterModelPhase), so nothing currently sets this field — it
-	// remains wired into Run() for any future genuinely-fatal condition.
+	// (cmd/wt/main.go's runLaunchPath). Nothing currently sets this
+	// field — enterModelPhase's route-backs return a status, never a
+	// fatal error — but it remains wired into Run() for any future
+	// genuinely-fatal condition.
 	fatalErr error
 }
 
@@ -462,7 +462,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// exclusive — renderTable sets exactly one per row, and its
 					// discovered-row case clears start before setting blocked —
 					// so this order is a guard, not a precedence rule.
-					return m.beginStart(highlighted, false)
+					// --replace is the -M pin's permission, not a blanket
+					// one: any other start row still gets the dialog.
+					return m.beginStart(highlighted, m.allowReplace && highlighted.model.ID == m.pinnedModel)
 				}
 				if highlighted.blocked != "" {
 					m.status = highlighted.blocked
@@ -756,13 +758,16 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // after the user resolves the resume prompt, so a cancel there leaves
 // rotation untouched.
 //
-// models is the agent's PRE-GATE eligible list; local models that are not
-// running appear as non-launchable rows (Enter shows a hint) rather than being
-// hidden.
+// models is the agent's eligible list; local models that are not
+// running appear as start rows (Enter runs the lifecycle engine; only blocked
+// rows show a hint — their reason) rather than being hidden.
 //
-// A pinned model (-M) still goes through localgate.Apply so the TUI and the
-// non-TUI path agree on whether a pinned local model may launch. A mismatch
-// routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
+// A pinned model (-M) is resolved against the same rows the table shows, so
+// the pin and the picker can never disagree: a launch row (cloud, or a local
+// model the probe reports running) proceeds straight to launch, an idle local
+// start row is selected and shown for the user to start, and a blocked row
+// routes back with the row's own reason. A mismatch routes to phaseAgent (the
+// bad pin is cleared so re-entry validates fresh).
 //
 // The header's tag line and hideDiscovered answer two different questions
 // and are intentionally not the same value: the tag line shows firstTag (the
@@ -779,7 +784,8 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // len(models) == 0 with their own status message. A future caller must do the
 // same — there is no empty-table branch here to catch it.
 //
-// The only route-back is a rejected -M pin.
+// The only route-back is a rejected -M pin: one with no row at all (outside
+// the eligible list), or one whose row is blocked.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
@@ -794,30 +800,6 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m, nil
 	}
 
-	// A -M pin keeps localgate's flag+probe verdict. Validate it BEFORE probing
-	// the inventory: a rejected pin routes back to the agent picker and never
-	// renders a table, so probing first would make the user wait on a live
-	// probe of every local provider for nothing.
-	//
-	// The inventory is then probed once, for the table's live STATUS/RUNNING
-	// columns. It is deliberately a separate probe from localgate.Apply's: Apply
-	// answers "may this local model launch?", and only for the models modelman's
-	// per-model `running` flags name — trusting ollama's flag outright and
-	// probing the others' /v1/models (name-checked for omlx/mtplx, non-empty
-	// only for mlx_lm_server) — while the table needs the full registered +
-	// discovered artifact inventory and each entry's live running and
-	// artifact-known state. Neither result can be derived from the other, so
-	// this is one probe per question, not a duplicated one.
-	if m.pinnedModel != "" {
-		gate := localgate.Apply(m.cfg, models, m.pinnedModel)
-		if gate.PinnedRejected != nil {
-			return routeBack(gate.PinnedRejected.Error())
-		}
-		if config.IndexModelByID(gate.Eligible, m.pinnedModel) < 0 {
-			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
-		}
-		models = gate.Eligible
-	}
 	m.tableModels = models
 	m.refreshGen++
 
@@ -846,10 +828,38 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	ml.SetShowStatusBar(false)
 	m.models = ml
 
+	// The -M pin's verdict comes from the same rows the table shows, so the
+	// pin can never disagree with what the user is looking at. That is why
+	// the inventory probe above is not skipped for a pinned model: the rows
+	// need it. The trade — a probe even when the pin turns out unusable — is
+	// deliberate, and replaces the old gate's reject-before-probing order.
 	if m.pinnedModel != "" {
-		if idx, ok := idIndex[m.pinnedModel]; ok {
-			m.models.Select(idx)
+		idx, ok := idIndex[m.pinnedModel]
+		if !ok {
+			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
 		}
+		it := tbl.items[idx]
+		switch {
+		case it.blocked != "":
+			// A row the pin cannot use at all: hand the reason back to the
+			// agent picker, where the user can choose another agent or fix
+			// the model.
+			return routeBack(it.blocked)
+		case it.start:
+			// The pin needs a start: run it through the same start flow every
+			// other start row uses, exactly as the non-TUI -M path does, so
+			// the worktree flags cannot change whether a pin starts.
+			// --replace skips the replace dialog. The row is selected first
+			// so a failed or cancelled start returns to the picker on it.
+			m.models.Select(idx)
+			m.phase = phaseModel
+			pinned, ok := m.models.SelectedItem().(*modelItem)
+			if !ok {
+				return m, nil
+			}
+			return m.beginStart(pinned, m.allowReplace)
+		}
+		m.models.Select(idx)
 		return m.proceedToLaunch()
 	}
 
@@ -1165,19 +1175,22 @@ type entriesLoadedMsg struct {
 // flag value (comma-delimited; "" = no filter). family is the -F/--family
 // flag value (comma-delimited; "" = no filter). extraArgs are the user's
 // passthrough args after --. theme is the active color theme, loaded by
-// cmd/wt. prePath, when non-empty, is a pre-resolved worktree path
+// cmd/wt. allowReplace grants the -M start path permission to stop a running
+// occupant without the replace dialog (it comes from --replace). prePath,
+// when non-empty, is a pre-resolved worktree path
 // (-W/--cwd/outside-repo): the worktree picker is skipped and control starts
 // at the agent/command picker (or model phase when agent is pinned). When
 // prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
 // has a valid directory even if it becomes reachable from the pre-path entry
 // point. cfg is the already-loaded config from cmd/wt's newApp (validated
 // before Run is called); it is not re-loaded here.
-func Run(yolo bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
 	p := tea.NewProgram(model{
 		status:       "loading worktrees...",
 		cfg:          cfg,
 		theme:        theme,
 		yolo:         yolo,
+		allowReplace: allowReplace,
 		initialAgent: agent,
 		pinnedModel:  pinned,
 		activeTags:   tags,

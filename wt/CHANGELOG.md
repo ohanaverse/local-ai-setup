@@ -26,8 +26,17 @@
 ### Added
 
 - `-A`/`--agent` short flag (alias for `--agent`).
-- `-M`/`--model` flag to pin a model as `<provider>/<name>`. Verified against
-  the eligible model list for the chosen agent.
+- `-M`/`--model` flag to pin a model as `<provider>/<name>`. Resolved from
+  live rows: a cloud or running local model launches; a non-running local
+  model is started first (timestamped progress on stderr, Ctrl+C cancels, a
+  second Ctrl+C exits); a model that cannot be used errors with the row's own
+  reason. The pin is looked up among all rows, including models discovered on
+  disk that have no registry entry.
+- `--replace` flag: with `-M`, start the model even if it means stopping a
+  running one. Without it, an occupied provider prompts y/N on a TTY (default
+  N; Ctrl+C at the prompt aborts) and refuses when stdin is not a TTY. In the
+  picker it covers only the pinned row; other start rows still show the
+  replace dialog.
 - `-T`/`--tags` flag to filter models by tag (comma-delimited, OR within flag).
 - `-F`/`--family` flag to filter models by family (comma-delimited, OR within flag).
 - `internal/config.EligibleModels(agent, tags, family)` returns the models

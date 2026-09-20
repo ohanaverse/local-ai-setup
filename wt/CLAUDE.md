@@ -34,7 +34,8 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use/create the worktree for `<name>`; skip the worktree picker |
 | `-A <name>`, `--agent <name>` | Pin the agent or `shell`; never defaulted |
-| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; errors if not eligible. Without `-A`, prompts for the agent first, then validates the pin |
+| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; cloud or running → launch; a non-running local starts (with a progress display; `--replace` skips the replace confirmation); a blocked model errors with that row's reason. Without `-A`, prompts for the agent first, then validates the pin |
+| `--replace` | With `-M`, start the model even if it means stopping a running one |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
 | `--cwd` | Launch in the current repo root; skip the worktree picker |
@@ -113,7 +114,7 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 **Test seams.** TTY, installed-check, guard, TUI behavior, the model
 picker's usage store, local-inventory probing, and model starting are stubbed via package-level var seams (`tuiRun`,
 `launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
-`newUsageStore`, `flushTTY`, `runInventory`, `startModel`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. When adding
+`newUsageStore`, `flushTTY`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. `cmd/wt` carries its own seams, stubbed by `testmain_test.go`: `probeInventory` (the non-TUI inventory probe) and a second `startModel` — a different package and signature (it wraps `startForLaunch`), a separate seam from the TUI's despite the shared name. Together the two `TestMain`s mean no Go test probes a real server or starts a real model. `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` hook for other packages' tests. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 `internal/lifecycle` is the other convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its package `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
 
@@ -131,7 +132,7 @@ make help                            # list Makefile targets
 
 Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `check` (shellcheck lint + shfmt format-check + `go-format-check`, a `gofmt -l` gate that wt-ci also runs; `make format` writes both shell and Go).
 
-Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,localgate,localmodels,lifecycle,smoke}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
+Package list: `internal/{config,rotation,usage,refcount,survey,agents,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,catalog,localmodels,lifecycle,smoke}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
@@ -143,7 +144,8 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/app.go` | shared dependency struct (loads/validates config once) |
 | `cmd/wt/commands.go` | hidden `rotate` subcommand |
 | `cmd/wt/commands_config.go` | `wt config` subcommand family |
-| `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch |
+| `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch, resolved from live `catalog` rows; a `-M` pin on a start row starts it through `startModel` |
+| `cmd/wt/start.go` | `startForLaunch` — the non-TUI start driver: progress on stderr, Ctrl+C cancel, the replace confirmation, and the package-level `allowReplace` the flag sets |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers (`maybeInstallGuard`, `checkGuardStatus`, `removeGuard`); TTY seams (`isStdinTTY`/`stdinTTY`) and picker-TTY errors |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
 | `cmd/wt/stats.go` | `wt stats` command — read-only report over `survey.jsonl` |
@@ -154,18 +156,18 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/refcount/` | live-session "in use" model counts: JSONL state file keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point, consumed by the model picker's ref column |
 | `internal/survey/` | post-session survey: append-only JSONL verdicts (worked/speed/quality + task description), 1d/7d/30d stats per model and per agent×model combo — used by the post-run prompt, the model picker's survey segment, and `wt stats` |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell |
-| `internal/smoke/` | `wt smoke`'s testable core: `Eligibility` (one localgate probe round → both the eligible-model union and each model's eligible-agent list; `EligibleAgents`/`AllEligibleModels` are thin wrappers over it — a caller needing both answers in one invocation should call `Eligibility` directly to avoid paying two probe rounds), `RunRow` (PASS/FAIL/SKIP classification via the `buildAndRun` seam) |
+| `internal/smoke/` | `wt smoke`'s testable core: `Eligibility` (builds `catalog` rows per agent from one `localmodels.Inventory` snapshot — via the `smokeProbe` seam, with `SetSmokeProbeForTest` for other packages' tests — and keeps the launch rows (cloud, or a local model the probe reports running); it never starts or stops a model; returns both the eligible-model union and each model's eligible-agent list, so `EligibleAgents`/`AllEligibleModels` are thin wrappers over it and a caller needing both answers in one invocation should call `Eligibility` directly to avoid paying two probe rounds), `RunRow` (PASS/FAIL/SKIP classification via the `buildAndRun` seam) |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
 | `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
 | `internal/initseed/` | `--init` seeding |
 | `internal/session/` | resume detection (claude/opencode) |
 | `internal/ollamacheck/` | availability check before launch |
-| `internal/localgate/` | multi-model local-running gate (2026-09-14 design): probes every flagged model (except ollama, which trusts the flag) + shared Apply policy |
-| `internal/localmodels/` | Local model inventory: `Inventory(cfg)` probes ollama (`/api/tags` + `/api/ps`, cloud `remote_host` entries excluded), omlx/mtplx (model-dir scan + `/v1/models`) and mlx_lm_server (running only) concurrently and returns registered + discovered entries with live `Running`; registry match keeps the registry id, else `config.DiscoveredModelID`. Status per family is `ok`/`partial` (the live running-state probe failed — ollama `/api/ps`, or omlx/mtplx `/v1/models` — so Running is untrustworthy)/`unreachable`/`unsupported`. Never reads modelman's `running` flag. `localgate` delegates its `nameMatches`/`fetchModelIDs` here and (via `ResolveAll`) probes the same registry `auth.base_url` origins (`FamilyOrigin`; `FamilyOriginPort(cfg, family)` returns the family origin **and** its numeric port from one resolution, with the family default applied to the origin when the registry value omits a port, so a command-line port and a dialed URL cannot disagree). `Entry.ArtifactKnown` distinguishes an artifact the probe confirmed missing from one it could not determine (an unreachable family; `mlx_lm_server`, which has no artifact discovery). Each entry also carries `ModelName` (the provider-side name: the registry `model_name` when registered, else the artifact), and `Family(providerID)` is exported for consumers like `lifecycle`. |
-| `internal/lifecycle/` | Local model start engine (Go port of modelman's start/warmup): `Start(ctx, cfg, Target{ProviderID, ModelName}, Options{AllowReplace, Progress})`, `Occupant(target, snapshot)`, `Stop`. Backends: ollama (daemon must answer; 1-token chat loads the model; multi-tenant), omlx (`omlx start` when the daemon is down, warm by model basename, `omlx stop` to replace), mtplx (`mtplx serve …` spawned in its own session with modelman's pidfile/log paths; `mtplx stop --port N` to replace; torn down on failure/cancel). Live Inventory decides already-running and occupant; never replaces without `AllowReplace` (returns `*OccupiedError`); typed errors `DaemonDownError`/`BinaryMissingError`/`PortBusyError`/`UnsupportedError`/`OccupancyUnknownError`. Where the live probe cannot determine the running state — a single-model provider's server accepted the connection and then stalled, or answered unusably — `Start` returns `*OccupancyUnknownError` instead of assuming no occupant, and only `AllowReplace` proceeds. A provider that is definitively down (connection refused) is not indeterminate: that is an ordinary cold start and needs no confirmation. Writes nothing to modelman state; does not kickstart the ollama daemon. Consumed by the TUI's start-on-select flow (`internal/tui/start_flow.go`); the non-TUI path, `-M` pin check and `wt smoke` (sub-project 4c) still use `localgate`. |
+| `internal/catalog/` | The shared row policy for every model list wt shows or resolves: `Build` (rows from an agent's eligible list plus one `localmodels.Inventory` snapshot), `Find` (row lookup by id, discovered rows included — a `-M` pin names a model, not necessarily a registry entry), `Row.Action` (launch / start / block), `Row.BlockReason`, and the presence status (`ok`/`absent`/`unknown` for registered locals, `new` for discovered rows). Knows nothing about rendering, counts or sorting — `internal/tui` wraps a `Row` in `tableRow` with those; `cmd/wt`'s `resolveModel` and `smoke.Eligibility` consume it directly. |
+| `internal/localmodels/` | Local model inventory: `Inventory(cfg)` probes ollama (`/api/tags` + `/api/ps`, cloud `remote_host` entries excluded), omlx/mtplx (model-dir scan + `/v1/models`) and mlx_lm_server (running only) concurrently and returns registered + discovered entries with live `Running`; registry match keeps the registry id, else `config.DiscoveredModelID`. Status per family is `ok`/`partial` (the live running-state probe failed — ollama `/api/ps`, or omlx/mtplx `/v1/models` — so Running is untrustworthy)/`unreachable`/`unsupported`. Never reads modelman's `running` flag. The registry `auth.base_url` origins behind every probe resolve here (`FamilyOrigin`; `FamilyOriginPort(cfg, family)` returns the family origin **and** its numeric port from one resolution, with the family default applied to the origin when the registry value omits a port, so a command-line port and a dialed URL cannot disagree) — the inventory's own probes and `internal/lifecycle`'s start/stop backends share them, so the two always describe the same server. `Entry.ArtifactKnown` distinguishes an artifact the probe confirmed missing from one it could not determine (an unreachable family; `mlx_lm_server`, which has no artifact discovery). Each entry also carries `ModelName` (the provider-side name: the registry `model_name` when registered, else the artifact), and `Family(providerID)` is exported for consumers like `lifecycle`. |
+| `internal/lifecycle/` | Local model start engine (Go port of modelman's start/warmup): `Start(ctx, cfg, Target{ProviderID, ModelName}, Options{AllowReplace, Progress})`, `Occupant(target, snapshot)`, `Stop`. Backends: ollama (daemon must answer; 1-token chat loads the model; multi-tenant), omlx (`omlx start` when the daemon is down, warm by model basename, `omlx stop` to replace), mtplx (`mtplx serve …` spawned in its own session with modelman's pidfile/log paths; `mtplx stop --port N` to replace; torn down on failure/cancel). Live Inventory decides already-running and occupant; never replaces without `AllowReplace` (returns `*OccupiedError`); typed errors `DaemonDownError`/`BinaryMissingError`/`PortBusyError`/`UnsupportedError`/`OccupancyUnknownError`. Where the live probe cannot determine the running state — a single-model provider's server accepted the connection and then stalled, or answered unusably — `Start` returns `*OccupancyUnknownError` instead of assuming no occupant, and only `AllowReplace` proceeds. A provider that is definitively down (connection refused) is not indeterminate: that is an ordinary cold start and needs no confirmation. Writes nothing to modelman state; does not kickstart the ollama daemon. Consumed by the TUI's start-on-select flow (`internal/tui/start_flow.go`) and by `cmd/wt`'s `startForLaunch` (`wt -A <agent> -M <id>` on a non-running local model); `wt smoke` never starts anything. Failure wording lives in `internal/lifecycle/message.go` (`StartErrorMessage`, `StageLabel`), shared by both paths. |
 | `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor (agent add/edit/delete) |
 | `internal/themes/` | color themes (4 palettes, `themes.toml`) |
-| `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildTable`, consumed by `wt smoke`. Selector table: `modelrows.go` (`buildRows`, `sortRows`, `tableRow.action`, `blockReason`) for rows and two-group sort (cost ascending by output then input price, local and subscription-only = $0, no-data last; then 7d usage ascending; non-running local alphabetical), `modeltable.go` (`buildTable`, `renderTable`, header as list title via `styleTableTitle`) for header and aligned rendering. `buildRows` assigns STATUS from `localmodels.Entry.ArtifactKnown`: `absent` only when the probe answered and found no artifact, `unknown` when it could not tell (an unreachable family, a model with no inventory entry, or any non-running `mlx_lm_server` row) — and a row that is `Running` is never absent and never `unknown`. `action()` fails open on `unknown` presence for ollama (an unknown row is startable), matching the non-TUI path's trust of an ollama flag. `start_flow.go` is the start-on-select flow (`startModel` seam, `beginStart`, `runStart`, the `phaseStarting` progress + cancel keys, and the `phaseReplaceConfirm` dialog). `runInventory` is a test seam stubbing `localmodels.Inventory` for probing local models live. |
+| `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildTable`, consumed by `wt smoke`. Selector table: `modelrows.go` (`buildRows`, `sortRows`; row action/block reason come from the embedded `catalog.Row`) delegates row inclusion and action to `internal/catalog`, and adds counts, survey stats and sort (cost ascending by output then input price, local and subscription-only = $0, no-data last; then 7d usage ascending; non-running local alphabetical); `modeltable.go` (`buildTable`, `renderTable`, header as list title via `styleTableTitle`) does the header and aligned rendering. `start_flow.go` is the start-on-select flow (`startModel` seam, `beginStart`, `runStart`, the `phaseStarting` progress + cancel keys, and the `phaseReplaceConfirm` dialog). `runInventory` is a test seam stubbing `localmodels.Inventory` for probing local models live. |
 | `docs/superpowers/` | specs + plans |
 
 ## Config (Go)
@@ -215,10 +217,10 @@ update both sides or both CI jobs fail.
 
 **Exposure predicate (2026-09-15 local-model visibility design):** wt's `IsExposed` decides Stage-1 (tag/family/provider) catalog membership:
 - Native models (provider `auth.type = "native"`): always exposed.
-- Local models (location resolves to `"local"`): always exposed here too — for the TUI picker, all configured and discovered local models are listed and launch-gated individually; for non-TUI launches, catalog membership is governed by the live-verified running gate below (`internal/localgate.Apply`/`FilterToRunningLocal`). A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
+- Local models (location resolves to `"local"`): always exposed here too — the picker lists every configured and discovered local model with live STATUS/RUNNING, and the non-TUI path consults the same rows; what a row can do (launch, start, or block) is decided per row from the live probe, not from any flag (see the "Local-model resolution" section below). A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
 - Cloud (and any model whose location doesn't resolve to local): `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`), unchanged from before.
 
-The model picker's EXPOSED column shows `Y` for native models (as modelman's own column does, unconditionally) and otherwise reads the raw modelman flag via `Config.ExposedFlag` — unlike `IsExposed`, it does no location-based special-casing, so cloud-location models show their true exposure state while local models show modelman's via-flag visibility (which may differ from the running gate's result; see below).
+The model picker's EXPOSED column shows `Y` for native models (as modelman's own column does, unconditionally) and otherwise reads the raw modelman flag via `Config.ExposedFlag` — unlike `IsExposed`, it does no location-based special-casing, so cloud-location models show their true exposure state while local models show modelman's via-flag visibility (which says nothing about whether the model is running — see the "Local-model resolution" section below).
 
 This means wt's picker can now show a local model modelman's own TUI still renders `–` for in its EXPOSED column — that divergence is intentional for local models; `modelman start` keeps `exposed` in sync automatically so LiteLLM-forced routes (see the Agents table below) keep working without a separate manual expose step. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
 
@@ -240,34 +242,48 @@ This means wt's picker can now show a local model modelman's own TUI still rende
 > needs a matching `agy` provider or `Load`/`Validate` fails with
 > `unknown provider "agy"`.
 
-## Local-model gate (multi-model design, 2026-09-14)
+## Local-model resolution (live rows, 2026-09-20)
 
-**TUI model picker:** Lists all configured and discovered local models — running and non-running alike — showing STATUS/RUNNING columns live from `localmodels.Inventory` (never the modelman flag). Every row resolves to one of three actions (`tableRow.action()` in `modelrows.go`): **launch** — cloud rows and running local rows; **start** — a non-running local row of a provider wt can start through the lifecycle engine (ollama, omlx/omlx-6bit, mtplx) whose status is not `absent` — a pulled ollama model is a start, not a launch exception; **block** (`tableRow.blockReason()`) — an `absent` row ("not on disk — pull or download it first"), a provider with no start engine such as `mlx_lm_server` (the `modelman start <id>` hint), or a discovered model under LiteLLM routing ("not in LiteLLM", unselectable). Enter on a start row runs `lifecycle.Start` with live progress, a cancel key, and a replace-confirm dialog (see TUI below); the single-row auto-launch shortcut applies only to launch rows. A pinned model (`-M`) still goes through `localgate.Apply`; if the pin is not in the verified-running set, the TUI routes back to the agent picker with the gate error.
+Every model row wt shows or resolves — the TUI picker, `wt smoke`'s picker, and the non-TUI launch path — is built by `internal/catalog` from the agent's eligible list plus one `localmodels.Inventory` snapshot; the TUI only decorates the rows (counts, survey stats, sort, rendering). The rules live once in `catalog` (`Row.Action`/`Row.BlockReason`):
 
-**Non-TUI launches and `-M` pin validation:** The gate policy lives in ONE place — `internal/localgate.Apply` — called by `cmd/wt/resolve.go`'s `resolveModel` (non-TUI) and by `enterModelPhase` (TUI's `-M` pin check only). Apply reads modelman-owned `modelman.toml`'s per-model `running` flags (`internal/config`'s `Config.RunningLocalModelIDs()`/`LocalGateActive()`), verifies each one with `internal/localgate.ResolveAll`'s probes — ollama is exempt from live verification (the flag is trusted unconditionally since `modelman start` for ollama is flag-only with no warmup, and an `ollama ps` check would read the model as not-loaded on the very first probe after start, self-clearing the flag); omlx/omlx-6bit via a name-checked `/v1/models` — 4-bit and 6-bit variants share port 8000 and differ exactly in the variant tail; mlx_lm_server via a non-empty `/v1/models`, exact names unreconstructable since one process serves one target+draft pairing; mtplx via a name-checked `/v1/models` on port 8003 — then rejects a `-M` pin naming a local model that isn't among the verified set, and (for non-TUI) narrows the eligible list with `Config.FilterToRunningLocal`, which fails closed on unresolvable locations (a registry data gap drops the model rather than keeping a possibly-local one). Non-TUI callers map the outcome to their own UX:
+- **launch** — a cloud row, or a local model the probe reports running.
+- **start** — a non-running local row of ollama/omlx/omlx-6bit/mtplx whose
+  status is not `absent` (a pulled ollama model is a start, not a launch
+  exception).
+- **block** — an `absent` row ("not on disk — pull or download it first") or
+  a provider with no start engine such as `mlx_lm_server` (the
+  `modelman start <id>` hint). Separately from these, a discovered row whose
+  route goes through LiteLLM is refused by the picker and the CLI ("not in
+  LiteLLM", unselectable — `renderTable` in the TUI, `pickerBlockedReason`
+  on the non-TUI path, not `catalog`).
 
-- No flags set → cloud models only.
-- One or more verified flags → cloud models plus every verified-running
-  local model.
-- A flagged-but-unverified model (crashed, stopped outside modelman, a
-  benchmark run tore it down) → silently excluded from the eligible
-  list — never fatal, since one drifted model must not block a launch
-  that doesn't need it.
-- Pinned local model that isn't among the verified set → `*NotRunningError`
-  is fatal for THAT launch (non-TUI fatal; TUI routes back to the agent
-  picker with the message as status, clearing the bad pin) — the one
-  surviving fatal case, since a pin is an explicit request that can't be
-  silently substituted.
-- Gate empties a non-empty eligible list (every eligible model was local,
-  none verified running) → a gate-specific error ("all of agent X's
-  eligible models are local and no local model is running — start one
-  with `modelman start <id>`"), not the generic "no models match"
-  wording; the non-TUI path propagates this error to its caller.
+**TUI model picker:** Lists all configured and discovered local models —
+running and non-running alike — with live STATUS/RUNNING columns from the
+inventory (never the modelman flag). Enter on a start row runs
+`lifecycle.Start` with live progress, a cancel key, and a replace-confirm
+dialog (see TUI below); the single-row auto-launch shortcut applies only to
+launch rows.
 
-`LocalGateActive()` is true only for a `Config` built by `Load()`
-(production); a hand-built `Config{}` literal — the shape nearly every
-pre-issue-#65 test uses — defaults to false, making the gate a no-op
-there unless a test opts in via `SetLocalRunningForTest`.
+**A `-M` pin is looked up among ALL rows, discovered ones included**
+(`catalog.Find`) — the launch path accepts a model the registry does not
+name. The pin's own row decides the outcome wherever it appears: a launch
+row (cloud or running local) launches; a start row selects its row and
+enters the start flow; a blocked row routes back with that row's reason;
+a pin absent from the list keeps the "not in the eligible list" message.
+
+**Non-TUI launches (`cmd/wt/resolve.go`):** `resolveModel` builds the same
+`catalog` rows from one inventory snapshot. With no `-M`, only the launch
+rows are eligible for resolution (`launchableModels`) — rotation sees cloud
+plus running-local rows only, so it can never hand an agent a server that
+is not up, and a start row is never auto-selected: only a pin may start
+one. A `-M` pin on a start row is started by `startForLaunch`
+(`cmd/wt/start.go`): timestamped progress on stderr, Ctrl+C cancels (a
+second Ctrl+C exits wt), and an occupied provider needs a TTY `y/N` or
+`--replace`. The TUI starts a non-running pin at once too (with or without
+`-W`), and `--replace` there covers only the pinned row. Start failures on
+both paths use `lifecycle.StartErrorMessage`. When models matched but none is cloud or running, the error
+names the fix: "no cloud or running local model for agent X — start one with
+`wt -M <id>`".
 
 Start/stop local models with modelman: `modelman start <provider>/<name>`
 / `modelman stop <provider>/<name>` / `modelman stop --all`, or the TUI's
@@ -423,7 +439,7 @@ On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Res
 
 ## TUI (Go)
 
-`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → resume prompt → launch, plus the start-on-select screens (`internal/tui/start_flow.go`): `phaseStarting` — Enter on a non-running local row of ollama/omlx/mtplx starts it through `internal/lifecycle`, showing the current engine stage and elapsed seconds; esc/q/ctrl+c cancels the run (the engine tears down anything it spawned); once cancellation is draining esc and q are ignored and only ctrl+c quits wt, so a mashed key cannot orphan a half-started server while a hung teardown still has an escape hatch; success launches immediately through `proceedToLaunch`, skipping the ollama availability check since the model just loaded; a cancel or any failure other than the two confirm cases rebuilds the table from a fresh inventory with the cursor kept — and `phaseReplaceConfirm` — when Start reports the provider's single slot occupied (`*OccupiedError`, naming the running model) or its state unknowable (`*OccupancyUnknownError`, naming provider and origin), a dialog offers Cancel (the default cursor position) and "Replace and start"; confirming re-issues Start with `AllowReplace: true`. Each picker is skipped only when its selection is already resolved: `prePath` (from `-W`/`--cwd`/outside-repo) skips the worktree picker, `-A` skips the agent+command picker, and `-M` skips the model picker (a pinned model is validated against the agent's eligible list once the agent is resolved). Every picker uses `ThemedListDelegate` (active color theme) — production code never uses `list.NewDefaultDelegate`.
+`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → resume prompt → launch, plus the start-on-select screens (`internal/tui/start_flow.go`): `phaseStarting` — Enter on a non-running local row of ollama/omlx/mtplx starts it through `internal/lifecycle`, showing the current engine stage and elapsed seconds; esc/q/ctrl+c cancels the run (the engine tears down anything it spawned); once cancellation is draining esc and q are ignored and only ctrl+c quits wt, so a mashed key cannot orphan a half-started server while a hung teardown still has an escape hatch; success launches immediately through `proceedToLaunch`, skipping the ollama availability check since the model just loaded; a cancel or any failure other than the two confirm cases rebuilds the table from a fresh inventory with the cursor kept — and `phaseReplaceConfirm` — when Start reports the provider's single slot occupied (`*OccupiedError`, naming the running model) or its state unknowable (`*OccupancyUnknownError`, naming provider and origin), a dialog offers Cancel (the default cursor position) and "Replace and start"; confirming re-issues Start with `AllowReplace: true`. Each picker is skipped only when its selection is already resolved: `prePath` (from `-W`/`--cwd`/outside-repo) skips the worktree picker, `-A` skips the agent+command picker, and `-M` skips the model picker (a pinned non-running local model starts immediately; a pinned model is validated against the agent's eligible list once the agent is resolved). Every picker uses `ThemedListDelegate` (active color theme) — production code never uses `list.NewDefaultDelegate`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted (command agents like `shell` launch directly with no model layer).
 

@@ -139,7 +139,7 @@ func validateSmokeTimeout(timeout time.Duration) error {
 // model rather than the other way around. Also returns the resolved
 // model's eligible agents (from the same smoke.Eligibility call that
 // resolved the model) so the caller doesn't need a second
-// smoke.EligibleAgents call — that would pay its own localgate probe round
+// smoke.EligibleAgents call — that would pay its own inventory round
 // on top of this one.
 func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (config.Model, []string, error) {
 	all, agentsForModel := smoke.Eligibility(cfg)

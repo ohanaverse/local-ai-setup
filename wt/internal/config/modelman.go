@@ -18,16 +18,10 @@ type LitellmState struct {
 }
 
 // ExposureEntry is the decoded-in-memory representation of a single model
-// state entry for wt's exposure predicate and the local-running gate.
+// state entry for wt's exposure predicate.
 type ExposureEntry struct {
 	Exposed bool
 	Ready   bool
-	// Running is modelman's per-model "I started this and haven't stopped
-	// it" flag (2026-09-14 multi-model local lifecycle design). It is a
-	// HINT, never ground truth by itself — internal/localgate verifies it
-	// with a live probe before trusting it. Meaningless for cloud models
-	// (modelman never sets it there).
-	Running bool
 }
 
 // modelmanState mirrors the subset of ~/.config/local-ai/modelman.toml that
@@ -50,14 +44,12 @@ type modelmanState struct {
 		LitellmExposed bool `toml:"litellm_exposed"` // back-compat read
 		Ready          bool `toml:"ready"`
 		Downloaded     bool `toml:"downloaded"`
-		Running        bool `toml:"running"`
 	} `toml:"model_state"`
 	Litellm LitellmState `toml:"litellm"`
 }
 
-// loadModelmanState reads modelman.toml and returns the exposure map (now
-// carrying each model's Running flag) and the [litellm] routing state. A
-// missing file returns empty values.
+// loadModelmanState reads modelman.toml and returns the exposure map and
+// the [litellm] routing state. A missing file returns empty values.
 func loadModelmanState() (map[string]ExposureEntry, LitellmState, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
@@ -76,7 +68,6 @@ func loadModelmanState() (map[string]ExposureEntry, LitellmState, error) {
 		out[id] = ExposureEntry{
 			Exposed: st.Exposed || st.LitellmExposed,
 			Ready:   st.Ready || st.Downloaded,
-			Running: st.Running,
 		}
 	}
 	return out, s.Litellm, nil

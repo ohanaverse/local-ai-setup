@@ -1,44 +1,27 @@
 package tui
 
 import (
-	"fmt"
 	"sort"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localgate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
-type rowStatus string
-
-const (
-	statusOK      rowStatus = "ok"      // on disk (local) or simply available (cloud)
-	statusAbsent  rowStatus = "absent"  // the provider answered and does not have this model
-	statusUnknown rowStatus = "unknown" // local model whose presence the probe could not determine
-	statusNew     rowStatus = "new"     // discovered, unregistered
-)
-
-// tableRow is one line of the selector table before rendering.
+// tableRow is one line of the selector table: the shared catalog rules
+// (presence status, action, block reason) plus the picker-only decorations
+// (agent-scoped usage counts, survey stats).
 type tableRow struct {
-	model      config.Model
-	location   config.Location
-	status     rowStatus
-	exposed    bool
-	running    bool
-	discovered bool
-	counts     usage.UsageCounts
-	stats      survey.Stats
+	catalog.Row
+	counts usage.UsageCounts
+	stats  survey.Stats
 }
 
 // tableInput gathers everything buildRows needs. models is the agent's
-// PRE-GATE eligible list (exposed cloud + every configured local model,
-// already filtered by agent/-T/-F); inventory is nil when no local probe ran,
-// in which case no local row is assessed at all: locals read as not running
-// with status ok. When inventory is set, a local row's status is ok, absent
-// (the probe answered and found no artifact), unknown (it could not tell), or
-// new (discovered, unregistered).
+// eligible list (exposed cloud + every configured local model, already
+// filtered by agent/-T/-F); inventory is nil when no local probe ran.
 type tableInput struct {
 	cfg            *config.Config
 	agent          string
@@ -49,74 +32,23 @@ type tableInput struct {
 	stats          map[string]survey.Stats
 }
 
+// buildRows builds the shared catalog rows and decorates them with the
+// picker's per-agent usage counts and per-model survey stats. The row rules
+// themselves live in internal/catalog so the non-TUI launch path and
+// `wt smoke` reach the same verdicts this table displays.
 func buildRows(in tableInput) []tableRow {
-	// Only REGISTERED entries describe a configured model. A discovered
-	// entry may share an id with a registry row by construction
-	// (DiscoveredModelID is provider/artifact); it must never overwrite the
-	// registered entry's Artifact/Running.
-	byID := map[string]localmodels.Entry{}
-	if in.inventory != nil {
-		for _, e := range in.inventory.Entries {
-			if e.Registered {
-				byID[e.ModelID] = e
-			}
-		}
-	}
-	rows := make([]tableRow, 0, len(in.models))
-	seen := map[string]bool{}
-	for _, m := range in.models {
-		loc := m.Location
-		if in.cfg != nil {
-			if l, err := in.cfg.ResolveLocation(m); err == nil {
-				loc = l
-			}
-		}
-		r := tableRow{model: m, location: loc, status: statusOK}
-		if loc == config.LocationLocal && in.inventory != nil {
-			e, ok := byID[m.ID]
-			switch {
-			case !ok:
-				// No registered entry: the probe skipped this model (an
-				// unresolvable location) or its family has no probe at all.
-				// Nothing was discovered about it, so presence is unknown.
-				r.status = statusUnknown
-			case e.Running:
-				// Serving right now, so nothing about the row is missing.
-				// Checked before the artifact tests because a running
-				// mlx_lm_server row never has a resolved artifact.
-				r.running = true
-			case !e.ArtifactKnown:
-				r.status = statusUnknown
-			case e.Artifact == "":
-				r.status = statusAbsent
-			}
-		}
-		r.exposed = m.Native || (in.cfg != nil && in.cfg.ExposedFlag(m.ID))
-		rows = append(rows, r)
-		seen[m.ID] = true
-	}
-	if in.inventory != nil && !in.hideDiscovered {
-		for _, e := range in.inventory.Entries {
-			if e.Registered || seen[e.ModelID] {
-				continue
-			}
-			if in.agent != "" && (in.cfg == nil || !in.cfg.AgentSupportsProvider(in.agent, e.ProviderID)) {
-				continue
-			}
-			rows = append(rows, tableRow{
-				model: config.Model{
-					ID: e.ModelID, ProviderID: e.ProviderID, ModelName: e.Artifact,
-					Location: config.LocationLocal, Source: config.SourceDiscovered,
-				},
-				location: config.LocationLocal, status: statusNew, running: e.Running, discovered: true,
-			})
-			seen[e.ModelID] = true
-		}
-	}
-
+	rows := catalog.Build(catalog.Input{
+		Config:         in.cfg,
+		Agent:          in.agent,
+		Models:         in.models,
+		Inventory:      in.inventory,
+		HideDiscovered: in.hideDiscovered,
+	})
+	out := make([]tableRow, len(rows))
 	ids := make([]string, len(rows))
 	for i, r := range rows {
-		ids[i] = r.model.ID
+		out[i] = tableRow{Row: r}
+		ids[i] = r.Model.ID
 	}
 	var counts map[string]usage.UsageCounts
 	if in.usage != nil {
@@ -126,11 +58,11 @@ func buildRows(in tableInput) []tableRow {
 			counts = in.usage.Counts(ids)
 		}
 	}
-	for i := range rows {
-		rows[i].counts = counts[rows[i].model.ID]
-		rows[i].stats = in.stats[rows[i].model.ID]
+	for i := range out {
+		out[i].counts = counts[out[i].Model.ID]
+		out[i].stats = in.stats[out[i].Model.ID]
 	}
-	return rows
+	return out
 }
 
 // costKey is the sort key for "cost ascending": output price per million,
@@ -143,10 +75,10 @@ type costKey struct {
 }
 
 func rowCostKey(r tableRow) costKey {
-	if r.location == config.LocationLocal {
+	if r.Location == config.LocationLocal {
 		return costKey{}
 	}
-	c := r.model.Cost
+	c := r.Model.Cost
 	if c.InputPricePerMillion == nil && c.CachePricePerMillion == nil && c.OutputPricePerMillion == nil {
 		if c.SubscriptionPrice != nil {
 			return costKey{}
@@ -167,7 +99,7 @@ func rowCostKey(r tableRow) costKey {
 // ascending then 7-day usage ascending then id; group 2 (non-running local)
 // alphabetical by id.
 func sortRows(rows []tableRow) {
-	group1 := func(r tableRow) bool { return r.location != config.LocationLocal || r.running }
+	group1 := func(r tableRow) bool { return r.Location != config.LocationLocal || r.Running }
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		ga, gb := group1(a), group1(b)
@@ -175,7 +107,7 @@ func sortRows(rows []tableRow) {
 			return ga
 		}
 		if !ga {
-			return a.model.ID < b.model.ID
+			return a.Model.ID < b.Model.ID
 		}
 		ka, kb := rowCostKey(a), rowCostKey(b)
 		if ka.noData != kb.noData {
@@ -190,46 +122,6 @@ func sortRows(rows []tableRow) {
 		if a.counts.SevenDay != b.counts.SevenDay {
 			return a.counts.SevenDay < b.counts.SevenDay
 		}
-		return a.model.ID < b.model.ID
+		return a.Model.ID < b.Model.ID
 	})
-}
-
-// rowAction is what Enter does on a row.
-type rowAction int
-
-const (
-	actionLaunch rowAction = iota // cloud row, or a local model that is already running
-	actionStart                   // a local model wt can start (its provider has a lifecycle backend)
-	actionBlock                   // cannot proceed; blockReason says why
-)
-
-// action reports what Enter does on r. A non-running local row is startable
-// when its provider has a lifecycle backend (ollama, omlx/omlx-6bit, mtplx)
-// and the model is not known to be missing from disk.
-func (r tableRow) action() rowAction {
-	if r.location != config.LocationLocal || r.running {
-		return actionLaunch
-	}
-	switch localmodels.Family(r.model.ProviderID) {
-	case "ollama", "omlx", "mtplx":
-		if r.status == statusAbsent {
-			return actionBlock
-		}
-		return actionStart
-	}
-	return actionBlock
-}
-
-// blockReason is the status line for an actionBlock row ("" otherwise): a
-// model missing from disk needs pulling; a provider wt cannot start needs
-// modelman.
-func (r tableRow) blockReason() string {
-	if r.action() != actionBlock {
-		return ""
-	}
-	switch localmodels.Family(r.model.ProviderID) {
-	case "ollama", "omlx", "mtplx":
-		return fmt.Sprintf("%s is not on disk — pull or download it first", r.model.ID)
-	}
-	return (&localgate.NotRunningError{ModelID: r.model.ID}).Error()
 }

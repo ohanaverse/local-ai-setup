@@ -86,6 +86,10 @@ func TestRegistryPathExpandsTildeInModelmanRegistryOverride(t *testing.T) {
 	}
 }
 
+// TestLoad_JoinsRegistry asserts the core Load() contract: config.toml's
+// wt-owned sections (default_tag, agents) are joined with modelman-owned
+// registry.toml's providers/models into one Config, so callers see a
+// single view instead of two files.
 func TestLoad_JoinsRegistry(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -109,6 +113,10 @@ func TestLoad_JoinsRegistry(t *testing.T) {
 	}
 }
 
+// TestLoad_FailsClosedWithoutRegistry asserts Load() errors when
+// registry.toml is absent — wrapping ErrRegistryMissing and pointing at
+// `modelman migrate` — so wt never silently runs with zero providers/models
+// before modelman has imported anything.
 func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, err := Load()
@@ -135,6 +143,10 @@ func TestLoadRegistryMissingReturnsSentinel(t *testing.T) {
 	}
 }
 
+// TestLoad_RegistryExtraFieldsIgnored asserts forward compatibility:
+// modelman may add registry fields wt doesn't know (model_dir,
+// model_info) without breaking wt's decode — unknown keys are simply
+// ignored, so the two tools can version their schemas independently.
 func TestLoad_RegistryExtraFieldsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -171,6 +183,10 @@ supports_function_calling = true
 	}
 }
 
+// TestSave_OmitsProvidersAndModels pins the ownership boundary on the
+// write side: Save persists only wt-owned config.toml content (agents,
+// default_tag); providers/models live in modelman-owned registry.toml
+// and must never be rewritten by wt.
 func TestSave_OmitsProvidersAndModels(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -196,6 +212,10 @@ func TestSave_OmitsProvidersAndModels(t *testing.T) {
 	}
 }
 
+// TestLoad_LegacyConfigSectionsIgnored asserts a pre-Phase-4 config.toml
+// still carrying its own providers/models loads cleanly: the legacy
+// sections are ignored (registry.toml is the source of truth), matching
+// finalizeCfg's registry-join-last ordering.
 func TestLoad_LegacyConfigSectionsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
