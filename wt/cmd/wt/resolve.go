@@ -58,6 +58,10 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		return config.Model{}, nil, err
 	}
 
+	// The probe runs even for a cloud pin: its rows decide `launchable`, which
+	// rotation reads, and the pin's verdict must match the picker's table.
+	// Each provider probe is bounded (2s) and they run concurrently, so a
+	// stalled server costs at most that.
 	snap := probeInventory(cfg)
 	rows := catalog.Build(catalog.Input{
 		Config: cfg, Agent: agent, Models: eligible, Inventory: &snap,

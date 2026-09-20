@@ -34,7 +34,9 @@
   disk that have no registry entry.
 - `--replace` flag: with `-M`, start the model even if it means stopping a
   running one. Without it, an occupied provider prompts y/N on a TTY (default
-  N) and refuses when stdin is not a TTY.
+  N; Ctrl+C at the prompt aborts) and refuses when stdin is not a TTY. In the
+  picker it covers only the pinned row; other start rows still show the
+  replace dialog.
 - `-T`/`--tags` flag to filter models by tag (comma-delimited, OR within flag).
 - `-F`/`--family` flag to filter models by family (comma-delimited, OR within flag).
 - `internal/config.EligibleModels(agent, tags, family)` returns the models

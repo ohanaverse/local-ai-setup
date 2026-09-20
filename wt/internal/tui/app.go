@@ -462,7 +462,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// exclusive — renderTable sets exactly one per row, and its
 					// discovered-row case clears start before setting blocked —
 					// so this order is a guard, not a precedence rule.
-					return m.beginStart(highlighted, m.allowReplace)
+					// --replace is the -M pin's permission, not a blanket
+					// one: any other start row still gets the dialog.
+					return m.beginStart(highlighted, m.allowReplace && highlighted.model.ID == m.pinnedModel)
 				}
 				if highlighted.blocked != "" {
 					m.status = highlighted.blocked
@@ -844,12 +846,18 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			// the model.
 			return routeBack(it.blocked)
 		case it.start:
-			// The pin needs a start. Select its row and let the user drive
-			// the same start flow every other start row uses; --replace
-			// skips the replace dialog.
+			// The pin needs a start: run it through the same start flow every
+			// other start row uses, exactly as the non-TUI -M path does, so
+			// the worktree flags cannot change whether a pin starts.
+			// --replace skips the replace dialog. The row is selected first
+			// so a failed or cancelled start returns to the picker on it.
 			m.models.Select(idx)
 			m.phase = phaseModel
-			return m, nil
+			pinned, ok := m.models.SelectedItem().(*modelItem)
+			if !ok {
+				return m, nil
+			}
+			return m.beginStart(pinned, m.allowReplace)
 		}
 		m.models.Select(idx)
 		return m.proceedToLaunch()

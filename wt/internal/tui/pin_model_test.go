@@ -6,10 +6,12 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -84,12 +86,14 @@ func TestPinOnRunningLocalModelLaunches(t *testing.T) {
 	}
 }
 
-// TestPinOnIdleLocalSelectsItsStartRow verifies a -M pin on a non-running
-// local model lands on the picker with that row selected and marked as a start
-// row, instead of launching something that is not up. The user presses Enter
-// to run it through the same start flow every other start row uses.
-func TestPinOnIdleLocalSelectsItsStartRow(t *testing.T) {
+// TestPinOnIdleLocalStartsIt verifies a -M pin on a non-running local model
+// begins its start at once — phaseStarting on the pinned row — instead of
+// waiting for Enter. The non-TUI path starts a pin immediately, so the same
+// pin must not behave differently depending on whether -W was given.
+func TestPinOnIdleLocalStartsIt(t *testing.T) {
 	tempStateDir(t)
+	// The start runs in a goroutine: never let it reach the real engine.
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	stubInventory(t, localmodels.Snapshot{
@@ -102,17 +106,16 @@ func TestPinOnIdleLocalSelectsItsStartRow(t *testing.T) {
 	m := model{cfg: cfg, agent: "claude", pinnedModel: "omlx/qwen3.8", selectedPath: t.TempDir(), width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
 
-	got, _ := m.enterModelPhase("claude", models, "code")
+	got, cmd := m.enterModelPhase("claude", models, "code")
+	if got.start != nil && got.start.cancel != nil {
+		t.Cleanup(got.start.cancel)
+	}
 
-	if got.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel (the pin needs a start, so show it)", got.phase)
+	if got.phase != phaseStarting || got.start == nil || cmd == nil {
+		t.Fatalf("phase = %v start = %v, want phaseStarting with a run in flight", got.phase, got.start)
 	}
-	if id := selectedModelID(got); id != "omlx/qwen3.8" {
-		t.Errorf("cursor on %q, want the pinned row omlx/qwen3.8", id)
-	}
-	it := got.models.SelectedItem().(*modelItem)
-	if !it.start || it.blocked != "" {
-		t.Errorf("pinned idle row: start = %v blocked = %q, want a start row", it.start, it.blocked)
+	if got.start.item.model.ID != "omlx/qwen3.8" {
+		t.Errorf("starting %q, want the pinned row omlx/qwen3.8", got.start.item.model.ID)
 	}
 }
 
@@ -178,6 +181,8 @@ func TestPinNotInEligibleRoutesBack(t *testing.T) {
 // usable, which is what makes the live-row union worth showing.
 func TestPinOnDiscoveredLocalStartsIt(t *testing.T) {
 	tempStateDir(t)
+	// The start runs in a goroutine: never let it reach the real engine.
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	disc := config.DiscoveredModelID("omlx", "extra")
@@ -198,14 +203,17 @@ func TestPinOnDiscoveredLocalStartsIt(t *testing.T) {
 	models, _ := cfg.EligibleModels("claude", "", "")
 
 	got, _ := m.enterModelPhase("claude", models, "code")
+	if got.start != nil && got.start.cancel != nil {
+		t.Cleanup(got.start.cancel)
+	}
 
-	if got.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", got.phase)
+	if got.phase != phaseStarting || got.start == nil {
+		t.Fatalf("phase = %v, want phaseStarting (a pinned non-running discovered model starts)", got.phase)
 	}
-	if id := selectedModelID(got); id != disc {
-		t.Errorf("cursor on %q, want the discovered pinned row %q", id, disc)
+	if got.start.item.model.ID != disc {
+		t.Errorf("starting %q, want the discovered pinned row %q", got.start.item.model.ID, disc)
 	}
-	if it := got.models.SelectedItem().(*modelItem); !it.start {
+	if !got.start.item.start {
 		t.Error("a pinned non-running discovered model must be a start row")
 	}
 }
