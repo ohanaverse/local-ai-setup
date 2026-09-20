@@ -210,3 +210,57 @@ func TestRefreshTableKeepsCursorUnderFilter(t *testing.T) {
 		t.Errorf("cursor = %q after refresh, want %q", gotID, want)
 	}
 }
+
+// TestRefreshTableKeepsCursorOnModelWhenRowsReorder verifies that with no
+// filter applied a refresh puts the cursor back on the same model id even when
+// the rebuilt rows sort differently. A failed replace stops the running
+// occupant, which drops out of the running-first group; restoring the old
+// numeric index would leave the cursor on whatever model now sits there, and
+// the next Enter would start or launch the wrong one.
+func TestRefreshTableKeepsCursorOnModelWhenRowsReorder(t *testing.T) {
+	probes := 0
+	old := runInventory
+	runInventory = func(*config.Config) localmodels.Snapshot {
+		probes++
+		snap := refreshTestSnapshot()
+		if probes == 1 {
+			snap.Entries[1].Running = true // qwen-b runs first, sorting above qwen-a
+		}
+		return snap
+	}
+	t.Cleanup(func() { runInventory = old })
+
+	got := flowEnter(t, model{cfg: refreshTestCfg(), width: 80, height: 24}, "pi")
+	idxA := indexOfID(got, "omlx/qwen-a")
+	got.models.Select(idxA)
+	if idxA == 0 {
+		t.Fatalf("precondition: running qwen-b should sort above qwen-a, got %v", itemIDs(got))
+	}
+
+	got, cmd := got.refreshTable()
+	got = drainCmds(t, got, cmd)
+
+	if id := selectedModelID(got); id != "omlx/qwen-a" {
+		t.Errorf("cursor = %q after reorder, want omlx/qwen-a (rows now %v)", id, itemIDs(got))
+	}
+}
+
+// TestStaleTableRefreshIsDropped verifies a tableRefreshedMsg from a superseded
+// refresh (or an earlier picker session) cannot overwrite the current table.
+// Probes take seconds, so an old one can land after the user has moved on and
+// installed rows — possibly another agent's — over the live picker.
+func TestStaleTableRefreshIsDropped(t *testing.T) {
+	stubInventory(t, refreshTestSnapshot())
+	got := flowEnter(t, model{cfg: refreshTestCfg(), width: 80, height: 24}, "pi")
+	got, _ = got.refreshTable() // the newer refresh, still in flight
+
+	stale := tableRefreshedMsg{
+		gen:   got.refreshGen - 1,
+		items: []list.Item{&modelItem{model: config.Model{ID: "other/stale"}}},
+	}
+	next, _ := got.Update(stale)
+
+	if indexOfID(next.(model), "other/stale") >= 0 {
+		t.Errorf("stale refresh replaced the table: %v", itemIDs(next.(model)))
+	}
+}

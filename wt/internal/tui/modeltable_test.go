@@ -178,3 +178,22 @@ func TestRenderTableUnknownStatusAligns(t *testing.T) {
 		t.Errorf("RUNNING cell = %q (column drift after a widened STATUS)", got)
 	}
 }
+
+// TestRenderTableStartRowNotStartableWhenRouteUnresolvable verifies a
+// non-running local row whose route cannot resolve (LiteLLM on but
+// unconfigured) is blocked instead of startable. Starting it would spawn the
+// server — and possibly stop another model via replace — only for the launch to
+// fail at ResolveRoute afterwards.
+func TestRenderTableStartRowNotStartableWhenRouteUnresolvable(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
+	row := tableRow{model: config.Model{ID: "omlx/x", ProviderID: "omlx", ModelName: "x", Location: config.LocationLocal}, location: config.LocationLocal, status: statusOK}
+	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
+	it := tbl.items[0]
+	if it.start || it.blocked == "" || it.exception != "(litellm required)" {
+		t.Errorf("start=%v blocked=%q exception=%q, want a blocked, non-startable row", it.start, it.blocked, it.exception)
+	}
+}

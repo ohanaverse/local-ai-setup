@@ -59,7 +59,7 @@ func startCfg(provider, id, name string) *config.Config {
 		DefaultTag: "code",
 		Providers: []config.Provider{
 			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: provider, Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			{ID: provider, Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
@@ -68,6 +68,7 @@ func startCfg(provider, id, name string) *config.Config {
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", provider}}},
 	}
 	cfg.ExposeAllForTest()
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	return cfg
 }
 
@@ -781,7 +782,7 @@ func TestEndToEndAbsentRowIsBlocked(t *testing.T) {
 func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 	local := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}

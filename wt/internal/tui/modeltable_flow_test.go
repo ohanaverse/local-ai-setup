@@ -125,7 +125,7 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 	// A single non-launchable row must show the table instead.
 	local := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
@@ -143,7 +143,7 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 	local := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Models: []config.Model{
 			{ID: "omlx/a", ProviderID: "omlx", ModelName: "a", Family: "a", Tags: []string{"code"}},
 			{ID: "omlx/b", ProviderID: "omlx", ModelName: "b", Family: "b", Tags: []string{"code"}},
@@ -213,6 +213,11 @@ func TestPinnedPathTableReflectsRunningInventory(t *testing.T) {
 		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true},
 	}})
 	cfg := gateTestConfig()
+	// The pinned model launches at once when its route resolves, which would
+	// leave no table to inspect. Strip the fixture's routing so the launch bails
+	// back to the picker, the state this test was written against.
+	cfg.SetLitellmForTest(config.LitellmState{})
+	cfg.Providers[1].Protocols, cfg.Providers[1].Auth.BaseURL = nil, ""
 	cfg.SetLocalRunningForTest("omlx/qwen3.8")
 	tempStateDir(t)
 	stubUsageStore(t)

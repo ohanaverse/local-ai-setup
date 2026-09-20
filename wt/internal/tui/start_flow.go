@@ -101,6 +101,8 @@ func startTick(id int) tea.Cmd {
 func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.startRun++
+	// Any refresh still in flight predates this start; finishStart issues its own.
+	m.refreshGen++
 	id := m.startRun
 	ch := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName}, allowReplace, id)
 	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch}

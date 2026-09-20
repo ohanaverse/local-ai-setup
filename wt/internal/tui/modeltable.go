@@ -127,10 +127,19 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 				it.exception = "(not in LiteLLM)"
 				it.blocked = "discovered model " + r.model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
 				it.start = false
-			case errors.Is(err, config.ErrLitellmUnconfigured):
-				it.exception = "(litellm required)"
 			case err != nil:
 				it.exception = "(unavailable)"
+				if errors.Is(err, config.ErrLitellmUnconfigured) {
+					it.exception = "(litellm required)"
+				}
+				// A start row whose launch cannot resolve must not start: the
+				// server would spawn (possibly replacing a running model) for a
+				// launch that then fails at ResolveRoute. Launch rows stay as
+				// they were and report the error on Enter.
+				if it.start {
+					it.start = false
+					it.blocked = it.model.ID + " cannot be launched: " + err.Error()
+				}
 			case route.Forced:
 				it.exception = "(via proxy)"
 			}

@@ -13,7 +13,7 @@ func gateTestConfig() *config.Config {
 		DefaultTag: "code",
 		Providers: []config.Provider{
 			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
@@ -24,6 +24,7 @@ func gateTestConfig() *config.Config {
 		},
 	}
 	cfg.ExposeAllForTest()
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	return cfg
 }
 
@@ -98,7 +99,7 @@ func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 		DefaultTag: "code",
 		Providers: []config.Provider{
 			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
 		},
 		Models: []config.Model{
 			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
@@ -110,6 +111,7 @@ func TestEnterModelPhaseMixedRunningState(t *testing.T) {
 		},
 	}
 	cfg.ExposeAllForTest()
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	m := model{cfg: cfg, width: 80, height: 24}
 	models, _ := cfg.EligibleModels("claude", "", "")
 

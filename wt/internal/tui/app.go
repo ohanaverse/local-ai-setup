@@ -77,6 +77,11 @@ type model struct {
 	// resolved against the rebuilt list inside the refresh message's handler,
 	// so a rebuild cannot silently move the user's cursor to another model.
 	pendingSelect string
+	// refreshGen numbers the picker's table: enterModelPhase, refreshTable and
+	// beginStart each bump it, and a tableRefreshedMsg is applied only when it
+	// carries the current value, so a slow probe from a superseded refresh or an
+	// earlier picker session cannot overwrite a newer table.
+	refreshGen int
 
 	// agent+command picker (PR 2): user picks an agent or command before the
 	// model screen. Built from buildAgentList in selectedEntryMsg; rebuilt when
@@ -182,7 +187,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
-		if m.phase != phaseModel {
+		if m.phase != phaseModel || msg.gen != m.refreshGen {
 			return m, nil
 		}
 		return m, m.applyRefreshedTable(msg)
@@ -814,6 +819,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		models = gate.Eligible
 	}
 	m.tableModels = models
+	m.refreshGen++
 
 	inv := runInventory(m.cfg)
 	snap := &inv
@@ -910,6 +916,7 @@ type tableRefreshedMsg struct {
 	items  []list.Item
 	header string
 	sel    string // model id the cursor should land on, when it still exists
+	gen    int    // refreshGen when the probe was issued; stale messages are dropped
 }
 
 // refreshTable re-probes the live inventory and rebuilds the model list,
@@ -929,32 +936,36 @@ func (m model) refreshTable() (model, tea.Cmd) {
 	if it, ok := m.models.SelectedItem().(*modelItem); ok {
 		sel = it.model.ID
 	}
-	// The command closes over a copy of the model; tableFor reads only cfg,
-	// agent and the active -T/-F filters, and the goroutine must never touch
-	// the live model.
-	src := m
+	m.refreshGen++
+	gen := m.refreshGen
+	// The command captures only the values tableFor reads (cfg and the active
+	// -T/-F filters), never the live model: the goroutine must not touch it,
+	// and copying the whole struct would pin its lists and inputs for the
+	// duration of the probe.
+	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily}
+	agent, models := m.agent, m.tableModels
 	return m, func() tea.Msg {
 		inv := runInventory(src.cfg)
-		tbl, _ := src.tableFor(src.agent, src.tableModels, &inv, rotation.New())
+		tbl, _ := src.tableFor(agent, models, &inv, rotation.New())
 		items := make([]list.Item, len(tbl.items))
 		for i, it := range tbl.items {
 			items[i] = it
 		}
-		return tableRefreshedMsg{items: items, header: tbl.header, sel: sel}
+		return tableRefreshedMsg{items: items, header: tbl.header, sel: sel, gen: gen}
 	}
 }
 
 // resolvePendingSelect puts the cursor back on pendingSelect's model when that
 // id is still on screen, and clears the field either way: the model may have
-// left the inventory, and a stale id must not capture the cursor later. Only an
-// applied filter defers — an unfiltered list shows everything, so an id that is
-// not there is gone, and while the user is mid-typing (Filtering) the cursor is
-// theirs to drive.
+// left the inventory, and a stale id must not capture the cursor later. The
+// rebuilt rows are re-sorted (a stopped occupant leaves the running group), so
+// the old numeric index is not trustworthy with or without a filter. While the
+// user is mid-typing (Filtering) the cursor is theirs to drive.
 func (m *model) resolvePendingSelect() {
 	if m.pendingSelect == "" {
 		return
 	}
-	if m.models.FilterState() == list.FilterApplied {
+	if m.models.FilterState() != list.Filtering {
 		for i, it := range m.models.VisibleItems() {
 			if mi, ok := it.(*modelItem); ok && mi.model.ID == m.pendingSelect {
 				m.models.Select(i)
