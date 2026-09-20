@@ -682,13 +682,13 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
 //
 // The header's tag line and hideDiscovered answer two different questions
-// and are intentionally not the same value: the tag line names the ROTATION
-// group (firstTag, defaulting to DefaultTag) shown in the header, while
-// hideDiscovered tracks an explicit -T/-F narrowing, because discovered
-// models are unregistered and cannot be filtered by tag or family. With a
-// DefaultTag set and no -T, the list is therefore unfiltered by tag
+// and are intentionally not the same value: the tag line shows firstTag (the
+// first tag when -T lists several, else DefaultTag), while hideDiscovered
+// tracks an explicit -T/-F narrowing, because discovered models are
+// unregistered and cannot be filtered by tag or family. With a DefaultTag
+// set and no -T, the list is therefore unfiltered by tag
 // (EligibleModelsIn only filters when a tag set is present) while the
-// header still names the rotation group.
+// header still shows a tag.
 //
 // models must be non-empty: buildRows emits one row per model, so an empty
 // table is only possible from an empty input, and both callers (the phaseAgent

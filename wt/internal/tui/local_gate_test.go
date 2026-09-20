@@ -161,8 +161,8 @@ func TestEnterModelPhasePinnedStaleLocalModelRejected(t *testing.T) {
 // missing from the agent's eligible list routes back to the agent picker with
 // the generic "not in the eligible list" status, not the `modelman start`
 // hint. It matters because enterModelPhase's two route-backs mean different
-// things: the hint belongs to the local-pin rejection (a flagged local model
-// the gate could not verify as running), so showing it for a pin the agent
+// things: the hint belongs to the local-pin rejection (a local model the gate
+// could not verify as running), so showing it for a pin the agent
 // cannot use at all would send users off to start a model that was never the
 // problem. The test above covers the hint's own path.
 func TestEnterModelPhasePinnedNotInEligibleRoutesBack(t *testing.T) {
