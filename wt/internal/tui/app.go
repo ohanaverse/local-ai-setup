@@ -676,6 +676,16 @@ var runInventory = localmodels.Inventory
 // A pinned model (-M) still goes through localgate.Apply so the TUI and the
 // non-TUI path agree on whether a pinned local model may launch. A mismatch
 // routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
+//
+// The header's tag line and hideDiscovered answer two different questions and
+// are intentionally not the same value: the tag line names the ROTATION group
+// (firstTag, defaulting to DefaultTag), which is what the cursor positions
+// against, while hideDiscovered tracks an explicit -T/-F narrowing, because
+// discovered models are unregistered and cannot be filtered by tag or family.
+// With a DefaultTag set and no -T, the list is therefore unfiltered by tag
+// (EligibleModelsIn only filters when a tag set is present) while the header
+// still names the rotation group.
+//
 // Otherwise the only route-back is an empty table.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
@@ -691,14 +701,20 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return m, nil
 	}
 
-	// A -M pin keeps localgate's flag+probe verdict.
-	// The inventory is probed on both paths so the table's running state
-	// agrees with what launches (the pinned table can be shown again after a
-	// cancelled resume prompt).
-	// (The pinned path probes the inventory too, in addition to
-	// localgate.Apply: the table is shown again after a cancelled resume prompt.)
-	inv := runInventory(m.cfg)
-	snap := &inv
+	// A -M pin keeps localgate's flag+probe verdict. Validate it BEFORE probing
+	// the inventory: a rejected pin routes back to the agent picker and never
+	// renders a table, so probing first would make the user wait on a
+	// synchronous round-trip against every local provider for nothing.
+	//
+	// The inventory is then probed once, for the table's live STATUS/RUNNING
+	// columns. It is deliberately a separate probe from localgate.Apply's: Apply
+	// answers "may this local model launch?", and only for the models modelman's
+	// per-model `running` flags name — trusting ollama's flag outright and
+	// probing the others' /v1/models (name-checked for omlx/mtplx, non-empty
+	// only for mlx_lm_server) — while the table needs the full registered +
+	// discovered artifact inventory and each family's probe status. Neither
+	// result can be derived from the other, so this is one probe per question,
+	// not a duplicated one.
 	if m.pinnedModel != "" {
 		gate := localgate.Apply(m.cfg, models, m.pinnedModel)
 		if gate.PinnedRejected != nil {
@@ -709,6 +725,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		}
 		models = gate.Eligible
 	}
+
+	inv := runInventory(m.cfg)
+	snap := &inv
 
 	// One Rotation for both the marker and the cursor (each New() scans the
 	// config dir). A missing rotation.state yields "".
