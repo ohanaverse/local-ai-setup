@@ -1,8 +1,12 @@
 package localmodels
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -186,6 +190,48 @@ func FamilyOrigin(cfg *config.Config, family string) (origin string, fromRegistr
 		}
 	}
 	return def, false
+}
+
+// FamilyOriginPort is FamilyOrigin with the URL's port resolved, for callers
+// that must hand a numeric port to a command line as well as dial the origin.
+// When the origin carries no port the family default is applied to the origin
+// itself, not only to the returned number, so the two can never describe
+// different servers.
+func FamilyOriginPort(cfg *config.Config, family string) (string, int, error) {
+	origin, _ := FamilyOrigin(cfg, family)
+	u, err := url.Parse(origin)
+	if err != nil {
+		return "", 0, fmt.Errorf("origin %q: %w", origin, err)
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return "", 0, fmt.Errorf("origin %q: bad port %q", origin, p)
+		}
+		return origin, n, nil
+	}
+	def, ok := defaultPortFor(family)
+	if !ok {
+		return "", 0, fmt.Errorf("origin %q has no port and family %q has no default", origin, family)
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(def))
+	return u.String(), def, nil
+}
+
+// defaultPortFor is the port a family's default origin uses, so a registry base
+// url that omits a port resolves to the same server the defaults describe.
+func defaultPortFor(family string) (int, bool) {
+	switch family {
+	case "ollama":
+		return 11434, true
+	case "omlx":
+		return 8000, true
+	case "mtplx":
+		return 8003, true
+	case "mlx_lm_server":
+		return 8001, true
+	}
+	return 0, false
 }
 
 func probeFamily(cfg *config.Config, client *http.Client, family string) *source {

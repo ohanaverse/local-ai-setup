@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,13 +19,15 @@ type mtplxBackend struct{}
 func (mtplxBackend) singleModel() bool { return true }
 
 // mtplxEndpoint returns the origin, /v1/models URL and port for the family.
+// All three come from one resolution so the port passed to `mtplx serve` cannot
+// differ from the port the wait polls.
 func mtplxEndpoint(cfg *config.Config) (origin, modelsURL string, port int) {
-	origin, _ = localmodels.FamilyOrigin(cfg, "mtplx")
-	port = 8003
-	if u, err := url.Parse(origin); err == nil {
-		if p, err := strconv.Atoi(u.Port()); err == nil {
-			port = p
-		}
+	origin, port, err := localmodels.FamilyOriginPort(cfg, "mtplx")
+	if err != nil {
+		// FamilyOriginPort only fails on an unparseable registry origin. Fall back
+		// through the same resolver with no registry rather than to a local
+		// constant, so the port still has exactly one source.
+		origin, port, _ = localmodels.FamilyOriginPort(&config.Config{}, "mtplx")
 	}
 	return origin, origin + "/v1/models", port
 }

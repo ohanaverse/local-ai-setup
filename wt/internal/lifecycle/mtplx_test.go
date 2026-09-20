@@ -247,3 +247,21 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 		t.Errorf("mtplxProc = %+v, want modelman's paths", e.mtplxProc)
 	}
 }
+
+// TestMtplxEndpointPortMatchesModelsURL verifies the port mtplx is spawned with
+// and the URL it is polled at come from one resolution. When they diverge the
+// spawn succeeds and the wait then times out for the full load budget before
+// killing the server it just started.
+func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
+	cfg := provCfg("mtplx", "http://localhost") // registry value with no port
+	origin, modelsURL, port := mtplxEndpoint(cfg)
+	if origin != "http://localhost:8003" {
+		t.Errorf("origin = %q, want http://localhost:8003", origin)
+	}
+	if modelsURL != "http://localhost:8003/v1/models" {
+		t.Errorf("modelsURL = %q, want http://localhost:8003/v1/models", modelsURL)
+	}
+	if port != 8003 {
+		t.Errorf("port = %d, want 8003", port)
+	}
+}

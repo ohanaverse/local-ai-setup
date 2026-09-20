@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -503,5 +505,41 @@ func TestInventoryOmlxEmptyAnswerIsOK(t *testing.T) {
 	}
 	if got := inventory(cfg, testClient).Providers["omlx"]; got != StatusOK {
 		t.Errorf("omlx status with an empty model list = %q, want %q", got, StatusOK)
+	}
+}
+
+// TestFamilyOriginPortAgreesWithOrigin verifies the port returned alongside an
+// origin is the port that origin actually addresses, including when a registry
+// base_url omits one. A caller passing the port to a command line while the
+// origin says something else spawns a server on one port and polls another,
+// which shows up as a full-length timeout instead of a failure.
+func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
+	// No port in the registry value: the family default must be applied to the
+	// origin too, not just to the returned port.
+	bare := &config.Config{Providers: []config.Provider{localProvider("mtplx", "http://localhost", "")}}
+	origin, port, err := FamilyOriginPort(bare, "mtplx")
+	if err != nil {
+		t.Fatalf("FamilyOriginPort: %v", err)
+	}
+	if origin != "http://localhost:8003" || port != 8003 {
+		t.Errorf("bare origin: origin=%q port=%d, want http://localhost:8003 and 8003", origin, port)
+	}
+	if u, err := url.Parse(origin); err != nil || u.Port() != strconv.Itoa(port) {
+		t.Errorf("origin %q does not address the returned port %d", origin, port)
+	}
+
+	// An explicit port wins, and is preserved in the origin.
+	explicit := &config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1:9123", "")}}
+	origin, port, err = FamilyOriginPort(explicit, "mtplx")
+	if err != nil {
+		t.Fatalf("FamilyOriginPort: %v", err)
+	}
+	if origin != "http://127.0.0.1:9123" || port != 9123 {
+		t.Errorf("explicit origin: origin=%q port=%d, want http://127.0.0.1:9123 and 9123", origin, port)
+	}
+
+	// The registry-free default still resolves to the family default.
+	if origin, port, err = FamilyOriginPort(&config.Config{}, "omlx"); err != nil || port != 8000 {
+		t.Errorf("default omlx: origin=%q port=%d err=%v, want 8000 and no error", origin, port, err)
 	}
 }
