@@ -46,6 +46,7 @@ type Entry struct {
 	ProviderID string // registry provider id (omlx-6bit rows keep theirs); the family id for discovered entries
 	Artifact   string // pulled/on-disk name in the provider's spelling; "" for a registered model not found on disk
 	ModelID    string // registry id when registered, else config.DiscoveredModelID(ProviderID, Artifact)
+	ModelName  string // provider-side name: the registry model_name when registered, else the artifact name
 	Registered bool
 	Running    bool // serving right now (live probe only)
 	// ArtifactKnown reports whether the probe actually determined this entry's
@@ -83,6 +84,10 @@ func familyOf(providerID string) string {
 	}
 	return ""
 }
+
+// Family maps a registry provider id to its probe family ("omlx-6bit" shares
+// "omlx"); "" when wt has no probe for it.
+func Family(providerID string) string { return familyOf(providerID) }
 
 // source is one family's probe result.
 type source struct {
@@ -288,7 +293,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 		if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationLocal {
 			continue
 		}
-		e := Entry{ProviderID: m.ProviderID, ModelID: m.ID, Registered: true}
+		e := Entry{ProviderID: m.ProviderID, ModelID: m.ID, ModelName: m.ModelName, Registered: true}
 		if src := sources[familyOf(m.ProviderID)]; src != nil {
 			e.ArtifactKnown = src.knowsArtifacts()
 			for _, a := range src.artifacts {
@@ -317,6 +322,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				ProviderID:    f,
 				Artifact:      a,
 				ModelID:       config.DiscoveredModelID(f, a),
+				ModelName:     a,
 				Running:       src.isRunning(a),
 				ArtifactKnown: true,
 			})

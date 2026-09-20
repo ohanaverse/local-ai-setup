@@ -428,3 +428,37 @@ func TestInventoryArtifactKnownReflectsProbeOutcome(t *testing.T) {
 		t.Errorf("mlx_lm_server entry = %+v ok=%v, want ArtifactKnown=false", e, ok)
 	}
 }
+
+// TestInventoryEntriesCarryProviderSideModelName verifies every entry exposes
+// the provider-side name (registered: the registry model_name; discovered: the
+// artifact name). The lifecycle engine matches a start target against running
+// entries by this name, and an entry with only a registry id cannot be compared.
+func TestInventoryEntriesCarryProviderSideModelName(t *testing.T) {
+	srv := ollamaServer(t, []string{"gemma4:9b", "other:1b"}, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("ollama", srv.URL, "")},
+		Models:    []config.Model{{ID: "ollama/gemma", ProviderID: "ollama", ModelName: "gemma4:9b"}},
+	}
+	snap := inventory(cfg, testClient)
+	reg, _ := byModelID(snap, "ollama/gemma")
+	if reg.ModelName != "gemma4:9b" {
+		t.Errorf("registered ModelName = %q, want gemma4:9b", reg.ModelName)
+	}
+	disc, _ := byModelID(snap, config.DiscoveredModelID("ollama", "other:1b"))
+	if disc.ModelName != "other:1b" {
+		t.Errorf("discovered ModelName = %q, want other:1b", disc.ModelName)
+	}
+}
+
+// TestFamilyExported verifies the exported Family maps provider ids to probe
+// families, with omlx-6bit sharing omlx's family and unknown ids returning "" —
+// the lifecycle engine uses it to decide which backend and occupancy domain a
+// target belongs to.
+func TestFamilyExported(t *testing.T) {
+	cases := map[string]string{"ollama": "ollama", "omlx": "omlx", "omlx-6bit": "omlx", "mtplx": "mtplx", "mlx_lm_server": "mlx_lm_server", "llamacpp": "", "": ""}
+	for id, want := range cases {
+		if got := Family(id); got != want {
+			t.Errorf("Family(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
