@@ -155,7 +155,10 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	back := func(status string) (model, tea.Cmd) {
 		m.status = status
 		m.phase = phaseModel
-		return m.refreshTable(), nil
+		// The table was built before the attempt and a start can have stopped
+		// the occupant and then failed, so re-probe instead of showing stale
+		// RUNNING.
+		return m.refreshTable()
 	}
 	if st.cancelling {
 		return back("cancelled")

@@ -73,6 +73,10 @@ type model struct {
 	// from, captured in enterModelPhase; refreshTable re-probes the inventory
 	// and rebuilds the table from exactly these models.
 	tableModels []config.Model
+	// pendingSelect is the model id a table refresh wants the cursor on. It is
+	// resolved against the rebuilt list inside the refresh message's handler,
+	// so a rebuild cannot silently move the user's cursor to another model.
+	pendingSelect string
 
 	// agent+command picker (PR 2): user picks an agent or command before the
 	// model screen. Built from buildAgentList in selectedEntryMsg; rebuilt when
@@ -175,6 +179,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if nm, cmd, ok := m.handleStartMsg(msg); ok {
 			return nm, cmd
 		}
+	case tableRefreshedMsg:
+		// A refresh can land after the user moved on (a second start, a quit);
+		// only the picker it was built for should absorb it.
+		if m.phase != phaseModel {
+			return m, nil
+		}
+		return m, m.applyRefreshedTable(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.ready {
@@ -891,35 +902,92 @@ func (m model) tableFor(agent string, models []config.Model, snap *localmodels.S
 	return tbl, lastID
 }
 
-// refreshTable re-probes the live inventory and rebuilds the model list in
-// place, keeping the cursor on the same model id when it still exists. Used
-// after a start attempt that returns to the picker: a replace can stop the
-// occupant and then fail, and the table built before the attempt would be
-// lying about RUNNING. A no-op before any table was built.
-func (m model) refreshTable() model {
+// tableRefreshedMsg carries a rebuilt model table back from
+// refreshTable's command, which runs the live inventory probe off the update
+// loop.
+type tableRefreshedMsg struct {
+	items  []list.Item
+	header string
+	sel    string // model id the cursor should land on, when it still exists
+}
+
+// refreshTable re-probes the live inventory and rebuilds the model list,
+// keeping the cursor on the same model id when it still exists. Used after a
+// start attempt that returns to the picker: a replace can stop the occupant and
+// then fail, and the table built before the attempt would be lying about
+// RUNNING. The probe itself runs in the returned command, never inline: it
+// dials ollama, omlx/mtplx and mlx_lm_server with multi-second per-request
+// timeouts, and this path is reached by every failed or cancelled start, so
+// probing here would freeze the picker on each retry. A no-op before any table
+// was built.
+func (m model) refreshTable() (model, tea.Cmd) {
 	if len(m.tableModels) == 0 {
-		return m
+		return m, nil
 	}
 	sel := ""
 	if it, ok := m.models.SelectedItem().(*modelItem); ok {
 		sel = it.model.ID
 	}
-	inv := runInventory(m.cfg)
-	tbl, _ := m.tableFor(m.agent, m.tableModels, &inv, rotation.New())
-	items := make([]list.Item, len(tbl.items))
-	idx := -1
-	for i, it := range tbl.items {
-		items[i] = it
-		if it.model.ID == sel {
-			idx = i
+	// The command closes over a copy of the model; tableFor reads only cfg,
+	// agent and the active -T/-F filters, and the goroutine must never touch
+	// the live model.
+	src := m
+	return m, func() tea.Msg {
+		inv := runInventory(src.cfg)
+		tbl, _ := src.tableFor(src.agent, src.tableModels, &inv, rotation.New())
+		items := make([]list.Item, len(tbl.items))
+		for i, it := range tbl.items {
+			items[i] = it
+		}
+		return tableRefreshedMsg{items: items, header: tbl.header, sel: sel}
+	}
+}
+
+// resolvePendingSelect puts the cursor back on pendingSelect's model when that
+// id is still on screen, and clears the field either way: the model may have
+// left the inventory, and a stale id must not capture the cursor later. Only an
+// applied filter defers — an unfiltered list shows everything, so an id that is
+// not there is gone, and while the user is mid-typing (Filtering) the cursor is
+// theirs to drive.
+func (m *model) resolvePendingSelect() {
+	if m.pendingSelect == "" {
+		return
+	}
+	if m.models.FilterState() == list.FilterApplied {
+		for i, it := range m.models.VisibleItems() {
+			if mi, ok := it.(*modelItem); ok && mi.model.ID == m.pendingSelect {
+				m.models.Select(i)
+				break
+			}
 		}
 	}
-	m.models.SetItems(items)
-	m.models.Title = tbl.header
-	if idx >= 0 {
-		m.models.Select(idx)
+	m.pendingSelect = ""
+}
+
+// applyRefreshedTable installs a rebuilt table on the picker. SetItems clears
+// filteredItems whenever a filter is applied, and its returned command is the
+// only thing that would repopulate them — discarding it leaves the list with no
+// visible rows at all, which strands the user on an empty picker (the view
+// renders "No items.", Enter does nothing, and the "esc clear filter" its own
+// help bar advertises is consumed by the app's esc chain and quits wt).
+// Re-applying the same text rather than forwarding that command re-derives the
+// matches synchronously and also recomputes pagination, which bubbles only does
+// while the user is typing — so the rows, the page bounds and the cursor are
+// all correct by the end of this update. The user's filter is preserved either
+// way.
+func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
+	cmd := m.models.SetItems(msg.items)
+	m.models.Title = msg.header
+	if m.models.FilterState() == list.FilterApplied {
+		m.models.SetFilterText(m.models.FilterInput.Value())
+		cmd = nil // SetFilterText already repopulated the matches
 	}
-	return m
+	// Otherwise (no filter, or the user is mid-typing) the command SetItems
+	// returned is forwarded as-is: with the list unfiltered there is nothing to
+	// repopulate, and while Filtering it feeds the input's own machinery.
+	m.pendingSelect = msg.sel
+	m.resolvePendingSelect()
+	return cmd
 }
 
 // proceedToLaunch checks for a prior session and either launches the agent

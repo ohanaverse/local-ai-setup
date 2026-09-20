@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -88,6 +89,41 @@ func stubInventory(t *testing.T, snap localmodels.Snapshot) {
 	old := runInventory
 	runInventory = func(*config.Config) localmodels.Snapshot { return snap }
 	t.Cleanup(func() { runInventory = old })
+}
+
+// drainCmds executes cmd and feeds each resulting message back through Update,
+// following the command chain (tea.Batch included) the way the tea runtime
+// would, and returns the settled model. A test asserting on state a command
+// produces — a refreshed table, a repopulated filter — must drain it: calling
+// the command and discarding its message proves nothing, because the message
+// is what applies the change.
+func drainCmds(t *testing.T, m model, cmd tea.Cmd) model {
+	t.Helper()
+	queue := []tea.Cmd{cmd}
+	for i := 0; len(queue) > 0; i++ {
+		if i > 32 {
+			t.Fatal("drainCmds: command chain did not settle")
+		}
+		c := queue[0]
+		queue = queue[1:]
+		if c == nil {
+			continue
+		}
+		msg := c()
+		if msg == nil {
+			continue
+		}
+		// tea.Batch returns a BatchMsg carrying the commands to run, not a
+		// message Update knows how to handle; unwrap it instead of routing it.
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		next, nextCmd := m.Update(msg)
+		m = next.(model)
+		queue = append(queue, nextCmd)
+	}
+	return m
 }
 
 // selectedModelID returns the ID of the model under the picker cursor, so

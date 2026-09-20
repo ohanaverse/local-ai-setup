@@ -444,13 +444,19 @@ func TestStartFailureRefreshesTable(t *testing.T) {
 	}
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
-	got, _ = updateMsg(got, recvStart(t, got))
+	got, refreshCmd := updateMsg(got, recvStart(t, got))
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel after a non-confirm failure", got.phase)
 	}
 	if !strings.Contains(got.status, "failed to start omlx/qwen3.8: boom") {
 		t.Errorf("status = %q, want the failure message", got.status)
 	}
+	// The refresh probe is deferred to the command the failure returned, so it
+	// has not run yet — probing here would block the update loop.
+	if probes != 1 {
+		t.Errorf("runInventory calls = %d before draining, want 1 (the probe must be deferred)", probes)
+	}
+	got = drainCmds(t, got, refreshCmd)
 	if probes != 2 {
 		t.Errorf("runInventory calls = %d, want 2 (the failure refreshes the table)", probes)
 	}
@@ -460,9 +466,12 @@ func TestStartFailureRefreshesTable(t *testing.T) {
 	confirm = true
 	m2 := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
 	got2, _ := enterStartRow(t, m2, "omlx/qwen3.8")
-	got2, _ = updateMsg(got2, recvStart(t, got2))
+	got2, confirmCmd := updateMsg(got2, recvStart(t, got2))
 	if got2.phase != phaseReplaceConfirm {
 		t.Fatalf("phase = %v, want phaseReplaceConfirm", got2.phase)
+	}
+	if confirmCmd != nil {
+		t.Errorf("confirm case returned a cmd, want none: the dialog decides, not a refresh")
 	}
 	if probes != 3 {
 		t.Errorf("runInventory calls = %d, want 3 (the confirm case must not refresh)", probes)
