@@ -158,3 +158,34 @@ func TestPickerNoopWhenNotTTY(t *testing.T) {
 		t.Fatalf("output = %q, want empty", out.String())
 	}
 }
+
+// TestStopPickerFlushesTTYOnEveryReadExit verifies the paste-residue drain runs
+// on the picker's skip paths too, not only after a confirmed stop. A pasted
+// block whose first line is "q"/"esc", or whose first line is blank (Enter with
+// nothing ticked), leaves every later line in the kernel's TTY input queue,
+// where the parent shell runs them as commands once wt exits — the hazard the
+// drain exists to prevent. A run where nothing is offered must stay flush-free:
+// the picker returns before reading a line, so it has no residue of its own.
+func TestStopPickerFlushesTTYOnEveryReadExit(t *testing.T) {
+	prevFlush := flushTTY
+	t.Cleanup(func() { flushTTY = prevFlush })
+
+	for _, input := range []string{"\n", "q\n", "esc\n", "1\n\n", ""} {
+		flushes := 0
+		flushTTY = func() { flushes++ }
+		h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/a", "a")}}}
+		runStopPicker(strings.NewReader(input), &bytes.Buffer{}, &config.Config{}, h.deps())
+		if flushes != 1 {
+			t.Errorf("input %q: flushes = %d, want 1", input, flushes)
+		}
+	}
+
+	flushes := 0
+	flushTTY = func() { flushes++ }
+	h := &stopHarness{snap: localmodels.Snapshot{}}
+	runStopPicker(strings.NewReader("\n"), &bytes.Buffer{}, &config.Config{}, h.deps())
+	if flushes != 0 {
+		t.Errorf("nothing offered: flushes = %d, want 0", flushes)
+	}
+}

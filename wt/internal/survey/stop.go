@@ -95,12 +95,15 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 		return
 	}
 	selected := chooseModels(bufio.NewScanner(r), w, offered)
+	// The picker read lines the same way the survey did; drop any paste
+	// residue so it cannot run as shell commands after wt exits. Deferred so it
+	// also runs on the skip paths below: "q"/"esc", or an Enter with nothing
+	// ticked, leave just as much residue queued as a confirmed stop does, and
+	// the early return used to skip the drain entirely.
+	defer flushTTY()
 	if len(selected) == 0 {
 		return
 	}
-	// The picker read lines the same way the survey did; drop any paste
-	// residue so it cannot run as shell commands after wt exits.
-	flushTTY()
 	stoppedFamily := map[string]bool{}
 	for _, i := range selected {
 		e := offered[i]
