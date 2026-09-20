@@ -111,7 +111,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		} else {
 			line = strings.TrimRight(line, " ")
 		}
-		it := &modelItem{model: r.model, line: line, marked: lastID != "" && r.model.ID == lastID, ref: refs[r.model.ID], row: r}
+		it := &modelItem{model: r.model, line: line, marked: lastID != "" && r.model.ID == lastID, ref: refs[r.model.ID]}
 		if !r.launchable() {
 			it.blocked = r.notLaunchableHint()
 		}
