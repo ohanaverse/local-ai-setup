@@ -23,10 +23,16 @@ type stopDeps struct {
 }
 
 func defaultStopDeps() stopDeps {
+	store := refcount.NewStore()
 	return stopDeps{
 		inventory: localmodels.Inventory,
-		counts:    refcount.NewStore().Counts,
-		stop:      lifecycle.StopModel,
+		// Sweep first: Sweep otherwise runs only at launch start, so an entry
+		// left by a killed session would count as "in use" forever.
+		counts: func(ids []string) map[string]int {
+			_ = store.Sweep()
+			return store.Counts(ids)
+		},
+		stop: lifecycle.StopModel,
 	}
 }
 
@@ -65,9 +71,18 @@ func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
 		ids[i] = e.ModelID
 	}
 	counts := d.counts(ids)
+	// A single-model provider (omlx, mtplx) stops as a whole, taking every
+	// running variant with it — so one session using any variant keeps the
+	// whole family off the list, not just its own row.
+	familyBusy := map[string]bool{}
+	for _, e := range cands {
+		if counts[e.ModelID] > 0 && lifecycle.SingleModel(e.ProviderID) {
+			familyBusy[localmodels.Family(e.ProviderID)] = true
+		}
+	}
 	var out []localmodels.Entry
 	for _, e := range cands {
-		if counts[e.ModelID] == 0 {
+		if counts[e.ModelID] == 0 && !familyBusy[localmodels.Family(e.ProviderID)] {
 			out = append(out, e)
 		}
 	}
@@ -86,13 +101,23 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	// The picker read lines the same way the survey did; drop any paste
 	// residue so it cannot run as shell commands after wt exits.
 	flushTTY()
+	stoppedFamily := map[string]bool{}
 	for _, i := range selected {
 		e := offered[i]
 		fmt.Fprintf(w, "Stopping %s... ", e.ModelID)
+		fam := localmodels.Family(e.ProviderID)
+		if lifecycle.SingleModel(e.ProviderID) {
+			// The first stop already took down the whole provider.
+			if stoppedFamily[fam] {
+				fmt.Fprintln(w, "done")
+				continue
+			}
+		}
 		if err := d.stop(context.Background(), cfg, e.ProviderID, e.ModelName); err != nil {
 			fmt.Fprintf(w, "failed: %v\n", err)
 			continue
 		}
+		stoppedFamily[fam] = true
 		fmt.Fprintln(w, "done")
 	}
 }

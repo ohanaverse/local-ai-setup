@@ -274,3 +274,11 @@ func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, mode
 func CanStop(providerID string) bool {
 	return backendsByFamily[localmodels.Family(providerID)] != nil
 }
+
+// SingleModel reports whether providerID's family serves one model per
+// process, so stopping any of its models stops the whole provider (and every
+// sibling variant it lists as running).
+func SingleModel(providerID string) bool {
+	b := backendsByFamily[localmodels.Family(providerID)]
+	return b != nil && b.singleModel()
+}
