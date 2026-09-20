@@ -76,9 +76,17 @@ table was built.
   whether <provider> is already serving"). Choices: "Replace and start" and
   "Cancel"; **Cancel is the default**. Confirming re-issues `Start` with
   `AllowReplace: true`.
-- **Keys during a start:** esc, q and ctrl+c all cancel and return to the
-  picker, never quit the program (so a half-started mtplx server cannot be
-  orphaned); a further press in the picker quits.
+- **Keys during a start:** esc, q and ctrl+c all cancel on the **first** press
+  (the stored `context.CancelFunc` is called; the engine tears down anything it
+  spawned). Once cancellation is draining, esc and q are **ignored** and only
+  ctrl+c quits. Quitting mid-teardown can orphan a half-started mtplx server —
+  it runs in its own session and keeps the port — and esc/q are exactly the keys
+  a user mashes when a start looks stuck; but a teardown that never returns must
+  not trap the user on the progress screen, so ctrl+c stays a deliberate escape
+  hatch. Otherwise the further press to quit is available from the picker.
+  *(Amended 2026-09-20 during code review: the original text said all three keys
+  cancel and "never quit the program", which contradicted the implementation and
+  left a hung cancel with no way out.)*
 
 ### Results and errors
 
@@ -114,8 +122,9 @@ Per the repo pattern (assert on unexported functions; stub through a
 - Occupied and unknown-occupancy each show the confirm dialog with Cancel
   selected by default; confirming re-issues `Start` with `AllowReplace: true`;
   Cancel returns to the picker without starting.
-- Esc, q and ctrl+c during a start cancel the context and return to the picker
-  without quitting.
+- Esc, q and ctrl+c during a start cancel the context; while cancelling, esc and
+  q are ignored and ctrl+c quits wt (see "Keys during a start" above). The
+  engine's done message returns to the picker with status "cancelled".
 - Each typed error produces its message; cancellation reads "cancelled".
 - The table refreshes after a failed start (a stale "run" row disappears).
 - The single-row shortcut does not fire for a start row.

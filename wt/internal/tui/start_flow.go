@@ -109,13 +109,27 @@ func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
 	return m, tea.Batch(waitForStart(ch), startTick(id))
 }
 
-// handleStartKey handles keys in phaseStarting: esc/q/ctrl+c cancel (a further
-// press while cancelling quits); every other key is ignored.
+// handleStartKey handles keys in phaseStarting. esc, q and ctrl+c all cancel
+// the in-flight run on the first press. Once cancellation is draining, esc and
+// q are ignored: the engine still has to tear down whatever it spawned, and
+// leaving mid-teardown can orphan it (an mtplx child starts in its own session
+// and keeps port 8003). ctrl+c is the deliberate escape hatch, because a cancel
+// that never returns would otherwise trap the user on this screen with no key
+// that exits. Every other key is ignored.
 func (m model) handleStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q", "ctrl+c":
+	case "ctrl+c":
 		if m.start.cancelling {
 			return m, tea.Quit
+		}
+		m.start.cancelling = true
+		m.start.cancel()
+	case "esc", "q":
+		// Ignored once cancellation is draining: these are the keys a user
+		// mashes when a start looks stuck, and leaving mid-teardown can orphan
+		// a server the engine spawned (an mtplx child keeps port 8003).
+		if m.start.cancelling {
+			return m, nil
 		}
 		m.start.cancelling = true
 		m.start.cancel()
@@ -216,7 +230,10 @@ func stageLabel(s lifecycle.Stage) string {
 func (m model) startingView() string {
 	elapsed := time.Since(m.start.began).Round(time.Second)
 	if m.start.cancelling {
-		return fmt.Sprintf("Cancelling %s… (%s)\n\n[esc] quit wt", m.start.item.model.ID, elapsed)
+		// Name only the key that still does something: esc and q are ignored
+		// while the engine tears down, so advertising them would be a lie.
+		return fmt.Sprintf("Cancelling %s… (%s)\n\nwaiting for the server to stop\n\n[ctrl+c] quit wt",
+			m.start.item.model.ID, elapsed)
 	}
 	return fmt.Sprintf("Starting %s — %s (%s)\n\n[esc] cancel", m.start.item.model.ID, stageLabel(m.start.stage), elapsed)
 }

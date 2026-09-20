@@ -309,13 +309,16 @@ func TestReplaceConfirmCancelDoesNotStart(t *testing.T) {
 	}
 }
 
-// TestKeysDuringStartCancelThenQuit verifies esc, q and ctrl+c all CANCEL an
-// in-flight start (the context is cancelled, the view shows Cancelling, and
-// the engine's done message returns to the picker with status "cancelled"),
-// and a further press while cancelling quits the program — the user must
-// always be able to back out, but a quit needs a second deliberate press so
-// a stray key cannot orphan a half-started server.
-func TestKeysDuringStartCancelThenQuit(t *testing.T) {
+// TestKeysDuringStartCancelThenOnlyCtrlCQuits verifies esc, q and ctrl+c all
+// CANCEL an in-flight start (the context is cancelled, the view says
+// Cancelling, and the engine's done message returns to the picker with status
+// "cancelled") — but only ctrl+c quits wt. esc and q are ignored once
+// cancellation is draining, because quitting then can orphan a server the
+// engine spawned into its own session (an mtplx child holding port 8003), and
+// those two are exactly the keys a user mashes when a start looks stuck.
+// ctrl+c stays a deliberate escape hatch: a cancel that never returns would
+// otherwise trap the user on the progress screen with no key that exits.
+func TestKeysDuringStartCancelThenOnlyCtrlCQuits(t *testing.T) {
 	keys := map[string]tea.KeyMsg{
 		"esc":    {Type: tea.KeyEsc},
 		"q":      {Type: tea.KeyRunes, Runes: []rune{'q'}},
@@ -346,13 +349,25 @@ func TestKeysDuringStartCancelThenQuit(t *testing.T) {
 				t.Errorf("startModel calls = %d, want 1 (cancel does not re-issue)", calls.len())
 			}
 
-			// A further press while cancelling quits the program.
-			_, quitCmd := updateMsg(got, key)
-			if quitCmd == nil {
-				t.Fatalf("second %s press returned a nil cmd, want tea.Quit", name)
-			}
-			if msg := quitCmd(); msg != (tea.QuitMsg{}) {
-				t.Errorf("second press cmd message = %T, want tea.QuitMsg", msg)
+			// A further press while cancelling: ctrl+c leaves, esc/q do not.
+			got, quitCmd := updateMsg(got, key)
+			if name == "ctrl+c" {
+				if quitCmd == nil {
+					t.Fatal("second ctrl+c press returned a nil cmd, want tea.Quit")
+				}
+				if msg := quitCmd(); msg != (tea.QuitMsg{}) {
+					t.Errorf("second ctrl+c press cmd message = %T, want tea.QuitMsg", msg)
+				}
+			} else {
+				if quitCmd != nil {
+					t.Errorf("second %s press returned a cmd (%T); it must not quit while the engine tears down", name, quitCmd)
+				}
+				if got.phase != phaseStarting {
+					t.Errorf("phase = %v after a second %s press, want to stay in phaseStarting", got.phase, name)
+				}
+				if v := got.View(); !strings.Contains(v, "ctrl+c") {
+					t.Errorf("cancelling view = %q, want it to name the one key that does quit", v)
+				}
 			}
 
 			// The engine's done message returns to the picker.
