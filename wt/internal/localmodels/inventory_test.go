@@ -462,3 +462,46 @@ func TestFamilyExported(t *testing.T) {
 		}
 	}
 }
+
+// TestInventoryOmlxProbeFailureIsPartial verifies an unanswerable /v1/models
+// leaves the omlx family StatusPartial rather than StatusOK-with-no-models.
+// The lifecycle engine reads that status to decide whether Running can be
+// trusted; reporting OK would let it treat a stalled daemon as empty and
+// replace the model that daemon is serving.
+func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "some-model")
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer down.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("omlx", down.URL, dir)},
+		Models:    []config.Model{{ID: "omlx/some-model", ProviderID: "omlx", ModelName: "some-model"}},
+	}
+	snap := inventory(cfg, testClient)
+	if got := snap.Providers["omlx"]; got != StatusPartial {
+		t.Errorf("omlx status with an unusable /v1/models = %q, want %q", got, StatusPartial)
+	}
+	// The model-dir scan still succeeded, so artifacts remain trustworthy.
+	if en, ok := byModelID(snap, "omlx/some-model"); !ok || !en.ArtifactKnown {
+		t.Errorf("probe failure must not make artifact discovery untrustworthy: %+v ok=%v", en, ok)
+	}
+}
+
+// TestInventoryOmlxEmptyAnswerIsOK verifies a server that answers with an
+// empty model list is StatusOK, not StatusPartial. That case is "nothing is
+// loaded", which must start normally without a confirmation prompt.
+func TestInventoryOmlxEmptyAnswerIsOK(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "some-model")
+	up := modelsServer(t) // answers {"data":[]}
+	defer up.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("omlx", up.URL, dir)},
+		Models:    []config.Model{{ID: "omlx/some-model", ProviderID: "omlx", ModelName: "some-model"}},
+	}
+	if got := inventory(cfg, testClient).Providers["omlx"]; got != StatusOK {
+		t.Errorf("omlx status with an empty model list = %q, want %q", got, StatusOK)
+	}
+}

@@ -13,13 +13,14 @@ import (
 type Status string
 
 const (
-	// StatusOK means discovery succeeded. It does NOT imply the server is up:
-	// a stopped omlx/mtplx server with model dirs on disk reports ok with
-	// nothing running.
+	// StatusOK means discovery succeeded AND the family's live probe answered.
+	// A stopped omlx/mtplx server therefore does NOT report ok: its failed
+	// /v1/models is partial, whether the cause is a dead server or a bad answer.
 	StatusOK Status = "ok"
 	// StatusPartial means discovery succeeded but live running-state could
-	// not be determined (ollama: /api/tags ok, /api/ps failed). Entries'
-	// Running flags are not trustworthy for this family.
+	// not be determined (ollama: /api/tags ok, /api/ps failed; omlx/mtplx:
+	// the model-dir scan succeeded, /v1/models failed). Entries' Running
+	// flags are not trustworthy for this family.
 	StatusPartial Status = "partial"
 	// StatusUnreachable means discovery itself failed: for ollama, /api/tags
 	// failed (daemon down); for omlx/mtplx, the model-directory scan (or
@@ -204,7 +205,16 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.status = StatusPartial
 		}
 	case "omlx", "mtplx":
-		s.loaded = FetchModelIDs(client, origin+"/v1/models")
+		// A failed /v1/models must not read as "nothing is loaded": for a
+		// single-model family that turns an unanswerable probe into permission to
+		// replace a model that may well be serving. StatusPartial records the same
+		// "Running flags are not trustworthy" state ollama already uses for a
+		// failed /api/ps.
+		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
+		if err != nil {
+			s.status = StatusPartial
+		}
+		s.loaded = loaded
 		def := defaultOmlxDir
 		if family == "mtplx" {
 			def = defaultMtplxDir

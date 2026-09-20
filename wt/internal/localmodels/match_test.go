@@ -78,3 +78,41 @@ func TestFetchModelIDs(t *testing.T) {
 		t.Errorf("unreachable = %v, want nil", got)
 	}
 }
+
+// TestFetchModelIDsErrDistinguishesEmptyFromFailure verifies the probe keeps
+// "the server answered and is serving nothing" apart from "the server did not
+// give a usable answer". The lifecycle engine starts normally on the first and
+// fails closed on the second, so collapsing them either refuses every cold
+// start or silently replaces a model that is still running.
+func TestFetchModelIDsErrDistinguishesEmptyFromFailure(t *testing.T) {
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer empty.Close()
+	ids, err := FetchModelIDsErr(empty.Client(), empty.URL)
+	if err != nil {
+		t.Errorf("server answered with an empty list: err = %v, want nil", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("server answered with an empty list: ids = %v, want empty", ids)
+	}
+
+	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"a"},{"id":"b"}]}`))
+	}))
+	defer serving.Close()
+	if ids, err := FetchModelIDsErr(serving.Client(), serving.URL); err != nil || len(ids) != 2 {
+		t.Errorf("serving server: ids=%v err=%v, want 2 ids and no error", ids, err)
+	}
+
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+	if _, err := FetchModelIDsErr(broken.Client(), broken.URL); err == nil {
+		t.Error("a non-2xx answer must be an error, not an empty model list")
+	}
+	if _, err := FetchModelIDsErr(broken.Client(), "http://127.0.0.1:1/v1/models"); err == nil {
+		t.Error("a refused connection must be an error, not an empty model list")
+	}
+}
