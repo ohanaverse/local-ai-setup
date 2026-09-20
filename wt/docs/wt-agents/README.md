@@ -139,12 +139,33 @@ On the TUI path the summary prints **after** the alt-screen is restored,
 so the line lands on a clean line in the parent terminal rather than inside
 the Bubble Tea frame.
 
-Immediately after the summary line, a post-session survey prompts up to
-four questions on the parent terminal (did it work? speed 1-5? quality
-1-5? — and on non-skip answers, what task were you doing), each
-answerable with Enter to skip. It silently does nothing when
-stdin is not a TTY or when the launch had no model (command agents like
-`shell`). See `docs/wt-stats.md` for how the collected data is reported.
+### Post-exit order
+
+The post-run steps run in a fixed order — identical in the TUI and non-TUI
+paths, with the user's interactive steps first and the informational output
+last so the prompts cannot scroll it away:
+
+> release this session's refcount entry → survey → stop picker → summary
+> line → after-survey stats → pricing notice
+
+Both the survey and the stop picker therefore run **before** the summary
+line.
+
+- **Survey.** Prompts up to four questions on the parent terminal (did it
+  work? speed 1-5? quality 1-5? — and on non-skip answers, what task were
+  you doing), each answerable with Enter to skip. It silently does nothing
+  when stdin is not a TTY, when the launch had no model (command agents
+  like `shell`), or when the model is **native** — a native launch has no
+  priced model to survey (issue #116).
+- **Stop picker** (`survey.Picker`, issue #115). Offers to stop running
+  local models that no live wt session is using (refcount zero, probe
+  trusted, stop backend exists). Line-typed: a number toggles, `all`/`none`,
+  Enter confirms, `q`/`esc` skips, and nothing starts selected. It is silent
+  when nothing qualifies, when stdin is not a TTY, and for command agents.
+  wt releases its own refcount entry first, or the model this session just
+  used would always count as in use.
+
+See `docs/wt-stats.md` for how the collected survey data is reported.
 
 ### Legacy bash flags
 
