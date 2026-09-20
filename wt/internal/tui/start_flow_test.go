@@ -624,8 +624,9 @@ func e2eStubStartModel(t *testing.T) *startCalls {
 // TestEndToEndNonRunningOmlxRowStartsThenLaunches drives the real path —
 // stubbed inventory to enterModelPhase to Enter to the (stubbed) engine — to
 // verify a non-running omlx row is a start row (start == true, no hint), that
-// Enter begins a start, and that success proceeds to launch. This is the
-// behavior the whole plan exists for.
+// Enter begins a start with AllowReplace false (so the engine's occupant check,
+// not the UI, decides whether to ask before stopping another model), and that
+// success proceeds to launch. This is the behavior the whole plan exists for.
 func TestEndToEndNonRunningOmlxRowStartsThenLaunches(t *testing.T) {
 	requireBinary(t, "claude")
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
@@ -653,10 +654,14 @@ func TestEndToEndNonRunningOmlxRowStartsThenLaunches(t *testing.T) {
 	if got.launchModel.ID != "omlx/qwen3.8" {
 		t.Errorf("launchModel.ID = %q, want the started row's id", got.launchModel.ID)
 	}
-	if calls.len() != 1 || !calls.at(0).opts.AllowReplace == true {
-		if calls.len() != 1 {
-			t.Errorf("startModel calls = %d, want 1", calls.len())
-		}
+	if calls.len() != 1 {
+		t.Fatalf("startModel calls = %d, want 1", calls.len())
+	}
+	// The first attempt must refuse to replace a running occupant: the engine's
+	// own OccupiedError is what drives the confirm dialog, and replacing without
+	// asking would stop another model behind the user's back.
+	if calls.at(0).opts.AllowReplace {
+		t.Error("first startModel call had AllowReplace == true, want false")
 	}
 }
 
