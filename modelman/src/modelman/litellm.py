@@ -338,11 +338,14 @@ def _bridge(
 
 
 def _outcome_error(result: wt_bridge.BridgeResult, model_id: str) -> str | None:
-    """wt's per-id rejection reason for `model_id`, or None when it applied."""
+    """Why `model_id` was not applied, or None when wt reported it applied.
+
+    Fails closed: a response with no outcome for a requested id is an error,
+    never success, so a short wt response can't flip a flag with no route."""
     for outcome in result.outcomes:
         if outcome.id == model_id:
             return outcome.error
-    return None
+    return f"wt returned no result for {model_id}"
 
 
 def expose_model(
@@ -450,15 +453,15 @@ def apply_expose_queue(
     if to_add:
         result = _bridge(wt_bridge.expose, to_add, litellm_path=litellm_path, skip_ready_gate=True)
         warnings += result.warnings
-        for outcome in result.outcomes:
-            if outcome.error:
-                errors[outcome.id] = outcome.error
+        for model_id in to_add:
+            if (error := _outcome_error(result, model_id)) is not None:
+                errors[model_id] = error
     if to_remove:
         result = _bridge(wt_bridge.unexpose, to_remove, litellm_path=litellm_path)
         warnings += result.warnings
-        for outcome in result.outcomes:
-            if outcome.error:
-                errors[outcome.id] = outcome.error
+        for model_id in to_remove:
+            if (error := _outcome_error(result, model_id)) is not None:
+                errors[model_id] = error
 
     outcomes: list[tuple[str, bool, str | None]] = []
     for model_id, target in exposes:
@@ -480,15 +483,17 @@ def apply_unexpose_queue(
     LiteLLM proxy once instead of N times.
 
     Unlike apply_expose_queue, removing a route never validates against
-    the registry and cannot fail per-model, so this takes no Registry and
-    has no per-item outcome to report: it either applies the whole batch
-    or raises. Bridge-level failures (wt missing, unreadable config.yaml)
-    propagate to the caller, same as apply_expose_queue and
-    unexpose_model — the caller decides how to turn that into a warning.
-    Flags flip only after wt reports success.
+    the registry, so this takes no Registry and has no per-item outcome
+    tuples to report. Bridge-level failures (wt missing, unreadable
+    config.yaml) raise LiteLLMConfigError with no flag touched, same as
+    apply_expose_queue and unexpose_model — the caller decides how to turn
+    that into a warning. A per-id failure (wt rejected the id, or returned
+    no result for it) does not raise: that id's flag is left alone and a
+    "could not be un-exposed" warning is appended, while the other ids
+    still apply. Flags flip only after wt reports success for that id.
 
-    Returns wt's proxy-restart warnings (empty on success or when nothing
-    changed), matching apply_expose_queue's warnings contract.
+    Returns wt's proxy-restart warnings plus any per-id failure warnings
+    (empty on success or when nothing changed), matching apply_expose_queue's warnings contract.
     """
     if not model_ids:
         return []

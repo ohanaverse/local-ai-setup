@@ -74,6 +74,7 @@ class _Bridge:
         self.errors: dict[str, str] = {}
         self.warnings: list[str] = []
         self.raise_on: str | None = None
+        self.drop_outcomes = False  # simulate a short wt response
 
     def _run(self, verb, ids, litellm_path, kwargs):
         self.calls.append((verb, list(ids), litellm_path, kwargs))
@@ -84,6 +85,7 @@ class _Bridge:
             [
                 wt_bridge.BridgeOutcome(i, None if i in self.errors else action, self.errors.get(i))
                 for i in ids
+                if not self.drop_outcomes
             ],
             True,
             list(self.warnings),
@@ -685,3 +687,44 @@ def test_passes_ready_gate_provider_cloud_not_ready():
     state = StateStore()
     state.set("handmade/x", ModelState(ready=False, exposed=True))
     assert passes_ready_gate(model, state, registry) is True
+
+
+# ---------------------------------------------------------------------------
+# A wt response with no outcome for a requested id must fail closed
+# ---------------------------------------------------------------------------
+
+
+def test_expose_model_fails_closed_when_wt_returns_no_outcome(tmp_path, bridge):
+    # A short/garbled wt response (no outcome for the id) must not be read as
+    # success: flipping the flag would claim a route wt never wrote.
+    registry, state = _queue_registry()
+    bridge.drop_outcomes = True
+    with pytest.raises(ExposeError, match="no result for ollama/a"):
+        expose_model(registry, state, "ollama/a", tmp_path / "config.yaml")
+    assert state.get("ollama/a").exposed is False
+
+
+def test_apply_expose_queue_fails_closed_when_wt_returns_no_outcome(tmp_path, bridge):
+    # Same fail-closed rule for the batch path, both directions: each id gets
+    # an error tuple and no flag flips.
+    registry, state = _queue_registry()
+    state.get("ollama/c").exposed = True
+    bridge.drop_outcomes = True
+    outcomes, _ = apply_expose_queue(
+        registry, state, [("ollama/a", True), ("ollama/c", False)], tmp_path / "config.yaml"
+    )
+    assert "no result for ollama/a" in outcomes[0][2]
+    assert "no result for ollama/c" in outcomes[1][2]
+    assert state.get("ollama/a").exposed is False
+    assert state.get("ollama/c").exposed is True
+
+
+def test_apply_unexpose_queue_fails_closed_when_wt_returns_no_outcome(tmp_path, bridge):
+    # The un-expose batch must warn and keep the flag when wt says nothing
+    # about an id, rather than claiming an un-exposure that never happened.
+    _, state = _queue_registry()
+    state.get("ollama/a").exposed = True
+    bridge.drop_outcomes = True
+    warnings = apply_unexpose_queue(state, ["ollama/a"], tmp_path / "config.yaml")
+    assert any("no result for ollama/a" in w for w in warnings)
+    assert state.get("ollama/a").exposed is True

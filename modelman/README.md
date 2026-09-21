@@ -111,7 +111,7 @@ save. `usage_tier` has been removed; use the pricing fields directly.
 ready = true
 disk_path = "ollama:ornith:35b"
 size_bytes = 123456789
-litellm_exposed = false
+exposed = false
 running = false
 ```
 
