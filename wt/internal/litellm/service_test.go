@@ -309,3 +309,37 @@ func TestSyncRecheckKeepsModelsThatStartedMeanwhile(t *testing.T) {
 		t.Fatalf("routed = %s, want only the model Recheck found running", got)
 	}
 }
+
+// TestApplyRejectsEmptyModelName pins that a model with an empty model_name is
+// rejected per id and no route is written: BuildEntry would otherwise emit a
+// bogus "ollama/" row now that wt commands no longer refuse on registry
+// validation errors. A FixedModel provider (llamacpp) ignores model_name, so
+// an empty one there must keep working.
+func TestApplyRejectsEmptyModelName(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: []\n")
+	o.SkipReadyGate = true
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/blank", ProviderID: "ollama", Location: config.LocationLocal},
+			{ID: "llamacpp/fixed", ProviderID: "llamacpp", Location: config.LocationLocal},
+		},
+	}
+	res, err := Apply(cfg, []string{"ollama/blank", "llamacpp/fixed"}, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcomes[0].Err == nil || !strings.Contains(res.Outcomes[0].Err.Error(), "empty model_name") {
+		t.Fatalf("blank outcome = %+v, want empty model_name error", res.Outcomes[0])
+	}
+	if res.Outcomes[1].Err != nil {
+		t.Fatalf("fixed-model provider rejected: %v", res.Outcomes[1].Err)
+	}
+	f, _ := Open(p)
+	if ids := f.RoutedIDs(); len(ids) != 1 || ids[0] != "llamacpp/fixed" || *restarts != 1 {
+		t.Fatalf("routed = %v restarts=%d", ids, *restarts)
+	}
+}

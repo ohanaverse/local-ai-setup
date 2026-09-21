@@ -83,6 +83,12 @@ func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) 
 	if !ok {
 		return nil, fmt.Errorf("provider %q has no LiteLLM mapping", p.ID)
 	}
+	// Config.validate's per-model data rule; wt commands no longer refuse on
+	// validation errors, so enforce it here. FixedModel providers (llamacpp)
+	// use a fixed LiteLLM model string and ignore model_name.
+	if m.ModelName == "" && !pol.FixedModel {
+		return nil, fmt.Errorf("model %q: empty model_name", id)
+	}
 	if !skipReady && !cfg.ReadyFlag(id) && !isCloud(m, *p, pol) {
 		return nil, fmt.Errorf("model %q is not ready", id)
 	}
