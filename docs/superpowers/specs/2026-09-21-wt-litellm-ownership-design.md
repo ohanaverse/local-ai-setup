@@ -95,8 +95,11 @@ and only the route is missing. One proxy restart per start or stop.
 `[litellm]` (`enabled` / `url` / `api_key`) moves to wt's `config.toml`. On
 first load, if `config.toml` has no `[litellm]` and `modelman.toml` has one,
 wt copies it once. The migration is automatic and idempotent; the old table is
-left in place and ignored. A malformed table or failed migration warns and
-falls back to LiteLLM off; it never blocks launching an agent.
+left in place and ignored. A failed migration *write* warns on stderr and wt keeps
+using the copied values in memory. A malformed `[litellm]` table in wt's own
+`config.toml` fails the config load like any other malformed `config.toml`
+(existing behavior; `wt config` is the repair path). Migration never creates
+`config.toml` when it does not exist yet, so it cannot pre-empt agent seeding.
 `config.Config` reads the value from wt's file instead of `modelman.toml`.
 
 ### modelman changes
