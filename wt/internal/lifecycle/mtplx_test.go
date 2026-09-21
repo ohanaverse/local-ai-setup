@@ -207,8 +207,7 @@ func TestMtplxMissingBinaryAndPortBusy(t *testing.T) {
 // succeeds once the port really closed; a stop that leaves the port open
 // surfaces the command's own error text.
 func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
-	addr := freeAddr(t)
-	srv := serveAt(t, addr, chatHandler())
+	srv, addr := serveFree(t, chatHandler())
 	_, portStr, _ := net.SplitHostPort(addr)
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
@@ -220,6 +219,7 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 	}
 	cfg := provCfg("mtplx", "http://"+addr+"/v1")
 	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+		logPortHolder(t, addr)
 		t.Fatalf("stop: %v", err)
 	}
 	if !reflect.DeepEqual(ran, []string{"/bin/mtplx", "stop", "--port", portStr, "--grace-seconds", "10"}) {

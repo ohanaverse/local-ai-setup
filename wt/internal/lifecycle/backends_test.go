@@ -205,8 +205,7 @@ func TestOmlxMissingBinaryAndNeverComesUp(t *testing.T) {
 // once the port closes, and returns an error naming the origin when it does
 // not — a replacement must not start while the old daemon still holds the port.
 func TestOmlxStopWaitsForPortClose(t *testing.T) {
-	addr := freeAddr(t)
-	srv := serveAt(t, addr, chatHandler())
+	srv, addr := serveFree(t, chatHandler())
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
 	var ran []string
@@ -216,6 +215,7 @@ func TestOmlxStopWaitsForPortClose(t *testing.T) {
 		return nil, nil
 	}
 	if err := (omlxBackend{}).stop(context.Background(), e, provCfg("omlx", "http://"+addr)); err != nil {
+		logPortHolder(t, addr)
 		t.Fatalf("stop: %v", err)
 	}
 	if !reflect.DeepEqual(ran, []string{"stop"}) {

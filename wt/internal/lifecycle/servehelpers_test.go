@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -33,4 +35,20 @@ func serveFree(t *testing.T, h http.Handler) (*httptest.Server, string) {
 		t.Fatal(err)
 	}
 	return serveOn(t, l, h), l.Addr().String()
+}
+
+// logPortHolder logs who holds addr's port (best effort, silent when lsof is
+// missing). It is called only on a "still listening" failure so the next CI
+// flake names the process that answered the probe instead of leaving only a
+// 1.01s timeout to go on.
+func logPortHolder(t *testing.T, addr string) {
+	t.Helper()
+	i := strings.LastIndex(addr, ":")
+	if i < 0 {
+		return
+	}
+	out, err := exec.Command("lsof", "-nP", "-iTCP:"+addr[i+1:]).CombinedOutput()
+	if err == nil {
+		t.Logf("port %s holders:\n%s", addr[i+1:], out)
+	}
 }
