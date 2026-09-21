@@ -8,6 +8,14 @@ per-machine state (ready markers, LiteLLM exposure) lives in
 model list, and queue changes (add/edit/delete/ready/expose) that are
 applied on exit.
 
+**Requires `wt` on PATH.** LiteLLM management is owned by the `wt` launcher
+(since 2026-09-21): modelman applies its own ready/exposure gates and then
+delegates to `wt litellm ...` — it no longer edits LiteLLM's `config.yaml` or
+restarts the proxy itself. Install `wt` with `make install` from the repo root
+(that installs both components). Without `wt`, the expose/unexpose and
+`modelman litellm ...` commands fail with a clear error before changing any
+state.
+
 ## Install
 
 modelman is a `uv` project nested inside the monorepo. Run all commands from
@@ -25,15 +33,16 @@ root will fail. Always `cd modelman` first.
 ## Configuration
 
 modelman reads three files under `~/.config/local-ai/` (each overridable
-with an env var), plus one LiteLLM-specific override:
+with an env var). LiteLLM's own `config.yaml`, the proxy restart and the routing
+on/off state are owned by `wt` (see below):
 
 | File / setting | Purpose | Env override |
 |----------------|---------|------------|
 | `registry.toml` | Canonical model/provider definitions (shared, read-only by other tools) | `MODELMAN_REGISTRY` |
 | `modelman.toml` | Per-machine mutable state: download markers, LiteLLM exposure flags (also read by `wt`, read-only, for the exposure flags) | `MODELMAN_STATE` |
 | `settings.yaml` | User preferences (theme) | `MODELMAN_SETTINGS` |
-| LiteLLM `config.yaml` | Path to the LiteLLM config file modelman writes | `MODELMAN_LITELLM_CONFIG` |
-| LiteLLM proxy restart | Shell command to restart the running proxy after expose changes | `MODELMAN_LITELLM_RESTART_CMD` |
+| LiteLLM `config.yaml` | Path to the LiteLLM config file. **wt writes it**; modelman only reads it for `modelman usage`. wt honors `WT_LITELLM_CONFIG` (legacy alias `MODELMAN_LITELLM_CONFIG`) | `MODELMAN_LITELLM_CONFIG` (usage reader) |
+| LiteLLM proxy restart | Done by wt after a route change: `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | (wt-owned) |
 
 ### `registry.toml`
 
@@ -134,8 +143,9 @@ This file is optional — a fresh install starts with an empty store.
 ```bash
 modelman                        # open the TUI (model list)
 modelman sync                   # reconcile configured models against providers
-modelman expose <model-id>      # expose a model through LiteLLM
-modelman unexpose <model-id>    # remove a model's LiteLLM exposure
+modelman expose <model-id>      # expose a model through LiteLLM (delegates to `wt litellm expose`)
+modelman unexpose <model-id>    # remove a model's LiteLLM exposure (delegates to `wt litellm unexpose`)
+modelman litellm status|on|off|set   # passthroughs to `wt litellm ...`
 modelman migrate                # one-time import of legacy config (see below)
 ```
 
@@ -213,45 +223,47 @@ reflexive `Enter` is never destructive.
 
 ### Expose models through LiteLLM
 
-A downloaded model (or any cloud model) can be exposed to LiteLLM, which
-writes a `model_list` entry into LiteLLM's `config.yaml` and flips the
-model's `litellm_exposed` flag in `modelman.toml`.
+A downloaded model (or any cloud model) can be exposed to LiteLLM. modelman
+checks its own gates (model/provider exist, not native, provider mapped, ready
+or cloud) against its in-memory state, then delegates to
+`wt litellm expose --json --skip-ready-gate`; **wt** writes the `model_list`
+entry into LiteLLM's `config.yaml` and restarts the proxy. modelman flips the
+model's `exposed` flag in `modelman.toml` only after wt reports success.
 
 ```bash
-modelman expose <model-id>    # add the model_list entry
-modelman unexpose <model-id>  # remove it
+modelman expose <model-id>    # add the model_list entry (via wt)
+modelman unexpose <model-id>  # remove it (via wt)
 ```
 
 In the TUI, press `x` on a model row to queue an exposure toggle; it
 applies after you exit via Apply, alongside every other queued change (a
 not-ready model is downloaded/pulled first, in the terminal, once the
 TUI has closed). The EXPOSED column shows `Y` when exposed (or queued
-to expose) and `–` otherwise.
+to expose) and `–` otherwise. A mixed queue of exposes and unexposes can cost
+up to two proxy restarts (one per direction).
+
+**Local models and the EXPOSED column.** `wt start`/`wt stop` add and remove a
+local model's route automatically, without touching modelman's `exposed` flag,
+so for a local model this column can disagree with the real config: a model
+started with `wt start` is routed but may show `–` here, and the inverse after
+`wt stop` or `wt litellm sync`. The authoritative answer is `wt litellm list`.
+(Reading `wt litellm list` for the column is a deferred follow-up.)
 
 LiteLLM's `config.yaml` lives at `~/.config/litellm/config.yaml` by default
-(override with `MODELMAN_LITELLM_CONFIG`). Writes are read-modify-write with
-ruamel round-trip, so sections modelman doesn't own (`general_settings`,
-`router_settings`, unknown keys, hand-written comments) survive untouched
-(comments attached to a specific `model_list` row are best-effort — one
-positioned next to a row modelman removes or replaces can be dropped).
-modelman additionally owns three launcher-required settings and ensures them
-on every write: `litellm_settings.drop_params: true` (without it, copilot's
-`parallel_tool_calls` gets rejected with `400 UnsupportedParamsError`),
-`litellm_settings.use_chat_completions_url_for_anthropic_messages: true`
-(without it, LiteLLM 1.98.0's `/v1/messages` endpoint — claude's wire
-protocol — bridges any `openai/<name>` deployment through the OpenAI
-Responses API instead of chat/completions; mtplx/omlx/mlx_lm_server only
-implement chat/completions, so claude-wt sees every local `openai/*` model
-as "may not exist"), and `additional_drop_params: ["reasoning_effort"]` on
-every `model_list` entry routed through the `ollama_chat/` bridge (a
-workaround for a LiteLLM 1.98.x responses-bridge crash hit by codex,
-BerriAI/litellm#37452; an entry already carrying the key, whatever its
-value, is left as-is). A write that changes nothing saves nothing and does
-not restart the proxy.
+(wt honors `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`). wt's
+writes are comment-preserving (yaml.v3): sections wt doesn't own and comments
+survive, but list indentation is normalized and blank lines are dropped on the
+first wt write. wt also enforces the launcher-required settings on every write
+(`litellm_settings.drop_params`, the anthropic-messages chat-completions
+switch, and the per-row `ollama_chat`/`openai` bridge parameters) — see
+`../wt/CLAUDE.md` and `../wt/docs/wt-agents/litellm-troubleshooting.md`.
 
-By default the running LiteLLM proxy is **not** automatically restarted
-after an expose/unexpose change. Set `MODELMAN_LITELLM_RESTART_CMD` to a
-shell command that restarts your proxy (e.g. `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`) to have modelman run it automatically after each config write that changes the model list. The restart runs only when the change actually took effect (a no-op unexpose of an already-removed model does not bounce the proxy), and is bounded by a 30-second timeout. When the command is unset, modelman surfaces a warning that a manual restart is needed — in the TUI it appears in the apply log, in the CLI it is printed to stderr. A failed restart does not fail the expose operation.
+The proxy restart is wt's too: `WT_LITELLM_RESTART_CMD` (legacy alias
+`MODELMAN_LITELLM_RESTART_CMD`), else `launchctl kickstart -k
+gui/$(id -u)/local.litellm.proxy`. The LiteLLM routing on/off state
+(`modelman litellm status|on|off|set`, the TUI `l` key) lives in wt's
+`~/.config/agent-wt/config.toml`; modelman.toml's `[litellm]` table is only a
+legacy read-only fallback that modelman round-trips untouched.
 
 ### Native providers
 
@@ -319,7 +331,8 @@ make clean       # remove caches
 - `src/modelman/registry.py` — loads/saves `registry.toml` (`Registry`, `ProviderEntry`, `ModelEntry`).
 - `src/modelman/state.py` — loads/saves `modelman.toml` (`StateStore`, `ModelState`, `FamilyState`).
 - `src/modelman/queue.py` — `PendingChanges` orchestrates queued edits: deletes run before moves, then downloads, then exposure changes, failures are collected, then a single save. Deletes check `provider.is_downloaded()` first: when the artifact is already gone (e.g. queued from the TUI on a not-ready row, or removed by hand), the provider's `delete()` is skipped but registry/state cleanup, lifecycle events, and the cascade-unexpose still run. A raising `is_downloaded()` is treated conservatively — the artifact delete is attempted and real failures surface normally.
-- `src/modelman/litellm.py` — owns all LiteLLM knowledge: provider→`model` prefix mapping, `model_list` entry construction, atomic `config.yaml` read/write (ruamel round-trip so comments and foreign sections survive byte-identically; PyYAML remains for the legacy modules), the `ensure_litellm_settings()` owned-settings pass, and the `expose_model`/`unexpose_model`/`apply_expose_queue` orchestration used by both the CLI and TUI.
+- `src/modelman/litellm.py` — modelman's side of LiteLLM exposure: its own gates and display predicates, read-only `config.yaml` helpers for `modelman usage`, and the thin `expose_model`/`unexpose_model`/`apply_expose_queue` functions that delegate the writes to `wt litellm ...`. All `model_list` construction, the config write, the owned-settings pass and the proxy restart live in `wt/internal/litellm`.
+- `src/modelman/wt_bridge.py` — the subprocess wrapper around `wt litellm ...` (JSON parsing, error mapping).
 - `src/modelman/sync.py` — reconciles configured models against provider state.
 - `src/modelman/migrate.py` — one-time import of legacy config into the registry/state.
 - `src/modelman/settings.py` — user preferences (`settings.yaml`).
