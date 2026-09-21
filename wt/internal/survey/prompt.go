@@ -20,9 +20,13 @@ var stdinTTY = func() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // flushTTY discards unread input from the real TTY after the survey finishes
 // reading. It targets os.Stdin (not the injected r) because paste residue
-// lives in the kernel's input queue for the process's actual fd. A seam so
-// tests don't ioctl the test process's stdin.
-var flushTTY = func() { _ = drainTTYInput(int(os.Stdin.Fd())) }
+// lives in the kernel's input queue for the process's actual fd. A seam
+// (var/realfunc, per wt/CLAUDE.md) so tests don't ioctl the test process's
+// stdin; this package's TestMain stubs it, so it is a no-op for every test
+// that does not assign its own.
+var flushTTY = realFlushTTY
+
+func realFlushTTY() { _ = drainTTYInput(int(os.Stdin.Fd())) }
 
 // answer identifies the Q1 verdict.
 type answer int
