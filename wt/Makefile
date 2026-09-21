@@ -11,7 +11,7 @@ help:                   # Show available targets
 	@echo "  go-format-check - Check gofmt formatting of the Go tree"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
-	@echo "  test-agents - Run live one-shot agent smoke tests in both gateway modes (requires gateways/agent CLIs)"
+	@echo "  test-agents - Run live one-shot agent smoke tests in both routing modes via wt litellm on/off (snapshots/restores wt's config.toml; requires gateways/agent CLIs)"
 	@echo "  clean     - Remove build artifacts"
 
 BINDIR := $(HOME)/.local/bin

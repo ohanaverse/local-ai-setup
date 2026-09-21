@@ -71,10 +71,11 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 `themes.toml`; other subcommands will add their own files alongside it.
 
 > **LiteLLM routing is not a `wt config` setting.** Whether agents route
-> through the LiteLLM proxy or dial providers directly is modelman-owned:
-> `modelman litellm status` / `on` / `off` controls the `[litellm]` table in
-> `~/.config/local-ai/modelman.toml`, which wt reads read-only. There is no
-> routing surface in the editor — and there never was.
+> through the LiteLLM proxy or dial providers directly is wt-owned but managed by
+> subcommands, not the editor: `wt litellm status` / `on` / `off` / `set`
+> control the `[litellm]` table in `config.toml`. (modelman.toml's `[litellm]`
+> is only a legacy fallback copied in once.) There is no routing surface in
+> the editor.
 
 ```
 ~/.config/agent-wt/

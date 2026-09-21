@@ -2,8 +2,8 @@
 # agents-smoke.sh -- live one-shot smoke test for every wt agent.
 #
 # The run covers every routing mode in --modes (default direct,litellm) by
-# flipping the [litellm].enabled field of modelman's modelman.toml between
-# passes and restoring the original afterwards. Native rows and shell are
+# flipping wt's routing mode (`wt litellm on|off`, which writes wt's own
+# config.toml) between passes and restoring the original config afterwards. Native rows and shell are
 # mode-invariant and run once, in the first pass.
 
 set -o nounset -o pipefail
@@ -111,7 +111,7 @@ is_mode_invariant() {
 # gtimeout needs --foreground: by default it puts the child in its own
 # process group, so a terminal Ctrl-C (delivered to the foreground group)
 # never reaches the running agent, gtimeout neither dies nor forwards, and
-# the script's INT trap is deferred forever — leaving the flipped [litellm]
+# the script's INT trap is deferred forever — leaving the flipped routing
 # state unrestored. --foreground keeps the child in the terminal's group;
 # Ctrl-C kills the row, the trap fires, and the EXIT trap restores the
 # config. (Documented gtimeout caveat: with --foreground, grandchildren of
@@ -144,138 +144,98 @@ preflight() {
 }
 
 # ── LiteLLM routing-mode flipping ─────────────────────────────────────────────
-# The routing on/off switch lives in modelman-owned modelman.toml's [litellm]
-# table; wt reads it read-only and never writes it. The script flips
-# [litellm].enabled directly (routing policy only — the proxy process is
-# never started or stopped), leaving url/api_key and every other section
-# verbatim, and the original is restored on any exit path. The file is
-# located at ${XDG_CONFIG_HOME:-$HOME/.config}/local-ai/modelman.toml — the
-# path wt actually reads (wt has no MODELMAN_STATE override, a deliberate
-# asymmetry: MODELMAN_STATE would flip a file wt never sees, and the smoke
-# matrix would run against the wrong mode). modelman honors XDG_CONFIG_HOME
-# at precedence 2, so targeting the XDG path keeps both tools on one file.
+# wt owns the routing on/off switch: the [litellm] table of its own
+# ${XDG_CONFIG_HOME:-$HOME/.config}/agent-wt/config.toml (modelman.toml's
+# [litellm] is only a legacy fallback that wt copies in once). The script
+# flips the mode through the tool itself — `wt litellm on` / `wt litellm off`,
+# using the same `wt` found on PATH that runs the matrix rows, so the state is
+# written properly (0600 when a key is stored) and a wt built from a branch is
+# the one that is flipped. Routing policy only: the proxy process is never
+# started or stopped. wt's config.toml is snapshotted before the first flip
+# and restored on any exit path; if it did not exist before, it is removed on
+# restore (an "absent" marker file records that, so a stale run is detected
+# either way).
 
-MODELMAN_FILE=""
-MODELMAN_BAK=""
+WT_CONFIG_FILE=""
+WT_CONFIG_BAK=""
+WT_CONFIG_ABSENT=""
+WT_CONFIG_SNAPSHOTTED=""
 
-# modelman_file_path resolves modelman's state file. Precedence mirrors
-# modelman/state.py's _default_state_path: MODELMAN_STATE override, else
-# ~/.config/local-ai/modelman.toml (modelman's state default is not XDG-
-# redirected, so the fallback matches modelman rather than wt).
-modelman_file_path() {
+# wt_config_path resolves wt's own config file, honoring XDG_CONFIG_HOME
+# exactly like wt (internal/config.Dir).
+wt_config_path() {
   local base="${XDG_CONFIG_HOME:-$HOME/.config}"
-  printf '%s\n' "$base/local-ai/modelman.toml"
+  printf '%s\n' "$base/agent-wt/config.toml"
 }
 
-# snapshot_modelman backs up the original state once, before any flip.
-# Refuses to run when a backup already exists: a leftover backup means a
-# previous run died between snapshot and restore, and overwriting it could
-# destroy the only copy of the user's original modelman.toml.
-snapshot_modelman() {
-  if [[ ! -f "$MODELMAN_FILE" ]]; then
-    echo "error: $MODELMAN_FILE not found; the smoke matrix needs modelman.toml (exposure state + [litellm] routing)" >&2
+# snapshot_wt_config backs up the original config once, before any flip.
+# Refuses to run when a backup or absent-marker already exists: a leftover
+# means a previous run died between snapshot and restore, and overwriting it
+# could destroy the only copy of the user's original config.toml.
+snapshot_wt_config() {
+  if [[ -e "$WT_CONFIG_BAK" || -e "$WT_CONFIG_ABSENT" ]]; then
+    echo "error: stale backup $WT_CONFIG_BAK (or $WT_CONFIG_ABSENT) exists; a previous run may have died mid-run." >&2
+    echo "       Inspect it, restore it by hand to $WT_CONFIG_FILE if it holds your config (or delete $WT_CONFIG_FILE if the marker exists), then remove the backup/marker." >&2
     return 1
   fi
-  if [[ -e "$MODELMAN_BAK" ]]; then
-    echo "error: stale backup $MODELMAN_BAK exists; a previous run may have died mid-run." >&2
-    echo "       Inspect it, restore it by hand to $MODELMAN_FILE if it holds your config, then remove it." >&2
-    return 1
+  mkdir -p "$(dirname "$WT_CONFIG_FILE")" || return 1
+  if [[ -f "$WT_CONFIG_FILE" ]]; then
+    cp -p "$WT_CONFIG_FILE" "$WT_CONFIG_BAK" || return 1
+  else
+    : >"$WT_CONFIG_ABSENT" || return 1
   fi
-  cp -p "$MODELMAN_FILE" "$MODELMAN_BAK"
+  WT_CONFIG_SNAPSHOTTED=yes
 }
 
-# restore_modelman returns the user's modelman.toml from the backup.
+# restore_wt_config returns wt's config.toml to its pre-run state: the backup
+# is moved back, or the file is removed when it did not exist before.
 # Idempotent: safe to call from both the explicit restore and the EXIT trap.
-restore_modelman() {
-  if [[ -n "$MODELMAN_BAK" && -f "$MODELMAN_BAK" ]]; then
-    mv "$MODELMAN_BAK" "$MODELMAN_FILE"
-    MODELMAN_BAK=""
+restore_wt_config() {
+  [[ -n "$WT_CONFIG_SNAPSHOTTED" ]] || return 0
+  if [[ -f "$WT_CONFIG_BAK" ]]; then
+    mv "$WT_CONFIG_BAK" "$WT_CONFIG_FILE"
+  elif [[ -e "$WT_CONFIG_ABSENT" ]]; then
+    rm -f "$WT_CONFIG_FILE" "$WT_CONFIG_ABSENT"
   fi
+  WT_CONFIG_SNAPSHOTTED=""
 }
 
-# set_litellm_enabled rewrites only the [litellm] enabled line in
-# MODELMAN_FILE to true or false. The temp file first inherits the
-# original's permissions via cp -p, then awk truncates and rewrites it, so
-# the swapped-in file keeps the original's mode/ownership without a
-# stat/chown dance. Atomic mv (same directory). Errors loudly when no
-# [litellm] table exists or the table lacks an enabled line, mirroring the
-# old gateway helper's fail-fast behavior — a silent no-op here would run
-# the whole matrix against the wrong mode without telling you. Section/key
-# patterns tolerate leading whitespace (modelman's TOML writer does not
-# indent section bodies, but tolerate it anyway).
+# set_litellm_enabled flips routing through the tool: `wt litellm on|off`.
+# Errors loudly on failure — a silent no-op here would run the whole matrix
+# against the wrong mode without telling you.
 set_litellm_enabled() {
-  local value="$1"
-  local tmp
-  tmp=$(mktemp "${MODELMAN_FILE}.XXXXXX") || return 1
-  if ! cp -p "$MODELMAN_FILE" "$tmp"; then
-    rm -f "$tmp"
+  local value="$1" sub="off"
+  [[ "$value" == "true" ]] && sub="on"
+  if ! wt litellm "$sub" >/dev/null; then
+    echo "error: cannot flip routing mode: 'wt litellm $sub' failed" >&2
     return 1
   fi
-  if ! grep -q '^[[:space:]]*\[litellm\][[:space:]]*$' "$tmp"; then
-    echo "error: no [litellm] table in $MODELMAN_FILE (run 'modelman litellm set --url ... --api-key ...' once to create it)" >&2
-    rm -f "$tmp"
-    return 1
-  fi
-  if ! awk -v val="$value" '
-    BEGIN { insec = 0 }
-    /^[[:space:]]*\[litellm\][[:space:]]*$/ { insec = 1; print; next }
-    /^[[:space:]]*\[/ { insec = 0 }
-    insec && /^[[:space:]]*enabled[[:space:]]*=/ { sub(/^[[:space:]]*enabled[[:space:]]*=.*/, "enabled = " val) }
-    { print }
-  ' "$MODELMAN_FILE" >"$tmp"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  if ! grep -q "^enabled = ${value}" "$tmp"; then
-    echo "error: cannot flip routing mode: no enabled line inside [litellm] in $MODELMAN_FILE" >&2
-    rm -f "$tmp"
-    return 1
-  fi
-  mv "$tmp" "$MODELMAN_FILE"
 }
 
-# litellm_field reads one field from the [litellm] section (enabled, url, or
-# api_key), stripping TOML quoting. Prints nothing when absent. The dynamic
-# regex "^[[:space:]]*<field>[[:space:]]*=" matches the same key forms as
-# set_litellm_enabled's rewrite rule, so read and write stay in lockstep.
-litellm_field() {
-  local field="$1"
-  awk -v f="$field" '
-    BEGIN { insec = 0 }
-    /^[[:space:]]*\[litellm\][[:space:]]*$/ { insec = 1; next }
-    /^[[:space:]]*\[/ { insec = 0 }
-    insec && $0 ~ ("^[[:space:]]*" f "[[:space:]]*=") {
-      line = $0
-      sub(/^[^=]*=[[:space:]]*/, "", line)
-      gsub(/"/, "", line)
-      print line
-      exit
-    }
-  ' "$MODELMAN_FILE"
+# litellm_status_json prints `wt litellm status --json` (the api key is never
+# printed by wt; only api_key_set).
+litellm_status_json() {
+  wt litellm status --json 2>/dev/null
 }
 
 # current_gateway_mode prints the effective routing mode: "litellm" when
-# [litellm].enabled is true, else "direct" (a missing table or key reads as
-# off — wt's IsDirect treats an absent table as direct).
+# routing is enabled, else "direct".
 current_gateway_mode() {
-  local enabled
-  enabled=$(litellm_field "enabled")
-  if [[ "$enabled" == "true" ]]; then
+  if litellm_status_json | grep -q '"enabled":true'; then
     printf 'litellm\n'
   else
     printf 'direct\n'
   fi
 }
 
-# require_litellm_credentials verifies [litellm] carries url and api_key: a
+# require_litellm_credentials verifies wt has a LiteLLM url and api key: a
 # litellm pass without credentials fails every row with connection errors
 # that read as agent bugs. Failing fast beats a wall of misleading FAILs.
 require_litellm_credentials() {
-  local url key
-  url=$(litellm_field "url")
-  key=$(litellm_field "api_key")
-  if [[ -z "$url" || -z "$key" ]]; then
-    echo "skip: [litellm] lacks url/api_key; the litellm pass would fail every row (see $MODELMAN_FILE)" >&2
+  local st
+  st=$(litellm_status_json)
+  if [[ "$st" != *'"api_key_set":true'* || "$st" == *'"url":""'* ]]; then
+    echo "skip: wt litellm lacks url/api_key; the litellm pass would fail every row (run 'wt litellm set --url ... --api-key ...')" >&2
     return 1
   fi
 }
@@ -399,7 +359,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/agents-smoke.sh [options]
   (no args)       Run the live agent smoke tests in both routing modes
-                  (direct then litellm; modelman.toml [litellm] state is
+                  (direct then litellm; wt's config.toml is
                   restored afterwards)
   --list          Print the test matrix and exit
   --dry-run       Print the wt command for each row and exit
@@ -582,15 +542,16 @@ main() {
 
   preflight
 
-  # Everything below flips the [litellm] routing state: resolve the path
-  # the original before any flip. (list/dry-run never touch the config.)
-  MODELMAN_FILE=$(modelman_file_path) || exit 1
-  MODELMAN_BAK="${MODELMAN_FILE}.agents-smoke.bak"
-  snapshot_modelman || exit 1
+  # Everything below flips the [litellm] routing state: snapshot wt's
+  # config.toml (or record its absence) before any flip. (list/dry-run never touch the config.)
+  WT_CONFIG_FILE=$(wt_config_path) || exit 1
+  WT_CONFIG_BAK="${WT_CONFIG_FILE}.agents-smoke.bak"
+  WT_CONFIG_ABSENT="${WT_CONFIG_FILE}.agents-smoke.absent"
+  snapshot_wt_config || exit 1
   # Restore the original on any exit path. INT/TERM exit so the EXIT trap
   # fires the restore (a plain restore-and-return handler would let the
   # script continue after Ctrl-C).
-  trap 'restore_modelman' EXIT
+  trap 'restore_wt_config' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -611,8 +572,8 @@ main() {
     ((pass_idx++)) || true
     run_tests_for_mode "$mode" "$([[ $pass_idx -eq 1 ]] && echo yes || echo no)" || overall_rc=1
   done
-  restore_modelman
-  echo "=== modelman.toml restored to original [litellm] state ==="
+  restore_wt_config
+  echo "=== wt config.toml restored to original state ==="
   exit $overall_rc
 }
 

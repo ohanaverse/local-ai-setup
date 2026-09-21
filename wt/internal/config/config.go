@@ -155,13 +155,13 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 		if c.LitellmBaseURL() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no URL is configured — "+
-					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on': %w",
+					"run 'wt litellm set --url ... --api-key ...' or 'wt litellm on': %w",
 				ErrLitellmUnconfigured)
 		}
 		if c.LitellmAPIKey() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no API key is configured — "+
-					"run 'modelman litellm set --url ... --api-key ...': %w",
+					"run 'wt litellm set --url ... --api-key ...': %w",
 				ErrLitellmUnconfigured)
 		}
 		return Route{
@@ -178,7 +178,7 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 	if provider.Auth.BaseURL == "" {
 		return Route{}, fmt.Errorf(
 			"direct routing: provider %q has no auth.base_url in registry.toml — "+
-				"set one, or enable the proxy with 'modelman litellm on'", providerID)
+				"set one, or enable the proxy with 'wt litellm on'", providerID)
 	}
 	apiKey := ""
 	if provider.Auth.SecretRef != "" {
