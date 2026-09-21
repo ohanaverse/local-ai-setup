@@ -78,7 +78,7 @@ func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
 // ErrLitellmUnconfigured wraps a ResolveRoute failure caused specifically by
 // litellm routing being required (forced by a protocol mismatch, or chosen
-// via the on/off toggle) while modelman.toml's [litellm] url/api_key are
+// via the on/off toggle) while wt's [litellm] url/api_key are
 // unset. Callers (the model picker) use errors.Is against this sentinel to
 // show a more specific "litellm required" label instead of a generic
 // "unavailable" one, which would also cover unrelated failures like an

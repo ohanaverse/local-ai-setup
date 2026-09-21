@@ -407,7 +407,7 @@ func TestBuildTableMarksOnlyDeviatingRows(t *testing.T) {
 }
 
 // TestBuildTableLitellmRequiredLabel: claude only speaks anthropic, so
-// claude+openrouter forces a litellm route. When modelman.toml's [litellm]
+// claude+openrouter forces a litellm route. When wt's [litellm]
 // url/api_key are unset (directOnlyTestConfig leaves them zero-valued), the
 // row must say "(litellm required)" — not the generic "(unavailable)" —
 // because the fix is specifically "configure litellm", distinct from a
