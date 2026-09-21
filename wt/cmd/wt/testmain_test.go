@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
 // TestMain stubs the two live seams a cmd/wt test would otherwise hit: the
@@ -24,6 +26,13 @@ func TestMain(m *testing.M) {
 	// stop the developer's running models.
 	releaseSession = func() {}
 	runStopPicker = func(*config.Config) {}
+	// `wt stop` seams: no test may probe live servers or stop a real model.
+	stopCandidates = func(*config.Config) []survey.Candidate { return nil }
+	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
+		return errors.New("stopEntries not stubbed in this test")
+	}
+	stopPickerAll = func(*config.Config) {}
+	confirmStop = func(string) (bool, error) { return false, nil }
 	os.Exit(m.Run())
 }
 
