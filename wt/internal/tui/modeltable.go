@@ -134,7 +134,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 				// The rule itself lives in catalog.Row.RefusedByRoute, shared
 				// with the non-TUI pin and `wt smoke`.
 				it.exception = "(not in LiteLLM)"
-				it.blocked = "discovered model " + r.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
+				it.blocked = "discovered model " + r.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (wt litellm off) to use it"
 				it.start = false
 			case err != nil:
 				it.exception = "(unavailable)"

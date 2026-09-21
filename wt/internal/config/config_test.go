@@ -879,7 +879,7 @@ func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
 
 // TestLitellmDirectByDefault asserts that a zero-value [litellm] state is
 // treated as direct (no proxy). This is the safe default: until the user
-// explicitly runs `modelman litellm on`, wt must keep routing agents to
+// explicitly runs `wt litellm on`, wt must keep routing agents to
 // their provider endpoints directly.
 func TestLitellmDirectByDefault(t *testing.T) {
 	cfg := &Config{}

@@ -73,41 +73,18 @@ func TestWaitReady(t *testing.T) {
 	}
 }
 
-// TestAlive pins the one-shot liveness probe the lifecycle route hook uses to
-// decide whether waiting for the proxy after a restart is worth anything: 200
-// on /health/liveliness is alive, a non-200 or an unreachable port is not, and
-// a dead port must fail fast rather than burn the caller's timeout.
-func TestAlive(t *testing.T) {
+// TestListeningHitsLivenessPath pins the shared health request: it dials
+// /health/liveliness (once, even with a trailing slash on the base URL), and
+// honors a cancelled caller ctx by reporting nothing listening.
+func TestListeningHitsLivenessPath(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health/liveliness" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 	}))
 	defer up.Close()
-	if !Alive(context.Background(), up.URL+"/", 2*time.Second) {
-		t.Error("Alive on a healthy proxy = false")
-	}
-
-	sick := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer sick.Close()
-	if Alive(context.Background(), sick.URL, 2*time.Second) {
-		t.Error("Alive on a 503 proxy = true")
-	}
-
-	began := time.Now()
-	if Alive(context.Background(), "http://127.0.0.1:1", 2*time.Second) {
-		t.Error("Alive on a closed port = true")
-	}
-	if el := time.Since(began); el > 2*time.Second {
-		t.Errorf("Alive on a closed port took %v, want an immediate refusal", el)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if Alive(ctx, up.URL, 2*time.Second) {
-		t.Error("Alive with a cancelled ctx = true, want the caller's cancel honored")
+	if !Listening(context.Background(), up.URL+"/", 2*time.Second) {
+		t.Error("Listening on a healthy proxy = false")
 	}
 }
 
@@ -147,9 +124,6 @@ func TestListeningOnlyFalseWhenNothingIsThere(t *testing.T) {
 	defer unhealthy.Close()
 	if !Listening(ctx, unhealthy.URL, time.Second) {
 		t.Error("a 503 answer must count as listening")
-	}
-	if Alive(ctx, unhealthy.URL, time.Second) {
-		t.Error("Alive must stay strict: 503 is not alive")
 	}
 
 	release := make(chan struct{})

@@ -373,8 +373,8 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 	}
 
 	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
-	// GatewayConfig was deleted (Task 9): LiteLLM routing now lives in
-	// modelman-owned modelman.toml's [litellm] table. The decoded Config
+	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
+	// [litellm] table (managed with `wt litellm ...`). The decoded Config
 	// simply has no Gateway field, so re-saving drops the block; this
 	// fixup only detects its presence to point the user at the new
 	// control surface. Self-extinguishing: after the triggered Save, the
@@ -403,7 +403,7 @@ func dropLegacyGateway(path string) (changed bool) {
 	if err := toml.Unmarshal(raw, &probe); err != nil || probe.Gateway == nil {
 		return false
 	}
-	fmt.Fprintln(os.Stderr, "wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by modelman (see 'modelman litellm status'); this block will be dropped on next save")
+	fmt.Fprintln(os.Stderr, "wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save")
 	return true
 }
 

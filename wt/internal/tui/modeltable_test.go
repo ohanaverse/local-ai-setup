@@ -132,6 +132,11 @@ func TestRenderTableDiscoveredBlockedUnderLitellm(t *testing.T) {
 	if lite.items[0].exception != "(not in LiteLLM)" || lite.items[0].blocked == "" || lite.items[0].start {
 		t.Errorf("litellm mode: exception=%q blocked=%q start=%v", lite.items[0].exception, lite.items[0].blocked, lite.items[0].start)
 	}
+	// Advice must name a command that changes the state wt reads (wt owns
+	// routing now; `modelman litellm off` would not).
+	if !strings.Contains(lite.items[0].blocked, "wt litellm off") || strings.Contains(lite.items[0].blocked, "modelman litellm") {
+		t.Errorf("blocked hint = %q, want `wt litellm off`", lite.items[0].blocked)
+	}
 }
 
 // TestRenderTableDiscoveredLitellmUnconfigured verifies that a discovered row

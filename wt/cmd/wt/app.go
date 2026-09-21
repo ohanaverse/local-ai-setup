@@ -7,9 +7,10 @@ import (
 
 // app holds shared dependencies loaded once at startup.
 type app struct {
-	cfg    *config.Config
-	cfgErr error        // config load/validation error, if any; surfaced by commands that can repair it
-	theme  themes.Theme // active theme; populated by newApp()
+	cfg     *config.Config
+	cfgErr  error        // config load/validation error, if any; surfaced by commands that can repair it
+	loadErr error        // config.Load error ONLY (parse/IO/registry missing); gates commands that just rewrite wt's own [litellm] state
+	theme   themes.Theme // active theme; populated by newApp()
 }
 
 // newApp loads the config (best-effort) and the active theme. Config
@@ -20,6 +21,7 @@ type app struct {
 // out to ollama or hit the OpenRouter API.
 func newApp() (*app, error) {
 	cfg, cfgErr := config.Load()
+	loadErr := cfgErr
 	if cfg == nil {
 		cfg = &config.Config{DefaultTag: "code"}
 	}
@@ -34,5 +36,5 @@ func newApp() (*app, error) {
 	if err != nil && !themes.IsThemeNameError(err) {
 		return nil, err
 	}
-	return &app{cfg: cfg, cfgErr: cfgErr, theme: theme}, nil
+	return &app{cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme}, nil
 }

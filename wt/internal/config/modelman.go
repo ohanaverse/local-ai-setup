@@ -7,8 +7,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// LitellmState mirrors the `[litellm]` table from
-// ~/.config/local-ai/modelman.toml. wt reads it read-only; modelman owns it.
+// LitellmState is wt-owned since 2026-09-21; it mirrors `[litellm]` in wt's
+// config.toml. modelman.toml's `[litellm]` is a legacy read-only fallback.
 // It controls whether agents dial providers directly or route through the
 // LiteLLM proxy.
 type LitellmState struct {
@@ -45,23 +45,24 @@ type modelmanState struct {
 		Ready          bool `toml:"ready"`
 		Downloaded     bool `toml:"downloaded"`
 	} `toml:"model_state"`
-	Litellm LitellmState `toml:"litellm"`
+	Litellm *LitellmState `toml:"litellm"`
 }
 
 // loadModelmanState reads modelman.toml and returns the exposure map and
-// the [litellm] routing state. A missing file returns empty values.
-func loadModelmanState() (map[string]ExposureEntry, LitellmState, error) {
+// the legacy [litellm] routing state (nil when the table is absent). A missing
+// file returns an empty map and nil.
+func loadModelmanState() (map[string]ExposureEntry, *LitellmState, error) {
 	path := ModelmanPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]ExposureEntry{}, LitellmState{}, nil
+		return map[string]ExposureEntry{}, nil, nil
 	}
 	if err != nil {
-		return nil, LitellmState{}, fmt.Errorf("read modelman.toml: %w", err)
+		return nil, nil, fmt.Errorf("read modelman.toml: %w", err)
 	}
 	var s modelmanState
 	if err := toml.Unmarshal(data, &s); err != nil {
-		return nil, LitellmState{}, fmt.Errorf("parse modelman.toml: %w", err)
+		return nil, nil, fmt.Errorf("parse modelman.toml: %w", err)
 	}
 	out := make(map[string]ExposureEntry, len(s.ModelState))
 	for id, st := range s.ModelState {

@@ -35,10 +35,30 @@ const (
 // ollama provider's auth base URL.
 const OllamaBaseURL = "http://localhost:11434"
 
-// ── LiteLLM routing state (modelman-sourced) ─────────────
+// ── LiteLLM routing state (wt-owned) ─────────────────────
+
+// UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
+// wt's config.toml. wt owns this state (moved from modelman.toml 2026-09-21).
+func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
+	prev, prevTable := c.litellm, c.LitellmTable
+	s := c.litellm
+	mutate(&s)
+	c.litellm = s
+	c.LitellmTable = &s
+	if err := Save(c); err != nil {
+		// Nothing persisted: keep memory in step with disk so later routing
+		// in this process does not act on a state that was never saved.
+		c.litellm, c.LitellmTable = prev, prevTable
+		return err
+	}
+	return nil
+}
+
+// LitellmConfigured reports whether both the proxy URL and API key are set.
+func (c *Config) LitellmConfigured() bool { return c.litellm.URL != "" && c.litellm.APIKey != "" }
 
 // IsLitellm reports whether non-native models route through the LiteLLM
-// proxy, sourced read-only from modelman.toml's [litellm].enabled. wt
+// proxy, per the wt-owned [litellm].enabled. wt
 // never starts, stops, or restarts the proxy — this is routing policy only.
 func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
 
@@ -46,18 +66,18 @@ func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
 // agent×provider protocol overlap allows it.
 func (c *Config) IsDirect() bool { return !c.litellm.Enabled }
 
-// LitellmBaseURL returns the modelman-sourced proxy URL with any trailing
+// LitellmBaseURL returns the proxy URL with any trailing
 // slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
 // so a user URL like "http://localhost:4000/" must not produce a double
 // slash. TrimRight (not TrimSuffix) so a double-slash typo is also
 // normalized.
 func (c *Config) LitellmBaseURL() string { return strings.TrimRight(c.litellm.URL, "/") }
 
-// LitellmAPIKey returns the modelman-sourced proxy API key.
+// LitellmAPIKey returns the proxy API key.
 func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
 
-// SetLitellmForTest overrides the modelman-sourced [litellm] routing state.
-// Production wiring goes through finalizeCfg (loadModelmanState); tests in
+// SetLitellmForTest overrides the [litellm] routing state.
+// Production wiring goes through finalizeCfg (config.toml / legacy fallback); tests in
 // other packages cannot set the unexported field directly.
 func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
@@ -65,7 +85,7 @@ func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
 // ErrLitellmUnconfigured wraps a ResolveRoute failure caused specifically by
 // litellm routing being required (forced by a protocol mismatch, or chosen
-// via the on/off toggle) while modelman.toml's [litellm] url/api_key are
+// via the on/off toggle) while wt's [litellm] url/api_key are
 // unset. Callers (the model picker) use errors.Is against this sentinel to
 // show a more specific "litellm required" label instead of a generic
 // "unavailable" one, which would also cover unrelated failures like an
@@ -142,13 +162,13 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 		if c.LitellmBaseURL() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no URL is configured — "+
-					"run 'modelman litellm set --url ... --api-key ...' or 'modelman litellm on': %w",
+					"run 'wt litellm set --url ... --api-key ...' or 'wt litellm on': %w",
 				ErrLitellmUnconfigured)
 		}
 		if c.LitellmAPIKey() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no API key is configured — "+
-					"run 'modelman litellm set --url ... --api-key ...': %w",
+					"run 'wt litellm set --url ... --api-key ...': %w",
 				ErrLitellmUnconfigured)
 		}
 		return Route{
@@ -165,7 +185,7 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 	if provider.Auth.BaseURL == "" {
 		return Route{}, fmt.Errorf(
 			"direct routing: provider %q has no auth.base_url in registry.toml — "+
-				"set one, or enable the proxy with 'modelman litellm on'", providerID)
+				"set one, or enable the proxy with 'wt litellm on'", providerID)
 	}
 	apiKey := ""
 	if provider.Auth.SecretRef != "" {
@@ -296,12 +316,15 @@ type Agent struct {
 // wt-owned config.toml; Providers + Models come from modelman-owned
 // registry.toml and are never persisted by wt (see Save).
 type Config struct {
-	DefaultTag string                   `toml:"default_tag"`
-	Providers  []Provider               `toml:"providers"`
-	Models     []Model                  `toml:"models"`
-	Agents     []Agent                  `toml:"agents"`
-	litellm    LitellmState             `toml:"-"` // from modelman.toml
-	exposed    map[string]ExposureEntry `toml:"-"` // from modelman.toml
+	DefaultTag string     `toml:"default_tag"`
+	Providers  []Provider `toml:"providers"`
+	Models     []Model    `toml:"models"`
+	Agents     []Agent    `toml:"agents"`
+	// LitellmTable is the wt-owned persisted [litellm] routing state.
+	LitellmTable    *LitellmState            `toml:"litellm,omitempty"`
+	migratedLitellm bool                     `toml:"-"`
+	litellm         LitellmState             `toml:"-"` // runtime copy of LitellmTable (or the legacy fallback)
+	exposed         map[string]ExposureEntry `toml:"-"` // from modelman.toml
 	// wt decides which local models are running from the live inventory
 	// (internal/localmodels), never from modelman's per-model `running` flag.
 	// The flag-parsing fields that used to live here were removed when the
@@ -389,7 +412,19 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	return finalizeCfg(cfg, providers, models)
+	c, err := finalizeCfg(cfg, providers, models)
+	if err != nil {
+		return nil, err
+	}
+	if c.migratedLitellm {
+		if err := Save(c); err != nil {
+			fmt.Fprintf(os.Stderr, "wt: could not persist [litellm] to config.toml: %v\n", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "wt: moved [litellm] routing state from modelman.toml into wt's config.toml")
+		}
+		c.migratedLitellm = false
+	}
+	return c, nil
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
@@ -398,12 +433,19 @@ func Load() (*Config, error) {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
-	exposed, litellm, err := loadModelmanState()
+	exposed, legacy, err := loadModelmanState()
 	if err != nil {
 		return nil, err
 	}
 	cfg.exposed = exposed
-	cfg.litellm = litellm
+	switch {
+	case cfg.LitellmTable != nil:
+		cfg.litellm = *cfg.LitellmTable
+	case legacy != nil:
+		cfg.litellm = *legacy
+		cfg.LitellmTable = legacy
+		cfg.migratedLitellm = true
+	}
 	return cfg, nil
 }
 
@@ -427,10 +469,10 @@ func (c *Config) validate() []error {
 		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
 	}
 
-	// Note: no validation of the [litellm] routing state here — it is sourced
-	// from modelman-owned modelman.toml, which wt cannot repair (Global
-	// Constraints: wt never fails closed on modelman.toml). A bad value only
-	// surfaces when ResolveRoute actually needs it at launch time.
+	// Note: no semantic validation of the [litellm] routing state here. A
+	// malformed [litellm] table in wt's own config.toml already fails the
+	// config load like any malformed config.toml; a missing or empty URL/key
+	// only surfaces when ResolveRoute actually needs it at launch time.
 
 	// Providers
 	provIDs := map[string]bool{}
@@ -740,14 +782,33 @@ func (c *Config) DeleteAgent(name string) {
 	}
 }
 
-// WriteFileAtomic writes data to path atomically via a temp file + rename,
-// creating the parent directory if needed.
-func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// WriteFileAtomic writes data to path atomically via a unique temp file in the
+// same directory + rename, creating the parent directory if needed. The temp
+// name is unique per call so concurrent writers never share (and truncate)
+// one another's temp file; the loser of the rename race simply loses.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// Best-effort cleanup so a failed write/chmod/rename never leaves a
+	// (possibly secret-bearing) temp file behind; after a successful rename
+	// the name no longer exists and the error is ignored.
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes the file 0600; set the requested mode explicitly.
+	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -764,7 +825,11 @@ func Save(cfg *Config) error {
 	if err := toml.NewEncoder(&buf).Encode(&trimmed); err != nil {
 		return err
 	}
-	return WriteFileAtomic(Path(), buf.Bytes(), 0o644)
+	mode := os.FileMode(0o644)
+	if cfg.LitellmTable != nil && cfg.LitellmTable.APIKey != "" {
+		mode = 0o600
+	}
+	return WriteFileAtomic(Path(), buf.Bytes(), mode)
 }
 
 // ModelsForAgent returns the models whose ProviderID is in the named

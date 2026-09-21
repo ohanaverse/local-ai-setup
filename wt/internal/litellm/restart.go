@@ -60,41 +60,13 @@ func RestartContext(ctx context.Context) []string {
 // Apply default when Options.Restart is nil).
 func Restart() []string { return RestartContext(context.Background()) }
 
-// Alive reports whether the proxy at baseURL answers /health/liveliness with
-// 200 within timeout. It is one request, not a poll: callers use it to decide
-// whether a proxy was up BEFORE a route change, so they only wait for it to
-// come back when there was something running to come back.
-func Alive(ctx context.Context, baseURL string, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	url := strings.TrimRight(baseURL, "/") + "/health/liveliness"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
 // Listening reports whether a proxy may be serving at baseURL: false only when
 // the request positively fails because nothing is there (connection refused,
 // unresolvable host). A timeout, a non-200 or any other answer counts as
 // listening, so a busy or half-started proxy is still waited for after a
-// restart instead of being launched into mid-bounce. Alive is the strict
-// counterpart; this is the one to gate a post-restart wait on.
+// restart instead of being launched into mid-bounce.
 func Listening(ctx context.Context, baseURL string, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	url := strings.TrimRight(baseURL, "/") + "/health/liveliness"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := healthGet(ctx, baseURL, timeout)
 	if err != nil {
 		var dns *net.DNSError
 		return !errors.Is(err, syscall.ECONNREFUSED) && !errors.As(err, &dns)
@@ -103,13 +75,26 @@ func Listening(ctx context.Context, baseURL string, timeout time.Duration) bool 
 	return true
 }
 
+// healthGet makes one bounded request to the proxy's liveness endpoint.
+func healthGet(ctx context.Context, baseURL string, timeout time.Duration) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL(baseURL), nil)
+	if err != nil {
+		return nil, err
+	}
+	return (&http.Client{Timeout: timeout}).Do(req)
+}
+
+func healthURL(baseURL string) string { return strings.TrimRight(baseURL, "/") + "/health/liveliness" }
+
 // WaitReady polls <baseURL>/health/liveliness until it answers 200 or the
 // timeout elapses, so a caller does not launch an agent into a proxy that is
 // still coming back up.
 func WaitReady(ctx context.Context, baseURL string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	url := strings.TrimRight(baseURL, "/") + "/health/liveliness"
+	url := healthURL(baseURL)
 	client := &http.Client{Timeout: 2 * time.Second}
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

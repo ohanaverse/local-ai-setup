@@ -349,6 +349,11 @@ func TestResolveModelPinOnDiscoveredUnderLitellmRefuses(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not in LiteLLM") {
 		t.Errorf("err = %v, want the picker's not-in-LiteLLM wording", err)
 	}
+	// Advice must name a command that changes the state wt reads (wt owns
+	// routing now; `modelman litellm off` would not).
+	if err != nil && (!strings.Contains(err.Error(), "wt litellm off") || strings.Contains(err.Error(), "modelman litellm")) {
+		t.Errorf("hint = %v, want `wt litellm off`", err)
+	}
 	if calls.called {
 		t.Error("a route-blocked pin must not reach the start driver")
 	}
