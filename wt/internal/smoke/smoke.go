@@ -58,6 +58,19 @@ func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
 	return func() { smokeProbe = old }
 }
 
+// SetBuildAndRunForTest replaces the agent-run seam with fn, which reports a
+// row's combined output and exit code (a non-zero code makes the row FAIL), and
+// returns the func restoring the real seam. It exists for cmd/wt's tests, which
+// cannot assign this package's unexported buildAndRun. Tests only.
+func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) (output string, exitCode int)) (restore func()) {
+	old := buildAndRun
+	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
+		out, code := fn(cfg, agentName, m, prompt, cwd, timeout)
+		return execOutcome{Command: agentName + " (stub)", Output: out, ExitCode: code}
+	}
+	return func() { buildAndRun = old }
+}
+
 // Candidate is one model a smoke run could target: its catalog row (Action is
 // launch, or start for a non-running local model wt can start) and the agents
 // that could run it once it is up.
