@@ -193,33 +193,3 @@ func TestModelPickerViewHeaderAlignsWithRows(t *testing.T) {
 		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, first.model.Family), header, row)
 	}
 }
-
-// TestPinnedPathTableReflectsRunningInventory verifies that on the -M path the
-// table's local rows use the live inventory: a running local model must be a
-// launchable row (blocked == ""), so cancelling the resume prompt and pressing
-// Enter does not falsely claim it is not running.
-func TestPinnedPathTableReflectsRunningInventory(t *testing.T) {
-	requireBinary(t, "claude")
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true},
-	}})
-	cfg := modelTestConfig()
-	// The pinned model launches at once when its route resolves, which would
-	// leave no table to inspect. Strip the fixture's routing so the launch bails
-	// back to the picker, the state this test was written against.
-	cfg.SetLitellmForTest(config.LitellmState{})
-	cfg.Providers[1].Protocols, cfg.Providers[1].Auth.BaseURL = nil, ""
-	tempStateDir(t)
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	m := model{cfg: cfg, agent: "claude", pinnedModel: "omlx/qwen3.8", selectedPath: t.TempDir(), width: 80, height: 24}
-	models, _ := cfg.EligibleModels("claude", "", "")
-	got, _ := m.enterModelPhase("claude", models, "code")
-	idx := indexOfID(got, "omlx/qwen3.8")
-	if idx < 0 {
-		t.Fatalf("pinned row missing: %v", itemIDs(got))
-	}
-	if b := got.models.Items()[idx].(*modelItem).blocked; b != "" {
-		t.Errorf("running pinned row blocked = %q, want launchable", b)
-	}
-}

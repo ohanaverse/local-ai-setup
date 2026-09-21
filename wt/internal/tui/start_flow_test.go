@@ -813,3 +813,30 @@ func TestReplaceFlagOnlyCoversThePinnedRow(t *testing.T) {
 		t.Error("a non-pinned row must not inherit --replace")
 	}
 }
+
+// TestReplaceFlagGrantsPermissionToPinnedRow verifies the --replace plumbing
+// end to end inside the TUI: with allowReplace set, Enter on the -M pinned
+// start row reaches the engine with AllowReplace true (no dialog needed), and
+// without it the same row starts with AllowReplace false so an occupied
+// provider raises the replace dialog. The existing test pins only that a
+// non-pinned row does NOT inherit the flag; this pins the positive path, so a
+// dropped Run(allowReplace) → model.allowReplace → beginStart wire fails here.
+func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
+	requireBinary(t, "claude")
+	for _, allow := range []bool{true, false} {
+		m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+		m.allowReplace = allow
+		m.pinnedModel = "ollama/gemma4:9b"
+		calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+
+		got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+		if got.start != nil && got.start.cancel != nil {
+			t.Cleanup(got.start.cancel)
+		}
+		waitStartCalls(t, calls, 1)
+
+		if got := calls.at(0).opts.AllowReplace; got != allow {
+			t.Errorf("allowReplace=%v: engine saw AllowReplace=%v, want %v", allow, got, allow)
+		}
+	}
+}
