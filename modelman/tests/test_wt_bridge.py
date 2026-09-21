@@ -1,0 +1,150 @@
+"""Tests for the wt subprocess bridge (wt owns LiteLLM management)."""
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from modelman import wt_bridge
+
+
+def _cp(stdout="", returncode=0, stderr=""):
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+@pytest.fixture
+def calls(monkeypatch):
+    """Record argv/env of every wt invocation and return canned output."""
+    seen = []
+    state = {"out": _cp(json.dumps({"outcomes": [], "changed": False, "warnings": []}))}
+
+    def fake_run(argv, **kwargs):
+        seen.append((argv, kwargs.get("env") or {}))
+        return state["out"]
+
+    monkeypatch.setattr(
+        wt_bridge, "_run", lambda args, env=None: fake_run(["wt", "litellm", *args], env=env)
+    )
+    return seen, state
+
+
+def test_expose_builds_argv_and_parses_json(calls):
+    # Pins the wire contract with `wt litellm expose`: modelman always passes
+    # --skip-ready-gate (it applied the gate against its own in-memory state)
+    # and --json, and per-id errors surface as BridgeOutcome.error rather than
+    # exceptions so the queue can report them per model. A partial batch exits
+    # 1 but still prints JSON, which must be parsed regardless of exit code.
+    seen, state = calls
+    state["out"] = _cp(
+        json.dumps(
+            {
+                "outcomes": [{"id": "a", "action": "exposed"}, {"id": "b", "error": "nope"}],
+                "changed": True,
+                "warnings": ["w"],
+            }
+        ),
+        returncode=1,
+    )
+    res = wt_bridge.expose(["a", "b"])
+    assert seen[0][0] == ["wt", "litellm", "expose", "--json", "--skip-ready-gate", "a", "b"]
+    assert [(o.id, o.action, o.error) for o in res.outcomes] == [
+        ("a", "exposed", None),
+        ("b", None, "nope"),
+    ]
+    assert res.changed and res.warnings == ["w"]
+
+
+def test_unexpose_partial_batch_parses_json_on_exit_1(calls):
+    # Same partial-batch rule for unexpose: exit 1 with JSON is per-id errors,
+    # not a bridge failure.
+    seen, state = calls
+    state["out"] = _cp(
+        json.dumps(
+            {"outcomes": [{"id": "a", "error": "not routed"}], "changed": False, "warnings": []}
+        ),
+        returncode=1,
+    )
+    res = wt_bridge.unexpose(["a"])
+    assert seen[0][0] == ["wt", "litellm", "unexpose", "--json", "a"]
+    assert res.outcomes[0].error == "not routed"
+
+
+def test_litellm_path_is_passed_via_env(calls):
+    # Tests and custom setups point modelman at a non-default config.yaml;
+    # the bridge must forward that to wt through WT_LITELLM_CONFIG or wt would
+    # edit the developer's real file.
+    seen, _ = calls
+    wt_bridge.unexpose(["a"], litellm_path=Path("/tmp/x.yaml"))
+    assert seen[0][1]["WT_LITELLM_CONFIG"] == "/tmp/x.yaml"
+
+
+def test_file_level_failure_raises(calls):
+    # A non-JSON failure (missing/invalid config.yaml) means nothing applied:
+    # the bridge must raise so callers treat the whole batch as failed rather
+    # than parsing garbage.
+    _, state = calls
+    state["out"] = _cp("", returncode=1, stderr="LiteLLM config not found: /x")
+    with pytest.raises(wt_bridge.WtBridgeError, match="LiteLLM config not found"):
+        wt_bridge.expose(["a"])
+
+
+def test_missing_wt_binary_is_a_clear_error(monkeypatch):
+    # modelman now requires the wt binary; fail before any state change with
+    # an actionable message instead of a bare FileNotFoundError.
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda _: None)
+    with pytest.raises(wt_bridge.WtNotFoundError, match="make install"):
+        wt_bridge.ensure_wt()
+
+
+def test_litellm_status_text_returns_stdout(calls):
+    # modelman's `litellm status` CLI passes wt's text through because the
+    # ***last4 key masking lives in wt; the bridge must call status WITHOUT
+    # --json and return stdout verbatim.
+    seen, state = calls
+    state["out"] = _cp("litellm: on\n  url: http://x\n  api_key: ***abcd\n")
+    assert wt_bridge.litellm_status_text() == "litellm: on\n  url: http://x\n  api_key: ***abcd\n"
+    assert seen[0][0] == ["wt", "litellm", "status"]
+
+
+def test_litellm_status_text_raises_on_failure(calls):
+    # A non-zero exit must surface wt's message rather than return garbage.
+    _, state = calls
+    state["out"] = _cp("", returncode=1, stderr="boom")
+    with pytest.raises(wt_bridge.WtBridgeError, match="boom"):
+        wt_bridge.litellm_status_text()
+
+
+def test_provider_cloud_flags_never_raises_and_warns_once(monkeypatch, capsys):
+    # provider_cloud_flags() runs on TUI render paths for every model row, so a
+    # missing/broken wt must degrade to {} with exactly one stderr warning per
+    # process rather than crash or spam the terminal.
+    def boom(args, env=None):
+        raise wt_bridge.WtNotFoundError("wt not found on PATH; install it with `make install`")
+
+    monkeypatch.setattr(wt_bridge, "_run", boom)
+    wt_bridge._reset_provider_cache()
+    assert wt_bridge.provider_cloud_flags() == {}
+    assert wt_bridge.provider_cloud_flags() == {}
+    err = capsys.readouterr().err
+    assert err.count("cannot read wt's LiteLLM provider table") == 1
+    wt_bridge._reset_provider_cache()
+
+
+def test_provider_cloud_flags_caches_success(monkeypatch):
+    # A successful read is cached for the process: wt is only spawned once
+    # even though render paths call this per row.
+    n = {"c": 0}
+
+    def ok(args, env=None):
+        n["c"] += 1
+        return _cp(
+            json.dumps({"providers": {"ollama": {"cloud": False}, "openrouter": {"cloud": True}}})
+        )
+
+    monkeypatch.setattr(wt_bridge, "_run", ok)
+    wt_bridge._reset_provider_cache()
+    assert wt_bridge.provider_cloud_flags() == {"ollama": False, "openrouter": True}
+    assert wt_bridge.provider_cloud_flags() == {"ollama": False, "openrouter": True}
+    assert n["c"] == 1
+    wt_bridge._reset_provider_cache()

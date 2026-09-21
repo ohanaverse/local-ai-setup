@@ -84,6 +84,56 @@ def _never_call_real_ollama(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _never_call_real_wt(monkeypatch):
+    """The suite must never run the real `wt` binary: it would rewrite the
+    developer's real LiteLLM config.yaml and bounce their live proxy. Every
+    bridge call goes through wt_bridge._run; replace it with a fake that
+    applies exposes to nothing and reports the known provider table. The
+    provider cache is reset before and after so no test sees another's table.
+    Tests that assert on the bridge itself monkeypatch _run again."""
+    import json
+
+    from modelman import wt_bridge
+
+    def fake(args, env=None):
+        if args[:1] == ["providers"]:
+            out = {
+                "providers": {
+                    p: {"cloud": p == "openrouter"}
+                    for p in ("ollama", "omlx", "mlx_lm_server", "mtplx", "llamacpp", "openrouter")
+                }
+            }
+        elif args[:1] == ["list"]:
+            out = {"routed": []}
+        elif args[:1] == ["status"]:
+            if "--json" in args:
+                out = {"enabled": False, "url": "", "api_key_set": False}
+            else:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="litellm: off\n  url: (unset)\n  api_key: (unset)\n",
+                    stderr="",
+                )
+        elif args[:1] in (["on"], ["off"], ["set"]):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        else:
+            ids = [a for a in args[1:] if not a.startswith("--")]
+            act = "unexposed" if args[:1] == ["unexpose"] else "exposed"
+            out = {
+                "outcomes": [{"id": i, "action": act} for i in ids],
+                "changed": True,
+                "warnings": [],
+            }
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(out), stderr="")
+
+    wt_bridge._reset_provider_cache()
+    monkeypatch.setattr(wt_bridge, "_run", fake)
+    yield
+    wt_bridge._reset_provider_cache()
+
+
 _real_subprocess_run = subprocess.run
 
 # argv[0] basenames (plus the "mlx_lm.*" family) the suite must NEVER
