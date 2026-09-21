@@ -255,3 +255,35 @@ func TestSyncDecidesUnderTheLock(t *testing.T) {
 		t.Fatalf("routed = %v, want the not-running model's route removed", ids)
 	}
 }
+
+// TestModelForToleratesSpellingDifferences pins that ModelFor resolves a
+// provider-side name the way the live inventory does — ollama's implicit
+// ":latest" tag and an org-prefixed omlx/mtplx spelling — so a started model
+// whose name differs from the registry's still gets its LiteLLM route instead
+// of a "not in the registry" warning. An exact match must win, and a name that
+// fits more than one registry model resolves to none rather than the wrong one.
+func TestModelForToleratesSpellingDifferences(t *testing.T) {
+	cfg := &config.Config{Models: []config.Model{
+		{ID: "ollama/gemma", ProviderID: "ollama", ModelName: "gemma"},
+		{ID: "ollama/qwen:latest", ProviderID: "ollama", ModelName: "qwen:latest"},
+		{ID: "mtplx/Y--Q35", ProviderID: "mtplx", ModelName: "Org/Q35"},
+		{ID: "mtplx/A--Q35", ProviderID: "mtplx", ModelName: "Other/Q35"},
+		{ID: "mtplx/Y--Q27", ProviderID: "mtplx", ModelName: "Org/Q27"},
+	}}
+	cases := []struct{ provider, name, want string }{
+		{"ollama", "gemma", "ollama/gemma"},          // exact
+		{"ollama", "gemma:latest", "ollama/gemma"},   // target has the implicit tag
+		{"ollama", "qwen", "ollama/qwen:latest"},     // registry has the tag
+		{"mtplx", "Org/Q27", "mtplx/Y--Q27"},         // exact
+		{"mtplx", "/models/Org/Q27", "mtplx/Y--Q27"}, // path-prefixed spelling
+		{"mtplx", "Q35", ""},                         // fits two registry models: ambiguous
+		{"ollama", "nope:1", ""},                     // unregistered
+		{"omlx", "gemma", ""},                        // wrong provider
+	}
+	for _, c := range cases {
+		m, ok := ModelFor(cfg, c.provider, c.name)
+		if got := m.ID; (c.want == "") == ok || got != c.want {
+			t.Errorf("ModelFor(%s, %q) = %q ok=%v, want %q", c.provider, c.name, got, ok, c.want)
+		}
+	}
+}
