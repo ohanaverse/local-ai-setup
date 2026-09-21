@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -176,6 +177,11 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 				return smokeTarget{Row: c.Row, Agents: c.Agents}, nil
 			}
 		}
+		// A blocked local row (not on disk, no start backend) is not a candidate,
+		// so name its real reason as `wt start` does rather than guessing.
+		if row, ok := catalog.Find(localRows(cfg), modelID); ok && row.Action() == catalog.ActionBlock {
+			return smokeTarget{}, errors.New(row.BlockReason())
+		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {
 			return smokeTarget{}, fmt.Errorf(
 				"model %q cannot be smoke-tested right now (not exposed, not on disk, or no agent supports it — check `modelman litellm status`; a local model must exist on disk)", modelID)
@@ -207,14 +213,15 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 	return smokeTarget{}, fmt.Errorf("unknown model %q", m.ID)
 }
 
-// smokeStopFlow is the exit flow: release this process's refcount entry, then
-// offer to stop running local models nothing else uses. Skipped for --json and
-// when stdin is not a TTY.
+// smokeStopFlow is the exit flow: offer to stop running local models nothing
+// else uses. Skipped for --json and when stdin is not a TTY. Unlike a real agent
+// launch (cmd/wt/launch.go), wt smoke never records a refcount entry for this
+// process — its one-shot agents run through smoke.RunRow and the start step is
+// not a session — so there is nothing to release before the picker.
 func smokeStopFlow(cfg *config.Config, jsonOut bool) {
 	if jsonOut || !stdinTTY() {
 		return
 	}
-	releaseSession()
 	runStopPicker(cfg)
 }
 

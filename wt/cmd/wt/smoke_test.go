@@ -97,6 +97,24 @@ func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 	}
 }
 
+// TestResolveSmokeModelPinnedBlockedNamesReason asserts a pinned local model
+// that is blocked (registered, but the provider answered and it is not on disk)
+// gets that row's real BlockReason — the same wording `wt start` gives — rather
+// than the generic three-guess message, so the user learns what to fix.
+func TestResolveSmokeModelPinnedBlockedNamesReason(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "", ModelID: "ollama/gone:x", ModelName: "gone:x", Registered: true, ArtifactKnown: true},
+		},
+	})
+	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/gone:x")
+	if err == nil || !strings.Contains(err.Error(), "not on disk") {
+		t.Fatalf("err = %v, want the row's not-on-disk block reason", err)
+	}
+}
+
 // TestResolveSmokeModelIdleLocalIsStartTarget verifies a registered local model
 // that is pulled but not running now resolves (with Start() true) instead of
 // erroring, since `wt smoke` starts it before testing.
@@ -111,9 +129,10 @@ func TestResolveSmokeModelIdleLocalIsStartTarget(t *testing.T) {
 	}
 }
 
-// TestSmokeStopFlow verifies the exit flow releases the refcount, then runs the
-// stop picker, and is skipped for --json or without a TTY (JSON consumers and
-// pipes must not get an interactive prompt).
+// TestSmokeStopFlow verifies the exit flow runs the stop picker — and touches no
+// refcount state, since wt smoke never records a session — and is skipped for
+// --json or without a TTY (JSON consumers and pipes must not get an interactive
+// prompt).
 func TestSmokeStopFlow(t *testing.T) {
 	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
 	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
@@ -123,8 +142,8 @@ func TestSmokeStopFlow(t *testing.T) {
 
 	stdinTTY = func() bool { return true }
 	smokeStopFlow(nil, false)
-	if strings.Join(calls, ",") != "release,picker" {
-		t.Fatalf("calls = %v, want release then picker", calls)
+	if strings.Join(calls, ",") != "picker" {
+		t.Fatalf("calls = %v, want only the picker (no release: nothing was recorded)", calls)
 	}
 	calls = nil
 	smokeStopFlow(nil, true)
