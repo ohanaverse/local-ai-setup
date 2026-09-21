@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // startCall records one startModel invocation: what was asked to start and
@@ -820,7 +821,8 @@ func TestReplaceFlagOnlyCoversThePinnedRow(t *testing.T) {
 // without it the same row starts with AllowReplace false so an occupied
 // provider raises the replace dialog. The existing test pins only that a
 // non-pinned row does NOT inherit the flag; this pins the positive path, so a
-// dropped Run(allowReplace) → model.allowReplace → beginStart wire fails here.
+// dropped model.allowReplace → beginStart wire fails here. The Run(allowReplace)
+// → model hop is covered separately by TestRunArgsReachModel.
 func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
 	requireBinary(t, "claude")
 	for _, allow := range []bool{true, false} {
@@ -837,6 +839,23 @@ func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
 
 		if got := calls.at(0).opts.AllowReplace; got != allow {
 			t.Errorf("allowReplace=%v: engine saw AllowReplace=%v, want %v", allow, got, allow)
+		}
+	}
+}
+
+// TestRunArgsReachModel verifies the Run(...) → model hand-off: the allowReplace
+// argument (from --replace) and the -M pinned model land on the initial model.
+// This is the one hop TestReplaceFlagGrantsPermissionToPinnedRow skips by
+// assigning m.allowReplace directly; without it, a Run that stopped copying
+// allowReplace would silently disable --replace while every other test passed.
+func TestRunArgsReachModel(t *testing.T) {
+	for _, allow := range []bool{true, false} {
+		m := newRunModel(false, allow, "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
+		if m.allowReplace != allow {
+			t.Errorf("allowReplace=%v: model.allowReplace=%v", allow, m.allowReplace)
+		}
+		if m.pinnedModel != "ollama/gemma4:9b" {
+			t.Errorf("model.pinnedModel=%q, want the -M pin", m.pinnedModel)
 		}
 	}
 }

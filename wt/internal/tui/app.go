@@ -1167,25 +1167,11 @@ type entriesLoadedMsg struct {
 	err           error
 }
 
-// Run starts the TUI in alternate-screen mode and returns when it quits.
-// agent is the --agent flag value ("" = no agent pinned; the agent/command
-// picker is shown). pinned is the --model flag value ("" = no model pinned;
-// the model picker is shown, and a non-empty pin is validated against the
-// agent's eligible list once the agent is resolved). tags is the -T/--tags
-// flag value (comma-delimited; "" = no filter). family is the -F/--family
-// flag value (comma-delimited; "" = no filter). extraArgs are the user's
-// passthrough args after --. theme is the active color theme, loaded by
-// cmd/wt. allowReplace grants the -M start path permission to stop a running
-// occupant without the replace dialog (it comes from --replace). prePath,
-// when non-empty, is a pre-resolved worktree path
-// (-W/--cwd/outside-repo): the worktree picker is skipped and control starts
-// at the agent/command picker (or model phase when agent is pinned). When
-// prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
-// has a valid directory even if it becomes reachable from the pre-path entry
-// point. cfg is the already-loaded config from cmd/wt's newApp (validated
-// before Run is called); it is not re-loaded here.
-func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
-	p := tea.NewProgram(model{
+// newRunModel builds the TUI's initial model from Run's arguments. It is split
+// out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
+// without starting a real tea.Program.
+func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
+	return model{
 		status:       "loading worktrees...",
 		cfg:          cfg,
 		theme:        theme,
@@ -1207,7 +1193,28 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 			}
 			return root
 		}(),
-	}, tea.WithAltScreen())
+	}
+}
+
+// Run starts the TUI in alternate-screen mode and returns when it quits.
+// agent is the --agent flag value ("" = no agent pinned; the agent/command
+// picker is shown). pinned is the --model flag value ("" = no model pinned;
+// the model picker is shown, and a non-empty pin is validated against the
+// agent's eligible list once the agent is resolved). tags is the -T/--tags
+// flag value (comma-delimited; "" = no filter). family is the -F/--family
+// flag value (comma-delimited; "" = no filter). extraArgs are the user's
+// passthrough args after --. theme is the active color theme, loaded by
+// cmd/wt. allowReplace grants the -M start path permission to stop a running
+// occupant without the replace dialog (it comes from --replace). prePath,
+// when non-empty, is a pre-resolved worktree path
+// (-W/--cwd/outside-repo): the worktree picker is skipped and control starts
+// at the agent/command picker (or model phase when agent is pinned). When
+// prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
+// has a valid directory even if it becomes reachable from the pre-path entry
+// point. cfg is the already-loaded config from cmd/wt's newApp (validated
+// before Run is called); it is not re-loaded here.
+func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+	p := tea.NewProgram(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
