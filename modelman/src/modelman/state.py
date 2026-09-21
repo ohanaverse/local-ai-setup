@@ -1,8 +1,9 @@
 """modelman.toml — modelman's per-machine mutable state overlay.
 
 Owner: modelman (the only writer). wt reads this file read-only — the
-`exposed` and `ready` flags and the `[litellm]` routing table, to filter
-its model picker. wt does NOT read the per-model `running` flag: running
+`exposed` and `ready` flags, to filter its model picker. A `[litellm]`
+table here is only a legacy read-only fallback wt copies once (wt owns the
+routing state); modelman round-trips it verbatim and never edits it. wt does NOT read the per-model `running` flag: running
 state comes from wt's own live probes of the providers (see
 wt/internal/config/modelman.go; the shared
 contract fixture is docs/contracts/modelman.sample.toml). See registry.py for the

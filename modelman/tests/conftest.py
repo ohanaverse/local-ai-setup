@@ -90,7 +90,7 @@ def _never_call_real_wt(monkeypatch):
 
     Limits of this fake: expose/unexpose always succeed for every id (exit 0,
     changed=True); `list` is a static empty routed set (not stateful across
-    expose calls); there is no partial-failure / exit-1 / file-level-failure
+    expose calls); on/off/set succeed (bare `set` exits 1 like real wt); there is no partial-failure / exit-1 / file-level-failure
     case. Tests exercising error paths must override wt_bridge._run."""
     import json
 
@@ -116,6 +116,14 @@ def _never_call_real_wt(monkeypatch):
                     stdout="litellm: off\n  url: (unset)\n  api_key: (unset)\n",
                     stderr="",
                 )
+        elif args == ["set"]:
+            # Mirrors real wt: `set` with neither --url nor --api-key errors.
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr="Error: nothing to set: pass --url and/or --api-key\n",
+            )
         elif args[:1] in (["on"], ["off"], ["set"]):
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         else:

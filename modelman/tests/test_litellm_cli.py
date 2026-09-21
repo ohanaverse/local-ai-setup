@@ -103,28 +103,46 @@ def test_litellm_errors_exit_1_without_traceback_or_key(monkeypatch):
         assert "Traceback" not in result.output
 
 
-def test_litellm_set_with_nothing_to_set_still_calls_wt_once(monkeypatch):
-    # Behavior parity with the old command: no flags -> still "litellm: updated"
-    # (wt treats it as a no-op); the bridge is not given phantom values.
-    seen = []
-    monkeypatch.setattr(wt_bridge, "litellm_set", lambda url, key: seen.append((url, key)))
+def test_litellm_set_with_no_flags_errors_like_wt(monkeypatch):
+    # DELIBERATE behavior change from the old command (which silently exited 0
+    # with "litellm: updated"): real wt rejects `set` with neither --url nor
+    # --api-key, so modelman now prints `error: ...` and exits 1. Pinned so a
+    # no-op is never reported as an update.
+    def fake_run(args, env=None, timeout=120):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Error: nothing to set: pass --url and/or --api-key\n",
+        )
+
+    monkeypatch.setattr(wt_bridge, "_run", fake_run)
     result = runner.invoke(app, ["litellm", "set"])
-    assert result.exit_code == 0
-    assert seen == [(None, None)]
+    assert result.exit_code == 1
+    assert "error: " in result.output and "nothing to set" in result.output
+    assert "litellm: updated" not in result.output
+    assert "Traceback" not in result.output
 
 
 def test_litellm_commands_never_touch_routes_or_the_proxy(monkeypatch):
-    # The on/off/set toggle is routing POLICY only: never a route call, since
-    # a toggle that bounced the shared proxy would be an outage for others.
-    calls = []
-    monkeypatch.setattr(wt_bridge, "expose", lambda *a, **k: calls.append("expose"))
-    monkeypatch.setattr(wt_bridge, "unexpose", lambda *a, **k: calls.append("unexpose"))
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *a, **k: calls.append("subprocess"),  # noqa: ARG005
-    )
-    runner.invoke(app, ["litellm", "on"])
-    runner.invoke(app, ["litellm", "off"])
-    runner.invoke(app, ["litellm", "set", "--url", "http://x", "--api-key", "k"])
-    assert "expose" not in calls and "unexpose" not in calls
+    # The on/off/set toggle is routing POLICY only: it may invoke only the
+    # status/on/off/set wt subcommands, never expose/unexpose/list/providers,
+    # since a route call could bounce the shared proxy for other users.
+    subs = []
+
+    def fake_run(args, env=None, timeout=120):
+        subs.append(args[0])
+        if args[:1] == ["status"]:
+            out = '{"enabled": true, "url": "http://x", "api_key_set": true}'
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=out, stderr="")
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(wt_bridge, "_run", fake_run)
+    results = [
+        runner.invoke(app, ["litellm", "on"]),
+        runner.invoke(app, ["litellm", "off"]),
+        runner.invoke(app, ["litellm", "set", "--url", "http://x", "--api-key", "k"]),
+    ]
+    assert [r.exit_code for r in results] == [0, 0, 0]
+    assert subs  # the fake was really exercised
+    assert set(subs) <= {"status", "on", "off", "set"}

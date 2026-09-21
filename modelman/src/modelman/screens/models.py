@@ -746,9 +746,8 @@ class ModelScreen(Screen[None]):
         on-mount reconcile worker put in memory (`ready`/`disk_path`/
         `size_bytes`, none of which is persisted until the pending-changes
         queue is applied on exit), silently reverting the READY/SIZE/path
-        columns after the first `s` press. Same reasoning — and same
-        targeted-resync shape — as the old litellm toggle's `[litellm]`
-        merge. `exposed` is included alongside `running` because start/stop
+        columns after the first `s` press. Hence this targeted
+        resync of only those flags. `exposed` is included alongside `running` because start/stop
         now flip it too (auto-expose on start, auto-unexpose on stop).
         """
         fresh = load_state(self.state_path)
