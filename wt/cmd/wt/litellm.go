@@ -281,8 +281,12 @@ func litellmCmd(a *app) *cobra.Command {
 	provC.Flags().BoolVar(&provJSON, "json", false, "machine-readable output")
 	cfgGuard := func(run func(cmd *cobra.Command) error) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
-			if a.cfgErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+			// Gate on the LOAD error only: these commands touch just wt's own
+			// [litellm] state, so a registry validation gap must not lock the
+			// user out. A genuine load failure leaves a default cfg that Save
+			// would write over config.toml.
+			if a.loadErr != nil {
+				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
 			}
 			return run(cmd)
 		}

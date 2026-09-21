@@ -416,13 +416,14 @@ func TestLitellmOffWarnsWhenUnconfigured(t *testing.T) {
 }
 
 // TestLitellmStateCommandsRefuseOnConfigError pins that status/on/off/set
-// refuse when the config failed to load (a.cfgErr) and write nothing, and that
+// refuse when the config failed to LOAD (a.loadErr; a default cfg would
+// overwrite the user's config.toml on Save) and write nothing, and that
 // `set` with no flags is a usage error that changes nothing. Guard existed in
 // the brief's registration; expected to pass immediately.
 func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 	cfg, path := litellmStateEnv(t)
-	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}} {
-		c := litellmCmd(&app{cfg: cfg, cfgErr: errors.New("bad toml")})
+	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}, {"expose", "x"}, {"unexpose", "x"}, {"sync"}} {
+		c := litellmCmd(&app{cfg: cfg, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
 		c.SetOut(&bytes.Buffer{})
 		c.SetErr(&bytes.Buffer{})
 		c.SetArgs(args)
@@ -443,5 +444,68 @@ func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Error("no-flag set wrote config.toml")
+	}
+}
+
+// validationOnlyApp builds an app via newApp() in a temp XDG dir whose registry
+// has a model pointing at a missing provider: Load succeeds but Validate fails
+// (the common gap `modelman sync` repairs).
+func validationOnlyApp(t *testing.T) (*app, string) {
+	t.Helper()
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	sample, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "contracts", "registry.sample.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := string(sample) + "\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n"
+	regDir := filepath.Join(home, ".config", "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte(reg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, filepath.Join(home, ".config", "agent-wt", "config.toml")
+}
+
+// TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that
+// status/on/off/set depend only on wt's own [litellm] state, not on registry
+// validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
+// must not lock the user out of the only routing control surface, and the
+// change must persist. expose/unexpose/sync depend on the registry, so they
+// still refuse.
+func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
+	litellmEnv(t, "model_list: []\n")
+	a, path := validationOnlyApp(t)
+	if a.cfgErr == nil || a.loadErr != nil {
+		t.Fatalf("fixture: cfgErr=%v loadErr=%v, want validation-only error", a.cfgErr, a.loadErr)
+	}
+	run := func(args ...string) error {
+		c := litellmCmd(a)
+		c.SetOut(&bytes.Buffer{})
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(args)
+		return c.Execute()
+	}
+	for _, args := range [][]string{{"set", "--url", "http://localhost:4000", "--api-key", "sk-abcdef"}, {"on"}, {"status"}, {"off"}, {"on"}} {
+		if err := run(args...); err != nil {
+			t.Fatalf("%v refused on validation-only error: %v", args, err)
+		}
+	}
+	if !a.cfg.IsLitellm() || a.cfg.LitellmAPIKey() != "sk-abcdef" {
+		t.Fatalf("state not applied: %+v", a.cfg.LitellmTable)
+	}
+	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "sk-abcdef") {
+		t.Fatalf("state not persisted (err %v):\n%s", err, b)
+	}
+	for _, args := range [][]string{{"expose", "x"}, {"unexpose", "x"}, {"sync"}} {
+		if err := run(args...); err == nil || !strings.Contains(err.Error(), "config error") {
+			t.Fatalf("%v: err = %v, want refusal", args, err)
+		}
 	}
 }
