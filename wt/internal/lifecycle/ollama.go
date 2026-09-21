@@ -2,6 +2,9 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -16,6 +19,23 @@ type ollamaBackend struct{}
 func (ollamaBackend) singleModel() bool { return false }
 
 func (ollamaBackend) stop(ctx context.Context, e *env, cfg *config.Config) error { return nil }
+
+// stopModel unloads one model with `ollama stop <name>`; the daemon and every
+// other loaded model stay up. A failure carries ollama's own message.
+func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
+	bin, err := e.lookPath("ollama")
+	if err != nil {
+		return &BinaryMissingError{Binary: "ollama"}
+	}
+	out, runErr := e.run(ctx, bin, "stop", modelName)
+	if runErr == nil {
+		return nil
+	}
+	if msg := strings.TrimSpace(string(out)); msg != "" {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("ollama stop %s failed: %w", modelName, runErr)
+}
 
 func (ollamaBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
 	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")

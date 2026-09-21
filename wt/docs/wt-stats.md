@@ -46,7 +46,8 @@ percentage.
 ## Where the data comes from
 
 Every model-driven agent launch (TUI or non-TUI) prompts up to four
-questions immediately after the agent exits:
+questions immediately after the agent exits, before the stop picker and the
+summary line:
 
 1. **Did it work?** `[y]es / [n]o / [s]kip (Enter=skip)` — `n` records a
    failure and stops the rating questions; `s`/Enter records a skip and
@@ -56,11 +57,13 @@ questions immediately after the agent exits:
 4. **What task were you doing?** (Enter=skip) — free text, asked after any
    non-skip verdict (both `y` and `n`).
 
-The prompt is silent (no output at all) when stdin is not a TTY, or when
-the launch had no model (command agents like `shell`). There is no config
-toggle to disable it — every-exit with a one-keypress skip is the intended
-trade-off.
+The prompt is silent (no output at all) when stdin is not a TTY, when the
+launch had no model (command agents like `shell`), or when the model is
+native (`config.Model.Native` — a native launch never touches a surveyed,
+priced model, issue #116). There is no config toggle to disable it —
+every-exit with a one-keypress skip is the intended trade-off.
 
-Right after answering, the same accumulated stats `wt stats` reports are
-printed for the current model (all agents) and the current agent×model
-combo, at the 1d/7d/30d windows.
+The same accumulated stats `wt stats` reports are printed for the current
+model (all agents) and the current agent×model combo, at the 1d/7d/30d
+windows — after the stop picker and the summary line, so the interactive
+prompts cannot scroll them away.

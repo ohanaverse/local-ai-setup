@@ -1217,7 +1217,7 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
-	printPendingSummaryAndSurvey()
+	printPendingSummaryAndSurvey(cfg)
 	if err == nil {
 		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
 			err = fm.fatalErr
@@ -1226,27 +1226,41 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	return err
 }
 
-// printPendingSummaryAndSurvey prints the captured post-run summary (if
-// any) and then runs the post-session survey (if a launch happened),
-// matching the summary → survey ordering used by the non-TUI path. It is
-// extracted from Run() so this ordering is unit-testable without a real
-// tea.Program/TTY.
-func printPendingSummaryAndSurvey() {
-	if pendingSummary != "" {
+// printPendingSummaryAndSurvey runs the TUI's post-exit flow once the
+// alt-screen is gone, in the same order as the non-TUI path (issues
+// #115/#116): release this session's refcount entry, survey (skipped for
+// native models), stop picker, summary line, after-survey stats, pricing
+// notice. It is extracted from Run() so this ordering is unit-testable
+// without a real tea.Program/TTY.
+func printPendingSummaryAndSurvey(cfg *config.Config) {
+	launched := pendingSurveyState
+	summary := pendingSummary
+	pendingSurveyState = pendingSurvey{}
+	pendingSummary = ""
+
+	var stats string
+	if launched.agent != "" {
+		releaseSession()
+		stats = runSurvey(launched.agent, launched.m)
+		// Command agents (e.g. shell) record m.ID == "" and launch no model, and
+		// native models run no local server, so a session on either has nothing
+		// of its own to stop.
+		if launched.m.ID != "" && !launched.m.Native {
+			runStopPhase(cfg)
+		}
+	}
+	if summary != "" {
 		// Leading "\n" guards against the agent's last byte being
 		// non-newline so the summary always lands on a fresh line.
 		// Println adds the trailing newline itself.
-		fmt.Println("\n" + pendingSummary)
-		pendingSummary = ""
-		// Command agents (e.g. shell) record pendingSurveyState with
-		// m.ID == "" and never touch a priced model, so the reminder is
-		// meaningless for them — same convention runSurvey already uses.
-		if pendingSurveyState.m.ID != "" {
-			emitPriceNotice()
-		}
+		fmt.Println("\n" + summary)
 	}
-	if pendingSurveyState.agent != "" {
-		runSurvey(pendingSurveyState.agent, pendingSurveyState.m)
-		pendingSurveyState = pendingSurvey{}
+	if stats != "" {
+		fmt.Println(stats)
+	}
+	// Command agents never touch a priced model, so the reminder is
+	// meaningless for them — same convention runSurvey already uses.
+	if summary != "" && launched.m.ID != "" {
+		emitPriceNotice()
 	}
 }

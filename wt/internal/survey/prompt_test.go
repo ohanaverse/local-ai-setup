@@ -53,7 +53,7 @@ func TestPromptRunYesFlow(t *testing.T) {
 	t.Cleanup(func() { now = time.Now })
 	store := NewStoreAt(t.TempDir())
 	var out bytes.Buffer
-	PromptRun(strings.NewReader("y\n4\n5\nadd task description to wt survey\n"), &out, store, "claude", config.Model{ID: "ollama/gemma4:9b"})
+	stats := PromptRun(strings.NewReader("y\n4\n5\nadd task description to wt survey\n"), &out, store, "claude", config.Model{ID: "ollama/gemma4:9b"})
 
 	events := store.Events()
 	if len(events) != 1 {
@@ -75,8 +75,30 @@ func TestPromptRunYesFlow(t *testing.T) {
 	if !strings.Contains(out.String(), "survey saved") {
 		t.Errorf("output = %q, want it to contain \"survey saved\"", out.String())
 	}
-	if !strings.Contains(out.String(), "model") {
-		t.Errorf("output = %q, want the after-survey stats block", out.String())
+	// The stats block is returned, not printed, so the caller can place it
+	// after the model-stopping picker and summary (issue #115 ordering).
+	if !strings.Contains(stats, "model") {
+		t.Errorf("stats = %q, want the after-survey stats block", stats)
+	}
+	if strings.Contains(out.String(), stats) {
+		t.Errorf("output = %q, must not contain the stats block (caller prints it)", out.String())
+	}
+}
+
+// TestPromptRunNativeModelSkipsSurvey verifies a native model (provider auth
+// native, e.g. claude on Anthropic) is never surveyed: no prompt, no event,
+// no stats (issue #116) — a verdict on the vendor's own model teaches wt
+// nothing about local or routed models.
+func TestPromptRunNativeModelSkipsSurvey(t *testing.T) {
+	withTTY(t, true)
+	store := NewStoreAt(t.TempDir())
+	var out bytes.Buffer
+	stats := PromptRun(strings.NewReader("y\n4\n5\n"), &out, store, "claude", config.Model{ID: "claude/native", Native: true})
+	if out.Len() != 0 || stats != "" {
+		t.Fatalf("output = %q stats = %q, want both empty (native skip)", out.String(), stats)
+	}
+	if len(store.Events()) != 0 {
+		t.Fatalf("Events() = %v, want empty", store.Events())
 	}
 }
 

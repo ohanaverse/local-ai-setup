@@ -1585,9 +1585,9 @@ func TestPrePathInitPinnedCommandLaunches(t *testing.T) {
 }
 
 // TestPrintPendingSummaryAndSurveyOrder verifies Run()'s post-p.Run() logic
-// prints the summary before invoking the survey (matching the non-TUI
-// path's summary → survey ordering) and clears both package vars so a
-// later launch in the same process doesn't replay stale state.
+// invokes the survey and prints the summary and pricing notice, and clears
+// both package vars so a later launch in the same process doesn't replay
+// stale state. Full ordering is pinned by TestPostExitOrder.
 func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 	prevSummary, prevSurvey, prevRunSurvey, prevNotice := pendingSummary, pendingSurveyState, runSurvey, emitPriceNotice
 	t.Cleanup(func() {
@@ -1602,9 +1602,10 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 
 	var calledWith pendingSurvey
 	called := false
-	runSurvey = func(agent string, m config.Model) {
+	runSurvey = func(agent string, m config.Model) string {
 		called = true
 		calledWith = pendingSurvey{agent: agent, m: m}
+		return ""
 	}
 	noticeCalled := false
 	emitPriceNotice = func() { noticeCalled = true }
@@ -1615,7 +1616,7 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey()
+	printPendingSummaryAndSurvey(&config.Config{})
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -1652,11 +1653,11 @@ func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
 	})
 	pendingSurveyState = pendingSurvey{}
 	called := false
-	runSurvey = func(agent string, m config.Model) { called = true }
+	runSurvey = func(agent string, m config.Model) string { called = true; return "" }
 	noticeCalled := false
 	emitPriceNotice = func() { noticeCalled = true }
 
-	printPendingSummaryAndSurvey()
+	printPendingSummaryAndSurvey(&config.Config{})
 	if called {
 		t.Fatal("runSurvey was invoked with no pending launch")
 	}
@@ -1681,7 +1682,7 @@ func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.
 
 	pendingSummary = "wt: shell · 1s"
 	pendingSurveyState = pendingSurvey{agent: "shell", m: config.Model{}}
-	runSurvey = func(agent string, m config.Model) {}
+	runSurvey = func(agent string, m config.Model) string { return "" }
 	noticeCalled := false
 	emitPriceNotice = func() { noticeCalled = true }
 
@@ -1691,7 +1692,7 @@ func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey()
+	printPendingSummaryAndSurvey(&config.Config{})
 	w.Close()
 	os.Stdout = old
 	_, _ = io.ReadAll(r)

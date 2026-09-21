@@ -25,6 +25,20 @@ func realEmitPriceNotice() {
 	agents.PrintPriceNotice()
 }
 
+// releaseSession is a seam for tests: production releases this wt process's own
+// refcount entry (survey.ReleaseSession) so the post-exit stop picker does not
+// count the finished session as a user of its model. Best-effort.
+var releaseSession = survey.ReleaseSession
+
+// runStopPicker is a seam for tests: production offers to stop running local
+// models no other wt session uses (issue #115); tests swap it so nothing
+// probes live servers or stops a real model.
+var runStopPicker = realRunStopPicker
+
+func realRunStopPicker(cfg *config.Config) {
+	survey.Picker(os.Stdin, os.Stdout, cfg)
+}
+
 // buildLaunch constructs the agent command for the given model and worktree,
 // appending passthrough args and a resume flag when a prior session exists.
 // It is a thin wrapper around agents.BuildLaunchCmd so tests can assert the
@@ -114,7 +128,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if err != nil {
 			return err
 		}
-		return runAgentCmd(cmd, agent, config.Model{})
+		return runAgentCmd(cmd, agent, config.Model{}, cfg)
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
@@ -186,32 +200,50 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runAgentCmd(cmd, agent, m)
+	return runAgentCmd(cmd, agent, m, cfg)
 }
 
-// runAgentCmd wires stdio through to the agent, runs it, prints the post-run
-// summary line, runs the post-session survey, and propagates the agent's
-// exit code to the caller. The survey call sits between the summary Println
-// and the os.Exit(ExitCode) branch so a non-zero agent exit is still
-// surveyed — a crashed session is exactly a "did it work? no" data point.
-func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model) error {
+// runAgentCmd wires stdio through to the agent, runs it, then runs the
+// post-exit flow and propagates the agent's exit code to the caller. Order
+// (issues #115/#116): release this session's refcount entry → survey (skipped
+// for native models) → stop picker → summary line → after-survey stats →
+// pricing notice. The user's
+// interactive steps come first and the informational output last, so it is
+// not scrolled away by the prompts. The duration is measured when the agent
+// exits, not when the summary prints. The survey call sits before the
+// os.Exit(ExitCode) branch so a non-zero agent exit is still surveyed — a
+// crashed session is exactly a "did it work? no" data point.
+func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	start := time.Now()
 	err := cmd.Run()
+	summary := agents.Summary(agent, m, time.Since(start))
+
+	releaseSession()
+	stats := survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
+	// Command agents (e.g. shell) launch with a zero-value config.Model
+	// (m.ID == "") and native models run no local server, so a session on
+	// either has nothing of its own to stop — offering unrelated idle models
+	// after it would be a surprise.
+	if m.ID != "" && !m.Native {
+		runStopPicker(cfg)
+	}
+
 	// Leading "\n" guards against the agent's last byte being non-newline
 	// (e.g. a bare prompt or a SIGINT-truncated line) — without it the
 	// summary would glue to that partial output. Println adds the trailing
 	// newline itself, so the line is always self-terminated.
-	fmt.Println("\n" + agents.Summary(agent, m, time.Since(start)))
-	// Command agents (e.g. shell) launch with a zero-value config.Model
-	// (m.ID == "") and never touch a priced model, so the reminder is
-	// meaningless for them — same convention survey.PromptRun already uses.
+	fmt.Println("\n" + summary)
+	if stats != "" {
+		fmt.Println(stats)
+	}
+	// The reminder is meaningless for command agents (no priced model) —
+	// same convention survey.PromptRun already uses.
 	if m.ID != "" {
 		emitPriceNotice()
 	}
-	survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

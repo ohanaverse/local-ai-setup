@@ -92,3 +92,9 @@ func (mtplxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error 
 	}
 	return fmt.Errorf("mtplx still listening on port %d", port)
 }
+
+// stopModel: mtplx is single-model-per-process, so stopping its occupant is
+// stopping the process.
+func (b mtplxBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, _ string) error {
+	return b.stop(ctx, e, cfg)
+}

@@ -32,7 +32,7 @@ check-links:
 # Aggregate local verification across all monorepo components (mirrors CI).
 test-all: lint
 	cd modelman && uv sync && make check && make test
-	cd wt && go build ./... && go vet ./... && go test ./...
+	cd wt && go build ./... && go vet ./... && go test -count=1 ./...
 
 install: ## Install all monorepo components (wt + modelman).
 	cd wt && make install

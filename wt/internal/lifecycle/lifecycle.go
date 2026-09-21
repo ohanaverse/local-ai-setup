@@ -84,6 +84,10 @@ type backend interface {
 	singleModel() bool
 	// stop stops the provider's current occupant and waits for it to release its port.
 	stop(ctx context.Context, e *env, cfg *config.Config) error
+	// stopModel stops the one named model (provider-side name). Multi-tenant
+	// providers unload just that model; single-model providers stop their
+	// only occupant, so modelName is informational there.
+	stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error
 	// start runs everything from spawn through warmup for t, reporting stages.
 	start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error
 }
@@ -97,12 +101,18 @@ func sameModel(family, a, b string) bool {
 	return localmodels.NameMatches(a, b)
 }
 
-// probeTrusted reports whether snap's Running flags for family were produced by
+// ProbeTrusted reports whether snap's Running flags for family were produced by
 // a probe that could actually determine them. An absent status counts as
 // trusted: inventory registers a family's key whenever this config has a local
 // provider or model for it, so an absent key means nothing is being started
 // into that family — and hand-built snapshots in tests carry no status map.
-func probeTrusted(snap localmodels.Snapshot, family string) bool {
+//
+// Exported because the post-exit stop picker (internal/survey) filters its
+// candidates by this same rule: it must not offer a model whose running state
+// no probe confirmed, or on a single-model provider it would stop whatever is
+// actually loaded rather than the row the user ticked. Keeping one
+// implementation is the point — a tightened rule here must reach both paths.
+func ProbeTrusted(snap localmodels.Snapshot, family string) bool {
 	st, ok := snap.Providers[family]
 	if !ok {
 		return true
@@ -112,7 +122,7 @@ func probeTrusted(snap localmodels.Snapshot, family string) bool {
 
 // isRunning reports whether live Inventory already shows the target serving.
 func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
-	if !probeTrusted(snap, family) {
+	if !ProbeTrusted(snap, family) {
 		return false
 	}
 	for _, en := range snap.Entries {
@@ -145,7 +155,7 @@ func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 	if b := backendsByFamily[family]; b == nil || !b.singleModel() {
 		return localmodels.Entry{}, false
 	}
-	if !probeTrusted(snap, family) {
+	if !ProbeTrusted(snap, family) {
 		return localmodels.Entry{}, false
 	}
 	for _, en := range snap.Entries {
@@ -173,7 +183,7 @@ func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family st
 	if occ, ok := Occupant(t, snap); ok {
 		return occ, true, false
 	}
-	if probeTrusted(snap, family) {
+	if ProbeTrusted(snap, family) {
 		return localmodels.Entry{}, false, false
 	}
 	ids, known := e.liveServed(ctx, cfg, family)
@@ -245,4 +255,36 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 		return &UnsupportedError{ProviderID: providerID}
 	}
 	return b.stop(ctx, e, cfg)
+}
+
+// StopModel stops one running model (modelName is the provider-side name) for
+// the post-exit stop picker. On ollama it unloads just that model; on
+// single-model providers (omlx, mtplx) it stops the provider's sole occupant.
+// The caller must only pass a model live Inventory reported running.
+func StopModel(ctx context.Context, cfg *config.Config, providerID, modelName string) error {
+	return stopModel(ctx, defaultEnv(), cfg, providerID, modelName)
+}
+
+// stopModel is StopModel's injectable core, the same shape as stop/start.
+func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, modelName string) error {
+	b := e.backends[localmodels.Family(providerID)]
+	if b == nil {
+		return &UnsupportedError{ProviderID: providerID}
+	}
+	return b.stopModel(ctx, e, cfg, modelName)
+}
+
+// CanStop reports whether wt has a stop backend for providerID's family, so a
+// picker never offers a model (e.g. one on mlx_lm_server) that StopModel would
+// refuse with *UnsupportedError.
+func CanStop(providerID string) bool {
+	return backendsByFamily[localmodels.Family(providerID)] != nil
+}
+
+// SingleModel reports whether providerID's family serves one model per
+// process, so stopping any of its models stops the whole provider (and every
+// sibling variant it lists as running).
+func SingleModel(providerID string) bool {
+	b := backendsByFamily[localmodels.Family(providerID)]
+	return b != nil && b.singleModel()
 }

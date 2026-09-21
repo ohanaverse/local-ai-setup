@@ -63,21 +63,27 @@ For agents, args append to the command; for `shell` (implements `ArgSetter`), th
 
 After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
 
-Immediately after the summary, a stale-pricing notice may print (one line, issue #69): when modelman's `price_refresh_last_run` (top-level key in `~/.config/local-ai/modelman.toml`) isn't today's date — or is absent — wt prints `wt: token pricing last refreshed <date> — run 'modelman refresh-prices'` (or the "never been refreshed" variant; a malformed (non-`YYYY-MM-DD`) value also uses the "never been refreshed" wording). wt only notifies; modelman owns the refresh. Parse errors on modelman.toml stay silent. Skipped for command agents like `shell` (`m.ID == ""` — same convention the session survey below uses), since they never touch a priced model.
+**Post-exit order (issues #115/#116), identical in the TUI and non-TUI paths:** release this session's refcount entry → survey (skipped for native models) → stop picker (below) → summary line → after-survey stats → stale-pricing notice. The interactive steps come first and the informational output last. The duration is measured when the agent exits.
 
-Immediately after the summary, a post-session survey prompts up to four questions (did it work? speed? quality? — and on non-skip answers, what task were you doing) on the parent terminal — see [Session survey](#session-survey-go) below.
+The stop picker (`survey.Picker`, `internal/survey/stop.go`) offers running local models that no live wt session uses (refcount zero, probe trusted, stop backend exists — `lifecycle.CanStop`/`lifecycle.StopModel`). It is line-typed (number toggles, `all`/`none`, Enter confirms, `q`/`esc` skips) and nothing starts selected. It is silent when nothing qualifies, when stdin is not a TTY, and for command agents and native models (neither runs a local server of its own). Ctrl+C or SIGTERM is caught for the whole picker on a context of its own: at the menu prompt it abandons the prompt (the read runs on a goroutine raced against the context), and during a stop it cancels the stop in flight and skips the remaining models — either way it prints `cancelled`, runs the TTY drain, and still reaches the summary line. wt's own refcount entry is released first (`refcount.Release`) — otherwise the model just used would always count as in use.
+
+After the summary, a stale-pricing notice may print (one line, issue #69): when modelman's `price_refresh_last_run` (top-level key in `~/.config/local-ai/modelman.toml`) isn't today's date — or is absent — wt prints `wt: token pricing last refreshed <date> — run 'modelman refresh-prices'` (or the "never been refreshed" variant; a malformed (non-`YYYY-MM-DD`) value also uses the "never been refreshed" wording). wt only notifies; modelman owns the refresh. Parse errors on modelman.toml stay silent. Skipped for command agents like `shell` (`m.ID == ""` — same convention the session survey below uses), since they never touch a priced model.
+
+Before the summary (see the post-exit order above), a post-session survey prompts up to four questions (did it work? speed? quality? — and on non-skip answers, what task were you doing) on the parent terminal — see [Session survey](#session-survey-go) below.
 
 ## Session survey (Go)
 
 `internal/survey` records a post-session verdict for every agent launch with
-a model (skipped for command agents like `shell`, whose `m.ID == ""`).
+a model (skipped for command agents like `shell`, whose `m.ID == ""`, and for
+native models, `m.Native` — issue #116).
 `survey.PromptRun` is the single implementation wired into both the non-TUI
-path (`cmd/wt/launch.go runAgentCmd`, after the summary line, before the
-exit-code propagation) and the TUI path (`internal/tui`, via the same
-capture-then-emit pattern the summary line uses). It silently no-ops when
-stdin is not a TTY.
+path (`cmd/wt/launch.go runAgentCmd`, before the exit-code propagation) and
+the TUI path (`internal/tui`, via the same capture-then-emit pattern the
+summary line uses). It silently no-ops when stdin is not a TTY. It
+**returns** the after-survey stats block instead of printing it, so the
+caller can place it after the stop picker and summary.
 
-Order on every launch: **summary → survey prompts → after-survey stats**.
+Order on every launch: **survey prompts → stop picker → summary → after-survey stats → pricing notice**.
 
 - **Paste drain:** after the last question, `PromptRun` flushes the kernel
   TTY input queue (`drainTTYInput`: `TIOCFLUSH` darwin / `TCFLSH` linux /
@@ -114,7 +120,7 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 **Test seams.** TTY, installed-check, guard, TUI behavior, the model
 picker's usage store, local-inventory probing, and model starting are stubbed via package-level var seams (`tuiRun`,
 `launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
-`newUsageStore`, `flushTTY`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. `cmd/wt` carries its own seams, stubbed by `testmain_test.go`: `probeInventory` (the non-TUI inventory probe) and a second `startModel` — a different package and signature (it wraps `startForLaunch`), a separate seam from the TUI's despite the shared name. Together the two `TestMain`s mean no Go test probes a real server or starts a real model. `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` hook for other packages' tests. When adding
+`newUsageStore`, `flushTTY`, `stopSignalCtx`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. `cmd/wt` carries its own seams, stubbed by `testmain_test.go`: `probeInventory` (the non-TUI inventory probe) and a second `startModel` — a different package and signature (it wraps `startForLaunch`), a separate seam from the TUI's despite the shared name. Together the two `TestMain`s mean no Go test probes a real server or starts a real model. `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` hook for other packages' tests. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 `internal/lifecycle` is the other convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its package `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
 
