@@ -155,29 +155,47 @@ func TestStopFailurePropagates(t *testing.T) {
 }
 
 // TestStopNoArgNeedsTTYAndOpensPicker verifies `wt stop` with no argument
-// errors without a TTY, says so when nothing is running, and otherwise opens
-// the in-use-inclusive picker (screen 2).
+// errors without a TTY, opens the in-use-inclusive picker (screen 2) when a TTY
+// is present, and says so when the picker reports nothing to offer. It also
+// pins that this path never probes the inventory itself (stopCandidates) — the
+// picker owns the single snapshot, so nothing is probed twice.
 func TestStopNoArgNeedsTTYAndOpensPicker(t *testing.T) {
 	oldTTY, oldPick := stdinTTY, stopPickerAll
 	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
-	opened := false
-	stopPickerAll = func(*config.Config) { opened = true }
+	opened, offer := false, true
+	stopPickerAll = func(*config.Config) bool { opened = true; return offer }
 
-	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	oldCands := stopCandidates
+	t.Cleanup(func() { stopCandidates = oldCands })
+	stopCandidates = func(*config.Config) []survey.Candidate {
+		t.Fatal("no-arg wt stop probed the inventory outside the picker")
+		return nil
+	}
+
 	stdinTTY = func() bool { return false }
 	if err := runStop(io.Discard, modelCmdConfig(), "", false); err == nil {
 		t.Fatal("no TTY and no arg must error")
 	}
 	stdinTTY = func() bool { return true }
-	if err := runStop(io.Discard, modelCmdConfig(), "", false); err != nil || !opened {
-		t.Fatalf("err = %v opened = %v, want the picker opened", err, opened)
+	var out bytes.Buffer
+	if err := runStop(&out, modelCmdConfig(), "", false); err != nil || !opened || out.Len() != 0 {
+		t.Fatalf("err = %v opened = %v out = %q, want the picker opened and no note", err, opened, out.String())
 	}
 
-	opened = false
-	stubStop(t, nil)
-	var out bytes.Buffer
-	if err := runStop(&out, modelCmdConfig(), "", false); err != nil || opened || !strings.Contains(out.String(), "no running local models") {
-		t.Fatalf("err = %v opened = %v out = %q, want the empty note and no picker", err, opened, out.String())
+	offer, out = false, bytes.Buffer{}
+	if err := runStop(&out, modelCmdConfig(), "", false); err != nil || !strings.Contains(out.String(), "no running local models") {
+		t.Fatalf("err = %v out = %q, want the empty note when the picker had nothing", err, out.String())
+	}
+}
+
+// TestStopUnknownProviderListsConfiguredStoppable verifies the error for a bad
+// bare provider names the providers the check actually accepts, derived from
+// the same list — so the message cannot drift from the check when a stop
+// backend is added.
+func TestStopUnknownProviderListsConfiguredStoppable(t *testing.T) {
+	err := runStop(io.Discard, modelCmdConfig(), "bogus", false)
+	if err == nil || !strings.Contains(err.Error(), "valid: ollama, omlx") {
+		t.Fatalf("err = %v, want it to list the configured stoppable providers", err)
 	}
 }
 

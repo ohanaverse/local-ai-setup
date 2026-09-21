@@ -470,7 +470,7 @@ func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
 // running stoppable model INCLUDING ones a live session uses, with the count,
 // and that a single-model provider reports its whole family's count. `wt stop`
 // needs the in-use models to warn before stopping them; the exit-of-session
-// picker must still hide them.
+// picker's hiding of them is asserted by TestStopPickerStopsOnlySelected.
 func TestStopCandidatesReportsSessionCounts(t *testing.T) {
 	h := &stopHarness{
 		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
@@ -489,12 +489,6 @@ func TestStopCandidatesReportsSessionCounts(t *testing.T) {
 	for id, n := range want {
 		if got[id] != n {
 			t.Errorf("Sessions[%s] = %d, want %d (all: %v)", id, got[id], n, got)
-		}
-	}
-	// The exit-flow view is unchanged: only zero-session models.
-	for _, e := range stoppable(&config.Config{}, h.deps()) {
-		if e.ModelID != "ollama/a" {
-			t.Errorf("stoppable offered %s, want only ollama/a", e.ModelID)
 		}
 	}
 }

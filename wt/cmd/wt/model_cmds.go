@@ -4,9 +4,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -23,8 +25,10 @@ import (
 var (
 	stopCandidates = survey.StopCandidates
 	stopEntries    = survey.StopEntries
-	stopPickerAll  = func(cfg *config.Config) {
-		survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
+	// stopPickerAll runs the in-use-inclusive picker and reports whether it had
+	// anything to offer, so `wt stop` needs no inventory probe of its own.
+	stopPickerAll = func(cfg *config.Config) bool {
+		return survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
 	}
 	confirmStop = promptStop
 )
@@ -70,25 +74,41 @@ func stopCmd(a *app) *cobra.Command {
 	return cmd
 }
 
+// stoppableProviders lists, sorted, the configured provider ids wt can stop.
+// The bare-provider check and its error message both read it, so they cannot
+// disagree about what is valid.
+func stoppableProviders(cfg *config.Config) []string {
+	var ids []string
+	for _, p := range cfg.Providers {
+		if lifecycle.CanStop(p.ID) {
+			ids = append(ids, p.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
 // runStop implements `wt stop`. Argument errors return before any side effect.
 func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	// A bare provider is validated before the live inventory probe; a model id
 	// still needs the probe to find its running entry.
-	if arg != "" && !strings.Contains(arg, "/") && !lifecycle.CanStop(arg) {
-		return fmt.Errorf("unknown provider %q (valid: ollama, omlx, omlx-6bit, mtplx)", arg)
+	if arg != "" && !strings.Contains(arg, "/") {
+		if valid := stoppableProviders(cfg); !slices.Contains(valid, arg) {
+			return fmt.Errorf("unknown provider %q (valid: %s)", arg, strings.Join(valid, ", "))
+		}
 	}
-	cands := stopCandidates(cfg)
 	if arg == "" {
 		if !stdinTTY() {
 			return fmt.Errorf("wt stop needs a TTY to list models; pass a model or provider (wt stop <provider>/<name> | wt stop <provider>)")
 		}
-		if len(cands) == 0 {
+		// The picker takes the one inventory snapshot itself and reports whether
+		// it had anything to offer, so nothing is probed twice.
+		if !stopPickerAll(cfg) {
 			fmt.Fprintln(out, "wt: no running local models")
-			return nil
 		}
-		stopPickerAll(cfg)
 		return nil
 	}
+	cands := stopCandidates(cfg)
 
 	var targets []survey.Candidate
 	if strings.Contains(arg, "/") {
@@ -214,6 +234,7 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 	case catalog.ActionLaunch:
 		fmt.Fprintf(out, "wt: %s is already running\n", id)
 		return nil
+	default: // catalog.ActionBlock: BlockReason is non-empty by definition
+		return errors.New(row.BlockReason())
 	}
-	return fmt.Errorf("%s", row.BlockReason())
 }

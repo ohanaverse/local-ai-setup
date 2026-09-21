@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
 		return errors.New("stopEntries not stubbed in this test")
 	}
-	stopPickerAll = func(*config.Config) {}
+	stopPickerAll = func(*config.Config) bool { return false }
 	confirmStop = func(string) (bool, error) { return false, nil }
 	os.Exit(m.Run())
 }

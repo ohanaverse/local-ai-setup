@@ -464,3 +464,44 @@ func TestCandidatesIncludeStartRowsButNotBlocked(t *testing.T) {
 		}
 	}
 }
+
+// TestCandidatesGateStartRowsPerAgent verifies an idle local model lists only
+// the agents whose OWN route resolves: claude reaches the provider directly
+// (it serves the anthropic protocol) while codex is forced through a LiteLLM
+// that is not configured, so its route errors. The candidate row is shared, but
+// its agent list must never inherit one agent's route verdict for another —
+// otherwise `wt smoke <id>` would start the model and run an agent whose launch
+// cannot be built, reporting a FAIL that reads as a model problem.
+func TestCandidatesGateStartRowsPerAgent(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/idle:1", ProviderID: "ollama", ModelName: "idle:1", Location: config.LocationLocal},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "codex", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	cfg.ExposeAllForTest()
+	defer SetSmokeProbeForTest(localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/idle:1", ModelName: "idle:1", Artifact: "idle:1", Registered: true, ArtifactKnown: true},
+		},
+	})()
+
+	for i := 0; i < 20; i++ { // agent iteration order must not matter
+		var got []string
+		for _, c := range Candidates(cfg) {
+			if c.Row.Model.ID == "ollama/idle:1" {
+				got = c.Agents
+			}
+		}
+		if !slices.Equal(got, []string{"claude"}) {
+			t.Fatalf("agents = %v, want only [claude] (codex's route cannot resolve)", got)
+		}
+	}
+}

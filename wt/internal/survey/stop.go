@@ -66,12 +66,15 @@ func Picker(r io.Reader, w io.Writer, cfg *config.Config) { PickerWith(r, w, cfg
 // it false.
 type Options struct{ IncludeInUse bool }
 
-// PickerWith is Picker with options; same silent-when-not-a-TTY behavior.
-func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) {
+// PickerWith is Picker with options; same silent-when-not-a-TTY behavior. It
+// reports whether the picker had any model to offer (false when stdin is not a
+// TTY), so a caller like `wt stop` can say "nothing running" without probing the
+// inventory a second time.
+func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) bool {
 	if !stdinTTY() {
-		return
+		return false
 	}
-	runStopPickerWith(r, w, cfg, defaultStopDeps(), opts)
+	return runStopPickerWith(r, w, cfg, defaultStopDeps(), opts)
 }
 
 // Candidate is one running local model wt can stop, with how many live wt
@@ -162,18 +165,6 @@ func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
 	return out
 }
 
-// stoppable lists the running local models the exit-flow picker may offer:
-// stopCandidates with a zero session count.
-func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
-	var out []localmodels.Entry
-	for _, c := range stopCandidates(cfg, d) {
-		if c.Sessions == 0 {
-			out = append(out, c.Entry)
-		}
-	}
-	return out
-}
-
 // stopSignalCtx is a test seam: production uses realStopSignalCtx, following the
 // var/realfunc shape wt/CLAUDE.md documents for package-level seams. (cmd/wt's
 // startSignalCtx covers the same ground for the start path but is an inline
@@ -195,7 +186,8 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	runStopPickerWith(r, w, cfg, d, Options{})
 }
 
-func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) {
+// runStopPickerWith runs the picker and reports whether it had any model to offer.
+func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) bool {
 	var offered []localmodels.Entry
 	var labels []string
 	for _, c := range stopCandidates(cfg, d) {
@@ -214,7 +206,7 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 		labels = append(labels, label)
 	}
 	if len(offered) == 0 {
-		return
+		return false
 	}
 	header := exitFlowHeader
 	if opts.IncludeInUse {
@@ -242,16 +234,17 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	case selected = <-answer:
 	case <-ctx.Done():
 		fmt.Fprintln(w, "\ncancelled")
-		return
+		return true
 	}
 	if len(selected) == 0 {
-		return
+		return true
 	}
 	entries := make([]localmodels.Entry, 0, len(selected))
 	for _, i := range selected {
 		entries = append(entries, offered[i])
 	}
 	_ = stopEntries(ctx, w, cfg, d, entries)
+	return true
 }
 
 // stopEntries is the picker's stop loop: sequential stops with progress lines,
