@@ -775,18 +775,32 @@ func (c *Config) DeleteAgent(name string) {
 	}
 }
 
-// WriteFileAtomic writes data to path atomically via a temp file + rename,
-// creating the parent directory if needed.
-func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// WriteFileAtomic writes data to path atomically via a unique temp file in the
+// same directory + rename, creating the parent directory if needed. The temp
+// name is unique per call so concurrent writers never share (and truncate)
+// one another's temp file; the loser of the rename race simply loses.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	// os.WriteFile does not change the mode of a pre-existing tmp file; a
-	// stale 0644 tmp would otherwise leak a secret-bearing file.
+	tmp := f.Name()
+	// Best-effort cleanup so a failed write/chmod/rename never leaves a
+	// (possibly secret-bearing) temp file behind; after a successful rename
+	// the name no longer exists and the error is ignored.
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes the file 0600; set the requested mode explicitly.
 	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}

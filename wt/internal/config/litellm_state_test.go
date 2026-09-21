@@ -1,9 +1,12 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -50,6 +53,11 @@ func TestLitellmStateMigratesFromModelmanOnce(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(home, "agent-wt", "config.toml"))
 	if !strings.Contains(string(b), "[litellm]") || !strings.Contains(string(b), "sk-legacy") {
 		t.Fatalf("state not persisted to config.toml:\n%s", b)
+	}
+	// The migration writes a secret without the user asking, so the file it
+	// lands in must be 0600 (fixture creates config.toml 0644).
+	if st, err := os.Stat(filepath.Join(home, "agent-wt", "config.toml")); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("migrated config.toml mode = %v (err %v), want 0600", st.Mode().Perm(), err)
 	}
 	// Owner is now wt: changing modelman's copy must have no effect.
 	os.WriteFile(filepath.Join(home, "local-ai", "modelman.toml"), []byte("[litellm]\nenabled = false\n"), 0o644)
@@ -132,7 +140,8 @@ func TestLitellmOwnEmptyTableWinsOverLegacy(t *testing.T) {
 
 // TestWriteFileAtomicChmodsStaleTmp pins that a stale 0644 <path>.tmp left by
 // a crash cannot make a 0600 write land world-readable: the tmp is chmod'ed
-// before rename. Matters because config.toml can hold the LiteLLM api_key.
+// before rename (now: the stale file is simply ignored because temp names are
+// unique). Matters because config.toml can hold the LiteLLM api_key.
 func TestWriteFileAtomicChmodsStaleTmp(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(p+".tmp", []byte("stale"), 0o644); err != nil {
@@ -150,5 +159,80 @@ func TestWriteFileAtomicChmodsStaleTmp(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(p); string(b) != "secret" {
+		t.Fatalf("content = %q, want the new payload (stale tmp must not matter)", b)
+	}
+}
+
+// TestWriteFileAtomicConcurrent pins that concurrent writers to one path never
+// expose a torn or empty file: every read sees exactly one complete payload,
+// no *.tmp files linger, and the final file equals one payload. With a shared
+// fixed temp name, O_TRUNC by one writer tore what another was about to
+// rename into place, and a reader of the empty config.toml made wt rewrite the
+// user's config with defaults.
+func TestWriteFileAtomicConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.toml")
+	const writers, iters = 8, 60
+	payloads := make([][]byte, writers)
+	for i := range payloads {
+		payloads[i] = bytes.Repeat([]byte(fmt.Sprintf("writer-%d;", i)), 2500) // ~20 KB
+	}
+	valid := func(b []byte) bool {
+		for _, pl := range payloads {
+			if bytes.Equal(b, pl) {
+				return true
+			}
+		}
+		return false
+	}
+	if err := WriteFileAtomic(p, payloads[0], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	var readerDone sync.WaitGroup
+	var mu sync.Mutex
+	var torn []int
+	readerDone.Add(1)
+	go func() {
+		defer readerDone.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if b, err := os.ReadFile(p); err == nil && !valid(b) {
+				mu.Lock()
+				torn = append(torn, len(b))
+				mu.Unlock()
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				if err := WriteFileAtomic(p, payloads[i], 0o600); err != nil {
+					t.Errorf("writer %d: %v", i, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(stop)
+	readerDone.Wait()
+	if len(torn) > 0 {
+		t.Fatalf("observed %d torn/empty reads (first sizes %v)", len(torn), torn[:min(5, len(torn))])
+	}
+	if b, _ := os.ReadFile(p); !valid(b) {
+		t.Fatalf("final file is not exactly one payload (len %d)", len(b))
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(m) != 0 {
+		t.Fatalf("leftover temp files: %v", m)
 	}
 }
