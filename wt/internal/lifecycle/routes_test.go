@@ -136,19 +136,49 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	}
 }
 
-// TestRouteHonorsCallerContext pins that the caller's ctx reaches the proxy
-// wait: after Ctrl+C cancels ctx the call must return promptly and stay quiet
-// (the user cancelled, a "proxy not ready" warning is noise). Ignoring ctx
+type ctxKey struct{}
+
+// TestRouteHonorsCallerContext pins that the CALLER's ctx (not a fresh
+// Background) reaches the proxy wait, for both start and stop: the stub
+// captures the ctx it receives and the test checks it carries the caller's
+// sentinel value and fires Done when the caller cancels. Also pins that a
+// cancelled ctx (Ctrl+C) produces no "proxy not ready" warning. Ignoring ctx
 // would hang the process up to the readiness timeout.
 func TestRouteHonorsCallerContext(t *testing.T) {
 	cfg := routesCfg()
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
 	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
-	waitProxy = func(ctx context.Context, _ string, _ time.Duration) error { return ctx.Err() }
-	ctx, cancel := context.WithCancel(context.Background())
+	var captured []context.Context
+	waitProxy = func(ctx context.Context, _ string, _ time.Duration) error {
+		captured = append(captured, ctx)
+		return ctx.Err()
+	}
+	base, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "sentinel"))
+	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStop(base, cfg, "ollama", "a:1")
+	if len(captured) != 2 {
+		t.Fatalf("waitProxy calls = %d, want 2", len(captured))
+	}
+	for i, c := range captured {
+		if c.Value(ctxKey{}) != "sentinel" {
+			t.Errorf("call %d: waitProxy did not receive the caller's ctx", i)
+		}
+		select {
+		case <-c.Done():
+			t.Errorf("call %d: ctx done before the caller cancelled", i)
+		default:
+		}
+	}
 	cancel()
-	routeAfterStart(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
-	routeAfterStop(ctx, cfg, "ollama", "a:1")
+	for i, c := range captured {
+		select {
+		case <-c.Done():
+		default:
+			t.Errorf("call %d: caller cancel did not reach waitProxy's ctx", i)
+		}
+	}
+	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStop(base, cfg, "ollama", "a:1")
 	if warn.Len() != 0 {
 		t.Fatalf("cancelled ctx must not warn, got %q", warn.String())
 	}
