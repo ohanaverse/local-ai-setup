@@ -60,9 +60,9 @@ Codex reads `AGENTS.md` natively, so no pointer file is needed.
 
 ### LiteLLM routing
 
-**codex always routes through LiteLLM, regardless of the on/off setting** (`modelman litellm status`): no local provider serves the `openai-responses` protocol codex requires, so every route is forced — and wt prints its forced-litellm stderr notice on every direct-mode launch.
+**codex always routes through LiteLLM, regardless of the on/off setting** (`wt litellm status`): no local provider serves the `openai-responses` protocol codex requires, so every route is forced — and wt prints its forced-litellm stderr notice on every direct-mode launch.
 
-When LiteLLM routing is enabled (`modelman litellm status`), `codex-wt` routes non-native models through the LiteLLM proxy (URL from modelman.toml's `[litellm]` table, typically `http://localhost:4000`). The provider block becomes:
+When LiteLLM routing is enabled (`wt litellm status`), `codex-wt` routes non-native models through the LiteLLM proxy (URL from the `[litellm]` table in wt's config.toml, typically `http://localhost:4000`). The provider block becomes:
 
 ```
 -c model_provider=agent-wt
@@ -73,7 +73,7 @@ When LiteLLM routing is enabled (`modelman litellm status`), `codex-wt` routes n
 --model <registry-model-id>
 ```
 
-The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. codex custom providers take no inline API key: the proxy key is exported as `AGENT_WT_GATEWAY_API_KEY` (value from `[litellm].api_key` in `~/.config/local-ai/modelman.toml`) and read via the `env_key` override above — without it the proxy rejects every request with `401 Authentication Error, No api key passed in`. Native models (`codex/native`) continue to use codex's own subscription and ignore LiteLLM routing.
+The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. codex custom providers take no inline API key: the proxy key is exported as `AGENT_WT_GATEWAY_API_KEY` (value from `[litellm].api_key` in wt's `~/.config/agent-wt/config.toml`) and read via the `env_key` override above — without it the proxy rejects every request with `401 Authentication Error, No api key passed in`. Native models (`codex/native`) continue to use codex's own subscription and ignore LiteLLM routing.
 
 > **Upstream incompatibility (litellm ≤ 1.98.0) — worked around.** codex ≥ 0.148 only speaks the responses API (`wire_api = "chat"` was removed), and litellm's responses→`ollama_chat` bridge crashes on codex's structured `reasoning` object (`TypeError: unhashable type: 'dict'` → 500 on every attempt; codex masks it as "high demand"). Workaround: add `additional_drop_params: ["reasoning_effort"]` to the model's `litellm_params` in `~/.config/litellm/config.yaml` and restart the proxy (applied to `ollama/glm-5.3-flash:cloud` on 2026-08-31; every `ollama_chat/*` model needs it for codex). Proper fix ships in a litellm release past 1.98.0. Details: [litellm-troubleshooting.md](litellm-troubleshooting.md).
 

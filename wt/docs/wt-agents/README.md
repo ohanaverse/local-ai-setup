@@ -2,42 +2,53 @@
 
 Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims in [`bin/`](../../bin/)). Each file documents how the underlying agent is configured on disk and how it authenticates. The `*-wt` files are now thin shims that forward to `wt` (e.g. `claude-wt` → `wt --agent claude`); the launch logic lives in the Go tool (`cmd/wt/`, `internal/agents/`).
 
-## Migrating to modelman exposure
+## LiteLLM routes are wt-owned
 
-After this update, `wt` only shows non-native models that have `exposed = true`
-in `~/.config/local-ai/modelman.toml` (the legacy `litellm_exposed` key is
-still read as a fallback). To make a model available in `wt`, run:
+`wt` owns everything LiteLLM-side: the `~/.config/litellm/config.yaml` routes
+(`model_list` rows and the settings wt enforces), the proxy restart, and the
+routing on/off switch. Cloud and native models are shown by the picker per the
+exposure rules in the root `CLAUDE.md`; local models are listed from live
+provider probes, and their routes are added and removed automatically by
+`wt start` / `wt stop` (and the TUI start flow and `wt smoke`).
 
 ```bash
-uv run modelman expose ollama/<model>
+wt litellm status                 # routing on/off + url + api_key_set
+wt litellm expose <id>...         # add routes (restarts the proxy on change)
+wt litellm unexpose <id>...       # remove routes
+wt litellm sync                   # make local routes match the running models
+wt litellm list                   # routed ids currently in config.yaml
 ```
 
-Native models (`claude/native`, `copilot/native`) are always shown and do not need to be exposed.
+Native models (`claude/native`, `copilot/native`) are always shown and do not
+need a route.
 
 ## LiteLLM proxy lifecycle
 
-With LiteLLM routing on (`modelman litellm on`), `wt` routes non-native models
+With LiteLLM routing on (`wt litellm on`), `wt` routes non-native models
 through the LiteLLM proxy at `:4000`. The proxy loads its model list from
 `~/.config/litellm/config.yaml`
 **only at startup** — editing that file does not take effect until the proxy is
 restarted; until then it serves a stale model list and returns
 `400 Invalid model name passed in model=…` for any newly added model.
 
-**The on/off routing switch is also modelman-owned.** Whether agents route
-through the proxy or dial providers directly no longer comes from wt's
-(retired) `[gateway]` config block: it lives in the `[litellm]` table of
-`~/.config/local-ai/modelman.toml` and is toggled with `modelman litellm on` /
-`modelman litellm off` (current state: `modelman litellm status`). Toggling is
-routing policy only — it never starts, stops, or restarts the proxy; the
-proxy-process lifecycle below is a separate concern.
+**The on/off routing switch is wt-owned.** Whether agents route
+through the proxy or dial providers directly lives in the `[litellm]` table
+(`enabled`/`url`/`api_key`) of wt's own `~/.config/agent-wt/config.toml` and is
+toggled with `wt litellm on` / `wt litellm off` (current state:
+`wt litellm status`). Toggling is routing policy only — it never starts,
+stops, or restarts the proxy; the proxy-process lifecycle below is a separate
+concern. (`~/.config/local-ai/modelman.toml`'s `[litellm]` table is only a
+legacy read-only fallback, migrated into wt's config once.)
 
-**modelman owns reconciliation.** `modelman` is the writer of `config.yaml`
-(`expose`/`unexpose`, TUI `l` key) and restarts the proxy after a successful
-write via the `MODELMAN_LITELLM_RESTART_CMD` env var (e.g.
-`launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`). `wt` does not
-detect or restart the proxy — it is a launcher, not the owner of the shared
-service. If a model was added by hand (or the env var is unset), restart the
-proxy manually:
+**wt owns reconciliation.** `wt litellm expose|unexpose|sync` (and the
+automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
+restart the proxy after a change, via `WT_LITELLM_RESTART_CMD` (legacy alias
+`MODELMAN_LITELLM_RESTART_CMD`) or, when unset, `launchctl kickstart -k
+gui/$(id -u)/local.litellm.proxy`; wt then waits up to 30s for the proxy's
+`/health/liveliness` when a LiteLLM URL is configured and the proxy answered
+before the restart. `modelman expose|unexpose` delegate to the same commands.
+If a model was added by hand or the restart failed, restart the proxy
+manually:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy

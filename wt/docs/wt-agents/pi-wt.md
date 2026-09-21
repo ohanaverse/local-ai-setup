@@ -47,7 +47,7 @@ For `pi/native` (the launcher's "use pi's own default" sentinel), `pi-wt` execs 
 
 ### LiteLLM routing
 
-When LiteLLM routing is enabled (`modelman litellm status`), `pi-wt` routes non-native models through the LiteLLM proxy (URL from modelman.toml's `[litellm]` table, typically `http://localhost:4000`) instead of pi's direct provider entries.
+When LiteLLM routing is enabled (`wt litellm status`), `pi-wt` routes non-native models through the LiteLLM proxy (URL from the `[litellm]` table in wt's config.toml, typically `http://localhost:4000`) instead of pi's direct provider entries.
 
 Proxy-routed models **cannot** live under pi's `ollama` provider: pi splits a `--model` value on the first slash and matches the remainder against the named provider's entries, so `ollama/<registry-id>` would always resolve to the bare-id entry and LiteLLM would receive the unprefixed name. The sync therefore manages two provider blocks:
 
