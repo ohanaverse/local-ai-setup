@@ -7,6 +7,7 @@ import (
 	"context"
 	"maps"
 	"net/http"
+	"os"
 	"os/exec"
 	"time"
 
@@ -21,6 +22,7 @@ type env struct {
 	chatClient  *http.Client // warmup chat requests; bounded by ctx, not a client timeout
 	lookPath    func(string) (string, error)
 	run         func(ctx context.Context, name string, args ...string) ([]byte, error)
+	runEnv      func(ctx context.Context, extra []string, name string, args ...string) ([]byte, error)
 	inventory   func(*config.Config) localmodels.Snapshot
 	backends    map[string]backend // keyed by provider family
 
@@ -40,6 +42,7 @@ func defaultEnv() *env {
 		chatClient:     &http.Client{},
 		lookPath:       exec.LookPath,
 		run:            runCommand,
+		runEnv:         runCommandEnv,
 		inventory:      localmodels.Inventory,
 		backends:       maps.Clone(backendsByFamily),
 		mtplxProc:      pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"},
@@ -54,4 +57,14 @@ func defaultEnv() *env {
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+// runCommandEnv is runCommand with extra vars layered over the inherited
+// environment (setting cmd.Env replaces it wholesale, so os.Environ must be
+// restated). ollamaBackend uses it to pin `ollama stop` to the registry
+// origin via OLLAMA_HOST.
+func runCommandEnv(ctx context.Context, extra []string, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), extra...)
+	return cmd.CombinedOutput()
 }

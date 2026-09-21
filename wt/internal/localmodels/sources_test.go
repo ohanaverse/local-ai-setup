@@ -1,6 +1,7 @@
 package localmodels
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +24,7 @@ func TestOllamaModelNames(t *testing.T) {
 			{"name":"medgemma:27b","remote_host":""}]}`))
 	}))
 	defer srv.Close()
-	got, err := ollamaModelNames(&http.Client{Timeout: time.Second}, srv.URL)
+	got, err := ollamaModelNames(context.Background(), &http.Client{Timeout: time.Second}, srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,15 +41,15 @@ func TestOllamaModelNamesErrors(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "x", 500) }))
 	defer bad.Close()
-	if _, err := ollamaModelNames(client, bad.URL); err == nil {
+	if _, err := ollamaModelNames(context.Background(), client, bad.URL); err == nil {
 		t.Error("500: want error")
 	}
 	junk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("nope")) }))
 	defer junk.Close()
-	if _, err := ollamaModelNames(client, junk.URL); err == nil {
+	if _, err := ollamaModelNames(context.Background(), client, junk.URL); err == nil {
 		t.Error("bad json: want error")
 	}
-	if _, err := ollamaModelNames(client, "http://127.0.0.1:1/"); err == nil {
+	if _, err := ollamaModelNames(context.Background(), client, "http://127.0.0.1:1/"); err == nil {
 		t.Error("unreachable: want error")
 	}
 }

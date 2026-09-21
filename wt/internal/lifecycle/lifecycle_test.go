@@ -444,6 +444,26 @@ func TestStopUsesInjectedEnv(t *testing.T) {
 	}
 }
 
+// TestStartableMatchesBackendRegistry verifies Startable is true for exactly
+// the families in backendsByFamily (including the omlx-6bit alias) and false
+// for providers wt has no backend for. catalog.startable delegates to it, so
+// this is the guard that a new backend cannot be registered yet still render
+// as an unstartable, "modelman start" row in the pickers.
+func TestStartableMatchesBackendRegistry(t *testing.T) {
+	for family := range backendsByFamily {
+		if !Startable(family) {
+			t.Errorf("Startable(%q) = false, but %q is in backendsByFamily", family, family)
+		}
+	}
+	for id, want := range map[string]bool{
+		"omlx-6bit": true, "mlx_lm_server": false, "anthropic": false, "": false,
+	} {
+		if got := Startable(id); got != want {
+			t.Errorf("Startable(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 // TestProbeTrustedStatuses pins the exported probe-trust rule: a family the
 // inventory never mentioned counts as trusted (nothing is being started into
 // it, and hand-built snapshots carry no status map), StatusOK counts as trusted,

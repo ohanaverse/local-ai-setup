@@ -274,12 +274,19 @@ func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, mode
 	return b.stopModel(ctx, e, cfg, modelName)
 }
 
-// CanStop reports whether wt has a stop backend for providerID's family, so a
-// picker never offers a model (e.g. one on mlx_lm_server) that StopModel would
-// refuse with *UnsupportedError.
-func CanStop(providerID string) bool {
+// Startable reports whether wt has a lifecycle backend for providerID's family
+// (ollama, omlx/omlx-6bit, mtplx). backendsByFamily is the single source of
+// truth; internal/catalog delegates here so the picker's "can wt start this?"
+// answer cannot drift from the engine's.
+func Startable(providerID string) bool {
 	return backendsByFamily[localmodels.Family(providerID)] != nil
 }
+
+// CanStop reports whether wt has a stop backend for providerID's family, so a
+// picker never offers a model (e.g. one on mlx_lm_server) that StopModel would
+// refuse with *UnsupportedError. Every backend implements both start and
+// stop, so this is Startable under its stop-side name.
+func CanStop(providerID string) bool { return Startable(providerID) }
 
 // SingleModel reports whether providerID's family serves one model per
 // process, so stopping any of its models stops the whole provider (and every

@@ -1,6 +1,7 @@
 package localmodels
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -240,13 +241,15 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 	origin := familyOrigin(cfg, family)
 	switch family {
 	case "ollama":
-		names, err := ollamaModelNames(client, origin+"/api/tags")
+		names, err := ollamaModelNames(context.Background(), client, origin+"/api/tags")
 		if err != nil {
 			s.status = StatusUnreachable
 			return s
 		}
 		s.artifacts = names
-		if loaded, err := ollamaModelNames(client, origin+"/api/ps"); err == nil {
+		// Same endpoint construction as the lifecycle re-probe's OllamaLoaded,
+		// so the two always describe the same server.
+		if loaded, err := OllamaLoaded(context.Background(), client, origin); err == nil {
 			s.loaded = loaded
 		} else {
 			s.status = StatusPartial
