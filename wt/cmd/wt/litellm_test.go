@@ -311,3 +311,137 @@ func TestLitellmStatusAndToggle(t *testing.T) {
 		t.Fatalf("off failed: err=%v enabled=%v", err, cfg.IsLitellm())
 	}
 }
+
+// litellmStateEnv returns a loaded config in a fresh temp XDG dir (empty
+// registry) plus the path of the config.toml that UpdateLitellm writes.
+func litellmStateEnv(t *testing.T) (*config.Config, string) {
+	t.Helper()
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	writeEmptyRegistry(t, home)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, filepath.Join(home, ".config", "agent-wt", "config.toml")
+}
+
+// TestLitellmStatusTextMasksKey pins that text-mode status shows only
+// `***last4` for a normal key and NEVER reveals a key of 4 or fewer chars
+// (last-4 of a short key would print the whole secret).
+// The short-key case is RED against the brief's implementation; the long-key
+// case is existing behavior.
+func TestLitellmStatusTextMasksKey(t *testing.T) {
+	cfg, _ := litellmStateEnv(t)
+	u := "http://localhost:4000"
+	for _, tc := range []struct{ key, want string }{{"sk-abcdef1234", "***1234"}, {"abcd", "***"}, {"ab", "***"}} {
+		k := tc.key
+		if err := runLitellmSet(&bytes.Buffer{}, cfg, &u, &k); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err := runLitellmStatus(&out, cfg, false); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "api_key: "+tc.want+"\n") {
+			t.Errorf("key %q: status = %q, want api_key: %s", tc.key, out.String(), tc.want)
+		}
+		if len(tc.key) <= 4 && strings.Contains(strings.TrimPrefix(out.String(), "litellm:"), tc.key) && tc.want == "***" {
+			// key text (e.g. "ab") could collide with other words; only fail on the api_key line.
+			for _, line := range strings.Split(out.String(), "\n") {
+				if strings.Contains(line, "api_key:") && strings.Contains(line, tc.key) {
+					t.Errorf("short key %q leaked: %q", tc.key, line)
+				}
+			}
+		}
+	}
+}
+
+// TestLitellmSetIndependentAndClear pins that `set` updates url and key
+// independently (a flag left unset never clobbers the other field), that an
+// explicit empty --api-key clears the key, and that persisting works: the
+// state survives a reload from disk and config.toml is 0600 while a key is
+// stored. Existing behavior; expected to pass immediately.
+func TestLitellmSetIndependentAndClear(t *testing.T) {
+	cfg, path := litellmStateEnv(t)
+	u, k := "http://localhost:4000", "sk-secret"
+	if err := runLitellmSet(&bytes.Buffer{}, cfg, &u, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runLitellmSet(&bytes.Buffer{}, cfg, nil, &k); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LitellmBaseURL() != u || cfg.LitellmAPIKey() != k {
+		t.Fatalf("after url-only then key-only: url=%q key=%q", cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
+	}
+	u2 := "http://other:4000"
+	if err := runLitellmSet(&bytes.Buffer{}, cfg, &u2, nil); err != nil || cfg.LitellmAPIKey() != k {
+		t.Fatalf("url-only changed the key: err=%v key=%q", err, cfg.LitellmAPIKey())
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("config.toml mode = %v, want 0600 with a stored key", fi.Mode().Perm())
+	}
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LitellmBaseURL() != u2 || reloaded.LitellmAPIKey() != k {
+		t.Errorf("state did not persist: url=%q key=%q", reloaded.LitellmBaseURL(), reloaded.LitellmAPIKey())
+	}
+	empty := ""
+	if err := runLitellmSet(&bytes.Buffer{}, cfg, nil, &empty); err != nil || cfg.LitellmAPIKey() != "" {
+		t.Fatalf("--api-key \"\" did not clear: err=%v key=%q", err, cfg.LitellmAPIKey())
+	}
+	if cfg.LitellmBaseURL() != u2 {
+		t.Errorf("clearing the key changed the url: %q", cfg.LitellmBaseURL())
+	}
+}
+
+// TestLitellmOffWarnsWhenUnconfigured pins the `off` warning: agents whose
+// protocols force LiteLLM still fail to launch without url/key, so the user is
+// told. Existing behavior; expected to pass immediately.
+func TestLitellmOffWarnsWhenUnconfigured(t *testing.T) {
+	cfg, _ := litellmStateEnv(t)
+	var out, errOut bytes.Buffer
+	if err := runLitellmToggle(&out, &errOut, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut.String(), "will still fail to launch") {
+		t.Errorf("no off warning: %q", errOut.String())
+	}
+}
+
+// TestLitellmStateCommandsRefuseOnConfigError pins that status/on/off/set
+// refuse when the config failed to load (a.cfgErr) and write nothing, and that
+// `set` with no flags is a usage error that changes nothing. Guard existed in
+// the brief's registration; expected to pass immediately.
+func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
+	cfg, path := litellmStateEnv(t)
+	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}} {
+		c := litellmCmd(&app{cfg: cfg, cfgErr: errors.New("bad toml")})
+		c.SetOut(&bytes.Buffer{})
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(args)
+		if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
+			t.Fatalf("%v: err = %v, want config error refusal", args, err)
+		}
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("refused commands wrote config.toml")
+	}
+	// No-flag `set` on a healthy config is an error and leaves state alone.
+	c := litellmCmd(&app{cfg: cfg})
+	c.SetOut(&bytes.Buffer{})
+	c.SetErr(&bytes.Buffer{})
+	c.SetArgs([]string{"set"})
+	if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "nothing to set") {
+		t.Fatalf("set with no flags: err = %v", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("no-flag set wrote config.toml")
+	}
+}

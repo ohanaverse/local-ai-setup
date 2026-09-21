@@ -213,7 +213,7 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {
 			return smokeTarget{}, fmt.Errorf(
-				"model %q cannot be smoke-tested right now (not exposed, not on disk, or no agent supports it — check `modelman litellm status`; a local model must exist on disk)", modelID)
+				"model %q cannot be smoke-tested right now (not exposed, not on disk, or no agent supports it — check `wt litellm status`; a local model must exist on disk)", modelID)
 		}
 		return smokeTarget{}, fmt.Errorf("unknown model %q", modelID)
 	}

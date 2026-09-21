@@ -189,7 +189,10 @@ func runLitellmStatus(out io.Writer, cfg *config.Config, asJSON bool) error {
 	}
 	key := "(unset)"
 	if k := cfg.LitellmAPIKey(); k != "" {
-		key = "***" + k[max(0, len(k)-4):]
+		key = "***"
+		if len(k) > 4 { // a short key's last-4 would be the whole secret
+			key += k[len(k)-4:]
+		}
 	}
 	url := cfg.LitellmBaseURL()
 	if url == "" {
