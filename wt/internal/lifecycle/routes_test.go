@@ -35,17 +35,23 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 	t.Helper()
 	var calls []routeCall
 	var warn bytes.Buffer
-	oa, ow, ww := applyRoutes, waitProxy, routesWarn
+	oa, ow, op, ww := applyRoutes, waitProxy, probeProxy, routesWarn
 	applyRoutes = func(_ *config.Config, add, remove []string, o litellm.Options) (litellm.Result, error) {
 		if !o.SkipReadyGate {
 			t.Error("lifecycle hook must skip the ready gate: the model is verifiably running")
+		}
+		if o.Restart == nil {
+			t.Error("lifecycle hook must pass a ctx-aware restart, not leave the package default")
 		}
 		calls = append(calls, routeCall{add, remove})
 		return res, err
 	}
 	waitProxy = func(context.Context, string, time.Duration) error { return nil }
+	// Default to "the proxy was already up" so the readiness-wait tests below
+	// exercise the wait; the proxy-down case overrides it.
+	probeProxy = func(context.Context, string, time.Duration) bool { return true }
 	routesWarn = &warn
-	t.Cleanup(func() { applyRoutes, waitProxy, routesWarn = oa, ow, ww })
+	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww })
 	return &calls, &warn
 }
 
@@ -117,7 +123,9 @@ func TestRouteNeverFailsTheCaller(t *testing.T) {
 
 // TestRouteWaitsForProxyOnlyWhenChanged pins the readiness wait: it runs after
 // a route change when a LiteLLM URL is configured, and is skipped when nothing
-// changed (no restart happened) or no URL is set.
+// changed (no restart happened) or no URL is set. The no-URL case also pins
+// that the liveness pre-probe is not even attempted without a URL — there is
+// nothing to dial.
 func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	cfg := routesCfg()
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
@@ -133,6 +141,47 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
 	if waited != 1 {
 		t.Fatal("waited despite no change")
+	}
+
+	noURL := routesCfg() // no [litellm] url at all
+	stubRoutes(t, litellm.Result{Changed: true}, nil)
+	probed := 0
+	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
+	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
+	routeAfterStart(context.Background(), noURL, Target{ProviderID: "ollama", ModelName: "a:1"})
+	if waited != 1 || probed != 0 {
+		t.Fatalf("no LiteLLM URL: waited=%d (want still 1) probed=%d (want 0)", waited, probed)
+	}
+}
+
+// TestRouteSkipsWaitWhenProxyWasNotRunning pins the pre-probe gate: when a
+// LiteLLM URL is configured but the proxy is not answering, wt must not spend
+// the 30s readiness budget waiting for a proxy that was never up — the restart
+// is best-effort and there is nothing to come back. Before the probe, every
+// start and stop on a machine with a configured-but-stopped proxy stalled for
+// the full timeout, even with routing switched off.
+func TestRouteSkipsWaitWhenProxyWasNotRunning(t *testing.T) {
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://127.0.0.1:1"})
+	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	probed := 0
+	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return false }
+	waited := 0
+	waitProxy = func(context.Context, string, time.Duration) error {
+		waited++
+		return errors.New("LiteLLM proxy not ready")
+	}
+	began := time.Now()
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
+	if probed != 2 || waited != 0 {
+		t.Fatalf("probed=%d (want 2) waited=%d (want 0)", probed, waited)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a proxy that was already down must not warn, got %q", warn.String())
+	}
+	if el := time.Since(began); el > 2*time.Second {
+		t.Errorf("hook took %v with a down proxy, want prompt", el)
 	}
 }
 

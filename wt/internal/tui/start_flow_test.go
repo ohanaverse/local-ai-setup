@@ -613,6 +613,14 @@ func TestStartingViewShowsStageAndElapsed(t *testing.T) {
 		}
 	}
 
+	// The route window after the engine finishes is its own stage: showing
+	// "warming the model" while wt bounces LiteLLM would be a lie the user
+	// stares at for seconds.
+	got.start.stage = lifecycle.StageRouting
+	if v := got.View(); !strings.Contains(v, "updating LiteLLM routes") {
+		t.Errorf("routing view %q must name the LiteLLM route update", v)
+	}
+
 	got.start.cancelling = true
 	if v := got.View(); !strings.Contains(v, "Cancelling") {
 		t.Errorf("cancelling view %q must say Cancelling", v)

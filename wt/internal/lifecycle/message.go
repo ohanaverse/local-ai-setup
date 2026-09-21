@@ -17,6 +17,8 @@ func StageLabel(s Stage) string {
 		return "waiting for the model to load"
 	case StageWarming:
 		return "warming the model"
+	case StageRouting:
+		return "updating LiteLLM routes"
 	}
 	return "starting"
 }

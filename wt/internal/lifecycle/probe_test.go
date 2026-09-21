@@ -14,9 +14,12 @@ import (
 )
 
 // testEnv is an env with tiny poll intervals and timeouts so polling tests run
-// in milliseconds.
+// in milliseconds. It also clears the occupant-stopped route hook: the
+// injectable cores stay hook-free, so a core-level test never reaches
+// config.yaml (the public wrappers are covered in wrappers_test.go instead).
 func testEnv() *env {
 	e := defaultEnv()
+	e.onOccupantStopped = nil
 	e.pollInterval = 5 * time.Millisecond
 	e.warmupTimeout = 300 * time.Millisecond
 	e.loadTimeout = 300 * time.Millisecond

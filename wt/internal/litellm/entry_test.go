@@ -114,3 +114,34 @@ func TestBuildEntryRejectsUnmappedProvider(t *testing.T) {
 		t.Fatal("BuildEntry(native claude) = nil error, want no-mapping error")
 	}
 }
+
+// TestOmlx6bitHasAPolicy pins that the 6-bit oMLX provider is routable like
+// its 4-bit sibling: one oMLX server serves both quantizations, so a missing
+// policy meant a started omlx-6bit model never got a route (a stderr warning
+// on every start), was invisible to LocalModels/sync, and its stale rows
+// survived the family sweep on stop.
+func TestOmlx6bitHasAPolicy(t *testing.T) {
+	pol, ok := PolicyFor("omlx-6bit")
+	if !ok {
+		t.Fatal("PolicyFor(omlx-6bit) not found")
+	}
+	if four, _ := PolicyFor("omlx"); pol != four {
+		t.Errorf("omlx-6bit policy = %+v, want the same mapping as omlx (%+v)", pol, four)
+	}
+	p := config.Provider{ID: "omlx-6bit", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000/v1"}}
+	m := config.Model{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal}
+	node, err := BuildEntry(m, p)
+	if err != nil {
+		t.Fatalf("BuildEntry: %v", err)
+	}
+	got := decode(t, node)
+	want := map[string]any{"model": "openai/Six", "api_base": "http://localhost:8000/v1", "api_key": "not-needed"}
+	if !reflect.DeepEqual(got["litellm_params"], want) {
+		t.Errorf("litellm_params = %#v, want %#v", got["litellm_params"], want)
+	}
+
+	cfg := &config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}}
+	if locals := LocalModels(cfg); len(locals) != 1 || locals[0].ID != "omlx-6bit/Six" {
+		t.Errorf("LocalModels = %v, want the omlx-6bit model (sync must manage it)", locals)
+	}
+}

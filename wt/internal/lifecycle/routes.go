@@ -17,11 +17,17 @@ import (
 var (
 	applyRoutes           = litellm.Apply
 	waitProxy             = litellm.WaitReady
+	probeProxy            = litellm.Alive
 	routesWarn  io.Writer = os.Stderr
 )
 
-// proxyReadyTimeout bounds the wait for the proxy after a route change.
-const proxyReadyTimeout = 30 * time.Second
+const (
+	// proxyReadyTimeout bounds the wait for the proxy after a route change.
+	proxyReadyTimeout = 30 * time.Second
+	// proxyAliveTimeout bounds the single liveness probe taken before the
+	// change. Short on purpose: it is paid on every start and stop.
+	proxyAliveTimeout = 1500 * time.Millisecond
+)
 
 // routeAfterStart adds the started model's LiteLLM route. A single-model
 // provider (omlx, mtplx) can serve only one model, so starting one replaced
@@ -62,6 +68,14 @@ func routeAfterStop(ctx context.Context, cfg *config.Config, providerID, modelNa
 	applyAndReport(ctx, cfg, nil, remove)
 }
 
+// routeAfterOccupantStopped removes the route of the occupant a replace just
+// stopped. It is the env hook defaultEnv wires in (env.go): the start that
+// follows may still fail, and a failed Start runs no route hook at all, so the
+// removal has to happen at the moment the occupant went down.
+func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ localmodels.Entry) {
+	routeAfterStop(ctx, cfg, occ.ProviderID, occ.ModelName)
+}
+
 // familyModelIDs lists the LiteLLM-managed local model ids whose provider
 // shares providerID's family (omlx and omlx-6bit are one physical server).
 func familyModelIDs(cfg *config.Config, providerID string) []string {
@@ -76,7 +90,20 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 }
 
 func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string) {
-	res, err := applyRoutes(cfg, add, remove, litellm.Options{SkipReadyGate: true})
+	// Probe the proxy ONCE before the write. Waiting for readiness afterwards
+	// is only meaningful when a proxy was actually serving: a configured URL
+	// with nothing listening (routing may even be switched off) used to cost
+	// every start and stop the full proxyReadyTimeout waiting for a process
+	// that was never up. The restart itself stays best-effort either way.
+	url := cfg.LitellmBaseURL()
+	wasUp := url != "" && probeProxy(ctx, url, proxyAliveTimeout)
+
+	res, err := applyRoutes(cfg, add, remove, litellm.Options{
+		SkipReadyGate: true,
+		// The caller's ctx, so Ctrl+C during a start/stop does not keep
+		// paying for the restart command's full run time.
+		Restart: func() []string { return litellm.RestartContext(ctx) },
+	})
 	if err != nil {
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
 			fmt.Fprintf(routesWarn, "wt: LiteLLM route not updated: %v\n", err)
@@ -88,11 +115,13 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 			fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
 		}
 	}
-	for _, w := range res.Warnings {
-		fmt.Fprintf(routesWarn, "wt: %s\n", w)
+	if ctx.Err() == nil { // cancelled by the user: a failed restart is expected, stay quiet
+		for _, w := range res.Warnings {
+			fmt.Fprintf(routesWarn, "wt: %s\n", w)
+		}
 	}
-	if res.Changed && cfg.LitellmBaseURL() != "" {
-		if err := waitProxy(ctx, cfg.LitellmBaseURL(), proxyReadyTimeout); err != nil && ctx.Err() == nil { // cancelled by the user: stay quiet
+	if res.Changed && wasUp {
+		if err := waitProxy(ctx, url, proxyReadyTimeout); err != nil && ctx.Err() == nil { // cancelled by the user: stay quiet
 			fmt.Fprintf(routesWarn, "wt: %v\n", err)
 		}
 	}

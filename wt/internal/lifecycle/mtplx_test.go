@@ -32,6 +32,7 @@ func TestMain(m *testing.M) {
 	applyRoutes = func(*config.Config, []string, []string, litellm.Options) (litellm.Result, error) {
 		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
 	}
+	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	os.Exit(m.Run())
 }
 
