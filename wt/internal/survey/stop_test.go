@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,6 +68,20 @@ func (h *stopHarness) deps() stopDeps {
 
 func runningEntry(provider, id, name string) localmodels.Entry {
 	return localmodels.Entry{ProviderID: provider, ModelID: id, ModelName: name, Running: true}
+}
+
+// readTrackingReader counts the reads a caller has issued, so a test can assert
+// the drain runs *after* the picker has read — the property that makes it a
+// drain of residue rather than a pre-emptive flush that would swallow
+// typed-ahead input on a real terminal.
+type readTrackingReader struct {
+	r     io.Reader
+	reads int
+}
+
+func (t *readTrackingReader) Read(p []byte) (int, error) {
+	t.reads++
+	return t.r.Read(p)
 }
 
 // TestStopPickerSilentWhenNothingToOffer verifies the picker prints nothing
@@ -182,27 +199,62 @@ func TestPickerNoopWhenNotTTY(t *testing.T) {
 	}
 }
 
-// TestStopPickerFlushesTTYOnEveryReadExit verifies the paste-residue drain runs
-// on the picker's skip paths too, not only after a confirmed stop. A pasted
+// TestStopPickerDrainsAfterReadingOnEveryExit verifies the paste-residue drain
+// runs after the picker has read, on every path that consumed input. A pasted
 // block whose first line is "q"/"esc", or whose first line is blank (Enter with
 // nothing ticked), leaves every later line in the kernel's TTY input queue,
 // where the parent shell runs them as commands once wt exits — the hazard the
-// drain exists to prevent. A run where nothing is offered must stay flush-free:
-// the picker returns before reading a line, so it has no residue of its own.
-func TestStopPickerFlushesTTYOnEveryReadExit(t *testing.T) {
+// drain exists to prevent. Asserting the ordering (not just the count) is what
+// stops a future refactor from draining before the prompt and eating input the
+// user typed ahead.
+func TestStopPickerDrainsAfterReadingOnEveryExit(t *testing.T) {
 	prevFlush := flushTTY
 	t.Cleanup(func() { flushTTY = prevFlush })
 
-	for _, input := range []string{"\n", "q\n", "esc\n", "1\n\n", ""} {
+	for _, input := range []string{"\n", "q\n", "esc\n", "1\n\n"} {
 		flushes := 0
-		flushTTY = func() { flushes++ }
+		src := &readTrackingReader{r: strings.NewReader(input)}
+		flushTTY = func() {
+			flushes++
+			if src.reads == 0 {
+				t.Errorf("input %q: drained before the picker read anything", input)
+			}
+		}
 		h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
 			runningEntry("ollama", "ollama/a", "a")}}}
-		runStopPicker(strings.NewReader(input), &bytes.Buffer{}, &config.Config{}, h.deps())
+		runStopPicker(src, &bytes.Buffer{}, &config.Config{}, h.deps())
 		if flushes != 1 {
 			t.Errorf("input %q: flushes = %d, want 1", input, flushes)
 		}
 	}
+}
+
+// TestStopPickerExhaustedReaderStillDrains verifies the drain is unconditional
+// once the picker has offered a choice, even when the reader ends without
+// returning a line. On a real terminal the scanner can consume part of the
+// input queue and then hit the end, so residue may still be queued; gating the
+// drain on "a line was returned" would leave exactly that residue to run as
+// shell commands in the parent terminal.
+func TestStopPickerExhaustedReaderStillDrains(t *testing.T) {
+	prevFlush := flushTTY
+	t.Cleanup(func() { flushTTY = prevFlush })
+
+	flushes := 0
+	flushTTY = func() { flushes++ }
+	h := &stopHarness{snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+		runningEntry("ollama", "ollama/a", "a")}}}
+	runStopPicker(strings.NewReader(""), &bytes.Buffer{}, &config.Config{}, h.deps())
+	if flushes != 1 {
+		t.Errorf("exhausted reader: flushes = %d, want 1", flushes)
+	}
+}
+
+// TestStopPickerFlushesNothingWhenNothingOffered verifies a run that offers no
+// model stays flush-free: the picker returns before reading a line, so it has
+// no residue of its own and must not clear a queue it never consumed.
+func TestStopPickerFlushesNothingWhenNothingOffered(t *testing.T) {
+	prevFlush := flushTTY
+	t.Cleanup(func() { flushTTY = prevFlush })
 
 	flushes := 0
 	flushTTY = func() { flushes++ }
@@ -223,7 +275,13 @@ func TestStopPickerStopIsCancellable(t *testing.T) {
 	t.Cleanup(func() { stopSignalCtx = prev })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stopSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+	// The picker must call this itself: signal.NotifyContext keeps its handler
+	// installed until the returned CancelFunc runs, so dropping the deferred
+	// cancel would leave wt's SIGINT handler live past the picker.
+	released := false
+	stopSignalCtx = func() (context.Context, context.CancelFunc) {
+		return ctx, func() { released = true }
+	}
 
 	h := &stopHarness{
 		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
@@ -244,6 +302,15 @@ func TestStopPickerStopIsCancellable(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "cancelled") {
 		t.Errorf("output = %q, want a cancelled line", out.String())
+	}
+	if !released {
+		t.Error("the picker never called the context's CancelFunc, leaving its signal handler installed")
+	}
+	// The guard must skip the print, not just the stop: an unattempted model
+	// must not be announced as "Stopping …". Match the print's own prefix —
+	// the choice list above legitimately names every offered model.
+	if strings.Contains(out.String(), "Stopping ollama/b") {
+		t.Errorf("output = %q, want no Stopping line for the unattempted model b", out.String())
 	}
 }
 
@@ -284,5 +351,41 @@ func TestStopPickerCancelledLastStopReportsCancelled(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "failed:") {
 		t.Errorf("output = %q, want no failed line: the stop was cancelled, not broken", out.String())
+	}
+}
+
+// TestReleaseSessionWarnsWhenStateIsUnwritable verifies a failed refcount
+// release warns on stderr and never panics or aborts the exit path. The release
+// is best-effort by design — the next launch's Sweep prunes a dead pid's entry —
+// but the warning is the user's only signal that the "in use" column may be
+// stale, and this branch previously had no coverage at all.
+func TestReleaseSessionWarnsWhenStateIsUnwritable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	// A *directory* where the state file belongs makes the read fail with
+	// EISDIR, which is not os.IsNotExist — the one error class Release
+	// propagates rather than swallowing.
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt", "refcount.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	prevStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = prevStderr })
+
+	ReleaseSession()
+
+	os.Stderr = prevStderr
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(r)
+	r.Close()
+	if !strings.Contains(string(got), "refcount state not released") {
+		t.Errorf("stderr = %q, want the refcount release warning", got)
 	}
 }

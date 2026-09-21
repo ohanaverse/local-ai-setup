@@ -452,22 +452,23 @@ func TestStopUsesInjectedEnv(t *testing.T) {
 // probe ever confirmed — and on a single-model provider, stopping that row takes
 // down whatever is actually loaded.
 func TestProbeTrustedStatuses(t *testing.T) {
+	// An absent key is trusted, and is the one case with no status to read —
+	// asserted separately so the table below holds only rows that set a status.
+	if got := ProbeTrusted(localmodels.Snapshot{}, "ollama"); !got {
+		t.Error("absent key: ProbeTrusted = false, want true")
+	}
+
 	cases := []struct {
 		name   string
 		status localmodels.Status
-		absent bool
 		want   bool
 	}{
-		{"absent key", "", true, true},
-		{"ok", localmodels.StatusOK, false, true},
-		{"partial", localmodels.StatusPartial, false, false},
-		{"unreachable", localmodels.StatusUnreachable, false, false},
+		{"ok", localmodels.StatusOK, true},
+		{"partial", localmodels.StatusPartial, false},
+		{"unreachable", localmodels.StatusUnreachable, false},
 	}
 	for _, c := range cases {
-		snap := localmodels.Snapshot{}
-		if !c.absent {
-			snap.Providers = map[string]localmodels.Status{"ollama": c.status}
-		}
+		snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": c.status}}
 		if got := ProbeTrusted(snap, "ollama"); got != c.want {
 			t.Errorf("%s: ProbeTrusted = %v, want %v", c.name, got, c.want)
 		}
