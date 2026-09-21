@@ -20,12 +20,17 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv("LIFECYCLE_HELPER") == "mtplx" {
 		helperMtplx()
 		return
+	}
+	// No test may reach the real config.yaml or proxy through the public wrappers.
+	applyRoutes = func(*config.Config, []string, []string, litellm.Options) (litellm.Result, error) {
+		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
 	}
 	os.Exit(m.Run())
 }
