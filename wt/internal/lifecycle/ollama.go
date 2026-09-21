@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,41 +22,49 @@ func (ollamaBackend) singleModel() bool { return false }
 func (ollamaBackend) stop(ctx context.Context, e *env, cfg *config.Config) error { return nil }
 
 // stopModel unloads one model with `ollama stop <name>`; the daemon and every
-// other loaded model stay up. A non-zero exit is not by itself a failure: the
-// goal is "the model is not loaded", so it re-probes /api/ps and succeeds when
-// the model is already gone (a daemon restart or eviction between the picker's
-// probe and this stop makes `ollama stop` exit 1 with "model not found") —
-// the same trust-the-state-not-the-exit-code shape omlx and mtplx use. When
-// the re-probe cannot answer, or the model is still loaded, the error carries
-// ollama's own message.
+// other loaded model stay up. The CLI is pinned to the registry origin with
+// OLLAMA_HOST so it stops the same daemon the re-probe queries — an inherited
+// OLLAMA_HOST pointing elsewhere would make the CLI stop against a daemon the
+// probe never sees, reporting success for a model still loaded. The exit code
+// is never trusted by itself: the goal is "the model is not loaded", so it
+// re-probes /api/ps and succeeds when the model is already gone (a daemon
+// restart or eviction between the picker's probe and this stop makes
+// `ollama stop` exit 1 with "model not found") — the same
+// trust-the-state-not-the-exit-code shape omlx and mtplx use, on every exit
+// code. When the re-probe cannot answer, the CLI's exit decides (exit 0 with
+// a daemon gone mid-stop has nothing left to check); a cancelled stop returns
+// the cancellation without probing, so Ctrl-C can never be read as success.
 func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
 	bin, err := e.lookPath("ollama")
 	if err != nil {
 		return &BinaryMissingError{Binary: "ollama"}
 	}
-	out, runErr := e.run(ctx, bin, "stop", modelName)
-	if runErr == nil {
-		return nil
-	}
 	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
-	if loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin); perr == nil && !anySameModel("ollama", loaded, modelName) {
-		return nil
+	out, runErr := e.runEnv(ctx, []string{"OLLAMA_HOST=" + origin}, bin, "stop", modelName)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	if msg := strings.TrimSpace(string(out)); msg != "" {
-		return errors.New(msg)
-	}
-	return fmt.Errorf("ollama stop %s failed: %w", modelName, runErr)
-}
-
-// anySameModel reports whether any name in names denotes want under family's
-// matching rule.
-func anySameModel(family string, names []string, want string) bool {
-	for _, n := range names {
-		if sameModel(family, n, want) {
-			return true
+	var cliErr error
+	if runErr != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			cliErr = errors.New(msg)
+		} else {
+			cliErr = fmt.Errorf("ollama stop %s failed: %w", modelName, runErr)
 		}
 	}
-	return false
+	loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin)
+	if perr == nil {
+		if slices.ContainsFunc(loaded, func(n string) bool { return sameModel("ollama", n, modelName) }) {
+			if cliErr != nil {
+				return cliErr
+			}
+			return fmt.Errorf("ollama stop %s: /api/ps still lists the model", modelName)
+		}
+		return nil
+	}
+	// The re-probe cannot answer: the daemon gave no usable verdict, so the
+	// CLI's own exit decides.
+	return cliErr
 }
 
 func (ollamaBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {

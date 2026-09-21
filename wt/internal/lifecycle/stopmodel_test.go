@@ -16,15 +16,18 @@ import (
 )
 
 // TestStopModelOllamaRunsOllamaStop verifies stopModel unloads exactly the
-// named ollama model via `ollama stop <name>`. Ollama is multi-tenant, so the
-// post-exit picker must stop only the model the user ticked, never the daemon
-// or the other loaded models.
+// named ollama model via `ollama stop <name>`, pinned to the registry origin
+// with OLLAMA_HOST so the CLI stops the same daemon the re-probe queries (an
+// inherited OLLAMA_HOST pointing elsewhere would stop a daemon wt never
+// probes). Ollama is multi-tenant, so the post-exit picker must stop only the
+// model the user ticked, never the daemon or the other loaded models.
 func TestStopModelOllamaRunsOllamaStop(t *testing.T) {
-	var ran []string
+	var ran, envs []string
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/ollama", nil }
-	e.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+	e.runEnv = func(_ context.Context, env []string, name string, args ...string) ([]byte, error) {
 		ran = append(ran, name+" "+strings.Join(args, " "))
+		envs = append(envs, env...)
 		return nil, nil
 	}
 	if err := stopModel(context.Background(), e, &config.Config{}, "ollama", "qwen3.8:27b-mlx"); err != nil {
@@ -32,6 +35,9 @@ func TestStopModelOllamaRunsOllamaStop(t *testing.T) {
 	}
 	if len(ran) != 1 || ran[0] != "/bin/ollama stop qwen3.8:27b-mlx" {
 		t.Fatalf("ran = %v, want [/bin/ollama stop qwen3.8:27b-mlx]", ran)
+	}
+	if len(envs) != 1 || envs[0] != "OLLAMA_HOST="+config.OllamaBaseURL {
+		t.Fatalf("env = %v, want [OLLAMA_HOST=%s]", envs, config.OllamaBaseURL)
 	}
 }
 
@@ -58,7 +64,7 @@ func psServing(t *testing.T, loaded ...string) *httptest.Server {
 func failingOllamaStop() *env {
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/ollama", nil }
-	e.run = func(context.Context, string, ...string) ([]byte, error) {
+	e.runEnv = func(context.Context, []string, string, ...string) ([]byte, error) {
 		return []byte("model not found\n"), errors.New("exit 1")
 	}
 	return e
@@ -87,6 +93,38 @@ func TestStopModelOllamaStillLoadedSurfacesFailure(t *testing.T) {
 		if err == nil || err.Error() != "model not found" {
 			t.Errorf("loaded=%q: err = %v, want ollama's own message", loaded, err)
 		}
+	}
+}
+
+// TestStopModelOllamaExitZeroButStillLoadedIsError verifies a clean `ollama
+// stop` exit is never trusted by itself: when /api/ps still lists the model
+// (a stop racing a re-load, or a CLI quirk reporting success wrongly), the
+// stop is an error — the same state-not-exit-code standard omlx and mtplx
+// hold even on exit 0, so the picker never prints "done" for a loaded model.
+func TestStopModelOllamaExitZeroButStillLoadedIsError(t *testing.T) {
+	daemon := psServing(t, "x")
+	e := testEnv()
+	e.lookPath = func(string) (string, error) { return "/bin/ollama", nil }
+	e.runEnv = func(context.Context, []string, string, ...string) ([]byte, error) { return nil, nil }
+	if err := stopModel(context.Background(), e, provCfg("ollama", daemon.URL), "ollama", "x"); err == nil {
+		t.Fatal("stopModel returned nil while /api/ps still lists the model")
+	}
+}
+
+// TestStopModelOllamaCancelledReturnsCancelWithoutProbe verifies the picker's
+// Ctrl-C path surfaces as a cancellation, not a success: the re-probe never
+// runs on a cancelled stop, where the model unloading during the probe's
+// timeout window would turn "cancelled" into "done".
+func TestStopModelOllamaCancelledReturnsCancelWithoutProbe(t *testing.T) {
+	daemon := psServing(t) // nothing loaded: a probe would report success
+	e := failingOllamaStop()
+	ctx, cancel := context.WithCancel(context.Background())
+	e.runEnv = func(_ context.Context, _ []string, _ string, _ ...string) ([]byte, error) {
+		cancel() // the picker cancels the stop in flight
+		return nil, errors.New("exit 1")
+	}
+	if err := stopModel(ctx, e, provCfg("ollama", daemon.URL), "ollama", "x"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
 
