@@ -136,8 +136,9 @@ func (s *StoreImpl) Sweep() error {
 // Release drops every entry recorded for pid. A wt session calls it once its
 // agent has exited, so the post-exit model-stopping picker does not count wt's
 // own finished session as a user of the model (the entry would otherwise live
-// until Sweep finds this pid dead). A missing file is a no-op; corrupt lines
-// are dropped, as in Sweep.
+// until Sweep finds this pid dead). A missing file, or a pid with no entry
+// (a command agent never records one), is a no-op that leaves the file
+// untouched; corrupt lines are dropped only when an entry is actually removed.
 func (s *StoreImpl) Release(pid int) error {
 	return s.withLock(func() error {
 		data, err := os.ReadFile(s.path())
@@ -148,11 +149,16 @@ func (s *StoreImpl) Release(pid int) error {
 			return err
 		}
 		var out []byte
+		removed := false
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			var e entry
-			if err := json.Unmarshal(line, &e); err != nil || e.Pid == pid {
+			if err := json.Unmarshal(line, &e); err != nil {
+				continue
+			}
+			if e.Pid == pid {
+				removed = true
 				continue
 			}
 			out = append(out, line...)
@@ -160,6 +166,9 @@ func (s *StoreImpl) Release(pid int) error {
 		}
 		if err := scanner.Err(); err != nil {
 			return err
+		}
+		if !removed {
+			return nil
 		}
 		return config.WriteFileAtomic(s.path(), out, 0o600)
 	})

@@ -63,3 +63,33 @@ func TestReleaseMissingFileIsNoop(t *testing.T) {
 		t.Fatalf("Release on empty store: %v", err)
 	}
 }
+
+// TestReleaseUnmatchedPidLeavesFileUntouched verifies Release does not rewrite
+// the state file when the pid has no entry. Command agents never Record, yet
+// post-exit calls Release for every session; a rewrite there is a needless
+// locked write — and would silently drop corrupt lines nobody asked it to
+// touch. The bytes on disk must be identical afterwards.
+func TestReleaseUnmatchedPidLeavesFileUntouched(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	if err := store.Record(222, "ollama/a"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	seed, err := os.ReadFile(store.path())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	seed = append([]byte("not json\n"), seed...)
+	if err := os.WriteFile(store.path(), seed, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.Release(111); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	got, err := os.ReadFile(store.path())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(seed) {
+		t.Errorf("file = %q, want it untouched (%q)", got, seed)
+	}
+}

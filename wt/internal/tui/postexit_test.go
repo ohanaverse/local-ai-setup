@@ -87,3 +87,25 @@ func TestPostExitCommandAgentSkipsStopPhase(t *testing.T) {
 		t.Error("stop phase ran for a command agent")
 	}
 }
+
+// TestPostExitNativeModelSkipsStopPhase verifies a native model (which runs no
+// local server) never offers to stop models after the session: the picker would
+// list unrelated idle models the session had nothing to do with.
+func TestPostExitNativeModelSkipsStopPhase(t *testing.T) {
+	prevSummary, prevSurvey := pendingSummary, pendingSurveyState
+	prevRun, prevStop := runSurvey, runStopPhase
+	t.Cleanup(func() {
+		pendingSummary, pendingSurveyState = prevSummary, prevSurvey
+		runSurvey, runStopPhase = prevRun, prevStop
+	})
+	pendingSummary = ""
+	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "claude/native", Native: true}}
+	runSurvey = func(string, config.Model) string { return "" }
+	called := false
+	runStopPhase = func(*config.Config) { called = true }
+
+	printPendingSummaryAndSurvey(&config.Config{})
+	if called {
+		t.Error("stop phase ran for a native model")
+	}
+}

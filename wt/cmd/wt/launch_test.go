@@ -1011,3 +1011,24 @@ func TestRunAgentCmdCommandAgentSkipsStopPicker(t *testing.T) {
 		t.Error("stop picker ran for a command agent")
 	}
 }
+
+// TestRunAgentCmdNativeModelSkipsStopPicker verifies a native model (which runs
+// no local server) never offers to stop models after the session: the picker
+// would list unrelated idle models the session had nothing to do with.
+func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
+	prev := runStopPicker
+	t.Cleanup(func() { runStopPicker = prev })
+	called := false
+	runStopPicker = func(*config.Config) { called = true }
+
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	if err := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "claude/native", Native: true}, &config.Config{}); err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	if called {
+		t.Error("stop picker ran for a native model")
+	}
+}

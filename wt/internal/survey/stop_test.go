@@ -415,3 +415,53 @@ func TestReleaseSessionWarnsWhenReleaseFails(t *testing.T) {
 		t.Errorf("stderr = %q, want the read error (EISDIR) threaded through after %q", got, wantPrefix)
 	}
 }
+
+// blockingReader cancels the picker's context on its first Read and then blocks
+// forever — the shape of Ctrl+C landing while the user sits at the "stop>"
+// prompt with nothing typed. Cancelling from inside Read guarantees the menu has
+// already been printed, so the test never races the picker's own writes.
+type blockingReader struct {
+	cancel context.CancelFunc
+	block  chan struct{}
+}
+
+func (b *blockingReader) Read([]byte) (int, error) {
+	b.cancel()
+	<-b.block
+	return 0, io.EOF
+}
+
+// TestStopPickerCtrlCAtMenuSkipsAndDrains verifies Ctrl+C while the menu is
+// waiting for input abandons the prompt, stops nothing, and still runs the
+// deferred TTY drain. Without it the default SIGINT disposition killed wt before
+// the summary, the stats and the drain, leaving paste residue queued to run as
+// shell commands.
+func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
+	prev, prevFlush := stopSignalCtx, flushTTY
+	t.Cleanup(func() { stopSignalCtx, flushTTY = prev, prevFlush })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	flushes := 0
+	flushTTY = func() { flushes++ }
+
+	h := &stopHarness{
+		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/a", "a"),
+		}},
+	}
+	rd := &blockingReader{cancel: cancel, block: make(chan struct{})}
+	defer close(rd.block)
+	var out bytes.Buffer
+	runStopPicker(rd, &out, &config.Config{}, h.deps())
+
+	if len(h.stops) != 0 {
+		t.Errorf("stops = %v, want none after a cancelled menu", h.stops)
+	}
+	if !strings.Contains(out.String(), "cancelled") {
+		t.Errorf("output = %q, want a cancelled line", out.String())
+	}
+	if flushes != 1 {
+		t.Errorf("flushes = %d, want 1: the drain must still run", flushes)
+	}
+}

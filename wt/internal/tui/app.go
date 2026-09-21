@@ -1242,9 +1242,10 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 	if launched.agent != "" {
 		releaseSession()
 		stats = runSurvey(launched.agent, launched.m)
-		// Command agents (e.g. shell) record m.ID == "" and launch no model,
-		// so there is nothing to offer to stop.
-		if launched.m.ID != "" {
+		// Command agents (e.g. shell) record m.ID == "" and launch no model, and
+		// native models run no local server, so a session on either has nothing
+		// of its own to stop.
+		if launched.m.ID != "" && !launched.m.Native {
 			runStopPhase(cfg)
 		}
 	}

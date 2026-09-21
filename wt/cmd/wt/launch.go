@@ -224,8 +224,10 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	releaseSession()
 	stats := survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
 	// Command agents (e.g. shell) launch with a zero-value config.Model
-	// (m.ID == "") and never touch a model, so there is nothing to stop.
-	if m.ID != "" {
+	// (m.ID == "") and native models run no local server, so a session on
+	// either has nothing of its own to stop — offering unrelated idle models
+	// after it would be a surprise.
+	if m.ID != "" && !m.Native {
 		runStopPicker(cfg)
 	}
 

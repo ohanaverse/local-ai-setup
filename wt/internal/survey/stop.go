@@ -129,26 +129,34 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	if len(offered) == 0 {
 		return
 	}
-	selected := chooseModels(bufio.NewScanner(r), w, offered)
+	// Ctrl+C/SIGTERM are caught for the whole picker — the menu read included —
+	// so the default disposition cannot kill wt before the summary, the stats
+	// and the deferred drain below run. See realStopSignalCtx.
+	ctx, cancel := stopSignalCtx()
+	defer cancel()
 	// The picker read lines the same way the survey did; drop any paste
 	// residue so it cannot run as shell commands after wt exits. Deferred so it
 	// also runs on the skip paths below: "q"/"esc", or an Enter with nothing
 	// ticked, leave just as much residue queued as a confirmed stop does, and
 	// the early return used to skip the drain entirely.
 	defer flushTTY()
+	// The menu read blocks in a syscall a signal does not interrupt (the runtime
+	// restarts it), so it runs on its own goroutine and the picker races it
+	// against the context. A cancelled menu abandons that goroutine still
+	// blocked in Scan: harmless, wt exits shortly after and it never writes to w
+	// again (it only prints between reads).
+	answer := make(chan []int, 1)
+	go func() { answer <- chooseModels(bufio.NewScanner(r), w, offered) }()
+	var selected []int
+	select {
+	case selected = <-answer:
+	case <-ctx.Done():
+		fmt.Fprintln(w, "\ncancelled")
+		return
+	}
 	if len(selected) == 0 {
 		return
 	}
-	// These stops run after the agent has exited, so this path owns the only
-	// Ctrl+C handling left — see realStopSignalCtx.
-	// Ctrl+C during the menu read above is deliberately unhandled: no stop is in
-	// flight yet, so there is nothing to cancel, and a handler over that read
-	// would turn the interrupted syscall into the scanner's EOF — skipping the
-	// prompt mid-answer. The cost is that the default disposition kills wt before
-	// the deferred drain runs, leaving any paste residue queued; that is the
-	// lesser of the two, and the only path on which it happens.
-	ctx, cancel := stopSignalCtx()
-	defer cancel()
 	stoppedFamily := map[string]bool{}
 	for _, i := range selected {
 		if ctx.Err() != nil {
