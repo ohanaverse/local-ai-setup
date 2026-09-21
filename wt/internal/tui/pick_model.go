@@ -36,14 +36,14 @@ type pickModel struct {
 // scoped to one agent; discovered (unregistered) local models are hidden.
 // The caller's models may include start-able and blocked rows; blocked rows
 // are shown (with their reason) but Enter on them does not select.
-func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme) pickModel {
+func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme, skipRoute bool) pickModel {
 	var snap *localmodels.Snapshot
 	if cfg != nil {
 		s := runInventory(cfg)
 		snap = &s
 	}
 	tbl := buildTable(tableInput{
-		cfg: cfg, agent: "", models: models, inventory: snap, hideDiscovered: true,
+		cfg: cfg, agent: "", models: models, inventory: snap, hideDiscovered: true, skipRoute: skipRoute,
 		usage: newUsageStore(),
 	}, newRefcountStore(), "")
 	items := tbl.items
@@ -127,7 +127,18 @@ func (m pickModel) View() string {
 // pass their own unfiltered union list. models may include start and blocked
 // rows (wt start); blocked rows are shown but not selectable.
 func PickModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
-	m := newPickModel(cfg, models, theme)
+	return runPick(newPickModel(cfg, models, theme, false))
+}
+
+// PickStartModel is PickModel for `wt start`: starting a model is not
+// launching an agent on it, so the launch-route rules (a discovered model not
+// in LiteLLM, a route that fails to resolve) do not block or decorate rows.
+// Rows that cannot start at all (not on disk, no start backend) stay blocked.
+func PickStartModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
+	return runPick(newPickModel(cfg, models, theme, true))
+}
+
+func runPick(m pickModel) (config.Model, bool, error) {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {

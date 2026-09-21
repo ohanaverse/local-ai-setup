@@ -238,13 +238,29 @@ func TestStartInvalidArgErrors(t *testing.T) {
 	}
 }
 
+// TestStopUnknownProviderErrorsBeforeProbe verifies a typo'd provider is
+// rejected before the live inventory probe (the stopCandidates seam), so a bad
+// argument costs nothing.
+func TestStopUnknownProviderErrorsBeforeProbe(t *testing.T) {
+	old := stopCandidates
+	t.Cleanup(func() { stopCandidates = old })
+	called := false
+	stopCandidates = func(*config.Config) []survey.Candidate { called = true; return nil }
+	if err := runStop(io.Discard, &config.Config{}, "bogus", false); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("err = %v, want unknown provider", err)
+	}
+	if called {
+		t.Fatal("stopCandidates was probed before provider validation")
+	}
+}
+
 // TestStartNoArgUsesPickerAndRunningPickIsNoOp verifies the no-arg flow needs a
 // TTY, lists every local model via the shared picker, starts an idle pick, and
 // treats a running pick as a no-op (spec: selecting a running model does nothing).
 func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
 	cfg, req := startFixture(t)
-	oldTTY, oldPick := stdinTTY, pickModelTUI
-	t.Cleanup(func() { stdinTTY, pickModelTUI = oldTTY, oldPick })
+	oldTTY, oldPick := stdinTTY, pickStartModelTUI
+	t.Cleanup(func() { stdinTTY, pickStartModelTUI = oldTTY, oldPick })
 
 	stdinTTY = func() bool { return false }
 	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err == nil {
@@ -254,7 +270,7 @@ func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	var offered []string
 	pick := "ollama/b:1"
-	pickModelTUI = func(_ *config.Config, models []config.Model, _ themes.Theme) (config.Model, bool, error) {
+	pickStartModelTUI = func(_ *config.Config, models []config.Model, _ themes.Theme) (config.Model, bool, error) {
 		for _, m := range models {
 			offered = append(offered, m.ID)
 		}
@@ -278,10 +294,10 @@ func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
 // error mentioning cancellation and starts nothing.
 func TestStartCancelledPicker(t *testing.T) {
 	cfg, req := startFixture(t)
-	oldTTY, oldPick := stdinTTY, pickModelTUI
-	t.Cleanup(func() { stdinTTY, pickModelTUI = oldTTY, oldPick })
+	oldTTY, oldPick := stdinTTY, pickStartModelTUI
+	t.Cleanup(func() { stdinTTY, pickStartModelTUI = oldTTY, oldPick })
 	stdinTTY = func() bool { return true }
-	pickModelTUI = func(*config.Config, []config.Model, themes.Theme) (config.Model, bool, error) {
+	pickStartModelTUI = func(*config.Config, []config.Model, themes.Theme) (config.Model, bool, error) {
 		return config.Model{}, false, nil
 	}
 	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err == nil || !strings.Contains(err.Error(), "canceled") || req.called {

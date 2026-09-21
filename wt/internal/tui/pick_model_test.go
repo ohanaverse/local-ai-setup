@@ -24,7 +24,7 @@ func TestPickModelEnterSelectsHighlightedModel(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 	}
-	m := newPickModel(nil, models, themes.Default)
+	m := newPickModel(nil, models, themes.Default, false)
 
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gm := got.(pickModel)
@@ -48,7 +48,7 @@ func TestPickModelEscCancels(t *testing.T) {
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-	m := newPickModel(nil, models, themes.Default)
+	m := newPickModel(nil, models, themes.Default, false)
 
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	gm := got.(pickModel)
@@ -68,7 +68,7 @@ func TestPickModelCtrlCCancels(t *testing.T) {
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-	m := newPickModel(nil, models, themes.Default)
+	m := newPickModel(nil, models, themes.Default, false)
 
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	gm := got.(pickModel)
@@ -87,7 +87,7 @@ func TestPickModelQCancelsWhenIdle(t *testing.T) {
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-	m := newPickModel(nil, models, themes.Default)
+	m := newPickModel(nil, models, themes.Default, false)
 
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	gm := got.(pickModel)
@@ -112,7 +112,7 @@ func TestPickModelQTypesIntoFilterInsteadOfQuitting(t *testing.T) {
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
 	}
-	m := newPickModel(nil, models, themes.Default)
+	m := newPickModel(nil, models, themes.Default, false)
 	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.list.FilterState() != list.Filtering {
 		t.Fatalf("filter state = %v, want Filtering", m.list.FilterState())
@@ -143,7 +143,7 @@ func TestNewPickModelUsesTableHeaderAndRunningState(t *testing.T) {
 	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
 	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
 
-	pm := newPickModel(cfg, models, themes.Default)
+	pm := newPickModel(cfg, models, themes.Default, false)
 
 	if !strings.Contains(pm.list.Title, "RUNNING") {
 		t.Errorf("title = %q, want the table header (with RUNNING)", pm.list.Title)
@@ -166,7 +166,7 @@ func TestPickModelViewHeaderAlignsWithRows(t *testing.T) {
 	stubUsageStore(t)
 	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"}}
-	pm := newPickModel(nil, models, themes.Default)
+	pm := newPickModel(nil, models, themes.Default, false)
 
 	var header, row string
 	for _, ln := range strings.Split(ansiRE.ReplaceAllString(pm.View(), ""), "\n") {
@@ -203,7 +203,7 @@ func TestNewPickModelHidesDiscoveredRows(t *testing.T) {
 	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
 	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
 
-	pm := newPickModel(cfg, models, themes.Default)
+	pm := newPickModel(cfg, models, themes.Default, false)
 
 	var ids []string
 	for _, it := range pm.list.Items() {
@@ -234,5 +234,53 @@ func TestPickModelEnterOnBlockedRowDoesNotSelect(t *testing.T) {
 	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := next.(pickModel).selected.ID; got != "ollama/ok" {
 		t.Fatalf("selected = %q, want ollama/ok", got)
+	}
+}
+
+// TestPickStartModelIgnoresLaunchRoutes verifies the start-only picker does
+// not apply launch-route rules: with LiteLLM on, a discovered row (not in the
+// proxy's model_list) and a start row whose route cannot resolve stay
+// selectable start rows, a row that is not on disk stays blocked, and plain
+// PickModel behaviour (route blocking) is unchanged. Without this, `wt start`'s
+// picker would refuse models that `wt start <id>` starts fine.
+func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelName: "disc", ModelID: "omlx/disc", Artifact: "disc", Registered: false},
+		{ProviderID: "omlx", ModelName: "idle", ModelID: "omlx/idle", Artifact: "idle", ArtifactKnown: true, Registered: true},
+		{ProviderID: "omlx", ModelName: "gone", ModelID: "omlx/gone", ArtifactKnown: true, Registered: true},
+	}})
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true}) // unconfigured: routes error
+	models := []config.Model{
+		{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal},
+		{ID: "omlx/idle", ProviderID: "omlx", ModelName: "idle", Location: config.LocationLocal},
+		{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Location: config.LocationLocal},
+	}
+	byID := func(pm pickModel) map[string]*modelItem {
+		out := map[string]*modelItem{}
+		for _, it := range pm.list.Items() {
+			mi := it.(*modelItem)
+			out[mi.model.ID] = mi
+		}
+		return out
+	}
+
+	start := byID(newPickModel(cfg, models, themes.Default, true))
+	for _, id := range []string{"omlx/disc", "omlx/idle"} {
+		if it := start[id]; it == nil || !it.start || it.blocked != "" {
+			t.Errorf("start-only %s: %+v, want a selectable start row", id, it)
+		}
+	}
+	if it := start["omlx/gone"]; it == nil || it.blocked == "" || !strings.Contains(it.blocked, "not on disk") {
+		t.Errorf("start-only omlx/gone: %+v, want still blocked (not on disk)", it)
+	}
+
+	plain := byID(newPickModel(cfg, models, themes.Default, false))
+	if it := plain["omlx/idle"]; it == nil || it.blocked == "" {
+		t.Errorf("plain PickModel omlx/idle: %+v, want blocked by the unresolvable route", it)
 	}
 }

@@ -33,6 +33,10 @@ var smokeExit = os.Exit
 // needs a TTY; tests stub it to avoid one.
 var pickModelTUI = tui.PickModel
 
+// pickStartModelTUI is the test seam for `wt start`'s picker (tui.PickStartModel:
+// no launch-route gating, since starting is not launching).
+var pickStartModelTUI = tui.PickStartModel
+
 // smokeNow is a test seam wrapping time.Now so progress-log timestamps are
 // deterministic in tests.
 var smokeNow = time.Now

@@ -72,6 +72,11 @@ func stopCmd(a *app) *cobra.Command {
 
 // runStop implements `wt stop`. Argument errors return before any side effect.
 func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
+	// A bare provider is validated before the live inventory probe; a model id
+	// still needs the probe to find its running entry.
+	if arg != "" && !strings.Contains(arg, "/") && !lifecycle.CanStop(arg) {
+		return fmt.Errorf("unknown provider %q (valid: ollama, omlx, omlx-6bit, mtplx)", arg)
+	}
 	cands := stopCandidates(cfg)
 	if arg == "" {
 		if !stdinTTY() {
@@ -99,9 +104,6 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			return fmt.Errorf("unknown model %q", arg)
 		}
 	} else {
-		if !lifecycle.CanStop(arg) {
-			return fmt.Errorf("unknown provider %q (valid: ollama, omlx, omlx-6bit, mtplx)", arg)
-		}
 		for _, c := range cands {
 			if c.Entry.ProviderID == arg {
 				targets = append(targets, c)
@@ -186,7 +188,7 @@ func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, 
 		for i, r := range rows {
 			models[i] = r.Model
 		}
-		m, ok, err := pickModelTUI(cfg, models, theme)
+		m, ok, err := pickStartModelTUI(cfg, models, theme)
 		if err != nil {
 			return err
 		}

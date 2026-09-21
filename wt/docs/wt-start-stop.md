@@ -21,8 +21,8 @@ wt stop <target> --yes           # skip the in-use confirmation
   stderr, Ctrl+C cancels). If the provider's single slot is occupied wt
   asks before replacing the running model; `--replace` skips the question.
 - Already running: does nothing, exits 0 (`wt: <id> is already running`).
-- Cannot start (not on disk, no lifecycle backend, not in LiteLLM): exits 1
-  with the reason. In the picker these rows are unselectable and show the
+- Cannot start (not on disk, no lifecycle backend): exits 1 with the
+  reason. In the picker these rows are unselectable and show the
   reason as a notice.
 - Cloud or unknown id: exits 1.
 
@@ -55,7 +55,7 @@ terminal, default No. `--yes` skips the question; with no terminal and no
 ## Exit codes
 
 `0` on success, no-op (already running, nothing to stop on a provider) or
-a cancelled picker with no argument; `1` on any error, including a
-declined confirmation.
+a cancelled `wt stop` picker; `1` on any error, including a declined
+confirmation and a cancelled `wt start` picker (`model selection canceled`).
 
 See also [`wt-smoke.md`](wt-smoke.md).

@@ -54,9 +54,11 @@ provider's slot.
 Once a model has been resolved, `wt smoke` releases its session refcount
 and, on a TTY, shows the stop picker so models it started (or any running
 model nothing else uses) can be stopped. This runs after PASS, FAIL, a
-start failure or Ctrl+C mid-run, but not after an invalid or aborted
+start failure, but not after an invalid or aborted
 selection, and is skipped entirely for `--json` or a non-TTY stdin. A FAIL
-still exits 1 regardless.
+still exits 1 regardless. Ctrl+C during the start phase is handled by the
+start driver and still reaches the stop flow, but Ctrl+C while agents are
+running ends wt immediately (a started model stays up; use `wt stop`).
 
 ## Progress (stderr)
 

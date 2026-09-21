@@ -304,15 +304,6 @@ func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) e
 
 const exitFlowHeader = "Stop running local models? (none are in use by another wt session)"
 
-// chooseModels runs the exit-flow checkbox prompt over model ids.
-func chooseModels(sc *bufio.Scanner, w io.Writer, offered []localmodels.Entry) []int {
-	labels := make([]string, len(offered))
-	for i, e := range offered {
-		labels[i] = e.ModelID
-	}
-	return chooseLabeled(sc, w, exitFlowHeader, labels)
-}
-
 // chooseLabeled runs the line-typed checkbox prompt and returns the selected
 // indices in list order. Nothing starts selected, so a bare Enter, "q",
 // "esc" or an exhausted reader all skip: stopping a model costs a reload, so
