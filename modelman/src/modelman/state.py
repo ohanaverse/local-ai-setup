@@ -60,13 +60,6 @@ def _default_state_path() -> Path:
 
 
 @dataclass
-class LitellmState:
-    enabled: bool = False
-    url: str | None = None
-    api_key: str | None = None
-
-
-@dataclass
 class ModelState:
     ready: bool = False
     disk_path: str | None = None
@@ -86,7 +79,8 @@ class FamilyState:
 class StateStore:
     models: dict[str, ModelState] = field(default_factory=dict)
     families: dict[str, FamilyState] = field(default_factory=dict)
-    litellm: LitellmState = field(default_factory=LitellmState)
+    # NOTE: a legacy [litellm] table (wt owns routing state since 2026-09-21)
+    # lives untouched in `extra`; modelman never reads, invents or mutates it.
     extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def get(self, model_id: str) -> ModelState:
@@ -137,17 +131,10 @@ def load_state(path: Path | None = None) -> StateStore:
         )
         for family, entry in raw.get("families", {}).items()
     }
-    litellm_raw = raw.get("litellm", {})
-    litellm = LitellmState(
-        enabled=litellm_raw.get("enabled", False),
-        url=litellm_raw.get("url"),
-        api_key=litellm_raw.get("api_key"),
-    )
     return StateStore(
         models=models,
         families=families,
-        litellm=litellm,
-        extra=unknown_keys(raw, {"model_state", "families", "litellm", "local"}),
+        extra=unknown_keys(raw, {"model_state", "families", "local"}),
     )
 
 
@@ -171,13 +158,6 @@ def save_state(store: StateStore, path: Path | None = None) -> None:
             family: drop_none({**s.extra, "display_name": s.display_name})
             for family, s in store.families.items()
         },
-        "litellm": drop_none(
-            {
-                "enabled": store.litellm.enabled,
-                "url": store.litellm.url,
-                "api_key": store.litellm.api_key,
-            }
-        ),
     }
     atomic_write_toml({**store.extra, **payload}, state_path)
 

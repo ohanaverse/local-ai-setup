@@ -59,15 +59,17 @@ def test_migrate_command_preserves_existing_state_on_rerun(tmp_path, monkeypatch
     # Simulate the user configuring litellm and exposing a model after the
     # first migrate — this is the state a repair re-run must not clobber.
     with locked_state(state_path) as state:
-        state.litellm.enabled = True
-        state.litellm.url = "http://localhost:4000"
-        state.litellm.api_key = "sk-real-key"
+        state.extra["litellm"] = {
+            "enabled": True,
+            "url": "http://localhost:4000",
+            "api_key": "sk-real-key",
+        }
         state.set("ollama/x", ModelState(ready=True, exposed=True))
 
     assert runner.invoke(app, ["migrate"]).exit_code == 0
 
     state = load_state(state_path)
-    assert state.litellm.url == "http://localhost:4000"
-    assert state.litellm.api_key == "sk-real-key"
+    assert state.extra["litellm"]["url"] == "http://localhost:4000"
+    assert state.extra["litellm"]["api_key"] == "sk-real-key"
     assert state.get("ollama/x").ready is True
     assert state.get("ollama/x").exposed is True
