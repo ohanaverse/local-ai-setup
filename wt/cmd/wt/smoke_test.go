@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -492,5 +493,31 @@ func TestSmokePickerSkipsAgentlessRouteCheck(t *testing.T) {
 	want := reflect.ValueOf(tui.PickStartModel).Pointer()
 	if got != want {
 		t.Fatalf("pickModelTUI is not tui.PickStartModel: smoke's picker would re-check routes without an agent and block rows Candidates admitted")
+	}
+}
+
+// TestSmokeCmdFailedStartSkipsStopFlow verifies that when starting the pinned
+// idle model fails, wt smoke returns the error without opening the stop picker.
+// The picker belongs to a run that started something; offering it after a
+// failed start buries the error under an interactive prompt.
+func TestSmokeCmdFailedStartSkipsStopFlow(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
+	t.Cleanup(func() { startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY })
+	startModel = func(*config.Config, catalog.Row, bool) error { return errors.New("start failed") }
+	releaseSession = func() {}
+	pickerRan := false
+	runStopPicker = func(*config.Config) { pickerRan = true }
+	stdinTTY = func() bool { return true }
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/not-eligible:x"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("err = %v, want the start failure", err)
+	}
+	if pickerRan {
+		t.Fatal("stop picker ran after a failed start")
 	}
 }

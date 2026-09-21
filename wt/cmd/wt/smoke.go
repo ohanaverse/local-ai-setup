@@ -106,8 +106,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		return false, err
 	}
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	defer smokeStopFlow(a.cfg, jsonOut)
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return false, err
@@ -119,6 +117,9 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			return false, err
 		}
 	}
+	// Registered only once the start step succeeded: a failed start returns its
+	// error without an interactive stop picker burying it.
+	defer smokeStopFlow(a.cfg, jsonOut)
 
 	runID := smoke.NewRunID()
 	stderr := cmd.ErrOrStderr()
