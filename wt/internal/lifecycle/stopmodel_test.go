@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -30,20 +32,79 @@ func TestStopModelOllamaRunsOllamaStop(t *testing.T) {
 	}
 }
 
-// TestStopModelOllamaSurfacesFailure verifies a failing `ollama stop` returns
-// its output as the error, and a missing binary returns *BinaryMissingError,
-// so the picker can print an honest "failed: ..." line instead of "done".
-func TestStopModelOllamaSurfacesFailure(t *testing.T) {
+// psServing is a stub ollama daemon whose /api/ps lists the given loaded
+// models; used so the post-failure re-probe never touches a real daemon.
+func psServing(t *testing.T, loaded ...string) *httptest.Server {
+	t.Helper()
+	body := `{"models":[`
+	for i, n := range loaded {
+		if i > 0 {
+			body += ","
+		}
+		body += `{"name":"` + n + `"}`
+	}
+	body += `]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// failingOllamaStop is an env whose `ollama stop` exits 1 with "model not found".
+func failingOllamaStop() *env {
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/ollama", nil }
 	e.run = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("model not found\n"), errors.New("exit 1")
 	}
-	err := stopModel(context.Background(), e, &config.Config{}, "ollama", "x")
-	if err == nil || err.Error() != "model not found" {
-		t.Fatalf("err = %v, want \"model not found\"", err)
-	}
+	return e
+}
 
+// TestStopModelOllamaAlreadyUnloadedIsSuccess verifies that when `ollama stop`
+// exits non-zero but /api/ps shows the model is no longer loaded (daemon
+// restart or eviction between the picker's probe and the stop), the stop is a
+// success. The goal — the model is not loaded — is met, and a spurious
+// "failed: model not found" reads as a broken provider CLI.
+func TestStopModelOllamaAlreadyUnloadedIsSuccess(t *testing.T) {
+	daemon := psServing(t) // nothing loaded
+	err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x")
+	if err != nil {
+		t.Fatalf("err = %v, want nil: the model is already unloaded", err)
+	}
+}
+
+// TestStopModelOllamaStillLoadedSurfacesFailure verifies a failed `ollama stop`
+// is still an error when /api/ps shows the model loaded — including under
+// ollama's implicit ":latest" tag — so a real failure is never masked.
+func TestStopModelOllamaStillLoadedSurfacesFailure(t *testing.T) {
+	for _, loaded := range []string{"x", "x:latest"} {
+		daemon := psServing(t, loaded)
+		err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x")
+		if err == nil || err.Error() != "model not found" {
+			t.Errorf("loaded=%q: err = %v, want ollama's own message", loaded, err)
+		}
+	}
+}
+
+// TestStopModelOllamaReprobeFailureKeepsOriginalError verifies that when the
+// re-probe itself cannot get an answer (daemon gone), the original CLI message
+// is returned rather than guessing success: with no evidence the model is
+// unloaded, the stop is reported as it failed.
+func TestStopModelOllamaReprobeFailureKeepsOriginalError(t *testing.T) {
+	daemon := psServing(t)
+	url := daemon.URL
+	daemon.Close()
+	err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", url), "ollama", "x")
+	if err == nil || err.Error() != "model not found" {
+		t.Fatalf("err = %v, want ollama's own message", err)
+	}
+}
+
+// TestStopModelOllamaMissingBinary verifies a missing binary returns
+// *BinaryMissingError (no probe happens, so &config.Config{} is fine there).
+func TestStopModelOllamaMissingBinary(t *testing.T) {
+	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "", errors.New("nope") }
 	var bm *BinaryMissingError
 	if err := stopModel(context.Background(), e, &config.Config{}, "ollama", "x"); !errors.As(err, &bm) {

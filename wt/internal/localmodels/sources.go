@@ -41,6 +41,13 @@ func ollamaModelNames(client *http.Client, url string) ([]string, error) {
 	return names, nil
 }
 
+// OllamaLoaded returns the local models ollama has loaded right now (its
+// /api/ps), with the same parsing inventory uses. An error means the daemon
+// gave no usable answer, so an empty list must not be read as "none loaded".
+func OllamaLoaded(client *http.Client, origin string) ([]string, error) {
+	return ollamaModelNames(client, origin+"/api/ps")
+}
+
 // scanModelDirs lists the subdirectories of dir (symlinks to directories
 // included), skipping dot-prefixed ones (.cache, .locks, .git — tool
 // bookkeeping, not models). A missing dir is "no models", not an error.
