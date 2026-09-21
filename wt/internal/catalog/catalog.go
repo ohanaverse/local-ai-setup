@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -136,15 +137,9 @@ func Find(rows []Row, id string) (Row, bool) {
 }
 
 // startable reports whether wt has a lifecycle backend for the provider
-// family — the families internal/lifecycle's backendsByFamily covers.
-// omlx-6bit shares omlx's engine (localmodels.Family folds the variant tail).
-func startable(providerID string) bool {
-	switch localmodels.Family(providerID) {
-	case "ollama", "omlx", "mtplx":
-		return true
-	}
-	return false
-}
+// family. It delegates to lifecycle.Startable — the single source of truth —
+// so adding a backend there updates every picker with no second edit here.
+func startable(providerID string) bool { return lifecycle.Startable(providerID) }
 
 // Action reports what selecting r does. A non-running local row is startable
 // when its provider has a lifecycle backend and the model is not known to be
