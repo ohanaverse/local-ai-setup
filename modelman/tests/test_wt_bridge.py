@@ -9,6 +9,12 @@ import pytest
 from modelman import wt_bridge
 
 
+# The genuine _run, captured at import (collection) time, before any fixture can
+# patch it. Tests that need the real _run re-install it with monkeypatch.setattr
+# instead of a blanket monkeypatch undo, which would also revert every autouse safety guard.
+_REAL_RUN = wt_bridge._run
+
+
 def _cp(stdout="", returncode=0, stderr=""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
@@ -224,7 +230,7 @@ def test_run_converts_subprocess_failures_without_leaking_argv(monkeypatch, exc)
     # A hung or unexecutable wt must surface as WtBridgeError, and the message
     # must never carry argv: `litellm set --api-key <secret>` would otherwise
     # leak the key into tracebacks.
-    monkeypatch.undo()  # drop the autouse fake _run; exercise the real one
+    monkeypatch.setattr(wt_bridge, "_run", _REAL_RUN)  # exercise the real _run; guards stay armed
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda _: "/bin/wt")
     monkeypatch.setattr(wt_bridge.subprocess, "run", _boom(exc))
     with pytest.raises(wt_bridge.WtBridgeError) as ei:
@@ -235,7 +241,7 @@ def test_run_converts_subprocess_failures_without_leaking_argv(monkeypatch, exc)
 def test_run_uses_short_timeout_and_utf8(monkeypatch):
     # The render-path providers call needs a short timeout, writes keep 120s,
     # and output is decoded as utf-8 regardless of locale.
-    monkeypatch.undo()
+    monkeypatch.setattr(wt_bridge, "_run", _REAL_RUN)
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda _: "/bin/wt")
     seen = []
 
@@ -254,7 +260,7 @@ def test_run_uses_short_timeout_and_utf8(monkeypatch):
 def test_provider_cloud_flags_survives_subprocess_failures(monkeypatch, capsys, exc):
     # Render paths must get {} plus a single warning even when wt hangs or is
     # unexecutable, not a crash.
-    monkeypatch.undo()
+    monkeypatch.setattr(wt_bridge, "_run", _REAL_RUN)
     monkeypatch.setattr(wt_bridge.shutil, "which", lambda _: "/bin/wt")
     monkeypatch.setattr(wt_bridge.subprocess, "run", _boom(exc))
     wt_bridge._reset_provider_cache()
@@ -284,3 +290,30 @@ def test_provider_failure_is_negative_cached_for_a_window(monkeypatch):
     wt_bridge.provider_cloud_flags()
     assert n["c"] == 2
     wt_bridge._reset_provider_cache()
+
+
+def test_real_run_never_executes_a_real_wt_binary(monkeypatch, tmp_path):
+    # Safety net: even the genuine _run must be intercepted by the suite's global
+    # subprocess guard. A marker-writing `wt` on PATH stands in for the real
+    # binary (which would rewrite ~/.config/litellm and bounce the live proxy);
+    # if the guard were disarmed the marker file would appear.
+    marker = tmp_path / "ran"
+    fake_wt = tmp_path / "wt"
+    fake_wt.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    fake_wt.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    monkeypatch.setattr(wt_bridge, "_run", _REAL_RUN)
+    proc = wt_bridge._run(["status", "--json"])
+    assert not marker.exists(), "real wt binary was executed by the test suite"
+    assert proc.returncode == 0
+
+
+def test_no_test_reverts_the_autouse_guards():
+    # Reverting the shared monkeypatch disarms every autouse safety guard (fake
+    # wt, subprocess interception, litellm config redirect), so no test may do
+    # it; tests re-install what they need with monkeypatch.setattr instead.
+    needle = "monkeypatch." + "undo("
+    offenders = [
+        str(p) for p in Path(__file__).parent.rglob("*.py") if needle in p.read_text("utf-8")
+    ]
+    assert offenders == []

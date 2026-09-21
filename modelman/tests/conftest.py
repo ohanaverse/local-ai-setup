@@ -150,7 +150,7 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "ollama"})
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "ollama", "wt"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 
