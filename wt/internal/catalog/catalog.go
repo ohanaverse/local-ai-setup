@@ -169,3 +169,14 @@ func (r Row) BlockReason() string {
 	}
 	return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", r.Model.ID, r.Model.ID)
 }
+
+// RefusedByRoute reports whether the row must be refused because of how it
+// routes: a discovered model — one wt found on disk, absent from the LiteLLM
+// gateway's model_list — cannot be launched through the proxy. It is false
+// when the route failed to resolve (a launch row with a route error stays
+// selectable and reports the error on Enter). The picker table, the non-TUI
+// -M pin and `wt smoke` all decide through this one rule; each keeps its own
+// wording.
+func (r Row) RefusedByRoute(route config.Route, routeErr error) bool {
+	return r.Discovered && routeErr == nil && (route.Litellm || route.Forced)
+}

@@ -5,6 +5,7 @@
 package catalog
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -261,5 +262,32 @@ func TestFindReportsDiscoveredRows(t *testing.T) {
 	}
 	if _, ok := Find(rows, "omlx/nope"); ok {
 		t.Error("Find(omlx/nope) reported a hit, want miss")
+	}
+}
+
+// TestRefusedByRoute verifies the one route-refusal rule: only a discovered
+// row whose route resolved AND goes through LiteLLM (routed or forced) is
+// refused. Registered rows are never refused, and a route error is not a
+// refusal (the picker reports it on Enter instead). The picker, the non-TUI
+// -M pin and `wt smoke` all call this, so a change here moves all three.
+func TestRefusedByRoute(t *testing.T) {
+	direct, viaProxy, forced := config.Route{}, config.Route{Litellm: true}, config.Route{Forced: true}
+	cases := []struct {
+		name       string
+		discovered bool
+		route      config.Route
+		err        error
+		want       bool
+	}{
+		{"discovered via litellm", true, viaProxy, nil, true},
+		{"discovered forced", true, forced, nil, true},
+		{"discovered direct", true, direct, nil, false},
+		{"discovered with route error", true, viaProxy, errors.New("no route"), false},
+		{"registered via litellm", false, viaProxy, nil, false},
+	}
+	for _, c := range cases {
+		if got := (Row{Discovered: c.discovered}).RefusedByRoute(c.route, c.err); got != c.want {
+			t.Errorf("%s: RefusedByRoute = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

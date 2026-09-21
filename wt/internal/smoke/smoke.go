@@ -97,15 +97,15 @@ func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[
 		})
 		for _, r := range rows {
 			// A discovered row routed through LiteLLM is unselectable in the
-			// picker (internal/tui/modeltable.go's discovered+LiteLLM rule)
-			// and refused by the CLI's pickerBlockedReason case 1 — the
-			// gateway's model_list has no entry for a model wt discovered on
-			// disk. Smoke mirrors that rule so its contract holds: a model it
-			// reports eligible is a model a real launch would accept. Launch
-			// rows whose route ERRORS stay eligible, like the picker's
-			// selectable "(unavailable)" rows that report on Enter.
+			// picker (catalog.Row.RefusedByRoute) and refused by the CLI's
+			// pickerBlockedReason case 1 — the gateway's model_list has no
+			// entry for a model wt discovered on disk. Smoke decides through
+			// the same predicate so its contract holds: a model it reports
+			// eligible is a model a real launch would accept. Launch rows
+			// whose route ERRORS stay eligible, like the picker's selectable
+			// "(unavailable)" rows that report on Enter.
 			if r.Discovered {
-				if route, err := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name)); err == nil && (route.Litellm || route.Forced) {
+				if route, err := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name)); r.RefusedByRoute(route, err) {
 					continue
 				}
 			}
