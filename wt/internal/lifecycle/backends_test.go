@@ -71,16 +71,13 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-func serveAt(t *testing.T, addr string, h http.Handler) *http.Server {
+func serveAt(t *testing.T, addr string, h http.Handler) *httptest.Server {
 	t.Helper()
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: h}
-	go func() { _ = srv.Serve(l) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	return srv
+	return serveOn(t, l, h)
 }
 
 func chatHandler() http.Handler {
@@ -208,25 +205,24 @@ func TestOmlxMissingBinaryAndNeverComesUp(t *testing.T) {
 // once the port closes, and returns an error naming the origin when it does
 // not — a replacement must not start while the old daemon still holds the port.
 func TestOmlxStopWaitsForPortClose(t *testing.T) {
-	addr := freeAddr(t)
-	srv := serveAt(t, addr, chatHandler())
+	srv, addr := serveFree(t, chatHandler())
 	e := testEnv()
 	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
 	var ran []string
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		ran = append(ran, args...)
-		_ = srv.Close()
+		srv.Close()
 		return nil, nil
 	}
 	if err := (omlxBackend{}).stop(context.Background(), e, provCfg("omlx", "http://"+addr)); err != nil {
+		logPortHolder(t, addr)
 		t.Fatalf("stop: %v", err)
 	}
 	if !reflect.DeepEqual(ran, []string{"stop"}) {
 		t.Errorf("ran = %v", ran)
 	}
 
-	addr2 := freeAddr(t)
-	serveAt(t, addr2, chatHandler())
+	_, addr2 := serveFree(t, chatHandler())
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) { return nil, nil }
 	e.stopTimeout = 60 * time.Millisecond
 	if err := (omlxBackend{}).stop(context.Background(), e, provCfg("omlx", "http://"+addr2)); err == nil || !containsFold(err.Error(), addr2) {
