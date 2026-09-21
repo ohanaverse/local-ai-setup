@@ -351,3 +351,45 @@ func TestStartDiscoveredRunningModel(t *testing.T) {
 		t.Error("localRows must include the discovered running model")
 	}
 }
+
+// TestStopSingleModelProviderStopsAndNamesWholeFamily verifies that stopping
+// one model of a single-model provider (omlx) — which takes the whole provider
+// down — puts every co-running model in the stop list and names the collateral
+// in the output. Otherwise a sibling variant dies with no warning.
+func TestStopSingleModelProviderStopsAndNamesWholeFamily(t *testing.T) {
+	stopped := stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 0), cand("omlx", "omlx/d", "d", 0), cand("ollama", "ollama/a:1", "a:1", 0)})
+	var out bytes.Buffer
+	if err := runStop(&out, modelCmdConfig(), "omlx/c", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(*stopped) != 2 {
+		t.Fatalf("stopped = %v, want both omlx models (the provider stops as a whole) and not ollama", *stopped)
+	}
+	if !strings.Contains(out.String(), "omlx/d") {
+		t.Errorf("out = %q, want the collateral model omlx/d named", out.String())
+	}
+}
+
+// TestStopInUseCountIsTotalAcrossModels verifies the in-use prompt reports the
+// real number of affected sessions: summed across models on a multi-model
+// provider (1 + 3 = 4, not the max 3) and counted once for a single-model
+// provider, whose candidates each carry the family total. The prompt also names
+// the in-use models so the user sees what dies.
+func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
+	old := confirmStop
+	t.Cleanup(func() { confirmStop = old })
+	var asked string
+	confirmStop = func(q string) (bool, error) { asked = q; return false, nil }
+
+	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 1), cand("ollama", "ollama/b:1", "b:1", 3)})
+	_ = runStop(io.Discard, modelCmdConfig(), "ollama", false)
+	if !strings.Contains(asked, "4 live") || !strings.Contains(asked, "ollama/a:1") || !strings.Contains(asked, "ollama/b:1") {
+		t.Errorf("ollama prompt = %q, want 4 sessions and both models named", asked)
+	}
+
+	stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 2), cand("omlx", "omlx/d", "d", 2)})
+	_ = runStop(io.Discard, modelCmdConfig(), "omlx", false)
+	if !strings.Contains(asked, "2 live") {
+		t.Errorf("omlx prompt = %q, want the family total (2) counted once, not 4", asked)
+	}
+}

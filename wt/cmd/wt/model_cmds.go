@@ -135,16 +135,13 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		}
 	}
 
-	inUse := 0
+	targets = withFamilyCollateral(out, cands, targets)
 	entries := make([]localmodels.Entry, 0, len(targets))
 	for _, c := range targets {
 		entries = append(entries, c.Entry)
-		if c.Sessions > inUse {
-			inUse = c.Sessions
-		}
 	}
-	if inUse > 0 && !yes {
-		ok, err := confirmStop(fmt.Sprintf("%s is in use by %d live wt session(s); stop anyway?", arg, inUse))
+	if inUse, users := stopImpact(targets); inUse > 0 && !yes {
+		ok, err := confirmStop(fmt.Sprintf("%s is in use by %d live wt session(s) (%s); stop anyway?", arg, inUse, strings.Join(users, ", ")))
 		if err != nil {
 			return err
 		}
@@ -153,6 +150,51 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 		}
 	}
 	return stopEntries(out, cfg, entries)
+}
+
+// withFamilyCollateral widens targets to every running model of any
+// single-model provider (omlx, mtplx) they touch: that provider stops as a
+// whole, so a sibling variant goes down with the one named. Collateral models
+// are announced on out. Targets keep their order; collateral follows.
+func withFamilyCollateral(out io.Writer, cands, targets []survey.Candidate) []survey.Candidate {
+	have := map[string]bool{}
+	fams := map[string]bool{}
+	for _, c := range targets {
+		have[c.Entry.ModelID] = true
+		if lifecycle.SingleModel(c.Entry.ProviderID) {
+			fams[localmodels.Family(c.Entry.ProviderID)] = true
+		}
+	}
+	for _, c := range cands {
+		if have[c.Entry.ModelID] || !lifecycle.SingleModel(c.Entry.ProviderID) || !fams[localmodels.Family(c.Entry.ProviderID)] {
+			continue
+		}
+		fmt.Fprintf(out, "wt: %s runs one model per process; stopping it also stops %s\n", localmodels.Family(c.Entry.ProviderID), c.Entry.ModelID)
+		targets = append(targets, c)
+	}
+	return targets
+}
+
+// stopImpact totals the live wt sessions a stop would hit and names the models
+// they use. A single-model provider's candidates each carry the whole family's
+// count, so the family is counted once; other candidates sum.
+func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
+	famSeen := map[string]bool{}
+	for _, c := range targets {
+		if c.Sessions == 0 {
+			continue
+		}
+		users = append(users, c.Entry.ModelID)
+		if lifecycle.SingleModel(c.Entry.ProviderID) {
+			fam := localmodels.Family(c.Entry.ProviderID)
+			if famSeen[fam] {
+				continue
+			}
+			famSeen[fam] = true
+		}
+		sessions += c.Sessions
+	}
+	return sessions, users
 }
 
 func startCmd(a *app) *cobra.Command {
