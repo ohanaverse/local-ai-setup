@@ -9,3 +9,9 @@
 # This repo intentionally tracks `.claude/skills/` — a local negation pattern
 # here can't override the global ignore, so new files under `.claude/` need
 # `git add -f`. (Same convention as wt/.gitignore.)
+
+# Subagent-driven-development scratch (ledgers, briefs, reports, review
+# packages for in-flight plans). Never tracked: dated records that belong in the
+# permanent history go under docs/superpowers/. Recorded here so the rule
+# travels with the repo instead of living in each clone's .git/info/exclude.
+.superpowers/
