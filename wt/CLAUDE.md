@@ -447,7 +447,7 @@ report) unaffected. See `docs/wt-smoke.md`.
 
 ## LiteLLM routes (`wt litellm`)
 
-`wt litellm expose|unexpose <id>...` add or remove `config.yaml` routes for registry models (the proxy is restarted after a change; an unchanged config writes nothing). `wt litellm sync` makes local-model routes match the running models, `wt litellm list` prints routed ids from `config.yaml`, and `wt litellm providers` lists providers with a LiteLLM mapping. All take `--json`; `expose`/`unexpose` also take `--dry-run` (validate only) and `--skip-ready-gate` (caller already verified readiness; used by modelman). Code: `cmd/wt/litellm.go`, `internal/litellm`. The same route updates run automatically from `wt start`/`wt stop` (see Start/stop above). wt never writes modelman's `exposed` flag.
+`wt litellm expose|unexpose <id>...` add or remove `config.yaml` routes for registry models (the proxy is restarted after a change; an unchanged config writes nothing). `wt litellm sync` makes local-model routes match the running models (it leaves alone any provider family whose probe status is not `ok` — a stopped omlx/mtplx reports `partial` — so it never removes routes it cannot verify), `wt litellm list` prints routed ids from `config.yaml`, and `wt litellm providers` lists providers with a LiteLLM mapping. All take `--json`; `expose` alone also takes `--dry-run` (validate only) and `--skip-ready-gate` (caller already verified readiness; used by modelman). Code: `cmd/wt/litellm.go`, `internal/litellm`. The same route updates run automatically from `wt start`/`wt stop` (the hook is described in the `internal/lifecycle/` package-table row). wt never writes modelman's `exposed` flag.
 
 ## Guard (Go)
 
