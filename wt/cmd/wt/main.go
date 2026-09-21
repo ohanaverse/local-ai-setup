@@ -159,7 +159,10 @@ func rootCmd() *cobra.Command {
 		Example: "  wt                          # interactive TUI\n" +
 			"  wt -W my-feature -A claude   # create worktree and launch\n" +
 			"  wt --cwd --agent codex       # launch in current repo root\n" +
-			"  wt --init                    # seed agent instruction files",
+			"  wt --init                    # seed agent instruction files\n" +
+			"  wt start [model]             # start a local model (picker when omitted)\n" +
+			"  wt stop [model|provider]     # stop a local model or provider (picker when omitted)\n" +
+			"  wt smoke [model]             # smoke-test every agent that supports a model",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered
 		// subcommand name (models/agents/rotate). Without this, passthrough
