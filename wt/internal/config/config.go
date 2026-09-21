@@ -274,7 +274,11 @@ type Model struct {
 	Tags       []string  `toml:"tags"`             // e.g. ["code", "design"]
 	Source     Source    `toml:"source,omitempty"` // curated or discovered
 	Cost       ModelCost `toml:"cost,omitempty"`
-	Native     bool      `toml:"-"` // derived: provider auth.type == "native"; not persisted
+	// ModelInfo is the registry's free-form `[models.model_info]` table.
+	// LiteLLM rows merge it over the derived pricing keys, so hand-written
+	// keys (context windows, capability flags) reach the proxy.
+	ModelInfo map[string]any `toml:"model_info,omitempty"`
+	Native    bool           `toml:"-"` // derived: provider auth.type == "native"; not persisted
 }
 
 // ── Agent ─────────────────────────────────────────────────
@@ -594,6 +598,24 @@ func (c *Config) IsExposed(m Model) bool {
 func (c *Config) ExposedFlag(id string) bool {
 	st, ok := c.exposed[id]
 	return ok && st.Exposed
+}
+
+// ReadyFlag reports modelman's `ready` flag for the model id (legacy
+// `downloaded` ORed in at load). The LiteLLM expose gate uses it: non-cloud
+// models must be ready before they may be routed.
+func (c *Config) ReadyFlag(id string) bool {
+	st, ok := c.exposed[id]
+	return ok && st.Ready
+}
+
+// SetExposureForTest overrides one model's modelman exposure/ready state.
+// Production wiring goes through finalizeCfg (loadModelmanState); tests in
+// other packages cannot set the unexported map directly.
+func (c *Config) SetExposureForTest(id string, e ExposureEntry) {
+	if c.exposed == nil {
+		c.exposed = map[string]ExposureEntry{}
+	}
+	c.exposed[id] = e
 }
 
 // AgentSupportsProvider reports whether the named agent lists providerID in
