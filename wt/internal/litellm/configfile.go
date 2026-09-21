@@ -75,25 +75,37 @@ func Open(path string) (*File, error) {
 	if f.doc.Kind != yaml.DocumentNode || len(f.doc.Content) == 0 || f.doc.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%w: %s is not a mapping", ErrInvalid, path)
 	}
-	f.before = f.encode()
+	if f.before, err = f.encode(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
 	return f, nil
 }
 
 func (f *File) root() *yaml.Node { return f.doc.Content[0] }
 
 // encode serializes the document with a 2-space indent and no line folding.
-func (f *File) encode() []byte {
+func (f *File) encode() ([]byte, error) {
 	var b bytes.Buffer
 	e := yaml.NewEncoder(&b)
 	e.SetIndent(2)
-	_ = e.Encode(&f.doc)
-	_ = e.Close()
-	return b.Bytes()
+	if err := e.Encode(&f.doc); err != nil {
+		return nil, fmt.Errorf("encode %s: %w", f.path, err)
+	}
+	if err := e.Close(); err != nil {
+		return nil, fmt.Errorf("encode %s: %w", f.path, err)
+	}
+	return b.Bytes(), nil
 }
 
 // Changed reports whether the document differs from what Open parsed
 // (compared through the same encoder, so pure re-indentation is not a change).
-func (f *File) Changed() bool { return !bytes.Equal(f.before, f.encode()) }
+// If the document cannot be encoded it reports true (the safe direction: the
+// caller proceeds to Save, which refuses with the encode error and leaves the
+// file untouched, rather than skipping and hiding the failure).
+func (f *File) Changed() bool {
+	cur, err := f.encode()
+	return err != nil || !bytes.Equal(f.before, cur)
+}
 
 func isNull(n *yaml.Node) bool { return n.Kind == yaml.ScalarNode && n.Tag == "!!null" }
 
@@ -257,6 +269,10 @@ func (f *File) EnsureSettings() {
 // Save writes the document atomically (temp file + rename) keeping the
 // original file's permission bits: the file holds API keys.
 func (f *File) Save() error {
+	out, err := f.encode()
+	if err != nil {
+		return err
+	}
 	mode := os.FileMode(0o600)
 	if st, err := os.Stat(f.path); err == nil {
 		mode = st.Mode().Perm()
@@ -266,7 +282,7 @@ func (f *File) Save() error {
 		return err
 	}
 	name := tmp.Name()
-	if _, err := tmp.Write(f.encode()); err != nil {
+	if _, err := tmp.Write(out); err != nil {
 		tmp.Close()
 		os.Remove(name)
 		return err

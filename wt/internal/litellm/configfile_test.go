@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 const baseConfig = `# hand-written header comment
@@ -34,6 +35,16 @@ func writeConfig(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// enc encodes f or fails the test.
+func enc(t *testing.T, f *File) string {
+	t.Helper()
+	b, err := f.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 // TestOpenErrors pins the two refusal modes: a missing file and unparseable
@@ -93,7 +104,7 @@ func TestSetRowPreservesUserManagedParams(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.EnsureSettings()
-	out := string(f.encode())
+	out := enc(t, f)
 	if !strings.Contains(out, "custom_param") {
 		t.Fatalf("user additional_drop_params lost:\n%s", out)
 	}
@@ -138,7 +149,7 @@ litellm_settings:
   drop_params: false
 `))
 	f.EnsureSettings()
-	out := string(f.encode())
+	out := enc(t, f)
 	for _, want := range []string{"drop_params: true", "use_chat_completions_url_for_anthropic_messages: true", "reasoning_effort", "use_chat_completions_api: true"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -172,24 +183,29 @@ func TestModelListDegenerateShapes(t *testing.T) {
 	}
 	f, _ = Open(writeConfig(t, "model_list:\n  - just-a-string\n"))
 	f.RemoveRow("x")
-	if !strings.Contains(string(f.encode()), "just-a-string") {
+	if !strings.Contains(enc(t, f), "just-a-string") {
 		t.Fatal("non-mapping row was dropped")
 	}
 }
 
 // TestSavePreservesPermissions pins that the saved file keeps its mode: the
 // config holds the proxy master key and provider API keys, so a save must
-// never widen 0600 to the umask default.
+// keep its original mode (here 0644, distinct from the 0600 default).
 func TestSavePreservesPermissions(t *testing.T) {
 	p := writeConfig(t, baseConfig)
+	// A mode distinct from both the fallback and CreateTemp's default (0600)
+	// so the test fails if Save stops copying the original mode.
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	f, _ := Open(p)
 	f.RemoveRow("keep/me")
 	if err := f.Save(); err != nil {
 		t.Fatal(err)
 	}
 	st, _ := os.Stat(p)
-	if st.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
+	if st.Mode().Perm() != 0o644 {
+		t.Fatalf("mode = %v, want 0644", st.Mode().Perm())
 	}
 }
 
@@ -244,5 +260,25 @@ func TestDefaultPathEnv(t *testing.T) {
 	t.Setenv("WT_LITELLM_CONFIG", "/wt.yaml")
 	if got := DefaultPath(); got != "/wt.yaml" {
 		t.Fatalf("wt = %q", got)
+	}
+}
+
+// TestSaveRefusesOnEncodeError pins that an encoder failure never reaches
+// disk: Save must return the error and leave the existing key-bearing config
+// byte-for-byte intact, and Changed must report true rather than hide it.
+func TestSaveRefusesOnEncodeError(t *testing.T) {
+	p := writeConfig(t, baseConfig)
+	f, _ := Open(p)
+	// An alias node with no target is rejected by the yaml encoder.
+	mapSet(f.root(), "bad", &yaml.Node{Kind: yaml.AliasNode})
+	if !f.Changed() {
+		t.Fatal("Changed must be true when the document cannot be encoded")
+	}
+	if err := f.Save(); err == nil {
+		t.Fatal("Save succeeded despite an encode failure")
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != baseConfig {
+		t.Fatalf("file modified after failed Save:\n%s", got)
 	}
 }
