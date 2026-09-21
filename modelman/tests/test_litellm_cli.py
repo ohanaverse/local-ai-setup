@@ -80,11 +80,18 @@ def test_litellm_status_redacts_key(tmp_path, monkeypatch):
     assert "sk-secret-value" not in result.stdout
 
 
-def test_litellm_commands_never_restart_proxy(tmp_path, monkeypatch):
+def test_litellm_commands_never_touch_routes_or_the_proxy(tmp_path, monkeypatch):
+    # The on/off/set toggle is routing POLICY only. wt owns config.yaml
+    # routes and the proxy restart now, so "never restarts the proxy"
+    # becomes "never makes a route call" — a toggle that bounced the shared
+    # proxy would turn a config change into an outage for every other user.
+    from modelman import wt_bridge
+
     state_path = tmp_path / "modelman.toml"
     monkeypatch.setenv("MODELMAN_STATE", str(state_path))
     calls = []
-    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(wt_bridge, "expose", lambda *a, **k: calls.append("expose"))
+    monkeypatch.setattr(wt_bridge, "unexpose", lambda *a, **k: calls.append("unexpose"))
     runner.invoke(app, ["litellm", "on"])
     runner.invoke(app, ["litellm", "off"])
     runner.invoke(app, ["litellm", "set", "--url", "http://x", "--api-key", "k"])

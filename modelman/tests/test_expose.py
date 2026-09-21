@@ -1,21 +1,21 @@
-"""Tests for expose_model/unexpose_model orchestration."""
+"""Tests for expose_model/unexpose_model — modelman's gates plus the
+delegation to `wt litellm expose|unexpose` (wt owns the config.yaml write
+and the proxy restart since 2026-09-21)."""
 
 import pytest
 
+from modelman import wt_bridge
 from modelman.litellm import (
     ExposeError,
     LiteLLMConfigError,
     expose_model,
-    load_litellm_config,
-    save_litellm_config,
     unexpose_model,
 )
 from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
 from modelman.state import ModelState, StateStore
-from tests.conftest import ENFORCED_LITELLM_SETTINGS
 
 
-def _registry(*, cloud=False):
+def _registry():
     providers = [
         ProviderEntry(
             id="ollama",
@@ -33,18 +33,8 @@ def _registry(*, cloud=False):
         ),
     ]
     models = [
-        ModelEntry(
-            id="ollama/a",
-            family="f",
-            provider_id="ollama",
-            model_name="a",
-        ),
-        ModelEntry(
-            id="openrouter/x",
-            family="f",
-            provider_id="openrouter",
-            model_name="x",
-        ),
+        ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+        ModelEntry(id="openrouter/x", family="f", provider_id="openrouter", model_name="x"),
     ]
     return Registry(providers=providers, models=models)
 
@@ -55,279 +45,171 @@ def _state(*, downloaded_a=True):
     return store
 
 
-def _seed_config(tmp_path):
+def _result(ids, action, *, error=None, warnings=()):
+    return wt_bridge.BridgeResult(
+        [wt_bridge.BridgeOutcome(i, None if error else action, error) for i in ids],
+        True,
+        list(warnings),
+    )
+
+
+@pytest.fixture
+def calls(monkeypatch):
+    """Record every wt_bridge.expose/unexpose call as (verb, ids, kwargs).
+
+    `calls.result` (set by a test) overrides the all-succeeded default.
+    """
+    recorded: list[tuple] = []
+
+    class _Recorder(list):
+        result = None
+        raises = None
+
+    recorded = _Recorder()
+
+    def fake(verb, ids, kwargs):
+        recorded.append((verb, list(ids), kwargs))
+        if recorded.raises is not None:
+            raise recorded.raises
+        if recorded.result is not None:
+            return recorded.result
+        return _result(ids, "exposed" if verb == "expose" else "unexposed")
+
+    monkeypatch.setattr(wt_bridge, "expose", lambda ids, **kw: fake("expose", ids, kw))
+    monkeypatch.setattr(wt_bridge, "unexpose", lambda ids, **kw: fake("unexpose", ids, kw))
+    return recorded
+
+
+def test_expose_model_delegates_and_flips_flag_after_success(tmp_path, calls):
+    # Pins ordering: the exposed flag flips only after wt reports the route
+    # was written, so state never claims an exposure config.yaml lost. Also
+    # pins that modelman keeps its own ready gate (wt is told
+    # skip_ready_gate) and that the caller's litellm_path is forwarded.
+    registry, state = _registry(), _state()
     path = tmp_path / "config.yaml"
-    save_litellm_config({"model_list": [], "general_settings": {"database_url": "x"}}, path)
-    return path
+    calls.result = _result(["ollama/a"], "exposed", warnings=["restart warning"])
 
+    warnings = expose_model(registry, state, "ollama/a", path)
 
-def test_expose_model_writes_entry_and_flag(tmp_path):
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-    expose_model(registry, state, "ollama/a", path)
+    assert calls == [("expose", ["ollama/a"], {"litellm_path": path, "skip_ready_gate": True})]
     assert state.get("ollama/a").exposed is True
-    from modelman.litellm import load_litellm_config
-
-    config = load_litellm_config(path)
-    assert config["model_list"][0]["model_name"] == "ollama/a"
-    assert config["general_settings"] == {"database_url": "x"}
+    assert warnings == ["restart warning"]
 
 
-def test_expose_model_cloud_ok_without_download(tmp_path):
-    registry = _registry()
-    state = _state(downloaded_a=False)
-    path = _seed_config(tmp_path)
-    expose_model(registry, state, "openrouter/x", path)
+def test_expose_model_leaves_flag_when_wt_rejects_the_id(tmp_path, calls):
+    # wt can reject an id it (unlike modelman) sees differently — a stale
+    # registry on disk, an empty model_name. The flag must stay false and
+    # the reason must surface as ExposeError, exactly as a local gate
+    # failure does.
+    registry, state = _registry(), _state()
+    calls.result = _result(["ollama/a"], "exposed", error="provider has no LiteLLM mapping")
+
+    with pytest.raises(ExposeError, match="no LiteLLM mapping"):
+        expose_model(registry, state, "ollama/a", tmp_path / "config.yaml")
+    assert state.get("ollama/a").exposed is False
+
+
+def test_expose_model_bridge_failure_is_config_error_with_flag_untouched(tmp_path, calls):
+    # wt missing / unreadable config.yaml / unparseable output: nothing was
+    # applied on either side, so this surfaces as LiteLLMConfigError (the
+    # type every caller already catches) and the flag never flips.
+    registry, state = _registry(), _state()
+    calls.raises = wt_bridge.WtNotFoundError("wt not found on PATH")
+
+    with pytest.raises(LiteLLMConfigError, match="wt not found"):
+        expose_model(registry, state, "ollama/a", tmp_path / "config.yaml")
+    assert state.get("ollama/a").exposed is False
+
+
+def test_expose_model_cloud_ok_without_download(tmp_path, calls):
+    # Cloud models have nothing to download, so the ready gate must not
+    # block them — the exemption modelman still owns (wt is told to skip
+    # its own ready gate).
+    registry, state = _registry(), _state(downloaded_a=False)
+    expose_model(registry, state, "openrouter/x", tmp_path / "config.yaml")
     assert state.get("openrouter/x").exposed is True
+    assert calls[0][1] == ["openrouter/x"]
 
 
-def test_expose_model_not_ready_raises(tmp_path):
-    registry = _registry()
-    state = _state(downloaded_a=False)
-    path = _seed_config(tmp_path)
+def test_expose_model_not_ready_raises_before_reaching_wt(tmp_path, calls):
+    # The ready gate runs against modelman's IN-MEMORY state, which wt
+    # cannot see (queued toggles, unsaved flags) — so it must reject here,
+    # without spawning wt.
+    registry, state = _registry(), _state(downloaded_a=False)
     with pytest.raises(ExposeError, match="not ready"):
-        expose_model(registry, state, "ollama/a", path)
+        expose_model(registry, state, "ollama/a", tmp_path / "config.yaml")
+    assert calls == []
 
 
-def test_expose_model_unknown_raises(tmp_path):
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
+def test_expose_model_unknown_raises(tmp_path, calls):
+    # An id absent from the registry is modelman's own error message, not a
+    # round trip through wt.
+    registry, state = _registry(), _state()
     with pytest.raises(ExposeError, match="not found in registry"):
-        expose_model(registry, state, "ollama/nope", path)
+        expose_model(registry, state, "ollama/nope", tmp_path / "config.yaml")
+    assert calls == []
 
 
-def test_expose_model_dangling_provider_raises_expose_error(tmp_path):
+def test_expose_model_dangling_provider_raises_expose_error(tmp_path, calls):
     # A hand-edited registry can reference a provider it never defines.
     # This must surface as ExposeError (which the CLI catches and prints
     # as "error: ..."), not an uncaught KeyError traceback.
-    registry = _registry()
+    registry, state = _registry(), _state()
     registry.models.append(ModelEntry(id="foo/x", family="f", provider_id="ghost", model_name="x"))
-    state = _state()
-    path = _seed_config(tmp_path)
     with pytest.raises(ExposeError, match="unknown provider 'ghost'"):
-        expose_model(registry, state, "foo/x", path)
+        expose_model(registry, state, "foo/x", tmp_path / "config.yaml")
+    assert calls == []
 
 
-def test_expose_model_missing_config_raises(tmp_path):
-    registry = _registry()
+def test_expose_model_unmapped_provider_raises(tmp_path, calls):
+    # A provider absent from wt's LiteLLM table (a new provider nobody has
+    # mapped yet) cannot produce a route; reject it before the bridge call.
+    registry, state = _registry(), _state()
+    registry.providers.append(
+        ProviderEntry(id="newthing", name="New", auth=AuthConfig(type="none"))
+    )
+    registry.models.append(
+        ModelEntry(id="newthing/x", family="f", provider_id="newthing", model_name="x")
+    )
+    state.set("newthing/x", ModelState(ready=True))
+    with pytest.raises(ExposeError, match="no LiteLLM mapping"):
+        expose_model(registry, state, "newthing/x", tmp_path / "config.yaml")
+    assert calls == []
+
+
+def test_unexpose_model_delegates_and_clears_flag(tmp_path, calls):
+    # The mirror of expose: one wt call, then the flag clears. Nothing is
+    # validated against the registry — removing a route never needed it.
     state = _state()
-    with pytest.raises(LiteLLMConfigError):
-        expose_model(registry, state, "ollama/a", tmp_path / "missing.yaml")
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
+    path = tmp_path / "config.yaml"
 
+    warnings = unexpose_model(state, "ollama/a", path)
 
-def test_expose_model_idempotent(tmp_path):
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-    expose_model(registry, state, "ollama/a", path)
-    expose_model(registry, state, "ollama/a", path)
-    from modelman.litellm import load_litellm_config
-
-    config = load_litellm_config(path)
-    assert len(config["model_list"]) == 1
-
-
-def test_unexpose_model_removes_entry_and_flag(tmp_path):
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-    expose_model(registry, state, "ollama/a", path)
-    unexpose_model(state, "ollama/a", path)
+    assert calls == [("unexpose", ["ollama/a"], {"litellm_path": path})]
     assert state.get("ollama/a").exposed is False
-    from modelman.litellm import load_litellm_config
-
-    config = load_litellm_config(path)
-    assert config["model_list"] == []
+    assert warnings == []
 
 
-def test_unexpose_model_idempotent(tmp_path):
-    state = _state()
-    path = _seed_config(tmp_path)
-    unexpose_model(state, "ollama/a", path)
-    assert state.get("ollama/a").exposed is False
-
-
-def test_unexpose_model_absent_from_registry_is_noop(tmp_path):
+def test_unexpose_model_absent_from_registry_is_fine(tmp_path, calls):
     # A model deleted earlier in the same apply cycle still has a config
     # row keyed by its id; unexposing it must remove that row without
-    # failing on the missing registry entry (design doc: no-op,
-    # idempotent) and must not materialize a state row for the corpse.
+    # failing on the missing registry entry, and must not materialize a
+    # state row for the corpse.
     state = StateStore()
-    path = _seed_config(tmp_path)
-    save_litellm_config(
-        {"model_list": [{"model_name": "ollama/a", "litellm_params": {"model": "x"}}]},
-        path,
-    )
-    unexpose_model(state, "ollama/a", path)
-    from modelman.litellm import load_litellm_config
-
-    assert load_litellm_config(path)["model_list"] == []
+    unexpose_model(state, "ollama/a", tmp_path / "config.yaml")
+    assert calls[0][1] == ["ollama/a"]
     assert "ollama/a" not in state.models
 
 
-def test_expose_model_restarts_proxy(tmp_path, monkeypatch):
-    registry = _registry()
+def test_unexpose_model_bridge_failure_keeps_flag(tmp_path, calls):
+    # A failed un-expose leaves the route in place, so the flag must stay
+    # true — local_control turns the LiteLLMConfigError into a warning and
+    # still stops the model.
     state = _state()
-    path = _seed_config(tmp_path)
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    expose_model(registry, state, "ollama/a", path)
-    assert calls == ["restart"]
+    state.set("ollama/a", ModelState(ready=True, exposed=True))
+    calls.raises = wt_bridge.WtBridgeError("LiteLLM config not found")
 
-
-def test_unexpose_stale_row_restarts_proxy(tmp_path, monkeypatch):
-    # The row exists in config but state says not exposed (flag reset by
-    # hand, or the model was deleted): removing the route IS a real
-    # config change, so the proxy restarts even though no flag flips.
-    # Pre-spec behavior skipped the restart because only flag changes
-    # triggered it — the settings-persistence spec's changed-detection
-    # fixes that.
-    state = StateStore()
-    path = tmp_path / "config.yaml"
-    save_litellm_config(
-        {"model_list": [{"model_name": "ollama/a", "litellm_params": {"model": "x"}}]},
-        path,
-    )
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    unexpose_model(state, "ollama/a", path)
-    assert calls == ["restart"]
-
-
-def test_unexpose_true_noop_skips_save_and_restart(tmp_path, monkeypatch):
-    # Row absent, flag already false, settings already ensured: the file
-    # is not rewritten (mtime and bytes unchanged) and the proxy is not
-    # bounced. A needless `launchctl kickstart -k` would disrupt
-    # in-flight proxy requests for zero config change.
-    state = _state()  # ollama/a with litellm_exposed defaulting to False
-    path = tmp_path / "config.yaml"
-    save_litellm_config(
-        {
-            "model_list": [],
-            "general_settings": {},
-            "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
-        },
-        path,
-    )
-    before = path.read_bytes()
-    mtime = path.stat().st_mtime_ns
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    unexpose_model(state, "ollama/a", path)
-    assert calls == []
-    assert path.read_bytes() == before
-    assert path.stat().st_mtime_ns == mtime
-
-
-def test_unexpose_model_restarts_proxy(tmp_path, monkeypatch):
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-    expose_model(registry, state, "ollama/a", path)
-    calls = []
-    monkeypatch.setattr("modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart"))
-    unexpose_model(state, "ollama/a", path)
-    assert calls == ["restart"]
-
-
-def test_unexpose_ensures_launcher_required_settings(tmp_path):
-    # The unexpose path runs the same ensure: every write opportunity is
-    # a settings-repair opportunity, even when the operation is a removal.
-    state = StateStore()
-    path = tmp_path / "config.yaml"
-    save_litellm_config(
-        {"model_list": [{"model_name": "ollama/a", "litellm_params": {"model": "x"}}]},
-        path,
-    )
-    unexpose_model(state, "ollama/a", path)
-    config = load_litellm_config(path)
-    assert config["litellm_settings"]["drop_params"] is True
-
-
-def test_expose_ensures_launcher_required_settings(tmp_path):
-    # The ensure runs over the whole parsed model_list: pre-existing
-    # hand rows are repaired on the same write, not just the new entry,
-    # and the fresh ollama entry gains the bridge workaround too.
-    registry = _registry()
-    state = _state()
-    path = tmp_path / "config.yaml"
-    save_litellm_config(
-        {
-            "model_list": [
-                {
-                    "model_name": "hand/row",
-                    "litellm_params": {"model": "ollama_chat/hand"},
-                }
-            ],
-            "general_settings": {"database_url": "x"},
-        },
-        path,
-    )
-    expose_model(registry, state, "ollama/a", path)
-    config = load_litellm_config(path)
-    assert config["litellm_settings"]["drop_params"] is True
-    hand = next(r for r in config["model_list"] if r["model_name"] == "hand/row")
-    assert hand["litellm_params"]["additional_drop_params"] == ["reasoning_effort"]
-    fresh = next(r for r in config["model_list"] if r["model_name"] == "ollama/a")
-    assert fresh["litellm_params"]["additional_drop_params"] == ["reasoning_effort"]
-
-
-def test_reexpose_identical_entry_skips_save_and_restart(tmp_path, monkeypatch):
-    # Idempotent re-expose: the rebuilt entry is identical to the saved
-    # row, the flag is already set, and the settings are already
-    # ensured — so nothing is saved and the proxy is not bounced.
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    expose_model(registry, state, "ollama/a", path)
-    assert calls == ["restart"]
-    before = path.read_bytes()
-    mtime = path.stat().st_mtime_ns
-    calls.clear()
-    expose_model(registry, state, "ollama/a", path)
-    assert calls == []
-    assert path.read_bytes() == before
-    assert path.stat().st_mtime_ns == mtime
-
-
-def test_reexpose_with_changed_content_restarts_proxy(tmp_path, monkeypatch):
-    # Latent-gap fix: a re-expose that rewrites the row with NEW content
-    # (here: the provider's base_url changed) must bounce the proxy even
-    # though the flag never flips — the running proxy serves the old row.
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-    expose_model(registry, state, "ollama/a", path)
-    registry.providers[0].auth.base_url = "http://localhost:11435"
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    expose_model(registry, state, "ollama/a", path)
-    assert calls == ["restart"]
-
-
-def test_expose_model_restart_failure_nonfatal(tmp_path, monkeypatch):
-    registry = _registry()
-    state = _state()
-    path = _seed_config(tmp_path)
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("restart failed")
-
-    monkeypatch.setattr("modelman.litellm.subprocess.run", boom)
-    # Must not raise.
-    expose_model(registry, state, "ollama/a", path)
+    with pytest.raises(LiteLLMConfigError, match="config not found"):
+        unexpose_model(state, "ollama/a", tmp_path / "config.yaml")
     assert state.get("ollama/a").exposed is True

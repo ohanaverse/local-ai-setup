@@ -436,7 +436,7 @@ class ModelScreen(Screen[None]):
                 # Use the projected ready value for the EXPOSED column preview.
                 ready_override = self._projected_ready(m.id)
                 # Effective exposure = the (queued or persisted) flag AND the
-                # *projected* ready value — the same gate `_validated_entry`
+                # *projected* ready value — the same gate `_validate_locally`
                 # applies at apply time, so the column shows what the model
                 # will be after apply, not what it was before the queue.
                 # Native rows are the one exception: the column shows Y
@@ -511,10 +511,10 @@ class ModelScreen(Screen[None]):
     def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
         """Single invariant: expose depends on ready. A queued expose=True
         cannot survive a model whose projected ready is False — apply()
-        enforces the same rule at the gate (_validated_entry rejects the
+        enforces the same rule at the gate (_validate_locally rejects the
         expose with 'model is not ready'); this keeps the queue consistent
         with it instead of leaving a doomed entry for apply() to fail on.
-        Cloud rows are exempt, matching _validated_entry (via
+        Cloud rows are exempt, matching _validate_locally (via
         passes_ready_gate). Drops the expose with a notification rather
         than silently overwriting the user's request."""
         if self.queued_exposes.get(mid) is True and not passes_ready_gate(
@@ -608,7 +608,7 @@ class ModelScreen(Screen[None]):
             self.registry,
             ready_override=self._projected_ready(mid),
         ):
-            # Exposing requires ready — the same gate _validated_entry
+            # Exposing requires ready — the same gate _validate_locally
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite
             # their request; otherwise cascade a ready=True queue in for

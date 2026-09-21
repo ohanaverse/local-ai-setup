@@ -422,9 +422,10 @@ async def test_expose_after_reconcile_survives_stale_state(tmp_path, monkeypatch
     save_state(store, state_path)
     # LiteLLM config for the expose step.
     litellm_path = tmp_path / "litellm" / "config.yaml"
-    from modelman.litellm import save_litellm_config
+    litellm_path.parent.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import write_litellm_config
 
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
     monkeypatch.setenv("MODELMAN_LITELLM_CONFIG", str(litellm_path))
 
     from modelman.providers import registry

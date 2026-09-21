@@ -724,7 +724,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
 async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeypatch):
     """The EXPOSED column renders 'Y' only when the exposure flag is set AND
     the model is ready. Cloud models are exempt from the ready gate (a remote
-    model has no local 'ready' state) — the same exemption _validated_entry
+    model has no local 'ready' state) — the same exemption _validate_locally
     applies at the apply gate — so a flagged cloud row always renders 'Y'.
 
     Regression: the readiness-AND rule was added without a test, and a

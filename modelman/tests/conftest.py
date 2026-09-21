@@ -8,14 +8,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# The full set of litellm_settings keys ensure_litellm_settings() value-enforces
-# (modelman/src/modelman/litellm.py). Shared so tests asserting the "already
-# correct, no-op" shape don't hand-roll the dict at every call site — a real
-# risk once a third enforced key is added and one copy gets missed.
-ENFORCED_LITELLM_SETTINGS = {
-    "drop_params": True,
-    "use_chat_completions_url_for_anthropic_messages": True,
-}
+
+def write_litellm_config(config: dict, path) -> None:
+    """Seed a LiteLLM config.yaml for tests.
+
+    modelman no longer writes this file — wt owns every route write since
+    2026-09-21 — but tests still need one on disk for the read-only helpers
+    (`modelman usage`) and for call sites that resolve a `litellm_path`.
+    Replaces the deleted `litellm.save_litellm_config` as a test fixture
+    writer only; nothing in src/ writes YAML any more.
+    """
+    from ruamel.yaml import YAML
+
+    with open(path, "w") as f:
+        YAML(typ="safe").dump(config, f)
 
 
 def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -33,17 +39,6 @@ def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedP
         stdout="",
         stderr="Error: model not found",
     )
-
-
-@pytest.fixture(autouse=True)
-def _never_restart_live_proxy(monkeypatch):
-    """Tests that apply exposes must not bounce the user's live LiteLLM
-    proxy: restart_litellm_proxy() runs `launchctl kickstart -k
-    gui/$(id -u)/local.litellm.proxy` on macOS, which kills in-flight LLM
-    requests from agents (pi, Claude) that route through localhost:4000.
-    Point it at a no-op shell command; tests that specifically exercise
-    restart behavior (test_litellm.py) monkeypatch the env var themselves."""
-    monkeypatch.setenv("MODELMAN_LITELLM_RESTART_CMD", "true")
 
 
 @pytest.fixture(autouse=True)
