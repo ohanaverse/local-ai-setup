@@ -27,7 +27,7 @@ const proxyReadyTimeout = 30 * time.Second
 // provider (omlx, mtplx) can serve only one model, so starting one replaced
 // whatever ran before: its siblings' routes are removed in the same write.
 // It never fails the caller — a missing route is a warning, not a failed start.
-func routeAfterStart(cfg *config.Config, t Target) {
+func routeAfterStart(ctx context.Context, cfg *config.Config, t Target) {
 	m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName)
 	if !ok {
 		fmt.Fprintf(routesWarn, "wt: %s/%s is not in the registry; no LiteLLM route added (register it with modelman)\n", t.ProviderID, t.ModelName)
@@ -41,13 +41,13 @@ func routeAfterStart(cfg *config.Config, t Target) {
 			}
 		}
 	}
-	applyAndReport(cfg, []string{m.ID}, remove)
+	applyAndReport(ctx, cfg, []string{m.ID}, remove)
 }
 
 // routeAfterStop removes the stopped model's route. Stopping a single-model
 // provider's model takes the whole provider down, so every one of its models
 // loses its route. modelName may be "" for a provider-wide stop.
-func routeAfterStop(cfg *config.Config, providerID, modelName string) {
+func routeAfterStop(ctx context.Context, cfg *config.Config, providerID, modelName string) {
 	var remove []string
 	switch {
 	case SingleModel(providerID):
@@ -59,7 +59,7 @@ func routeAfterStop(cfg *config.Config, providerID, modelName string) {
 		}
 		remove = []string{m.ID}
 	}
-	applyAndReport(cfg, nil, remove)
+	applyAndReport(ctx, cfg, nil, remove)
 }
 
 // familyModelIDs lists the LiteLLM-managed local model ids whose provider
@@ -75,7 +75,7 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 	return ids
 }
 
-func applyAndReport(cfg *config.Config, add, remove []string) {
+func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string) {
 	res, err := applyRoutes(cfg, add, remove, litellm.Options{SkipReadyGate: true})
 	if err != nil {
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
@@ -92,7 +92,7 @@ func applyAndReport(cfg *config.Config, add, remove []string) {
 		fmt.Fprintf(routesWarn, "wt: %s\n", w)
 	}
 	if res.Changed && cfg.LitellmBaseURL() != "" {
-		if err := waitProxy(context.Background(), cfg.LitellmBaseURL(), proxyReadyTimeout); err != nil {
+		if err := waitProxy(ctx, cfg.LitellmBaseURL(), proxyReadyTimeout); err != nil && ctx.Err() == nil { // cancelled by the user: stay quiet
 			fmt.Fprintf(routesWarn, "wt: %v\n", err)
 		}
 	}

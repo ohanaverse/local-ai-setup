@@ -211,7 +211,7 @@ func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) erro
 	if err := start(ctx, defaultEnv(), cfg, t, opts); err != nil {
 		return err
 	}
-	routeAfterStart(cfg, t)
+	routeAfterStart(ctx, cfg, t)
 	return nil
 }
 
@@ -253,7 +253,7 @@ func Stop(ctx context.Context, cfg *config.Config, providerID string) error {
 	if err := stop(ctx, defaultEnv(), cfg, providerID); err != nil {
 		return err
 	}
-	routeAfterStop(cfg, providerID, "")
+	routeAfterStop(ctx, cfg, providerID, "")
 	return nil
 }
 
@@ -276,7 +276,7 @@ func StopModel(ctx context.Context, cfg *config.Config, providerID, modelName st
 	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
 		return err
 	}
-	routeAfterStop(cfg, providerID, modelName)
+	routeAfterStop(ctx, cfg, providerID, modelName)
 	return nil
 }
 

@@ -55,7 +55,7 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 // Without the removal a replaced model keeps a dead route.
 func TestRouteAfterStartSingleModelReplacesSiblings(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35"})
 	want := routeCall{add: []string{"mtplx/Y--Q35"}, remove: []string{"mtplx/Y--Q27"}}
 	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, want.add) || !slices.Equal((*calls)[0].remove, want.remove) {
 		t.Fatalf("calls = %+v, want %+v", *calls, want)
@@ -67,7 +67,7 @@ func TestRouteAfterStartSingleModelReplacesSiblings(t *testing.T) {
 // may still be loaded.
 func TestRouteAfterStartMultiTenantOnlyAdds(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
 	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"ollama/a:1"}) || len((*calls)[0].remove) != 0 {
 		t.Fatalf("calls = %+v", *calls)
 	}
@@ -78,8 +78,8 @@ func TestRouteAfterStartMultiTenantOnlyAdds(t *testing.T) {
 // model of that provider (the whole provider went down).
 func TestRouteAfterStop(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStop(routesCfg(), "ollama", "a:1")
-	routeAfterStop(routesCfg(), "mtplx", "Y/Q35")
+	routeAfterStop(context.Background(), routesCfg(), "ollama", "a:1")
+	routeAfterStop(context.Background(), routesCfg(), "mtplx", "Y/Q35")
 	if len(*calls) != 2 {
 		t.Fatalf("calls = %+v", *calls)
 	}
@@ -97,19 +97,19 @@ func TestRouteAfterStop(t *testing.T) {
 // route would strand a running model.
 func TestRouteNeverFailsTheCaller(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{}, errors.New("boom"))
-	routeAfterStart(routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
 	if !bytes.Contains(warn.Bytes(), []byte("boom")) {
 		t.Fatalf("no warning for a failed apply: %q", warn.String())
 	}
 
 	_, warn = stubRoutes(t, litellm.Result{}, litellm.ErrMissing)
-	routeAfterStart(routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
 	if warn.Len() != 0 {
 		t.Fatalf("missing config.yaml must be silent, got %q", warn.String())
 	}
 
 	calls, warn := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"})
 	if len(*calls) != 0 || !bytes.Contains(warn.Bytes(), []byte("not in the registry")) {
 		t.Fatalf("unregistered: calls=%v warn=%q", *calls, warn.String())
 	}
@@ -124,14 +124,45 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	stubRoutes(t, litellm.Result{Changed: true}, nil)
 	waited := 0
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
-	routeAfterStart(cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
 	if waited != 1 {
 		t.Fatalf("waited = %d, want 1", waited)
 	}
 	stubRoutes(t, litellm.Result{Changed: false}, nil)
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
-	routeAfterStart(cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
 	if waited != 1 {
 		t.Fatal("waited despite no change")
+	}
+}
+
+// TestRouteHonorsCallerContext pins that the caller's ctx reaches the proxy
+// wait: after Ctrl+C cancels ctx the call must return promptly and stay quiet
+// (the user cancelled, a "proxy not ready" warning is noise). Ignoring ctx
+// would hang the process up to the readiness timeout.
+func TestRouteHonorsCallerContext(t *testing.T) {
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
+	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	waitProxy = func(ctx context.Context, _ string, _ time.Duration) error { return ctx.Err() }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	routeAfterStart(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStop(ctx, cfg, "ollama", "a:1")
+	if warn.Len() != 0 {
+		t.Fatalf("cancelled ctx must not warn, got %q", warn.String())
+	}
+}
+
+// TestRouteWarnsWhenProxyWaitFailsUncancelled pins that a genuine readiness
+// failure (ctx still live) is still surfaced as a warning.
+func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
+	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	waitProxy = func(context.Context, string, time.Duration) error { return errors.New("proxy down") }
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	if !bytes.Contains(warn.Bytes(), []byte("proxy down")) {
+		t.Fatalf("expected warning, got %q", warn.String())
 	}
 }
