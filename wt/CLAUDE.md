@@ -433,6 +433,9 @@ detail the final report shows (`logSmokeStart`/`logSmokeResult` in
 the two can't drift apart) — leaving stdout (the human table and `--json`
 report) unaffected. See `docs/wt-smoke.md`.
 
+- **Timeout is location-based** (`smokeTimeout`, `cmd/wt/smoke.go`): unset `--timeout` → 180s cloud / 900s local (unresolvable location counts as cloud). The flag default is `0` = unset; only an explicit value is validated. Local rows are slow because agents send 12–41k-token preambles that cold-prefill at 65–95 tok/s, so a timed-out local row usually isn't a broken agent.
+- **Diagnosing a slow local row:** `/tmp/local-ai-setup-mtplx.log` has one `mtplx_openai_generation` line per *completed* request (`prompt_tokens`, `elapsed_s`) plus `memory guard`/`pressure_trim` lines; killed (timed-out) requests leave no line, and a repeat agent is fast only while its prefix is still in mtplx's session cache. Rows run sequentially.
+
 ## Start/stop (`wt start`, `wt stop`)
 
 `wt start [model]` starts a local model without launching an agent (`cmd/wt/model_cmds.go`). With an id it resolves through `catalog.Find` over `localRows` (every configured local model plus detected ones, one inventory snapshot): an idle row starts via `startModel` (`--replace` skips the replace question), a running row is a no-op ("already running"), a blocked row errors with its `BlockReason`, and a cloud or unknown id errors. With no argument it needs a TTY and shows the screen-1 picker (`tui.PickStartModel`, via the `pickStartModelTUI` seam — `PickModel` minus launch-route gating, since starting is not launching) over all local rows; blocked rows are unselectable.

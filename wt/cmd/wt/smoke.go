@@ -68,7 +68,7 @@ func smokeCmd(a *app) *cobra.Command {
 		},
 	}
 	cmd.Flags().String("prompt", "", "Override the default sentinel prompt (weakens verification to exit-code-only)")
-	cmd.Flags().Duration("timeout", 180*time.Second, "Per-agent timeout")
+	cmd.Flags().Duration("timeout", 0, "Per-agent timeout (default 3m for cloud models, 15m for local)")
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
 	return cmd
@@ -102,9 +102,14 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	promptOverride := mustGetString(cmd, "prompt")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	if err := validateSmokeTimeout(timeout); err != nil {
-		return false, err
+	// Validate only an explicit value: the unset flag is 0, meaning "pick the
+	// default for this model's location".
+	if cmd.Flags().Changed("timeout") {
+		if err := validateSmokeTimeout(timeout); err != nil {
+			return false, err
+		}
 	}
+	timeout = smokeTimeout(a.cfg, m, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -141,6 +146,27 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
 	}
 	return anyFail, err
+}
+
+// Default per-agent smoke budgets. Local models cold-prefill the 10-40k-token
+// preambles agents send at tens of tok/s, so one row can take 5-9 minutes;
+// cloud models answer in seconds and a short budget surfaces real hangs fast.
+const (
+	smokeCloudTimeout = 180 * time.Second
+	smokeLocalTimeout = 900 * time.Second
+)
+
+// smokeTimeout returns the explicit timeout when set (non-zero), otherwise the
+// default for the model's location. A model whose location cannot be resolved
+// is treated as non-local, matching Config.IsExposed.
+func smokeTimeout(cfg *config.Config, m config.Model, explicit time.Duration) time.Duration {
+	if explicit != 0 {
+		return explicit
+	}
+	if loc, err := cfg.ResolveLocation(m); err == nil && loc == config.LocationLocal {
+		return smokeLocalTimeout
+	}
+	return smokeCloudTimeout
 }
 
 // validateSmokeTimeout rejects a non-positive --timeout before any row

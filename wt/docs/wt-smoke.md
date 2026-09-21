@@ -31,7 +31,7 @@ wt smoke <model-id> --json
   cannot be verified for a sentinel it was never asked to produce, so
   verification degrades to "the agent exited 0 within the timeout" — this
   confirms wiring, not response correctness.
-- `--timeout` — per-agent timeout (default `180s`).
+- `--timeout` — per-agent timeout. Default: `180s` for cloud models, `900s` for local models (cold prefill of large agent prompts can take minutes). An explicit value applies to both.
 - `--only` — comma-separated agents to restrict the run to; must be a
   subset of the model's currently eligible agents.
 - `--json` — emit a machine-readable report instead of the human table.
