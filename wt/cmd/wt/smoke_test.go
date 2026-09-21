@@ -551,3 +551,33 @@ func TestSmokeTimeoutDefaultsByLocation(t *testing.T) {
 		t.Fatalf("explicit = %s, want 42s", got)
 	}
 }
+
+// TestSmokeCmdExplicitZeroTimeoutRejected verifies that passing --timeout 0
+// (or a negative value) through the command fails validation before anything is
+// started, even though an unset flag also defaults to 0. Without the
+// Changed("timeout") guard, 0 would silently mean "use the location default",
+// or reach the row timer and fail every row immediately.
+func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
+	for _, val := range []string{"0", "-5s"} {
+		cfg := smokeFixtureConfig(t)
+		oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
+		t.Cleanup(func() { startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY })
+		started := false
+		startModel = func(*config.Config, catalog.Row, bool) error { started = true; return nil }
+		releaseSession = func() {}
+		runStopPicker = func(*config.Config) {}
+		stdinTTY = func() bool { return true }
+
+		cmd := smokeCmd(&app{cfg: cfg})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"ollama/not-eligible:x", "--timeout", val})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("--timeout %s: err = %v, want a timeout validation error", val, err)
+		}
+		if started {
+			t.Fatalf("--timeout %s: model was started despite invalid timeout", val)
+		}
+	}
+}
