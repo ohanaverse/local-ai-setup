@@ -8,7 +8,6 @@ import pytest
 
 from modelman import wt_bridge
 
-
 # The genuine _run, captured at import (collection) time, before any fixture can
 # patch it. Tests that need the real _run re-install it with monkeypatch.setattr
 # instead of a blanket monkeypatch undo, which would also revert every autouse safety guard.
@@ -319,24 +318,19 @@ def test_no_test_reverts_the_autouse_guards():
     assert offenders == []
 
 
-def test_litellm_status_forwards_optional_timeout(calls):
+def test_litellm_status_forwards_optional_timeout(monkeypatch):
     # The TUI passes a short timeout; other callers keep _run's default. Only
     # forwarding when given keeps the default behavior unchanged.
     got = []
-    real = wt_bridge._run
 
     def spy(args, env=None, timeout=120):
         got.append(timeout)
         return _cp(json.dumps({"enabled": True, "url": "u", "api_key_set": False}))
 
-    import pytest as _pt
-
-    with _pt.MonkeyPatch.context() as mp:
-        mp.setattr(wt_bridge, "_run", spy)
-        wt_bridge.litellm_status()
-        wt_bridge.litellm_status(timeout=3)
+    monkeypatch.setattr(wt_bridge, "_run", spy)
+    wt_bridge.litellm_status()
+    wt_bridge.litellm_status(timeout=3)
     assert got == [120, 3]
-    assert real is not spy
 
 
 @pytest.mark.parametrize(

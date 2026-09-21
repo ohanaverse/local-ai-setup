@@ -52,8 +52,11 @@ def ensure_wt() -> None:
         raise WtNotFoundError("wt not found on PATH; install it with `make install`")
 
 
+_DEFAULT_TIMEOUT = 120.0
+
+
 def _run(
-    args: list[str], env: dict[str, str] | None = None, timeout: float = 120
+    args: list[str], env: dict[str, str] | None = None, timeout: float = _DEFAULT_TIMEOUT
 ) -> subprocess.CompletedProcess[str]:
     ensure_wt()
     # Error messages deliberately name only the subcommand: argv may carry
@@ -217,7 +220,7 @@ def provider_cloud_flags() -> dict[str, bool]:
 def litellm_status(timeout: float | None = None) -> LitellmStatus:
     """wt's routing state. `timeout` (seconds) overrides _run's 120 s default;
     the TUI passes a short one so a hung wt cannot freeze it."""
-    proc = _run(["status", "--json"], **({} if timeout is None else {"timeout": timeout}))
+    proc = _run(["status", "--json"], timeout=_DEFAULT_TIMEOUT if timeout is None else timeout)
     try:
         return parse_status(proc.stdout)
     except (ValueError, KeyError, TypeError):
@@ -226,7 +229,7 @@ def litellm_status(timeout: float | None = None) -> LitellmStatus:
 
 def litellm_status_text(timeout: float | None = None) -> str:
     """wt's human-readable status (key masking lives in wt)."""
-    proc = _run(["status"], **({} if timeout is None else {"timeout": timeout}))
+    proc = _run(["status"], timeout=_DEFAULT_TIMEOUT if timeout is None else timeout)
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, "wt litellm status failed"))
     return proc.stdout

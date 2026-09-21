@@ -2887,7 +2887,9 @@ async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, mo
         assert notes and "unavailable" in notes[-1]
         # Status becomes readable but the set fails: error is surfaced.
         monkeypatch.setattr(
-            wt_bridge, "litellm_status", lambda timeout=None: wt_bridge.LitellmStatus(False, "", False)
+            wt_bridge,
+            "litellm_status",
+            lambda timeout=None: wt_bridge.LitellmStatus(False, "", False),
         )
 
         def fail(on):
