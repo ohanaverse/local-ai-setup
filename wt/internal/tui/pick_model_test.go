@@ -213,3 +213,26 @@ func TestNewPickModelHidesDiscoveredRows(t *testing.T) {
 		t.Errorf("items = %v, want only the passed model omlx/a (discovered omlx/stray must be hidden)", ids)
 	}
 }
+
+// TestPickModelEnterOnBlockedRowDoesNotSelect verifies pressing Enter on a
+// blocked row (e.g. a model missing from disk) keeps the picker open and shows
+// the reason, while Enter on a normal row selects it. `wt start` lists blocked
+// rows for visibility; letting Enter pick one would start a doomed model.
+func TestPickModelEnterOnBlockedRowDoesNotSelect(t *testing.T) {
+	items := []list.Item{
+		&modelItem{model: config.Model{ID: "ollama/gone"}, blocked: "ollama/gone is not on disk — pull or download it first"},
+		&modelItem{model: config.Model{ID: "ollama/ok"}},
+	}
+	m := pickModel{list: list.New(items, list.NewDefaultDelegate(), 80, 24)}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm := next.(pickModel)
+	if cmd != nil || pm.selected.ID != "" || !strings.Contains(pm.notice, "not on disk") {
+		t.Fatalf("blocked Enter: selected=%q notice=%q cmd=%v, want no selection and a notice", pm.selected.ID, pm.notice, cmd)
+	}
+	pm.list.CursorDown()
+	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := next.(pickModel).selected.ID; got != "ollama/ok" {
+		t.Fatalf("selected = %q, want ollama/ok", got)
+	}
+}

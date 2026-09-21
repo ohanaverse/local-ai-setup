@@ -25,12 +25,17 @@ type pickModel struct {
 	selected config.Model
 	canceled bool
 	quitting bool
+	// notice is a one-line message under the list, set when Enter hits a
+	// blocked row and cleared on the next key.
+	notice string
 }
 
 // newPickModel builds the picker's list from models via the same buildTable
 // the agent flow uses. cfg may be nil (no inventory probe and no per-row route
 // resolution). The agent argument is "" and stats is nil since this list isn't
 // scoped to one agent; discovered (unregistered) local models are hidden.
+// The caller's models may include start-able and blocked rows; blocked rows
+// are shown (with their reason) but Enter on them does not select.
 func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme) pickModel {
 	var snap *localmodels.Snapshot
 	if cfg != nil {
@@ -72,6 +77,7 @@ func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SetSize(msg.Width-2, msg.Height-2)
 		return m, nil
 	case tea.KeyMsg:
+		m.notice = ""
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			m.canceled = true
@@ -86,6 +92,10 @@ func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.list.FilterState() != list.Filtering {
 				if it, ok := m.list.SelectedItem().(*modelItem); ok {
+					if it.blocked != "" {
+						m.notice = it.blocked
+						return m, nil
+					}
 					m.selected = it.model
 					m.quitting = true
 					return m, tea.Quit
@@ -102,7 +112,11 @@ func (m pickModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	return m.list.View()
+	v := m.list.View()
+	if m.notice != "" {
+		v += "\n" + m.notice
+	}
+	return v
 }
 
 // PickModel runs a standalone Bubble Tea program showing the selector
@@ -110,7 +124,8 @@ func (m pickModel) View() string {
 // canceled (Esc/q/Ctrl+C) rather than selecting a model. Unlike the agent
 // flow's picker, models is never filtered down to one agent's eligible set;
 // callers scoped to "any agent that can run this model" (e.g. wt smoke)
-// pass their own unfiltered union list.
+// pass their own unfiltered union list. models may include start and blocked
+// rows (wt start); blocked rows are shown but not selectable.
 func PickModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
 	m := newPickModel(cfg, models, theme)
 	p := tea.NewProgram(m, tea.WithAltScreen())

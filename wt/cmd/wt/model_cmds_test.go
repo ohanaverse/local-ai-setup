@@ -10,6 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // modelCmdConfig is a minimal local-only registry shared by the start/stop
@@ -177,5 +178,113 @@ func TestStopNoArgNeedsTTYAndOpensPicker(t *testing.T) {
 	var out bytes.Buffer
 	if err := runStop(&out, modelCmdConfig(), "", false); err != nil || opened || !strings.Contains(out.String(), "no running local models") {
 		t.Fatalf("err = %v opened = %v out = %q, want the empty note and no picker", err, opened, out.String())
+	}
+}
+
+// startFixture stubs the inventory: ollama/a:1 running, ollama/b:1 pulled but
+// idle (start row), omlx/c missing from disk (blocked). Returns the start recorder.
+func startFixture(t *testing.T) (*config.Config, *startRequest) {
+	t.Helper()
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "a:1", ModelID: "ollama/a:1", ModelName: "a:1", Registered: true, Running: true, ArtifactKnown: true},
+			{ProviderID: "ollama", Artifact: "b:1", ModelID: "ollama/b:1", ModelName: "b:1", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", Artifact: "", ModelID: "omlx/c", ModelName: "c", Registered: true, ArtifactKnown: true},
+		},
+	})
+	return modelCmdConfig(), stubStartDriver(t, nil)
+}
+
+// TestStartRunningModelIsNoOp verifies `wt start` on an already-running model
+// says so and never calls the start driver — starting twice must be harmless.
+func TestStartRunningModelIsNoOp(t *testing.T) {
+	cfg, req := startFixture(t)
+	var out bytes.Buffer
+	if err := runStart(&out, cfg, themes.Theme{}, "ollama/a:1", false); err != nil {
+		t.Fatal(err)
+	}
+	if req.called || !strings.Contains(out.String(), "already running") {
+		t.Fatalf("called = %v out = %q, want a no-op note", req.called, out.String())
+	}
+}
+
+// TestStartIdleModelStartsIt verifies an idle local model goes through the
+// start driver with the caller's --replace permission.
+func TestStartIdleModelStartsIt(t *testing.T) {
+	cfg, req := startFixture(t)
+	if err := runStart(io.Discard, cfg, themes.Theme{}, "ollama/b:1", true); err != nil {
+		t.Fatal(err)
+	}
+	if !req.called || req.row.Model.ID != "ollama/b:1" || !req.replace {
+		t.Fatalf("req = %+v, want ollama/b:1 started with replace", req)
+	}
+}
+
+// TestStartInvalidArgErrors verifies unknown ids, cloud ids, and blocked models
+// exit with an error naming the problem and never start anything.
+func TestStartInvalidArgErrors(t *testing.T) {
+	cfg, req := startFixture(t)
+	cfg.Models = append(cfg.Models, config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud})
+	cases := map[string]string{"ollama/nope:9": "unknown model", "openrouter/x": "not a local model", "omlx/c": "not on disk"}
+	for arg, want := range cases {
+		err := runStart(io.Discard, cfg, themes.Theme{}, arg, false)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("runStart(%q) err = %v, want %q", arg, err, want)
+		}
+	}
+	if req.called {
+		t.Error("nothing may be started for an invalid argument")
+	}
+}
+
+// TestStartNoArgUsesPickerAndRunningPickIsNoOp verifies the no-arg flow needs a
+// TTY, lists every local model via the shared picker, starts an idle pick, and
+// treats a running pick as a no-op (spec: selecting a running model does nothing).
+func TestStartNoArgUsesPickerAndRunningPickIsNoOp(t *testing.T) {
+	cfg, req := startFixture(t)
+	oldTTY, oldPick := stdinTTY, pickModelTUI
+	t.Cleanup(func() { stdinTTY, pickModelTUI = oldTTY, oldPick })
+
+	stdinTTY = func() bool { return false }
+	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err == nil {
+		t.Fatal("no TTY and no arg must error")
+	}
+
+	stdinTTY = func() bool { return true }
+	var offered []string
+	pick := "ollama/b:1"
+	pickModelTUI = func(_ *config.Config, models []config.Model, _ themes.Theme) (config.Model, bool, error) {
+		for _, m := range models {
+			offered = append(offered, m.ID)
+		}
+		return config.Model{ID: pick}, true, nil
+	}
+	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err != nil || !req.called {
+		t.Fatalf("idle pick: err = %v called = %v, want a start", err, req.called)
+	}
+	if len(offered) != 3 {
+		t.Errorf("picker offered %v, want all three local models (running, idle, blocked)", offered)
+	}
+
+	*req = startRequest{}
+	pick = "ollama/a:1"
+	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err != nil || req.called {
+		t.Fatalf("running pick: err = %v called = %v, want a no-op", err, req.called)
+	}
+}
+
+// TestStartCancelledPicker verifies canceling the picker (ok=false) is an
+// error mentioning cancellation and starts nothing.
+func TestStartCancelledPicker(t *testing.T) {
+	cfg, req := startFixture(t)
+	oldTTY, oldPick := stdinTTY, pickModelTUI
+	t.Cleanup(func() { stdinTTY, pickModelTUI = oldTTY, oldPick })
+	stdinTTY = func() bool { return true }
+	pickModelTUI = func(*config.Config, []config.Model, themes.Theme) (config.Model, bool, error) {
+		return config.Model{}, false, nil
+	}
+	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err == nil || !strings.Contains(err.Error(), "canceled") || req.called {
+		t.Fatalf("err = %v called = %v, want canceled error and no start", err, req.called)
 	}
 }
