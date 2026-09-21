@@ -22,6 +22,11 @@ type Options struct {
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
+	// Recheck, when set, is called by Sync under the config.yaml lock just
+	// before it removes routes, and returns the ids running NOW. Ids that
+	// turn out to be running are kept: a start finishing between the caller's
+	// probe and the lock would otherwise have its fresh route removed.
+	Recheck func() []string
 	// NoRestart writes config.yaml but leaves the proxy alone: the caller owes
 	// (and performs) the restart itself, so several route changes in one
 	// operation cost one bounce.
@@ -220,6 +225,10 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 			case slices.Contains(routed, m.ID):
 				remove = append(remove, m.ID)
 			}
+		}
+		if len(remove) > 0 && o.Recheck != nil {
+			fresh := o.Recheck()
+			remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
 		}
 		return add, remove
 	}, o)

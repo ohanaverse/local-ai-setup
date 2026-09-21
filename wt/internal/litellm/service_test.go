@@ -287,3 +287,25 @@ func TestModelForToleratesSpellingDifferences(t *testing.T) {
 		}
 	}
 }
+
+// TestSyncRecheckKeepsModelsThatStartedMeanwhile pins the under-lock re-probe:
+// a model that Sync's earlier probe saw stopped but that Recheck finds running
+// (a start finished between the probe and the lock) keeps its route, while a
+// model still stopped is removed. Without it, sync could delete the fresh
+// route of a model that is running and leave it unreachable through LiteLLM.
+func TestSyncRecheckKeepsModelsThatStartedMeanwhile(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+  - model_name: mtplx/Youssofal--Q
+    litellm_params: {model: openai/Youssofal/Q}
+`)
+	o.Recheck = func() []string { return []string{"ollama/gemma:9b"} }
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
+		t.Fatalf("routed = %s, want only the model Recheck found running", got)
+	}
+}

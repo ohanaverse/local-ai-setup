@@ -98,12 +98,7 @@ func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, id
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) error {
 	snap := probeInventory(cfg)
-	var running []string
-	for _, e := range snap.Entries {
-		if e.Running && e.Registered {
-			running = append(running, e.ModelID)
-		}
-	}
+	running := runningIDs(snap)
 	// Running is untrustworthy for a family whose probe did not fully
 	// succeed; leave its models' routes exactly as they are. The exception is
 	// a server that refused the connection: nothing is listening, so nothing
@@ -124,7 +119,13 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 			skipped[fam] = true
 		}
 	}
-	res, err := litellm.Sync(cfg, running, litellm.Options{Untouched: untouched})
+	res, err := litellm.Sync(cfg, running, litellm.Options{
+		Untouched: untouched,
+		// The probe above predates the config.yaml lock; a start that lands
+		// in between must not lose its route, so removals are re-verified
+		// under the lock.
+		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
+	})
 	if err != nil {
 		return err
 	}
@@ -137,6 +138,17 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
 	return reportLitellm(out, errOut, res, asJSON)
+}
+
+// runningIDs lists the registered model ids a probe found running.
+func runningIDs(snap localmodels.Snapshot) []string {
+	var running []string
+	for _, e := range snap.Entries {
+		if e.Running && e.Registered {
+			running = append(running, e.ModelID)
+		}
+	}
+	return running
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {
