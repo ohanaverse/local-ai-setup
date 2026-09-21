@@ -43,8 +43,15 @@ func TestStopModelOllamaRunsOllamaStop(t *testing.T) {
 
 // psServing is a stub ollama daemon whose /api/ps lists the given loaded
 // models; used so the post-failure re-probe never touches a real daemon.
+// Built on the serveFree listener handoff like every server in this package.
 func psServing(t *testing.T, loaded ...string) *httptest.Server {
 	t.Helper()
+	srv, _ := serveFree(t, psBodyHandler(loaded...))
+	return srv
+}
+
+// psBodyHandler answers every request with an /api/ps body listing loaded.
+func psBodyHandler(loaded ...string) http.Handler {
 	body := `{"models":[`
 	for i, n := range loaded {
 		if i > 0 {
@@ -53,10 +60,22 @@ func psServing(t *testing.T, loaded ...string) *httptest.Server {
 		body += `{"name":"` + n + `"}`
 	}
 	body += `]}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(body))
+	})
+}
+
+// psFailing answers /api/ps with a server error: the deterministic stand-in
+// for a re-probe that cannot get an answer (daemon gone). Closing a real
+// server instead would leave a window in which another process takes the
+// freed ephemeral port — the flake vector #131's listener handoff removed,
+// since a stranger's JSON without a "models" key decodes to an empty loaded
+// list and would fake a successful stop.
+func psFailing(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv, _ := serveFree(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	t.Cleanup(srv.Close)
 	return srv
 }
 
@@ -133,10 +152,8 @@ func TestStopModelOllamaCancelledReturnsCancelWithoutProbe(t *testing.T) {
 // is returned rather than guessing success: with no evidence the model is
 // unloaded, the stop is reported as it failed.
 func TestStopModelOllamaReprobeFailureKeepsOriginalError(t *testing.T) {
-	daemon := psServing(t)
-	url := daemon.URL
-	daemon.Close()
-	err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", url), "ollama", "x")
+	daemon := psFailing(t)
+	err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x")
 	if err == nil || err.Error() != "model not found" {
 		t.Fatalf("err = %v, want ollama's own message", err)
 	}
