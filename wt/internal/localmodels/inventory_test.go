@@ -491,6 +491,38 @@ func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
 	}
 }
 
+// TestInventoryDownOnlyForRefusedConnections pins the Down signal: a closed
+// port (connection refused) marks its family Down for both omlx (Partial) and
+// ollama (Unreachable), while a live server that answers 500 is Partial but
+// NOT Down. `wt litellm sync` removes routes only for Down families, so
+// conflating "erroring" with "not running" would delete a live route.
+func TestInventoryDownOnlyForRefusedConnections(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "some-model")
+	gone := modelsServer(t)
+	goneURL := gone.URL
+	gone.Close()
+	erroring := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer erroring.Close()
+	deadOllama := ollamaServer(t, nil, nil)
+	deadOllamaURL := deadOllama.URL
+	deadOllama.Close()
+
+	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx", goneURL, dir), localProvider("ollama", deadOllamaURL, "")}}
+	snap := inventory(cfg, testClient)
+	if !snap.Down["omlx"] || !snap.Down["ollama"] {
+		t.Errorf("Down = %v, want omlx and ollama down (connections refused)", snap.Down)
+	}
+
+	cfg = &config.Config{Providers: []config.Provider{localProvider("omlx", erroring.URL, dir)}}
+	snap = inventory(cfg, testClient)
+	if snap.Providers["omlx"] != StatusPartial || snap.Down["omlx"] {
+		t.Errorf("erroring server: status=%q down=%v, want partial and not down", snap.Providers["omlx"], snap.Down["omlx"])
+	}
+}
+
 // TestInventoryOmlxEmptyAnswerIsOK verifies a server that answers with an
 // empty model list is StatusOK, not StatusPartial. That case is "nothing is
 // loaded", which must start normally without a confirmation prompt.

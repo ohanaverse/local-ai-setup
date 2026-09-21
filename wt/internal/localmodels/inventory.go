@@ -2,6 +2,7 @@ package localmodels
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -70,6 +72,11 @@ type Entry struct {
 type Snapshot struct {
 	Entries   []Entry
 	Providers map[string]Status
+	// Down marks families whose server actively refused the probe connection:
+	// unlike a timeout or a bad answer, that positively means nothing is
+	// serving, so those families' Running flags (all false) can be trusted
+	// even though their Status is not StatusOK.
+	Down map[string]bool
 }
 
 // Inventory probes every local provider in the registry concurrently and
@@ -102,6 +109,7 @@ type source struct {
 	artifacts  []string // discovered names, provider spelling (mtplx: repo id form)
 	loaded     []string // names serving right now
 	registered int      // local registry models in this family
+	down       bool     // the server refused the connection (nothing listening)
 }
 
 func (s *source) matchArtifact(artifact, modelName string) bool {
@@ -236,6 +244,10 @@ func defaultPortFor(family string) (int, bool) {
 	return 0, false
 }
 
+// refused reports whether err is a refused TCP connection: the port has no
+// listener, so the server is down (as opposed to slow or answering badly).
+func refused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }
+
 func probeFamily(cfg *config.Config, client *http.Client, family string) *source {
 	s := &source{family: family, status: StatusOK}
 	origin := familyOrigin(cfg, family)
@@ -244,6 +256,7 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		names, err := ollamaModelNames(context.Background(), client, origin+"/api/tags")
 		if err != nil {
 			s.status = StatusUnreachable
+			s.down = refused(err)
 			return s
 		}
 		s.artifacts = names
@@ -263,6 +276,7 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
 		if err != nil {
 			s.status = StatusPartial
+			s.down = refused(err)
 		}
 		s.loaded = loaded
 		def := defaultOmlxDir
@@ -340,12 +354,15 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 	}
 	wg.Wait()
 
-	snap := Snapshot{Providers: map[string]Status{}}
+	snap := Snapshot{Providers: map[string]Status{}, Down: map[string]bool{}}
 	sources := map[string]*source{}
 	for i, f := range families {
 		sources[f] = results[i]
 		results[i].registered = registered[f]
 		snap.Providers[f] = results[i].status
+		if results[i].down {
+			snap.Down[f] = true
+		}
 	}
 
 	consumed := map[string]bool{}
