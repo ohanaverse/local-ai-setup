@@ -268,3 +268,46 @@ func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 		t.Fatalf("unprobed model's route was removed:\n%s", b)
 	}
 }
+
+// TestLitellmStatusAndToggle pins the routing-state commands: `on`/`off` flip
+// enabled (routing policy only — never touch the proxy), `set` updates
+// url/key independently, status never prints the key (only api_key_set), and
+// `on` warns when url/key are unset because agents would fail at launch.
+func TestLitellmStatusAndToggle(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	writeEmptyRegistry(t, home)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := runLitellmToggle(&out, &errOut, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut.String(), "litellm.url or litellm.api_key is not set") {
+		t.Fatalf("no incomplete-config warning: %q", errOut.String())
+	}
+	u, k := "http://localhost:4000", "sk-123456"
+	if err := runLitellmSet(&out, cfg, &u, &k); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runLitellmStatus(&out, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "sk-123456") {
+		t.Fatalf("status leaked the api key: %s", out.String())
+	}
+	var st struct {
+		Enabled   bool   `json:"enabled"`
+		URL       string `json:"url"`
+		APIKeySet bool   `json:"api_key_set"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &st); err != nil || !st.Enabled || st.URL != u || !st.APIKeySet {
+		t.Fatalf("status = %s (%v)", out.String(), err)
+	}
+	if err := runLitellmToggle(&out, &errOut, cfg, false); err != nil || cfg.IsLitellm() {
+		t.Fatalf("off failed: err=%v enabled=%v", err, cfg.IsLitellm())
+	}
+}
