@@ -387,7 +387,7 @@ class ModelScreen(Screen[None]):
         wt renders "unavailable". Purely display: never touches the proxy.
         """
         try:
-            self._litellm_status = wt_bridge.litellm_status()
+            self._litellm_status = wt_bridge.litellm_status(timeout=wt_bridge.STATUS_TIMEOUT)
         except wt_bridge.WtBridgeError:
             self._litellm_status = None
         self._render_litellm_status()
@@ -399,7 +399,11 @@ class ModelScreen(Screen[None]):
         else:
             url = f" ({status.url})" if status.enabled and status.url else ""
             text = f"LiteLLM: {'on' if status.enabled else 'off'}{url}  \\[l] toggle"
-        self.query_one("#litellm-status", Static).update(text)
+        try:
+            self.query_one("#litellm-status", Static).update(text)
+        except NoMatches:
+            # Screen already torn down (e.g. a worker finishing after exit).
+            return
 
     def action_toggle_litellm(self) -> None:
         """Flip the routing switch on `l` by asking wt (the state's owner).

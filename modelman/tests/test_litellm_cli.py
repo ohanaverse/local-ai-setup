@@ -113,13 +113,17 @@ def test_litellm_set_with_no_flags_errors_like_wt(monkeypatch):
             args=[],
             returncode=1,
             stdout="",
-            stderr="Error: nothing to set: pass --url and/or --api-key\n",
+            stderr=(
+                "Error: nothing to set: pass --url and/or --api-key\n"
+                "wt: nothing to set: pass --url and/or --api-key\n"
+            ),
         )
 
     monkeypatch.setattr(wt_bridge, "_run", fake_run)
     result = runner.invoke(app, ["litellm", "set"])
     assert result.exit_code == 1
-    assert "error: " in result.output and "nothing to set" in result.output
+    # Exactly one clean line: no doubled "Error:"/"wt:" prefix, no duplicate.
+    assert result.output.strip() == "error: nothing to set: pass --url and/or --api-key"
     assert "litellm: updated" not in result.output
     assert "Traceback" not in result.output
 

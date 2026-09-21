@@ -317,3 +317,46 @@ def test_no_test_reverts_the_autouse_guards():
         str(p) for p in Path(__file__).parent.rglob("*.py") if needle in p.read_text("utf-8")
     ]
     assert offenders == []
+
+
+def test_litellm_status_forwards_optional_timeout(calls):
+    # The TUI passes a short timeout; other callers keep _run's default. Only
+    # forwarding when given keeps the default behavior unchanged.
+    got = []
+    real = wt_bridge._run
+
+    def spy(args, env=None, timeout=120):
+        got.append(timeout)
+        return _cp(json.dumps({"enabled": True, "url": "u", "api_key_set": False}))
+
+    import pytest as _pt
+
+    with _pt.MonkeyPatch.context() as mp:
+        mp.setattr(wt_bridge, "_run", spy)
+        wt_bridge.litellm_status()
+        wt_bridge.litellm_status(timeout=3)
+    assert got == [120, 3]
+    assert real is not spy
+
+
+@pytest.mark.parametrize(
+    "stderr,stdout,rc,want",
+    [
+        (
+            "Error: nothing to set: pass --url and/or --api-key\nwt: nothing to set: pass --url and/or --api-key\n",
+            "",
+            1,
+            "nothing to set: pass --url and/or --api-key",
+        ),
+        ("LiteLLM config not found: /x\n", "", 1, "LiteLLM config not found: /x"),
+        ("Error: a\n\nwt: b\n", "", 1, "a; b"),
+        ("", "some stdout\n", 1, "some stdout"),
+        ("  \n", "", 3, "wt exited 3"),
+    ],
+)
+def test_msg_cleans_wt_output(stderr, stdout, rc, want):
+    # wt prints cobra's `Error: x` plus its own `wt: x`; the CLI prefixes
+    # `error: ` itself, so the bridge must yield one clean line (deduped,
+    # prefix-stripped), falling back to stdout then "wt exited N".
+    proc = _cp(stdout, returncode=rc, stderr=stderr)
+    assert wt_bridge._msg(proc, f"wt exited {rc}") == want

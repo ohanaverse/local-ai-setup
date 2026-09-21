@@ -81,7 +81,22 @@ def _env(litellm_path: Path | None) -> dict[str, str]:
 
 
 def _msg(proc: subprocess.CompletedProcess[str], fallback: str) -> str:
-    return (proc.stderr or proc.stdout).strip() or fallback
+    """One clean line for the user from wt's output.
+
+    wt (cobra) prints both `Error: <msg>` and its own `wt: <msg>`; drop blank
+    lines, strip those prefixes, de-duplicate and join with "; ". Only wt's
+    own output is used (never argv), so no api key can leak through here.
+    """
+    raw = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    lines: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        for prefix in ("Error: ", "wt: "):
+            if line.startswith(prefix):
+                line = line[len(prefix) :].strip()
+        if line and line not in lines:
+            lines.append(line)
+    return "; ".join(lines) or fallback
 
 
 def parse_change_result(stdout: str) -> BridgeResult:
@@ -147,6 +162,8 @@ def routed_ids(*, litellm_path: Path | None = None) -> list[str]:
 
 _PROVIDER_FAILURE_TTL = 30.0
 _PROVIDER_TIMEOUT = 5.0
+# Short bound for the TUI's status read (runs on the UI thread at mount).
+STATUS_TIMEOUT = 5.0
 _provider_cache: dict[str, bool] | None = None
 _provider_failed_at: float | None = None
 _provider_warned = False
@@ -197,17 +214,19 @@ def provider_cloud_flags() -> dict[str, bool]:
     return flags
 
 
-def litellm_status() -> LitellmStatus:
-    proc = _run(["status", "--json"])
+def litellm_status(timeout: float | None = None) -> LitellmStatus:
+    """wt's routing state. `timeout` (seconds) overrides _run's 120 s default;
+    the TUI passes a short one so a hung wt cannot freeze it."""
+    proc = _run(["status", "--json"], **({} if timeout is None else {"timeout": timeout}))
     try:
         return parse_status(proc.stdout)
     except (ValueError, KeyError, TypeError):
         raise WtBridgeError(_msg(proc, "wt litellm status failed")) from None
 
 
-def litellm_status_text() -> str:
+def litellm_status_text(timeout: float | None = None) -> str:
     """wt's human-readable status (key masking lives in wt)."""
-    proc = _run(["status"])
+    proc = _run(["status"], **({} if timeout is None else {"timeout": timeout}))
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, "wt litellm status failed"))
     return proc.stdout

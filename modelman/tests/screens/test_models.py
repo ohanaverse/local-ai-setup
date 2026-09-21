@@ -2834,7 +2834,7 @@ async def test_litellm_status_line_and_toggle_go_through_wt(tmp_path, monkeypatc
     calls = []
     reads = []
 
-    def status():
+    def status(timeout=None):
         reads.append(1)
         return wt_bridge.LitellmStatus(current["enabled"], "http://localhost:4000", True)
 
@@ -2870,7 +2870,7 @@ async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, mo
 
     _seed_registry_and_state(tmp_path, monkeypatch)
 
-    def down():
+    def down(timeout=None):
         raise wt_bridge.WtNotFoundError("wt not found on PATH")
 
     monkeypatch.setattr(wt_bridge, "litellm_status", down)
@@ -2887,7 +2887,7 @@ async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, mo
         assert notes and "unavailable" in notes[-1]
         # Status becomes readable but the set fails: error is surfaced.
         monkeypatch.setattr(
-            wt_bridge, "litellm_status", lambda: wt_bridge.LitellmStatus(False, "", False)
+            wt_bridge, "litellm_status", lambda timeout=None: wt_bridge.LitellmStatus(False, "", False)
         )
 
         def fail(on):
@@ -2975,3 +2975,45 @@ async def test_x_unexpose_allowed_for_genuinely_unmapped_provider(tmp_path, monk
         tmp_path, monkeypatch, exposed=True, provider_flags={"omlx": False}
     )
     assert queued == {"ollama/a": False}
+
+
+@pytest.mark.asyncio
+async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_path, monkeypatch):
+    # The status read runs on the UI thread at mount; without a short timeout a
+    # hung wt froze the TUI ~2 minutes. The screen must pass the short timeout
+    # to the bridge and render "unavailable" (not raise) when it expires.
+    from modelman import wt_bridge
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    timeouts = []
+
+    def hung(args, env=None, timeout=120):
+        if args[:1] == ["status"]:
+            timeouts.append(timeout)
+            raise wt_bridge.WtBridgeError(f"wt litellm status timed out after {timeout:g}s")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(wt_bridge, "_run", hung)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        assert "LiteLLM: unavailable" in _status_text(app.screen)
+    assert timeouts and set(timeouts) == {wt_bridge.STATUS_TIMEOUT}
+    assert wt_bridge.STATUS_TIMEOUT <= 10
+
+
+@pytest.mark.asyncio
+async def test_render_litellm_status_tolerates_unmounted_screen(tmp_path, monkeypatch):
+    # A worker may call _render_litellm_status after the screen is torn down;
+    # the missing #litellm-status widget must not raise (same guard as
+    # _load_models / _refresh_pending_bar).
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        screen = app.screen
+        screen.query_one("#litellm-status").remove()
+        await pilot.pause()
+        screen._render_litellm_status()  # must not raise
