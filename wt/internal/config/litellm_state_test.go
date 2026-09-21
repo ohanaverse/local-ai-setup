@@ -236,3 +236,25 @@ func TestWriteFileAtomicConcurrent(t *testing.T) {
 		t.Fatalf("leftover temp files: %v", m)
 	}
 }
+
+// TestUpdateLitellmRollsBackOnSaveFailure pins that a failed persist leaves the
+// in-memory state untouched. Otherwise `wt litellm on` reports an error while
+// this process keeps routing through LiteLLM on a state that was never saved.
+func TestUpdateLitellmRollsBackOnSaveFailure(t *testing.T) {
+	home := litellmStateEnv(t, "default_tag = \"code\"\n", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "agent-wt")
+	if err := os.Chmod(dir, 0o500); err != nil { // read-only: atomic write cannot create its temp file
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.Enabled = true }); err == nil {
+		t.Skip("directory permissions did not block the write (running as root?)")
+	}
+	if cfg.IsLitellm() || cfg.LitellmTable != nil {
+		t.Fatalf("state changed despite the failed save: enabled=%v table=%v", cfg.IsLitellm(), cfg.LitellmTable)
+	}
+}

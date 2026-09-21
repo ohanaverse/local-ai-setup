@@ -40,11 +40,18 @@ const OllamaBaseURL = "http://localhost:11434"
 // UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
 // wt's config.toml. wt owns this state (moved from modelman.toml 2026-09-21).
 func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
+	prev, prevTable := c.litellm, c.LitellmTable
 	s := c.litellm
 	mutate(&s)
 	c.litellm = s
 	c.LitellmTable = &s
-	return Save(c)
+	if err := Save(c); err != nil {
+		// Nothing persisted: keep memory in step with disk so later routing
+		// in this process does not act on a state that was never saved.
+		c.litellm, c.LitellmTable = prev, prevTable
+		return err
+	}
+	return nil
 }
 
 // LitellmConfigured reports whether both the proxy URL and API key are set.
