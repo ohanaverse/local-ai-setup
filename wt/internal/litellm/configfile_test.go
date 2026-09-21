@@ -344,3 +344,51 @@ func TestIsLoopbackCaseInsensitive(t *testing.T) {
 		t.Fatalf("uppercase loopback host not recognised:\n%s", out)
 	}
 }
+
+// TestWithLockMissingConfig pins that a missing config.yaml surfaces as
+// ErrMissing (the "LiteLLM not set up" message) even when its directory is
+// absent too, and that no stray .lock file is left behind. Without the check
+// the lock's OpenFile failed first with a raw OS error.
+func TestWithLockMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []string{filepath.Join(dir, "config.yaml"), filepath.Join(dir, "nodir", "config.yaml")} {
+		err := WithLock(p, func() error { t.Fatal("fn must not run"); return nil })
+		if !errors.Is(err, ErrMissing) {
+			t.Fatalf("WithLock(%s) err = %v, want ErrMissing", p, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.yaml.lock")); !os.IsNotExist(err) {
+		t.Fatalf("stray lock file left behind (stat err = %v)", err)
+	}
+}
+
+// TestSaveFollowsSymlink pins that saving a config.yaml that is a symlink
+// (dotfiles setups) rewrites the link's target and keeps the link, instead of
+// replacing the symlink with a regular file that silently forks the config.
+func TestSaveFollowsSymlink(t *testing.T) {
+	real := writeConfig(t, baseConfig)
+	link := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Open(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.RemoveRow("keep/me")
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced (err=%v)", err)
+	}
+	g, err := Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range g.RoutedIDs() {
+		if id == "keep/me" {
+			t.Fatal("target file was not updated")
+		}
+	}
+}

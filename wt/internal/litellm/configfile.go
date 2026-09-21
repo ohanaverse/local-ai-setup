@@ -286,11 +286,17 @@ func (f *File) Save() error {
 	if err != nil {
 		return err
 	}
+	// Write through a symlinked config.yaml (e.g. into a dotfiles repo): the
+	// temp file and rename target the real file, so the link survives.
+	target := f.path
+	if resolved, err := filepath.EvalSymlinks(f.path); err == nil {
+		target = resolved
+	}
 	mode := os.FileMode(0o600)
-	if st, err := os.Stat(f.path); err == nil {
+	if st, err := os.Stat(target); err == nil {
 		mode = st.Mode().Perm()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(f.path), ".litellm-config-*.yaml")
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".litellm-config-*.yaml")
 	if err != nil {
 		return err
 	}
@@ -308,7 +314,7 @@ func (f *File) Save() error {
 		os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, f.path); err != nil {
+	if err := os.Rename(name, target); err != nil {
 		os.Remove(name)
 		return err
 	}
@@ -318,6 +324,11 @@ func (f *File) Save() error {
 // WithLock serializes read-modify-write cycles on path across processes with
 // an flock on path+".lock".
 func WithLock(path string, fn func() error) error {
+	// Fail as Open would before creating a lock file: no LiteLLM setup must
+	// surface as ErrMissing (not a raw OS error) and leave nothing behind.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("%w: %s", ErrMissing, path)
+	}
 	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
