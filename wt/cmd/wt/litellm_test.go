@@ -216,3 +216,27 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 		t.Fatalf("no text-mode warning naming the family: %q", errOut.String())
 	}
 }
+
+// TestLitellmSyncNoWarningForUnprobedProvider pins that a registered model on
+// a provider with no probe family (retired llamacpp) is left alone silently.
+// Before, it produced `provider "" probe did not succeed` in every sync —
+// text and the --json warnings modelman parses.
+func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
+	body := "model_list:\n  - model_name: llamacpp/m\n    litellm_params: {model: openai/local-model}\n"
+	p := litellmEnv(t, body)
+	cfg := litellmTestConfig()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}})
+	cfg.Models = append(cfg.Models, config.Model{ID: "llamacpp/m", ProviderID: "llamacpp", ModelName: "m", Location: config.LocationLocal})
+	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct{ Warnings []string }
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || len(doc.Warnings) != 0 {
+		t.Fatalf("stdout = %q (%v), want no warnings", out.String(), err)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "llamacpp/m") {
+		t.Fatalf("unprobed model's route was removed:\n%s", b)
+	}
+}

@@ -110,6 +110,12 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
 		fam := localmodels.Family(m.ProviderID)
+		if fam == "" {
+			// No probe exists for this provider (retired llamacpp), so
+			// nothing can vouch for its state: leave it, with no probe warning.
+			untouched = append(untouched, m.ID)
+			continue
+		}
 		if snap.Providers[fam] != localmodels.StatusOK {
 			untouched = append(untouched, m.ID)
 			skipped[fam] = true
