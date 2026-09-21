@@ -465,3 +465,72 @@ func TestStopPickerCtrlCAtMenuSkipsAndDrains(t *testing.T) {
 		t.Errorf("flushes = %d, want 1: the drain must still run", flushes)
 	}
 }
+
+// TestStopCandidatesReportsSessionCounts verifies StopCandidates returns every
+// running stoppable model INCLUDING ones a live session uses, with the count,
+// and that a single-model provider reports its whole family's count. `wt stop`
+// needs the in-use models to warn before stopping them; the exit-of-session
+// picker must still hide them.
+func TestStopCandidatesReportsSessionCounts(t *testing.T) {
+	h := &stopHarness{
+		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/a", "a"),
+			runningEntry("ollama", "ollama/busy", "busy"),
+			runningEntry("omlx", "omlx/x", "x"),
+			runningEntry("omlx-6bit", "omlx-6bit/y", "y"),
+		}},
+		counts: map[string]int{"ollama/busy": 2, "omlx/x": 1},
+	}
+	got := map[string]int{}
+	for _, c := range stopCandidates(&config.Config{}, h.deps()) {
+		got[c.Entry.ModelID] = c.Sessions
+	}
+	want := map[string]int{"ollama/a": 0, "ollama/busy": 2, "omlx/x": 1, "omlx-6bit/y": 1}
+	for id, n := range want {
+		if got[id] != n {
+			t.Errorf("Sessions[%s] = %d, want %d (all: %v)", id, got[id], n, got)
+		}
+	}
+	// The exit-flow view is unchanged: only zero-session models.
+	for _, e := range stoppable(&config.Config{}, h.deps()) {
+		if e.ModelID != "ollama/a" {
+			t.Errorf("stoppable offered %s, want only ollama/a", e.ModelID)
+		}
+	}
+}
+
+// TestStopPickerIncludeInUseMarksSessions verifies that with IncludeInUse the
+// picker lists an in-use model with its session count and can stop it. This is
+// what lets explicit `wt stop` act on a model while making the risk visible.
+func TestStopPickerIncludeInUseMarksSessions(t *testing.T) {
+	h := &stopHarness{
+		snap:   localmodels.Snapshot{Entries: []localmodels.Entry{runningEntry("ollama", "ollama/busy", "busy")}},
+		counts: map[string]int{"ollama/busy": 2},
+	}
+	var out bytes.Buffer
+	runStopPickerWith(strings.NewReader("1\n\n"), &out, &config.Config{}, h.deps(), Options{IncludeInUse: true})
+	if !strings.Contains(out.String(), "ollama/busy (2 sessions)") {
+		t.Errorf("output = %q, want the session count next to the model", out.String())
+	}
+	if len(h.stops) != 1 || h.stops[0] != "ollama|busy" {
+		t.Errorf("stops = %v, want [ollama|busy]", h.stops)
+	}
+}
+
+// TestStopEntriesReportsFailures verifies the exported stop loop stops every
+// entry, keeps going after a failure, and reports how many failed so a CLI can
+// choose a non-zero exit code.
+func TestStopEntriesReportsFailures(t *testing.T) {
+	h := &stopHarness{failOn: "b"}
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entries := []localmodels.Entry{runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}
+	err := stopEntries(ctx, &out, &config.Config{}, h.deps(), entries)
+	if err == nil || !strings.Contains(err.Error(), "1 of 2 stops failed") {
+		t.Fatalf("err = %v, want a 1 of 2 failure", err)
+	}
+	if len(h.stops) != 2 {
+		t.Errorf("stops = %v, want both attempted", h.stops)
+	}
+}
