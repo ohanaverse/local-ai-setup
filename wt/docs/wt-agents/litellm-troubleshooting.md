@@ -304,8 +304,8 @@ into a chat/completions call before dispatch — unlike
 single deployment, not global, so it applies cleanly to mtplx/omlx/
 mlx_lm_server without touching a hypothetical future deployment that *does*
 serve `/v1/responses` natively (that row would just carry an explicit
-`use_chat_completions_api: false`, which `set_exposed`/`ensure_litellm_settings`
-both preserve on re-expose). Verified via a direct `/v1/responses` curl probe
+`use_chat_completions_api: false`, which wt's `internal/litellm` (formerly modelman's
+`set_exposed`/`ensure_litellm_settings`, removed 2026-09-21) preserves on re-expose). Verified via a direct `/v1/responses` curl probe
 against mtplx (200, was 404→429) and `wt smoke <model> --only codex` (green).
 
 ### agy / shell

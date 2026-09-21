@@ -44,9 +44,12 @@ legacy read-only fallback, migrated into wt's config once.)
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
 restart the proxy after a change, via `WT_LITELLM_RESTART_CMD` (legacy alias
 `MODELMAN_LITELLM_RESTART_CMD`) or, when unset, `launchctl kickstart -k
-gui/$(id -u)/local.litellm.proxy`; wt then waits up to 30s for the proxy's
-`/health/liveliness` when a LiteLLM URL is configured and the proxy answered
-before the restart. `modelman expose|unexpose` delegate to the same commands.
+gui/$(id -u)/local.litellm.proxy`. The `wt litellm` commands restart and return
+(the proxy may need a few seconds before the new route is live); only the
+automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
+and stop picker then wait up to 30s for `/health/liveliness`, when a LiteLLM
+URL is configured and a pre-probe before the restart was not refused.
+`modelman expose|unexpose` delegate to the same commands (no wait).
 If a model was added by hand or the restart failed, restart the proxy
 manually:
 
