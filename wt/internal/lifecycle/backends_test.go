@@ -71,16 +71,13 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-func serveAt(t *testing.T, addr string, h http.Handler) *http.Server {
+func serveAt(t *testing.T, addr string, h http.Handler) *httptest.Server {
 	t.Helper()
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: h}
-	go func() { _ = srv.Serve(l) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	return srv
+	return serveOn(t, l, h)
 }
 
 func chatHandler() http.Handler {
@@ -215,7 +212,7 @@ func TestOmlxStopWaitsForPortClose(t *testing.T) {
 	var ran []string
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		ran = append(ran, args...)
-		_ = srv.Close()
+		srv.Close()
 		return nil, nil
 	}
 	if err := (omlxBackend{}).stop(context.Background(), e, provCfg("omlx", "http://"+addr)); err != nil {

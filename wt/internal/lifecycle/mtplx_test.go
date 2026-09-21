@@ -215,7 +215,7 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 	var ran []string
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		ran = append([]string{name}, args...)
-		_ = srv.Close()
+		srv.Close()
 		return nil, nil
 	}
 	cfg := provCfg("mtplx", "http://"+addr+"/v1")
