@@ -226,8 +226,7 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 		t.Errorf("ran = %v", ran)
 	}
 
-	addr2 := freeAddr(t)
-	serveAt(t, addr2, chatHandler())
+	_, addr2 := serveFree(t, chatHandler())
 	e.stopTimeout = 60 * time.Millisecond
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return []byte("no such server"), errors.New("exit 1")

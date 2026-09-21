@@ -47,7 +47,7 @@ func logPortHolder(t *testing.T, addr string) {
 	if i < 0 {
 		return
 	}
-	out, err := exec.Command("lsof", "-nP", "-iTCP:"+addr[i+1:]).CombinedOutput()
+	out, err := exec.Command("lsof", "-nP", "-sTCP:LISTEN", "-iTCP:"+addr[i+1:]).CombinedOutput()
 	if err == nil {
 		t.Logf("port %s holders:\n%s", addr[i+1:], out)
 	}

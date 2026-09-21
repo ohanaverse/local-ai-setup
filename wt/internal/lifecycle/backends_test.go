@@ -222,8 +222,7 @@ func TestOmlxStopWaitsForPortClose(t *testing.T) {
 		t.Errorf("ran = %v", ran)
 	}
 
-	addr2 := freeAddr(t)
-	serveAt(t, addr2, chatHandler())
+	_, addr2 := serveFree(t, chatHandler())
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) { return nil, nil }
 	e.stopTimeout = 60 * time.Millisecond
 	if err := (omlxBackend{}).stop(context.Background(), e, provCfg("omlx", "http://"+addr2)); err == nil || !containsFold(err.Error(), addr2) {
