@@ -472,8 +472,10 @@ func TestSmokeCmdFlags(t *testing.T) {
 	if cmd.Use != "smoke [model-id]" {
 		t.Fatalf("Use = %q", cmd.Use)
 	}
+	// The flag default is 0 = "unset": the effective default depends on the
+	// model's location and is resolved by smokeTimeout.
 	timeout, err := cmd.Flags().GetDuration("timeout")
-	if err != nil || timeout != 180*time.Second {
+	if err != nil || timeout != 0 {
 		t.Fatalf("timeout default = %v, err = %v", timeout, err)
 	}
 	if v, _ := cmd.Flags().GetBool("json"); v {
@@ -519,5 +521,33 @@ func TestSmokeCmdFailedStartSkipsStopFlow(t *testing.T) {
 	}
 	if pickerRan {
 		t.Fatal("stop picker ran after a failed start")
+	}
+}
+
+// TestSmokeTimeoutDefaultsByLocation asserts an unset --timeout resolves to
+// the short cloud default for cloud (and unresolvable) models and the long
+// local default for local ones, and that an explicit value always wins. Local
+// models cold-prefill 10-40k-token agent preambles at tens of tok/s, taking
+// minutes; a cloud-sized budget would fail them spuriously.
+func TestSmokeTimeoutDefaultsByLocation(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{
+		{ID: "ollama", Location: config.LocationLocal},
+		{ID: "openrouter", Location: config.LocationCloud},
+	}}
+	local := config.Model{ID: "ollama/x", ProviderID: "ollama"}
+	cloud := config.Model{ID: "openrouter/y", ProviderID: "openrouter"}
+	unknown := config.Model{ID: "nope/z", ProviderID: "nope"}
+
+	if got := smokeTimeout(cfg, local, 0); got != smokeLocalTimeout {
+		t.Fatalf("local default = %s, want %s", got, smokeLocalTimeout)
+	}
+	if got := smokeTimeout(cfg, cloud, 0); got != smokeCloudTimeout {
+		t.Fatalf("cloud default = %s, want %s", got, smokeCloudTimeout)
+	}
+	if got := smokeTimeout(cfg, unknown, 0); got != smokeCloudTimeout {
+		t.Fatalf("unresolvable default = %s, want %s", got, smokeCloudTimeout)
+	}
+	if got := smokeTimeout(cfg, local, 42*time.Second); got != 42*time.Second {
+		t.Fatalf("explicit = %s, want 42s", got)
 	}
 }
