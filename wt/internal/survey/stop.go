@@ -3,6 +3,7 @@ package survey
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,16 +59,39 @@ func ReleaseSession() {
 // not a TTY or when no such model exists. The caller must release wt's own
 // refcount entry first, or the model the session just used would always count
 // as in use.
-func Picker(r io.Reader, w io.Writer, cfg *config.Config) {
+func Picker(r io.Reader, w io.Writer, cfg *config.Config) { PickerWith(r, w, cfg, Options{}) }
+
+// Options tunes the stop picker. IncludeInUse lists models a live wt session
+// uses (marked with the count) — for explicit `wt stop`; the exit flows leave
+// it false.
+type Options struct{ IncludeInUse bool }
+
+// PickerWith is Picker with options; same silent-when-not-a-TTY behavior. It
+// reports whether the picker had any model to offer (false when stdin is not a
+// TTY), so a caller like `wt stop` can say "nothing running" without probing the
+// inventory a second time.
+func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) bool {
 	if !stdinTTY() {
-		return
+		return false
 	}
-	runStopPicker(r, w, cfg, defaultStopDeps())
+	return runStopPickerWith(r, w, cfg, defaultStopDeps(), opts)
 }
 
-// stoppable lists the running local models the picker may offer: probed
-// trustworthily, with a stop backend, and with zero live sessions using them.
-func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
+// Candidate is one running local model wt can stop, with how many live wt
+// sessions use it (for a single-model provider: the whole family's count,
+// since stopping any variant stops the provider).
+type Candidate struct {
+	Entry    localmodels.Entry
+	Sessions int
+}
+
+// StopCandidates is the exported view `wt stop` uses: every running, trusted,
+// stoppable model, in-use ones included.
+func StopCandidates(cfg *config.Config) []Candidate {
+	return stopCandidates(cfg, defaultStopDeps())
+}
+
+func stopCandidates(cfg *config.Config, d stopDeps) []Candidate {
 	snap := d.inventory(cfg)
 	var cands []localmodels.Entry
 	for _, e := range snap.Entries {
@@ -115,28 +139,28 @@ func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
 		}
 	}
 	counts := d.counts(allIDs)
-	inUse := func(e localmodels.Entry) bool {
+	own := func(e localmodels.Entry) int {
+		n := 0
 		for _, id := range aliasOf(e) {
-			if counts[id] > 0 {
-				return true
-			}
+			n += counts[id]
 		}
-		return false
+		return n
 	}
 	// A single-model provider (omlx, mtplx) stops as a whole, taking every
-	// running variant with it — so one session using any variant keeps the
-	// whole family off the list, not just its own row.
-	familyBusy := map[string]bool{}
+	// running variant with it — so its sessions are the whole family's.
+	famSessions := map[string]int{}
 	for _, e := range cands {
-		if inUse(e) && lifecycle.SingleModel(e.ProviderID) {
-			familyBusy[localmodels.Family(e.ProviderID)] = true
+		if lifecycle.SingleModel(e.ProviderID) {
+			famSessions[localmodels.Family(e.ProviderID)] += own(e)
 		}
 	}
-	var out []localmodels.Entry
+	out := make([]Candidate, 0, len(cands))
 	for _, e := range cands {
-		if !inUse(e) && !familyBusy[localmodels.Family(e.ProviderID)] {
-			out = append(out, e)
+		n := own(e)
+		if lifecycle.SingleModel(e.ProviderID) {
+			n = famSessions[localmodels.Family(e.ProviderID)]
 		}
+		out = append(out, Candidate{Entry: e, Sessions: n})
 	}
 	return out
 }
@@ -159,9 +183,34 @@ func realStopSignalCtx() (context.Context, context.CancelFunc) {
 }
 
 func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
-	offered := stoppable(cfg, d)
+	runStopPickerWith(r, w, cfg, d, Options{})
+}
+
+// runStopPickerWith runs the picker and reports whether it had any model to offer.
+func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) bool {
+	var offered []localmodels.Entry
+	var labels []string
+	for _, c := range stopCandidates(cfg, d) {
+		if !opts.IncludeInUse && c.Sessions > 0 {
+			continue
+		}
+		label := c.Entry.ModelID
+		if c.Sessions > 0 {
+			plural := "s"
+			if c.Sessions == 1 {
+				plural = ""
+			}
+			label += fmt.Sprintf(" (%d session%s)", c.Sessions, plural)
+		}
+		offered = append(offered, c.Entry)
+		labels = append(labels, label)
+	}
 	if len(offered) == 0 {
-		return
+		return false
+	}
+	header := exitFlowHeader
+	if opts.IncludeInUse {
+		header = "Stop running local models? (sessions = live wt sessions using it)"
 	}
 	// Ctrl+C/SIGTERM are caught for the whole picker — the menu read included —
 	// so the default disposition cannot kill wt before the summary, the stats
@@ -171,8 +220,7 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	// The picker read lines the same way the survey did; drop any paste
 	// residue so it cannot run as shell commands after wt exits. Deferred so it
 	// also runs on the skip paths below: "q"/"esc", or an Enter with nothing
-	// ticked, leave just as much residue queued as a confirmed stop does, and
-	// the early return used to skip the drain entirely.
+	// ticked, leave just as much residue queued as a confirmed stop does.
 	defer flushTTY()
 	// The menu read blocks in a syscall a signal does not interrupt (the runtime
 	// restarts it), so it runs on its own goroutine and the picker races it
@@ -180,60 +228,82 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	// blocked in Scan: harmless, wt exits shortly after and it never writes to w
 	// again (it only prints between reads).
 	answer := make(chan []int, 1)
-	go func() { answer <- chooseModels(bufio.NewScanner(r), w, offered) }()
+	go func() { answer <- chooseLabeled(bufio.NewScanner(r), w, header, labels) }()
 	var selected []int
 	select {
 	case selected = <-answer:
 	case <-ctx.Done():
 		fmt.Fprintln(w, "\ncancelled")
-		return
+		return true
 	}
 	if len(selected) == 0 {
-		return
+		return true
 	}
-	stoppedFamily := map[string]bool{}
+	entries := make([]localmodels.Entry, 0, len(selected))
 	for _, i := range selected {
+		entries = append(entries, offered[i])
+	}
+	_ = stopEntries(ctx, w, cfg, d, entries)
+	return true
+}
+
+// stopEntries is the picker's stop loop: sequential stops with progress lines,
+// one failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight
+// and skips the remainder. Returns nil, a "N of M stops failed" error, or a
+// "cancelled" error.
+func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDeps, entries []localmodels.Entry) error {
+	stoppedFamily := map[string]bool{}
+	failed := 0
+	for _, e := range entries {
 		if ctx.Err() != nil {
 			// Ctrl+C landed while a stop was in flight (or before the first
-			// one): complete the current line and stop offering the rest
-			// rather than starting stops nobody is waiting for.
+			// one): complete the current line and stop offering the rest.
 			fmt.Fprintln(w, "cancelled")
-			break
+			return errors.New("cancelled")
 		}
-		e := offered[i]
 		fmt.Fprintf(w, "Stopping %s... ", e.ModelID)
 		fam := localmodels.Family(e.ProviderID)
-		if lifecycle.SingleModel(e.ProviderID) {
-			// The first stop already took down the whole provider.
-			if stoppedFamily[fam] {
-				fmt.Fprintln(w, "done")
-				continue
-			}
+		// The first stop of a single-model provider already took down the whole
+		// provider.
+		if lifecycle.SingleModel(e.ProviderID) && stoppedFamily[fam] {
+			fmt.Fprintln(w, "done")
+			continue
 		}
 		if err := d.stop(ctx, cfg, e.ProviderID, e.ModelName); err != nil {
 			if ctx.Err() != nil {
 				// Cancelled mid-stop: the provider CLI was killed, not broken.
-				// Say so rather than reporting it as a failed stop. The guard at
-				// the top of the loop cannot cover this case — on the last (or
-				// only) selected model there is no next iteration to reach it.
 				fmt.Fprintln(w, "cancelled")
-				break
+				return errors.New("cancelled")
 			}
 			fmt.Fprintf(w, "failed: %v\n", err)
+			failed++
 			continue
 		}
 		stoppedFamily[fam] = true
 		fmt.Fprintln(w, "done")
 	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d stops failed", failed, len(entries))
+	}
+	return nil
 }
 
-// chooseModels runs the line-typed checkbox prompt and returns the selected
+// StopEntries runs stopEntries under its own Ctrl+C/SIGTERM context.
+func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) error {
+	ctx, cancel := stopSignalCtx()
+	defer cancel()
+	return stopEntries(ctx, w, cfg, defaultStopDeps(), entries)
+}
+
+const exitFlowHeader = "Stop running local models? (none are in use by another wt session)"
+
+// chooseLabeled runs the line-typed checkbox prompt and returns the selected
 // indices in list order. Nothing starts selected, so a bare Enter, "q",
 // "esc" or an exhausted reader all skip: stopping a model costs a reload, so
 // it must be an explicit choice.
-func chooseModels(sc *bufio.Scanner, w io.Writer, offered []localmodels.Entry) []int {
-	state := make([]bool, len(offered))
-	printChoices(w, offered, state)
+func chooseLabeled(sc *bufio.Scanner, w io.Writer, header string, labels []string) []int {
+	state := make([]bool, len(labels))
+	printChoices(w, header, labels, state)
 	for {
 		fmt.Fprint(w, "stop> ")
 		if !sc.Scan() {
@@ -266,18 +336,18 @@ func chooseModels(sc *bufio.Scanner, w io.Writer, offered []localmodels.Entry) [
 				continue
 			}
 		}
-		printChoices(w, offered, state)
+		printChoices(w, header, labels, state)
 	}
 }
 
-func printChoices(w io.Writer, offered []localmodels.Entry, state []bool) {
-	fmt.Fprintln(w, "Stop running local models? (none are in use by another wt session)")
-	for i, e := range offered {
+func printChoices(w io.Writer, header string, labels []string, state []bool) {
+	fmt.Fprintln(w, header)
+	for i, l := range labels {
 		mark := " "
 		if state[i] {
 			mark = "x"
 		}
-		fmt.Fprintf(w, "  %d [%s] %s\n", i+1, mark, e.ModelID)
+		fmt.Fprintf(w, "  %d [%s] %s\n", i+1, mark, l)
 	}
 	fmt.Fprintln(w, "  number toggles · all · none · Enter confirms · q skips")
 }

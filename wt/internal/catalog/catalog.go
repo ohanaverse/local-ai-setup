@@ -62,12 +62,18 @@ func Build(in Input) []Row {
 	// Only REGISTERED entries describe a configured model. A discovered
 	// entry may share an id with a registry row by construction
 	// (DiscoveredModelID is provider/artifact); it must never overwrite the
-	// registered entry's Artifact/Running.
+	// registered entry's Artifact/Running. A discovered model handed in via
+	// Models (e.g. a caller that already built rows and re-feeds them to a
+	// picker) is described by its non-registered entry, so both maps are filled
+	// in one pass over the inventory.
 	byID := map[string]localmodels.Entry{}
+	discByID := map[string]localmodels.Entry{}
 	if in.Inventory != nil {
 		for _, e := range in.Inventory.Entries {
 			if e.Registered {
 				byID[e.ModelID] = e
+			} else {
+				discByID[e.ModelID] = e
 			}
 		}
 	}
@@ -81,7 +87,9 @@ func Build(in Input) []Row {
 			}
 		}
 		r := Row{Model: m, Location: loc, Status: StatusOK}
-		if loc == config.LocationLocal && in.Inventory != nil {
+		if de, isDisc := discByID[m.ID]; isDisc && m.Source == config.SourceDiscovered && loc == config.LocationLocal {
+			r.Status, r.Running, r.Discovered = StatusNew, de.Running, true
+		} else if loc == config.LocationLocal && in.Inventory != nil {
 			e, ok := byID[m.ID]
 			switch {
 			case !ok:

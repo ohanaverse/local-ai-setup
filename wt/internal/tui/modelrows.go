@@ -28,8 +28,12 @@ type tableInput struct {
 	models         []config.Model
 	inventory      *localmodels.Snapshot
 	hideDiscovered bool
-	usage          usage.Store
-	stats          map[string]survey.Stats
+	// skipRoute suppresses the launch-route blocking/decoration in
+	// buildTable: `wt start` starts a model, it does not launch an agent on
+	// it, so a route verdict must not gate its rows.
+	skipRoute bool
+	usage     usage.Store
+	stats     map[string]survey.Stats
 }
 
 // buildRows builds the shared catalog rows and decorates them with the

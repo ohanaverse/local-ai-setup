@@ -58,25 +58,35 @@ func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
 	return func() { smokeProbe = old }
 }
 
-// Eligibility takes ONE live inventory snapshot and walks the same catalog
-// rows the picker and the non-TUI launch path read, returning both the
-// deduped, id-sorted union of eligible models (AllEligibleModels' answer)
-// and, per model id, the sorted list of eligible agents (EligibleAgents'
-// answer). A model is eligible when selecting it would launch: a cloud row,
-// or a local row the probe reports as running — plus discovered running
-// rows, which a -M pin can launch — minus discovered rows routed through
-// LiteLLM, which the picker makes unselectable and the CLI refuses. Because
-// the rows are the same ones a real launch consults, wt smoke cannot
-// advertise a model a real `wt -A <agent> -M <id>` launch would refuse, and
-// it never starts or stops anything — starting a model to check it is the
-// launch path's job, not the doctor's. wt smoke's command layer calls this
-// once per invocation and derives both answers from the result, instead of
-// calling EligibleAgents and AllEligibleModels back to back, which would
-// each pay their own inventory round.
-func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[string][]string) {
+// SetBuildAndRunForTest replaces the agent-run seam with fn, which reports a
+// row's combined output and exit code (a non-zero code makes the row FAIL), and
+// returns the func restoring the real seam. It exists for cmd/wt's tests, which
+// cannot assign this package's unexported buildAndRun. Tests only.
+func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) (output string, exitCode int)) (restore func()) {
+	old := buildAndRun
+	buildAndRun = func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration) execOutcome {
+		out, code := fn(cfg, agentName, m, prompt, cwd, timeout)
+		return execOutcome{Command: agentName + " (stub)", Output: out, ExitCode: code}
+	}
+	return func() { buildAndRun = old }
+}
+
+// Candidate is one model a smoke run could target: its catalog row (Action is
+// launch, or start for a non-running local model wt can start) and the agents
+// that could run it once it is up.
+type Candidate struct {
+	Row    catalog.Row
+	Agents []string
+}
+
+// Candidates is Eligibility's superset: it also keeps start rows (a non-running
+// local model wt can start) whose route resolves, so `wt smoke` can offer them
+// and start the pick. Blocked rows stay out. It never starts anything itself.
+func Candidates(cfg *config.Config) []Candidate { return walk(cfg, true) }
+
+func walk(cfg *config.Config, includeStart bool) []Candidate {
 	snap := smokeProbe(cfg)
-	agentsForModel = map[string][]string{}
-	seen := map[string]bool{}
+	byID := map[string]*Candidate{}
 	for _, a := range cfg.Agents {
 		if agents.IsCommand(a.Name) {
 			continue
@@ -86,41 +96,65 @@ func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[
 			continue
 		}
 		rows := catalog.Build(catalog.Input{
-			Config: cfg,
-			Agent:  a.Name,
-			Models: eligible,
-			// A discovered running model is one a -M pin can launch, so
-			// smoke reports it; discovered non-running rows stay out, since
-			// their action is start, not launch.
-			Inventory:      &snap,
-			HideDiscovered: false,
+			Config: cfg, Agent: a.Name, Models: eligible,
+			Inventory: &snap, HideDiscovered: false,
 		})
 		for _, r := range rows {
-			// A discovered row routed through LiteLLM is unselectable in the
-			// picker (catalog.Row.RefusedByRoute) and refused by the CLI's
-			// pickerBlockedReason case 1 — the gateway's model_list has no
-			// entry for a model wt discovered on disk. Smoke decides through
-			// the same predicate so its contract holds: a model it reports
-			// eligible is a model a real launch would accept. Launch rows
-			// whose route ERRORS stay eligible, like the picker's selectable
-			// "(unavailable)" rows that report on Enter.
-			if r.Discovered {
-				if route, err := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name)); r.RefusedByRoute(route, err) {
+			act := r.Action()
+			if act == catalog.ActionBlock || (act == catalog.ActionStart && !includeStart) {
+				continue
+			}
+			// Keep the exact route rules the old loop applied: a discovered row
+			// routed through LiteLLM is refused (smoke must not advertise what a
+			// real launch refuses); a start row whose route errors is refused
+			// like pickerBlockedReason does. A launch row with a route error
+			// stays eligible (the picker reports it on Enter).
+			if r.Discovered || act == catalog.ActionStart {
+				route, rerr := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name))
+				if r.Discovered && r.RefusedByRoute(route, rerr) {
+					continue
+				}
+				if act == catalog.ActionStart && rerr != nil {
 					continue
 				}
 			}
-			if r.Action() == catalog.ActionLaunch {
-				if !seen[r.Model.ID] {
-					seen[r.Model.ID] = true
-					models = append(models, r.Model)
-				}
-				agentsForModel[r.Model.ID] = append(agentsForModel[r.Model.ID], a.Name)
+			c := byID[r.Model.ID]
+			if c == nil {
+				c = &Candidate{Row: r}
+				byID[r.Model.ID] = c
 			}
+			c.Agents = append(c.Agents, a.Name)
 		}
 	}
-	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-	for id := range agentsForModel {
-		sort.Strings(agentsForModel[id])
+	out := make([]Candidate, 0, len(byID))
+	for _, c := range byID {
+		sort.Strings(c.Agents)
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Row.Model.ID < out[j].Row.Model.ID })
+	return out
+}
+
+// Eligibility takes ONE live inventory snapshot and walks the same catalog
+// rows the picker and the non-TUI launch path read, returning both the
+// deduped, id-sorted union of eligible models (AllEligibleModels' answer)
+// and, per model id, the sorted list of eligible agents (EligibleAgents'
+// answer). A model is eligible when selecting it would launch: a cloud row,
+// or a local row the probe reports as running — plus discovered running
+// rows, which a -M pin can launch — minus discovered rows routed through
+// LiteLLM, which the picker makes unselectable and the CLI refuses. Because
+// the rows are the same ones a real launch consults, wt smoke cannot
+// advertise a model a real `wt -A <agent> -M <id>` launch would refuse. It
+// never starts or stops anything itself; `Candidates` plus the caller's start
+// step is how `wt smoke` handles idle local models. wt smoke's command layer calls this
+// once per invocation and derives both answers from the result, instead of
+// calling EligibleAgents and AllEligibleModels back to back, which would
+// each pay their own inventory round.
+func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[string][]string) {
+	agentsForModel = map[string][]string{}
+	for _, c := range walk(cfg, false) {
+		models = append(models, c.Row.Model)
+		agentsForModel[c.Row.Model.ID] = c.Agents
 	}
 	return models, agentsForModel
 }

@@ -59,7 +59,13 @@ func buildTable(in tableInput, refs refcount.Store, lastID string) modelTable {
 		}
 		refCounts = refs.Counts(ids)
 	}
-	return renderTable(rows, in.cfg, in.agent, refCounts, lastID)
+	cfg := in.cfg
+	if in.skipRoute {
+		// No route resolution: renderTable only uses cfg to decorate/block rows
+		// by launch route.
+		cfg = nil
+	}
+	return renderTable(rows, cfg, in.agent, refCounts, lastID)
 }
 
 // renderTable formats already-sorted rows. Columns are separated by two

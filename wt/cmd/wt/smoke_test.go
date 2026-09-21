@@ -8,15 +8,19 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 // smokeFixtureConfig builds a one-agent, two-model config: one model is
@@ -33,15 +37,21 @@ func smokeFixtureConfig(t *testing.T) *config.Config {
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "ollama", Artifact: "qwen3.8:27b-mlx", ModelID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", Registered: true, Running: true, ArtifactKnown: true},
+			{ProviderID: "ollama", Artifact: "not-eligible:x", ModelID: "ollama/not-eligible:x", ModelName: "not-eligible:x", Registered: true, ArtifactKnown: true},
+			{ProviderID: "ollama", Artifact: "", ModelID: "ollama/gone:x", ModelName: "gone:x", Registered: true, ArtifactKnown: true},
 		},
 	})
 	cfg := &config.Config{
 		Providers: []config.Provider{
-			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}},
+			// Serves claude's wire protocol with a base_url so an idle model's
+			// start row resolves a direct route (a forced-LiteLLM route with no
+			// gateway would error and drop the row from smoke.Candidates).
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}, Protocols: []config.Protocol{config.ProtocolAnthropic}},
 		},
 		Models: []config.Model{
 			{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama", ModelName: "qwen3.8:27b-mlx", Location: config.LocationLocal},
 			{ID: "ollama/not-eligible:x", ProviderID: "ollama", ModelName: "not-eligible:x", Location: config.LocationLocal},
+			{ID: "ollama/gone:x", ProviderID: "ollama", ModelName: "gone:x", Location: config.LocationLocal},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
@@ -65,10 +75,11 @@ func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
 // eligible set resolves directly, with no TTY/picker interaction.
 func TestResolveSmokeModelPinnedEligible(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
-	m, eligible, err := resolveSmokeModel(cfg, themes.Default, "ollama/qwen3.8:27b-mlx")
+	tgt, err := resolveSmokeModel(cfg, themes.Default, "ollama/qwen3.8:27b-mlx")
 	if err != nil {
 		t.Fatalf("resolveSmokeModel: %v", err)
 	}
+	m, eligible := tgt.Row.Model, tgt.Agents
 	if m.ID != "ollama/qwen3.8:27b-mlx" {
 		t.Fatalf("got model %q", m.ID)
 	}
@@ -78,14 +89,108 @@ func TestResolveSmokeModelPinnedEligible(t *testing.T) {
 }
 
 // TestResolveSmokeModelPinnedNotEligible asserts a pinned id that exists in
-// the registry but isn't currently eligible (a local model that isn't
-// running) gets a specific "not eligible" message, distinct from
+// the registry but cannot be smoke-tested (a local model absent from disk)
+// gets a specific "cannot be smoke-tested" message, distinct from
 // "unknown model".
 func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
-	_, _, err := resolveSmokeModel(cfg, themes.Default, "ollama/not-eligible:x")
-	if err == nil || !strings.Contains(err.Error(), "not currently eligible") {
-		t.Fatalf("err = %v, want a not-currently-eligible message", err)
+	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/gone:x")
+	if err == nil || !strings.Contains(err.Error(), "cannot be smoke-tested") {
+		t.Fatalf("err = %v, want a cannot-be-smoke-tested message", err)
+	}
+}
+
+// TestResolveSmokeModelPinnedBlockedNamesReason asserts a pinned local model
+// that is blocked (registered, but the provider answered and it is not on disk)
+// gets that row's real BlockReason — the same wording `wt start` gives — rather
+// than the generic three-guess message, so the user learns what to fix.
+func TestResolveSmokeModelPinnedBlockedNamesReason(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "", ModelID: "ollama/gone:x", ModelName: "gone:x", Registered: true, ArtifactKnown: true},
+		},
+	})
+	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/gone:x")
+	if err == nil || !strings.Contains(err.Error(), "not on disk") {
+		t.Fatalf("err = %v, want the row's not-on-disk block reason", err)
+	}
+}
+
+// TestResolveSmokeModelIdleLocalIsStartTarget verifies a registered local model
+// that is pulled but not running now resolves (with Start() true) instead of
+// erroring, since `wt smoke` starts it before testing.
+func TestResolveSmokeModelIdleLocalIsStartTarget(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	got, err := resolveSmokeModel(cfg, themes.Theme{}, "ollama/not-eligible:x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Start() || len(got.Agents) == 0 {
+		t.Fatalf("target = %+v, want a start target with agents", got)
+	}
+}
+
+// TestSmokeStopFlow verifies the exit flow runs the stop picker — and touches no
+// refcount state, since wt smoke never records a session — and is skipped for
+// --json or without a TTY (JSON consumers and pipes must not get an interactive
+// prompt).
+func TestSmokeStopFlow(t *testing.T) {
+	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
+	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
+	var calls []string
+	releaseSession = func() { calls = append(calls, "release") }
+	runStopPicker = func(*config.Config) { calls = append(calls, "picker") }
+
+	stdinTTY = func() bool { return true }
+	smokeStopFlow(nil, false)
+	if strings.Join(calls, ",") != "picker" {
+		t.Fatalf("calls = %v, want only the picker (no release: nothing was recorded)", calls)
+	}
+	calls = nil
+	smokeStopFlow(nil, true)
+	stdinTTY = func() bool { return false }
+	smokeStopFlow(nil, false)
+	if len(calls) != 0 {
+		t.Fatalf("calls = %v, want none for --json / no TTY", calls)
+	}
+}
+
+// TestSmokeCmdIdlePinStartsRunsThenStops is the end-to-end ordering check: for
+// an idle pinned model the command starts it once, then runs the agent row,
+// then runs the stop flow, and a FAILed row triggers smokeExit(1) only after
+// the stop flow — so the deferred cleanup is never skipped by the exit.
+func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	var events []string
+	oldStart := startModel
+	startModel = func(*config.Config, catalog.Row, bool) error {
+		events = append(events, "start")
+		return nil
+	}
+	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
+	t.Cleanup(func() {
+		startModel, releaseSession, runStopPicker, stdinTTY, smokeExit = oldStart, oldRel, oldPick, oldTTY, oldExit
+	})
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) { events = append(events, "stop") }
+	stdinTTY = func() bool { return true }
+	smokeExit = func(code int) { events = append(events, fmt.Sprintf("exit%d", code)) }
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(*config.Config, string, config.Model, string, string, time.Duration) (string, int) {
+		events = append(events, "row")
+		return "boom", 1
+	}))
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/not-eligible:x"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(events, ","); got != "start,row,stop,exit1" {
+		t.Fatalf("events = %s, want start,row,stop,exit1", got)
 	}
 }
 
@@ -93,7 +198,7 @@ func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
 // registry entirely gets "unknown model".
 func TestResolveSmokeModelUnknown(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
-	_, _, err := resolveSmokeModel(cfg, themes.Default, "ollama/does-not-exist")
+	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/does-not-exist")
 	if err == nil || !strings.Contains(err.Error(), "unknown model") {
 		t.Fatalf("err = %v, want unknown model error", err)
 	}
@@ -108,7 +213,7 @@ func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
 	defer func() { stdinTTY = old }()
 
 	cfg := smokeFixtureConfig(t)
-	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
+	_, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err == nil || !strings.Contains(err.Error(), "needs a TTY") {
 		t.Fatalf("err = %v, want a TTY-required message", err)
 	}
@@ -118,8 +223,8 @@ func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
 // with actionable guidance instead of silently opening an empty picker.
 func TestResolveSmokeModelNoneEligible(t *testing.T) {
 	cfg := &config.Config{}
-	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
-	if err == nil || !strings.Contains(err.Error(), "no models are currently eligible") {
+	_, err := resolveSmokeModel(cfg, themes.Default, "")
+	if err == nil || !strings.Contains(err.Error(), "no models are available") {
 		t.Fatalf("err = %v, want a no-eligible-models message", err)
 	}
 }
@@ -135,15 +240,23 @@ func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {
 
 	oldPick := pickModelTUI
 	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
+		// Candidates now include idle start models, so pick the running one by id
+		// rather than relying on list order.
+		for _, m := range models {
+			if m.ID == "ollama/qwen3.8:27b-mlx" {
+				return m, true, nil
+			}
+		}
 		return models[0], true, nil
 	}
 	defer func() { pickModelTUI = oldPick }()
 
 	cfg := smokeFixtureConfig(t)
-	m, eligible, err := resolveSmokeModel(cfg, themes.Default, "")
+	tgt, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err != nil {
 		t.Fatalf("resolveSmokeModel: %v", err)
 	}
+	m, eligible := tgt.Row.Model, tgt.Agents
 	if m.ID != "ollama/qwen3.8:27b-mlx" {
 		t.Fatalf("got model %q, want the picker's returned model", m.ID)
 	}
@@ -167,7 +280,7 @@ func TestResolveSmokeModelInteractiveCanceled(t *testing.T) {
 	defer func() { pickModelTUI = oldPick }()
 
 	cfg := smokeFixtureConfig(t)
-	_, _, err := resolveSmokeModel(cfg, themes.Default, "")
+	_, err := resolveSmokeModel(cfg, themes.Default, "")
 	if err == nil || !strings.Contains(err.Error(), "canceled") {
 		t.Fatalf("err = %v, want a canceled-picker message", err)
 	}
@@ -365,5 +478,46 @@ func TestSmokeCmdFlags(t *testing.T) {
 	}
 	if v, _ := cmd.Flags().GetBool("json"); v {
 		t.Fatal("json flag default should be false")
+	}
+}
+
+// TestSmokePickerSkipsAgentlessRouteCheck verifies wt smoke's interactive
+// picker is the route-skipping one (tui.PickStartModel). smoke.Candidates has
+// already admitted each row using a real agent's protocols; the picker resolves
+// routes with no agent, which can fail where the agent-specific route succeeds
+// (a provider with no direct base_url that a protocol-mismatched agent is
+// forced through LiteLLM for). With route checking on, the picker would block a
+// row `wt smoke <id>` accepts.
+func TestSmokePickerSkipsAgentlessRouteCheck(t *testing.T) {
+	got := reflect.ValueOf(pickModelTUI).Pointer()
+	want := reflect.ValueOf(tui.PickStartModel).Pointer()
+	if got != want {
+		t.Fatalf("pickModelTUI is not tui.PickStartModel: smoke's picker would re-check routes without an agent and block rows Candidates admitted")
+	}
+}
+
+// TestSmokeCmdFailedStartSkipsStopFlow verifies that when starting the pinned
+// idle model fails, wt smoke returns the error without opening the stop picker.
+// The picker belongs to a run that started something; offering it after a
+// failed start buries the error under an interactive prompt.
+func TestSmokeCmdFailedStartSkipsStopFlow(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
+	t.Cleanup(func() { startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY })
+	startModel = func(*config.Config, catalog.Row, bool) error { return errors.New("start failed") }
+	releaseSession = func() {}
+	pickerRan := false
+	runStopPicker = func(*config.Config) { pickerRan = true }
+	stdinTTY = func() bool { return true }
+
+	cmd := smokeCmd(&app{cfg: cfg})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"ollama/not-eligible:x"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("err = %v, want the start failure", err)
+	}
+	if pickerRan {
+		t.Fatal("stop picker ran after a failed start")
 	}
 }

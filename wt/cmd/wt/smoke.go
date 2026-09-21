@@ -8,12 +8,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -27,10 +29,16 @@ import (
 // the test process.
 var smokeExit = os.Exit
 
-// pickModelTUI is a test seam wrapping tui.PickModel (the same decorated
-// picker the wt agent flow uses): production dials the real TUI, which
-// needs a TTY; tests stub it to avoid one.
-var pickModelTUI = tui.PickModel
+// pickModelTUI is a test seam wrapping tui.PickStartModel: production dials the
+// real TUI, which needs a TTY; tests stub it to avoid one. The route-skipping
+// picker is deliberate — smoke.Candidates already applied each agent's own
+// route rules, and the agent-less route check in tui.PickModel could block a
+// row that an agent's forced-through-LiteLLM route accepts.
+var pickModelTUI = tui.PickStartModel
+
+// pickStartModelTUI is the test seam for `wt start`'s picker (tui.PickStartModel:
+// no launch-route gating, since starting is not launching).
+var pickStartModelTUI = tui.PickStartModel
 
 // smokeNow is a test seam wrapping time.Now so progress-log timestamps are
 // deterministic in tests.
@@ -44,68 +52,17 @@ func smokeCmd(a *app) *cobra.Command {
 			"prompt through each, using wt's real launch machinery. Reports\n" +
 			"PASS/FAIL/SKIP per agent with enough detail to diagnose a failure\n" +
 			"without re-running anything by hand.\n\n" +
-			"With no model-id, lists every currently eligible model and prompts\n" +
-			"for a choice (requires a TTY).",
+			"With no model-id, shows the full model picker (requires a TTY). A local\n" +
+			"model that isn't running is started first; on exit, offers to stop\n" +
+			"running local models.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if a.cfgErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
-			}
-
-			var modelID string
-			if len(args) > 0 {
-				modelID = args[0]
-			}
-			m, eligible, err := resolveSmokeModel(a.cfg, a.theme, modelID)
-			if err != nil {
-				return err
-			}
-
-			if len(eligible) == 0 {
-				return fmt.Errorf("model %q has no currently eligible agents", m.ID)
-			}
-			agentsToRun, err := filterOnlyAgents(eligible, mustGetString(cmd, "only"))
-			if err != nil {
-				return err
-			}
-
-			promptOverride := mustGetString(cmd, "prompt")
-			timeout, _ := cmd.Flags().GetDuration("timeout")
-			if err := validateSmokeTimeout(timeout); err != nil {
-				return err
-			}
-			jsonOut, _ := cmd.Flags().GetBool("json")
-
-			cwd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-
-			runID := smoke.NewRunID()
-			stderr := cmd.ErrOrStderr()
-			rows := make([]smoke.RowResult, 0, len(agentsToRun))
-			for _, agentName := range agentsToRun {
-				prompt, sentinel := promptOverride, ""
-				if promptOverride == "" {
-					prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
-				}
-				logSmokeStart(stderr, agentName, m.ID)
-				r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd)
-				logSmokeResult(stderr, r)
-				rows = append(rows, r)
-			}
-
-			var anyFail bool
-			if jsonOut {
-				anyFail, err = printSmokeJSON(cmd.OutOrStdout(), runID, m.ID, rows)
-			} else {
-				anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
-			}
+			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
 				return err
 			}
 			if anyFail {
-				smokeExit(1)
+				smokeExit(1) // after runSmoke's deferred stop flow has already run
 			}
 			return nil
 		},
@@ -115,6 +72,75 @@ func smokeCmd(a *app) *cobra.Command {
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
 	return cmd
+}
+
+// runSmoke resolves the target, starts it if idle, runs every selected agent
+// and prints the report. It returns whether any row FAILed rather than exiting,
+// so the deferred stop flow runs before the caller sets the exit code.
+func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err error) {
+	if a.cfgErr != nil {
+		return false, fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+	}
+
+	var modelID string
+	if len(args) > 0 {
+		modelID = args[0]
+	}
+	t, err := resolveSmokeModel(a.cfg, a.theme, modelID)
+	if err != nil {
+		return false, err
+	}
+	m, eligible := t.Row.Model, t.Agents
+
+	if len(eligible) == 0 {
+		return false, fmt.Errorf("model %q has no currently eligible agents", m.ID)
+	}
+	agentsToRun, err := filterOnlyAgents(eligible, mustGetString(cmd, "only"))
+	if err != nil {
+		return false, err
+	}
+
+	promptOverride := mustGetString(cmd, "prompt")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if err := validateSmokeTimeout(timeout); err != nil {
+		return false, err
+	}
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false, err
+	}
+
+	if t.Start() {
+		replace, _ := cmd.Flags().GetBool("replace")
+		if err := startModel(a.cfg, t.Row, replace); err != nil {
+			return false, err
+		}
+	}
+	// Registered only once the start step succeeded: a failed start returns its
+	// error without an interactive stop picker burying it.
+	defer smokeStopFlow(a.cfg, jsonOut)
+
+	runID := smoke.NewRunID()
+	stderr := cmd.ErrOrStderr()
+	rows := make([]smoke.RowResult, 0, len(agentsToRun))
+	for _, agentName := range agentsToRun {
+		prompt, sentinel := promptOverride, ""
+		if promptOverride == "" {
+			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
+		}
+		logSmokeStart(stderr, agentName, m.ID)
+		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd)
+		logSmokeResult(stderr, r)
+		rows = append(rows, r)
+	}
+
+	if jsonOut {
+		anyFail, err = printSmokeJSON(cmd.OutOrStdout(), runID, m.ID, rows)
+	} else {
+		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
+	}
+	return anyFail, err
 }
 
 // validateSmokeTimeout rejects a non-positive --timeout before any row
@@ -130,45 +156,76 @@ func validateSmokeTimeout(timeout time.Duration) error {
 	return nil
 }
 
-// resolveSmokeModel resolves the model to test: the pinned id if given
-// (validated against the currently eligible set, with a message
-// distinguishing "unknown" from "exists but not eligible right now"), or
-// an interactive pick from the eligible list when omitted, via the same
-// decorated picker (tui.PickModel) the wt agent flow uses — unfiltered by
-// agent, since here the eligible agents are determined *from* the chosen
-// model rather than the other way around. Also returns the resolved
-// model's eligible agents (from the same smoke.Eligibility call that
-// resolved the model) so the caller doesn't need a second
-// smoke.EligibleAgents call — that would pay its own inventory round
-// on top of this one.
-func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (config.Model, []string, error) {
-	all, agentsForModel := smoke.Eligibility(cfg)
+// smokeTarget is the resolved model to test, its catalog row (Action tells
+// whether it must be started first), and the agents that can run it.
+type smokeTarget struct {
+	Row    catalog.Row
+	Agents []string
+}
+
+// Start reports whether the model is idle and must be started before testing.
+func (t smokeTarget) Start() bool { return t.Row.Action() == catalog.ActionStart }
+
+// resolveSmokeModel resolves the model to test from smoke.Candidates (launch
+// rows plus startable idle local models): the pinned id if given (with a
+// message distinguishing "unknown" from "exists but cannot be tested"), or an
+// interactive pick via the shared picker (tui.PickModel), unfiltered by agent
+// since the eligible agents are determined from the chosen model. The target
+// carries its eligible agents so no second inventory round is needed.
+func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (smokeTarget, error) {
+	cands := smoke.Candidates(cfg)
 	if modelID != "" {
-		if idx := config.IndexModelByID(all, modelID); idx >= 0 {
-			return all[idx], agentsForModel[all[idx].ID], nil
+		for _, c := range cands {
+			if c.Row.Model.ID == modelID {
+				return smokeTarget{Row: c.Row, Agents: c.Agents}, nil
+			}
 		}
-		if idx := config.IndexModelByID(cfg.Models, modelID); idx >= 0 {
-			return config.Model{}, nil, fmt.Errorf(
-				"model %q is not currently eligible for any agent (not exposed, or a local "+
-					"model that isn't running — check `modelman start %s` or `modelman litellm status`)",
-				modelID, modelID)
+		// A blocked local row (not on disk, no start backend) is not a candidate,
+		// so name its real reason as `wt start` does rather than guessing.
+		if row, ok := catalog.Find(localRows(cfg), modelID); ok && row.Action() == catalog.ActionBlock {
+			return smokeTarget{}, errors.New(row.BlockReason())
 		}
-		return config.Model{}, nil, fmt.Errorf("unknown model %q", modelID)
+		if config.IndexModelByID(cfg.Models, modelID) >= 0 {
+			return smokeTarget{}, fmt.Errorf(
+				"model %q cannot be smoke-tested right now (not exposed, not on disk, or no agent supports it — check `modelman litellm status`; a local model must exist on disk)", modelID)
+		}
+		return smokeTarget{}, fmt.Errorf("unknown model %q", modelID)
 	}
-	if len(all) == 0 {
-		return config.Model{}, nil, fmt.Errorf("no models are currently eligible for any agent — expose a cloud model or start a local one with `modelman start <id>`")
+	if len(cands) == 0 {
+		return smokeTarget{}, fmt.Errorf("no models are available for any agent — expose a cloud model or pull a local one")
 	}
 	if !stdinTTY() {
-		return config.Model{}, nil, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
+		return smokeTarget{}, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
 	}
-	m, ok, err := pickModelTUI(cfg, all, theme)
+	models := make([]config.Model, len(cands))
+	for i, c := range cands {
+		models[i] = c.Row.Model
+	}
+	m, ok, err := pickModelTUI(cfg, models, theme)
 	if err != nil {
-		return config.Model{}, nil, err
+		return smokeTarget{}, err
 	}
 	if !ok {
-		return config.Model{}, nil, fmt.Errorf("model selection canceled")
+		return smokeTarget{}, fmt.Errorf("model selection canceled")
 	}
-	return m, agentsForModel[m.ID], nil
+	for _, c := range cands {
+		if c.Row.Model.ID == m.ID {
+			return smokeTarget{Row: c.Row, Agents: c.Agents}, nil
+		}
+	}
+	return smokeTarget{}, fmt.Errorf("unknown model %q", m.ID)
+}
+
+// smokeStopFlow is the exit flow: offer to stop running local models nothing
+// else uses. Skipped for --json and when stdin is not a TTY. Unlike a real agent
+// launch (cmd/wt/launch.go), wt smoke never records a refcount entry for this
+// process — its one-shot agents run through smoke.RunRow and the start step is
+// not a session — so there is nothing to release before the picker.
+func smokeStopFlow(cfg *config.Config, jsonOut bool) {
+	if jsonOut || !stdinTTY() {
+		return
+	}
+	runStopPicker(cfg)
 }
 
 // filterOnlyAgents narrows eligible to the comma-separated --only list,

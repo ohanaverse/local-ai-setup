@@ -787,3 +787,22 @@ func TestResolveModelForLaunchCloudOnlyResolves(t *testing.T) {
 		t.Errorf("resolveModelForLaunch() = (resolved=%v, m=%v), want (true, claude/opus)", resolved, m)
 	}
 }
+
+// TestRootHelpListsModelSubcommands verifies `wt --help` documents start, stop
+// and smoke with usage examples, so the model subcommands are discoverable
+// without reading the docs.
+func TestRootHelpListsModelSubcommands(t *testing.T) {
+	var out bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"start", "stop", "smoke", "wt start", "wt stop", "wt smoke"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help output missing %q:\n%s", want, out.String())
+		}
+	}
+}
