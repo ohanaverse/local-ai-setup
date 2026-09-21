@@ -31,7 +31,7 @@ modelman reads three files under `~/.config/local-ai/` (table copied from the mo
 
 Full map including wt and LaunchAgent surfaces: [00-config-map](00-config-map.md)
 
-LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_LITELLM_CONFIG` overrides it).
+LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`, overrides it; wt is the writer).
 
 ## TL;DR
 
@@ -41,7 +41,7 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`MODELMAN_L
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv run modelman                                # full TUI: browse the model table → add/edit/delete → queue changes → confirm on exit
 uv run modelman sync                           # reconcile downloaded/disk_path/size_bytes in modelman.toml against providers; never adds models
-uv run modelman expose ollama/gpt-oss:20b      # non-interactive: writes a model_list entry + sets exposed = true
+uv run modelman expose ollama/gpt-oss:20b      # non-interactive: wt writes a model_list entry; sets exposed = true
 uv run modelman unexpose ollama/gpt-oss:20b    # removes the entry and clears the flag
 ```
 
@@ -199,7 +199,7 @@ uv run modelman unexpose ollama/gpt-oss:20b
 Unexposed ollama/gpt-oss:20b.
 ```
 
-On success `expose` writes a `model_list` entry into `~/.config/litellm/config.yaml` and flips the model's `exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. modelman only touches the `model_list` section — `general_settings` and unrecognized rows are preserved — and restarts LiteLLM itself right after (`MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y` if both the flag is set and the model is ready, with cloud models — `openrouter/*` or `location = "cloud"` rows — exempt from the ready gate).
+On success `expose` has **wt** write a `model_list` entry into `~/.config/litellm/config.yaml` (modelman applies its ready/cloud gates, then runs `wt litellm expose --json --skip-ready-gate`, so **`wt` must be on PATH** — `make install`) and flips the model's `exposed` flag in `modelman.toml`; `unexpose` removes the entry and clears the flag. wt only touches the `model_list` section (plus a few launcher-required `litellm_settings`) — `general_settings`, other sections and comments are preserved — and restarts LiteLLM itself right after (`WT_LITELLM_RESTART_CMD`, legacy `MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7 and [04-litellm-config](04-litellm-config.md)). Local models are also routed automatically by `wt start`/`wt stop` without touching the `exposed` flag, so for a local model this grep pair can disagree — `wt litellm list` is the authoritative view. In the TUI the same toggle is `x` on a model row (queued, applied on exit — downloads/pulls first if the model isn't ready yet; the EXPOSED column shows `Y` if both the flag is set and the model is ready, with cloud models — `openrouter/*` or `location = "cloud"` rows — exempt from the ready gate).
 
 ## Verification
 

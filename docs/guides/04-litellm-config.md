@@ -1,13 +1,13 @@
-# LiteLLM config — `~/.config/litellm/config.yaml`, modelman exposure, admin UI
+# LiteLLM config — `~/.config/litellm/config.yaml`, wt routes, admin UI
 
-> Use this to: read and audit the LiteLLM proxy config, expose/unexpose models through :4000 with modelman, hand-edit the proxy-only sections without fighting the tool, and use the admin dashboard at :4000/ui.
+> Use this to: read and audit the LiteLLM proxy config, expose/unexpose models through :4000 with `wt litellm` (or `modelman expose`, which delegates to it), hand-edit the proxy-only sections without fighting the tool, and use the admin dashboard at :4000/ui.
 >
 > Verified against: modelman 0.1.0, wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29
 
 ## Prerequisites
 
 - [01-initial-setup](01-initial-setup.md) complete: proxy running under the `local.litellm.proxy` LaunchAgent with `--config /Users/keith/.config/litellm/config.yaml --port 4000`, master key in the plist's `EnvironmentVariables`, Postgres + Redis up (health checks: guide 01 §6).
-- modelman runnable from its repo (not installed globally — run from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`). Exposure context (providers, registry): [02-providers-and-models](02-providers-and-models.md).
+- `wt` on PATH (`make install` from the repo root) — it owns every write to `config.yaml`. modelman is runnable from its repo (not installed globally — run from `~/github/ohanaverse/local-ai-setup/modelman` with `uv run modelman …`) and requires `wt` on PATH. Exposure context (providers, registry): [02-providers-and-models](02-providers-and-models.md).
 - Live pre-flight — all three lines must match before relying on anything below:
 
 ```bash
@@ -30,9 +30,10 @@ ui:307
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman expose ollama/gemma4:12b-mlx   # writes/updates the model_list row in /Users/keith/.config/litellm/config.yaml
+uv run modelman expose ollama/gemma4:12b-mlx   # gates in modelman, then `wt litellm expose`: wt writes/updates the model_list row in /Users/keith/.config/litellm/config.yaml and restarts the proxy
+# (or, without modelman:  wt litellm expose ollama/gemma4:12b-mlx)
 
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # LiteLLM re-reads config.yaml only at start; down ~10–20 s (§5)
+launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # only if wt's automatic restart was skipped/failed: LiteLLM re-reads config.yaml only at start; down ~10–20 s (§5)
 
 LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)   # value never echoed
 curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://localhost:4000/v1/models \
@@ -40,7 +41,7 @@ curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://localhost:4000/v1/
 
 # to revert instead:
 # from: ~/github/ohanaverse/local-ai-setup/modelman
-# uv run modelman unexpose ollama/gemma4:12b-mlx    # removes the row; restart to apply
+# uv run modelman unexpose ollama/gemma4:12b-mlx    # removes the row (wt restarts the proxy)
 ```
 
 ```text
@@ -53,19 +54,19 @@ kickstart OK
 
 ### 1. config.yaml anatomy
 
-One file drives the proxy; the LaunchAgent starts `litellm` with it and the env block in the same plist carries the secrets (`LITELLM_MASTER_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `OPENROUTER_API_KEY`, `DATABASE_URL`, `LITELLM_SALT_KEY` — 6 secret keys (plus `PATH`); **values never printed here**). modelman reads/writes the same file (override with `MODELMAN_LITELLM_CONFIG`, default `/Users/keith/.config/litellm/config.yaml`).
+One file drives the proxy; the LaunchAgent starts `litellm` with it and the env block in the same plist carries the secrets (`LITELLM_MASTER_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `OPENROUTER_API_KEY`, `DATABASE_URL`, `LITELLM_SALT_KEY` — 6 secret keys (plus `PATH`); **values never printed here**). **wt** writes this file (`wt litellm ...`; override the path with `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`; default `/Users/keith/.config/litellm/config.yaml`); modelman only reads it (for `modelman usage`).
 
 Shape — current file, redacted (`api_key` on the OpenRouter row is a **real key on disk**; shown as `sk-or-v1-…`):
 
 ```yaml
 model_list:
-  # ---- Ollama (local) ----                      # ← comment banners are hand-written; modelman strips them on rewrite (§2)
+  # ---- Ollama (local) ----                      # ← comment banners are hand-written; wt preserves comments (§1)
   - model_name: ollama/qwen3.8:27b-mlx            # = registry model id (also the client-facing id)
     litellm_params:
       model: ollama_chat/qwen3.8:27b-mlx          # = provider prefix + model name
       api_base: http://localhost:11434
     model_info:
-      supports_function_calling: true             # copied from the registry model by modelman
+      supports_function_calling: true             # copied from the registry model by wt
 
   - model_name: openrouter/qwen/qwen3.8-27b
     litellm_params:
@@ -80,7 +81,7 @@ general_settings:
     port: 6379
 ```
 
-Field provenance (from `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/litellm.py` — `PROVIDER_POLICIES` and the entry builder at ~line 110):
+Field provenance (from `wt/internal/litellm/policy.go` — the provider policy table — and `entry.go`, the entry builder; the old Python table was removed 2026-09-21):
 
 | Field | Comes from |
 |---|---|
@@ -92,11 +93,11 @@ Field provenance (from `~/github/ohanaverse/local-ai-setup/modelman/src/modelman
 
 `general_settings` (real block above) is the Postgres/Redis wiring: `database_url` points at the `litellm` database (trust auth, no password on the local socket — the plist additionally carries `DATABASE_URL` + `LITELLM_SALT_KEY` for the proxy process). There is **no** `master_key` in config.yaml on this machine — auth comes from the plist env `LITELLM_MASTER_KEY`.
 
-What modelman manages vs preserves (enforced in code, `src/modelman/litellm.py`):
+What wt manages vs preserves (enforced in code, `wt/internal/litellm`):
 
-- **Owns only `model_list`** — `set_exposed`/`remove_exposed` add/replace/remove rows keyed by `model_name` (replace-by-id, else append; non-dict rows are skipped, not crashed on).
-- **Preserves everything else as data** — `general_settings` and unrecognized top-level/other sections survive every write (writes are atomic: temp file + rename, permission bits kept).
-- **Comments are NOT preserved** — PyYAML round-trip; the `# ---- <backend> ----` banners in the current file vanish on the first modelman write.
+- **Owns `model_list` plus a few launcher-required `litellm_settings`** — `expose`/`unexpose`/`sync` add/replace/remove rows keyed by `model_name` (replace-by-id, else append). wt value-enforces `litellm_settings.drop_params: true` and `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`, and adds the per-row bridge params (`additional_drop_params` on `ollama_chat/*` rows, `use_chat_completions_api` on loopback `openai/*` rows) when missing.
+- **Preserves everything else** — `general_settings` and unrecognized sections survive every write. Writes are atomic (unique temp file + rename), keep permission bits, and take a flock on `<config>.lock`.
+- **Comments are preserved** (yaml.v3), with one cosmetic caveat: the first wt write normalizes list indentation and drops blank lines. A comment sitting next to a row wt removes or replaces can be dropped.
 
 Count the live list:
 
@@ -108,15 +109,18 @@ python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/conf
 model_list entries: 11
 ```
 
-### 2. Expose / unexpose via modelman
+### 2. Expose / unexpose via wt (or modelman)
 
-CLI (positional model id; success lines from `src/modelman/main.py`):
+CLI (positional model id). `wt litellm` is the primary interface; `modelman expose|unexpose` applies modelman's own gates and then delegates to it (success lines from `src/modelman/main.py`):
 
-<!-- UNVERIFIED — mutating commands; not run on this machine (they rewrite the live config.yaml + modelman.toml). Help text/success strings verified in source and in guide 02 §7 (identical command set); errors go to stderr with exit 1, e.g. `error: ...` for unknown ids, non-downloaded local models, or providers with no LiteLLM mapping. -->
+<!-- UNVERIFIED — mutating commands; not run on this machine (they rewrite the live config.yaml, and modelman's also modelman.toml). Help text/success strings verified in source and in guide 02 §7 (identical command set); errors go to stderr with exit 1, e.g. `error: ...` for unknown ids, non-downloaded local models, or providers with no LiteLLM mapping. -->
 
 ```bash
+wt litellm expose ollama/gemma4:12b-mlx          # wt checks the model is ready (cloud models exempt); --dry-run validates only
+wt litellm unexpose ollama/gemma4:12b-mlx
+
 # from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman expose ollama/gemma4:12b-mlx     # model must be downloaded (cloud models exempt)
+uv run modelman expose ollama/gemma4:12b-mlx     # model must be downloaded (cloud models exempt); also flips `exposed` in modelman.toml
 uv run modelman unexpose ollama/gemma4:12b-mlx
 ```
 
@@ -146,7 +150,7 @@ exposed = false
 
 Expected after `uv run modelman expose ollama/gpt-oss:20b`:
 
-<!-- UNVERIFIED — not run; row shape is deterministic from PROVIDER_POLICIES + the registry entry, and set_exposed would append a new row because none exists. The comment-strip behavior is stated in the save_litellm_config docstring (src/modelman/litellm.py:215-219), not exercised here. -->
+<!-- UNVERIFIED — not run; row shape is deterministic from wt's provider policy table (`wt/internal/litellm/policy.go`) + the registry entry, and wt would append a new row because none exists. -->
 
 ```yaml
 model_list:                                       # banners/comments gone — PyYAML round-trip
@@ -165,21 +169,21 @@ exposed = true                                    # ← only field modelman flip
 
 This model is currently unexposed on this machine — running the command above would produce the "after" state.
 
-Exposure and routing are independent: `expose`/`unexpose` decide which models exist on the proxy, while the `[litellm]` table in `~/.config/local-ai/modelman.toml` (`modelman litellm on|off`, see [00-config-map](00-config-map.md)) only decides whether wt routes agents through it. Toggling `[litellm].enabled` therefore needs no re-exposing of models — and `modelman litellm` never touches the proxy service (no restart).
+Exposure and routing are independent: `expose`/`unexpose` decide which models exist on the proxy, while the `[litellm]` table in wt's `~/.config/agent-wt/config.toml` (`wt litellm on|off`, see [00-config-map](00-config-map.md)) only decides whether wt routes agents through it. Toggling `[litellm].enabled` therefore needs no re-exposing of models — and `wt litellm on|off|set` never touches the proxy service (no restart).
 
-modelman **does** restart LiteLLM after an exposing write — `expose`/`unexpose` run the restart command from `MODELMAN_LITELLM_RESTART_CMD`, falling back to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` when the var is unset, so a new row is live right away (proxy down ~10–20 s; if the start fails, KeepAlive crash-loops it and `~/.litellm.err.log` is the tell). The TUI status pane and CLI surface a non-fatal warning if the restart itself fails — restart manually per §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
+**wt** restarts LiteLLM after a route change (`wt litellm expose|unexpose|sync`, and the automatic route updates from `wt start`/`wt stop`) — it runs `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`), falling back to the canonical `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, and then waits up to 30 s for `/health/liveliness` when a LiteLLM URL is configured, so a new row is live right away (proxy down ~10–20 s; if the start fails, KeepAlive crash-loops it and `~/.litellm.err.log` is the tell). A failed restart is a non-fatal warning — restart manually per §5. For a genuinely new model (no existing row) `expose` appends instead of replacing; for an id whose provider has no policy it refuses with `provider '<id>' has no LiteLLM mapping`.
 
 ### 3. Hand-editing
 
-When to hand-edit vs modelman:
+When to hand-edit vs wt:
 
 | Edit | Tool |
 |---|---|
-| `model_list` rows (expose a model) | modelman — `expose`/`unexpose`/TUI `l` (keeps `modelman.toml` flags honest) |
+| `model_list` rows (expose a model) | wt — `wt litellm expose`/`unexpose`/`sync`, or `modelman expose`/`unexpose`/TUI `x` (which delegate and keep `modelman.toml` flags honest) |
 | One-off tweak inside an existing `model_list` row | hand-edit (temporary: next `expose`/`unexpose` of that id replaces the row) — see Gotchas |
-| `general_settings`, logging, router/callback settings, any non-`model_list` section | hand-edit — modelman never rewrites these, so the edits survive indefinitely |
+| `general_settings`, logging, router/callback settings, any non-`model_list` section | hand-edit — wt never rewrites these, so the edits survive indefinitely |
 | `litellm_settings` keys **other than** `drop_params`/`use_chat_completions_url_for_anthropic_messages` | hand-edit — survives indefinitely, same as above |
-| `litellm_settings.drop_params`, `litellm_settings.use_chat_completions_url_for_anthropic_messages` | modelman — value-enforced to `true` on every expose/unexpose write (`ensure_litellm_settings()`); a hand-set `false` is silently reverted on the next write |
+| `litellm_settings.drop_params`, `litellm_settings.use_chat_completions_url_for_anthropic_messages` | wt — value-enforced to `true` on every write (`wt/internal/litellm`); a hand-set `false` is silently reverted on the next write |
 
 Hand-edit flow — always back up, edit, validate, restart:
 
@@ -195,7 +199,7 @@ python3 -c "import yaml; yaml.safe_load(open('/Users/keith/.config/litellm/confi
 YAML OK
 ```
 
-(Exit 0 with `YAML OK`. On a syntax error: a `yaml.YAMLError` traceback and exit 1; fix before restarting or the proxy dies on start — the plist's `StandardErrorPath` `~/.litellm.err.log` shows why. modelman surfaces the same condition cleanly: `error: LiteLLM config is not valid YAML: …` on stderr, exit 1, live config untouched.)
+(Exit 0 with `YAML OK`. On a syntax error: a `yaml.YAMLError` traceback and exit 1; fix before restarting or the proxy dies on start — the plist's `StandardErrorPath` `~/.litellm.err.log` shows why. wt likewise refuses to write a config it cannot parse and leaves the file untouched; an unreadable config makes `wt litellm ...` exit 1 with an error.)
 
 Never hand-edit under time pressure without the YAML check — a broken config takes the whole :4000 endpoint down on restart (KeepAlive then respawns a crash loop; `~/.litellm.err.log` is the tell).
 
@@ -279,12 +283,41 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 
 (401 unauthenticated = master key required; `1` = exactly one `model_list` row for the id.)
 
+### 6. `wt litellm` reference
+
+wt owns all LiteLLM management. Commands:
+
+| Command | What it does |
+|---|---|
+| `wt litellm expose <id>... [--json] [--dry-run] [--skip-ready-gate]` | Add `model_list` rows for registry models (restarts the proxy on change). `--dry-run` validates only; `--skip-ready-gate` is for callers that already verified readiness (modelman does) |
+| `wt litellm unexpose <id>... [--json]` | Remove rows |
+| `wt litellm sync [--json]` | Make local-model routes match the models actually running. Provider families whose live probe status is not `ok` are left alone, so it never removes routes it cannot verify |
+| `wt litellm list [--json]` | Routed ids currently in `config.yaml` — **the authoritative answer to "is this local model routed?"** |
+| `wt litellm providers [--json]` | Providers with a LiteLLM mapping (and whether each is cloud) |
+| `wt litellm status [--json]` | Routing state: enabled, url, whether an api key is set (never printed) |
+| `wt litellm on` / `off` | Route non-native models through the proxy / dial providers directly (policy only; the proxy is untouched) |
+| `wt litellm set [--url U] [--api-key K]` | Update the proxy URL and/or key wt uses |
+
+Exit code is 0 when every id applied, 1 when any id failed (the `--json` document is still printed) or the config could not be processed. `--json` shapes: change commands `{"outcomes":[{"id","action","error"}],"changed":bool,"warnings":[...]}`; `list` `{"routed":[...]}`; `providers` `{"providers":{"<id>":{"cloud":bool}}}`; `status` `{"enabled":bool,"url":"...","api_key_set":bool}`.
+
+**Automatic routes.** `wt start`, `wt stop`, the TUI start flow, `wt smoke` and the stop picker update routes after a successful start/stop (progress stage "updating LiteLLM routes"): the started model is added (omlx and mtplx serve one model per process, so their sibling routes are removed), stopped models are removed, and a failed replacement removes the old occupant's route. LiteLLM problems only warn; a missing `config.yaml` is silent. Run `wt litellm sync` after starting or stopping a server outside wt.
+
+**Routing state ownership.** The `[litellm]` table (`enabled`/`url`/`api_key`) lives in wt's `~/.config/agent-wt/config.toml` (0600 when a key is stored), copied once from modelman.toml's legacy `[litellm]` on first load. `modelman litellm status|on|off|set` pass through to these commands. config.toml writes are whole-file last-writer-wins: an open `wt config` editor session and `wt litellm on|off|set` overwrite each other (issue #143).
+
+**Environment variables.** `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`): config.yaml path. `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`): restart command, else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
+
+**Troubleshooting a `400 Invalid model name`.** The proxy answered but does not have that model.
+1. `wt litellm list` — is the id routed? If not: `wt litellm expose <id>` (cloud/native rules apply) or, for a local model that is running, `wt litellm sync`.
+2. If it is listed, the proxy has a stale model list (it reads `config.yaml` only at start): restart it per §5 and check `~/.litellm.err.log`. wt's own restart may have failed — that surfaces as a warning at the time of the change.
+3. Check routing is actually on: `wt litellm status`.
+4. modelman's EXPOSED column for a *local* model reads modelman.toml's `exposed` flag, not `config.yaml`, so it can disagree with `wt litellm list` after `wt start`/`wt stop`/`sync`. Trust `wt litellm list`.
+
 ## Gotchas
 
-- **modelman manages ONLY `model_list`.** Hand-edits to a `model_list` row are silently replaced the next time you `expose` the same id (`set_exposed` replaces by `model_name`, else appends — `src/modelman/litellm.py`). Hand-edits to `general_settings` and any other section survive every modelman write.
-- **Comments don't survive modelman writes.** The save path is a PyYAML round-trip (`save_litellm_config` docstring, `src/modelman/litellm.py:215-219`): the current `# ---- Ollama (local) ----`-style banners disappear on the first `expose`/`unexpose`. Keep structural notes in this guide, not the YAML.
-- **`config.yaml` carries literal api_key values on this machine.** The OpenRouter entries hold the real `sk-or-v1-…` key inline — **not** `os.environ/OPENROUTER_API_KEY` indirection. modelman writes `provider.auth.secret_ref` verbatim into `api_key` (`src/modelman/litellm.py:110`), so anything put in the registry surfaces in plaintext here. Treat `config.yaml` (and the plist) as secret material; redact before pasting anywhere.
-- **modelman's bookkeeping drift (historical):** `modelman.toml` flags were out of sync because non-ollama entries were seeded outside modelman. Twenty-seven in-registry models (thirteen ollama + twelve openrouter + one omlx + one mtplx, issue #66) are now modelman-exposed; the remaining omlx rows, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` remain hand-managed by design (the 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md)). First modelman write also strips the comment banners (above).
+- **wt manages `model_list` (plus a few enforced `litellm_settings`).** Hand-edits to a `model_list` row are silently replaced the next time you expose the same id (replace by `model_name`, else append). Hand-edits to `general_settings` and any other section survive every wt write.
+- **Comments survive, whitespace changes.** wt edits the file with yaml.v3: comments (the `# ---- Ollama (local) ----` banners) are kept, but the first wt write normalizes list indentation and drops blank lines. Expect a one-time whitespace diff.
+- **`config.yaml` carries literal api_key values on this machine.** The OpenRouter entries hold the real `sk-or-v1-…` key inline — **not** `os.environ/OPENROUTER_API_KEY` indirection. wt writes `provider.auth.secret_ref` verbatim into `api_key` (`wt/internal/litellm/entry.go`), so anything put in the registry surfaces in plaintext here. Treat `config.yaml` (and the plist) as secret material; redact before pasting anywhere.
+- **modelman's bookkeeping drift (historical):** `modelman.toml` flags were out of sync because non-ollama entries were seeded outside modelman. Twenty-seven in-registry models (thirteen ollama + twelve openrouter + one omlx + one mtplx, issue #66) are now modelman-exposed; the remaining omlx rows, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` remain hand-managed by design (the 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md)). 
 - **4000 is the proxy; backends live elsewhere.** `api_base` targets are oMLX `:8000`, ollama `:11434` — never `:4000` (that loops back into LiteLLM). Also: an omlx row in `model_list` doesn't mean that quant variant is loaded on the oMLX server — see guide 01 Gotchas (`modelman provider isolate`).
 - **Syntax errors take the proxy down on restart.** Validate YAML before bouncing (§3 command); a dead start shows up as repeated respawns with errors in `~/.litellm.err.log`.
 - **Postgres/Redis down ⇒ proxy fails to boot.** KeepAlive turns a dead dependency into a crash loop — respawns with connection errors in the plist's `StandardErrorPath` log (`~/.litellm.err.log`, per `~/Library/LaunchAgents/local.litellm.proxy.plist`). Pre-flight with guide 01 §6's `pg_isready -h localhost` and `redis-cli ping`.
@@ -293,7 +326,7 @@ grep -c 'model_name: ollama/qwen3.8:27b-mlx' /Users/keith/.config/litellm/config
 
 - Admin UI in depth — Postgres/Redis/Prisma setup, plist template, troubleshooting: [`../reference/litellm-admin-ui-setup.md`](../reference/litellm-admin-ui-setup.md)
 - LiteLLM proxy deep-dive (prefixes, `ollama_chat/` vs `openai/`, security): [`../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md`](../reference/LiteLLM%20Proxy%20on%20macOS_%20Unifying%20Ollama%2C%20llama_cpp%2C%20and%20OpenRouter.md)
-- modelman's LiteLLM exposure design (writer contract, upsert semantics): `~/github/ohanaverse/local-ai-setup/modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
-- Source of the writer/policies on this machine: `~/github/ohanaverse/local-ai-setup/modelman/src/modelman/litellm.py` (policies ~54–58, entry builder ~96–125, save semantics ~215–219)
+- wt-owned LiteLLM management design (current): `docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md` (the original modelman exposure design, `modelman/docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`, is historical)
+- Source of the writer/policies: `wt/internal/litellm/` (`policy.go`, `entry.go`, `configfile.go`, `restart.go`, `service.go`) and `wt/cmd/wt/litellm.go`
 - Benchmarks through the proxy: [05-benchmarks](05-benchmarks.md)
 - When :4000 misbehaves: [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md)

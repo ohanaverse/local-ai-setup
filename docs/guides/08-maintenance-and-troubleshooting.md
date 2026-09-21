@@ -163,15 +163,15 @@ exposed = true
 
 Historical note (2026-08-30, updated 2026-09-10): `modelman.toml` flags were out of sync because the non-ollama entries were seeded outside modelman. The count above is now 27: thirteen ollama models (the two local MLX downloads `ollama/qwen3.8:27b-mlx` and `ollama/ornith-1.5:35b` plus eleven cloud-hosted ollama models), twelve openrouter models, one omlx model (`omlx/mlx-community--Qwen3.8-27B-4bit`, exposed by hand), and one mtplx model (`mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, issue #66). The remaining omlx entries stay hand-managed by design and will still show `exposed = false` (or be absent from `[model_state...]` entirely) even though they're live in `config.yaml`. `config.yaml` is still what the proxy serves. **This is a LiteLLM-exposure debug flow, not necessarily a "why doesn't wt show my model" one** — as of the 2026-09-15 local-model-visibility design (`docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`), `exposed` is no longer the truth for what wt shows for LOCAL models at all:
 
-- **Model missing from wt's picker, and it's a LOCAL model** (ollama/omlx/mtplx/mlx_lm_server): don't look at `exposed`/`ready` here — run `wt -A <agent>` and read the STATUS/RUNNING columns; wt probes ollama/omlx/mtplx live and shows what is actually up. Every configured local model appears as a row: running → launchable; non-running ollama/omlx/mtplx → a start row (Enter starts it); `absent` (the provider answered and does not have the model) or a no-engine provider like `mlx_lm_server` → blocked with the reason. A model missing from the list entirely is neither in `registry.toml` nor discovered on disk — or its provider isn't in that agent's `supported_providers`; try another agent. `exposed`/`ready` play no role for local models in wt, and modelman.toml's per-model `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section).
-- **Model missing from wt's picker, and it's a CLOUD model** (openrouter, or `location = "cloud"`): `exposed` is still the relevant flag — continue with the flow below (independent of whether LiteLLM routing is active; `modelman litellm on`/`off` never changes exposure). A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
+- **Model missing from wt's picker, and it's a LOCAL model** (ollama/omlx/mtplx/mlx_lm_server): don't look at `exposed`/`ready` here — run `wt -A <agent>` and read the STATUS/RUNNING columns; wt probes ollama/omlx/mtplx live and shows what is actually up. Every configured local model appears as a row: running → launchable; non-running ollama/omlx/mtplx → a start row (Enter starts it); `absent` (the provider answered and does not have the model) or a no-engine provider like `mlx_lm_server` → blocked with the reason. A model missing from the list entirely is neither in `registry.toml` nor discovered on disk — or its provider isn't in that agent's `supported_providers`; try another agent. `exposed`/`ready` play no role for local models in wt, and modelman.toml's per-model `running` flag is modelman-owned and not read by wt at all (see `wt/CLAUDE.md`'s "Local-model resolution" section). A local model that *is* running but gets `400 Invalid model name` on `:4000` lacks a `config.yaml` route: `wt litellm list` shows what is routed, `wt start`/`wt stop` keep routes current automatically, and `wt litellm sync` repairs them after a server was started or stopped outside wt (modelman's EXPOSED column for a local model is the stale `exposed` flag, not the route).
+- **Model missing from wt's picker, and it's a CLOUD model** (openrouter, or `location = "cloud"`): `exposed` is still the relevant flag — continue with the flow below (independent of whether LiteLLM routing is active; `wt litellm on`/`off` never changes exposure). A `false` here does not prove the model is missing. A `true` with no `config.yaml` row is one of two things — disambiguate before re-exposing:
 
 - **`ready = false` alongside the flag** → mid-cascade: the user pressed `x` on a not-ready model in the TUI, which queues `exposed = true` AND `ready = true` (a download). The flag is set, but the apply step hasn't run yet, so `config.yaml` has no row. **Do not re-expose** — apply the pending changes from the TUI (or `modelman apply` if exposed via CLI), and the row appears. Re-exposing now is a redundant op that bounces the proxy without fixing the gap.
 - **`ready = true` alongside the flag** (or the model is a cloud model — `provider_id` in `openrouter`, or `location = "cloud"` for an ollama model, where `ready` is permanently false) → genuine drift: modelman expects the row, and it was lost. → step 4 (re-expose replaces the row by id).
 
 (Drift is a known guide 04 gotcha.)
 
-**Step 4 — not exposed anywhere: expose it.** modelman writes the `model_list` row and flips the flag (local models must be downloaded first):
+**Step 4 — not exposed anywhere: expose it.** modelman applies its gates, then `wt` writes the `model_list` row and restarts the proxy, and modelman flips the flag (local models must be downloaded first; `wt` must be on PATH; `wt litellm expose <id>` is the direct equivalent):
 
 <!-- UNVERIFIED — mutating; not run in this session (would rewrite the live config.yaml + modelman.toml). Success line from live-verified source (guide 04 §2, guide 02 §7). -->
 
@@ -225,7 +225,7 @@ python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/conf
 model_list entries: 9
 ```
 
-Parse error → fix by hand or rebuild the row via modelman (it does atomic PyYAML writes, guide 04 §3); count `9` on this machine = current healthy state (your count is however many you exposed).
+Parse error → fix by hand or rebuild the row via `wt litellm expose` / `modelman expose` (wt does atomic, comment-preserving writes, guide 04 §1); count `9` on this machine = current healthy state (your count is however many you exposed).
 
 **Step 8 — restart, then re-check Step 1.** The proxy reads config.yaml only at start:
 
@@ -470,6 +470,6 @@ model_list entries: 9
 ## Going deeper
 
 - Full install, plist templates, and the secret-redaction rules (plist `EnvironmentVariables`, config.yaml `api_key`s): [01-initial-setup](01-initial-setup.md)
-- config.yaml anatomy, modelman exposure mechanics, and the same kickstart with measured recovery: [04-litellm-config](04-litellm-config.md)
+- config.yaml anatomy, `wt litellm` exposure mechanics, and the same kickstart with measured recovery: [04-litellm-config](04-litellm-config.md)
 - Benchmark isolation/restore contracts behind §5, and what a clean restore guarantees: [05-benchmarks](05-benchmarks.md)
 - The actual source of truth for everything §1 asserts (start-at-load, keep-alive, log paths, env keys): `~/Library/LaunchAgents/` — read the plist before guessing about any service
