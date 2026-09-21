@@ -7,8 +7,10 @@ from pathlib import Path
 import typer
 
 # Import providers package to trigger registration of all providers.
-from . import providers  # noqa: F401
-from . import wt_bridge
+from . import (
+    providers,  # noqa: F401
+    wt_bridge,
+)
 from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .formatting import format_size

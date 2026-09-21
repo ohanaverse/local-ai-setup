@@ -120,7 +120,9 @@ def test_litellm_commands_never_touch_routes_or_the_proxy(monkeypatch):
     monkeypatch.setattr(wt_bridge, "expose", lambda *a, **k: calls.append("expose"))
     monkeypatch.setattr(wt_bridge, "unexpose", lambda *a, **k: calls.append("unexpose"))
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: calls.append("subprocess")  # noqa: ARG005
+        subprocess,
+        "run",
+        lambda *a, **k: calls.append("subprocess"),  # noqa: ARG005
     )
     runner.invoke(app, ["litellm", "on"])
     runner.invoke(app, ["litellm", "off"])

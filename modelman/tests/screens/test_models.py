@@ -2813,3 +2813,165 @@ async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp
         "Starting this will also stop omlx/b, since omlx can only serve one model at a time."
         in message
     )
+
+
+def _status_text(screen) -> str:
+    from textual.widgets import Static
+
+    return str(screen.query_one("#litellm-status", Static).render())
+
+
+@pytest.mark.asyncio
+async def test_litellm_status_line_and_toggle_go_through_wt(tmp_path, monkeypatch):
+    # The status line must show wt's state (wt owns [litellm]), and `l` must
+    # flip it via the bridge only: no modelman.toml write, no self.state
+    # mutation. Guards against reintroducing the "toggle a table wt ignores" bug.
+    from modelman import wt_bridge
+
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
+    before = state_path.read_text()
+    current = {"enabled": True}
+    calls = []
+    reads = []
+
+    def status():
+        reads.append(1)
+        return wt_bridge.LitellmStatus(current["enabled"], "http://localhost:4000", True)
+
+    def set_enabled(on):
+        calls.append(on)
+        current["enabled"] = on
+
+    monkeypatch.setattr(wt_bridge, "litellm_status", status)
+    monkeypatch.setattr(wt_bridge, "litellm_set_enabled", set_enabled)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        screen = app.screen
+        assert "LiteLLM: on (http://localhost:4000)" in _status_text(screen)
+        n = len(reads)
+        await pilot.press("j")  # ordinary keystrokes must not re-spawn wt
+        await pilot.pause()
+        assert len(reads) == n
+        await pilot.press("l")
+        await pilot.pause()
+        assert calls == [False]
+        assert "LiteLLM: off" in _status_text(screen)
+    assert state_path.read_text() == before
+
+
+@pytest.mark.asyncio
+async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, monkeypatch):
+    # If wt cannot be reached the line must say "unavailable" (never raise),
+    # and a failing toggle must notify with the error text, no traceback/key.
+    from modelman import wt_bridge
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+
+    def down():
+        raise wt_bridge.WtNotFoundError("wt not found on PATH")
+
+    monkeypatch.setattr(wt_bridge, "litellm_status", down)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        screen = app.screen
+        assert "LiteLLM: unavailable  [l] toggle" in _status_text(screen)
+        notes = []
+        monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
+        await pilot.press("l")
+        await pilot.pause()
+        assert notes and "unavailable" in notes[-1]
+        # Status becomes readable but the set fails: error is surfaced.
+        monkeypatch.setattr(
+            wt_bridge, "litellm_status", lambda: wt_bridge.LitellmStatus(False, "", False)
+        )
+
+        def fail(on):
+            raise wt_bridge.WtBridgeError("wt exited 1")
+
+        monkeypatch.setattr(wt_bridge, "litellm_set_enabled", fail)
+        await pilot.press("l")
+        await pilot.pause()
+        assert "wt exited 1" in notes[-1]
+
+
+async def _expose_press_notes(tmp_path, monkeypatch, *, exposed, provider_flags):
+    """Open the screen on one ollama/a model (persisted `exposed`), force the
+    bridge's provider table, press `x`, return (notes, queued_exposes)."""
+    from unittest.mock import MagicMock
+
+    from modelman import wt_bridge
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    st = StateStore()
+    st.set("ollama/a", ModelState(ready=True, exposed=exposed))
+    save_state(st, state_path)
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", lambda: provider_flags)
+    app = ModelmanApp()
+    notes = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
+        await pilot.press("x")
+        await pilot.pause()
+        queued = dict(app.screen.queued_exposes)
+    return notes, queued
+
+
+@pytest.mark.asyncio
+async def test_x_unexpose_allowed_when_wt_unavailable(tmp_path, monkeypatch):
+    # With wt down the provider table degrades to {}; un-exposing an
+    # already-exposed model must still queue (only EXPOSE needs a mapping),
+    # or a user could never clean up while wt is broken.
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=True, provider_flags={}
+    )
+    assert queued == {"ollama/a": False}
+    assert not any("cannot expose" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_x_expose_blocked_with_wt_unavailable_message(tmp_path, monkeypatch):
+    # Expose while wt is unreachable must be blocked with an accurate reason
+    # (install wt), not the misleading "no LiteLLM mapping".
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=False, provider_flags={}
+    )
+    assert queued == {}
+    assert notes == ["wt is unavailable — cannot expose (install wt)"]
+
+
+@pytest.mark.asyncio
+async def test_x_expose_blocked_for_genuinely_unmapped_provider(tmp_path, monkeypatch):
+    # wt is reachable (non-empty table) but omits the provider: that IS the
+    # "no LiteLLM mapping" case, and expose stays blocked.
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=False, provider_flags={"omlx": False}
+    )
+    assert queued == {}
+    assert notes == ["Provider has no LiteLLM mapping — cannot expose"]
+
+
+@pytest.mark.asyncio
+async def test_x_unexpose_allowed_for_genuinely_unmapped_provider(tmp_path, monkeypatch):
+    # Un-expose of a model whose provider lost its mapping is also allowed
+    # (wt's unexpose tolerates it), so stale exposures can be cleared.
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=True, provider_flags={"omlx": False}
+    )
+    assert queued == {"ollama/a": False}

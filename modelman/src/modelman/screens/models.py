@@ -17,11 +17,13 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from .. import wt_bridge
 from ..formatting import format_size
 from ..litellm import (
     is_effectively_exposed,
     passes_ready_gate,
     provider_policy,
+    provider_table_available,
 )
 from ..local_control import (
     LocalControlError,
@@ -225,6 +227,9 @@ class ModelScreen(Screen[None]):
         self.state = state
         self.registry_path = registry_path
         self.state_path = state_path
+        # Last `wt litellm status` (None = wt unreachable); refreshed only on
+        # mount and after a toggle so keystrokes never spawn wt.
+        self._litellm_status: wt_bridge.LitellmStatus | None = None
         # Provider of the last model added or edited this session; used to
         # default the Add dialog's provider dropdown.
         self._last_provider_used: str | None = None
@@ -374,31 +379,46 @@ class ModelScreen(Screen[None]):
         self.app.call_from_thread(self.reload)
 
     def _update_litellm_status(self) -> None:
-        """Render the [litellm] routing mode in the screen's status area.
+        """Re-read wt's routing state once and render it in the status area.
 
-        Purely display: never starts, stops, or restarts the proxy — the
-        toggle only flips modelman.toml's [litellm].enabled. Moved here
-        from the removed FamilyScreen, which was the app's home screen
-        before this one took over that role.
+        wt owns the [litellm] state; this asks wt (never modelman.toml) and
+        caches the answer in `_litellm_status` so keystrokes never spawn wt.
+        Called on mount and after a toggle only. Never raises: an unreachable
+        wt renders "unavailable". Purely display: never touches the proxy.
         """
-        mode = "on" if self.state.litellm.enabled else "off"
-        url_display = (
-            f" ({self.state.litellm.url})" if mode == "on" and self.state.litellm.url else ""
-        )
-        self.query_one("#litellm-status", Static).update(
-            f"LiteLLM: {mode}{url_display}  [l] toggle"
-        )
+        try:
+            self._litellm_status = wt_bridge.litellm_status()
+        except wt_bridge.WtBridgeError:
+            self._litellm_status = None
+        self._render_litellm_status()
+
+    def _render_litellm_status(self) -> None:
+        status = self._litellm_status
+        if status is None:
+            text = "LiteLLM: unavailable  \\[l] toggle"
+        else:
+            url = f" ({status.url})" if status.enabled and status.url else ""
+            text = f"LiteLLM: {'on' if status.enabled else 'off'}{url}  \\[l] toggle"
+        self.query_one("#litellm-status", Static).update(text)
 
     def action_toggle_litellm(self) -> None:
-        """Flip [litellm].enabled on `l`. Routing policy only — the proxy
-        process is never touched. locked_state() re-reads the on-disk
-        state so the flip applies on top of the latest file. Only the
-        `litellm` table is resynced back onto self.state (not a full
-        reload) so this doesn't clobber in-session model/queue state
-        this screen has already reconciled or the user has queued."""
-        with locked_state(self.state_path) as disk_state:
-            disk_state.litellm.enabled = not disk_state.litellm.enabled
-        self.state.litellm = load_state(self.state_path).litellm
+        """Flip the routing switch on `l` by asking wt (the state's owner).
+        Routing policy only — the proxy is never touched, modelman.toml is
+        never written and self.state is left alone. The cached status is
+        refreshed afterwards."""
+        status = self._litellm_status
+        if status is None:
+            # Unknown current state: re-read before deciding the direction.
+            self._update_litellm_status()
+            status = self._litellm_status
+        if status is None:
+            self.app.notify("LiteLLM: wt is unavailable — cannot toggle (install wt)")
+            return
+        try:
+            wt_bridge.litellm_set_enabled(not status.enabled)
+        except wt_bridge.WtBridgeError as exc:
+            self.app.notify(f"LiteLLM toggle failed: {exc}")
+            return
         self._update_litellm_status()
 
     def reload(self) -> None:
@@ -585,12 +605,17 @@ class ModelScreen(Screen[None]):
         if entry is None:
             return
         mid = entry.id
-        if provider_policy(entry.provider_id) is None:
-            self.app.notify("Provider has no LiteLLM mapping — cannot expose")
-            return
         persisted_exposed = self.state.get(mid).exposed
         displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
         target = not displayed_exposed
+        # Only EXPOSE needs a mapping; un-expose must stay possible even when
+        # wt is unreachable (the provider table is then degraded to {}).
+        if target and provider_policy(entry.provider_id) is None:
+            if not provider_table_available():
+                self.app.notify("wt is unavailable — cannot expose (install wt)")
+            else:
+                self.app.notify("Provider has no LiteLLM mapping — cannot expose")
+            return
         if target == persisted_exposed:
             # Repeated keypress: cancel the queued expose toggle.
             self.queued_exposes.pop(mid, None)
@@ -722,7 +747,7 @@ class ModelScreen(Screen[None]):
         `size_bytes`, none of which is persisted until the pending-changes
         queue is applied on exit), silently reverting the READY/SIZE/path
         columns after the first `s` press. Same reasoning — and same
-        targeted-resync shape — as action_toggle_litellm's `[litellm]`
+        targeted-resync shape — as the old litellm toggle's `[litellm]`
         merge. `exposed` is included alongside `running` because start/stop
         now flip it too (auto-expose on start, auto-unexpose on stop).
         """

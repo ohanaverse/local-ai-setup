@@ -75,6 +75,12 @@ def provider_policy(provider_id: str) -> ProviderPolicy | None:
     return ProviderPolicy(cloud=flags[provider_id]) if provider_id in flags else None
 
 
+def provider_table_available() -> bool:
+    """True when wt's provider table could be read (it is never empty when it
+    could), so callers can tell "wt unavailable" from "genuinely unmapped"."""
+    return bool(wt_bridge.provider_cloud_flags())
+
+
 def is_cloud(provider_id: str) -> bool:
     """True when a provider's models live remotely (no local download).
 
