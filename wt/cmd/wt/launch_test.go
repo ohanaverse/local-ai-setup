@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -311,7 +312,7 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -341,7 +342,7 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -377,7 +378,7 @@ func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
 	defer func() { os.Stdout = old }()
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	w.Close()
@@ -861,7 +862,7 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if !called {
@@ -893,7 +894,7 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	os.Stdout = w
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}); err != nil {
 		w.Close()
 		os.Stdout = old
 		t.Fatalf("runAgentCmd() error: %v", err)
@@ -929,7 +930,7 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "shell", config.Model{}, nil); err != nil {
+	if err := runAgentCmd(cmd, "shell", config.Model{}, &config.Config{}); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if called {
@@ -942,14 +943,23 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 // summary line, then the pricing notice (issues #115/#116). Release must
 // precede the picker or the just-used model always counts as in use; the
 // summary and notice must follow the interactive steps so the prompts do not
-// scroll them away.
+// scroll them away. The picker stub writes a marker through os.Stdout so the
+// summary's position *relative to the picker* is pinned too: the seam-only
+// `order` slice cannot see it, because the summary is printed by real code
+// rather than by a seam, so a summary moved above the picker would keep every
+// other assertion green.
 func TestRunAgentCmdPostExitOrder(t *testing.T) {
 	prevNotice, prevRelease, prevPicker := emitPriceNotice, releaseSession, runStopPicker
 	t.Cleanup(func() { emitPriceNotice, releaseSession, runStopPicker = prevNotice, prevRelease, prevPicker })
 
 	var order []string
 	releaseSession = func() { order = append(order, "release") }
-	runStopPicker = func(*config.Config) { order = append(order, "picker") }
+	runStopPicker = func(*config.Config) {
+		order = append(order, "picker")
+		// Written through the redirected os.Stdout so it lands in the captured
+		// output next to the real summary line.
+		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
+	}
 	emitPriceNotice = func() { order = append(order, "notice") }
 
 	truePath, err := exec.LookPath("true")
@@ -962,15 +972,19 @@ func TestRunAgentCmdPostExitOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, nil)
+	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{})
 	w.Close()
 	os.Stdout = old
 	if runErr != nil {
 		t.Fatalf("runAgentCmd: %v", runErr)
 	}
 	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "wt: claude · ollama/qwen3.8 ·") {
-		t.Errorf("stdout = %q, want the summary line", string(out))
+	s := string(out)
+	if !strings.Contains(s, "wt: claude · ollama/qwen3.8 ·") {
+		t.Errorf("stdout = %q, want the summary line", s)
+	}
+	if i, j := strings.Index(s, "PICKER-MARKER"), strings.Index(s, "wt: claude · ollama/qwen3.8 ·"); i < 0 || j < 0 || i > j {
+		t.Errorf("stdout = %q, want the picker marker before the summary line", s)
 	}
 	if got := strings.Join(order, ","); got != "release,picker,notice" {
 		t.Errorf("order = %s, want release,picker,notice", got)
@@ -990,7 +1004,7 @@ func TestRunAgentCmdCommandAgentSkipsStopPicker(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, nil); err != nil {
+	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, &config.Config{}); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	if called {

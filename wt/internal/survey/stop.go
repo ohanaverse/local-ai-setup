@@ -162,6 +162,14 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 			}
 		}
 		if err := d.stop(ctx, cfg, e.ProviderID, e.ModelName); err != nil {
+			if ctx.Err() != nil {
+				// Cancelled mid-stop: the provider CLI was killed, not broken.
+				// Say so rather than reporting it as a failed stop. The guard at
+				// the top of the loop cannot cover this case — on the last (or
+				// only) selected model there is no next iteration to reach it.
+				fmt.Fprintln(w, "cancelled")
+				break
+			}
 			fmt.Fprintf(w, "failed: %v\n", err)
 			continue
 		}

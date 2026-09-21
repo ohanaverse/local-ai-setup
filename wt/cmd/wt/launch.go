@@ -205,8 +205,9 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 
 // runAgentCmd wires stdio through to the agent, runs it, then runs the
 // post-exit flow and propagates the agent's exit code to the caller. Order
-// (issues #115/#116): survey (skipped for native models) → stop picker →
-// summary line → after-survey stats → pricing notice. The user's
+// (issues #115/#116): release this session's refcount entry → survey (skipped
+// for native models) → stop picker → summary line → after-survey stats →
+// pricing notice. The user's
 // interactive steps come first and the informational output last, so it is
 // not scrolled away by the prompts. The duration is measured when the agent
 // exits, not when the summary prints. The survey call sits before the
