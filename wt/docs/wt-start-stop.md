@@ -29,7 +29,9 @@ wt stop <target> --yes           # skip the in-use confirmation
 ## `wt stop [model|provider]`
 
 - `<provider>/<name>` stops one running model; not running or unknown is
-  an error.
+  an error. omlx and mtplx serve one process for all models, so stopping
+  one also stops every other running model of that provider; wt prints
+  the extra models it stops.
 - A bare provider (`ollama`, `omlx`, `omlx-6bit`, `mtplx`) stops all its
   running models; nothing running exits 0 with a note. Other names are an
   error.
@@ -39,9 +41,10 @@ wt stop <target> --yes           # skip the in-use confirmation
 
 ### In-use confirmation
 
-If a live wt session uses the target (for a provider, the highest count
-across its models), wt asks `... stop anyway? [y/N]` on the controlling
-terminal, default No. `--yes` skips the question; with no terminal and no
+If live wt sessions use the target, wt asks
+`... in use by N live wt session(s) (models); stop anyway? [y/N]` on the
+controlling terminal, default No. N is the total across the models being
+stopped (a single-model provider counts once). `--yes` skips the question; with no terminal and no
 `--yes`, the command fails and says to rerun with `--yes`.
 
 ## Selection screens
