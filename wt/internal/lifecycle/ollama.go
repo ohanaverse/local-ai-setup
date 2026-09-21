@@ -38,7 +38,7 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 		return nil
 	}
 	origin, _ := localmodels.FamilyOrigin(cfg, "ollama")
-	if loaded, perr := localmodels.OllamaLoaded(e.probeClient, origin); perr == nil && !anySameModel("ollama", loaded, modelName) {
+	if loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin); perr == nil && !anySameModel("ollama", loaded, modelName) {
 		return nil
 	}
 	if msg := strings.TrimSpace(string(out)); msg != "" {

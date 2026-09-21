@@ -1,6 +1,7 @@
 package localmodels
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +15,12 @@ import (
 // ollamaModelNames returns the names in an ollama {"models":[...]} response
 // (/api/tags: pulled models; /api/ps: loaded models). Entries with a non-empty
 // remote_host are ollama.com cloud models, not local ones, and are skipped.
-func ollamaModelNames(client *http.Client, url string) ([]string, error) {
-	resp, err := client.Get(url)
+func ollamaModelNames(ctx context.Context, client *http.Client, url string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +49,10 @@ func ollamaModelNames(client *http.Client, url string) ([]string, error) {
 // OllamaLoaded returns the local models ollama has loaded right now (its
 // /api/ps), with the same parsing inventory uses. An error means the daemon
 // gave no usable answer, so an empty list must not be read as "none loaded".
-func OllamaLoaded(client *http.Client, origin string) ([]string, error) {
-	return ollamaModelNames(client, origin+"/api/ps")
+// The request honors ctx, so a cancelled caller aborts the probe instead of
+// waiting out the client timeout.
+func OllamaLoaded(ctx context.Context, client *http.Client, origin string) ([]string, error) {
+	return ollamaModelNames(ctx, client, origin+"/api/ps")
 }
 
 // scanModelDirs lists the subdirectories of dir (symlinks to directories
