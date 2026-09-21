@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -8,19 +9,27 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
-// TestMain stubs the two live seams a cmd/wt test would otherwise hit: the
+// TestMain stubs the live seams a cmd/wt test would otherwise hit: the
 // local-model inventory probe (no test may dial the developer's real
-// ollama/omlx/mtplx servers) and the non-TUI start driver (no test may start
-// a real model process). Tests that need a probe result call
+// ollama/omlx/mtplx servers) and the non-TUI start driver plus the engine
+// behind it (no test may start a real model process or let the engine's route
+// hook rewrite the real config.yaml). Tests that need a probe result call
 // stubProbeInventory; tests that exercise a start call stubStartDriver.
 func TestMain(m *testing.M) {
 	probeInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
 	startModel = func(*config.Config, catalog.Row, bool) error {
 		return errors.New("startModel not stubbed in this test")
+	}
+	// The engine behind the driver, stubbed for the same reason one level
+	// down: an unstubbed test reaching lifecycle.Start would start a real
+	// model AND let its route hook rewrite the developer's real config.yaml.
+	lifecycleStart = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
+		return errors.New("lifecycleStart not stubbed in this test")
 	}
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.

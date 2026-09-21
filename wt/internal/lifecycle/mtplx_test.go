@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 func TestMain(m *testing.M) {
@@ -27,6 +28,11 @@ func TestMain(m *testing.M) {
 		helperMtplx()
 		return
 	}
+	// No test may reach the real config.yaml or proxy through the public wrappers.
+	applyRoutes = func(*config.Config, []string, []string, litellm.Options) (litellm.Result, error) {
+		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
+	}
+	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	os.Exit(m.Run())
 }
 

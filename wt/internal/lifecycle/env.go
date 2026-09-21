@@ -26,6 +26,18 @@ type env struct {
 	inventory   func(*config.Config) localmodels.Snapshot
 	backends    map[string]backend // keyed by provider family
 
+	// onOccupantStopped fires the moment a replace has stopped the running
+	// occupant, before the new model is started. Production drops the
+	// occupant's LiteLLM route there: if the new model then fails to load,
+	// Start returns the error and no route hook runs, so the stopped occupant
+	// would otherwise keep its model_list row until the next `wt litellm
+	// sync` (which only repairs providers that refuse connections). Test envs leave it nil so the injectable cores stay
+	// hook-free. It reports whether it wrote config.yaml without restarting
+	// the proxy (a restart is owed): Start settles that with ONE bounce after
+	// the start, success or failure, instead of one per hook.
+	onOccupantStopped func(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool
+	restartOwed       bool // set by start() when the hook reported an owed restart
+
 	mtplxProc pidProcess // pidfile + log used for the spawned mtplx server
 
 	pollInterval   time.Duration
@@ -38,20 +50,21 @@ type env struct {
 
 func defaultEnv() *env {
 	return &env{
-		probeClient:    &http.Client{Timeout: 5 * time.Second},
-		chatClient:     &http.Client{},
-		lookPath:       exec.LookPath,
-		run:            runCommand,
-		runEnv:         runCommandEnv,
-		inventory:      localmodels.Inventory,
-		backends:       maps.Clone(backendsByFamily),
-		mtplxProc:      pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"},
-		pollInterval:   time.Second,
-		warmupTimeout:  600 * time.Second,
-		loadTimeout:    300 * time.Second,
-		stopTimeout:    6 * time.Second,
-		portUpTimeout:  90 * time.Second,
-		prebindTimeout: 10 * time.Second,
+		probeClient:       &http.Client{Timeout: 5 * time.Second},
+		chatClient:        &http.Client{},
+		lookPath:          exec.LookPath,
+		run:               runCommand,
+		runEnv:            runCommandEnv,
+		inventory:         localmodels.Inventory,
+		backends:          maps.Clone(backendsByFamily),
+		onOccupantStopped: routeAfterOccupantStopped,
+		mtplxProc:         pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"},
+		pollInterval:      time.Second,
+		warmupTimeout:     600 * time.Second,
+		loadTimeout:       300 * time.Second,
+		stopTimeout:       6 * time.Second,
+		portUpTimeout:     90 * time.Second,
+		prebindTimeout:    10 * time.Second,
 	}
 }
 

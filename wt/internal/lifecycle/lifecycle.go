@@ -21,6 +21,11 @@ const (
 	StageStarting         Stage = "starting"
 	StageWaiting          Stage = "waiting-for-model"
 	StageWarming          Stage = "warming"
+	// StageRouting covers the LiteLLM route update that follows a successful
+	// start: rewriting config.yaml, bouncing the proxy and waiting for it
+	// back. Without it callers keep rendering the engine's last stage
+	// ("warming the model") for the whole route window.
+	StageRouting Stage = "routing"
 )
 
 // Options tunes Start. AllowReplace permits stopping a running occupant of a
@@ -205,9 +210,24 @@ func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family st
 // model and opts.AllowReplace is false, returns *OccupancyUnknownError
 // (touching nothing) when its server accepted a connection but could not say
 // what it is serving, and otherwise stops the occupant (if any) and runs the
-// provider's start sequence.
+// provider's start sequence. After a successful start the model's LiteLLM
+// route is updated (routes.go), announced as StageRouting so callers stop
+// rendering the engine's last stage while the proxy is bounced.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
-	return start(ctx, defaultEnv(), cfg, t, opts)
+	e := defaultEnv()
+	if err := start(ctx, e, cfg, t, opts); err != nil {
+		if e.restartOwed {
+			// The occupant's route was already dropped from config.yaml; the
+			// proxy still serves the old list until it is bounced.
+			bounceRoutes(ctx, cfg)
+		}
+		return err
+	}
+	if opts.Progress != nil {
+		opts.Progress(StageRouting)
+	}
+	routeAfterStart(ctx, cfg, t, e.restartOwed)
+	return nil
 }
 
 func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Options) error {
@@ -238,14 +258,24 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 		if err := b.stop(ctx, e, cfg); err != nil {
 			return fmt.Errorf("stopping %s before starting %s: %w", occ.ModelID, t.ModelName, err)
 		}
+		// The occupant is down now. Drop its route here rather than after the
+		// start, because a start that fails from here on returns without any
+		// route hook and would strand the dead occupant's model_list row.
+		if e.onOccupantStopped != nil && e.onOccupantStopped(ctx, cfg, occ) {
+			e.restartOwed = true
+		}
 	}
 	return b.start(ctx, e, cfg, t, report)
 }
 
-// Stop stops the provider's running model (used for replacement; wt has no
-// user-facing stop command). A no-op for multi-tenant ollama.
+// Stop stops the provider's running model. A no-op for multi-tenant ollama.
+// After a successful stop the model's LiteLLM route is updated (routes.go).
 func Stop(ctx context.Context, cfg *config.Config, providerID string) error {
-	return stop(ctx, defaultEnv(), cfg, providerID)
+	if err := stop(ctx, defaultEnv(), cfg, providerID); err != nil {
+		return err
+	}
+	routeAfterStop(ctx, cfg, providerID, "")
+	return nil
 }
 
 // stop is Stop's injectable core, the same shape Start/start uses so tests can
@@ -261,9 +291,14 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 // StopModel stops one running model (modelName is the provider-side name) for
 // the post-exit stop picker. On ollama it unloads just that model; on
 // single-model providers (omlx, mtplx) it stops the provider's sole occupant.
-// The caller must only pass a model live Inventory reported running.
+// The caller must only pass a model live Inventory reported running. After a
+// successful stop the model's LiteLLM route is updated (routes.go).
 func StopModel(ctx context.Context, cfg *config.Config, providerID, modelName string) error {
-	return stopModel(ctx, defaultEnv(), cfg, providerID, modelName)
+	if err := stopModel(ctx, defaultEnv(), cfg, providerID, modelName); err != nil {
+		return err
+	}
+	routeAfterStop(ctx, cfg, providerID, modelName)
+	return nil
 }
 
 // stopModel is StopModel's injectable core, the same shape as stop/start.

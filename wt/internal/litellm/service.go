@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,6 +22,13 @@ type Options struct {
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
+	// NoRestart writes config.yaml but leaves the proxy alone: the caller owes
+	// (and performs) the restart itself, so several route changes in one
+	// operation cost one bounce.
+	NoRestart bool
+	// ForceRestart restarts the proxy even when this call changed nothing —
+	// the settling restart for a run of earlier NoRestart writes.
+	ForceRestart bool
 }
 
 // Outcome is one requested id's result. Action is "exposed" or "unexposed"
@@ -136,7 +144,7 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 	if err != nil {
 		return Result{}, err
 	}
-	if res.Changed {
+	if (res.Changed && !o.NoRestart) || o.ForceRestart {
 		restart := o.Restart
 		if restart == nil {
 			restart = Restart
@@ -167,13 +175,34 @@ func LocalModels(cfg *config.Config) []config.Model {
 }
 
 // ModelFor finds the registry model for a provider and provider-side name.
+// An exact match wins. Otherwise it falls back to the same per-family name
+// matching the live inventory uses (ollama's implicit ":latest" tag, a path-
+// or org-prefixed omlx/mtplx spelling), in either direction, so a target
+// spelled slightly differently from the registry still gets its route. The
+// fallback applies only when exactly one model matches: an ambiguous name
+// routes nothing rather than the wrong model.
 func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, bool) {
 	for _, m := range cfg.Models {
 		if m.ProviderID == providerID && m.ModelName == modelName {
 			return m, true
 		}
 	}
-	return config.Model{}, false
+	match := localmodels.NameMatches
+	if providerID == "ollama" {
+		match = localmodels.OllamaNameMatches
+	}
+	var found config.Model
+	n := 0
+	for _, m := range cfg.Models {
+		if m.ProviderID == providerID && (match(modelName, m.ModelName) || match(m.ModelName, modelName)) {
+			found = m
+			n++
+		}
+	}
+	if n != 1 {
+		return config.Model{}, false
+	}
+	return found, true
 }
 
 // Sync makes the local-model routes match reality: every id in `running`

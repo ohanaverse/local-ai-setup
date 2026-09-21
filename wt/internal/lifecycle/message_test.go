@@ -38,7 +38,7 @@ func TestStartErrorMessageMapsEngineFailures(t *testing.T) {
 // phrase and the zero value falls back to a generic one. A missing case would
 // render an empty progress segment while the user waits on a slow warmup.
 func TestStageLabelCoversEveryStage(t *testing.T) {
-	stages := []Stage{StageStoppingOccupant, StageStarting, StageWaiting, StageWarming}
+	stages := []Stage{StageStoppingOccupant, StageStarting, StageWaiting, StageWarming, StageRouting}
 	seen := map[string]bool{}
 	for _, s := range stages {
 		label := StageLabel(s)

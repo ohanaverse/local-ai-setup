@@ -239,13 +239,17 @@ func TestStartProgressReportsEachStage(t *testing.T) {
 	report := startProgress("omlx/qwen3.8", done, time.Now().Add(-12*time.Second))
 	report(lifecycle.StageStarting)
 	report(lifecycle.StageWarming)
+	// The post-engine route window has its own stage: the driver must report
+	// it truthfully instead of leaving "warming the model" on screen while wt
+	// rewrites config.yaml and bounces the proxy.
+	report(lifecycle.StageRouting)
 	close(done)
 	_ = w.Close()
 
 	buf, _ := io.ReadAll(r)
 	_ = r.Close()
 	got := string(buf)
-	for _, want := range []string{"starting omlx/qwen3.8", "starting the server", "warming the model", "(12s)"} {
+	for _, want := range []string{"starting omlx/qwen3.8", "starting the server", "warming the model", "updating LiteLLM routes", "(12s)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("progress output = %q, want it to contain %q", got, want)
 		}

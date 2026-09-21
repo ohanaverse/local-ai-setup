@@ -105,7 +105,10 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 		}
 	}
 	// Running is untrustworthy for a family whose probe did not fully
-	// succeed; leave its models' routes exactly as they are.
+	// succeed; leave its models' routes exactly as they are. The exception is
+	// a server that refused the connection: nothing is listening, so nothing
+	// is running, and its routes are stale and must go (the case a provider
+	// stopped outside wt leaves behind).
 	var untouched []string
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
@@ -116,7 +119,7 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 			untouched = append(untouched, m.ID)
 			continue
 		}
-		if snap.Providers[fam] != localmodels.StatusOK {
+		if snap.Providers[fam] != localmodels.StatusOK && !snap.Down[fam] {
 			untouched = append(untouched, m.ID)
 			skipped[fam] = true
 		}

@@ -217,6 +217,34 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 	}
 }
 
+// TestLitellmSyncRemovesRoutesOfRefusedProvider pins the repair case sync
+// exists for: a provider stopped outside wt (server refuses connections, so
+// its probe is not StatusOK but positively nothing is running) must lose its
+// stale routes, with no "probe did not succeed" warning. Unlike an ambiguous
+// probe failure, a refused connection is proof the server is down.
+func TestLitellmSyncRemovesRoutesOfRefusedProvider(t *testing.T) {
+	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, additional_drop_params: [reasoning_effort]}\n" +
+		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	p := litellmEnv(t, body)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusUnreachable},
+		Down:      map[string]bool{"ollama": true},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma:9b", ModelName: "gemma:9b", Registered: true, Running: false},
+		},
+	})
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), "ollama/gemma:9b") {
+		t.Fatalf("stale route of a refused provider survived sync:\n%s", b)
+	}
+	if strings.Contains(errOut.String(), "probe did not succeed") {
+		t.Fatalf("unexpected probe warning for a provider known to be down: %q", errOut.String())
+	}
+}
+
 // TestLitellmSyncNoWarningForUnprobedProvider pins that a registered model on
 // a provider with no probe family (retired llamacpp) is left alone silently.
 // Before, it produced `provider "" probe did not succeed` in every sync —

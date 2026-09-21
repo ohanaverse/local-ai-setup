@@ -188,14 +188,24 @@ func (f *File) RoutedIDs() []string {
 
 // SetRow adds the row keyed by id, or replaces the existing one in place,
 // carrying over any user-managed presence-based params the new row lacks.
+// LiteLLM load-balances across rows sharing a model_name, so a hand-edited
+// file with duplicates would keep routing to the stale copies: the first
+// mapping row is replaced and every later duplicate is dropped (RemoveRow
+// likewise removes all of them).
 func (f *File) SetRow(id string, row *yaml.Node) error {
 	ml, err := f.modelList()
 	if err != nil {
 		return err
 	}
-	for i, old := range ml.Content {
-		if rowName(old) != id {
+	first := -1
+	kept := ml.Content[:0]
+	for _, old := range ml.Content {
+		if old.Kind != yaml.MappingNode || rowName(old) != id {
+			kept = append(kept, old)
 			continue
+		}
+		if first >= 0 {
+			continue // duplicate of a row already replaced
 		}
 		oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
 		if oldParams != nil && newParams != nil {
@@ -206,10 +216,13 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 			}
 		}
 		row.HeadComment, row.LineComment, row.FootComment = old.HeadComment, old.LineComment, old.FootComment
-		ml.Content[i] = row
-		return nil
+		first = len(kept)
+		kept = append(kept, row)
 	}
-	ml.Content = append(ml.Content, row)
+	ml.Content = kept
+	if first < 0 {
+		ml.Content = append(ml.Content, row)
+	}
 	return nil
 }
 

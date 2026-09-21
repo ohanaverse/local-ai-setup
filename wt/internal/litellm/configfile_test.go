@@ -113,6 +113,36 @@ func TestSetRowPreservesUserManagedParams(t *testing.T) {
 	}
 }
 
+// TestSetRowCollapsesDuplicateRows pins that re-exposing an id whose
+// model_name appears more than once leaves exactly one row (in the first
+// row's position). LiteLLM load-balances across same-named rows, so a
+// surviving stale duplicate would keep sending half the requests to the old
+// backend after an expose.
+func TestSetRowCollapsesDuplicateRows(t *testing.T) {
+	// The extra row must sit inside model_list, so splice it before general_settings.
+	dup := strings.Replace(baseConfig, "general_settings:", `  - model_name: ollama/old:1
+    litellm_params:
+      model: ollama_chat/old:1
+      api_base: http://stale:11434
+general_settings:`, 1)
+	f, err := Open(writeConfig(t, dup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	row, _ := BuildEntry(config.Model{ID: "ollama/old:1", ProviderID: "ollama", ModelName: "old:1"}, cfg.Providers[0])
+	if err := f.SetRow("ollama/old:1", row); err != nil {
+		t.Fatal(err)
+	}
+	ids := f.RoutedIDs()
+	if len(ids) != 2 || ids[0] != "ollama/old:1" || ids[1] != "keep/me" {
+		t.Fatalf("RoutedIDs = %v, want [ollama/old:1 keep/me]", ids)
+	}
+	if strings.Contains(enc(t, f), "stale") {
+		t.Fatal("stale duplicate row survived SetRow")
+	}
+}
+
 // TestRemoveRowAndNoOps pins removal (only the named row goes) and the no-op
 // contract: removing an absent id changes nothing, so no write and no proxy
 // restart follow.
