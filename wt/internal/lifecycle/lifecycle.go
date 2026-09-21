@@ -92,9 +92,10 @@ type backend interface {
 	start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error
 }
 
-// sameModel reports whether two provider-side names denote the same model under
-// the family's matching rule.
-func sameModel(family, a, b string) bool {
+// SameModel reports whether two provider-side names denote the same model under
+// the family's matching rule (exported so internal/survey counts usage the way
+// the engine matches occupants).
+func SameModel(family, a, b string) bool {
 	if family == "ollama" {
 		return localmodels.OllamaNameMatches(a, b) || localmodels.OllamaNameMatches(b, a)
 	}
@@ -126,7 +127,7 @@ func isRunning(snap localmodels.Snapshot, family string, t Target) bool {
 		return false
 	}
 	for _, en := range snap.Entries {
-		if en.Running && localmodels.Family(en.ProviderID) == family && sameModel(family, en.ModelName, t.ModelName) {
+		if en.Running && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
 			return true
 		}
 	}
@@ -162,7 +163,7 @@ func Occupant(t Target, snap localmodels.Snapshot) (localmodels.Entry, bool) {
 		if !en.Running || localmodels.Family(en.ProviderID) != family {
 			continue
 		}
-		if sameModel(family, en.ModelName, t.ModelName) {
+		if SameModel(family, en.ModelName, t.ModelName) {
 			continue
 		}
 		return en, true
@@ -191,7 +192,7 @@ func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family st
 		return localmodels.Entry{}, false, true
 	}
 	for _, id := range ids {
-		if sameModel(family, id, t.ModelName) {
+		if SameModel(family, id, t.ModelName) {
 			continue // the target itself is already served: not an occupant
 		}
 		return localmodels.Entry{ProviderID: t.ProviderID, ModelID: id, ModelName: id, Running: true}, true, false

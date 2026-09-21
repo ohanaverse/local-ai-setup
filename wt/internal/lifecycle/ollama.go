@@ -54,7 +54,7 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 	}
 	loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin)
 	if perr == nil {
-		if slices.ContainsFunc(loaded, func(n string) bool { return sameModel("ollama", n, modelName) }) {
+		if slices.ContainsFunc(loaded, func(n string) bool { return SameModel("ollama", n, modelName) }) {
 			if cliErr != nil {
 				return cliErr
 			}
