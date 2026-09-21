@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 // smokeFixtureConfig builds a one-agent, two-model config: one model is
@@ -475,5 +477,20 @@ func TestSmokeCmdFlags(t *testing.T) {
 	}
 	if v, _ := cmd.Flags().GetBool("json"); v {
 		t.Fatal("json flag default should be false")
+	}
+}
+
+// TestSmokePickerSkipsAgentlessRouteCheck verifies wt smoke's interactive
+// picker is the route-skipping one (tui.PickStartModel). smoke.Candidates has
+// already admitted each row using a real agent's protocols; the picker resolves
+// routes with no agent, which can fail where the agent-specific route succeeds
+// (a provider with no direct base_url that a protocol-mismatched agent is
+// forced through LiteLLM for). With route checking on, the picker would block a
+// row `wt smoke <id>` accepts.
+func TestSmokePickerSkipsAgentlessRouteCheck(t *testing.T) {
+	got := reflect.ValueOf(pickModelTUI).Pointer()
+	want := reflect.ValueOf(tui.PickStartModel).Pointer()
+	if got != want {
+		t.Fatalf("pickModelTUI is not tui.PickStartModel: smoke's picker would re-check routes without an agent and block rows Candidates admitted")
 	}
 }

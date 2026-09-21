@@ -29,10 +29,12 @@ import (
 // the test process.
 var smokeExit = os.Exit
 
-// pickModelTUI is a test seam wrapping tui.PickModel (the same decorated
-// picker the wt agent flow uses): production dials the real TUI, which
-// needs a TTY; tests stub it to avoid one.
-var pickModelTUI = tui.PickModel
+// pickModelTUI is a test seam wrapping tui.PickStartModel: production dials the
+// real TUI, which needs a TTY; tests stub it to avoid one. The route-skipping
+// picker is deliberate — smoke.Candidates already applied each agent's own
+// route rules, and the agent-less route check in tui.PickModel could block a
+// row that an agent's forced-through-LiteLLM route accepts.
+var pickModelTUI = tui.PickStartModel
 
 // pickStartModelTUI is the test seam for `wt start`'s picker (tui.PickStartModel:
 // no launch-route gating, since starting is not launching).
