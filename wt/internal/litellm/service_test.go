@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
@@ -222,5 +223,35 @@ litellm_settings:
 	f, _ := Open(p)
 	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
 		t.Fatalf("routed = %s", got)
+	}
+}
+
+// TestSyncDecidesUnderTheLock pins that Sync reads the current routes inside
+// the lock: a route added by another process while Sync waits for the lock
+// (a lifecycle hook exposing a just-started model) is seen and handled, not
+// judged against a stale pre-lock read. The sleep only gives Sync time to
+// reach the lock; a slow scheduler can make the test pass vacuously against
+// the old code, never fail against the fixed code.
+func TestSyncDecidesUnderTheLock(t *testing.T) {
+	o, _, p := opts(t, "model_list: []\n")
+	done := make(chan error, 1)
+	err := WithLock(p, func() error {
+		go func() {
+			_, err := Sync(testConfig(), nil, o)
+			done <- err
+		}()
+		time.Sleep(100 * time.Millisecond)
+		// Another process exposes a local model while Sync waits.
+		return os.WriteFile(p, []byte("model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b}\n"), 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	if ids := f.RoutedIDs(); len(ids) != 0 {
+		t.Fatalf("routed = %v, want the not-running model's route removed", ids)
 	}
 }

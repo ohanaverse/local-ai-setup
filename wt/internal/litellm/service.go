@@ -92,6 +92,14 @@ func Check(cfg *config.Config, ids []string, skipReady bool) []Outcome {
 // returns (Result{}, err) with nothing changed. The file is written, and the
 // proxy restarted, only when the document actually changed.
 func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) {
+	return applyPlanned(cfg, func(*File) ([]string, []string) { return add, remove }, o)
+}
+
+// applyPlanned is Apply with the add/remove decision made by plan against the
+// document as read under the lock, so callers that derive the change from the
+// current routes (Sync) never act on a snapshot another process has since
+// changed.
+func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o Options) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(path, func() error {
@@ -99,6 +107,7 @@ func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) 
 		if err != nil {
 			return err
 		}
+		add, remove := plan(f)
 		for _, id := range remove {
 			f.RemoveRow(id)
 			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "unexposed"})
@@ -171,23 +180,20 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // (that is a registry local model) gets a route; every other local model that
 // currently has a route loses it. Cloud and unrelated rows are untouched.
 func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
-	f, err := Open(o.path())
-	if err != nil {
-		return Result{}, err
-	}
-	routed := f.RoutedIDs()
-	var add, remove []string
-	for _, m := range LocalModels(cfg) {
-		switch {
-		case slices.Contains(o.Untouched, m.ID):
-		case slices.Contains(running, m.ID):
-			add = append(add, m.ID)
-		case slices.Contains(routed, m.ID):
-			remove = append(remove, m.ID)
-		}
-	}
 	o.SkipReadyGate = true
-	return Apply(cfg, add, remove, o)
+	return applyPlanned(cfg, func(f *File) (add, remove []string) {
+		routed := f.RoutedIDs()
+		for _, m := range LocalModels(cfg) {
+			switch {
+			case slices.Contains(o.Untouched, m.ID):
+			case slices.Contains(running, m.ID):
+				add = append(add, m.ID)
+			case slices.Contains(routed, m.ID):
+				remove = append(remove, m.ID)
+			}
+		}
+		return add, remove
+	}, o)
 }
 
 // Providers maps each LiteLLM-mapped provider id to whether it is a cloud
