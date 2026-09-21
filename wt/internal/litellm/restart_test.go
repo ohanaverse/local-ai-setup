@@ -34,6 +34,8 @@ func TestRestartCommandPrecedence(t *testing.T) {
 // source of truth and a stale proxy must not fail wt start/stop.
 func TestRestartNeverFails(t *testing.T) {
 	t.Setenv("WT_LITELLM_RESTART_CMD", "mycmd")
+	orig := runShell
+	t.Cleanup(func() { runShell = orig })
 	var ran string
 	runShell = func(_ context.Context, cmd string) error { ran = cmd; return nil }
 	if w := Restart(); len(w) != 0 || ran != "mycmd" {

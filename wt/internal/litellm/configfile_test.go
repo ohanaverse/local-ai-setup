@@ -282,3 +282,65 @@ func TestSaveRefusesOnEncodeError(t *testing.T) {
 		t.Fatalf("file modified after failed Save:\n%s", got)
 	}
 }
+
+// TestOpenRefusesMultiDocument covers a two-document config.yaml: Open must
+// return ErrInvalid (as Python's ruamel does), and an Apply against it must
+// leave the file byte-identical. Without this, yaml.Unmarshal reads only the
+// first document and Save silently deletes the rest of the user's config.
+func TestOpenRefusesMultiDocument(t *testing.T) {
+	body := "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n---\n# second doc\nother: 1\n"
+	p := writeConfig(t, body)
+	if _, err := Open(p); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Open(multi-doc) err = %v, want ErrInvalid", err)
+	}
+	n := 0
+	res, err := Apply(testConfig(), nil, []string{"a/b"}, Options{Path: p, Restart: func() []string { n++; return nil }})
+	if !errors.Is(err, ErrInvalid) || res.Changed || n != 0 {
+		t.Fatalf("Apply err=%v changed=%v restarts=%d", err, res.Changed, n)
+	}
+	if got, _ := os.ReadFile(p); string(got) != body {
+		t.Fatalf("multi-doc file modified:\n%s", got)
+	}
+}
+
+// TestSetRowKeepsRowComments pins that re-exposing an existing row keeps the
+// comments attached to the old row node (ruamel does), so hand-written notes
+// above a model are not lost every time the model starts.
+func TestSetRowKeepsRowComments(t *testing.T) {
+	p := writeConfig(t, "model_list:\n  # my note about gemma\n  - model_name: ollama/gemma:9b\n    litellm_params:\n      model: old\n")
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	row, _ := BuildEntry(cfg.Models[0], cfg.Providers[0])
+	if err := f.SetRow("ollama/gemma:9b", row); err != nil {
+		t.Fatal(err)
+	}
+	if out := enc(t, f); !strings.Contains(out, "# my note about gemma") {
+		t.Fatalf("row comment lost:\n%s", out)
+	}
+}
+
+// TestEnsureSettingsKeepsInlineComment pins that rewriting an enforced
+// setting's value keeps its inline comment (drop_params: false # note), which
+// ruamel preserves; otherwise every write eats the user's annotations.
+func TestEnsureSettingsKeepsInlineComment(t *testing.T) {
+	f, _ := Open(writeConfig(t, "model_list: []\nlitellm_settings:\n  drop_params: false # my note\n"))
+	f.EnsureSettings()
+	out := enc(t, f)
+	if !strings.Contains(out, "drop_params: true # my note") {
+		t.Fatalf("inline comment lost:\n%s", out)
+	}
+}
+
+// TestIsLoopbackCaseInsensitive pins that hostnames are lower-cased before the
+// loopback check (Python's urlparse().hostname does), so http://LOCALHOST:8003
+// still gets use_chat_completions_api.
+func TestIsLoopbackCaseInsensitive(t *testing.T) {
+	f, _ := Open(writeConfig(t, "model_list:\n  - model_name: b\n    litellm_params: {model: openai/b, api_base: \"http://LOCALHOST:8003/v1\"}\n"))
+	f.EnsureSettings()
+	if out := enc(t, f); !strings.Contains(out, "use_chat_completions_api: true") {
+		t.Fatalf("uppercase loopback host not recognised:\n%s", out)
+	}
+}

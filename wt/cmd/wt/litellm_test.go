@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,9 +102,11 @@ func TestLitellmExposeGateAndDryRun(t *testing.T) {
 // route and an unrouted-but-stopped one keeps none.
 func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
-	stubProbeInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "ollama", ModelID: "ollama/gemma:9b", ModelName: "gemma:9b", Registered: true, Running: true},
-	}})
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma:9b", ModelName: "gemma:9b", Registered: true, Running: true},
+		}})
 	var out, errOut bytes.Buffer
 	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false); err != nil {
 		t.Fatal(err)
@@ -133,5 +136,83 @@ func TestLitellmListAndProviders(t *testing.T) {
 	}
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil || !got.Providers["openrouter"].Cloud || got.Providers["ollama"].Cloud {
 		t.Fatalf("providers = %s (%v)", out.String(), err)
+	}
+}
+
+// TestLitellmMutatorsRefuseOnConfigError pins that expose/unexpose/sync refuse
+// when the registry failed to load (a.cfgErr), like every sibling command.
+// Without the guard they act on an empty registry: expose reports "not found"
+// and unexpose/sync still write config.yaml and restart the proxy.
+func TestLitellmMutatorsRefuseOnConfigError(t *testing.T) {
+	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
+	p := litellmEnv(t, body)
+	for _, args := range [][]string{{"expose", "ollama/gemma:9b"}, {"unexpose", "ollama/gemma:9b"}, {"sync"}} {
+		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml")})
+		var out, errOut bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&errOut)
+		c.SetArgs(args)
+		err := c.Execute()
+		if err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
+			t.Fatalf("%v: err = %v, want config error refusal", args, err)
+		}
+		if b, _ := os.ReadFile(p); string(b) != body {
+			t.Fatalf("%v modified config.yaml:\n%s", args, b)
+		}
+	}
+}
+
+// TestLitellmRejectsBlankIDs pins that a blank or whitespace-only id is
+// refused before anything is touched: an empty unexpose id would otherwise
+// match (and delete) every row that lacks a model_name.
+func TestLitellmRejectsBlankIDs(t *testing.T) {
+	body := "model_list:\n  - litellm_params: {model: x}\n  - model_name: a/b\n    litellm_params: {model: y}\n"
+	p := litellmEnv(t, body)
+	for _, expose := range []bool{true, false} {
+		var out, errOut bytes.Buffer
+		err := runLitellmChange(&out, &errOut, litellmTestConfig(), expose, []string{"a/b", "  "}, litellmFlags{SkipReadyGate: true})
+		if err == nil || !strings.Contains(err.Error(), "blank") {
+			t.Fatalf("expose=%v err = %v, want blank-id rejection", expose, err)
+		}
+		if b, _ := os.ReadFile(p); string(b) != body {
+			t.Fatalf("expose=%v modified config.yaml:\n%s", expose, b)
+		}
+	}
+}
+
+// TestLitellmSyncLeavesUnreachableFamilyAlone pins that when a provider
+// family's probe did not succeed (Running is untrustworthy), sync neither
+// removes its models' routes nor restarts the proxy, and prints a warning
+// naming the family. Otherwise a down ollama daemon wipes every ollama route.
+func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
+	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, additional_drop_params: [reasoning_effort]}\n" +
+		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	p := litellmEnv(t, body)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusUnreachable},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma:9b", ModelName: "gemma:9b", Registered: true, Running: false},
+		},
+	})
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), true); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != body {
+		t.Fatalf("route removed for unreachable family:\n%s", b)
+	}
+	var doc struct {
+		Changed  bool
+		Warnings []string
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Changed || len(doc.Warnings) != 1 || !strings.Contains(doc.Warnings[0], "ollama") {
+		t.Fatalf("stdout = %q (%v), want JSON with changed=false and an ollama warning", out.String(), err)
+	}
+	out.Reset()
+	if err := runLitellmSync(&out, &errOut, litellmTestConfig(), false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut.String(), "warning") || !strings.Contains(errOut.String(), "ollama") {
+		t.Fatalf("no text-mode warning naming the family: %q", errOut.String())
 	}
 }

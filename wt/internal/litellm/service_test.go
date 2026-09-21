@@ -179,3 +179,48 @@ func TestModelForAndLocalModels(t *testing.T) {
 		t.Fatalf("Providers = %v (openrouter must be cloud, ollama local)", p)
 	}
 }
+
+// TestSyncRestartsOnceAndSkipsReadyGate pins that a Sync that changes routes
+// restarts the proxy exactly once, and that a running local model that is not
+// ready in the registry still gets its route (Sync passes SkipReadyGate: the
+// model is verifiably running). Each restart kills in-flight agent requests.
+func TestSyncRestartsOnceAndSkipsReadyGate(t *testing.T) {
+	o, restarts, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	if testConfig().ReadyFlag("mtplx/Youssofal--Q") {
+		t.Fatal("precondition: mtplx model must be not-ready")
+	}
+	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
+	if err != nil || !res.Changed || *restarts != 1 {
+		t.Fatalf("err=%v changed=%v restarts=%d, want nil/true/1", err, res.Changed, *restarts)
+	}
+	f, _ := Open(p)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "mtplx/Youssofal--Q" {
+		t.Fatalf("routed = %s", got)
+	}
+}
+
+// TestSyncLeavesUntouchedModelsAlone pins that ids in Options.Untouched are
+// neither removed (existing route survives while not "running") nor added
+// (running but untouched gets no new route). The caller uses this for
+// families whose provider probe failed, where Running cannot be trusted.
+func TestSyncLeavesUntouchedModelsAlone(t *testing.T) {
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b, additional_drop_params: [reasoning_effort]}
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+`)
+	o.Untouched = []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}
+	res, err := Sync(testConfig(), []string{"mtplx/Youssofal--Q"}, o)
+	if err != nil || res.Changed {
+		t.Fatalf("err=%v changed=%v, want nothing changed", err, res.Changed)
+	}
+	f, _ := Open(p)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
+		t.Fatalf("routed = %s", got)
+	}
+}

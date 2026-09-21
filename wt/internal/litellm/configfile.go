@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -69,8 +70,15 @@ func Open(path string) (*File, error) {
 		return nil, err
 	}
 	f := &File{path: path}
-	if err := yaml.Unmarshal(data, &f.doc); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&f.doc); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: %s: %v", ErrInvalid, path, err)
+	}
+	// Saving would silently drop every document after the first (ruamel
+	// refuses such a stream too), so refuse to open it.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: %s: expected a single document in the stream", ErrInvalid, path)
 	}
 	if f.doc.Kind != yaml.DocumentNode || len(f.doc.Content) == 0 || f.doc.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%w: %s is not a mapping", ErrInvalid, path)
@@ -124,6 +132,10 @@ func mapGet(m *yaml.Node, key string) *yaml.Node {
 func mapSet(m *yaml.Node, key string, val *yaml.Node) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {
+			// Overwriting a value keeps the old node's comments (an inline
+			// "# note" after the value would otherwise vanish).
+			old := m.Content[i+1]
+			val.HeadComment, val.LineComment, val.FootComment = old.HeadComment, old.LineComment, old.FootComment
 			m.Content[i+1] = val
 			return
 		}
@@ -193,6 +205,7 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 				}
 			}
 		}
+		row.HeadComment, row.LineComment, row.FootComment = old.HeadComment, old.LineComment, old.FootComment
 		ml.Content[i] = row
 		return nil
 	}
@@ -222,7 +235,7 @@ func isLoopback(n *yaml.Node) bool {
 		return false
 	}
 	u, err := url.Parse(n.Value)
-	return err == nil && loopbackHosts[u.Hostname()]
+	return err == nil && loopbackHosts[strings.ToLower(u.Hostname())]
 }
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two

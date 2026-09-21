@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
 
@@ -72,6 +74,11 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON bool) error
 }
 
 func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, ids []string, fl litellmFlags) error {
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			return errors.New("blank model id: refusing to touch config.yaml")
+		}
+	}
 	o := litellm.Options{SkipReadyGate: fl.SkipReadyGate}
 	var res litellm.Result
 	var err error
@@ -90,15 +97,35 @@ func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, id
 }
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) error {
+	snap := probeInventory(cfg)
 	var running []string
-	for _, e := range probeInventory(cfg).Entries {
+	for _, e := range snap.Entries {
 		if e.Running && e.Registered {
 			running = append(running, e.ModelID)
 		}
 	}
-	res, err := litellm.Sync(cfg, running, litellm.Options{})
+	// Running is untrustworthy for a family whose probe did not fully
+	// succeed; leave its models' routes exactly as they are.
+	var untouched []string
+	skipped := map[string]bool{}
+	for _, m := range litellm.LocalModels(cfg) {
+		fam := localmodels.Family(m.ProviderID)
+		if snap.Providers[fam] != localmodels.StatusOK {
+			untouched = append(untouched, m.ID)
+			skipped[fam] = true
+		}
+	}
+	res, err := litellm.Sync(cfg, running, litellm.Options{Untouched: untouched})
 	if err != nil {
 		return err
+	}
+	fams := make([]string, 0, len(skipped))
+	for f := range skipped {
+		fams = append(fams, f)
+	}
+	sort.Strings(fams)
+	for _, f := range fams {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 	}
 	return reportLitellm(out, errOut, res, asJSON)
 }
@@ -151,6 +178,9 @@ func litellmCmd(a *app) *cobra.Command {
 		cc := &cobra.Command{
 			Use: use, Short: short, Args: cobra.MinimumNArgs(1), SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				if a.cfgErr != nil {
+					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				}
 				return runLitellmChange(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, expose, args, fl)
 			},
 		}
@@ -165,6 +195,9 @@ func litellmCmd(a *app) *cobra.Command {
 	syncC := &cobra.Command{
 		Use: "sync", Short: "Make local-model routes match the running models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if a.cfgErr != nil {
+				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+			}
 			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON)
 		},
 	}

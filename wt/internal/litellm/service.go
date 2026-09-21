@@ -18,6 +18,9 @@ type Options struct {
 	Path          string
 	SkipReadyGate bool
 	Restart       func() []string
+	// Untouched lists model ids Sync must neither add nor remove (their
+	// running state is unknown, e.g. the provider probe failed).
+	Untouched []string
 }
 
 // Outcome is one requested id's result. Action is "exposed" or "unexposed"
@@ -176,6 +179,7 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 	var add, remove []string
 	for _, m := range LocalModels(cfg) {
 		switch {
+		case slices.Contains(o.Untouched, m.ID):
 		case slices.Contains(running, m.ID):
 			add = append(add, m.ID)
 		case slices.Contains(routed, m.ID):
