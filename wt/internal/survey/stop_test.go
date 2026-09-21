@@ -354,12 +354,24 @@ func TestStopPickerCancelledLastStopReportsCancelled(t *testing.T) {
 	}
 }
 
-// TestReleaseSessionWarnsWhenStateIsUnwritable verifies a failed refcount
-// release warns on stderr and never panics or aborts the exit path. The release
-// is best-effort by design — the next launch's Sweep prunes a dead pid's entry —
+// TestReleaseSessionWarnsWhenReleaseFails verifies a failed refcount release
+// warns on stderr and never panics or aborts the exit path. The release is
+// best-effort by design — the next launch's Sweep prunes a dead pid's entry —
 // but the warning is the user's only signal that the "in use" column may be
 // stale, and this branch previously had no coverage at all.
-func TestReleaseSessionWarnsWhenStateIsUnwritable(t *testing.T) {
+//
+// It drives Release's *read*-error path, not a write failure: a directory where
+// the state file belongs makes os.ReadFile fail EISDIR, which is not
+// os.IsNotExist, so Release propagates it and ReleaseSession warns. A genuine
+// write failure cannot be driven this way (WriteFileAtomic renames over its
+// target), and both branches share the one warning string, so the name stays
+// branch-neutral.
+//
+// The assertion pins the warning's whole shape — prefix, separator and the
+// error value — because this is user-facing stderr text on the post-exit path:
+// a reword that drops the "note: " cue or the underlying cause must fail here,
+// not pass silently.
+func TestReleaseSessionWarnsWhenReleaseFails(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	// A *directory* where the state file belongs makes the read fail with
@@ -385,7 +397,21 @@ func TestReleaseSessionWarnsWhenStateIsUnwritable(t *testing.T) {
 	}
 	got, _ := io.ReadAll(r)
 	r.Close()
-	if !strings.Contains(string(got), "refcount state not released") {
-		t.Errorf("stderr = %q, want the refcount release warning", got)
+	// Pin the full prefix — "note: ", the message, and the ": " separator
+	// including its trailing space — rather than a bare substring, so a
+	// reworded warning cannot pass silently.
+	const wantPrefix = "note: refcount state not released: "
+	if !strings.HasPrefix(string(got), wantPrefix) {
+		t.Fatalf("stderr = %q, want the refcount release warning prefixed %q", got, wantPrefix)
+	}
+	// The remainder must carry the underlying cause, so the %v argument itself
+	// is guarded and not just the literal prose: EISDIR's text proves the read
+	// error is actually threaded through.
+	detail := strings.TrimSuffix(strings.TrimPrefix(string(got), wantPrefix), "\n")
+	if detail == "" {
+		t.Errorf("stderr = %q, want a non-empty error detail after %q", got, wantPrefix)
+	}
+	if !strings.Contains(detail, "is a directory") {
+		t.Errorf("stderr = %q, want the read error (EISDIR) threaded through after %q", got, wantPrefix)
 	}
 }
