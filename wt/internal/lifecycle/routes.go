@@ -15,17 +15,21 @@ import (
 
 // Seams: production talks to the real config.yaml, proxy and stderr.
 var (
-	applyRoutes           = litellm.Apply
-	waitProxy             = litellm.WaitReady
-	probeProxy            = litellm.Listening
-	routesWarn  io.Writer = os.Stderr
+	applyRoutes            = litellm.Apply
+	restartProxy           = litellm.RestartContext
+	waitProxy              = litellm.WaitReady
+	probeProxy             = litellm.Listening
+	routesWarn   io.Writer = os.Stderr
 )
 
 const (
 	// proxyReadyTimeout bounds the wait for the proxy after a route change.
 	proxyReadyTimeout = 30 * time.Second
-	// proxyAliveTimeout bounds the single probe taken before the change.
-	// Short on purpose: it is paid on every start and stop. It only has to
+	// settleTimeout bounds the settling restart bounceRoutes runs after a
+	// failed or cancelled start, on a context detached from the caller's.
+	settleTimeout = 15 * time.Second
+	// proxyAliveTimeout bounds the single probe taken just before a restart.
+	// Short on purpose: it is paid on every restart. It only has to
 	// tell "nothing there" (refused: no wait) from "something there" (any
 	// other outcome, even a timeout: wait for it after the restart).
 	proxyAliveTimeout = 1500 * time.Millisecond
@@ -55,6 +59,10 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 	m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName)
 	if !ok {
 		fmt.Fprintf(routesWarn, "wt: %s/%s is not in the registry; no LiteLLM route added (register it with modelman)\n", t.ProviderID, t.ModelName)
+		if restartOwed {
+			// No route to add, but the occupant's removal is still unsettled.
+			bounceRoutes(ctx, cfg)
+		}
 		return
 	}
 	var remove []string
@@ -102,8 +110,13 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 }
 
 // bounceRoutes restarts the proxy (and waits for it) to settle deferred route
-// writes when the start that followed them failed.
+// writes when the start that followed them failed or found nothing to route.
+// It runs on a context detached from ctx: the common trigger is the user's
+// Ctrl+C, and a cancelled ctx would kill the restart at once, leaving the
+// proxy serving the removed route. The detached context is bounded.
 func bounceRoutes(ctx context.Context, cfg *config.Config) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
 	applyAndReport(ctx, cfg, nil, nil, restartForced)
 }
 
@@ -122,14 +135,16 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 
 // applyAndReport reports whether config.yaml was written.
 func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string, mode restartMode) bool {
-	// Probe the proxy ONCE before the write (Listening: only a refused
-	// connection counts as down, so a slow proxy is still waited for). Waiting for readiness afterwards
-	// is only meaningful when a proxy was actually serving: a configured URL
-	// with nothing listening (routing may even be switched off) used to cost
-	// every start and stop the full proxyReadyTimeout waiting for a process
-	// that was never up. The restart itself stays best-effort either way.
+	// The proxy is probed once, lazily, just before a restart (Listening: only
+	// a refused connection counts as down, so a slow proxy is still waited
+	// for). Waiting for readiness afterwards is only meaningful when a proxy
+	// was actually serving: a configured URL with nothing listening (routing
+	// may even be switched off) used to cost every start and stop the full
+	// proxyReadyTimeout. Probing inside the restart hook means writes that
+	// never restart (deferred, or nothing changed) pay no probe at all. The
+	// restart itself stays best-effort either way.
 	url := cfg.LitellmBaseURL()
-	wasUp := url != "" && probeProxy(ctx, url, proxyAliveTimeout)
+	wasUp := false
 
 	res, err := applyRoutes(cfg, add, remove, litellm.Options{
 		SkipReadyGate: true,
@@ -137,7 +152,10 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 		ForceRestart:  mode == restartForced,
 		// The caller's ctx, so Ctrl+C during a start/stop does not keep
 		// paying for the restart command's full run time.
-		Restart: func() []string { return litellm.RestartContext(ctx) },
+		Restart: func() []string {
+			wasUp = url != "" && probeProxy(ctx, url, proxyAliveTimeout)
+			return restartProxy(ctx)
+		},
 	})
 	if err != nil {
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up

@@ -35,7 +35,7 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 	t.Helper()
 	var calls []routeCall
 	var warn bytes.Buffer
-	oa, ow, op, ww := applyRoutes, waitProxy, probeProxy, routesWarn
+	oa, ow, op, ww, or := applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy
 	applyRoutes = func(_ *config.Config, add, remove []string, o litellm.Options) (litellm.Result, error) {
 		if !o.SkipReadyGate {
 			t.Error("lifecycle hook must skip the ready gate: the model is verifiably running")
@@ -44,14 +44,20 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 			t.Error("lifecycle hook must pass a ctx-aware restart, not leave the package default")
 		}
 		calls = append(calls, routeCall{add, remove})
+		// Like the real Apply: the restart hook runs only when a restart
+		// happens (this is where the lazy proxy probe lives).
+		if err == nil && !o.NoRestart && (res.Changed || o.ForceRestart) {
+			o.Restart()
+		}
 		return res, err
 	}
+	restartProxy = func(context.Context) []string { return nil }
 	waitProxy = func(context.Context, string, time.Duration) error { return nil }
 	// Default to "the proxy was already up" so the readiness-wait tests below
 	// exercise the wait; the proxy-down case overrides it.
 	probeProxy = func(context.Context, string, time.Duration) bool { return true }
 	routesWarn = &warn
-	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww })
+	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy = oa, ow, op, ww, or })
 	return &calls, &warn
 }
 
@@ -243,5 +249,57 @@ func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if !bytes.Contains(warn.Bytes(), []byte("proxy down")) {
 		t.Fatalf("expected warning, got %q", warn.String())
+	}
+}
+
+// TestRouteAfterStartUnregisteredSettlesOwedRestart pins that a start of a
+// model missing from the registry still bounces the proxy when an earlier
+// deferred occupant-route removal is owed. Returning early would leave the
+// proxy serving the replaced model's dead route until a manual restart.
+func TestRouteAfterStartUnregisteredSettlesOwedRestart(t *testing.T) {
+	calls, _ := stubRoutes(t, litellm.Result{}, nil)
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, true)
+	if len(*calls) != 1 || len((*calls)[0].add) != 0 || len((*calls)[0].remove) != 0 {
+		t.Fatalf("owed restart not settled: calls=%+v", *calls)
+	}
+	calls, _ = stubRoutes(t, litellm.Result{}, nil)
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, false)
+	if len(*calls) != 0 {
+		t.Fatalf("nothing owed, yet the proxy was touched: %+v", *calls)
+	}
+}
+
+// TestBounceRoutesSurvivesCancelledContext pins that the settling restart after
+// a failed start runs on a live context even when the caller's is already
+// cancelled (Ctrl+C mid-start). A restart on the cancelled ctx would be killed
+// at once, leaving the proxy on its stale model list.
+func TestBounceRoutesSurvivesCancelledContext(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	var restartErr error
+	restarted := false
+	restartProxy = func(ctx context.Context) []string { restarted, restartErr = true, ctx.Err(); return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	bounceRoutes(ctx, routesCfg())
+	if !restarted || restartErr != nil {
+		t.Fatalf("restarted=%v ctx.Err=%v, want a restart on a live ctx", restarted, restartErr)
+	}
+}
+
+// TestRouteProbesProxyOnlyWhenRestarting pins the lazy probe: a deferred write
+// and an unchanged write never restart, so they must not pay the proxy probe
+// (up to proxyAliveTimeout each) on every start and stop.
+func TestRouteProbesProxyOnlyWhenRestarting(t *testing.T) {
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
+	stubRoutes(t, litellm.Result{Changed: true}, nil)
+	probed := 0
+	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
+	routeRemove(context.Background(), cfg, "ollama", "a:1", restartDeferred)
+	stubRoutes(t, litellm.Result{Changed: false}, nil)
+	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
+	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
+	if probed != 0 {
+		t.Fatalf("probed %d times without a restart", probed)
 	}
 }
