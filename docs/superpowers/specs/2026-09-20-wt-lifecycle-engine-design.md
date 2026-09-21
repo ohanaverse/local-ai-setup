@@ -25,6 +25,8 @@ nothing to modelman-owned state (`modelman.toml` running/exposed flags,
 LiteLLM config) and never restarts the LiteLLM proxy. A started model works in
 LiteLLM mode only if modelman already exposed it there.
 
+> Superseded 2026-09-21: `lifecycle.Start/Stop/StopModel` now update LiteLLM routes — see `2026-09-21-wt-litellm-ownership-design.md`.
+
 ## Problem
 
 Selecting a non-running local model in the wt picker only shows a hint to run
