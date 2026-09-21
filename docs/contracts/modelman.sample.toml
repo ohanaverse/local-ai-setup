@@ -1,7 +1,8 @@
 # Shared fixture for cross-language contract tests of modelman.toml —
 # the per-machine mutable state file modelman writes and wt reads
-# read-only (the `exposed` and `ready` flags and the `[litellm]` routing
-# table, to filter the model picker; wt does NOT read the per-model
+# read-only (the `exposed` and `ready` flags, to filter the model picker;
+# the `[litellm]` routing table is now wt-owned in wt's config.toml, and wt
+# reads modelman's table below only as a legacy fallback; wt does NOT read the per-model
 # `running` flag — running state comes from wt's live probes of the
 # providers).
 #

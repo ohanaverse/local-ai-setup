@@ -180,22 +180,22 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) is wt-owned and contains **only agents and preferences** — Providers/Models live in the registry (below), and LiteLLM routing state lives in modelman's `modelman.toml` (below). wt never writes providers/models to this file.
+`~/.config/agent-wt/config.toml` (TOML) is wt-owned and contains **only agents and preferences** — Providers/Models live in the registry (below), and the `[litellm]` routing state is wt-owned in this same file (below). wt never writes providers/models to this file.
 
 Fields:
 
 - **Agent** — tool with ≥1 supported provider and optional default.
 - **DefaultTag** — the default rotation tag group.
 
-> **Legacy `[gateway]` blocks.** LiteLLM routing used to be configured here (`GatewayConfig`); the type and the `[gateway]` table were removed — routing is now modelman-owned (below). `migrateConfigSchema` detects a config.toml still carrying `[gateway]` and prints a one-time stderr notice (`wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by modelman (see 'modelman litellm status'); this block will be dropped on next save`); since `Config` no longer decodes the field, the block is dropped on wt's next save. **Ordering matters**: `modelman migrate` is the only thing that reads `[gateway]` back out (importing it into modelman.toml's `[litellm]` table), and it's read-only/best-effort — it never re-adds the block. Any other `wt` command run first (a launch, `wt config`, …) triggers the drop via its own config save, permanently losing the auto-import opportunity; the user then has to re-enter `--url`/`--api-key` by hand via `modelman litellm set`. There's no code-level guard against this — it's a documented upgrade-order caveat (see `docs/guides/00-config-map.md`), not a bug to "fix" by having wt write modelman.toml (that would violate the ownership split above).
+> **Legacy `[gateway]` blocks.** LiteLLM routing used to be configured here (`GatewayConfig`); the type and the `[gateway]` table were removed — routing is now wt-owned again, as a `[litellm]` table (below). `migrateConfigSchema` detects a config.toml still carrying `[gateway]` and prints a one-time stderr notice (`wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by modelman (see 'modelman litellm status'); this block will be dropped on next save`); since `Config` no longer decodes the field, the block is dropped on wt's next save. **Ordering matters**: `modelman migrate` is the only thing that reads `[gateway]` back out (importing it into modelman.toml's `[litellm]` table), and it's read-only/best-effort — it never re-adds the block. Any other `wt` command run first (a launch, `wt config`, …) triggers the drop via its own config save, permanently losing the auto-import opportunity; the user then has to re-enter `--url`/`--api-key` by hand via `modelman litellm set`. There's no code-level guard against this — it's a documented upgrade-order caveat (see `docs/guides/00-config-map.md`), not a bug to "fix" by having wt write modelman.toml (that would violate the ownership split above).
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
-## LiteLLM routing state (modelman-owned)
+## LiteLLM routing state (wt-owned)
 
-Whether non-native models route through the LiteLLM proxy — `Config.IsLitellm()`, read-only from `~/.config/local-ai/modelman.toml`'s `[litellm]` table (`enabled`/`url`/`api_key`, loaded via `finalizeCfg`/`loadModelmanState`) — or dial providers directly (`Config.IsDirect()`) is decided by modelman (`modelman litellm status|on|off|set`). Toggling is routing policy only: wt never flips the switch, but it does manage `config.yaml` routes and restarts the proxy after a change through `wt litellm ...` (`lifecycle.Start`/`Stop`/`StopModel` call it after a successful start/stop; routing on/off/url/key is still modelman-owned for now). `LitellmBaseURL()` trims trailing slashes so drivers append `/v1` (or nothing for claude) cleanly; the proxy loads `~/.config/litellm/config.yaml` only at startup and modelman restarts it after expose changes via `MODELMAN_LITELLM_RESTART_CMD` (see `docs/wt-agents/README.md#litellm-proxy-lifecycle`).
+Whether non-native models route through the LiteLLM proxy — `Config.IsLitellm()`, backed by the `[litellm]` table (`enabled`/`url`/`api_key`) in wt's own `~/.config/agent-wt/config.toml` (`Config.LitellmTable`) — or dial providers directly (`Config.IsDirect()`) is wt-owned since 2026-09-21. `~/.config/local-ai/modelman.toml`'s `[litellm]` is only a legacy read-only fallback (via `finalizeCfg`/`loadModelmanState`): on the first `Load` where config.toml already exists but has no `[litellm]`, the legacy table is copied into config.toml once (never creates config.toml just to migrate); afterwards wt's copy wins. `Config.UpdateLitellm` mutates and persists the state (config.toml is written 0600 when an api_key is stored); `LitellmConfigured()` reports URL+key set. The `wt litellm status|on|off|set` commands are added in a follow-up task. **Interim caveat:** until modelman is rewired (a later phase), `modelman litellm on|off|set` and the modelman TUI toggle still write only modelman.toml's legacy table, which wt ignores once it has migrated. Toggling is routing policy only; wt also manages `config.yaml` routes and restarts the proxy after a change through `wt litellm ...` (`lifecycle.Start`/`Stop`/`StopModel` call it after a successful start/stop). `LitellmBaseURL()` trims trailing slashes so drivers append `/v1` (or nothing for claude) cleanly; the proxy loads `~/.config/litellm/config.yaml` only at startup and modelman restarts it after expose changes via `MODELMAN_LITELLM_RESTART_CMD` (see `docs/wt-agents/README.md#litellm-proxy-lifecycle`).
 
 ## Registry (modelman-owned)
 
@@ -389,7 +389,7 @@ Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the 
 | agy | no model passthrough (chosen in its TUI); **not** a command agent — `IsCommand("agy")` is false, so the launch path still resolves a model and `-A agy` without `-M` errors "multiple models match" (→ TTY error on non-TTY stdin) when >1 agy model is eligible |
 | shell | execs passthrough args as argv, or interactive `bash`; no model/yolo/resume; `ArgSetter` |
 
-With LiteLLM routing on (`modelman litellm on`) — or forced by a protocol mismatch — non-native models route through the proxy in modelman.toml's `[litellm]` table (`r.BaseOrigin` = its URL with trailing slashes trimmed, `r.APIKey` = its key, `r.ModelRef` = `m.ID`):
+With LiteLLM routing on — or forced by a protocol mismatch — non-native models route through the proxy in the `[litellm]` table (`r.BaseOrigin` = its URL with trailing slashes trimmed, `r.APIKey` = its key, `r.ModelRef` = `m.ID`):
 
 | Agent | litellm routing |
 |---|---|

@@ -69,6 +69,9 @@ func TestLoadModelmanStateMatchesSharedFixture(t *testing.T) {
 		t.Error("legacy `downloaded` entry must still read as ready")
 	}
 
+	if litellm == nil {
+		t.Fatal("fixture [litellm] table not decoded")
+	}
 	if !litellm.Enabled || litellm.URL != "http://localhost:4000" {
 		t.Errorf("got litellm=%+v", litellm)
 	}

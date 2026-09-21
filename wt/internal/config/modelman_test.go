@@ -46,8 +46,8 @@ func TestLoadModelmanStateMissingFileReturnsEmptySet(t *testing.T) {
 	if len(exposed) != 0 {
 		t.Errorf("exposed = %v, want empty map", exposed)
 	}
-	if litellm != (LitellmState{}) {
-		t.Errorf("litellm = %+v, want zero value", litellm)
+	if litellm != nil {
+		t.Errorf("litellm = %+v, want nil", litellm)
 	}
 }
 
