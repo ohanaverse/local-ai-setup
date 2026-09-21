@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
@@ -403,5 +404,63 @@ func TestDefaultPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, sentinel) {
 		t.Fatalf("prompt %q does not contain sentinel %q", prompt, sentinel)
+	}
+}
+
+// candidatesFixture builds an ollama-only config with three local models — one
+// running, one pulled but idle, one absent from disk — supported by one agent,
+// and stubs the probe to match. Returns the config and the probe restore func.
+func candidatesFixture(t *testing.T) (*config.Config, func()) {
+	t.Helper()
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			// Serves claude's wire protocol and has a base_url so the start
+			// row's direct route resolves (a forced-LiteLLM route with no gateway would error and
+			// drop the row).
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}, Protocols: []config.Protocol{config.ProtocolAnthropic}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/running:1", ProviderID: "ollama", ModelName: "running:1", Location: config.LocationLocal},
+			{ID: "ollama/idle:1", ProviderID: "ollama", ModelName: "idle:1", Location: config.LocationLocal},
+			{ID: "ollama/absent:1", ProviderID: "ollama", ModelName: "absent:1", Location: config.LocationLocal},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.ExposeAllForTest()
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/running:1", ModelName: "running:1", Artifact: "running:1", Registered: true, Running: true, ArtifactKnown: true},
+			{ProviderID: "ollama", ModelID: "ollama/idle:1", ModelName: "idle:1", Artifact: "idle:1", Registered: true, ArtifactKnown: true},
+			{ProviderID: "ollama", ModelID: "ollama/absent:1", ModelName: "absent:1", Artifact: "", Registered: true, ArtifactKnown: true},
+		},
+	}
+	return cfg, SetSmokeProbeForTest(snap)
+}
+
+// TestCandidatesIncludeStartRowsButNotBlocked verifies Candidates lists a
+// launchable model, a non-running startable local model (Action start), and
+// omits a model missing from disk (blocked). `wt smoke` starts the second kind
+// before testing it; Eligibility must keep excluding it so existing callers
+// are unchanged.
+func TestCandidatesIncludeStartRowsButNotBlocked(t *testing.T) {
+	cfg, restore := candidatesFixture(t)
+	defer restore()
+
+	got := map[string]catalog.Action{}
+	for _, c := range Candidates(cfg) {
+		got[c.Row.Model.ID] = c.Row.Action()
+	}
+	if got["ollama/running:1"] != catalog.ActionLaunch || got["ollama/idle:1"] != catalog.ActionStart {
+		t.Errorf("candidates = %v, want running=launch idle=start", got)
+	}
+	if _, ok := got["ollama/absent:1"]; ok {
+		t.Errorf("blocked (absent) model must not be a candidate: %v", got)
+	}
+	models, _ := Eligibility(cfg)
+	for _, m := range models {
+		if m.ID == "ollama/idle:1" {
+			t.Error("Eligibility must still exclude start rows")
+		}
 	}
 }
