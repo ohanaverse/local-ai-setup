@@ -325,18 +325,25 @@ func TestApplyRejectsEmptyModelName(t *testing.T) {
 		},
 		Models: []config.Model{
 			{ID: "ollama/blank", ProviderID: "ollama", Location: config.LocationLocal},
+			// Whitespace-only names (spaces, tab, newline) are just as empty as ""
+			// and would otherwise write a bogus 'ollama_chat/   ' route.
+			{ID: "ollama/spaces", ProviderID: "ollama", ModelName: "   ", Location: config.LocationLocal},
+			{ID: "ollama/tab", ProviderID: "ollama", ModelName: "\t", Location: config.LocationLocal},
+			{ID: "ollama/nl", ProviderID: "ollama", ModelName: " \n ", Location: config.LocationLocal},
 			{ID: "llamacpp/fixed", ProviderID: "llamacpp", Location: config.LocationLocal},
 		},
 	}
-	res, err := Apply(cfg, []string{"ollama/blank", "llamacpp/fixed"}, nil, o)
+	res, err := Apply(cfg, []string{"ollama/blank", "ollama/spaces", "ollama/tab", "ollama/nl", "llamacpp/fixed"}, nil, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcomes[0].Err == nil || !strings.Contains(res.Outcomes[0].Err.Error(), "empty model_name") {
-		t.Fatalf("blank outcome = %+v, want empty model_name error", res.Outcomes[0])
+	for _, i := range []int{0, 1, 2, 3} {
+		if res.Outcomes[i].Err == nil || !strings.Contains(res.Outcomes[i].Err.Error(), "empty model_name") {
+			t.Fatalf("outcome %d = %+v, want empty model_name error", i, res.Outcomes[i])
+		}
 	}
-	if res.Outcomes[1].Err != nil {
-		t.Fatalf("fixed-model provider rejected: %v", res.Outcomes[1].Err)
+	if res.Outcomes[4].Err != nil {
+		t.Fatalf("fixed-model provider rejected: %v", res.Outcomes[4].Err)
 	}
 	f, _ := Open(p)
 	if ids := f.RoutedIDs(); len(ids) != 1 || ids[0] != "llamacpp/fixed" || *restarts != 1 {

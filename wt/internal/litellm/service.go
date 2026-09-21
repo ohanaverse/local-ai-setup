@@ -3,6 +3,7 @@ package litellm
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -86,7 +87,7 @@ func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) 
 	// Config.validate's per-model data rule; wt commands no longer refuse on
 	// validation errors, so enforce it here. FixedModel providers (llamacpp)
 	// use a fixed LiteLLM model string and ignore model_name.
-	if m.ModelName == "" && !pol.FixedModel {
+	if strings.TrimSpace(m.ModelName) == "" && !pol.FixedModel {
 		return nil, fmt.Errorf("model %q: empty model_name", id)
 	}
 	if !skipReady && !cfg.ReadyFlag(id) && !isCloud(m, *p, pol) {
