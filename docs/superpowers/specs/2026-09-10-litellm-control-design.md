@@ -1,5 +1,7 @@
 # modelman-owned LiteLLM control + protocol-negotiated routing
 
+> **Status banner (2026-09-21):** Ownership split superseded 2026-09-21 by `2026-09-21-wt-litellm-ownership-design.md`; the protocol-negotiation half is unchanged.
+
 Status: approved (brainstorming session 2026-09-10). Source of truth for the
 implementation plan; do not diverge without updating this doc.
 
