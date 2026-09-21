@@ -120,7 +120,7 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 **Test seams.** TTY, installed-check, guard, TUI behavior, the model
 picker's usage store, local-inventory probing, and model starting are stubbed via package-level var seams (`tuiRun`,
 `launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
-`newUsageStore`, `flushTTY`, `stopSignalCtx`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`, `pickModelTUI`, `stopCandidates`, `stopEntries`, `stopPickerAll`, `confirmStop`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. `cmd/wt` carries its own seams, stubbed by `testmain_test.go`: `probeInventory` (the non-TUI inventory probe) and a second `startModel` — a different package and signature (it wraps `startForLaunch`), a separate seam from the TUI's despite the shared name. `internal/survey`'s `TestMain` stubs `flushTTY` the same way, so it is a no-op package-wide. Together the three `TestMain`s mean no Go test probes a real server, starts a real model, or drains the developer's terminal input queue. `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` hook for other packages' tests. When adding
+`newUsageStore`, `flushTTY`, `stopSignalCtx`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`, `pickModelTUI`, `pickStartModelTUI`, `stopCandidates`, `stopEntries`, `stopPickerAll`, `confirmStop`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. `cmd/wt` carries its own seams, stubbed by `testmain_test.go`: `probeInventory` (the non-TUI inventory probe) and a second `startModel` — a different package and signature (it wraps `startForLaunch`), a separate seam from the TUI's despite the shared name. `internal/survey`'s `TestMain` stubs `flushTTY` the same way, so it is a no-op package-wide. Together the three `TestMain`s mean no Go test probes a real server, starts a real model, or drains the developer's terminal input queue. `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` hook for other packages' tests. When adding
 a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
 `internal/lifecycle` is the other convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its package `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
 
@@ -414,9 +414,10 @@ matrix (static agent×model list, both routing modes) — `wt smoke` tests
 whatever routing mode is live right now, against whichever model you point it
 at. Read-only against modelman-owned state; never flips LiteLLM routing. It
 does start an idle local pick first (via the shared `startModel` driver,
-honouring root `--replace`) and, once a model is resolved, releases its
-refcount and runs the exit-flow stop picker on pass, fail or start failure
-(skipped for `--json` or a non-TTY stdin; a FAIL still exits 1). With no model-id on a TTY, the interactive picker
+honouring root `--replace`) and, once a model is resolved, runs the
+exit-flow stop picker on pass, fail or start failure (skipped for `--json`
+or a non-TTY stdin; a FAIL still exits 1). It records no refcount entry, so
+there is none to release first. With no model-id on a TTY, the interactive picker
 is `internal/tui.PickModel` — a standalone Bubble Tea program (not the main
 app's worktree→agent→model state machine) that reuses `buildTable` for
 the same table rows the agent flow's model picker renders, over
@@ -433,7 +434,9 @@ report) unaffected. See `docs/wt-smoke.md`.
 
 ## Start/stop (`wt start`, `wt stop`)
 
-`wt start [model]` starts a local model without launching an agent (`cmd/wt/model_cmds.go`). With an id it resolves through `catalog.Find` over `localRows` (every configured local model plus detected ones, one inventory snapshot): an idle row starts via `startModel` (`--replace` skips the replace question), a running row is a no-op ("already running"), a blocked row errors with its `BlockReason`, and a cloud or unknown id errors. With no argument it needs a TTY and shows the screen-1 picker (`tui.PickModel`, via `pickModelTUI`) over all local rows; blocked rows are unselectable.
+`wt start [model]` starts a local model without launching an agent (`cmd/wt/model_cmds.go`). With an id it resolves through `catalog.Find` over `localRows` (every configured local model plus detected ones, one inventory snapshot): an idle row starts via `startModel` (`--replace` skips the replace question), a running row is a no-op ("already running"), a blocked row errors with its `BlockReason`, and a cloud or unknown id errors. With no argument it needs a TTY and shows the screen-1 picker (`tui.PickStartModel`, via the `pickStartModelTUI` seam — `PickModel` minus launch-route gating, since starting is not launching) over all local rows; blocked rows are unselectable.
+
+`wt stop` with no argument probes the inventory once: `survey.PickerWith` takes the snapshot itself and returns whether it had anything to offer (the `stopPickerAll` seam), which decides the "no running local models" note. A bare provider is validated against the configured providers `lifecycle.CanStop` accepts (`stoppableProviders`), the same list its error message prints.
 
 `wt stop [model|provider]` uses `survey.StopCandidates` (running models with live-session counts), `survey.StopEntries` (the shared stop loop) and `survey.PickerWith(..., Options{IncludeInUse: true})` for the no-arg picker (needs a TTY; in-use rows are listed with their session count, unlike the exit-flow pickers, which hide them). `<provider>/<name>` stops one model (not running: error; unknown: error); a bare provider (`ollama|omlx|omlx-6bit|mtplx`) stops all its running models (nothing running: exit 0 with a note). If the target is in use by a live wt session (max count across a provider's models), `confirmStop` asks y/N on `/dev/tty` (default No); `--yes` skips it. See `docs/wt-start-stop.md`.
 

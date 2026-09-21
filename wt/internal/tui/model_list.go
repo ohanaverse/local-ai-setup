@@ -44,11 +44,10 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // Enter instead of launching or starting: a local model that is not on disk,
 // a local provider wt has no lifecycle backend for, or a discovered row whose
 // route would go through LiteLLM (see catalog.Row Action/BlockReason). A non-running
-// local model is deliberately NOT one of these — it is a start row. It is the
-// agent flow only that honors it: PickModel (wt smoke's standalone picker)
-// selects the highlighted row unconditionally, since its rows come from a
-// cross-agent eligible union where choosing a row this flow would refuse is
-// a legitimate diagnostic choice.
+// local model is deliberately NOT one of these — it is a start row. Every
+// picker honors it: the agent flow shows it on Enter, and the standalone
+// PickModel/PickStartModel (wt smoke, wt start) refuse to select a blocked
+// row and show it as a notice instead.
 type modelItem struct {
 	model     config.Model
 	line      string

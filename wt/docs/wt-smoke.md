@@ -43,7 +43,10 @@ launch after a start: the model's provider is in the agent's
 `supported_providers` and the row is a launch row (cloud, or a local model
 the live probe reports running) or a start row (an idle local model wt can
 start). Blocked rows — not on disk, no lifecycle backend, not in LiteLLM —
-are excluded and named with their reason if passed by id
+are excluded; passing one by id names the row's reason (not on disk, no
+lifecycle backend) as `wt start` does, while other ineligible ids (for
+example an unexposed cloud model) get a generic "cannot be smoke-tested"
+message
 (`smoke.Candidates` walks the same `catalog` rows a real launch consults).
 An idle pick is started first through the shared start driver, honouring
 the root `--replace` flag when another model occupies a single-model
@@ -51,9 +54,10 @@ provider's slot.
 
 ## Exit flow
 
-Once a model has been resolved, `wt smoke` releases its session refcount
-and, on a TTY, shows the stop picker so models it started (or any running
-model nothing else uses) can be stopped. This runs after PASS, FAIL, a
+Once a model has been resolved, `wt smoke`, on a TTY, shows the stop picker
+so models it started (or any running model nothing else uses) can be
+stopped. (wt smoke never records a session refcount entry — its agents run
+one-shot — so there is none to release first.) This runs after PASS, FAIL, a
 start failure, but not after an invalid or aborted
 selection, and is skipped entirely for `--json` or a non-TTY stdin. A FAIL
 still exits 1 regardless. Ctrl+C during the start phase is handled by the
