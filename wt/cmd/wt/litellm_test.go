@@ -140,14 +140,15 @@ func TestLitellmListAndProviders(t *testing.T) {
 }
 
 // TestLitellmMutatorsRefuseOnConfigError pins that expose/unexpose/sync refuse
-// when the registry failed to load (a.cfgErr), like every sibling command.
+// when the registry failed to LOAD (a.loadErr), like every sibling command.
+// (Validation-only errors are covered by TestLitellmChangeCommandsWorkOnValidationOnlyError.)
 // Without the guard they act on an empty registry: expose reports "not found"
 // and unexpose/sync still write config.yaml and restart the proxy.
 func TestLitellmMutatorsRefuseOnConfigError(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
 	for _, args := range [][]string{{"expose", "ollama/gemma:9b"}, {"unexpose", "ollama/gemma:9b"}, {"sync"}} {
-		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml")})
+		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
 		var out, errOut bytes.Buffer
 		c.SetOut(&out)
 		c.SetErr(&errOut)
@@ -477,8 +478,8 @@ func validationOnlyApp(t *testing.T) (*app, string) {
 // status/on/off/set depend only on wt's own [litellm] state, not on registry
 // validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
 // must not lock the user out of the only routing control surface, and the
-// change must persist. expose/unexpose/sync depend on the registry, so they
-// still refuse.
+// change must persist. (expose/unexpose/sync are covered by
+// TestLitellmChangeCommandsWorkOnValidationOnlyError.)
 func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	litellmEnv(t, "model_list: []\n")
 	a, path := validationOnlyApp(t)
@@ -503,9 +504,71 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "sk-abcdef") {
 		t.Fatalf("state not persisted (err %v):\n%s", err, b)
 	}
-	for _, args := range [][]string{{"expose", "x"}, {"unexpose", "x"}, {"sync"}} {
-		if err := run(args...); err == nil || !strings.Contains(err.Error(), "config error") {
-			t.Fatalf("%v: err = %v, want refusal", args, err)
-		}
+}
+
+// TestLitellmChangeCommandsWorkOnValidationOnlyError pins that expose/unexpose/
+// sync gate only on a config LOAD failure. A registry gap in an unrelated model
+// (unknown provider: cfgErr set, loadErr nil) must not block modelman's
+// expose/unexpose (chicken-and-egg: modelman is what repairs such gaps), while
+// the broken model itself is still reported per id, exit non-zero, without
+// blocking the healthy ids in the same batch.
+func TestLitellmChangeCommandsWorkOnValidationOnlyError(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	a, _ := validationOnlyApp(t)
+	if a.cfgErr == nil || a.loadErr != nil {
+		t.Fatalf("fixture: cfgErr=%v loadErr=%v", a.cfgErr, a.loadErr)
+	}
+	const good = "ollama/contract-fixture:local"
+	run := func(args ...string) (string, error) {
+		c := litellmCmd(a)
+		var out bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(args)
+		err := c.Execute()
+		return out.String(), err
+	}
+	if _, err := run("expose", good, "--skip-ready-gate"); err != nil {
+		t.Fatalf("expose healthy model refused: %v", err)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) {
+		t.Fatalf("route not written:\n%s", b)
+	}
+	if _, err := run("unexpose", good); err != nil {
+		t.Fatalf("unexpose refused: %v", err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), good) {
+		t.Fatalf("route not removed:\n%s", b)
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: good, ModelName: "contract-fixture:local", Registered: true, Running: true},
+		}})
+	if _, err := run("sync"); err != nil {
+		t.Fatalf("sync refused: %v", err)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) {
+		t.Fatalf("sync did not route running model:\n%s", b)
+	}
+	if _, err := run("unexpose", good); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run("expose", "ghost/m", good, "--skip-ready-gate", "--json")
+	if err == nil {
+		t.Fatal("want non-nil error: broken model rejected")
+	}
+	var got struct {
+		Outcomes []struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+			Error  string `json:"error"`
+		} `json:"outcomes"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &got); jerr != nil || len(got.Outcomes) != 2 {
+		t.Fatalf("output = %s (%v)", out, jerr)
+	}
+	if got.Outcomes[0].Error == "" || got.Outcomes[1].Error != "" || got.Outcomes[1].Action != "exposed" {
+		t.Fatalf("outcomes = %+v", got.Outcomes)
 	}
 }

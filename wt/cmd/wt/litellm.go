@@ -257,8 +257,10 @@ func litellmCmd(a *app) *cobra.Command {
 		cc := &cobra.Command{
 			Use: use, Short: short, Args: cobra.MinimumNArgs(1), SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				if a.cfgErr != nil {
-					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				// Gate on a load failure only (cfg would be an empty default);
+				// registry validation gaps are reported per id by litellm.Apply.
+				if a.loadErr != nil {
+					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
 				}
 				return runLitellmChange(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, expose, args, fl)
 			},
@@ -274,8 +276,8 @@ func litellmCmd(a *app) *cobra.Command {
 	syncC := &cobra.Command{
 		Use: "sync", Short: "Make local-model routes match the running models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if a.cfgErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+			if a.loadErr != nil {
+				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
 			}
 			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON)
 		},
