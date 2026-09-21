@@ -288,3 +288,32 @@ func TestStartCancelledPicker(t *testing.T) {
 		t.Fatalf("err = %v called = %v, want canceled error and no start", err, req.called)
 	}
 }
+
+// TestStartDiscoveredRunningModel verifies a detected (unregistered) model that
+// is running is offered to the picker and `wt start` on it is a no-op, so the
+// screen-1 row set reflects live state for models missing from the registry.
+func TestStartDiscoveredRunningModel(t *testing.T) {
+	cfg, req := startFixture(t)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", Artifact: "d:1", ModelID: "ollama/d:1", ModelName: "d:1", Running: true, ArtifactKnown: true},
+		},
+	})
+	var out bytes.Buffer
+	if err := runStart(&out, cfg, themes.Theme{}, "ollama/d:1", false); err != nil {
+		t.Fatal(err)
+	}
+	if req.called || !strings.Contains(out.String(), "already running") {
+		t.Fatalf("called = %v out = %q, want already-running no-op", req.called, out.String())
+	}
+	found := false
+	for _, r := range localRows(cfg) {
+		if r.Model.ID == "ollama/d:1" && r.Discovered && r.Running {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("localRows must include the discovered running model")
+	}
+}

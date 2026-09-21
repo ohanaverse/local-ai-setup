@@ -71,6 +71,17 @@ func Build(in Input) []Row {
 			}
 		}
 	}
+	// A discovered model handed in via Models (e.g. a caller that already
+	// built rows and re-feeds them to a picker) is described by its
+	// non-registered inventory entry.
+	discByID := map[string]localmodels.Entry{}
+	if in.Inventory != nil {
+		for _, e := range in.Inventory.Entries {
+			if !e.Registered {
+				discByID[e.ModelID] = e
+			}
+		}
+	}
 	rows := make([]Row, 0, len(in.Models))
 	seen := map[string]bool{}
 	for _, m := range in.Models {
@@ -81,7 +92,9 @@ func Build(in Input) []Row {
 			}
 		}
 		r := Row{Model: m, Location: loc, Status: StatusOK}
-		if loc == config.LocationLocal && in.Inventory != nil {
+		if de, isDisc := discByID[m.ID]; isDisc && m.Source == config.SourceDiscovered && loc == config.LocationLocal {
+			r.Status, r.Running, r.Discovered = StatusNew, de.Running, true
+		} else if loc == config.LocationLocal && in.Inventory != nil {
 			e, ok := byID[m.ID]
 			switch {
 			case !ok:

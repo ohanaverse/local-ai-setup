@@ -291,3 +291,33 @@ func TestRefusedByRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildMarksDiscoveredModelsPassedViaModels verifies a discovered model
+// handed in through Models (as the picker receives rows a caller already built)
+// takes Discovered/StatusNew/Running from its non-registered inventory entry, so
+// a running detected model resolves to launch and an idle one to start rather
+// than reading as an unknown, startable row.
+func TestBuildMarksDiscoveredModelsPassedViaModels(t *testing.T) {
+	mk := func(id, name string) config.Model {
+		return config.Model{ID: id, ProviderID: "ollama", ModelName: name, Location: config.LocationLocal, Source: config.SourceDiscovered}
+	}
+	snap := &localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "ollama", Artifact: "run:1", ModelID: "ollama/run:1", Running: true},
+		{ProviderID: "ollama", Artifact: "idle:1", ModelID: "ollama/idle:1"},
+	}}
+	rows := Build(Input{Config: catalogTestCfg(), Models: []config.Model{mk("ollama/run:1", "run:1"), mk("ollama/idle:1", "idle:1")}, Inventory: snap})
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if !r.Discovered || r.Status != StatusNew {
+			t.Errorf("%s: Discovered=%v Status=%q, want discovered/new", r.Model.ID, r.Discovered, r.Status)
+		}
+	}
+	if !rows[0].Running || rows[0].Action() != ActionLaunch {
+		t.Errorf("running discovered row: Running=%v action=%v, want launch", rows[0].Running, rows[0].Action())
+	}
+	if rows[1].Running || rows[1].Action() != ActionStart {
+		t.Errorf("idle discovered row: Running=%v action=%v, want start", rows[1].Running, rows[1].Action())
+	}
+}
