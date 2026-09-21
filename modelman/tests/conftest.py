@@ -91,12 +91,17 @@ def _never_call_real_wt(monkeypatch):
     bridge call goes through wt_bridge._run; replace it with a fake that
     applies exposes to nothing and reports the known provider table. The
     provider cache is reset before and after so no test sees another's table.
-    Tests that assert on the bridge itself monkeypatch _run again."""
+    Tests that assert on the bridge itself monkeypatch _run again.
+
+    Limits of this fake: expose/unexpose always succeed for every id (exit 0,
+    changed=True); `list` is a static empty routed set (not stateful across
+    expose calls); there is no partial-failure / exit-1 / file-level-failure
+    case. Tests exercising error paths must override wt_bridge._run."""
     import json
 
     from modelman import wt_bridge
 
-    def fake(args, env=None):
+    def fake(args, env=None, timeout=120):
         if args[:1] == ["providers"]:
             out = {
                 "providers": {

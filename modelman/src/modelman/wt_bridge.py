@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,15 +52,28 @@ def ensure_wt() -> None:
         raise WtNotFoundError("wt not found on PATH; install it with `make install`")
 
 
-def _run(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: list[str], env: dict[str, str] | None = None, timeout: float = 120
+) -> subprocess.CompletedProcess[str]:
     ensure_wt()
-    return subprocess.run(
-        ["wt", "litellm", *args],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env={**os.environ, **(env or {})},
-    )
+    # Error messages deliberately name only the subcommand: argv may carry
+    # `--api-key <secret>` and must never reach a traceback or the TUI.
+    sub = args[0] if args else ""
+    try:
+        return subprocess.run(
+            ["wt", "litellm", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+            env={**os.environ, **(env or {})},
+        )
+    except subprocess.TimeoutExpired:
+        raise WtBridgeError(f"wt litellm {sub} timed out after {timeout:g}s") from None
+    except FileNotFoundError:
+        raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
+    except OSError as e:
+        raise WtBridgeError(f"wt litellm {sub} could not run: {type(e).__name__}") from None
 
 
 def _env(litellm_path: Path | None) -> dict[str, str]:
@@ -87,44 +101,62 @@ def parse_status(stdout: str) -> LitellmStatus:
     return LitellmStatus(bool(doc["enabled"]), doc.get("url") or "", bool(doc["api_key_set"]))
 
 
+def parse_routed(stdout: str) -> list[str]:
+    return [str(x) for x in json.loads(stdout)["routed"]]
+
+
+def parse_providers(stdout: str) -> dict[str, bool]:
+    return {pid: bool(v["cloud"]) for pid, v in json.loads(stdout)["providers"].items()}
+
+
 def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
     proc = _run(args, _env(litellm_path))
+    try:
+        json.loads(proc.stdout)
+    except (ValueError, TypeError):
+        # No JSON on stdout: a file-level failure (missing/invalid config.yaml,
+        # unreadable registry). Nothing was applied.
+        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}")) from None
     try:
         # Parse regardless of exit code: a partial batch exits 1 with JSON.
         return parse_change_result(proc.stdout)
     except (ValueError, KeyError, TypeError, AttributeError):
-        # No JSON on stdout: a file-level failure (missing/invalid config.yaml,
-        # unreadable registry). Nothing was applied.
-        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}")) from None
+        raise WtBridgeError(
+            f"unparseable wt output (exit {proc.returncode}); changes may have been applied"
+        ) from None
 
 
 def expose(
     ids: list[str], *, litellm_path: Path | None = None, skip_ready_gate: bool = True
 ) -> BridgeResult:
-    args = ["expose", "--json"] + (["--skip-ready-gate"] if skip_ready_gate else []) + ids
+    args = ["expose", "--json"] + (["--skip-ready-gate"] if skip_ready_gate else []) + ["--", *ids]
     return _change(args, litellm_path)
 
 
 def unexpose(ids: list[str], *, litellm_path: Path | None = None) -> BridgeResult:
-    return _change(["unexpose", "--json", *ids], litellm_path)
+    return _change(["unexpose", "--json", "--", *ids], litellm_path)
 
 
 def routed_ids(*, litellm_path: Path | None = None) -> list[str]:
     proc = _run(["list", "--json"], _env(litellm_path))
     try:
-        return list(json.loads(proc.stdout)["routed"])
+        return parse_routed(proc.stdout)
     except (ValueError, KeyError, TypeError):
         raise WtBridgeError(_msg(proc, "wt litellm list failed")) from None
 
 
+_PROVIDER_FAILURE_TTL = 30.0
+_PROVIDER_TIMEOUT = 5.0
 _provider_cache: dict[str, bool] | None = None
+_provider_failed_at: float | None = None
 _provider_warned = False
 
 
 def _reset_provider_cache() -> None:
-    """Forget the cached provider table and the one-shot warning (tests)."""
-    global _provider_cache, _provider_warned
+    """Forget the cached provider table, failure window and one-shot warning (tests)."""
+    global _provider_cache, _provider_failed_at, _provider_warned
     _provider_cache = None
+    _provider_failed_at = None
     _provider_warned = False
 
 
@@ -132,21 +164,26 @@ def provider_cloud_flags() -> dict[str, bool]:
     """provider id -> is cloud, for every LiteLLM-mapped provider (wt owns the table).
 
     Called from TUI render paths, so it never raises: if wt is missing or
-    fails, warn once per process on stderr and return {} (not cached, so a
-    later call can recover).
+    fails, warn once per process on stderr and return {}. A failure is
+    remembered for _PROVIDER_FAILURE_TTL seconds (no re-spawn per model row),
+    then retried.
     """
-    global _provider_cache, _provider_warned
+    global _provider_cache, _provider_failed_at, _provider_warned
     if _provider_cache is not None:
         return _provider_cache
+    if (
+        _provider_failed_at is not None
+        and time.monotonic() - _provider_failed_at < _PROVIDER_FAILURE_TTL
+    ):
+        return {}
     try:
-        proc = _run(["providers", "--json"])
+        proc = _run(["providers", "--json"], timeout=_PROVIDER_TIMEOUT)
         try:
-            flags = {
-                pid: bool(v["cloud"]) for pid, v in json.loads(proc.stdout)["providers"].items()
-            }
+            flags = parse_providers(proc.stdout)
         except (ValueError, KeyError, TypeError, AttributeError):
             raise WtBridgeError(_msg(proc, "wt litellm providers failed")) from None
     except WtBridgeError as e:
+        _provider_failed_at = time.monotonic()
         if not _provider_warned:
             _provider_warned = True
             print(
@@ -155,6 +192,7 @@ def provider_cloud_flags() -> dict[str, bool]:
                 file=sys.stderr,
             )
         return {}
+    _provider_failed_at = None
     _provider_cache = flags
     return flags
 

@@ -7,7 +7,7 @@ fails both CI jobs in the same PR."""
 import json
 from pathlib import Path
 
-from modelman.wt_bridge import parse_change_result, parse_status
+from modelman.wt_bridge import parse_change_result, parse_providers, parse_routed, parse_status
 
 FIXTURE = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "litellm-cli.sample.json"
 
@@ -18,6 +18,7 @@ def test_change_fixture_parses():
     doc = json.loads(FIXTURE.read_text())
     res = parse_change_result(json.dumps(doc["change"]))
     assert [o.id for o in res.outcomes] == ["ollama/gemma:9b", "claude/sonnet"]
+    assert res.outcomes[0].action == "exposed"
     assert res.outcomes[1].error and res.changed and res.warnings
 
 
@@ -26,3 +27,15 @@ def test_status_fixture_parses():
     doc = json.loads(FIXTURE.read_text())
     st = parse_status(json.dumps(doc["status"]))
     assert st.enabled and st.url == "http://localhost:4000" and st.api_key_set
+
+
+def test_list_fixture_parses():
+    # Pins the `wt litellm list --json` shape routed_ids reads.
+    doc = json.loads(FIXTURE.read_text())
+    assert parse_routed(json.dumps(doc["list"])) == ["ollama/gemma:9b", "openrouter/x/y"]
+
+
+def test_providers_fixture_parses():
+    # Pins the `wt litellm providers --json` shape behind is_cloud checks.
+    doc = json.loads(FIXTURE.read_text())
+    assert parse_providers(json.dumps(doc["providers"])) == {"ollama": False, "openrouter": True}
