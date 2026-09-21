@@ -785,6 +785,11 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.WriteFile(tmp, data, perm); err != nil {
 		return err
 	}
+	// os.WriteFile does not change the mode of a pre-existing tmp file; a
+	// stale 0644 tmp would otherwise leak a secret-bearing file.
+	if err := os.Chmod(tmp, perm); err != nil {
+		return err
+	}
 	return os.Rename(tmp, path)
 }
 

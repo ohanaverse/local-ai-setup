@@ -99,3 +99,56 @@ func TestUpdateLitellmPersists(t *testing.T) {
 		t.Fatal("state did not round-trip through config.toml")
 	}
 }
+
+// TestLitellmOwnEmptyTableWinsOverLegacy pins precedence for present-but-empty:
+// a config.toml with its own zero-valued [litellm] (user turned it off in wt)
+// must win over a populated legacy modelman.toml table, must decode to a
+// non-nil pointer (distinguishable from absent), and must not re-migrate.
+func TestLitellmOwnEmptyTableWinsOverLegacy(t *testing.T) {
+	home := litellmStateEnv(t, "default_tag = \"code\"\n[litellm]\nenabled = false\nurl = \"\"\napi_key = \"\"\n", legacyLitellm)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LitellmTable == nil {
+		t.Fatal("bare/zero [litellm] must decode to a non-nil pointer")
+	}
+	if cfg.IsLitellm() || cfg.LitellmAPIKey() != "" || cfg.LitellmBaseURL() != "" {
+		t.Fatalf("legacy table overrode wt's own empty [litellm]: %+v", cfg.litellm)
+	}
+	if cfg.migratedLitellm {
+		t.Fatal("must not re-migrate when wt has its own [litellm]")
+	}
+	b, _ := os.ReadFile(filepath.Join(home, "agent-wt", "config.toml"))
+	if strings.Contains(string(b), "sk-legacy") {
+		t.Fatalf("legacy key leaked into config.toml:\n%s", b)
+	}
+	litellmStateEnv(t, "default_tag = \"code\"\n[litellm]\n", "")
+	c2, err := Load()
+	if err != nil || c2.LitellmTable == nil {
+		t.Fatalf("bare [litellm] table: err=%v table=%v", err, c2.LitellmTable)
+	}
+}
+
+// TestWriteFileAtomicChmodsStaleTmp pins that a stale 0644 <path>.tmp left by
+// a crash cannot make a 0600 write land world-readable: the tmp is chmod'ed
+// before rename. Matters because config.toml can hold the LiteLLM api_key.
+func TestWriteFileAtomicChmodsStaleTmp(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p+".tmp", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p+".tmp", 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(p, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
+	}
+}

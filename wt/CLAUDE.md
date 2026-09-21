@@ -349,7 +349,7 @@ go run ./cmd/wt rotate code    # debug helper: print the model after the last-la
 
 Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Route) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor used by both TUI and non-TUI launch paths — it resolves one `config.Route` per launch via `(*config.Config).ResolveRoute(m, agents.ProtocolsFor(agent))` and hands it to `Build`; drivers should not bypass it.
 
-`Route` (`internal/config`) carries everything a launch needs: `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the model's own provider (`auth.base_url`, normalized via `BaseOrigin`, key from `auth.secret_ref` via `ResolveSecret`) with the provider-side model name; litellm/forced routes dial modelman's `[litellm]` URL/key with the registry id.
+`Route` (`internal/config`) carries everything a launch needs: `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the model's own provider (`auth.base_url`, normalized via `BaseOrigin`, key from `auth.secret_ref` via `ResolveSecret`) with the provider-side model name; litellm/forced routes dial the proxy URL/key from wt's `[litellm]` config with the registry id.
 
 **Agent protocols.** Agents declare the wire protocols they speak via the `ProtocolDeclarer` capability (`Protocols() []Protocol`); registry providers declare what they serve (`Provider.protocols` in registry.toml, defaulting to `openai-chat`). `ResolveRoute` intersects the two — an empty intersection sets `Forced = true`, routing through LiteLLM regardless of the on/off toggle.
 
@@ -413,7 +413,7 @@ in-process launch construction a real launch uses), reporting PASS/FAIL/SKIP.
 Distinct from `make test-agents`/agents-smoke.sh's hand-curated regression
 matrix (static agent×model list, both routing modes) — `wt smoke` tests
 whatever routing mode is live right now, against whichever model you point it
-at. Read-only against modelman-owned state; never flips LiteLLM routing. It
+at. Never writes config or flips LiteLLM routing (it only reads the live state). It
 does start an idle local pick first (via the shared `startModel` driver,
 honouring root `--replace`) and, once a model is resolved, runs the
 exit-flow stop picker on pass or fail (registered only after the start step
