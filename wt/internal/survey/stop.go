@@ -107,9 +107,10 @@ func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
 	return out
 }
 
-// stopSignalCtx is a test seam: production uses realStopSignalCtx. It mirrors
-// cmd/wt/start.go's startSignalCtx, in the var/realfunc shape wt/CLAUDE.md
-// documents for new seams.
+// stopSignalCtx is a test seam: production uses realStopSignalCtx, following the
+// var/realfunc shape wt/CLAUDE.md documents for package-level seams. (cmd/wt's
+// startSignalCtx covers the same ground for the start path but is an inline
+// closure, so what the two share is the intent, not the declaration form.)
 var stopSignalCtx = realStopSignalCtx
 
 // realStopSignalCtx returns a context cancelled by Ctrl+C or SIGTERM. The
@@ -140,6 +141,12 @@ func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
 	}
 	// These stops run after the agent has exited, so this path owns the only
 	// Ctrl+C handling left — see realStopSignalCtx.
+	// Ctrl+C during the menu read above is deliberately unhandled: no stop is in
+	// flight yet, so there is nothing to cancel, and a handler over that read
+	// would turn the interrupted syscall into the scanner's EOF — skipping the
+	// prompt mid-answer. The cost is that the default disposition kills wt before
+	// the deferred drain runs, leaving any paste residue queued; that is the
+	// lesser of the two, and the only path on which it happens.
 	ctx, cancel := stopSignalCtx()
 	defer cancel()
 	stoppedFamily := map[string]bool{}

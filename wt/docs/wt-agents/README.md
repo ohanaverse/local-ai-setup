@@ -164,6 +164,11 @@ line.
   when nothing qualifies, when stdin is not a TTY, and for command agents.
   wt releases its own refcount entry first, or the model this session just
   used would always count as in use.
+  Its stops run on a context of their own, cancelled by Ctrl+C or SIGTERM:
+  the stop in flight is abandoned, the remaining models are skipped, and wt
+  still prints its summary. Nothing above the picker is watching for those
+  signals any more — the agent has already exited — so this is the only
+  Ctrl+C handling left on the path.
 
 See `docs/wt-stats.md` for how the collected survey data is reported.
 

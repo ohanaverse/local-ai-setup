@@ -47,7 +47,7 @@ func TestPostExitOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey(nil)
+	printPendingSummaryAndSurvey(&config.Config{})
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -82,7 +82,7 @@ func TestPostExitCommandAgentSkipsStopPhase(t *testing.T) {
 	called := false
 	runStopPhase = func(*config.Config) { called = true }
 
-	printPendingSummaryAndSurvey(nil)
+	printPendingSummaryAndSurvey(&config.Config{})
 	if called {
 		t.Error("stop phase ran for a command agent")
 	}

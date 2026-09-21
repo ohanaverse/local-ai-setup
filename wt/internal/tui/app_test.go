@@ -1616,7 +1616,7 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey(nil)
+	printPendingSummaryAndSurvey(&config.Config{})
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -1657,7 +1657,7 @@ func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
 	noticeCalled := false
 	emitPriceNotice = func() { noticeCalled = true }
 
-	printPendingSummaryAndSurvey(nil)
+	printPendingSummaryAndSurvey(&config.Config{})
 	if called {
 		t.Fatal("runSurvey was invoked with no pending launch")
 	}
@@ -1692,7 +1692,7 @@ func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey(nil)
+	printPendingSummaryAndSurvey(&config.Config{})
 	w.Close()
 	os.Stdout = old
 	_, _ = io.ReadAll(r)
