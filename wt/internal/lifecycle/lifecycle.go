@@ -214,13 +214,19 @@ func (e *env) resolveOccupant(ctx context.Context, cfg *config.Config, family st
 // route is updated (routes.go), announced as StageRouting so callers stop
 // rendering the engine's last stage while the proxy is bounced.
 func Start(ctx context.Context, cfg *config.Config, t Target, opts Options) error {
-	if err := start(ctx, defaultEnv(), cfg, t, opts); err != nil {
+	e := defaultEnv()
+	if err := start(ctx, e, cfg, t, opts); err != nil {
+		if e.restartOwed {
+			// The occupant's route was already dropped from config.yaml; the
+			// proxy still serves the old list until it is bounced.
+			bounceRoutes(ctx, cfg)
+		}
 		return err
 	}
 	if opts.Progress != nil {
 		opts.Progress(StageRouting)
 	}
-	routeAfterStart(ctx, cfg, t)
+	routeAfterStart(ctx, cfg, t, e.restartOwed)
 	return nil
 }
 
@@ -255,8 +261,8 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 		// The occupant is down now. Drop its route here rather than after the
 		// start, because a start that fails from here on returns without any
 		// route hook and would strand the dead occupant's model_list row.
-		if e.onOccupantStopped != nil {
-			e.onOccupantStopped(ctx, cfg, occ)
+		if e.onOccupantStopped != nil && e.onOccupantStopped(ctx, cfg, occ) {
+			e.restartOwed = true
 		}
 	}
 	return b.start(ctx, e, cfg, t, report)

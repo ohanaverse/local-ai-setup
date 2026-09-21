@@ -21,6 +21,13 @@ type Options struct {
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
+	// NoRestart writes config.yaml but leaves the proxy alone: the caller owes
+	// (and performs) the restart itself, so several route changes in one
+	// operation cost one bounce.
+	NoRestart bool
+	// ForceRestart restarts the proxy even when this call changed nothing —
+	// the settling restart for a run of earlier NoRestart writes.
+	ForceRestart bool
 }
 
 // Outcome is one requested id's result. Action is "exposed" or "unexposed"
@@ -136,7 +143,7 @@ func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o
 	if err != nil {
 		return Result{}, err
 	}
-	if res.Changed {
+	if (res.Changed && !o.NoRestart) || o.ForceRestart {
 		restart := o.Restart
 		if restart == nil {
 			restart = Restart

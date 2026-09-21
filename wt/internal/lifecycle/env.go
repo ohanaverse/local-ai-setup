@@ -30,11 +30,13 @@ type env struct {
 	// occupant, before the new model is started. Production drops the
 	// occupant's LiteLLM route there: if the new model then fails to load,
 	// Start returns the error and no route hook runs, so the stopped occupant
-	// would otherwise keep its model_list row forever (`wt litellm sync`
-	// cannot repair it — a stopped provider probes partial and is left
-	// untouched). Test envs leave it nil so the injectable cores stay
-	// hook-free.
-	onOccupantStopped func(ctx context.Context, cfg *config.Config, occ localmodels.Entry)
+	// would otherwise keep its model_list row until the next `wt litellm
+	// sync` (which only repairs providers that refuse connections). Test envs leave it nil so the injectable cores stay
+	// hook-free. It reports whether it wrote config.yaml without restarting
+	// the proxy (a restart is owed): Start settles that with ONE bounce after
+	// the start, success or failure, instead of one per hook.
+	onOccupantStopped func(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool
+	restartOwed       bool // set by start() when the hook reported an owed restart
 
 	mtplxProc pidProcess // pidfile + log used for the spawned mtplx server
 

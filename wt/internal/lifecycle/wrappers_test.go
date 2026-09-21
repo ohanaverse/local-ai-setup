@@ -448,3 +448,44 @@ func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
 		t.Fatalf("routed = %v, want none: one oMLX server serves both variants (warn %q)", got, warn.String())
 	}
 }
+
+// TestStartWrapperReplaceBouncesProxyOnce pins that a replace start (stop the
+// occupant, start the new model) restarts the LiteLLM proxy exactly once: the
+// occupant's route removal is written without a restart and the post-start
+// route write settles it. Two bounces per replace doubled the proxy downtime
+// and readiness wait, dropping in-flight requests twice.
+func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
+	path, restarts, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the occupant
+	var calls []string
+	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
+
+	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"mtplx/Y--Q35"}) {
+		t.Fatalf("routed = %v, want only the new model (warn %q)", got, warn.String())
+	}
+	if restarts() != 1 {
+		t.Fatalf("restarts = %d for one replace, want 1", restarts())
+	}
+}
+
+// TestStartWrapperReplaceThenFailStillBouncesOnce pins the failure half: the
+// occupant's route is dropped from config.yaml at stop time without a restart,
+// so when the new model then fails to load Start must still bounce the proxy
+// (once) — otherwise the proxy keeps serving the dead occupant's route until
+// something else restarts it.
+func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
+	_, restarts, _ := realRoutes(t, staleSiblingYAML)
+	var calls []string
+	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
+
+	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err == nil {
+		t.Fatal("Start = nil, want the backend's failure")
+	}
+	if restarts() != 1 {
+		t.Fatalf("restarts = %d after replace-then-fail, want 1", restarts())
+	}
+}

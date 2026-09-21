@@ -61,7 +61,7 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 // Without the removal a replaced model keeps a dead route.
 func TestRouteAfterStartSingleModelReplacesSiblings(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, false)
 	want := routeCall{add: []string{"mtplx/Y--Q35"}, remove: []string{"mtplx/Y--Q27"}}
 	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, want.add) || !slices.Equal((*calls)[0].remove, want.remove) {
 		t.Fatalf("calls = %+v, want %+v", *calls, want)
@@ -73,7 +73,7 @@ func TestRouteAfterStartSingleModelReplacesSiblings(t *testing.T) {
 // may still be loaded.
 func TestRouteAfterStartMultiTenantOnlyAdds(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if len(*calls) != 1 || !slices.Equal((*calls)[0].add, []string{"ollama/a:1"}) || len((*calls)[0].remove) != 0 {
 		t.Fatalf("calls = %+v", *calls)
 	}
@@ -103,19 +103,19 @@ func TestRouteAfterStop(t *testing.T) {
 // route would strand a running model.
 func TestRouteNeverFailsTheCaller(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{}, errors.New("boom"))
-	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if !bytes.Contains(warn.Bytes(), []byte("boom")) {
 		t.Fatalf("no warning for a failed apply: %q", warn.String())
 	}
 
 	_, warn = stubRoutes(t, litellm.Result{}, litellm.ErrMissing)
-	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if warn.Len() != 0 {
 		t.Fatalf("missing config.yaml must be silent, got %q", warn.String())
 	}
 
 	calls, warn := stubRoutes(t, litellm.Result{}, nil)
-	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"})
+	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, false)
 	if len(*calls) != 0 || !bytes.Contains(warn.Bytes(), []byte("not in the registry")) {
 		t.Fatalf("unregistered: calls=%v warn=%q", *calls, warn.String())
 	}
@@ -132,13 +132,13 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	stubRoutes(t, litellm.Result{Changed: true}, nil)
 	waited := 0
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
-	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if waited != 1 {
 		t.Fatalf("waited = %d, want 1", waited)
 	}
 	stubRoutes(t, litellm.Result{Changed: false}, nil)
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
-	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if waited != 1 {
 		t.Fatal("waited despite no change")
 	}
@@ -148,7 +148,7 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	probed := 0
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
-	routeAfterStart(context.Background(), noURL, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), noURL, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if waited != 1 || probed != 0 {
 		t.Fatalf("no LiteLLM URL: waited=%d (want still 1) probed=%d (want 0)", waited, probed)
 	}
@@ -172,7 +172,7 @@ func TestRouteSkipsWaitWhenProxyWasNotRunning(t *testing.T) {
 		return errors.New("LiteLLM proxy not ready")
 	}
 	began := time.Now()
-	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
 	if probed != 2 || waited != 0 {
 		t.Fatalf("probed=%d (want 2) waited=%d (want 0)", probed, waited)
@@ -203,7 +203,7 @@ func TestRouteHonorsCallerContext(t *testing.T) {
 		return ctx.Err()
 	}
 	base, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "sentinel"))
-	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	routeAfterStop(base, cfg, "ollama", "a:1")
 	if len(captured) != 2 {
 		t.Fatalf("waitProxy calls = %d, want 2", len(captured))
@@ -226,7 +226,7 @@ func TestRouteHonorsCallerContext(t *testing.T) {
 			t.Errorf("call %d: caller cancel did not reach waitProxy's ctx", i)
 		}
 	}
-	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	routeAfterStop(base, cfg, "ollama", "a:1")
 	if warn.Len() != 0 {
 		t.Fatalf("cancelled ctx must not warn, got %q", warn.String())
@@ -240,7 +240,7 @@ func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
 	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
 	waitProxy = func(context.Context, string, time.Duration) error { return errors.New("proxy down") }
-	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"})
+	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
 	if !bytes.Contains(warn.Bytes(), []byte("proxy down")) {
 		t.Fatalf("expected warning, got %q", warn.String())
 	}
