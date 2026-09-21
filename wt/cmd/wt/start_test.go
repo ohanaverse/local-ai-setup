@@ -380,3 +380,23 @@ func TestStartForLaunchFailureUsesSharedWording(t *testing.T) {
 		t.Errorf("err = %v, want DaemonDownError still on the chain", err)
 	}
 }
+
+// TestStartForLaunchGenericFailureUsesSharedWording verifies an engine error
+// with no dedicated wording is prefixed with the model id exactly as the TUI's
+// status line does, while the original error stays on the chain. Only the
+// daemon-down mapping was pinned; this closes the other branch of the shared
+// StartErrorMessage so the two start paths cannot drift on generic failures.
+func TestStartForLaunchGenericFailureUsesSharedWording(t *testing.T) {
+	stubSignals(t)
+	boom := errors.New("spawn failed")
+	stubLifecycleStart(t, []error{boom})
+
+	err := startForLaunch(&config.Config{}, startTestRow(), true)
+	want := lifecycle.StartErrorMessage("omlx/qwen3.8", boom)
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the engine error still on the chain", err)
+	}
+}

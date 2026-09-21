@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // startCall records one startModel invocation: what was asked to start and
@@ -811,5 +812,50 @@ func TestReplaceFlagOnlyCoversThePinnedRow(t *testing.T) {
 
 	if calls.at(0).opts.AllowReplace {
 		t.Error("a non-pinned row must not inherit --replace")
+	}
+}
+
+// TestReplaceFlagGrantsPermissionToPinnedRow verifies the --replace plumbing
+// end to end inside the TUI: with allowReplace set, Enter on the -M pinned
+// start row reaches the engine with AllowReplace true (no dialog needed), and
+// without it the same row starts with AllowReplace false so an occupied
+// provider raises the replace dialog. The existing test pins only that a
+// non-pinned row does NOT inherit the flag; this pins the positive path, so a
+// dropped model.allowReplace → beginStart wire fails here. The Run(allowReplace)
+// → model hop is covered separately by TestRunArgsReachModel.
+func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
+	requireBinary(t, "claude")
+	for _, allow := range []bool{true, false} {
+		m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+		m.allowReplace = allow
+		m.pinnedModel = "ollama/gemma4:9b"
+		calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+
+		got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+		if got.start != nil && got.start.cancel != nil {
+			t.Cleanup(got.start.cancel)
+		}
+		waitStartCalls(t, calls, 1)
+
+		if got := calls.at(0).opts.AllowReplace; got != allow {
+			t.Errorf("allowReplace=%v: engine saw AllowReplace=%v, want %v", allow, got, allow)
+		}
+	}
+}
+
+// TestRunArgsReachModel verifies the Run(...) → model hand-off: the allowReplace
+// argument (from --replace) and the -M pinned model land on the initial model.
+// This is the one hop TestReplaceFlagGrantsPermissionToPinnedRow skips by
+// assigning m.allowReplace directly; without it, a Run that stopped copying
+// allowReplace would silently disable --replace while every other test passed.
+func TestRunArgsReachModel(t *testing.T) {
+	for _, allow := range []bool{true, false} {
+		m := newRunModel(false, allow, "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
+		if m.allowReplace != allow {
+			t.Errorf("allowReplace=%v: model.allowReplace=%v", allow, m.allowReplace)
+		}
+		if m.pinnedModel != "ollama/gemma4:9b" {
+			t.Errorf("model.pinnedModel=%q, want the -M pin", m.pinnedModel)
+		}
 	}
 }

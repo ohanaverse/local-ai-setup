@@ -119,12 +119,13 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 // usable. The switch order matches renderTable's exactly: the discovered
 // case wins over the route-error case, and a launch row with an unresolvable
 // route stays usable (the picker leaves it selectable and reports the error
-// on Enter). Keeping this next to resolveModel is what lets the non-TUI path
-// make the same decisions the table displays.
+// on Enter). The discovered refusal is catalog.Row.RefusedByRoute, the one
+// rule the table and `wt smoke` also call; keeping this next to resolveModel
+// is what lets the non-TUI path make the same decisions the table displays.
 func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) string {
 	route, err := cfg.ResolveRoute(row.Model, agents.ProtocolsFor(agent))
 	switch {
-	case row.Discovered && err == nil && (route.Litellm || route.Forced):
+	case row.RefusedByRoute(route, err):
 		return "discovered model " + row.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (modelman litellm off) to use it"
 	case err != nil && row.Action() == catalog.ActionStart:
 		return row.Model.ID + " cannot be launched: " + err.Error()

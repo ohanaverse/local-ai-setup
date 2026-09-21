@@ -84,23 +84,57 @@ func stoppable(cfg *config.Config, d stopDeps) []localmodels.Entry {
 	if len(cands) == 0 {
 		return nil
 	}
-	ids := make([]string, len(cands))
-	for i, e := range cands {
-		ids[i] = e.ModelID
+	// Usage is recorded under the registry id a session launched from, but two
+	// rows can name one provider-side model (qwen3.8 / qwen3.8:latest). Sum the
+	// count over every row that matches this candidate's provider-side name, so
+	// a session on either row keeps both off the list.
+	aliasOf := func(e localmodels.Entry) []string {
+		fam := localmodels.Family(e.ProviderID)
+		ids := []string{e.ModelID}
+		if e.ModelName == "" {
+			return ids
+		}
+		for _, o := range snap.Entries {
+			if o.ModelID == e.ModelID || o.ModelName == "" || localmodels.Family(o.ProviderID) != fam {
+				continue
+			}
+			if lifecycle.SameModel(fam, o.ModelName, e.ModelName) {
+				ids = append(ids, o.ModelID)
+			}
+		}
+		return ids
 	}
-	counts := d.counts(ids)
+	allIDs := make([]string, 0, len(cands))
+	seen := map[string]bool{}
+	for _, e := range cands {
+		for _, id := range aliasOf(e) {
+			if !seen[id] {
+				seen[id] = true
+				allIDs = append(allIDs, id)
+			}
+		}
+	}
+	counts := d.counts(allIDs)
+	inUse := func(e localmodels.Entry) bool {
+		for _, id := range aliasOf(e) {
+			if counts[id] > 0 {
+				return true
+			}
+		}
+		return false
+	}
 	// A single-model provider (omlx, mtplx) stops as a whole, taking every
 	// running variant with it — so one session using any variant keeps the
 	// whole family off the list, not just its own row.
 	familyBusy := map[string]bool{}
 	for _, e := range cands {
-		if counts[e.ModelID] > 0 && lifecycle.SingleModel(e.ProviderID) {
+		if inUse(e) && lifecycle.SingleModel(e.ProviderID) {
 			familyBusy[localmodels.Family(e.ProviderID)] = true
 		}
 	}
 	var out []localmodels.Entry
 	for _, e := range cands {
-		if counts[e.ModelID] == 0 && !familyBusy[localmodels.Family(e.ProviderID)] {
+		if !inUse(e) && !familyBusy[localmodels.Family(e.ProviderID)] {
 			out = append(out, e)
 		}
 	}

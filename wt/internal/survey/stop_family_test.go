@@ -50,3 +50,24 @@ func TestStopPickerSingleModelFamilyStoppedOnce(t *testing.T) {
 		t.Errorf("output = %q, want two done lines", out.String())
 	}
 }
+
+// TestStopPickerAliasRowsShareUsage verifies that two registry rows naming the
+// same provider-side model ("qwen3.8" and ollama's implicit "qwen3.8:latest")
+// share one usage count: a live session launched from row A keeps row B off
+// the list. Counting by registry id alone offered idle alias B, and
+// `ollama stop` on it unloaded the single loaded copy under the live session.
+func TestStopPickerAliasRowsShareUsage(t *testing.T) {
+	h := &stopHarness{
+		snap: localmodels.Snapshot{Entries: []localmodels.Entry{
+			runningEntry("ollama", "ollama/qwen", "qwen3.8"),
+			runningEntry("ollama", "ollama/qwen-latest", "qwen3.8:latest"),
+			runningEntry("ollama", "ollama/other", "other"),
+		}},
+		counts: map[string]int{"ollama/qwen": 1},
+	}
+	var out bytes.Buffer
+	runStopPicker(strings.NewReader("all\n\n"), &out, &config.Config{}, h.deps())
+	if len(h.stops) != 1 || h.stops[0] != "ollama|other" {
+		t.Fatalf("stops = %v, want only ollama|other (both qwen aliases are in use)", h.stops)
+	}
+}

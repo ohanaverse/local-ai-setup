@@ -231,6 +231,66 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	}
 }
 
+// TestReplaceFlagReachesTUIRun verifies `--replace` is forwarded from the CLI
+// to tui.Run's allowReplace argument, and that omitting it forwards false.
+// The parameter is compiler-checked but nothing asserted its value, so a
+// dropped or hard-coded flag would silently make --replace a no-op for the
+// TUI's -M start path.
+func TestReplaceFlagReachesTUIRun(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"with --replace", []string{"-W", "my-feature", "-A", "pi", "--replace"}, true},
+		{"without --replace", []string{"-W", "my-feature", "-A", "pi"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := initTestRepo(t)
+			oldWd, _ := os.Getwd()
+			t.Cleanup(func() { _ = os.Chdir(oldWd) })
+			if err := os.Chdir(dir); err != nil {
+				t.Fatalf("chdir: %v", err)
+			}
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			t.Setenv("MODELMAN_REGISTRY", "")
+			writeEmptyRegistry(t, home)
+
+			// allowReplace is process-wide; restore it so this test cannot leak
+			// --replace into another test.
+			t.Cleanup(func(prev bool) func() { return func() { allowReplace = prev } }(allowReplace))
+
+			var got, called bool
+			oldTuiRun := tuiRun
+			tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+				got, called = allowReplace, true
+				return nil
+			}
+			t.Cleanup(func() { tuiRun = oldTuiRun })
+			oldStdinTTY := stdinTTY
+			stdinTTY = func() bool { return true }
+			t.Cleanup(func() { stdinTTY = oldStdinTTY })
+
+			var buf bytes.Buffer
+			root := rootCmd()
+			root.SetOut(&buf)
+			root.SetErr(&buf)
+			root.SetArgs(c.args)
+			if err := root.Execute(); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !called {
+				t.Fatal("tuiRun was not called")
+			}
+			if got != c.want {
+				t.Errorf("tuiRun allowReplace = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestWorktreeWithAgentAndModelLaunches verifies that `wt -W foo -A pi -M
 // claude/opus` (all three selections resolved) still auto-launches instead of
 // showing the model picker. With an empty config the launch fails on model
