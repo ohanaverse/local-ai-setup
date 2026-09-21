@@ -3,10 +3,13 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -112,11 +115,10 @@ func TestStopModelOllamaMissingBinary(t *testing.T) {
 	}
 }
 
-// TestStopModelSingleModelDelegatesToStop verifies single-model providers
-// (omlx, mtplx) stop through their existing whole-provider stop. The picker
-// only lists a running model, which on these providers is the sole occupant,
-// so stopping the provider is stopping that model.
-func TestStopModelSingleModelDelegatesToStop(t *testing.T) {
+// TestStopModelRoutesToProviderBackend verifies dispatch: the picker's
+// `stopModel` reaches the backend registered for each provider id (including
+// the `omlx-6bit` alias). Body unchanged from the original delegation test.
+func TestStopModelRoutesToProviderBackend(t *testing.T) {
 	var calls []string
 	e := fakeEnv(localmodels.Snapshot{}, true, &calls)
 	for _, provider := range []string{"omlx", "omlx-6bit", "mtplx"} {
@@ -153,5 +155,57 @@ func TestCanStop(t *testing.T) {
 		if got := CanStop(id); got != want {
 			t.Errorf("CanStop(%q) = %v, want %v", id, got, want)
 		}
+	}
+}
+
+// TestStopModelOmlxRunsOmlxStopAndWaitsForPort verifies the omlx stopModel
+// thunk actually reaches the daemon stop: it invokes `omlx stop` and returns
+// only after the port closes. A thunk that returned nil without stopping would
+// leave the post-exit picker printing "done" for a model still loaded.
+func TestStopModelOmlxRunsOmlxStopAndWaitsForPort(t *testing.T) {
+	srv, addr := serveFree(t, chatHandler())
+	e := testEnv()
+	e.lookPath = func(string) (string, error) { return "/bin/omlx", nil }
+	var ran []string
+	e.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		ran = append(ran, name+" "+strings.Join(args, " "))
+		srv.Close()
+		return nil, nil
+	}
+	if err := stopModel(context.Background(), e, provCfg("omlx", "http://"+addr), "omlx", "m"); err != nil {
+		t.Fatalf("stopModel: %v", err)
+	}
+	if len(ran) != 1 || ran[0] != "/bin/omlx stop" {
+		t.Fatalf("ran = %v, want [/bin/omlx stop]", ran)
+	}
+
+	// The port never closes: the thunk must report it, not "done".
+	_, addr2 := serveFree(t, chatHandler())
+	e.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+	e.stopTimeout = 60 * time.Millisecond
+	if err := stopModel(context.Background(), e, provCfg("omlx", "http://"+addr2), "omlx", "m"); err == nil {
+		t.Fatal("stopModel returned nil while the daemon still holds its port")
+	}
+}
+
+// TestStopModelMtplxRunsMtplxStopAndWaitsForPort is the mtplx counterpart: the
+// thunk must run `mtplx stop --port N ...` and confirm the port closed.
+func TestStopModelMtplxRunsMtplxStopAndWaitsForPort(t *testing.T) {
+	srv, addr := serveFree(t, chatHandler())
+	_, portStr, _ := net.SplitHostPort(addr)
+	e := testEnv()
+	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
+	var ran []string
+	e.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		ran = append([]string{name}, args...)
+		srv.Close()
+		return nil, nil
+	}
+	if err := stopModel(context.Background(), e, provCfg("mtplx", "http://"+addr+"/v1"), "mtplx", "m"); err != nil {
+		t.Fatalf("stopModel: %v", err)
+	}
+	want := []string{"/bin/mtplx", "stop", "--port", portStr, "--grace-seconds", "10"}
+	if !reflect.DeepEqual(ran, want) {
+		t.Fatalf("ran = %v, want %v", ran, want)
 	}
 }
