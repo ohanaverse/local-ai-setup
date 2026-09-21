@@ -2,11 +2,14 @@ package litellm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -75,6 +78,29 @@ func Alive(ctx context.Context, baseURL string, timeout time.Duration) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// Listening reports whether a proxy may be serving at baseURL: false only when
+// the request positively fails because nothing is there (connection refused,
+// unresolvable host). A timeout, a non-200 or any other answer counts as
+// listening, so a busy or half-started proxy is still waited for after a
+// restart instead of being launched into mid-bounce. Alive is the strict
+// counterpart; this is the one to gate a post-restart wait on.
+func Listening(ctx context.Context, baseURL string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	url := strings.TrimRight(baseURL, "/") + "/health/liveliness"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		var dns *net.DNSError
+		return !errors.Is(err, syscall.ECONNREFUSED) && !errors.As(err, &dns)
+	}
+	resp.Body.Close()
+	return true
 }
 
 // WaitReady polls <baseURL>/health/liveliness until it answers 200 or the

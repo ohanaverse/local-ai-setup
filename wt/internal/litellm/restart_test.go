@@ -132,3 +132,40 @@ func TestRestartContextHonorsCallerCancel(t *testing.T) {
 		t.Fatalf("warnings = %v, want the cancelled restart reported once", w)
 	}
 }
+
+// TestListeningOnlyFalseWhenNothingIsThere pins the gate for the post-restart
+// wait: a closed port is "not listening" (skip the wait, there is no proxy to
+// come back), but a proxy that answers 503 or is too slow to answer within the
+// probe timeout still counts as listening. Treating a slow proxy as absent
+// used to skip the wait and launch the agent into a proxy mid-restart.
+func TestListeningOnlyFalseWhenNothingIsThere(t *testing.T) {
+	ctx := context.Background()
+
+	unhealthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "starting", http.StatusServiceUnavailable)
+	}))
+	defer unhealthy.Close()
+	if !Listening(ctx, unhealthy.URL, time.Second) {
+		t.Error("a 503 answer must count as listening")
+	}
+	if Alive(ctx, unhealthy.URL, time.Second) {
+		t.Error("Alive must stay strict: 503 is not alive")
+	}
+
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer slow.Close()
+	defer close(release)
+	if !Listening(ctx, slow.URL, 50*time.Millisecond) {
+		t.Error("a probe timeout must count as listening (busy proxy)")
+	}
+
+	gone := httptest.NewServer(http.NotFoundHandler())
+	url := gone.URL
+	gone.Close()
+	if Listening(ctx, url, time.Second) {
+		t.Error("a refused connection must not count as listening")
+	}
+}

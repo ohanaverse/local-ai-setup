@@ -17,15 +17,17 @@ import (
 var (
 	applyRoutes           = litellm.Apply
 	waitProxy             = litellm.WaitReady
-	probeProxy            = litellm.Alive
+	probeProxy            = litellm.Listening
 	routesWarn  io.Writer = os.Stderr
 )
 
 const (
 	// proxyReadyTimeout bounds the wait for the proxy after a route change.
 	proxyReadyTimeout = 30 * time.Second
-	// proxyAliveTimeout bounds the single liveness probe taken before the
-	// change. Short on purpose: it is paid on every start and stop.
+	// proxyAliveTimeout bounds the single probe taken before the change.
+	// Short on purpose: it is paid on every start and stop. It only has to
+	// tell "nothing there" (refused: no wait) from "something there" (any
+	// other outcome, even a timeout: wait for it after the restart).
 	proxyAliveTimeout = 1500 * time.Millisecond
 )
 
@@ -90,7 +92,8 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 }
 
 func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string) {
-	// Probe the proxy ONCE before the write. Waiting for readiness afterwards
+	// Probe the proxy ONCE before the write (Listening: only a refused
+	// connection counts as down, so a slow proxy is still waited for). Waiting for readiness afterwards
 	// is only meaningful when a proxy was actually serving: a configured URL
 	// with nothing listening (routing may even be switched off) used to cost
 	// every start and stop the full proxyReadyTimeout waiting for a process
