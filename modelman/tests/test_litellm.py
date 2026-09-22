@@ -308,18 +308,27 @@ def test_apply_expose_queue_per_id_wt_error_leaves_that_flag_alone(tmp_path, bri
     assert state.get("ollama/b").exposed is False
 
 
-def test_apply_expose_queue_bridge_failure_raises_with_no_flag_touched(tmp_path, bridge):
-    # A bridge-level failure (wt missing, unreadable config.yaml, garbled
-    # output) applied nothing on wt's side either, so it must propagate as
-    # LiteLLMConfigError — the type queue.py turns into a whole-batch
-    # failure — with every flag untouched.
+def test_apply_expose_queue_expose_batch_bridge_failure_is_per_id_with_flags_untouched(
+    tmp_path, bridge
+):
+    # A bridge-level failure in the EXPOSE batch (wt missing, unreadable
+    # config.yaml, garbled output) applied nothing on wt's side, but it
+    # must not raise and wipe errors already recorded for other ids in the
+    # same queue — it becomes a per-id error for this batch's own ids
+    # instead, mirroring the fix already applied to the unexpose batch
+    # (see the sibling test below). Every flag stays untouched since
+    # nothing was applied.
     registry, state = _queue_registry()
     bridge.raise_on = "expose"
 
-    with pytest.raises(LiteLLMConfigError):
-        apply_expose_queue(
-            registry, state, [("ollama/a", True), ("ollama/b", True)], tmp_path / "config.yaml"
-        )
+    outcomes, _ = apply_expose_queue(
+        registry, state, [("ollama/a", True), ("ollama/b", True)], tmp_path / "config.yaml"
+    )
+
+    assert outcomes == [
+        ("ollama/a", True, "wt litellm expose could not run"),
+        ("ollama/b", True, "wt litellm expose could not run"),
+    ]
     assert state.get("ollama/a").exposed is False
     assert state.get("ollama/b").exposed is False
 

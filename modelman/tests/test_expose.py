@@ -8,6 +8,7 @@ from modelman import wt_bridge
 from modelman.litellm import (
     ExposeError,
     LiteLLMConfigError,
+    apply_expose_queue,
     expose_model,
     unexpose_model,
 )
@@ -200,6 +201,73 @@ def test_unexpose_model_absent_from_registry_is_fine(tmp_path, calls):
     unexpose_model(state, "ollama/a", tmp_path / "config.yaml")
     assert calls[0][1] == ["ollama/a"]
     assert "ollama/a" not in state.models
+
+
+def test_apply_expose_queue_bridge_failure_in_expose_batch_is_per_id(tmp_path, calls, monkeypatch):
+    # A bridge-level failure in the EXPOSE batch must not raise and wipe
+    # already-computed errors from other ids in the same queue — it becomes
+    # a per-id error for the expose batch's own ids only, mirroring the fix
+    # already applied to the unexpose batch (a76b9d5).
+    providers = [
+        ProviderEntry(
+            id="ollama",
+            name="Ollama",
+            auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+        ),
+    ]
+    models = [
+        ModelEntry(id="bad", family="f", provider_id="ollama", model_name="bad"),
+        ModelEntry(id="good", family="f", provider_id="ollama", model_name="good"),
+    ]
+    registry = Registry(providers=providers, models=models)
+    state = StateStore()
+    state.set("bad", ModelState(ready=False))
+    state.set("good", ModelState(ready=True))
+
+    def broken_expose(ids, *, litellm_path=None, skip_ready_gate=True):
+        raise wt_bridge.WtBridgeError("wt not found")
+
+    monkeypatch.setattr(wt_bridge, "expose", broken_expose)
+
+    outcomes, warnings = apply_expose_queue(
+        registry, state, [("bad", True), ("good", True)], tmp_path / "config.yaml"
+    )
+    by_id = {model_id: error for model_id, _target, error in outcomes}
+    assert "not ready" in by_id["bad"]
+    assert "wt not found" in by_id["good"]
+
+
+def test_apply_expose_queue_validation_bridge_error_does_not_abort_the_loop(
+    tmp_path, calls, monkeypatch
+):
+    # _validate_locally can itself raise LiteLLMConfigError (via
+    # _provider_flags_for_write, when wt's provider table can't be read at
+    # all) — that must become a per-id error too, not abort validation for
+    # every remaining id in the queue.
+    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", lambda: {})  # wt unreachable
+
+    providers = [
+        ProviderEntry(
+            id="ollama",
+            name="Ollama",
+            auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+        ),
+    ]
+    models = [
+        ModelEntry(id="a", family="f", provider_id="ollama", model_name="a"),
+        ModelEntry(id="b", family="f", provider_id="ollama", model_name="b"),
+    ]
+    registry = Registry(providers=providers, models=models)
+    state = StateStore()
+    state.set("a", ModelState(ready=True))
+    state.set("b", ModelState(ready=True))
+
+    outcomes, warnings = apply_expose_queue(
+        registry, state, [("a", True), ("b", True)], tmp_path / "config.yaml"
+    )
+    by_id = {model_id: error for model_id, _target, error in outcomes}
+    assert "cannot read wt's LiteLLM provider table" in by_id["a"]
+    assert "cannot read wt's LiteLLM provider table" in by_id["b"]
 
 
 def test_unexpose_model_bridge_failure_keeps_flag(tmp_path, calls):
