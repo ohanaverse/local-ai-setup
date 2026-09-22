@@ -20,6 +20,14 @@ The scrollable list includes commands first, then regular agents, both
 groups sorted by name. Each row shows the agent's supported providers and
 one of `✓ installed`, `✗ not installed`, or `✗ not configured`.
 
+> **`wt config`'s "not configured" marker is not the same as launch
+> eligibility.** This editor exists to add the missing `config.toml` entry,
+> so a `✗ not configured` row here is exactly what it says. But in the
+> worktree-launcher's own agent+command picker (`wt`, not `wt config`), an
+> installed agent with no `config.toml` entry is launchable anyway — Enter
+> launches it directly with no model routing (issue #147). Only an
+> uninstalled agent is truly blocked in the launcher.
+
 ### Editing rows
 
 Press `Enter` on any row to open an edit form for that entry. Forms vary

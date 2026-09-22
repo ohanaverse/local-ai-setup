@@ -54,6 +54,39 @@ func withCleanConfigEnv(t *testing.T, home string) {
 	t.Setenv("MODELMAN_REGISTRY", "")
 }
 
+// writeConfiguredAgent writes config.toml with one agent entry (name,
+// providerID) and a registry.toml with a matching provider and no models, so
+// the agent is "configured" (has a config.toml entry) with zero eligible
+// models — used by tests that need a configured model-driven agent whose
+// model resolution still falls through to the picker, distinct from an
+// unconfigured agent that falls through to passthrough.
+func writeConfiguredAgent(t *testing.T, home, agentName, providerID string) {
+	t.Helper()
+	withCleanConfigEnv(t, home)
+	cfgDir := filepath.Join(home, ".config", "agent-wt")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgToml := "default_tag = \"code\"\n[[agents]]\nname = \"" + agentName + "\"\nsupported_providers = [\"" + providerID + "\"]\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	regDir := filepath.Join(home, ".config", "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// migrateConfigSchema (runs on every Load once config.toml exists)
+	// unconditionally ensures an "agy" agent referencing an "agy" provider
+	// (see wt/CLAUDE.md's "Fixture gotcha" note) — any config.toml with
+	// agents needs a matching agy provider in the registry or Validate
+	// fails with "unknown provider \"agy\"".
+	regToml := "[[providers]]\nid = \"" + providerID + "\"\nname = \"" + providerID + "\"\nlocation = \"local\"\nauth = { type = \"none\", base_url = \"http://localhost:11434\" }\n" +
+		"[[providers]]\nid = \"agy\"\nname = \"agy\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte(regToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestMaybeInstallGuardInRepo installs the guard in a temp repo and verifies
 // that a subsequent Check reports Installed. Without this, the launcher would
 // silently skip guard protection on normal launches.

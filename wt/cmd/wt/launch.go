@@ -204,6 +204,25 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	return runAgentCmd(cmd, agent, m, cfg)
 }
 
+// launchPassthrough builds and runs the bare-agent command for an
+// unconfigured model-driven agent (agents.IsConfigured false) — no model
+// routing, equivalent to running the installed binary directly. The zero
+// config.Model passed to runAgentCmd makes the post-exit flow behave exactly
+// like a command-agent launch: no survey, no stop picker, no price notice,
+// and a summary line without a model segment.
+//
+// launchPassthrough is a package-level variable so tests can stub it,
+// mirroring launchFiltered above.
+var launchPassthrough = launchPassthroughImpl
+
+func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+	cmd, err := agents.BuildPassthroughCmd(agent, worktreePath, yolo, extraArgs)
+	if err != nil {
+		return err
+	}
+	return runAgentCmd(cmd, agent, config.Model{}, cfg)
+}
+
 // runAgentCmd wires stdio through to the agent, runs it, then runs the
 // post-exit flow and propagates the agent's exit code to the caller. Order
 // (issues #115/#116): release this session's refcount entry → survey (skipped

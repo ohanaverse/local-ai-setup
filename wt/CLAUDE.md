@@ -220,6 +220,24 @@ decoded (`config.ModelCost` in `internal/config/config.go`) and the cost is
 rendered as per-token + subscription pricing columns in the model picker
 (`internal/tui/model_list.go`).
 
+**Unconfigured-agent passthrough (issue #147).** A missing registry
+(`config.ErrRegistryMissing`) is tolerated by the launch-path gate for
+*every* agent, not just commands: `config.Load` still fails closed the same
+way, but `cmd/wt`'s `rootCmd().RunE` now only re-raises the error when it is
+*not* `ErrRegistryMissing`. `config.Load` also stopped discarding an
+already-parsed `config.toml` on a missing registry: the returned `Config`
+still carries real `Agents`/`DefaultTag` (just an empty model catalog), so a
+genuinely configured agent is never misread as unconfigured just because the
+registry also went missing — only an agent truly absent from `config.toml`
+reads as unconfigured via `agents.IsConfigured(cfg, name)` and launches its
+installed binary directly with no model routing, through
+`agents.BuildPassthroughCmd`. A configured agent whose registry is missing
+instead fails on model resolution (no models to resolve against) rather
+than silently launching native. `-M` against an unconfigured agent is still
+an error. A genuinely malformed `config.toml`/`registry.toml` (a real parse
+error, not `ErrRegistryMissing`) still fails closed with the repair hint.
+See `docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md`.
+
 **Read-side schemas are pinned by contract fixtures.** `docs/contracts/registry.sample.toml`
 and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
 contract tests and modelman's `tests/contracts/` — a schema change must
@@ -350,6 +368,21 @@ go run ./cmd/wt rotate code    # debug helper: print the model after the last-la
 ## Agents (Go)
 
 Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Route) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor used by both TUI and non-TUI launch paths — it resolves one `config.Route` per launch via `(*config.Config).ResolveRoute(m, agents.ProtocolsFor(agent))` and hands it to `Build`; drivers should not bypass it.
+
+**Unconfigured-agent passthrough.** `agents.IsConfigured(cfg, name)` is the
+single source of truth for "does this agent have a model catalog to resolve
+against" — commands are always configured; a model-driven agent needs a
+`config.toml` entry. When false, both launch paths skip the model layer and
+call `agents.BuildPassthroughCmd(agent, worktreePath, yolo, extraArgs)`,
+which reuses every driver's existing native-model branch via the sentinel
+`config.Model{Native: true, ModelName: "native"}` — no `--model`, no gateway
+env, the same env-clearing (`claude` clears `ANTHROPIC_*`, `copilot` clears
+`COPILOT_*`) a real native launch gets. `opencode`'s `Build` is the one
+driver that gained a native-model guard for this (it was previously
+ollama-only and never saw a native model). The TUI marks an installed,
+unconfigured agent row `passthrough` in the agent+command picker instead of
+the usual "not configured" issue; an uninstalled agent stays blocked either
+way, since a passthrough launch still needs a binary to exec.
 
 `Route` (`internal/config`) carries everything a launch needs: `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the model's own provider (`auth.base_url`, normalized via `BaseOrigin`, key from `auth.secret_ref` via `ResolveSecret`) with the provider-side model name; litellm/forced routes dial the proxy URL/key from wt's `[litellm]` config with the registry id.
 

@@ -2,6 +2,8 @@
 
 ## Summary
 
+> **Extended 2026-09-22:** [`2026-09-22-wt-unconfigured-agent-passthrough-design.md`](2026-09-22-wt-unconfigured-agent-passthrough-design.md) generalizes the missing-registry tolerance this spec introduced for command agents to model-driven agents too. The command-agent carve-out below is unchanged; only the "real agents always fail closed" half was replaced.
+
 `shell-wt` (and any command agent) should work on a fresh machine where the
 modelman registry has not been set up yet. Command agents have no model layer,
 so a missing `registry.toml` must not block them. Real (model-driven) agents

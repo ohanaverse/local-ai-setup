@@ -28,6 +28,13 @@ var version = "0.1.0"
 // instead of opening a real /dev/tty.
 var tuiRun = tui.Run
 
+// installed is a test seam wrapping agents.Installed for the pinned-agent
+// binary check in RunE (issue #147): a pinned agent whose binary is missing
+// must fail before any worktree work, and tests stub this so that check does
+// not depend on the host's installed binaries. cmd/wt's TestMain defaults it
+// to true so existing tests are unaffected unless they opt into stubbing it.
+var installed = agents.Installed
+
 // sweepRefcounts is a seam for tests: production sweeps the live-session
 // refcount state at the top of every launch; tests stub it to observe the
 // call without touching a real state file.
@@ -135,6 +142,21 @@ func runLaunchPath(
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
+
+	// An unconfigured model-driven agent (no config.toml entry — including
+	// the extreme case of a wholly missing registry) has no model catalog
+	// to resolve a launch against; launch it bare instead of routing
+	// through the model layer. Guarded on agent != "" so an unpinned launch
+	// (-W with no -A) still falls through to needsModelPicker's
+	// agent-selection path below — cfg.AgentByName("") always fails too,
+	// and an empty agent name is not "unconfigured", it's "not chosen yet".
+	if agent != "" && !agents.IsCommand(agent) && !agents.IsConfigured(a.cfg, agent) {
+		if pinned != "" {
+			return fmt.Errorf("agent %q is not configured; cannot pin model %q", agent, pinned)
+		}
+		fmt.Fprintf(os.Stderr, "wt: %s is not configured — launching it directly without a model\n", agent)
+		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg)
+	}
 
 	if needsModelPicker(agent, pinned) {
 		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
@@ -316,11 +338,14 @@ func rootCmd() *cobra.Command {
 			allowReplace, _ = cmd.Flags().GetBool("replace")
 
 			// Launch paths require a valid config. The `wt config` subcommand
-			// bypasses this so it can repair a broken config.toml. Command
-			// agents (shell, etc.) have no model layer, so a missing modelman
-			// registry is tolerated for them — only real agents need the
-			// registry, and they still fail closed with the migrate hint.
-			if a.cfgErr != nil && !(agent != "" && agents.IsCommand(agent) && errors.Is(a.cfgErr, config.ErrRegistryMissing)) {
+			// bypasses this so it can repair a broken config.toml. A missing
+			// modelman registry is tolerated for every agent (issue #147): a
+			// command agent has no model layer, and a model-driven agent with
+			// no config.toml entry falls back to a bare passthrough launch
+			// (see agents.IsConfigured and runLaunchPath, below). Anything
+			// else — a config.toml/registry.toml that exists but does not
+			// parse — still fails closed with the repair hint.
+			if a.cfgErr != nil && !errors.Is(a.cfgErr, config.ErrRegistryMissing) {
 				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
 			}
 
@@ -330,6 +355,16 @@ func rootCmd() *cobra.Command {
 			// fast-fail: the agent picker is only useful for known agents.
 			if agent != "" && agents.ByName(agent) == nil {
 				return fmt.Errorf("unknown agent %q (known: %s)", agent, strings.Join(agents.Names(), ", "))
+			}
+
+			// A pinned model-driven agent whose binary is missing can never
+			// launch, configured or not; fail before any worktree work rather
+			// than deep inside BuildLaunchCmd after a worktree may already
+			// have been created. Commands (e.g. shell) have no binary
+			// requirement of their own — ListEntries/IssueFor already treat
+			// them as always-installed.
+			if agent != "" && !agents.IsCommand(agent) && !installed(agent) {
+				return fmt.Errorf("agent %q is not installed — install the %s binary", agent, agent)
 			}
 
 			// -W <name>: use/create a worktree, then launch (no picker).

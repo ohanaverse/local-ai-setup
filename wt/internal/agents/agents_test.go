@@ -992,9 +992,12 @@ func TestListEntries(t *testing.T) {
 
 // TestIssueFor verifies the single-agent launch blocker: configured+installed
 // is launchable, a missing config or binary produces the right message, and
-// commands are always launchable. This is the shared helper behind both the
-// picker rows and the TUI's pinned-agent path, so a regression here would
-// either hide a real problem or block a valid launch.
+// commands are always launchable. ListEntries (and so the agent+command
+// picker's row text for the "both good" case) is the only production caller
+// left — the CLI gate and the TUI's pinned-agent path re-implement this
+// precedence themselves (see IssueFor's doc comment) — but this still guards
+// the shared "not configured"/"not installed" wording those call sites
+// reference via agents.NotInstalledIssue.
 func TestIssueFor(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{

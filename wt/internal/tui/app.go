@@ -381,12 +381,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// by the picked driver's name, not a hardcoded "shell".
 					return m.launchCommand(item.name)
 				}
-				// An agent that is not configured or not installed cannot
-				// launch. Surface the reason inline instead of letting the
-				// user advance to a model screen that can never succeed.
+				// An agent that cannot launch at all (uninstalled) carries
+				// a non-empty issue. Surface it inline instead of letting
+				// the user advance to a model screen that can never
+				// succeed. (An installed-but-unconfigured agent takes the
+				// item.passthrough branch below, not this one.)
 				if item.issue != "" {
 					m.status = "cannot launch " + item.name + ": " + item.issue
 					return m, nil
+				}
+				if item.passthrough {
+					// Installed but no config.toml entry (issue #147):
+					// launch directly, no model layer to resolve.
+					return m.launchPassthrough(item.name)
 				}
 				// Agent: validate the model catalog for the agent + active
 				// filters (-T/-F), then build the picker list and position
@@ -686,6 +693,21 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 	return m, runAndWaitCmd(cmd, name, config.Model{})
 }
 
+// launchPassthrough builds and runs a model-driven agent that has no
+// config.toml entry, via the buildPassthrough seam — no model routing,
+// equivalent to running the installed binary directly. Mirrors
+// launchCommand's shape; the zero config.Model passed to runAndWaitCmd
+// produces the same command-agent-like post-exit behavior (no survey, no
+// stop picker, no price notice).
+func (m model) launchPassthrough(name string) (model, tea.Cmd) {
+	cmd, err := buildPassthrough(name, m.selectedPath, m.yolo, m.extraArgs)
+	if err != nil {
+		m.status = "launch failed: " + err.Error()
+		return m, nil
+	}
+	return m, runAndWaitCmd(cmd, name, config.Model{})
+}
+
 // proceedFromSelectedPath continues the launch flow once m.selectedPath is
 // resolved — either directly from a worktree/current entry, or after
 // EnsureForBranch materialized a worktree for a bare branch. It is the body
@@ -703,12 +725,24 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 		if agents.IsCommand(m.agent) {
 			return m.launchCommand(m.agent)
 		}
-		// A pinned agent that is not configured or not installed cannot
-		// launch; surface the reason instead of a cryptic "agent not found"
-		// from EligibleModels or a late "not installed" from the launch path.
-		if issue := agents.IssueFor(m.cfg, m.agent, installed); issue != "" {
-			m.status = "cannot launch " + m.agent + ": " + issue
+		// The installed check runs first, regardless of configured state:
+		// there is no binary to launch bare or otherwise (decision #3 of the
+		// passthrough design — the installed check is early and
+		// pinned-agent-only).
+		if !installed(m.agent) {
+			m.status = "cannot launch " + m.agent + ": not installed — install the binary"
 			return m, nil
+		}
+		if !agents.IsConfigured(m.cfg, m.agent) {
+			// Installed but no config.toml entry (issue #147): launch
+			// directly, unless the user pinned a model that cannot be
+			// honored — an explicit pin must be surfaced, never silently
+			// dropped (decision #5).
+			if m.pinnedModel != "" {
+				m.status = fmt.Sprintf("agent %q is not configured; cannot pin model %q", m.agent, m.pinnedModel)
+				return m, nil
+			}
+			return m.launchPassthrough(m.agent)
 		}
 		// Pinned agent: skip the picker, run the same model setup
 		// that phaseAgent Enter would have run for an agent item.

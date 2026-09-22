@@ -111,6 +111,10 @@ agent-toolkit deploy home --dry-run    # Preview changes
 2. **Static files** from `components/<name>/static/` → `~/` (e.g., hooks)
 3. **Hook registration** - Automatically updates `~/.claude/settings.json` for Claude
 
+## wt Agent Launching
+
+`wt` (the worktree/agent launcher, `wt/cmd/wt`) is a separate tool from the Claude Code/Codex configuration this doc otherwise covers, but it reads its own model registry at `~/.config/local-ai/registry.toml`. A missing registry no longer blocks launching an agent: a model-driven agent with no `config.toml` entry (including the case where the registry is entirely absent) launches its installed binary directly, with no model routing. `modelman migrate` is the opt-in that seeds the registry and unlocks model routing/rotation. See `wt/CLAUDE.md`'s "Unconfigured-agent passthrough" note and `wt/docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md` for the full behavior.
+
 ## References
 
 - [Claude Code Hooks](https://code.claude.com/docs/en/hooks)

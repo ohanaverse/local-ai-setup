@@ -370,7 +370,12 @@ func Path() string {
 // Config. The registry is checked before any schema-migration save so a
 // missing registry fails closed before wt rewrites config.toml: legacy
 // provider/model sections must survive on disk for `modelman migrate` to
-// import them. Returns an empty Config if config.toml does not exist yet.
+// import them. Returns an empty Config if config.toml does not exist yet. A
+// missing registry (ErrRegistryMissing) still returns an error, but the
+// returned Config is not nil: it carries whatever config.toml already
+// parsed (Agents/DefaultTag), just with an empty model catalog, so a
+// genuinely configured agent isn't misread as unconfigured by callers like
+// agents.IsConfigured. A malformed config.toml/registry.toml returns nil.
 func Load() (*Config, error) {
 	if _, err := Migrate(); err != nil {
 		return nil, fmt.Errorf("migration: %w", err)
@@ -381,7 +386,7 @@ func Load() (*Config, error) {
 	if os.IsNotExist(err) {
 		providers, models, err := loadRegistry()
 		if err != nil {
-			return nil, err
+			return cfgOrNilOnMissingRegistry(cfg, err), err
 		}
 		return finalizeCfg(cfg, providers, models)
 	}
@@ -394,7 +399,14 @@ func Load() (*Config, error) {
 
 	providers, models, err := loadRegistry()
 	if err != nil {
-		return nil, err
+		// cfg already carries the Agents/DefaultTag decoded from config.toml
+		// above — a missing registry must not throw that away. A genuinely
+		// configured model-driven agent needs cfg.Agents intact so
+		// agents.IsConfigured keeps reporting it as configured (and its
+		// launch fails loud on the empty model catalog below) instead of
+		// silently reading as unconfigured and falling back to the
+		// unconfigured-agent passthrough (issue #147's fail-open edge case).
+		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
 
 	changed, err := migrateConfigSchema(cfg)
@@ -425,6 +437,19 @@ func Load() (*Config, error) {
 		c.migratedLitellm = false
 	}
 	return c, nil
+}
+
+// cfgOrNilOnMissingRegistry returns cfg (whatever Load has decoded from
+// config.toml so far — Agents/DefaultTag, no Providers/Models) when err
+// wraps ErrRegistryMissing, so a caller like agents.IsConfigured can still
+// see real agent entries. Any other registry error (a genuine parse
+// failure) returns nil, matching Load's existing fail-closed behavior for
+// malformed config/registry data.
+func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
+	if errors.Is(err, ErrRegistryMissing) {
+		return cfg
+	}
+	return nil
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
