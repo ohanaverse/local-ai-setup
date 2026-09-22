@@ -25,6 +25,11 @@ class WtNotFoundError(WtBridgeError):
     """The wt binary is not on PATH."""
 
 
+class WtBridgeTimeoutError(WtBridgeError):
+    """wt timed out; a write it was doing (expose/unexpose) may have already
+    applied to config.yaml before the kill."""
+
+
 @dataclass(frozen=True)
 class BridgeOutcome:
     id: str
@@ -72,7 +77,7 @@ def _run(
             env={**os.environ, **(env or {})},
         )
     except subprocess.TimeoutExpired:
-        raise WtBridgeError(f"wt litellm {sub} timed out after {timeout:g}s") from None
+        raise WtBridgeTimeoutError(f"wt litellm {sub} timed out after {timeout:g}s") from None
     except FileNotFoundError:
         raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
     except OSError as e:
@@ -128,7 +133,10 @@ def parse_providers(stdout: str) -> dict[str, bool]:
 
 
 def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
-    proc = _run(args, _env(litellm_path))
+    try:
+        proc = _run(args, _env(litellm_path))
+    except WtBridgeTimeoutError:
+        return _reconcile_after_timeout(args, litellm_path)
     try:
         json.loads(proc.stdout)
     except (ValueError, TypeError):
@@ -142,6 +150,36 @@ def _change(args: list[str], litellm_path: Path | None) -> BridgeResult:
         raise WtBridgeError(
             f"unparseable wt output (exit {proc.returncode}); changes may have been applied"
         ) from None
+
+
+def _reconcile_after_timeout(args: list[str], litellm_path: Path | None) -> BridgeResult:
+    """expose/unexpose timed out: config.yaml may already have been written
+    (and the proxy restarted) before the kill. Read the actual routed set
+    back with a plain `wt litellm list` — unaffected by the timed-out call —
+    instead of assuming nothing applied, so a timeout can't silently leave
+    modelman.toml's exposed flag out of sync with the real route."""
+    action = args[0]
+    ids = args[args.index("--") + 1 :]
+    try:
+        routed = set(routed_ids(litellm_path=litellm_path))
+    except WtBridgeError:
+        raise WtBridgeError(f"wt litellm {action} timed out and its result is unknown") from None
+    applied_action = "exposed" if action == "expose" else "unexposed"
+    outcomes = []
+    for model_id in ids:
+        applied = (model_id in routed) if action == "expose" else (model_id not in routed)
+        outcomes.append(
+            BridgeOutcome(
+                model_id,
+                applied_action if applied else None,
+                None if applied else f"wt litellm {action} timed out before this id applied",
+            )
+        )
+    return BridgeResult(
+        outcomes=outcomes,
+        changed=True,
+        warnings=[f"wt litellm {action} timed out; recovered actual state from config.yaml"],
+    )
 
 
 def expose(

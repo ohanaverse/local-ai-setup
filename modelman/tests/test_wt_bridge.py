@@ -354,3 +354,47 @@ def test_msg_cleans_wt_output(stderr, stdout, rc, want):
     # prefix-stripped), falling back to stdout then "wt exited N".
     proc = _cp(stdout, returncode=rc, stderr=stderr)
     assert wt_bridge._msg(proc, f"wt exited {rc}") == want
+
+
+def test_expose_timeout_reconciles_via_routed_ids(monkeypatch):
+    # A timed-out `wt litellm expose` may have already written config.yaml
+    # and restarted the proxy before the kill — the bridge must check the
+    # actual routed set (`wt litellm list`, unaffected by the timed-out
+    # call) instead of assuming nothing applied, so a timeout can't
+    # silently leave modelman.toml's exposed flag out of sync with the
+    # real route.
+    from modelman import wt_bridge
+
+    def fake_run(args, env=None, timeout=120):
+        if args[0] == "expose":
+            raise wt_bridge.WtBridgeTimeoutError("wt litellm expose timed out after 120s")
+        raise AssertionError(f"unexpected _run call: {args}")
+
+    monkeypatch.setattr(wt_bridge, "_run", fake_run)
+    monkeypatch.setattr(wt_bridge, "routed_ids", lambda litellm_path=None: ["m1"])
+
+    result = wt_bridge.expose(["m1", "m2"])
+    outcomes = {o.id: o for o in result.outcomes}
+    assert outcomes["m1"].action == "exposed" and outcomes["m1"].error is None
+    assert outcomes["m2"].action is None and "timed out" in outcomes["m2"].error
+
+
+def test_expose_timeout_reconcile_failure_still_raises(monkeypatch):
+    # If the post-timeout reconciliation read (`wt litellm list`) itself
+    # fails, the caller must still see a clear error rather than a
+    # silently-wrong success/failure guess.
+    from modelman import wt_bridge
+
+    def fake_run(args, env=None, timeout=120):
+        if args[0] == "expose":
+            raise wt_bridge.WtBridgeTimeoutError("wt litellm expose timed out after 120s")
+        raise AssertionError(f"unexpected _run call: {args}")
+
+    def broken_routed_ids(litellm_path=None):
+        raise wt_bridge.WtBridgeError("wt litellm list failed")
+
+    monkeypatch.setattr(wt_bridge, "_run", fake_run)
+    monkeypatch.setattr(wt_bridge, "routed_ids", broken_routed_ids)
+
+    with pytest.raises(wt_bridge.WtBridgeError, match="timed out and its result is unknown"):
+        wt_bridge.expose(["m1"])
