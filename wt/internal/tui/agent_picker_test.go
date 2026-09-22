@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -454,5 +455,171 @@ func TestBuildAgentListAdapter(t *testing.T) {
 		if ai.command && ai.issue != "" {
 			t.Errorf("command %q has issue %q", ai.name, ai.issue)
 		}
+	}
+}
+
+// An agent with no config.toml entry but a real binary on PATH is marked
+// passthrough (launchable directly, no model) rather than blocked with a
+// "not configured" issue — the fix for issue #147 (a fresh machine with no
+// modelman/wt configuration must still be able to launch a real agent).
+func TestBuildAgentListMarksInstalledUnconfiguredAsPassthrough(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude", "opencode"))
+
+	items := buildAgentList(cfg)
+	var oc agentItem
+	found := false
+	for _, it := range items {
+		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
+			oc, found = ai, true
+		}
+	}
+	if !found {
+		t.Fatal("missing opencode entry")
+	}
+	if !oc.passthrough {
+		t.Error("opencode should be marked passthrough (installed, no config.toml entry)")
+	}
+	if oc.issue != "" {
+		t.Errorf("opencode issue = %q, want empty for a passthrough row", oc.issue)
+	}
+}
+
+// An uninstalled, unconfigured agent must stay blocked (its existing "not
+// configured"/"not installed" issue text), never marked passthrough — there
+// is no binary to launch bare.
+func TestBuildAgentListUninstalledStaysBlockedNotPassthrough(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude")) // opencode is not installed
+
+	items := buildAgentList(cfg)
+	for _, it := range items {
+		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
+			if ai.passthrough {
+				t.Error("uninstalled opencode must not be marked passthrough")
+			}
+			if ai.issue == "" {
+				t.Error("uninstalled opencode should carry a non-empty issue")
+			}
+			return
+		}
+	}
+	t.Fatal("missing opencode entry")
+}
+
+// Selecting a passthrough row in phaseAgent calls the buildPassthrough seam
+// and launches with no model — the picker half of issue #147's fix.
+func TestPhaseAgentEnterLaunchesPassthroughForUnconfiguredAgent(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"ollama"}},
+		},
+	}
+	t.Cleanup(stubInstalled("claude", "opencode"))
+
+	var gotAgent, gotPath string
+	oldBuildPassthrough := buildPassthrough
+	buildPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
+		gotAgent, gotPath = agent, worktreePath
+		return exec.Command("true"), nil
+	}
+	t.Cleanup(func() { buildPassthrough = oldBuildPassthrough })
+
+	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24, selectedPath: "/tmp/repo"}
+	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	for i, it := range m.agentList.Items() {
+		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
+			m.agentList.Select(i)
+			break
+		}
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if gotAgent != "opencode" {
+		t.Errorf("buildPassthrough agent = %q, want opencode", gotAgent)
+	}
+	if gotPath != "/tmp/repo" {
+		t.Errorf("buildPassthrough worktreePath = %q, want /tmp/repo", gotPath)
+	}
+	if cmd == nil {
+		t.Fatal("expected a launch cmd")
+	}
+}
+
+// The pinned-agent CLI path (`-A <installed-but-unconfigured-agent>`, no
+// -M) must also launch via the buildPassthrough seam instead of blocking on
+// "not configured" or building a model catalog that doesn't exist.
+func TestProceedFromSelectedPathPinnedUnconfiguredAgentPassesThrough(t *testing.T) {
+	t.Cleanup(stubInstalled("opencode"))
+
+	var called bool
+	oldBuildPassthrough := buildPassthrough
+	buildPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
+		called = true
+		return exec.Command("true"), nil
+	}
+	t.Cleanup(func() { buildPassthrough = oldBuildPassthrough })
+
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
+	m.selectedPath = t.TempDir()
+
+	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	nm := gotModel.(model)
+	if !called {
+		t.Fatal("expected buildPassthrough to be called")
+	}
+	if cmd == nil {
+		t.Fatal("expected a launch cmd")
+	}
+	if nm.status != "" {
+		t.Errorf("status = %q, want empty", nm.status)
+	}
+}
+
+// `-A <unconfigured-agent> -M <id>` must error rather than silently
+// dropping the pin or passing through — decision #5 of the passthrough
+// design.
+func TestProceedFromSelectedPathPinnedUnconfiguredAgentWithModelErrors(t *testing.T) {
+	t.Cleanup(stubInstalled("opencode"))
+
+	m := model{
+		cfg: &config.Config{}, phase: phaseList, width: 80, height: 24,
+		initialAgent: "opencode", pinnedModel: "ollama/foo",
+	}
+	m.selectedPath = t.TempDir()
+
+	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	nm := gotModel.(model)
+	if cmd != nil {
+		t.Errorf("expected no launch cmd, got %v", cmd)
+	}
+	if !strings.Contains(nm.status, "not configured") || !strings.Contains(nm.status, "ollama/foo") {
+		t.Errorf("status = %q, want it to mention not configured and the pinned model", nm.status)
+	}
+}
+
+// A pinned agent that is not installed must still be blocked with a clear
+// status, not attempted as a passthrough (there is no binary to launch).
+func TestProceedFromSelectedPathPinnedUninstalledAgentBlocked(t *testing.T) {
+	t.Cleanup(stubInstalled()) // nothing installed
+
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
+	m.selectedPath = t.TempDir()
+
+	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	nm := gotModel.(model)
+	if cmd != nil {
+		t.Errorf("expected no launch cmd, got %v", cmd)
+	}
+	if !strings.Contains(nm.status, "not installed") {
+		t.Errorf("status = %q, want it to mention not installed", nm.status)
 	}
 }

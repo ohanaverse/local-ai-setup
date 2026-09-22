@@ -51,6 +51,11 @@ func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, s
 	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
 }
 
+// buildPassthrough is a test seam wrapping agents.BuildPassthroughCmd,
+// mirroring launchAgent above — used for an agent with no config.toml entry
+// (issue #147).
+var buildPassthrough = agents.BuildPassthroughCmd
+
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
 // terminal, restores the TUI, captures the post-run summary line into
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
