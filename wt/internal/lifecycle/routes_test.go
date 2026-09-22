@@ -208,55 +208,59 @@ func TestRouteSkipsWaitWhenProxyWasNotRunning(t *testing.T) {
 
 type ctxKey struct{}
 
-// TestRouteHonorsCallerContext pins that the CALLER's ctx (not a fresh
-// Background) reaches the proxy wait, for both start and stop: the stub
-// captures the ctx it receives and the test checks it carries the caller's
-// sentinel value and fires Done when the caller cancels. Also pins that a
-// cancelled ctx (Ctrl+C) produces no "proxy not ready" warning. Ignoring ctx
-// would hang the process up to the readiness timeout.
-func TestRouteHonorsCallerContext(t *testing.T) {
+// TestRouteRestartSurvivesCallerCancelAfterReturn pins the fix for a
+// regression the async redesign introduced. Every real caller of the route
+// hook cancels its own ctx through a scoped `defer cancel()` the instant its
+// call returns — wt start's startSignalCtx, the TUI start flow's st.cancel,
+// the stop picker's and StopEntries' stopSignalCtx. That was harmless while
+// the restart ran synchronously (it finished before the caller returned), but
+// now it fires BEFORE the async restart starts. If the async phase inherited
+// that cancellation, wt would write config.yaml and the proxy would silently
+// never pick the change up — and the old "cancelled by the user, stay quiet"
+// warning guard would hide it, since a post-return cancel is indistinguishable
+// from a Ctrl+C.
+//
+// probeProxy blocks until the cancel has definitely landed, so this test
+// cannot pass by winning a race with the goroutine.
+func TestRouteRestartSurvivesCallerCancelAfterReturn(t *testing.T) {
 	cfg := routesCfg()
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})
 	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
-	var captured []context.Context
-	waitProxy = func(ctx context.Context, _ string, _ time.Duration) error {
-		captured = append(captured, ctx)
-		return ctx.Err()
+	cancelled := make(chan struct{})
+	var restartCtx, waitCtx context.Context
+	probeProxy = func(context.Context, string, time.Duration) bool {
+		<-cancelled // the caller's scoped defer cancel() has already fired
+		return true
 	}
+	restartProxy = func(ctx context.Context) []string { restartCtx = ctx; return nil }
+	waitProxy = func(ctx context.Context, _ string, _ time.Duration) error { waitCtx = ctx; return nil }
+
 	base, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "sentinel"))
-	// One WaitPendingRoutes per call: the wait runs asynchronously now, and
-	// two overlapping goroutines would race appending to captured.
 	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	cancel() // exactly what every caller's own `defer cancel()` does here
+	close(cancelled)
 	WaitPendingRoutes()
-	routeAfterStop(base, cfg, "ollama", "a:1")
-	WaitPendingRoutes()
-	if len(captured) != 2 {
-		t.Fatalf("waitProxy calls = %d, want 2", len(captured))
+
+	if restartCtx == nil {
+		t.Fatal("restart never ran — the caller's post-return cancel killed it")
 	}
-	for i, c := range captured {
+	if waitCtx == nil {
+		t.Fatal("readiness wait never ran — the caller's post-return cancel killed it")
+	}
+	for name, c := range map[string]context.Context{"restart": restartCtx, "readiness wait": waitCtx} {
+		// Detached from cancellation, but still a descendant carrying the
+		// caller's values — not a bare context.Background().
 		if c.Value(ctxKey{}) != "sentinel" {
-			t.Errorf("call %d: waitProxy did not receive the caller's ctx", i)
+			t.Errorf("%s ctx lost the caller's values", name)
 		}
 		select {
 		case <-c.Done():
-			t.Errorf("call %d: ctx done before the caller cancelled", i)
+			t.Errorf("%s ctx was cancelled by the caller's post-return cancel", name)
 		default:
 		}
 	}
-	cancel()
-	for i, c := range captured {
-		select {
-		case <-c.Done():
-		default:
-			t.Errorf("call %d: caller cancel did not reach waitProxy's ctx", i)
-		}
-	}
-	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
-	WaitPendingRoutes()
-	routeAfterStop(base, cfg, "ollama", "a:1")
-	WaitPendingRoutes()
 	if warn.Len() != 0 {
-		t.Fatalf("cancelled ctx must not warn, got %q", warn.String())
+		t.Fatalf("unexpected warning: %q", warn.String())
 	}
 }
 

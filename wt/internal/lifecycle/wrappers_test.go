@@ -404,33 +404,37 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	}
 }
 
-// TestStartWrapperRestartHonorsCallerContext drives the real public Start with
-// the real litellm.Apply and a deliberately slow restart command against an
-// already-cancelled context: the restart runs through /bin/sh on the CALLER's
-// ctx, so a user who pressed Ctrl+C must not keep paying for it. Before this,
-// Apply's restart ran on context.Background and a 3s command cost 3s after the
-// cancel. The elapsed budget is measured across WaitPendingRoutes, not just
-// Start: the restart is asynchronous now, so timing Start alone would pass
-// even if the abandoned-on-cancel behavior regressed.
-func TestStartWrapperRestartHonorsCallerContext(t *testing.T) {
-	_, _, warn := realRoutes(t, "model_list: []\n")
-	t.Setenv("WT_LITELLM_RESTART_CMD", "sleep 5")
+// TestStartWrapperRestartSurvivesCancelledCaller is the end-to-end half of
+// TestRouteRestartSurvivesCallerCancelAfterReturn: it drives the real public
+// Start with the real litellm.Apply AND the real RestartContext (counting
+// actual restart-command executions, not stubbed ones) against a caller whose
+// context is already cancelled.
+//
+// Since the restart became asynchronous, every caller's own scoped
+// `defer cancel()` fires before it runs, so inheriting the caller's
+// cancellation means the restart command never executes: config.yaml gets the
+// new route and the running proxy never learns about it. This test fails with
+// 0 restarts if the async phase stops detaching from the caller's ctx.
+func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
+	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
 	swapBackend(t, "ollama", wrapBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the user pressed Ctrl+C
-	began := time.Now()
+	cancel() // the caller's own scoped defer cancel() has already fired
 	if err := Start(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()
-	if el := time.Since(began); el > 2*time.Second {
-		t.Fatalf("a cancelled start paid %v for the restart command, want it abandoned at once", el)
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
+		t.Fatalf("routed = %v, want [ollama/a:1] (warn %q)", got, warn.String())
+	}
+	if restarts() != 1 {
+		t.Fatalf("restarts = %d, want 1: a cancelled caller must not cancel the async restart", restarts())
 	}
 	if warn.Len() != 0 {
-		t.Errorf("a cancelled restart must stay quiet, got %q", warn.String())
+		t.Errorf("unexpected warning: %q", warn.String())
 	}
 }
 

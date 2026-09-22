@@ -122,9 +122,12 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 
 // bounceRoutes restarts the proxy (and waits for it) to settle deferred route
 // writes when the start that followed them failed or found nothing to route.
-// It runs on a context detached from ctx: the common trigger is the user's
-// Ctrl+C, and a cancelled ctx would kill the restart at once, leaving the
-// proxy serving the removed route.
+// It runs on a context detached from ctx, and still needs to even though
+// applyAndReport's async restart detaches again for itself: the common trigger
+// is the user's Ctrl+C, and applyAndReport's SYNCHRONOUS half — the config.yaml
+// write — takes this ctx as litellm.Options.Ctx. An already-cancelled one makes
+// WithLock fail instantly on any lock contention, so the route removal this
+// exists to settle would never be written at all. Detaching twice is harmless.
 //
 // No local timeout wrapper here any more. Under the old fully synchronous
 // applyAndReport a WithTimeout+defer cancel() safely bounded the whole
@@ -191,17 +194,18 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 	routeWG.Add(1)
 	go func() {
 		defer routeWG.Done()
-		// The caller's ctx is passed through unwrapped, exactly as the old
-		// synchronous code did. Not context.WithoutCancel: a genuine Ctrl+C
-		// must still reach an in-flight restart or readiness wait, or the
-		// process hangs on them for the full budget. Not context.WithTimeout
-		// either: every seam here already bounds itself (probeProxy and
-		// waitProxy take their timeout as an argument, litellm.RestartContext
-		// bounds the restart command at 30s), and the defer cancel() such a
-		// wrapper needs would fire the moment this goroutine returns, leaving
-		// a dead context behind for anything still holding it.
-		// bounceRoutes detaches its own ctx before calling in, so its
-		// settling restart still runs live on an already-cancelled caller.
+		// Detached from ctx: every real caller cancels its own ctx via a
+		// scoped defer cancel() the instant its (now async) call returns —
+		// which happens before this restart even starts. A caller's normal
+		// completion is not a signal to abandon the restart; only litellm's
+		// own per-call timeouts (RestartContext's ~30s, Listening's and
+		// WaitReady's own bounds) need to cap this goroutine's lifetime.
+		// WaitPendingRoutes() still bounds how long a wt command's exit can
+		// be delayed by a restart it kicked off.
+		//
+		// A context.WithTimeout child of ctx would not do: its defer cancel()
+		// fires the moment this goroutine returns, and it would still inherit
+		// the caller's post-return cancellation regardless.
 		//
 		// The proxy is probed once, lazily, just before the restart
 		// (Listening: only a refused connection counts as down, so a slow
@@ -212,15 +216,17 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 		// never restart (deferred, or nothing changed) never reach this
 		// goroutine, so they pay no probe at all. The restart itself stays
 		// best-effort either way.
-		wasUp := url != "" && probeProxy(ctx, url, proxyAliveTimeout)
-		warnings := restartProxy(ctx)
-		if ctx.Err() == nil { // cancelled by the user: a failed restart is expected, stay quiet
-			for _, w := range warnings {
-				fmt.Fprintf(routesWarn, "wt: %s\n", w)
-			}
+		bgCtx := context.WithoutCancel(ctx)
+		wasUp := url != "" && probeProxy(bgCtx, url, proxyAliveTimeout)
+		// Warnings are always surfaced: bgCtx cannot be cancelled by the
+		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
+		// restart is expected" case to stay quiet about — suppressing them on
+		// that theory is exactly what hid this path failing silently.
+		for _, w := range restartProxy(bgCtx) {
+			fmt.Fprintf(routesWarn, "wt: %s\n", w)
 		}
 		if wasUp {
-			if err := waitProxy(ctx, url, proxyReadyTimeout); err != nil && ctx.Err() == nil { // cancelled by the user: stay quiet
+			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
 				fmt.Fprintf(routesWarn, "wt: %v\n", err)
 			}
 		}
