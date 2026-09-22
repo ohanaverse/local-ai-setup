@@ -425,8 +425,12 @@ def apply_expose_queue(
 
     Returns (outcomes, warnings). `outcomes` is one (model_id, target,
     error) per queue item, in the queue's order, error None when applied.
-    Bridge-level failures (wt missing, unreadable config.yaml) propagate
-    to the caller as LiteLLMConfigError with no flag touched; per-model
+    A bridge-level failure (wt missing, unreadable config.yaml) in the
+    expose batch propagates to the caller as LiteLLMConfigError with no
+    flag touched — nothing was applied. In the unexpose batch the exposes
+    have already applied, so the same failure becomes a per-id error for
+    each unexpose instead of raising: the applied exposes' flags still
+    flip and the caller sees exactly which ids failed. Per-model
     validation failures — modelman's or wt's — are reported per item and
     don't block the rest of the queue. Flags flip only after wt reports
     success for that id. `warnings` carries wt's non-fatal proxy-restart
@@ -457,11 +461,22 @@ def apply_expose_queue(
             if (error := _outcome_error(result, model_id)) is not None:
                 errors[model_id] = error
     if to_remove:
-        result = _bridge(wt_bridge.unexpose, to_remove, litellm_path=litellm_path)
-        warnings += result.warnings
-        for model_id in to_remove:
-            if (error := _outcome_error(result, model_id)) is not None:
-                errors[model_id] = error
+        try:
+            result = _bridge(wt_bridge.unexpose, to_remove, litellm_path=litellm_path)
+        except LiteLLMConfigError as exc:
+            # The unexpose batch failed at the bridge level — nothing was
+            # removed. But the expose batch above already applied, so its
+            # flags must still flip: raise only in the expose batch (above),
+            # and turn this into a per-id error for each unexpose so the
+            # caller sees which ids failed while keeping the applied
+            # exposes' flags.
+            for model_id in to_remove:
+                errors[model_id] = str(exc)
+        else:
+            warnings += result.warnings
+            for model_id in to_remove:
+                if (error := _outcome_error(result, model_id)) is not None:
+                    errors[model_id] = error
 
     outcomes: list[tuple[str, bool, str | None]] = []
     for model_id, target in exposes:

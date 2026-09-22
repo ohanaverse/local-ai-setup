@@ -324,6 +324,33 @@ def test_apply_expose_queue_bridge_failure_raises_with_no_flag_touched(tmp_path,
     assert state.get("ollama/b").exposed is False
 
 
+def test_apply_expose_queue_unexpose_batch_bridge_failure_keeps_expose_flags(tmp_path, bridge):
+    # The batches are sequential: when the expose batch applied and the
+    # unexpose batch then fails at the bridge level, only the unexposes
+    # failed. Raising would discard the applied exposes and leave their
+    # flags false while config.yaml already carries the routes, so the
+    # failure must become a per-id error for the unexposed ids and the
+    # applied exposes' flags must still flip.
+    registry, state = _queue_registry()
+    bridge.raise_on = "unexpose"
+
+    outcomes, _ = apply_expose_queue(
+        registry,
+        state,
+        [("ollama/a", True), ("ollama/b", False), ("ollama/c", True)],
+        tmp_path / "config.yaml",
+    )
+
+    assert outcomes == [
+        ("ollama/a", True, None),
+        ("ollama/b", False, "wt litellm unexpose could not run"),
+        ("ollama/c", True, None),
+    ]
+    assert state.get("ollama/a").exposed is True
+    assert state.get("ollama/b").exposed is False
+    assert state.get("ollama/c").exposed is True
+
+
 def test_apply_expose_queue_empty_queue_does_nothing(tmp_path, bridge):
     # An empty queue must not spawn wt (and therefore never bounce the
     # proxy) — apply() calls this whenever anything else was queued.
