@@ -131,3 +131,21 @@ func envValue(t *testing.T, env []string, key string) string {
 	t.Fatalf("env %s not found in %v", key, env)
 	return ""
 }
+
+// OpenCode was the one driver whose Build ignored the Native model bit —
+// opencode is ollama-only in normal use, so it never received a Native
+// model before the unconfigured-agent passthrough sentinel (issue #147).
+// Without this guard, a native launch would still emit
+// OPENCODE_CONFIG_CONTENT pointing at an empty gateway base URL instead of a
+// bare `opencode` command.
+func TestOpenCodeNativeBypass(t *testing.T) {
+	d := ByName("opencode")
+	if d == nil {
+		t.Fatal("opencode driver not registered")
+	}
+	m := nativeModel("opencode")
+	lc := d.Build(m, false, directRoute(m))
+	if lc.Bin != "opencode" || len(lc.Args) != 0 || len(lc.Env) != 0 {
+		t.Errorf("native build = %+v, want bare opencode (no args, no env)", lc)
+	}
+}
