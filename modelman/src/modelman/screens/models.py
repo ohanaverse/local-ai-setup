@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -295,9 +296,10 @@ class ModelScreen(Screen[None]):
             "COST",
             "SIZE",
         )
+        self._prefetch_litellm_state()
         self.reload()
         self._refresh_pending_bar()
-        self._update_litellm_status()
+        self._render_litellm_status()
         mt.focus()
         self.run_worker(
             self._run_reconcile,
@@ -378,6 +380,18 @@ class ModelScreen(Screen[None]):
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
+    def _fetch_litellm_status(self) -> None:
+        """Blocking read of wt's routing state into `_litellm_status`
+        (bounded by `wt_bridge.STATUS_TIMEOUT`). Never raises: an unreachable
+        wt is recorded as None. Split out of `_update_litellm_status` so a
+        caller running off the main thread (the mount-time prefetch, the
+        toggle worker) can do the blocking read without also rendering from
+        the wrong thread."""
+        try:
+            self._litellm_status = wt_bridge.litellm_status(timeout=wt_bridge.STATUS_TIMEOUT)
+        except wt_bridge.WtBridgeError:
+            self._litellm_status = None
+
     def _update_litellm_status(self) -> None:
         """Re-read wt's routing state once and render it in the status area.
 
@@ -386,11 +400,21 @@ class ModelScreen(Screen[None]):
         Called on mount and after a toggle only. Never raises: an unreachable
         wt renders "unavailable". Purely display: never touches the proxy.
         """
-        try:
-            self._litellm_status = wt_bridge.litellm_status(timeout=wt_bridge.STATUS_TIMEOUT)
-        except wt_bridge.WtBridgeError:
-            self._litellm_status = None
+        self._fetch_litellm_status()
         self._render_litellm_status()
+
+    def _prefetch_litellm_state(self) -> None:
+        """Warm the provider-flags cache and read wt's status CONCURRENTLY
+        instead of back-to-back: each is a subprocess call bounded at ~5s
+        when its cache is cold, and running them one after another could
+        block the initial paint for up to ~10s. Blocks until both are done
+        (still synchronous overall), but the wall-clock cost is the slower
+        of the two, not their sum."""
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            status_future = pool.submit(self._fetch_litellm_status)
+            flags_future = pool.submit(wt_bridge.provider_cloud_flags)
+            status_future.result()
+            flags_future.result()
 
     def _render_litellm_status(self) -> None:
         status = self._litellm_status

@@ -2993,6 +2993,13 @@ async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_pat
         if args[:1] == ["status"]:
             timeouts.append(timeout)
             raise wt_bridge.WtBridgeError(f"wt litellm status timed out after {timeout:g}s")
+        if args[:1] == ["providers"]:
+            # Task 9's mount-time prefetch also warms provider_cloud_flags()
+            # concurrently with the status read, so a fully-hung wt must
+            # degrade this call too, not just "status" — provider_cloud_flags()
+            # itself catches WtBridgeError and returns {}, so this must not
+            # propagate as an unhandled exception out of the prefetch pool.
+            raise wt_bridge.WtBridgeError("wt litellm providers timed out")
         raise AssertionError(args)
 
     monkeypatch.setattr(wt_bridge, "_run", hung)
@@ -3019,3 +3026,58 @@ async def test_render_litellm_status_tolerates_unmounted_screen(tmp_path, monkey
         screen.query_one("#litellm-status").remove()
         await pilot.pause()
         screen._render_litellm_status()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypatch):
+    # provider_cloud_flags() and litellm_status() must run CONCURRENTLY at
+    # mount, not back-to-back — two cold, 5s-bounded subprocess reads run
+    # one after another would block the initial paint for up to ~10s.
+    # Both stubs sleep briefly and are timed; concurrent execution keeps
+    # the wall-clock total close to one sleep instead of the sum of both.
+    import time as time_mod
+
+    from modelman import wt_bridge
+
+    # An empty registry never calls provider_cloud_flags() at all (the
+    # EXPOSED-column predicate only reaches it for a model whose `exposed`
+    # flag is set and whose `ready` flag is False — see
+    # is_effectively_exposed/passes_ready_gate's short-circuiting `or` in
+    # litellm.py), so this test would pass even on the unfixed
+    # back-to-back on_mount unless reload() is actually made to call it.
+    a = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[a])
+    state = load_state(state_path)
+    state.set("ollama/a", ModelState(exposed=True, ready=False))
+    save_state(state, state_path)
+
+    # provider_cloud_flags() is also called again later in the mount
+    # sequence (reload()'s EXPOSED-column predicate, and again when the
+    # background reconcile worker triggers its own re-render) — the real
+    # function caches its result after the first call (`_provider_cache`
+    # in wt_bridge.py) so those later calls are cheap. Mirror that here so
+    # the stub measures the mount-time concurrency this task fixes, not
+    # unrelated later reads.
+    flags_calls = []
+
+    def slow_flags():
+        if flags_calls:
+            return {"ollama": False}
+        flags_calls.append(1)
+        time_mod.sleep(0.3)
+        return {"ollama": False}
+
+    def slow_status(timeout=None):
+        time_mod.sleep(0.3)
+        return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
+
+    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", slow_flags)
+    monkeypatch.setattr(wt_bridge, "litellm_status", slow_status)
+
+    app = ModelmanApp()
+    start = time_mod.monotonic()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+    elapsed = time_mod.monotonic() - start
+    assert elapsed < 0.55, f"mount took {elapsed:.2f}s, want the two reads run concurrently (~0.3s)"
