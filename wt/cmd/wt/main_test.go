@@ -595,9 +595,12 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 	}
 }
 
-// A real (model-driven) agent must still fail closed with the clear
-// "seed with modelman migrate" message when registry.toml is missing.
-func TestNonCommandAgentStillFailsWithoutRegistry(t *testing.T) {
+// A malformed (not merely missing) registry.toml must still fail closed with
+// the repair hint, for every agent — only config.ErrRegistryMissing is
+// tolerated by the launch-path gate, never a real parse error. Regression
+// guard for decision #7 of the passthrough design (fail closed on malformed
+// config).
+func TestMalformedRegistryStillFailsClosed(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	dir := initTestRepo(t)
@@ -606,18 +609,97 @@ func TestNonCommandAgentStillFailsWithoutRegistry(t *testing.T) {
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
+	regDir := filepath.Join(home, ".config", "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte("not valid toml [[["), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var buf bytes.Buffer
 	root := rootCmd()
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetArgs([]string{"--agent", "claude"})
+	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
 	err := root.Execute()
 	if err == nil {
-		t.Fatal("expected config error for non-command agent with missing registry")
+		t.Fatal("expected a config error for a malformed registry.toml")
 	}
-	if !strings.Contains(err.Error(), "modelman migrate") {
-		t.Errorf("error should point at `modelman migrate`, got: %v", err)
+	if !strings.Contains(err.Error(), "wt config") {
+		t.Errorf("err = %v, want it to mention `wt config` as the repair path", err)
+	}
+}
+
+// A pinned agent whose binary is missing must fail before any worktree work
+// — creating a worktree for an agent that can never launch is wasted work
+// (and, for -W, a wasted `git worktree add`). Decision #3 of the passthrough
+// design: the installed check is early and pinned-agent-only.
+func TestPinnedAgentNotInstalledErrorsBeforeWorktreeWork(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	writeEmptyRegistry(t, home)
+
+	oldInstalled := installed
+	installed = func(name string) bool { return false }
+	defer func() { installed = oldInstalled }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected a not-installed error")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("err = %v, want it to mention \"not installed\"", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".worktrees", "my-feature")); !os.IsNotExist(statErr) {
+		t.Errorf("worktree should not have been created before the installed check (stat err = %v)", statErr)
+	}
+}
+
+// A pinned command agent (shell) has no binary requirement of its own — the
+// new pinned-installed fast-fail must not block it even when the installed
+// seam reports false for every name.
+func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	writeEmptyRegistry(t, home)
+
+	oldInstalled := installed
+	installed = func(name string) bool { return false }
+	defer func() { installed = oldInstalled }()
+
+	var called bool
+	oldLaunchFiltered := launchFiltered
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model) error {
+		called = true
+		return nil
+	}
+	defer func() { launchFiltered = oldLaunchFiltered }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "shell", "true"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected launchFiltered to be called for a command agent")
 	}
 }
 
