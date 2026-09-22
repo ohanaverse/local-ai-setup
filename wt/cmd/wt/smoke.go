@@ -126,6 +126,14 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		if err := startModel(a.cfg, t.Row, replace); err != nil {
 			return false, err
 		}
+		// The rows below fire a one-shot prompt through the LiteLLM proxy at
+		// once, so the route hook's async restart has to have landed first: a
+		// model wt itself just started would otherwise report a spurious FAIL
+		// against a refused connection or a route table that predates it. The
+		// production start driver waits for the same thing internally; this
+		// wait belongs to the code about to USE the proxy, and costs nothing
+		// when nothing is pending.
+		waitPendingRoutes()
 	}
 	// Registered only once the start step succeeded: a failed start returns its
 	// error without an interactive stop picker burying it.

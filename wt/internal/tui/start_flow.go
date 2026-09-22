@@ -16,6 +16,17 @@ import (
 // engine.
 var startModel = lifecycle.Start
 
+// waitPendingRoutes is a test seam over lifecycle.WaitPendingRoutes. The route
+// hook's LiteLLM proxy restart runs asynchronously, and a successful start
+// hands straight off to the launch flow, whose agent dials the model THROUGH
+// the proxy: launching while the restart is in flight can meet a refused
+// connection or the pre-restart route table. It is called on the Bubble Tea
+// update goroutine, so the "Starting …" screen stops updating for the length
+// of the restart — the alternative (a wait phase of its own) would show a
+// ticking screen for the same total time, and this is the last thing that
+// happens before the agent takes over the terminal anyway.
+var waitPendingRoutes = lifecycle.WaitPendingRoutes
+
 // startState is the in-flight start: which row, the current stage, when it
 // began, how to cancel it, and the channel carrying its messages.
 type startState struct {
@@ -182,6 +193,9 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	}
 	if msg.err == nil {
 		m.phase = phaseModel
+		// The launch that follows routes through LiteLLM: settle the route
+		// hook's async proxy restart before handing the model to an agent.
+		waitPendingRoutes()
 		return m.proceedToLaunch()
 	}
 	var occ *lifecycle.OccupiedError

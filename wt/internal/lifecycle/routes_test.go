@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -338,12 +339,13 @@ func TestRouteProbesProxyOnlyWhenRestarting(t *testing.T) {
 
 // TestApplyAndReportRestartsAsynchronously pins that the route write returns
 // as soon as config.yaml is saved, without waiting for the proxy restart or
-// readiness poll — that machinery is off the model-serving critical path, and
-// blocking on it made a plain wt start/stop pay up to ~60s of LiteLLM proxy
-// time after the backend was already confirmed up. WaitPendingRoutes must
-// still observe the restart finish before the caller (a wt process) exits, or
-// the restart would be killed mid-flight and the proxy never pick up the
-// route change.
+// readiness poll: that machinery is off the model-serving critical path, so
+// control goes back to the caller — which then decides for itself where it
+// needs the proxy ready — instead of every start and stop blocking in the
+// hook. (It is not a wall-clock saving for a plain wt start/stop: main() waits
+// via WaitPendingRoutes before the process exits either way.) WaitPendingRoutes
+// must still observe the restart finish before the caller exits, or the restart
+// would be killed mid-flight and the proxy never pick up the route change.
 func TestApplyAndReportRestartsAsynchronously(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{Changed: true}, nil)
 	restartStarted := make(chan struct{})
@@ -372,5 +374,80 @@ func TestApplyAndReportRestartsAsynchronously(t *testing.T) {
 	WaitPendingRoutes() // ...and WaitPendingRoutes must observe it finish
 	if len(*calls) != 1 {
 		t.Fatalf("route calls = %d, want 1", len(*calls))
+	}
+}
+
+// TestWaitPendingRoutesBlocksUntilTheRestartFinishes pins the guarantee the
+// launch paths depend on: WaitPendingRoutes does not return while an async
+// proxy restart is still running. wt start/stop only need it at process exit,
+// but an agent launch (cmd/wt's startForLaunch, the TUI start flow, wt smoke's
+// one-shot prompt) hands the model to a client that dials it THROUGH LiteLLM
+// the instant the start returns — if this call could return early, that client
+// would race a mid-restart proxy (connection refused) or one still serving the
+// route table from before the model existed. Those callers stub their own seam
+// over this function; this is the test that the real thing actually blocks.
+func TestWaitPendingRoutesBlocksUntilTheRestartFinishes(t *testing.T) {
+	stubRoutes(t, litellm.Result{Changed: true}, nil)
+	var restartFinished atomic.Bool
+	release := make(chan struct{})
+	restartProxy = func(context.Context) []string {
+		<-release
+		restartFinished.Store(true)
+		return nil
+	}
+
+	applyAndReport(context.Background(), routesCfg(), []string{"ollama/a:1"}, nil, restartIfChanged)
+	if restartFinished.Load() {
+		t.Fatal("precondition: the restart finished before it was released")
+	}
+
+	waited := make(chan struct{})
+	go func() { WaitPendingRoutes(); close(waited) }()
+	select {
+	case <-waited:
+		t.Fatal("WaitPendingRoutes returned while the restart was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("WaitPendingRoutes never returned after the restart finished")
+	}
+	if !restartFinished.Load() {
+		t.Error("WaitPendingRoutes returned before the restart goroutine completed")
+	}
+}
+
+// TestBounceRoutesBoundsTheConfigWriteLockWait pins that the settling bounce
+// hands litellm a context with a deadline. That context is what WithLock waits
+// on for <config>.lock (see TestWithLockHonorsContext, which pins that a
+// bounded context actually makes a contended lock give up): without a deadline
+// here, a lock held by another wt or by modelman would hang this cleanup path
+// — reached after a failed or Ctrl+C'd start — forever. The deadline must not
+// leak into the async restart, which runs on the goroutine's own
+// context.WithoutCancel; TestBounceRoutesSurvivesCancelledContext covers that
+// side.
+func TestBounceRoutesBoundsTheConfigWriteLockWait(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	var applyCtx context.Context
+	applyRoutes = func(_ *config.Config, _, _ []string, o litellm.Options) (litellm.Result, error) {
+		applyCtx = o.Ctx
+		return litellm.Result{}, nil
+	}
+	began := time.Now()
+	bounceRoutes(context.Background(), routesCfg())
+	WaitPendingRoutes()
+
+	if applyCtx == nil {
+		t.Fatal("bounceRoutes passed no context to the config.yaml write")
+	}
+	dl, ok := applyCtx.Deadline()
+	if !ok {
+		t.Fatal("the config.yaml write's lock wait is unbounded — a contended flock would hang the settling bounce forever")
+	}
+	if budget := dl.Sub(began); budget <= 0 || budget > settleTimeout+time.Second {
+		t.Errorf("lock-wait budget = %v, want (0, %v]", budget, settleTimeout)
 	}
 }

@@ -45,9 +45,10 @@ type Options struct {
 	SkipReadyGate bool
 	Restart       func() []string
 	// Ctx bounds the wait for the config.yaml lock (nil = unbounded). The
-	// lifecycle route hook passes a bounded context so a contended lock cannot
-	// outlive the settling bounce's own deadline; the CLI leaves it nil, since
-	// an interactive command should wait rather than fail.
+	// lifecycle route hook passes its caller's context, which on the settling
+	// bounce carries a deadline (settleTimeout) so a contended lock cannot
+	// hang that cleanup path; the CLI leaves it nil, since an interactive
+	// command should wait rather than fail.
 	Ctx context.Context
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
