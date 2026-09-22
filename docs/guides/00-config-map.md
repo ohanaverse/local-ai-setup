@@ -13,12 +13,12 @@ None — this is a reference doc, not a procedure.
 | File | Owner (writes) | Consumers | Purpose |
 |---|---|---|---|
 | `~/.config/local-ai/registry.toml` | `modelman` (TUI add/edit, `modelman migrate`) | `wt` (read-only), LiteLLM exposure | Canonical providers + models |
-| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only for `exposed`/`[litellm]`) | Per-machine state: downloads, exposure flags, family display names, LiteLLM routing table |
+| `~/.config/local-ai/modelman.toml` | `modelman` | `modelman` (writes), `wt` (read-only for `exposed`/`ready`; `[litellm]` only as a legacy fallback) | Per-machine state: downloads, exposure flags, family display names (its `[litellm]` table is a legacy read-only fallback) |
 | `~/.config/local-ai/settings.yaml` | `modelman` | `modelman` | User preferences (theme) |
 | `~/.config/local-ai/config.yaml` | you by hand (pre-modelman) | `modelman migrate` (read-only input) | Legacy provider types — superseded by `registry.toml` |
 | `~/.config/local-ai/families/*.yaml` | pre-registry modelman tooling | `modelman migrate` (read-only input) | Legacy per-family variants + download markers |
-| `~/.config/litellm/config.yaml` | `modelman` (expose toggle), you by hand | LiteLLM proxy | `model_list`, general settings |
-| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag. (NO providers/models — modelman owns those in registry.toml) |
+| `~/.config/litellm/config.yaml` | `wt` (`wt litellm ...`; `modelman expose` delegates to it), you by hand | LiteLLM proxy | `model_list`, general settings |
+| `~/.config/agent-wt/config.toml` | `wt` | `wt` | Agents, default rotation tag, and the `[litellm]` routing state (enabled/url/api_key). (NO providers/models — modelman owns those in registry.toml) |
 | `~/.config/agent-wt/themes.toml` | `wt` (`wt config theme`) | `wt` | Active theme |
 | `~/.config/agent-wt/models.conf` | you by hand (pre-wt bash era) | `wt` first-run migration (read-only input) | Legacy bash rotation config |
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `modelman usage` | Launch log |
@@ -35,7 +35,7 @@ Ollama has no LaunchAgent plist — it runs as the Ollama.app login item (`com.o
 ### `~/.config/local-ai/registry.toml`
 
 - **Owner:** `modelman` — TUI queue applies on exit, and `modelman migrate`.
-- **Consumers:** `wt` (read-only; joins it in memory with `~/.config/agent-wt/config.toml`), `modelman` when exposing (copies `model_info` into LiteLLM `model_list` entries).
+- **Consumers:** `wt` (read-only; joins it in memory with `~/.config/agent-wt/config.toml`), `wt litellm expose` (copies `model_info` into LiteLLM `model_list` entries; `modelman expose` delegates to it).
 - **Purpose:** canonical providers + models. `providers` is still empty on this machine; only Ollama models are recorded, with `source = "discovered"`.
 - **Env override:** `MODELMAN_REGISTRY`.
 
@@ -54,9 +54,9 @@ tags = []
 
 ### `~/.config/local-ai/modelman.toml`
 
-- **Owner:** `modelman` (written on every TUI apply, `sync`, `expose`/`unexpose`, `litellm on|off|set`).
-- **Consumers:** `modelman`, plus `wt` (read-only — reads `exposed` (legacy `litellm_exposed` still accepted) and `ready`, plus the `[litellm]` routing table, to filter the model picker; that read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
-- **Purpose:** per-machine state: ready/downloaded status, disk path, size, exposure flags, the `[litellm]` LiteLLM routing table, and family display names.
+- **Owner:** `modelman` (written on every TUI apply, `sync`, `expose`/`unexpose`; the `[litellm]` table is no longer written — `modelman litellm ...` passes through to wt).
+- **Consumers:** `modelman`, plus `wt` (read-only — reads `exposed` (legacy `litellm_exposed` still accepted) and `ready`, (and the legacy `[litellm]` table as a fallback for routing state that wt has not migrated), to filter the model picker; that read-side contract is pinned by `docs/contracts/modelman.sample.toml`).
+- **Purpose:** per-machine state: ready/downloaded status, disk path, size, exposure flags, a legacy `[litellm]` routing table (modelman round-trips it verbatim; wt owns the live copy), and family display names.
 - **Env override:** `MODELMAN_STATE`.
 - **Exposure predicate (modelman's own rule; shared with wt for cloud/native models only):** A model is effectively exposed iff `exposed = true` AND (`ready = true` OR effective location is cloud), where effective location resolves model `location` first, then the provider's `location` (issue #46 parity). Native models (provider `auth.type = "native"`) are always exposed — they cannot route through LiteLLM. For cloud and native models, `wt` and the TUI apply this same rule, so a cloud/native model offered by `wt` always shows `Y` in the TUI's EXPOSED column. **For LOCAL models this no longer holds** (2026-09-15 design, `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`): `wt`'s picker lists every configured and discovered local model — with live STATUS/RUNNING columns probed from the providers themselves — regardless of `exposed`/`ready`, so `wt` can offer a local model the TUI's EXPOSED column renders `–` for. What the model can do there (launch, start, or block) is decided per row from those live probes: modelman.toml's per-model `running` flag is modelman-owned and **not read by wt**. The rules live in `wt/CLAUDE.md`'s "Local-model resolution" section — this guide does not repeat them.
 
@@ -140,11 +140,11 @@ variants:
 
 ### `~/.config/litellm/config.yaml`
 
-- **Owner:** `modelman` (expose/unexpose writes `model_list` entries), you by hand.
-- **Hand-managed entries:** of the 36 `model_list` rows, modelman owns the 27 exposed ids (13 `ollama/*` + 12 `openrouter/*` + 1 `omlx/*` + 1 `mtplx/*`, issue #66); the remaining 9 — 3 omlx variants, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
+- **Owner:** `wt` (`wt litellm expose|unexpose|sync`, plus the automatic route updates from `wt start`/`wt stop`; `modelman expose|unexpose` delegate to it), you by hand. modelman never writes this file.
+- **Hand-managed entries:** of the 36 `model_list` rows, wt writes the routes for the 27 exposed ids (13 `ollama/*` + 12 `openrouter/*` + 1 `omlx/*` + 1 `mtplx/*`, issue #66); the remaining 9 — 3 omlx variants, the hand-managed `openrouter/qwen/qwen3.8-*` set, and `ollama/q8`/`ollama/o35` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)
 - **Consumers:** LiteLLM proxy (started by `~/Library/LaunchAgents/local.litellm.proxy.plist`, port 4000).
-- **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). modelman only touches `model_list`; `general_settings` and unrecognized sections are preserved.
-- **Env override:** `MODELMAN_LITELLM_CONFIG`.
+- **Purpose:** `model_list` (one entry per exposed model: Ollama, oMLX, OpenRouter) plus `general_settings` (`database_url` → local Postgres, `coordination_redis` → local Redis). wt only touches `model_list` (plus a few launcher-required `litellm_settings` keys); `general_settings`, other sections and comments are preserved (the first wt write normalizes list indentation and drops blank lines).
+- **Env override:** `WT_LITELLM_CONFIG` (legacy alias `MODELMAN_LITELLM_CONFIG`). The proxy restart command is `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`).
 - OpenRouter entries contain real `api_key: sk-or-v1-…` values — redact before sharing this file.
 
 ```yaml
@@ -169,7 +169,7 @@ model_list:
 - **Owner:** `wt` (`wt config` editor; writes atomically on save).
 - **Consumers:** `wt` only.
 - **Purpose:** agents and default rotation tag (`default_tag = "code"`). NO live providers/models — modelman owns those in `registry.toml`; `wt` joins that file in memory and `wt config` never writes providers or models.
-- **No routing config lives here anymore.** wt's `config.toml` carries no LiteLLM/gateway section: LiteLLM routing is controlled by modelman's `[litellm]` table in `~/.config/local-ai/modelman.toml` (`modelman litellm status|on|off|set`); wt reads it read-only. wt's legacy `gateway` config block is dropped on next save with a notice — self-extinguishing, so run `modelman migrate` (which imports it into `modelman.toml`'s `[litellm]` table) **immediately after upgrading, before any other `wt` command**. Any other `wt` invocation first (any `wt`/`*-wt` launch, `wt config`, etc.) drops the block on its own config save, and the import can no longer happen automatically — you'd need to re-enter `--url`/`--api-key` by hand via `modelman litellm set`.
+- **LiteLLM routing state lives here (wt-owned).** The `[litellm]` table (`enabled`/`url`/`api_key`; file is 0600 when a key is stored) is controlled with `wt litellm status|on|off|set --url ... --api-key ...` (`modelman litellm ...` passes through to the same commands). On the first wt load where this file already exists, wt copies modelman.toml's legacy `[litellm]` table in once; afterwards wt's copy wins and modelman.toml's is ignored. A legacy `[gateway]` block is dropped on wt's next save with a notice and is not imported — re-enter the values with `wt litellm set --url ... --api-key ...`. Writes to this file are whole-file last-writer-wins: an open `wt config` editor session and a `wt litellm on|off|set` will overwrite each other's changes (issue #143).
 - On this machine the file still contains `[[providers]]`/`[[models]]` blocks: wt's one-time `models.conf` migration wrote them as an exchange format for `modelman migrate`. `wt` never reads Providers/Models back out of `config.toml` — treat those blocks as inert.
 - **Env override:** `XDG_CONFIG_HOME` (config dir is `~/.config/agent-wt/` or `$XDG_CONFIG_HOME/agent-wt/`).
 - **Env override:** `MODELMAN_WT_CONFIG` — used by `modelman migrate` to point at a non-default wt `config.toml` to import from.
@@ -288,8 +288,8 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 
 ## Gotchas
 
-- **Never hand-edit `registry.toml` to change what `wt` sees.** It is read-only to `wt`; change models through `modelman` (TUI, `expose`, `sync`).
-- **Exposure state lives in two places by design:** the `exposed` flag in `~/.config/local-ai/modelman.toml`, and the generated `model_list` entry in `~/.config/litellm/config.yaml`. Edit neither by hand — use `modelman expose` / `modelman unexpose`.
+- **Never hand-edit `registry.toml` to change what `wt` sees.** It is read-only to `wt`; change models through `modelman` (TUI, `sync`) and routes through `wt litellm ...`.
+- **Exposure state lives in two places by design:** the `exposed` flag in `~/.config/local-ai/modelman.toml`, and the generated `model_list` entry in `~/.config/litellm/config.yaml`. Edit neither by hand — use `modelman expose` / `modelman unexpose` (which delegate to `wt litellm expose|unexpose`). For LOCAL models the `config.yaml` entry is the truth: `wt start`/`wt stop`/`wt litellm sync` add and remove routes without touching modelman's `exposed` flag, so check `wt litellm list`.
 - **`~/.config/agent-wt/config.toml` trap:** the `[[providers]]`/`[[models]]` blocks you see there are stale migration output that `wt` ignores. Only `default_tag` and `[[agents]]` are live; providers/models come from `registry.toml`.
 - **Legacy files are migration inputs, not config:** `~/.config/local-ai/config.yaml`, `~/.config/local-ai/families/*.yaml`, and `~/.config/agent-wt/models.conf` are read only by `modelman migrate` / wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
 - **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist. Redact before pasting either into issues, docs, or chats.

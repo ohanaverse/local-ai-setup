@@ -17,25 +17,44 @@ type kv struct {
 }
 
 // mapping builds an ordered YAML mapping node.
-func mapping(pairs []kv) *yaml.Node {
+func mapping(pairs []kv) (*yaml.Node, error) {
 	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	for _, p := range pairs {
-		n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: p.key}, toNode(p.val))
+		val, err := toNode(p.val)
+		if err != nil {
+			return nil, fmt.Errorf("key %q: %w", p.key, err)
+		}
+		n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: p.key}, val)
 	}
-	return n
+	return n, nil
 }
 
-func toNode(v any) *yaml.Node {
-	if n, ok := v.(*yaml.Node); ok {
-		return n
+// toNode encodes v as a YAML node. Registry values are TOML scalars/arrays/
+// tables and always encode, but a hand-edited registry.toml can decode into a
+// shape yaml.Node.Encode rejects — that must surface as a per-model error
+// (BuildEntry already returns one), never a process-crashing panic.
+//
+// yaml.v3's Node.Encode only returns an error for failures it wraps as its
+// internal yamlError (e.g. a Marshaler/TextMarshaler returning one); for a
+// Go kind it has no encoding for at all (chan, func, complex, ...) it does a
+// bare panic("cannot marshal type: ...") that its own recover deliberately
+// re-panics (gopkg.in/yaml.v3@v3.0.1 yaml.go's handleErr only converts
+// yamlError panics to a returned err). So toNode needs its own recover to
+// turn that panic into an error too, not just check Encode's return value.
+func toNode(v any) (n *yaml.Node, err error) {
+	if node, ok := v.(*yaml.Node); ok {
+		return node, nil
 	}
-	n := &yaml.Node{}
-	if err := n.Encode(v); err != nil {
-		// Encode only fails on unsupported Go types; registry values are
-		// TOML scalars, so surface it loudly rather than writing a bad row.
-		panic(fmt.Sprintf("litellm: cannot encode %T: %v", v, err))
+	defer func() {
+		if r := recover(); r != nil {
+			n, err = nil, fmt.Errorf("cannot encode %T: %v", v, r)
+		}
+	}()
+	n = &yaml.Node{}
+	if encErr := n.Encode(v); encErr != nil {
+		return nil, fmt.Errorf("cannot encode %T: %w", v, encErr)
 	}
-	return n
+	return n, nil
 }
 
 // pricingInfo derives model_info pricing keys from a registry cost: per-token
@@ -103,9 +122,17 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 		}
 	}
 
+	paramsNode, err := mapping(params)
+	if err != nil {
+		return nil, fmt.Errorf("model %q: %w", m.ID, err)
+	}
+	infoNode, err := mapping(info)
+	if err != nil {
+		return nil, fmt.Errorf("model %q: %w", m.ID, err)
+	}
 	return mapping([]kv{
 		{"model_name", m.ID},
-		{"litellm_params", mapping(params)},
-		{"model_info", mapping(info)},
-	}), nil
+		{"litellm_params", paramsNode},
+		{"model_info", infoNode},
+	})
 }

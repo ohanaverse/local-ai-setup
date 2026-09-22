@@ -724,7 +724,7 @@ async def test_model_screen_columns_and_details_panel(tmp_path, monkeypatch):
 async def test_exposed_column_requires_ready_but_exempts_cloud(tmp_path, monkeypatch):
     """The EXPOSED column renders 'Y' only when the exposure flag is set AND
     the model is ready. Cloud models are exempt from the ready gate (a remote
-    model has no local 'ready' state) — the same exemption _validated_entry
+    model has no local 'ready' state) — the same exemption _validate_locally
     applies at the apply gate — so a flagged cloud row always renders 'Y'.
 
     Regression: the readiness-AND rule was added without a test, and a
@@ -2813,3 +2813,362 @@ async def test_toggle_running_confirm_dialog_names_same_provider_replacement(tmp
         "Starting this will also stop omlx/b, since omlx can only serve one model at a time."
         in message
     )
+
+
+def _status_text(screen) -> str:
+    from textual.widgets import Static
+
+    return str(screen.query_one("#litellm-status", Static).render())
+
+
+@pytest.mark.asyncio
+async def test_litellm_status_line_and_toggle_go_through_wt(tmp_path, monkeypatch):
+    # The status line must show wt's state (wt owns [litellm]), and `l` must
+    # flip it via the bridge only: no modelman.toml write, no self.state
+    # mutation. Guards against reintroducing the "toggle a table wt ignores" bug.
+    from modelman import wt_bridge
+
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch)
+    before = state_path.read_text()
+    current = {"enabled": True}
+    calls = []
+    reads = []
+
+    def status(timeout=None):
+        reads.append(1)
+        return wt_bridge.LitellmStatus(current["enabled"], "http://localhost:4000", True)
+
+    def set_enabled(on):
+        calls.append(on)
+        current["enabled"] = on
+
+    monkeypatch.setattr(wt_bridge, "litellm_status", status)
+    monkeypatch.setattr(wt_bridge, "litellm_set_enabled", set_enabled)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        screen = app.screen
+        assert "LiteLLM: on (http://localhost:4000)" in _status_text(screen)
+        n = len(reads)
+        await pilot.press("j")  # ordinary keystrokes must not re-spawn wt
+        await pilot.pause()
+        assert len(reads) == n
+        await pilot.press("l")
+        for _ in range(200):
+            await pilot.pause()
+            if calls:
+                break
+        assert calls == [False]
+        assert "LiteLLM: off" in _status_text(screen)
+    assert state_path.read_text() == before
+
+
+@pytest.mark.asyncio
+async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, monkeypatch):
+    # If wt cannot be reached the line must say "unavailable" (never raise),
+    # and a failing toggle must notify with the error text, no traceback/key.
+    from modelman import wt_bridge
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+
+    def down(timeout=None):
+        raise wt_bridge.WtNotFoundError("wt not found on PATH")
+
+    monkeypatch.setattr(wt_bridge, "litellm_status", down)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        screen = app.screen
+        assert "LiteLLM: unavailable  [l] toggle" in _status_text(screen)
+        notes = []
+        monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
+        await pilot.press("l")
+        for _ in range(200):
+            await pilot.pause()
+            if notes:
+                break
+        assert notes and "unavailable" in notes[-1]
+        # Status becomes readable but the set fails: error is surfaced.
+        monkeypatch.setattr(
+            wt_bridge,
+            "litellm_status",
+            lambda timeout=None: wt_bridge.LitellmStatus(False, "", False),
+        )
+
+        def fail(on):
+            raise wt_bridge.WtBridgeError("wt exited 1")
+
+        monkeypatch.setattr(wt_bridge, "litellm_set_enabled", fail)
+        base = len(notes)
+        await pilot.press("l")
+        for _ in range(200):
+            await pilot.pause()
+            if len(notes) > base:
+                break
+        assert "wt exited 1" in notes[-1]
+
+
+@pytest.mark.asyncio
+async def test_toggle_litellm_runs_off_the_main_thread(tmp_path, monkeypatch):
+    # A slow wt litellm on/off (a proxy restart can take a while) must not
+    # freeze the TUI: the app must keep processing messages (here, a
+    # keystroke on an unrelated binding) while the toggle's subprocess call
+    # is still "in flight" on its worker thread.
+    #
+    # NOTE on this test's design: a plain "does it eventually finish"
+    # assertion is NOT enough here, because `slow_set_enabled` below times
+    # out its own `release.wait()` after `release_timeout` seconds. Against
+    # the old inline (main-thread) implementation, the whole test still
+    # passes — it just blocks for the full `release_timeout` before
+    # `entered.is_set()` can even be observed, then self-unblocks. So the
+    # only thing that actually distinguishes "ran on a worker thread" from
+    # "froze the event loop for release_timeout seconds" is wall-clock
+    # time: `entered.is_set()` must be observable almost immediately, well
+    # under `release_timeout`, not only after it.
+    import threading
+    import time
+
+    from modelman import wt_bridge
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    release_timeout = 5.0
+    release = threading.Event()
+    entered = threading.Event()
+    call_thread: list[threading.Thread] = []
+
+    def status(timeout=None):
+        return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
+
+    def slow_set_enabled(on):
+        call_thread.append(threading.current_thread())
+        entered.set()
+        release.wait(timeout=release_timeout)
+
+    monkeypatch.setattr(wt_bridge, "litellm_status", status)
+    monkeypatch.setattr(wt_bridge, "litellm_set_enabled", slow_set_enabled)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        started = time.monotonic()
+        await pilot.press("l")
+        # The event loop must still be alive and processing keystrokes while
+        # the worker thread is blocked in slow_set_enabled.
+        for _ in range(200):
+            await pilot.pause()
+            if entered.is_set():
+                break
+        elapsed = time.monotonic() - started
+        assert entered.is_set(), "toggle never reached the (slow) bridge call"
+        # Primary, timing-independent proof: the bridge call must not have
+        # run on the same thread that's driving this coroutine/event loop
+        # (pytest-asyncio runs the test — and Textual's main loop — on the
+        # thread calling `run_test()`, i.e. the current thread here). This
+        # can't be fooled by a slow CI machine the way a wall-clock budget
+        # could.
+        assert call_thread, "slow_set_enabled was never called"
+        assert call_thread[0] is not threading.current_thread(), (
+            f"litellm_set_enabled ran on {call_thread[0]!r}, the same "
+            "thread driving the test's event loop — the 'l' toggle is "
+            "running inline on the main thread instead of a worker thread"
+        )
+        # Secondary, wall-clock corroboration: also assert entered.is_set()
+        # was observable well before slow_set_enabled's own release_timeout
+        # elapses (see the module-level note above for why this on its own
+        # would not be a sufficient regression guard, but it does catch a
+        # worker whose *dispatch* — not just the call itself — is slow).
+        assert elapsed < release_timeout / 2, (
+            f"observing the toggle reach its bridge call took {elapsed:.2f}s "
+            "(close to slow_set_enabled's own release_timeout) — the 'l' "
+            "toggle appears to be running inline on the main thread again, "
+            "blocking the event loop instead of a worker thread"
+        )
+        await pilot.press("j")  # an unrelated, harmless keystroke
+        await pilot.pause()
+    release.set()
+
+
+async def _expose_press_notes(tmp_path, monkeypatch, *, exposed, provider_flags):
+    """Open the screen on one ollama/a model (persisted `exposed`), force the
+    bridge's provider table, press `x`, return (notes, queued_exposes)."""
+    from unittest.mock import MagicMock
+
+    from modelman import wt_bridge
+    from modelman.providers import registry as prov_registry
+
+    model = ModelEntry(
+        id="ollama/a", family="ornith", provider_id="ollama", model_name="a", location="local"
+    )
+    _, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[model])
+    st = StateStore()
+    st.set("ollama/a", ModelState(ready=True, exposed=exposed))
+    save_state(st, state_path)
+    stub = MagicMock()
+    stub.name = "ollama"
+    stub.is_downloaded.return_value = True
+    stub.size_of.return_value = None
+    monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
+    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", lambda: provider_flags)
+    app = ModelmanApp()
+    notes = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        await pilot.pause()
+        monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
+        await pilot.press("x")
+        await pilot.pause()
+        queued = dict(app.screen.queued_exposes)
+    return notes, queued
+
+
+@pytest.mark.asyncio
+async def test_x_unexpose_allowed_when_wt_unavailable(tmp_path, monkeypatch):
+    # With wt down the provider table degrades to {}; un-exposing an
+    # already-exposed model must still queue (only EXPOSE needs a mapping),
+    # or a user could never clean up while wt is broken.
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=True, provider_flags={}
+    )
+    assert queued == {"ollama/a": False}
+    assert not any("cannot expose" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_x_expose_blocked_with_wt_unavailable_message(tmp_path, monkeypatch):
+    # Expose while wt is unreachable must be blocked with an accurate reason
+    # (install wt), not the misleading "no LiteLLM mapping".
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=False, provider_flags={}
+    )
+    assert queued == {}
+    assert notes == ["wt is unavailable — cannot expose (install wt)"]
+
+
+@pytest.mark.asyncio
+async def test_x_expose_blocked_for_genuinely_unmapped_provider(tmp_path, monkeypatch):
+    # wt is reachable (non-empty table) but omits the provider: that IS the
+    # "no LiteLLM mapping" case, and expose stays blocked.
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=False, provider_flags={"omlx": False}
+    )
+    assert queued == {}
+    assert notes == ["Provider has no LiteLLM mapping — cannot expose"]
+
+
+@pytest.mark.asyncio
+async def test_x_unexpose_allowed_for_genuinely_unmapped_provider(tmp_path, monkeypatch):
+    # Un-expose of a model whose provider lost its mapping is also allowed
+    # (wt's unexpose tolerates it), so stale exposures can be cleared.
+    notes, queued = await _expose_press_notes(
+        tmp_path, monkeypatch, exposed=True, provider_flags={"omlx": False}
+    )
+    assert queued == {"ollama/a": False}
+
+
+@pytest.mark.asyncio
+async def test_litellm_status_mount_read_uses_short_timeout_and_degrades(tmp_path, monkeypatch):
+    # The status read runs on the UI thread at mount; without a short timeout a
+    # hung wt froze the TUI ~2 minutes. The screen must pass the short timeout
+    # to the bridge and render "unavailable" (not raise) when it expires.
+    from modelman import wt_bridge
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    timeouts = []
+
+    def hung(args, env=None, timeout=120):
+        if args[:1] == ["status"]:
+            timeouts.append(timeout)
+            raise wt_bridge.WtBridgeError(f"wt litellm status timed out after {timeout:g}s")
+        if args[:1] == ["providers"]:
+            # Task 9's mount-time prefetch also warms provider_cloud_flags()
+            # concurrently with the status read, so a fully-hung wt must
+            # degrade this call too, not just "status" — provider_cloud_flags()
+            # itself catches WtBridgeError and returns {}, so this must not
+            # propagate as an unhandled exception out of the prefetch pool.
+            raise wt_bridge.WtBridgeError("wt litellm providers timed out")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(wt_bridge, "_run", hung)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        assert "LiteLLM: unavailable" in _status_text(app.screen)
+    assert timeouts and set(timeouts) == {wt_bridge.STATUS_TIMEOUT}
+    assert wt_bridge.STATUS_TIMEOUT <= 10
+
+
+@pytest.mark.asyncio
+async def test_render_litellm_status_tolerates_unmounted_screen(tmp_path, monkeypatch):
+    # A worker may call _render_litellm_status after the screen is torn down;
+    # the missing #litellm-status widget must not raise (same guard as
+    # _load_models / _refresh_pending_bar).
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        screen = app.screen
+        screen.query_one("#litellm-status").remove()
+        await pilot.pause()
+        screen._render_litellm_status()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_on_mount_prefetches_litellm_state_concurrently(tmp_path, monkeypatch):
+    # provider_cloud_flags() and litellm_status() must run CONCURRENTLY at
+    # mount, not back-to-back — two cold, 5s-bounded subprocess reads run
+    # one after another would block the initial paint for up to ~10s.
+    # Both stubs sleep briefly and are timed; concurrent execution keeps
+    # the wall-clock total close to one sleep instead of the sum of both.
+    import time as time_mod
+
+    from modelman import wt_bridge
+
+    # An empty registry never calls provider_cloud_flags() at all (the
+    # EXPOSED-column predicate only reaches it for a model whose `exposed`
+    # flag is set and whose `ready` flag is False — see
+    # is_effectively_exposed/passes_ready_gate's short-circuiting `or` in
+    # litellm.py), so this test would pass even on the unfixed
+    # back-to-back on_mount unless reload() is actually made to call it.
+    a = ModelEntry(id="ollama/a", family="ornith", provider_id="ollama", model_name="a")
+    reg_path, state_path = _seed_registry_and_state(tmp_path, monkeypatch, models=[a])
+    state = load_state(state_path)
+    state.set("ollama/a", ModelState(exposed=True, ready=False))
+    save_state(state, state_path)
+
+    # provider_cloud_flags() is also called again later in the mount
+    # sequence (reload()'s EXPOSED-column predicate, and again when the
+    # background reconcile worker triggers its own re-render) — the real
+    # function caches its result after the first call (`_provider_cache`
+    # in wt_bridge.py) so those later calls are cheap. Mirror that here so
+    # the stub measures the mount-time concurrency this task fixes, not
+    # unrelated later reads.
+    flags_calls = []
+
+    def slow_flags():
+        if flags_calls:
+            return {"ollama": False}
+        flags_calls.append(1)
+        time_mod.sleep(0.3)
+        return {"ollama": False}
+
+    def slow_status(timeout=None):
+        time_mod.sleep(0.3)
+        return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
+
+    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", slow_flags)
+    monkeypatch.setattr(wt_bridge, "litellm_status", slow_status)
+
+    app = ModelmanApp()
+    start = time_mod.monotonic()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+    elapsed = time_mod.monotonic() - start
+    assert elapsed < 0.55, f"mount took {elapsed:.2f}s, want the two reads run concurrently (~0.3s)"

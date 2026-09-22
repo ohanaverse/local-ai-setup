@@ -103,7 +103,7 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
 - Proxy: `litellm --config ~/.config/litellm/config.yaml --port 4000`, kept
   alive by `~/Library/LaunchAgents/local.litellm.proxy.plist` (artifact:
   redacted copy — see inventory for the five keys to re-fill).
-- `model_list`: modelman owns exposed ids; the hand-managed rows are the 3
+- `model_list`: wt (`wt litellm`) writes the routes for exposed ids; the hand-managed rows are the 3
   omlx variants, the `openrouter/qwen/qwen3.8-*` set, and `ollama/q8` /
   `ollama/o35`. (The 2 llama.cpp rows were retired — kept in
   [`artifacts/litellm/llamacpp-model-rows.yaml`](artifacts/litellm/llamacpp-model-rows.yaml).)
@@ -146,7 +146,7 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
 - Code wiring: `DEFAULT_PROVIDER_IDS` (`registry.py`), `SUPPORTED_PROVIDER_IDS`
   (`modelman/src/modelman/providers/lifecycle/backends/__init__.py`,
   re-exported by `modelman/src/modelman/benchmark/isolation.py`),
-  `PROVIDER_POLICIES` (`modelman/src/modelman/litellm.py`), the
+  the provider→LiteLLM mapping table (`wt/internal/litellm/policy.go`; modelman reads it via `wt litellm providers`), the
   `MlxLmServerBackend` class in
   `modelman/src/modelman/providers/lifecycle/backends/mlx_lm_server.py`,
   and its unconditional stop inside `orchestrate.restore()` (this provider

@@ -163,9 +163,13 @@ func TestSmokeStopFlow(t *testing.T) {
 }
 
 // TestSmokeCmdIdlePinStartsRunsThenStops is the end-to-end ordering check: for
-// an idle pinned model the command starts it once, then runs the agent row,
-// then runs the stop flow, and a FAILed row triggers smokeExit(1) only after
-// the stop flow — so the deferred cleanup is never skipped by the exit.
+// an idle pinned model the command starts it once, settles the route hook's
+// async LiteLLM proxy restart, then runs the agent row, then runs the stop
+// flow, and a FAILed row triggers smokeExit(1) only after the stop flow — so
+// the deferred cleanup is never skipped by the exit. The wait belongs before
+// the row and not after it: the row's one-shot prompt goes through the proxy,
+// so a model wt itself just started would report a spurious FAIL against a
+// mid-restart proxy or a route table that predates it.
 func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
 	cfg := smokeFixtureConfig(t)
 	var events []string
@@ -174,6 +178,9 @@ func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
 		events = append(events, "start")
 		return nil
 	}
+	oldWait := waitPendingRoutes
+	waitPendingRoutes = func() { events = append(events, "wait") }
+	t.Cleanup(func() { waitPendingRoutes = oldWait })
 	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
 	t.Cleanup(func() {
 		startModel, releaseSession, runStopPicker, stdinTTY, smokeExit = oldStart, oldRel, oldPick, oldTTY, oldExit
@@ -194,8 +201,8 @@ func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "start,row,stop,exit1" {
-		t.Fatalf("events = %s, want start,row,stop,exit1", got)
+	if got := strings.Join(events, ","); got != "start,wait,row,stop,exit1" {
+		t.Fatalf("events = %s, want start,wait,row,stop,exit1", got)
 	}
 }
 

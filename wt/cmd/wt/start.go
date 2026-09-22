@@ -39,6 +39,14 @@ var startProgressInterval = 10 * time.Second
 // confirmReplace is a test seam over the y/N prompt on /dev/tty.
 var confirmReplace = promptReplace
 
+// waitPendingRoutes is a test seam over lifecycle.WaitPendingRoutes: the route
+// hook's proxy restart runs asynchronously, and a successful start hands
+// straight off to an agent that dials the model THROUGH the LiteLLM proxy.
+// Returning before the restart has finished lets the agent hit a refused
+// connection or the pre-restart route table, in which the model just started
+// is not listed yet. Tests stub it to observe that ordering without a proxy.
+var waitPendingRoutes = lifecycle.WaitPendingRoutes
+
 // osStderr is the progress stream, a seam so tests can capture it.
 var osStderr io.Writer = os.Stderr
 
@@ -144,6 +152,9 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 
 	err := lifecycleStart(ctx, cfg, target, opts)
 	if err == nil {
+		// The agent launch follows immediately and routes through LiteLLM:
+		// settle the route hook's async proxy restart first.
+		waitPendingRoutes()
 		return nil
 	}
 	if errors.Is(err, context.Canceled) {
@@ -204,6 +215,9 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 	opts.AllowReplace = true
 	err = lifecycleStart(ctx, cfg, target, opts)
 	if err == nil {
+		// Same as the first attempt: the proxy must carry the new route (and
+		// have dropped the replaced occupant's) before the agent launches.
+		waitPendingRoutes()
 		return nil
 	}
 	if errors.Is(err, context.Canceled) {

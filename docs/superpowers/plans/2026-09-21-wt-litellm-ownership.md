@@ -2785,6 +2785,15 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 # PHASE 4 — modelman delegates to wt
 
+> **Pre-flight amendments (2026-09-21, after Phases 1-3 merged; these override the task text below where they conflict):**
+> 1. **New Task 9a (Go, runs first):** `wt litellm expose|unexpose|sync` must gate on `app.loadErr` (config failed to load) instead of the full `cfgErr` (which includes registry *validation* gaps). Once modelman delegates, a data gap elsewhere in the registry must not block modelman — the tool that repairs such gaps. `Apply` already validates the specific model per id.
+> 2. **Task 10 ordering:** `queue.py::apply` saves `registry.toml` only in `_persist` at the end, AFTER `apply_expose_queue`. wt reads the registry from disk, so `save_registry(self.registry, self.registry_path)` must run before the expose step (a failure reports the expose batch as failed). Re-check `_expose_for_start` and the stop paths in `local_control.py` for the same ordering; `_register_discovered_model` already saves before exposing.
+> 3. **Task 10 display paths:** `provider_cloud_flags()`/`provider_policy()`/`is_cloud()` are reached from TUI render code for every row, so they must not raise when `wt` is missing or fails: return `{}` and warn once on stderr. Write paths (`expose_model` etc.) still raise `LiteLLMConfigError` before any state change.
+> 4. **Task 11 state.py:** instead of keeping a modeled `LitellmState` as an "inert passthrough", remove the `litellm` field from `StateStore`; the raw `[litellm]` table (if present) stays in `StateStore.extra` and is written back verbatim, and nothing is written when it is absent. This removes the api_key round-trip hazard and stops modelman creating a default `[litellm]` table. `migrate_wt_gateway_to_litellm` keeps working on `state.extra["litellm"]`.
+> 5. **Task 11 text:** `modelman litellm status` passes through wt's TEXT output (the `***last4` masking lives there; `status --json` only has `api_key_set`); the TUI status line reads `wt_bridge.litellm_status()` and shows "LiteLLM: unavailable" if wt cannot be reached.
+> 6. **Task 12:** also removes the interim-window notes added in Phases 3 (wt/CLAUDE.md, modelman/CLAUDE.md) and covers docs/guides 00/04/06/07/08/09 and docs/wt-agents/*.md.
+
+
 ### Task 9: `wt_bridge.py` and hermetic test guard
 
 **Files:**

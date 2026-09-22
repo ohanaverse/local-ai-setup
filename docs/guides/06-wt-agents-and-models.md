@@ -95,29 +95,34 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
 By default (routing off) wt agents dial providers directly — e.g. Ollama on
 `localhost:11434`. To route non-native traffic through the LiteLLM proxy
 (`localhost:4000`) and populate the dashboard, flip the routing switch with
-modelman. The switch lives in modelman-owned `~/.config/local-ai/modelman.toml`
-(the `[litellm]` table), not in wt's `config.toml` — wt's legacy `gateway`
-config block is gone; wt drops it with a notice on next save:
+`wt litellm`. The switch lives in wt's own `~/.config/agent-wt/config.toml`
+(the `[litellm]` table; copied once from modelman.toml's legacy table on first
+load). `modelman litellm ...` passes through to the same commands:
 
 ```bash
-# from: ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman litellm status   # on/off + url + api_key (key masked)
-uv run modelman litellm on       # route non-native models through LiteLLM
-uv run modelman litellm off      # dial providers directly where possible
-uv run modelman litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key wt reads
+wt litellm status   # on/off + url + api_key_set (key never printed)
+wt litellm on       # route non-native models through LiteLLM
+wt litellm off      # dial providers directly where possible
+wt litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key wt uses
 ```
 
 This is a routing-policy-only toggle: it writes `enabled`/`url`/`api_key`
 into `[litellm]` and never starts, stops, or restarts the proxy (that stays
-the LaunchAgent job — guide 04 §5). wt reads the table read-only
-(`internal/config/modelman.go`).
+the LaunchAgent job — guide 04 §5). Route management is separate and also
+wt-owned: `wt litellm expose|unexpose|sync|list` write `config.yaml`, and
+`wt start`/`wt stop` add and remove local-model routes automatically (see
+[04-litellm-config](04-litellm-config.md) §6).
 
 Two mechanisms stack on top of the on/off switch:
 
-- **Exposure filter (always on).** wt only shows models with `exposed = true`
-  in `modelman.toml` — independent of whether routing is on or off (the
-  readiness/cloud rule behind the flag is in [00-config-map](00-config-map.md)).
-  Native models (`claude/native`, `copilot/native`) are always shown.
+- **Exposure filter (cloud models).** For cloud models wt only shows those
+  with `exposed = true` in `modelman.toml` — independent of whether routing is
+  on or off (the readiness/cloud rule behind the flag is in
+  [00-config-map](00-config-map.md)). Native models (`claude/native`,
+  `copilot/native`) are always shown. Local models are listed from live
+  provider probes regardless of that flag; a local model whose route goes
+  through LiteLLM needs a `config.yaml` route, which `wt start` (or
+  `wt litellm sync`) adds — check `wt litellm list`.
 - **Protocol forcing (can override `off`).** Agents declare wire protocols
   (claude: `anthropic`; codex: `openai-responses`; copilot/opencode/pi:
   `openai-chat`) and registry providers declare the protocols they serve
@@ -132,8 +137,8 @@ Two mechanisms stack on top of the on/off switch:
   So codex (`openai-responses` only) has no direct path for any local
   provider, and claude + openrouter forces LiteLLM too (`ResolveRoute` in
   `internal/config/config.go`). If routing is then required but no URL is
-  configured, the launch errors pointing at `modelman litellm set --url …
-  --api-key …` (or `modelman litellm on`).
+  configured, the launch errors pointing at `wt litellm set --url …
+  --api-key …` (or `wt litellm on`).
 
 In this mode the model name passed to agents is the registry id (e.g.
 `ollama/qwen3.8:27b-mlx`), matching LiteLLM's `model_list` entries.

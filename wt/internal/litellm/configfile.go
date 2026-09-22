@@ -2,6 +2,7 @@ package litellm
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,10 +11,16 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"gopkg.in/yaml.v3"
 )
+
+// lockPollInterval is how long an interruptible (context-bounded) WithLock
+// wait sleeps between non-blocking flock attempts. Short enough that a
+// cancel is noticed promptly, long enough not to spin.
+const lockPollInterval = 25 * time.Millisecond
 
 var (
 	// ErrMissing: config.yaml does not exist (LiteLLM not set up).
@@ -143,7 +150,11 @@ func mapSet(m *yaml.Node, key string, val *yaml.Node) {
 	m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, val)
 }
 
-func boolNode(v bool) *yaml.Node { return toNode(v) }
+// boolNode encodes a literal bool, which always succeeds.
+func boolNode(v bool) *yaml.Node {
+	n, _ := toNode(v)
+	return n
+}
 
 func isTrue(n *yaml.Node) bool {
 	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!bool" && n.Value == "true"
@@ -248,7 +259,20 @@ func isLoopback(n *yaml.Node) bool {
 		return false
 	}
 	u, err := url.Parse(n.Value)
-	return err == nil && loopbackHosts[strings.ToLower(u.Hostname())]
+	if err != nil || u.Host == "" {
+		// Schemeless input ("localhost:11434", "127.0.0.1:8000"): url.Parse
+		// either reads the part before the colon as a scheme and everything
+		// after as opaque (Host/Hostname() come back empty), or — when that
+		// prefix isn't a valid scheme, e.g. an IP literal — rejects the
+		// whole value outright ("first path segment in URL cannot contain
+		// colon"). Reparse with a "//" prefix so it resolves as a host
+		// instead.
+		u, err = url.Parse("//" + n.Value)
+		if err != nil {
+			return false
+		}
+	}
+	return loopbackHosts[strings.ToLower(u.Hostname())]
 }
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two
@@ -259,7 +283,7 @@ func (f *File) EnsureSettings() {
 	root := f.root()
 	ls := mapGet(root, "litellm_settings")
 	if ls == nil || isNull(ls) {
-		ls = mapping(nil)
+		ls, _ = mapping(nil) // nil pairs never fail
 		mapSet(root, "litellm_settings", ls)
 	}
 	if ls.Kind == yaml.MappingNode {
@@ -284,7 +308,8 @@ func (f *File) EnsureSettings() {
 		}
 		switch {
 		case strings.HasPrefix(model.Value, "ollama_chat/") && mapGet(params, "additional_drop_params") == nil:
-			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{toNode("reasoning_effort")}}
+			reasoningNode, _ := toNode("reasoning_effort") // literal string always succeeds
+			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{reasoningNode}}
 			mapSet(params, "additional_drop_params", seq)
 		case strings.HasPrefix(model.Value, "openai/") && mapGet(params, "use_chat_completions_api") == nil && isLoopback(mapGet(params, "api_base")):
 			mapSet(params, "use_chat_completions_api", boolNode(true))
@@ -336,7 +361,14 @@ func (f *File) Save() error {
 
 // WithLock serializes read-modify-write cycles on path across processes with
 // an flock on path+".lock".
-func WithLock(path string, fn func() error) error {
+//
+// The wait honors ctx: flock offers no timeout, so the lock is taken
+// non-blockingly and retried, letting a caller with a bounded context (the
+// lifecycle route hook's settling bounce, Ctrl+C on a start/stop) abandon a
+// contended lock instead of hanging past its own deadline. A nil ctx waits
+// without bound. Note the lock is released by fn returning — a cancelled ctx
+// never leaves the flock held.
+func WithLock(ctx context.Context, path string, fn func() error) error {
 	// Fail as Open would before creating a lock file: no LiteLLM setup must
 	// surface as ErrMissing (not a raw OS error) and leave nothing behind.
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -347,8 +379,27 @@ func WithLock(path string, fn func() error) error {
 		return err
 	}
 	defer lf.Close()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		return err
+	for {
+		err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		if ctx == nil {
+			// No deadline to honor: fall back to a blocking wait rather than
+			// spinning on a lock this process may hold for a while.
+			if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+				return err
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for %s.lock: %w", path, ctx.Err())
+		case <-time.After(lockPollInterval):
+		}
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN) //nolint:errcheck
 	return fn()

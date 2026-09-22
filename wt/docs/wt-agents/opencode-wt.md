@@ -60,7 +60,7 @@ The builtin `ollama` provider resolves model ids against OpenCode's own catalog 
 
 ### LiteLLM routing
 
-When LiteLLM routing is enabled (`modelman litellm status`), the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
+When LiteLLM routing is enabled (`wt litellm status`), the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
 
 ```json
 {"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<litellm.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}

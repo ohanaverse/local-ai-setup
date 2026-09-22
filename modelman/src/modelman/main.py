@@ -7,7 +7,10 @@ from pathlib import Path
 import typer
 
 # Import providers package to trigger registration of all providers.
-from . import providers  # noqa: F401
+from . import (
+    providers,  # noqa: F401
+    wt_bridge,
+)
 from .benchmark.cli import benchmark_app
 from .config import default_config_path
 from .formatting import format_size
@@ -58,13 +61,17 @@ litellm_app = typer.Typer(
 app.add_typer(litellm_app, name="litellm")
 
 
-def _warn_if_litellm_incomplete(state, consequence: str) -> None:
-    """Emit the shared 'url/api_key not set' warning if either is missing.
+def _warn_if_litellm_incomplete(consequence: str) -> None:
+    """Emit the shared 'url/api_key not set' warning if wt reports either missing.
 
-    `on` and `off` differ only in how they describe the consequence — this
-    keeps the incomplete-config check itself in one place.
+    `on` and `off` differ only in how they describe the consequence. The
+    status read is best-effort: a failure here never masks a successful change.
     """
-    if not state.litellm.url or not state.litellm.api_key:
+    try:
+        status = wt_bridge.litellm_status()
+    except wt_bridge.WtBridgeError:
+        return
+    if not status.url or not status.api_key_set:
         typer.echo(
             f"warning: litellm.url or litellm.api_key is not set — "
             f"{consequence}; run 'modelman litellm set --url ... --api-key ...'",
@@ -72,36 +79,38 @@ def _warn_if_litellm_incomplete(state, consequence: str) -> None:
         )
 
 
+def _wt_call(fn, *args):
+    """Run a wt_bridge call; a bridge failure becomes `error: ...` + exit 1
+    (never a traceback; bridge messages never contain the api key)."""
+    try:
+        return fn(*args)
+    except wt_bridge.WtBridgeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
 @litellm_app.command("status")
 def litellm_status():
-    """Show the current [litellm] routing state. Does not touch the proxy."""
-    state = load_state()
-    mode = "on" if state.litellm.enabled else "off"
-    key_display = "(unset)" if not state.litellm.api_key else "***" + state.litellm.api_key[-4:]
-    typer.echo(f"litellm: {mode}")
-    typer.echo(f"  url: {state.litellm.url or '(unset)'}")
-    typer.echo(f"  api_key: {key_display}")
+    """Show wt's LiteLLM routing state. Does not touch the proxy."""
+    typer.echo(_wt_call(wt_bridge.litellm_status_text), nl=False)
 
 
 @litellm_app.command("on")
 def litellm_on():
     """Route non-native models through LiteLLM. Does not start the proxy."""
-    with locked_state() as state:
-        state.litellm.enabled = True
+    _wt_call(wt_bridge.litellm_set_enabled, True)
     typer.echo("litellm: on")
-    _warn_if_litellm_incomplete(state, "wt will fail at launch time")
+    _warn_if_litellm_incomplete("wt will fail at launch time")
 
 
 @litellm_app.command("off")
 def litellm_off():
     """Dial providers directly where possible. Does not stop the proxy."""
-    with locked_state() as state:
-        state.litellm.enabled = False
+    _wt_call(wt_bridge.litellm_set_enabled, False)
     typer.echo("litellm: off")
     _warn_if_litellm_incomplete(
-        state,
         "agent/model pairs with no direct protocol overlap (e.g. claude+openrouter) "
-        "still route through litellm regardless of this setting and will fail to launch",
+        "still route through litellm regardless of this setting and will fail to launch"
     )
 
 
@@ -111,11 +120,7 @@ def litellm_set(
     api_key: str = typer.Option(None, "--api-key", help="LiteLLM proxy API key"),
 ):
     """Set the proxy URL/key wt will use when routing through LiteLLM."""
-    with locked_state() as state:
-        if url is not None:
-            state.litellm.url = url
-        if api_key is not None:
-            state.litellm.api_key = api_key
+    _wt_call(wt_bridge.litellm_set, url, api_key)
     typer.echo("litellm: updated")
 
 

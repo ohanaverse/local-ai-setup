@@ -188,14 +188,17 @@ def test_migrate_imports_wt_gateway_into_litellm_table(tmp_path, monkeypatch):
     assert imported is True
 
     state = load_state(path=state_path)
-    assert state.litellm.enabled is True
-    assert state.litellm.url == "http://localhost:4000"
-    assert state.litellm.api_key == "sk-litellm-existing"
+    # Raw legacy table in extra: wt's one-time migration reads it from here.
+    assert state.extra["litellm"] == {
+        "enabled": True,
+        "url": "http://localhost:4000",
+        "api_key": "sk-litellm-existing",
+    }
 
 
 def test_migrate_gateway_import_is_idempotent(tmp_path, monkeypatch):
     """A second run (e.g. modelman migrate invoked twice) must not clobber
-    a value the user has since changed via `modelman litellm set`."""
+    a legacy [litellm] value that is already populated (e.g. hand-edited)."""
     wt_config = tmp_path / "wt-config.toml"
     wt_config.write_text(
         '[gateway]\nmode = "litellm"\nurl = "http://old:4000"\napi_key = "old-key"\n'
@@ -205,8 +208,8 @@ def test_migrate_gateway_import_is_idempotent(tmp_path, monkeypatch):
 
     migrate_wt_gateway_to_litellm(wt_config_path=wt_config)
     with locked_state(path=state_path) as state:
-        state.litellm.url = "http://new:4000"  # user changed it since
+        state.extra["litellm"]["url"] = "http://new:4000"  # changed since
 
     imported_again = migrate_wt_gateway_to_litellm(wt_config_path=wt_config)
     assert imported_again is False
-    assert load_state(path=state_path).litellm.url == "http://new:4000"
+    assert load_state(path=state_path).extra["litellm"]["url"] == "http://new:4000"

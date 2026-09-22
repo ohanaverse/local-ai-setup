@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -235,7 +236,7 @@ litellm_settings:
 func TestSyncDecidesUnderTheLock(t *testing.T) {
 	o, _, p := opts(t, "model_list: []\n")
 	done := make(chan error, 1)
-	err := WithLock(p, func() error {
+	err := WithLock(context.Background(), p, func() error {
 		go func() {
 			_, err := Sync(testConfig(), nil, o)
 			done <- err
@@ -307,5 +308,96 @@ func TestSyncRecheckKeepsModelsThatStartedMeanwhile(t *testing.T) {
 	f, _ := Open(p)
 	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
 		t.Fatalf("routed = %s, want only the model Recheck found running", got)
+	}
+}
+
+// TestSyncRecheckAlsoAppliesToAddSet pins the other half of the under-lock
+// re-probe: a model the outer probe saw running but that stopped before the
+// lock was acquired must not get a fresh route added for a backend that is
+// no longer there. Only Recheck's remove-side filtering was covered before;
+// this pins that add is filtered too.
+func TestSyncRecheckAlsoAppliesToAddSet(t *testing.T) {
+	o, _, p := opts(t, "model_list: []\n")
+	// Outer probe says both are running; Recheck (under the lock) finds only
+	// one still running.
+	o.Recheck = func() []string { return []string{"ollama/gemma:9b"} }
+	if _, err := Sync(testConfig(), []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
+		t.Fatalf("routed = %s, want only the model Recheck still found running", got)
+	}
+}
+
+// TestApplyRejectsEmptyModelName pins that a model with an empty model_name is
+// rejected per id and no route is written: BuildEntry would otherwise emit a
+// bogus "ollama/" row now that wt commands no longer refuse on registry
+// validation errors. A FixedModel provider (llamacpp) ignores model_name, so
+// an empty one there must keep working.
+func TestApplyRejectsEmptyModelName(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: []\n")
+	o.SkipReadyGate = true
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "llamacpp", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8080"}},
+		},
+		Models: []config.Model{
+			{ID: "ollama/blank", ProviderID: "ollama", Location: config.LocationLocal},
+			// Whitespace-only names (spaces, tab, newline) are just as empty as ""
+			// and would otherwise write a bogus 'ollama_chat/   ' route.
+			{ID: "ollama/spaces", ProviderID: "ollama", ModelName: "   ", Location: config.LocationLocal},
+			{ID: "ollama/tab", ProviderID: "ollama", ModelName: "\t", Location: config.LocationLocal},
+			{ID: "ollama/nl", ProviderID: "ollama", ModelName: " \n ", Location: config.LocationLocal},
+			{ID: "llamacpp/fixed", ProviderID: "llamacpp", Location: config.LocationLocal},
+		},
+	}
+	res, err := Apply(cfg, []string{"ollama/blank", "ollama/spaces", "ollama/tab", "ollama/nl", "llamacpp/fixed"}, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range []int{0, 1, 2, 3} {
+		if res.Outcomes[i].Err == nil || !strings.Contains(res.Outcomes[i].Err.Error(), "empty model_name") {
+			t.Fatalf("outcome %d = %+v, want empty model_name error", i, res.Outcomes[i])
+		}
+	}
+	if res.Outcomes[4].Err != nil {
+		t.Fatalf("fixed-model provider rejected: %v", res.Outcomes[4].Err)
+	}
+	f, _ := Open(p)
+	if ids := f.RoutedIDs(); len(ids) != 1 || ids[0] != "llamacpp/fixed" || *restarts != 1 {
+		t.Fatalf("routed = %v restarts=%d", ids, *restarts)
+	}
+}
+
+// TestSyncRecheckTimesOutInsteadOfHoldingTheLock pins that a slow/hung
+// Recheck probe cannot hold the config.yaml lock indefinitely: past
+// recheckTimeout, Sync gives up on the recheck and applies the pre-recheck
+// plan, the same as if Recheck were unset. Without this a hung provider
+// probe could starve a concurrent bounded-context caller (the lifecycle
+// route hook's settling bounce) of the lock.
+func TestSyncRecheckTimesOutInsteadOfHoldingTheLock(t *testing.T) {
+	old := recheckTimeout
+	recheckTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { recheckTimeout = old })
+
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	block := make(chan []string) // never sent to: simulates a hung probe
+	o.Recheck = func() []string { return <-block }
+
+	start := time.Now()
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Sync took %s, want it to give up around recheckTimeout (%s)", elapsed, recheckTimeout)
+	}
+	f, _ := Open(p)
+	if ids := f.RoutedIDs(); len(ids) != 0 {
+		t.Fatalf("routed = %v, want the route removed (recheck timed out, pre-recheck plan applied)", ids)
 	}
 }

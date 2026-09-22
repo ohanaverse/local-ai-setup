@@ -10,7 +10,7 @@ This guide, unlike 00/02/04/05/08, embeds no `exposed` snapshots — nothing her
 
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, isolation helpers on `PATH`).
 - `pi` installed and on `PATH` — this harness drives `pi --mode json`, not a direct HTTP request, for the agent rows.
-- A working LiteLLM apiKey already seeded into `~/.pi/agent/models.json` — flip LiteLLM routing on (`modelman litellm on`) and launch any `wt` agent once if you've never done so; the harness reads that key rather than storing its own.
+- A working LiteLLM apiKey already seeded into `~/.pi/agent/models.json` — flip LiteLLM routing on (`wt litellm on`) and launch any `wt` agent once if you've never done so; the harness reads that key rather than storing its own.
 - `OPENROUTER_API_KEY` available (via `~/Library/LaunchAgents/local.litellm.proxy.plist` or the env) if your suite's `[judge]` model is an OpenRouter model — preflight checks this before running any agent row.
 
 ## TL;DR

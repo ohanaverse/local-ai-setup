@@ -1,13 +1,37 @@
 package litellm
 
 import (
+	"context"
 	"fmt"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"gopkg.in/yaml.v3"
 )
+
+// recheckTimeout bounds Sync's live Recheck probe while the config.yaml
+// lock is held: a slow/unresponsive provider must not hold the lock
+// indefinitely and starve a concurrent bounded-context caller (e.g. the
+// lifecycle route hook's settling bounce). A timeout is treated the same
+// as "no Recheck": the pre-recheck plan proceeds unchanged. A var, not a
+// const, so tests can shrink it.
+var recheckTimeout = 5 * time.Second
+
+// runRecheck calls o.Recheck with recheckTimeout, reporting ok=false (fresh
+// left nil) when it does not return in time.
+func runRecheck(o Options) (fresh []string, ok bool) {
+	done := make(chan []string, 1)
+	go func() { done <- o.Recheck() }()
+	select {
+	case fresh = <-done:
+		return fresh, true
+	case <-time.After(recheckTimeout):
+		return nil, false
+	}
+}
 
 // Options tunes Apply/Sync.
 //   - Path          — config.yaml; "" means DefaultPath().
@@ -15,10 +39,17 @@ import (
 //     hook passes it: the model is verifiably running; modelman passes it
 //     because it applied the gate against its own in-memory state).
 //   - Restart       — proxy restart hook; nil means Restart. Tests inject.
+//   - Ctx           — bounds the config.yaml lock wait; nil means no bound.
 type Options struct {
 	Path          string
 	SkipReadyGate bool
 	Restart       func() []string
+	// Ctx bounds the wait for the config.yaml lock (nil = unbounded). The
+	// lifecycle route hook passes its caller's context, which on the settling
+	// bounce carries a deadline (settleTimeout) so a contended lock cannot
+	// hang that cleanup path; the CLI leaves it nil, since an interactive
+	// command should wait rather than fail.
+	Ctx context.Context
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
@@ -83,6 +114,12 @@ func prepare(cfg *config.Config, id string, skipReady bool) (*yaml.Node, error) 
 	if !ok {
 		return nil, fmt.Errorf("provider %q has no LiteLLM mapping", p.ID)
 	}
+	// Config.validate's per-model data rule; wt commands no longer refuse on
+	// validation errors, so enforce it here. FixedModel providers (llamacpp)
+	// use a fixed LiteLLM model string and ignore model_name.
+	if strings.TrimSpace(m.ModelName) == "" && !pol.FixedModel {
+		return nil, fmt.Errorf("model %q: empty model_name", id)
+	}
 	if !skipReady && !cfg.ReadyFlag(id) && !isCloud(m, *p, pol) {
 		return nil, fmt.Errorf("model %q is not ready", id)
 	}
@@ -115,7 +152,7 @@ func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) 
 func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o Options) (Result, error) {
 	path := o.path()
 	var res Result
-	err := WithLock(path, func() error {
+	err := WithLock(o.Ctx, path, func() error {
 		f, err := Open(path)
 		if err != nil {
 			return err
@@ -226,9 +263,21 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 				remove = append(remove, m.ID)
 			}
 		}
-		if len(remove) > 0 && o.Recheck != nil {
-			fresh := o.Recheck()
-			remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
+		// Recheck runs under the lock, right before add/remove are applied:
+		// a model the outer probe saw stopped but that started meanwhile
+		// must keep its route (remove-side), and one the outer probe saw
+		// running but that stopped meanwhile must not get a fresh route for
+		// a dead backend (add-side). Both sides are re-verified together so
+		// one live probe settles the whole plan.
+		if o.Recheck != nil && (len(add) > 0 || len(remove) > 0) {
+			if fresh, ok := runRecheck(o); ok {
+				if len(remove) > 0 {
+					remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
+				}
+				if len(add) > 0 {
+					add = slices.DeleteFunc(add, func(id string) bool { return !slices.Contains(fresh, id) })
+				}
+			}
 		}
 		return add, remove
 	}, o)

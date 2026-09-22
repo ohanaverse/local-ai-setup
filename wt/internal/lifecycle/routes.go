@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -22,11 +23,39 @@ var (
 	routesWarn   io.Writer = os.Stderr
 )
 
+// routeWG tracks the in-flight async proxy restarts applyAndReport started.
+var routeWG sync.WaitGroup
+
+// WaitPendingRoutes blocks until every async proxy restart started by
+// applyAndReport has finished. It has two distinct callers:
+//
+//   - Every wt command that can reach a route hook (start, stop, smoke, a
+//     launch's exit-flow stop picker, the TUI start flow) must call it before
+//     the process exits — goroutines do not survive main returning, so a
+//     restart wt kicked off would be killed mid-flight and the proxy would
+//     never pick up the route change.
+//   - Every path that is about to USE the proxy must call it before handing
+//     off: an agent launched after a local-model start talks to that model
+//     THROUGH LiteLLM, so proceeding while the restart is still in flight can
+//     meet a refused connection or the pre-restart route table (the model just
+//     started not yet listed). The launch paths — cmd/wt's startForLaunch, the
+//     TUI start flow before proceedToLaunch, wt smoke before its one-shot
+//     prompt — therefore wait here rather than only at process exit.
+func WaitPendingRoutes() {
+	routeWG.Wait()
+}
+
 const (
 	// proxyReadyTimeout bounds the wait for the proxy after a route change.
 	proxyReadyTimeout = 30 * time.Second
-	// settleTimeout bounds the settling restart bounceRoutes runs after a
-	// failed or cancelled start, on a context detached from the caller's.
+	// settleTimeout bounds the SYNCHRONOUS half of bounceRoutes: the
+	// config.yaml write, whose lock wait takes the context bounceRoutes hands
+	// to litellm.Options.Ctx. Without it a contended flock (another wt, or
+	// modelman, holding <config>.lock) blocks this cleanup path forever.
+	// It deliberately does NOT bound the proxy restart: applyAndReport's
+	// goroutine derives context.WithoutCancel(ctx) for itself, which strips
+	// this deadline along with cancellation, so bounceRoutes' defer cancel()
+	// cannot cut the restart short.
 	settleTimeout = 15 * time.Second
 	// proxyAliveTimeout bounds the single probe taken just before a restart.
 	// Short on purpose: it is paid on every restart. It only has to
@@ -111,9 +140,20 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 
 // bounceRoutes restarts the proxy (and waits for it) to settle deferred route
 // writes when the start that followed them failed or found nothing to route.
-// It runs on a context detached from ctx: the common trigger is the user's
-// Ctrl+C, and a cancelled ctx would kill the restart at once, leaving the
-// proxy serving the removed route. The detached context is bounded.
+// It runs on a context detached from ctx, and still needs to even though
+// applyAndReport's async restart detaches again for itself: the common trigger
+// is the user's Ctrl+C, and applyAndReport's SYNCHRONOUS half — the config.yaml
+// write — takes this ctx as litellm.Options.Ctx. An already-cancelled one makes
+// WithLock fail instantly on any lock contention, so the route removal this
+// exists to settle would never be written at all. Detaching twice is harmless.
+//
+// The detached context is bounded by settleTimeout, which bounds exactly one
+// thing: that synchronous config.yaml write's lock wait. The defer cancel()
+// fires as soon as bounceRoutes returns — before the async restart has even
+// begun — but the restart does not run on this context: applyAndReport's
+// goroutine derives its own context.WithoutCancel(ctx), which strips both the
+// cancellation and the deadline. Deleting the wrapper (as the async change
+// first did) leaves the lock wait unbounded on this cleanup path.
 func bounceRoutes(ctx context.Context, cfg *config.Config) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()
@@ -133,29 +173,36 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 	return ids
 }
 
-// applyAndReport reports whether config.yaml was written.
+// applyAndReport writes the route change and reports whether config.yaml
+// changed. The write itself is synchronous: it is the source of truth and it
+// is fast. The proxy restart and the readiness poll that follows it — the slow
+// part, worst case the restart command's own 30s bound plus proxyReadyTimeout
+// on top of the pre-probe — run asynchronously, tracked by routeWG /
+// WaitPendingRoutes, so control returns to the caller as soon as the write is
+// done rather than at the end of the LiteLLM proxy machinery that is off the
+// model-serving path.
+//
+// This is not a wall-clock saving for a plain `wt start`/`wt stop`: main()
+// calls WaitPendingRoutes() before the process exits, so those commands still
+// pay the full restart. What it buys is that the work between the route write
+// and that exit — the engine's own return, progress output, the stop picker,
+// the survey — no longer sits behind the proxy, and that each caller decides
+// for itself where it needs the proxy ready: the launch paths wait explicitly
+// (see WaitPendingRoutes) because the agent they hand off to dials the model
+// through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string, mode restartMode) bool {
-	// The proxy is probed once, lazily, just before a restart (Listening: only
-	// a refused connection counts as down, so a slow proxy is still waited
-	// for). Waiting for readiness afterwards is only meaningful when a proxy
-	// was actually serving: a configured URL with nothing listening (routing
-	// may even be switched off) used to cost every start and stop the full
-	// proxyReadyTimeout. Probing inside the restart hook means writes that
-	// never restart (deferred, or nothing changed) pay no probe at all. The
-	// restart itself stays best-effort either way.
-	url := cfg.LitellmBaseURL()
-	wasUp := false
-
 	res, err := applyRoutes(cfg, add, remove, litellm.Options{
 		SkipReadyGate: true,
-		NoRestart:     mode == restartDeferred,
-		ForceRestart:  mode == restartForced,
-		// The caller's ctx, so Ctrl+C during a start/stop does not keep
-		// paying for the restart command's full run time.
-		Restart: func() []string {
-			wasUp = url != "" && probeProxy(ctx, url, proxyAliveTimeout)
-			return restartProxy(ctx)
-		},
+		// The restart is always deferred here: applyAndReport itself decides
+		// whether to restart, and runs that restart asynchronously, below.
+		// ForceRestart is deliberately not passed — Apply restarts on it even
+		// with NoRestart set, which would put the bounce back on this path.
+		NoRestart: true,
+		// The caller's ctx bounds the config.yaml lock wait too, so a
+		// contended lock cannot outlive a caller that set a deadline —
+		// bounceRoutes passes a settleTimeout-bounded context for exactly
+		// this reason.
+		Ctx: ctx,
 	})
 	if err != nil {
 		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
@@ -168,16 +215,52 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 			fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
 		}
 	}
-	if ctx.Err() == nil { // cancelled by the user: a failed restart is expected, stay quiet
-		for _, w := range res.Warnings {
+	// res.Warnings is only ever populated by Apply's restart hook, which
+	// NoRestart disables; the restart's own warnings are reported below.
+	restart := (res.Changed && mode != restartDeferred) || mode == restartForced
+	if !restart {
+		return res.Changed
+	}
+	url := cfg.LitellmBaseURL()
+	routeWG.Add(1)
+	go func() {
+		defer routeWG.Done()
+		// Detached from ctx: every real caller cancels its own ctx via a
+		// scoped defer cancel() the instant its (now async) call returns —
+		// which happens before this restart even starts. A caller's normal
+		// completion is not a signal to abandon the restart; only litellm's
+		// own per-call timeouts (RestartContext's ~30s, Listening's and
+		// WaitReady's own bounds) need to cap this goroutine's lifetime.
+		// WaitPendingRoutes() is where a caller (a process about to exit, or
+		// a launch path about to use the proxy) rejoins this goroutine.
+		//
+		// A context.WithTimeout child of ctx would not do: its defer cancel()
+		// fires the moment this goroutine returns, and it would still inherit
+		// the caller's post-return cancellation regardless.
+		//
+		// The proxy is probed once, lazily, just before the restart
+		// (Listening: only a refused connection counts as down, so a slow
+		// proxy is still waited for). Waiting for readiness afterwards is
+		// only meaningful when a proxy was actually serving: a configured URL
+		// with nothing listening (routing may even be switched off) used to
+		// cost every start and stop the full proxyReadyTimeout. Writes that
+		// never restart (deferred, or nothing changed) never reach this
+		// goroutine, so they pay no probe at all. The restart itself stays
+		// best-effort either way.
+		bgCtx := context.WithoutCancel(ctx)
+		wasUp := url != "" && probeProxy(bgCtx, url, proxyAliveTimeout)
+		// Warnings are always surfaced: bgCtx cannot be cancelled by the
+		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
+		// restart is expected" case to stay quiet about — suppressing them on
+		// that theory is exactly what hid this path failing silently.
+		for _, w := range restartProxy(bgCtx) {
 			fmt.Fprintf(routesWarn, "wt: %s\n", w)
 		}
-	}
-	restarted := (res.Changed && mode != restartDeferred) || mode == restartForced
-	if restarted && wasUp {
-		if err := waitProxy(ctx, url, proxyReadyTimeout); err != nil && ctx.Err() == nil { // cancelled by the user: stay quiet
-			fmt.Fprintf(routesWarn, "wt: %v\n", err)
+		if wasUp {
+			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
+				fmt.Fprintf(routesWarn, "wt: %v\n", err)
+			}
 		}
-	}
+	}()
 	return res.Changed
 }

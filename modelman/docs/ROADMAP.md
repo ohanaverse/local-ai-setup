@@ -39,6 +39,13 @@ Spec: `docs/superpowers/specs/2026-08-28-modelman-litellm-exposure-design.md`
 
 Spec (reconcile): `docs/superpowers/specs/2026-08-31-modelman-litellm-proxy-reconcile-design.md`
 
+> **Superseded 2026-09-21:** the Python write path described above (modelman
+> writing `config.yaml` and restarting the proxy via
+> `MODELMAN_LITELLM_RESTART_CMD`) was moved into `wt` (`wt litellm ...`).
+> modelman now applies its gates and delegates to `wt`, and requires `wt` on
+> PATH. See `../docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md`
+> (monorepo root). The items above are kept as history.
+
 ## Phase 4 — wt consumer (cross-repo)
 
 wt reads `registry.toml` read-only and joins it in memory with its own

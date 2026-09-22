@@ -68,7 +68,7 @@ def _has_provider(registry: Registry, provider_id: str) -> bool:
 def migrate_wt_gateway_to_litellm(wt_config_path: Path | None = None) -> bool:
     """One-time import of wt's legacy [gateway] block into modelman's
     [litellm] table. Read-only on wt's file; skips if [litellm] is already
-    populated so a user's later `modelman litellm set` is never clobbered."""
+    populated so an existing (or wt-migrated) config is never clobbered."""
     path = wt_config_path or _default_wt_config_path()
     if not path.exists():
         return False
@@ -78,11 +78,22 @@ def migrate_wt_gateway_to_litellm(wt_config_path: Path | None = None) -> bool:
         return False
 
     with locked_state() as state:
-        if state.litellm.url or state.litellm.api_key or state.litellm.enabled:
+        # wt owns LiteLLM routing state; this is only the legacy rescue path that
+        # parks the old [gateway] values where wt's one-time migration reads them.
+        table = state.extra.get("litellm")
+        if isinstance(table, dict) and (
+            table.get("url") or table.get("api_key") or table.get("enabled")
+        ):
             return False  # already configured; do not overwrite
-        state.litellm.enabled = gateway.get("mode") == "litellm"
-        state.litellm.url = gateway.get("url")
-        state.litellm.api_key = gateway.get("api_key")
+        state.extra["litellm"] = {
+            k: v
+            for k, v in {
+                "enabled": gateway.get("mode") == "litellm",
+                "url": gateway.get("url"),
+                "api_key": gateway.get("api_key"),
+            }.items()
+            if v is not None
+        }
     return True
 
 

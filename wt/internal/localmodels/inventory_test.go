@@ -2,6 +2,7 @@ package localmodels
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -16,6 +18,13 @@ import (
 )
 
 var testClient = &http.Client{Timeout: 2 * time.Second}
+
+// roundTripFunc adapts a function to http.RoundTripper, so a test can answer
+// one path with a real transport error (a refused connection) while leaving
+// the rest of the request going to the live stub server.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // modelsServer serves an OpenAI-compatible /v1/models body.
 func modelsServer(t *testing.T, ids ...string) *httptest.Server {
@@ -187,6 +196,37 @@ func TestInventoryOllamaLatestFallback(t *testing.T) {
 	e, ok := byModelID(snap, "ollama/llama3")
 	if !ok || e.Artifact != "llama3:latest" || !e.Running || len(snap.Entries) != 1 {
 		t.Errorf("entry = %+v ok=%v entries=%d", e, ok, len(snap.Entries))
+	}
+}
+
+// TestInventoryOllamaDownWhenDaemonDiesBetweenProbes covers the daemon dying
+// between the two ollama probes: /api/tags answers (so status is Partial, not
+// Unreachable) but /api/ps is refused. That refusal still proves nothing is
+// listening, so the family must be Down — otherwise `wt litellm sync`, which
+// removes routes only for Down families, would keep routes pointing at a dead
+// daemon. Both probes hit the same origin, so a refused second probe can only
+// mean the server went away.
+func TestInventoryOllamaDownWhenDaemonDiesBetweenProbes(t *testing.T) {
+	srv := ollamaServer(t, []string{"x:1b"}, nil)
+	// /api/tags reaches the live stub; /api/ps is answered with a real
+	// connection-refused error, as if the daemon had just exited.
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/api/ps" {
+				return nil, &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
+			}
+			return http.DefaultTransport.RoundTrip(r)
+		}),
+	}
+
+	cfg := &config.Config{Providers: []config.Provider{localProvider("ollama", srv.URL, "")}}
+	snap := inventory(cfg, client)
+	if snap.Providers["ollama"] != StatusPartial {
+		t.Fatalf("status = %q, want partial (tags answered, ps failed)", snap.Providers["ollama"])
+	}
+	if !snap.Down["ollama"] {
+		t.Errorf("Down = %v, want ollama down (its /api/ps was refused)", snap.Down)
 	}
 }
 

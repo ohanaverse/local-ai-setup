@@ -1,9 +1,11 @@
 """Raw launchd primitives (kickstart/load/unload) used by provider lifecycle.
 
-Separate from `modelman.litellm.restart_litellm_proxy`: that one is
-config-write driven and honors `MODELMAN_LITELLM_RESTART_CMD`, while this
-module is the raw `launchctl` primitive provider lifecycle code calls
-directly (e.g. to bounce a LaunchAgent-managed provider).
+Separate from the LiteLLM proxy restart, which modelman no longer owns:
+since 2026-09-21 wt bounces the proxy itself after every route change
+(`wt/internal/litellm/restart.go`, honoring `WT_LITELLM_RESTART_CMD` and
+the legacy `MODELMAN_LITELLM_RESTART_CMD`). This module is the raw
+`launchctl` primitive provider lifecycle code calls directly (e.g. to
+bounce a LaunchAgent-managed provider).
 """
 
 from __future__ import annotations

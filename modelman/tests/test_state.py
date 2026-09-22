@@ -295,3 +295,47 @@ def test_stale_local_table_is_dropped_on_load_and_save(tmp_path):
 def test_state_store_has_no_local_attribute():
     store = StateStore()
     assert not hasattr(store, "local")
+
+
+_LEGACY_LITELLM = (
+    '[litellm]\nenabled = true\nurl = "http://localhost:4000"\n'
+    'api_key = "sk-legacy"\nfuture_key = "keep-me"\n'
+)
+
+
+def test_legacy_litellm_table_round_trips_verbatim(tmp_path):
+    # wt owns routing state now; modelman.toml's [litellm] is only the legacy
+    # fallback wt migrates from once. modelman must load+save it byte-for-value
+    # identical (api_key and unknown keys included) or wt's migration source is lost.
+    import tomllib
+
+    p = tmp_path / "modelman.toml"
+    p.write_text(_LEGACY_LITELLM)
+    save_state(load_state(p), p)
+    assert tomllib.loads(p.read_text())["litellm"] == tomllib.loads(_LEGACY_LITELLM)["litellm"]
+
+
+def test_legacy_litellm_table_survives_locked_state_mutation(tmp_path):
+    # An unrelated model_state write (expose/ready) must never touch or blank
+    # the legacy [litellm] table.
+    import tomllib
+
+    from modelman.state import locked_state
+
+    p = tmp_path / "modelman.toml"
+    p.write_text(_LEGACY_LITELLM)
+    with locked_state(p) as s:
+        s.set("ollama/x", ModelState(ready=True, exposed=True))
+    doc = tomllib.loads(p.read_text())
+    assert doc["litellm"] == tomllib.loads(_LEGACY_LITELLM)["litellm"]
+    assert doc["model_state"]["ollama/x"]["exposed"] is True
+
+
+def test_absent_litellm_table_stays_absent(tmp_path):
+    # modelman used to invent a default [litellm] table on every save; that
+    # would shadow/confuse wt's legacy fallback, so an absent table stays absent.
+    import tomllib
+
+    p = tmp_path / "modelman.toml"
+    save_state(StateStore(models={"a/b": ModelState(ready=True)}), p)
+    assert "litellm" not in tomllib.loads(p.read_text())

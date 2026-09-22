@@ -66,9 +66,9 @@ ollama pull qwen3.8:27b-mlx
 # from: ~/github/ohanaverse/local-ai-setup/modelman
 uv sync
 # uv run modelman        # TUI (interactive) — skip in one-shot mode; 'expose' below is non-interactive
-uv run modelman expose ollama/qwen3.8:27b-mlx   # non-interactive expose (writes model_list entry)
+uv run modelman expose ollama/qwen3.8:27b-mlx   # non-interactive expose (delegates to `wt litellm expose`, which writes the model_list entry and restarts the proxy; needs `wt` on PATH)
 
-# 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back)
+# 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the expose — this is only needed if that restart was skipped or failed)
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
 
 # 6. Smoke curls
@@ -109,7 +109,7 @@ LiteLLM: Current Version = 1.98.0
 
 Create the config (fresh machine only):
 
-<!-- UNVERIFIED — `~/.config/litellm/config.yaml` already exists here and modelman manages it; running this on this machine would discard the live `model_list`. -->
+<!-- UNVERIFIED — `~/.config/litellm/config.yaml` already exists here and wt manages it (`wt litellm ...`); running this on this machine would discard the live `model_list`. -->
 
 ```bash
 mkdir -p ~/.config/litellm

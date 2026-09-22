@@ -97,6 +97,35 @@ func TestLitellmExposeGateAndDryRun(t *testing.T) {
 	}
 }
 
+// TestLitellmDryRunJSONIsDistinguishableFromRealApply pins that --dry-run
+// --json output carries a "dry_run" marker: without it, a script previewing
+// a change with --dry-run cannot tell the output apart from a real apply
+// that happened to change nothing (both show changed:false, action:exposed).
+func TestLitellmDryRunJSONIsDistinguishableFromRealApply(t *testing.T) {
+	// Sandbox WT_LITELLM_CONFIG the same way every other test in this file
+	// does: without it, the real-apply sub-case below would target
+	// DefaultPath() (~/.config/litellm/config.yaml) and could write to a
+	// developer's live proxy config.
+	litellmEnv(t, "model_list: []\n")
+	var out, errOut bytes.Buffer
+	err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{JSON: true, DryRun: true, SkipReadyGate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"dry_run":true`) {
+		t.Fatalf("dry-run JSON = %s, want a dry_run:true marker", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{JSON: true, SkipReadyGate: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), `"dry_run"`) {
+		t.Fatalf("real-apply JSON = %s, want no dry_run key at all", out.String())
+	}
+}
+
 // TestLitellmSyncUsesLiveInventory pins that sync derives "running" from the
 // live inventory (never modelman's flag): a running registered model gets a
 // route and an unrouted-but-stopped one keeps none.
@@ -140,14 +169,15 @@ func TestLitellmListAndProviders(t *testing.T) {
 }
 
 // TestLitellmMutatorsRefuseOnConfigError pins that expose/unexpose/sync refuse
-// when the registry failed to load (a.cfgErr), like every sibling command.
+// when the registry failed to LOAD (a.loadErr), like every sibling command.
+// (Validation-only errors are covered by TestLitellmChangeCommandsWorkOnValidationOnlyError.)
 // Without the guard they act on an empty registry: expose reports "not found"
 // and unexpose/sync still write config.yaml and restart the proxy.
 func TestLitellmMutatorsRefuseOnConfigError(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
 	for _, args := range [][]string{{"expose", "ollama/gemma:9b"}, {"unexpose", "ollama/gemma:9b"}, {"sync"}} {
-		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml")})
+		c := litellmCmd(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")})
 		var out, errOut bytes.Buffer
 		c.SetOut(&out)
 		c.SetErr(&errOut)
@@ -477,8 +507,8 @@ func validationOnlyApp(t *testing.T) (*app, string) {
 // status/on/off/set depend only on wt's own [litellm] state, not on registry
 // validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
 // must not lock the user out of the only routing control surface, and the
-// change must persist. expose/unexpose/sync depend on the registry, so they
-// still refuse.
+// change must persist. (expose/unexpose/sync are covered by
+// TestLitellmChangeCommandsWorkOnValidationOnlyError.)
 func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	litellmEnv(t, "model_list: []\n")
 	a, path := validationOnlyApp(t)
@@ -503,9 +533,121 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "sk-abcdef") {
 		t.Fatalf("state not persisted (err %v):\n%s", err, b)
 	}
-	for _, args := range [][]string{{"expose", "x"}, {"unexpose", "x"}, {"sync"}} {
-		if err := run(args...); err == nil || !strings.Contains(err.Error(), "config error") {
+}
+
+// TestLitellmChangeCommandsWorkOnValidationOnlyError pins that expose/unexpose/
+// sync gate only on a config LOAD failure. A registry gap in an unrelated model
+// (unknown provider: cfgErr set, loadErr nil) must not block modelman's
+// expose/unexpose (chicken-and-egg: modelman is what repairs such gaps), while
+// the broken model itself is still reported per id, exit non-zero, without
+// blocking the healthy ids in the same batch.
+func TestLitellmChangeCommandsWorkOnValidationOnlyError(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	a, _ := validationOnlyApp(t)
+	if a.cfgErr == nil || a.loadErr != nil {
+		t.Fatalf("fixture: cfgErr=%v loadErr=%v", a.cfgErr, a.loadErr)
+	}
+	const good = "ollama/contract-fixture:local"
+	run := func(args ...string) (string, error) {
+		c := litellmCmd(a)
+		var out bytes.Buffer
+		c.SetOut(&out)
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(args)
+		err := c.Execute()
+		return out.String(), err
+	}
+	if _, err := run("expose", good, "--skip-ready-gate"); err != nil {
+		t.Fatalf("expose healthy model refused: %v", err)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) {
+		t.Fatalf("route not written:\n%s", b)
+	}
+	if _, err := run("unexpose", good); err != nil {
+		t.Fatalf("unexpose refused: %v", err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), good) {
+		t.Fatalf("route not removed:\n%s", b)
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: good, ModelName: "contract-fixture:local", Registered: true, Running: true},
+		}})
+	if _, err := run("sync"); err != nil {
+		t.Fatalf("sync refused: %v", err)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) {
+		t.Fatalf("sync did not route running model:\n%s", b)
+	}
+	if _, err := run("unexpose", good); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run("expose", "ghost/m", good, "--skip-ready-gate", "--json")
+	if err == nil {
+		t.Fatal("want non-nil error: broken model rejected")
+	}
+	var got struct {
+		Outcomes []struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+			Error  string `json:"error"`
+		} `json:"outcomes"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &got); jerr != nil || len(got.Outcomes) != 2 {
+		t.Fatalf("output = %s (%v)", out, jerr)
+	}
+	if got.Outcomes[0].Error == "" || got.Outcomes[1].Error != "" || got.Outcomes[1].Action != "exposed" {
+		t.Fatalf("outcomes = %+v", got.Outcomes)
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), good) || strings.Contains(string(b), "ghost/m") {
+		t.Fatalf("mixed batch: healthy route missing or ghost route written:\n%s", b)
+	}
+}
+
+// TestLitellmExposeEmptyModelNameUnderValidationError pins that a model with
+// an empty model_name (a registry validation gap) is reported per id in the
+// JSON outcome and writes no route, leaving config.yaml byte-identical, even
+// though expose no longer refuses on validation-only errors.
+func TestLitellmExposeEmptyModelNameUnderValidationError(t *testing.T) {
+	// Seed the settings wt would add so a no-op leaves the bytes untouched.
+	body := "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	p := litellmEnv(t, body)
+	a, _ := validationOnlyApp(t)
+	a.cfg.Models = append(a.cfg.Models, config.Model{ID: "ollama/blank", ProviderID: "ollama", Location: config.LocationLocal})
+	c := litellmCmd(a)
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&bytes.Buffer{})
+	c.SetArgs([]string{"expose", "ollama/blank", "--skip-ready-gate", "--json"})
+	if err := c.Execute(); err == nil {
+		t.Fatal("want non-nil error")
+	}
+	if !strings.Contains(out.String(), "empty model_name") {
+		t.Fatalf("outcome lacks per-id error: %s", out.String())
+	}
+	if b, _ := os.ReadFile(p); string(b) != body {
+		t.Fatalf("config.yaml modified:\n%s", b)
+	}
+}
+
+// TestLitellmChangeCommandsGateOnLoadErrOnly pins that the guard reads
+// a.loadErr and not a.cfgErr by setting only loadErr. In production loadErr
+// implies cfgErr (newApp copies it), so this combination cannot occur there;
+// it exists to pin which field the guard consults.
+func TestLitellmChangeCommandsGateOnLoadErrOnly(t *testing.T) {
+	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
+	p := litellmEnv(t, body)
+	for _, args := range [][]string{{"expose", "ollama/gemma:9b"}, {"unexpose", "ollama/gemma:9b"}, {"sync"}} {
+		c := litellmCmd(&app{cfg: &config.Config{}, loadErr: errors.New("bad toml")})
+		c.SetOut(&bytes.Buffer{})
+		c.SetErr(&bytes.Buffer{})
+		c.SetArgs(args)
+		if err := c.Execute(); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want refusal", args, err)
+		}
+		if b, _ := os.ReadFile(p); string(b) != body {
+			t.Fatalf("%v modified config.yaml", args)
 		}
 	}
 }

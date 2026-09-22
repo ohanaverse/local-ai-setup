@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,11 +18,13 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from .. import wt_bridge
 from ..formatting import format_size
 from ..litellm import (
     is_effectively_exposed,
     passes_ready_gate,
     provider_policy,
+    provider_table_available,
 )
 from ..local_control import (
     LocalControlError,
@@ -225,6 +228,9 @@ class ModelScreen(Screen[None]):
         self.state = state
         self.registry_path = registry_path
         self.state_path = state_path
+        # Last `wt litellm status` (None = wt unreachable); refreshed only on
+        # mount and after a toggle so keystrokes never spawn wt.
+        self._litellm_status: wt_bridge.LitellmStatus | None = None
         # Provider of the last model added or edited this session; used to
         # default the Add dialog's provider dropdown.
         self._last_provider_used: str | None = None
@@ -290,9 +296,10 @@ class ModelScreen(Screen[None]):
             "COST",
             "SIZE",
         )
+        self._prefetch_litellm_state()
         self.reload()
         self._refresh_pending_bar()
-        self._update_litellm_status()
+        self._render_litellm_status()
         mt.focus()
         self.run_worker(
             self._run_reconcile,
@@ -373,33 +380,90 @@ class ModelScreen(Screen[None]):
         # Re-render on the main thread.
         self.app.call_from_thread(self.reload)
 
-    def _update_litellm_status(self) -> None:
-        """Render the [litellm] routing mode in the screen's status area.
+    def _fetch_litellm_status(self) -> None:
+        """Blocking read of wt's routing state into `_litellm_status`
+        (bounded by `wt_bridge.STATUS_TIMEOUT`). Never raises: an unreachable
+        wt is recorded as None. Split out of `_update_litellm_status` so a
+        caller running off the main thread (the mount-time prefetch, the
+        toggle worker) can do the blocking read without also rendering from
+        the wrong thread."""
+        try:
+            self._litellm_status = wt_bridge.litellm_status(timeout=wt_bridge.STATUS_TIMEOUT)
+        except wt_bridge.WtBridgeError:
+            self._litellm_status = None
 
-        Purely display: never starts, stops, or restarts the proxy — the
-        toggle only flips modelman.toml's [litellm].enabled. Moved here
-        from the removed FamilyScreen, which was the app's home screen
-        before this one took over that role.
+    def _update_litellm_status(self) -> None:
+        """Re-read wt's routing state once and render it in the status area.
+
+        wt owns the [litellm] state; this asks wt (never modelman.toml) and
+        caches the answer in `_litellm_status` so keystrokes never spawn wt.
+        Called on mount and after a toggle only. Never raises: an unreachable
+        wt renders "unavailable". Purely display: never touches the proxy.
         """
-        mode = "on" if self.state.litellm.enabled else "off"
-        url_display = (
-            f" ({self.state.litellm.url})" if mode == "on" and self.state.litellm.url else ""
-        )
-        self.query_one("#litellm-status", Static).update(
-            f"LiteLLM: {mode}{url_display}  [l] toggle"
-        )
+        self._fetch_litellm_status()
+        self._render_litellm_status()
+
+    def _prefetch_litellm_state(self) -> None:
+        """Warm the provider-flags cache and read wt's status CONCURRENTLY
+        instead of back-to-back: each is a subprocess call bounded at ~5s
+        when its cache is cold, and running them one after another could
+        block the initial paint for up to ~10s. Blocks until both are done
+        (still synchronous overall), but the wall-clock cost is the slower
+        of the two, not their sum."""
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            status_future = pool.submit(self._fetch_litellm_status)
+            flags_future = pool.submit(wt_bridge.provider_cloud_flags)
+            status_future.result()
+            flags_future.result()
+
+    def _render_litellm_status(self) -> None:
+        status = self._litellm_status
+        if status is None:
+            text = "LiteLLM: unavailable  \\[l] toggle"
+        else:
+            url = f" ({status.url})" if status.enabled and status.url else ""
+            text = f"LiteLLM: {'on' if status.enabled else 'off'}{url}  \\[l] toggle"
+        try:
+            self.query_one("#litellm-status", Static).update(text)
+        except NoMatches:
+            # Screen already torn down (e.g. a worker finishing after exit).
+            return
 
     def action_toggle_litellm(self) -> None:
-        """Flip [litellm].enabled on `l`. Routing policy only — the proxy
-        process is never touched. locked_state() re-reads the on-disk
-        state so the flip applies on top of the latest file. Only the
-        `litellm` table is resynced back onto self.state (not a full
-        reload) so this doesn't clobber in-session model/queue state
-        this screen has already reconciled or the user has queued."""
-        with locked_state(self.state_path) as disk_state:
-            disk_state.litellm.enabled = not disk_state.litellm.enabled
-        self.state.litellm = load_state(self.state_path).litellm
-        self._update_litellm_status()
+        """Flip the routing switch on `l` by asking wt (the state's owner),
+        off the main thread: `wt litellm on/off` can include a full proxy
+        restart and the bridge's default timeout is 120s, so running it
+        inline would freeze the whole TUI (no repaint, no keybindings, not
+        even quit) for up to that long. Routing policy only — the proxy is
+        never touched, modelman.toml is never written and self.state is
+        left alone."""
+        status = self._litellm_status
+        if status is None:
+            # Unknown current state: re-read before deciding the direction.
+            # This one status read is still inline (bounded ~5s, not 120s).
+            self._update_litellm_status()
+            status = self._litellm_status
+        if status is None:
+            self.app.notify("LiteLLM: wt is unavailable — cannot toggle (install wt)")
+            return
+        target = not status.enabled
+        self.run_worker(
+            lambda: self._do_toggle_litellm(target),
+            thread=True,
+            exclusive=True,
+            group="litellm-toggle",
+            name="litellm-toggle",
+            description="Toggling LiteLLM routing",
+        )
+
+    def _do_toggle_litellm(self, target: bool) -> None:
+        try:
+            wt_bridge.litellm_set_enabled(target)
+        except wt_bridge.WtBridgeError as exc:
+            self.app.call_from_thread(self.app.notify, f"LiteLLM toggle failed: {exc}")
+            return
+        self._fetch_litellm_status()
+        self.app.call_from_thread(self._render_litellm_status)
 
     def reload(self) -> None:
         self._load_models()
@@ -436,7 +500,7 @@ class ModelScreen(Screen[None]):
                 # Use the projected ready value for the EXPOSED column preview.
                 ready_override = self._projected_ready(m.id)
                 # Effective exposure = the (queued or persisted) flag AND the
-                # *projected* ready value — the same gate `_validated_entry`
+                # *projected* ready value — the same gate `_validate_locally`
                 # applies at apply time, so the column shows what the model
                 # will be after apply, not what it was before the queue.
                 # Native rows are the one exception: the column shows Y
@@ -511,10 +575,10 @@ class ModelScreen(Screen[None]):
     def _enforce_expose_ready_rule(self, mid: str, entry: ModelEntry) -> None:
         """Single invariant: expose depends on ready. A queued expose=True
         cannot survive a model whose projected ready is False — apply()
-        enforces the same rule at the gate (_validated_entry rejects the
+        enforces the same rule at the gate (_validate_locally rejects the
         expose with 'model is not ready'); this keeps the queue consistent
         with it instead of leaving a doomed entry for apply() to fail on.
-        Cloud rows are exempt, matching _validated_entry (via
+        Cloud rows are exempt, matching _validate_locally (via
         passes_ready_gate). Drops the expose with a notification rather
         than silently overwriting the user's request."""
         if self.queued_exposes.get(mid) is True and not passes_ready_gate(
@@ -585,12 +649,17 @@ class ModelScreen(Screen[None]):
         if entry is None:
             return
         mid = entry.id
-        if provider_policy(entry.provider_id) is None:
-            self.app.notify("Provider has no LiteLLM mapping — cannot expose")
-            return
         persisted_exposed = self.state.get(mid).exposed
         displayed_exposed = self.queued_exposes.get(mid, persisted_exposed)
         target = not displayed_exposed
+        # Only EXPOSE needs a mapping; un-expose must stay possible even when
+        # wt is unreachable (the provider table is then degraded to {}).
+        if target and provider_policy(entry.provider_id) is None:
+            if not provider_table_available():
+                self.app.notify("wt is unavailable — cannot expose (install wt)")
+            else:
+                self.app.notify("Provider has no LiteLLM mapping — cannot expose")
+            return
         if target == persisted_exposed:
             # Repeated keypress: cancel the queued expose toggle.
             self.queued_exposes.pop(mid, None)
@@ -608,7 +677,7 @@ class ModelScreen(Screen[None]):
             self.registry,
             ready_override=self._projected_ready(mid),
         ):
-            # Exposing requires ready — the same gate _validated_entry
+            # Exposing requires ready — the same gate _validate_locally
             # applies at apply time. If the user has a ready toggle queued
             # that leaves the model not-ready, refuse rather than overwrite
             # their request; otherwise cascade a ready=True queue in for
@@ -721,9 +790,8 @@ class ModelScreen(Screen[None]):
         on-mount reconcile worker put in memory (`ready`/`disk_path`/
         `size_bytes`, none of which is persisted until the pending-changes
         queue is applied on exit), silently reverting the READY/SIZE/path
-        columns after the first `s` press. Same reasoning — and same
-        targeted-resync shape — as action_toggle_litellm's `[litellm]`
-        merge. `exposed` is included alongside `running` because start/stop
+        columns after the first `s` press. Hence this targeted
+        resync of only those flags. `exposed` is included alongside `running` because start/stop
         now flip it too (auto-expose on start, auto-unexpose on stop).
         """
         fresh = load_state(self.state_path)

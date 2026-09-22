@@ -57,9 +57,10 @@ def test_load_state_matches_shared_fixture():
     assert family.display_name == "Contract Fixture (legacy)"
 
     # [litellm] routing table
-    assert state.litellm.enabled is True
-    assert state.litellm.url == "http://localhost:4000"
-    assert state.litellm.api_key == "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
+    # (kept verbatim in extra: wt owns it, modelman only preserves it)
+    assert state.extra["litellm"]["enabled"] is True
+    assert state.extra["litellm"]["url"] == "http://localhost:4000"
+    assert state.extra["litellm"]["api_key"] == "sk-litellm-CONTRACT-FIXTURE-NOT-A-REAL-KEY"
 
     # Per-model running flag (2026-09-14 multi-model design): replaces
     # the single [local].running_model marker.

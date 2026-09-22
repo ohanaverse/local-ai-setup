@@ -52,8 +52,10 @@ supports_vision = true
 
 **2. `~/.config/local-ai/modelman.toml`** — Model state tracking
 
-Exposure (`litellm_exposed`) is managed by modelman (TUI `l` toggle or
-`modelman expose`); see guide 04 for the workflow. No TOML to copy here —
+Exposure (the `exposed` flag; legacy name `litellm_exposed`) is set by
+`modelman expose` or the TUI `x` toggle, which delegate the `config.yaml` write
+to `wt litellm expose`; the TUI `l` key is the separate LiteLLM *routing*
+on/off toggle (`wt litellm on|off`). See guide 04 for the workflow. No TOML to copy here —
 the state file is machine state, not a config to hand-edit.
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration

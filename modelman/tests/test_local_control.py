@@ -1993,6 +1993,46 @@ def test_register_discovered_model_keeps_registry_and_state_when_expose_fails(tm
     assert load_state(state_path).get("ollama/llama3.2:3b").running is False
 
 
+def test_register_discovered_model_persists_registry_before_exposing(tmp_path):
+    # wt writes the LiteLLM route from registry.toml ON DISK, so a
+    # just-discovered model must be persisted before the expose is
+    # delegated — otherwise wt answers "model not found in registry" and
+    # the auto-register+expose half of `modelman start <native-name>`
+    # silently stops working. Covers both expose call sites on this path
+    # (_register_discovered_model's own, and _expose_for_start's).
+    from modelman import wt_bridge
+
+    registry = _registry()
+    registry_path = tmp_path / "registry.toml"
+    save_registry(registry, registry_path)
+    state_path = _state_path(tmp_path)
+    mapping = {
+        "ollama": [{"variant_id": "llama3.2:3b", "path": "ollama:llama3.2:3b", "size_bytes": 7}]
+    }
+    seen: list[list[str]] = []
+
+    def recording_expose(ids, **kwargs):
+        seen.append([m.id for m in load_registry(registry_path).models])
+        return wt_bridge.BridgeResult(
+            [wt_bridge.BridgeOutcome(i, "exposed", None) for i in ids], True, []
+        )
+
+    with (
+        _patch_provider_local_models(mapping),
+        patch.object(wt_bridge, "expose", recording_expose),
+    ):
+        start_local_model(
+            registry,
+            "llama3.2:3b",
+            state_path,
+            family="discovered",
+            registry_path=registry_path,
+        )
+
+    assert seen, "the discovered model was never exposed"
+    assert all("ollama/llama3.2:3b" in ids for ids in seen)
+
+
 def test_register_discovered_model_refuses_an_id_that_already_exists(tmp_path):
     # Defense-in-depth against a race or a hand-edited registry.toml: the id
     # is derived from (provider, native name), so a colliding id means the

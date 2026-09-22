@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -402,5 +403,97 @@ func TestStartForLaunchGenericFailureUsesSharedWording(t *testing.T) {
 	}
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want the engine error still on the chain", err)
+	}
+}
+
+// stubWaitRoutes replaces the route-settling seam with a recorder. The
+// returned entered channel is closed when the wait begins; the wait does not
+// return until release is closed, so a test can observe what the caller does
+// (or refuses to do) while a proxy restart is still in flight.
+func stubWaitRoutes(t *testing.T, log *[]string, mu *sync.Mutex) (entered chan struct{}, release func()) {
+	t.Helper()
+	entered = make(chan struct{})
+	ch := make(chan struct{})
+	// Closed at most once, whether the test releases the wait itself or the
+	// cleanup has to unblock an abandoned caller after a failed assertion.
+	release = sync.OnceFunc(func() { close(ch) })
+	old := waitPendingRoutes
+	waitPendingRoutes = func() {
+		mu.Lock()
+		*log = append(*log, "wait")
+		mu.Unlock()
+		close(entered)
+		<-ch
+	}
+	t.Cleanup(func() { waitPendingRoutes = old; release() })
+	return entered, release
+}
+
+// TestStartForLaunchWaitsForPendingRoutesBeforeReturning pins the ordering the
+// agent launch depends on: the LiteLLM proxy restart the route hook kicks off
+// runs asynchronously, and startForLaunch's caller hands the model straight to
+// an agent that dials it THROUGH the proxy. Returning early would let that
+// agent meet a mid-restart proxy (connection refused) or the route table from
+// before the model existed. The wait must also come AFTER the engine start, so
+// it settles this start's own route write rather than some earlier one.
+// lifecycle.WaitPendingRoutes really blocking until the restart finishes is
+// pinned separately by TestWaitPendingRoutesBlocksUntilTheRestartFinishes.
+func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
+	stubSignals(t)
+	var mu sync.Mutex
+	var order []string
+	oldStart := lifecycleStart
+	lifecycleStart = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
+		mu.Lock()
+		order = append(order, "start")
+		mu.Unlock()
+		return nil
+	}
+	t.Cleanup(func() { lifecycleStart = oldStart })
+	entered, release := stubWaitRoutes(t, &order, &mu)
+
+	done := make(chan error, 1)
+	go func() { done <- startForLaunch(&config.Config{}, startTestRow(), false) }()
+
+	<-entered
+	select {
+	case <-done:
+		t.Fatal("startForLaunch returned while the proxy restart was still pending — the agent would launch against a mid-restart proxy")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("startForLaunch() error = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("startForLaunch never returned after the routes settled")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "start" || order[1] != "wait" {
+		t.Errorf("order = %v, want [start wait]", order)
+	}
+}
+
+// TestStartForLaunchDoesNotWaitWhenTheStartFailed pins the other half: a
+// failed start launches no agent, so there is nothing that needs the proxy and
+// the error must come back at once rather than behind a restart the user is
+// not waiting for. Anything the hook did kick off is still settled at process
+// exit by main's own WaitPendingRoutes.
+func TestStartForLaunchDoesNotWaitWhenTheStartFailed(t *testing.T) {
+	stubSignals(t)
+	stubLifecycleStart(t, []error{errors.New("omlx: boom")})
+	waited := 0
+	old := waitPendingRoutes
+	waitPendingRoutes = func() { waited++ }
+	t.Cleanup(func() { waitPendingRoutes = old })
+
+	if err := startForLaunch(&config.Config{}, startTestRow(), false); err == nil {
+		t.Fatal("startForLaunch() error = nil, want the engine's failure")
+	}
+	if waited != 0 {
+		t.Errorf("waited for pending routes %d times after a failed start, want 0", waited)
 	}
 }

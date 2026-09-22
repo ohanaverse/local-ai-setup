@@ -44,7 +44,7 @@ COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
 
 ### LiteLLM routing
 
-When LiteLLM routing is enabled (`modelman litellm status`), `copilot-wt` routes non-native models through the LiteLLM proxy (URL from modelman.toml's `[litellm]` table, typically `http://localhost:4000`) instead of dialing the provider directly. The launcher sets:
+When LiteLLM routing is enabled (`wt litellm status`), `copilot-wt` routes non-native models through the LiteLLM proxy (URL from the `[litellm]` table in wt's config.toml, typically `http://localhost:4000`) instead of dialing the provider directly. The launcher sets:
 
 ```bash
 COPILOT_PROVIDER_BASE_URL="http://localhost:4000/v1"  # trailing slash normalized
@@ -53,7 +53,7 @@ COPILOT_PROVIDER_WIRE_API="completions"
 COPILOT_MODEL="<registry-model-id>"  # e.g. ollama/qwen3.8:27b-mlx
 ```
 
-The `COPILOT_MODEL` value is the full registry model id, not the bare provider-specific name. The `COPILOT_PROVIDER_API_KEY` comes from `[litellm].api_key` in `~/.config/local-ai/modelman.toml`. Native models (`copilot/native`) continue to use the native subscription and ignore LiteLLM routing.
+The `COPILOT_MODEL` value is the full registry model id, not the bare provider-specific name. The `COPILOT_PROVIDER_API_KEY` comes from `[litellm].api_key` in wt's `~/.config/agent-wt/config.toml`. Native models (`copilot/native`) continue to use the native subscription and ignore LiteLLM routing.
 
 Verified in both routing modes 2026-09-01 with `ollama/glm-5.3-flash:cloud` (one-shot prompt answered end-to-end in direct and litellm modes; the earlier 2026-08-31 litellm-mode matrix run had verified the `responses` wire with the proxy-side `drop_params` workaround below, before the truncation was attributed to the responses wire itself — the responses-era PASS and the truncation both went through the same bridge, which is why the wire was switched). This requires the proxy to tolerate params copilot sends that `ollama_chat` does not support (e.g. `parallel_tool_calls`) — set `litellm_settings: drop_params: true` in `~/.config/litellm/config.yaml` and restart the proxy; otherwise litellm answers `400 UnsupportedParamsError`. See [litellm-troubleshooting.md](litellm-troubleshooting.md).
 

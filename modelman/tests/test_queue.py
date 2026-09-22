@@ -38,7 +38,7 @@ from modelman.state import (
     load_state,
     save_state,
 )
-from tests.conftest import ENFORCED_LITELLM_SETTINGS
+from tests.conftest import write_litellm_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -49,6 +49,31 @@ from tests.conftest import ENFORCED_LITELLM_SETTINGS
 def store(tmp_path):
     """StateStore rooted at tmp_path/modelman.toml."""
     return tmp_path / "modelman.toml"
+
+
+@pytest.fixture
+def bridge_calls(monkeypatch):
+    """Record every `wt litellm expose|unexpose` the apply delegates as
+    (verb, ids), returning an all-applied result.
+
+    wt owns the config.yaml write since 2026-09-21, so the queue's exposes
+    are asserted through the bridge calls they make rather than through the
+    file contents (those live in wt/internal/litellm's Go tests).
+    """
+    from modelman import wt_bridge
+
+    recorded: list[tuple[str, list[str]]] = []
+
+    def fake(verb, ids):
+        recorded.append((verb, list(ids)))
+        action = "exposed" if verb == "expose" else "unexposed"
+        return wt_bridge.BridgeResult(
+            [wt_bridge.BridgeOutcome(i, action, None) for i in ids], True, []
+        )
+
+    monkeypatch.setattr(wt_bridge, "expose", lambda ids, **kw: fake("expose", ids))
+    monkeypatch.setattr(wt_bridge, "unexpose", lambda ids, **kw: fake("unexpose", ids))
+    return recorded
 
 
 def _registry_with(tmp_path: Path, *entries: ModelEntry) -> tuple[Registry, Path]:
@@ -427,13 +452,11 @@ def test_apply_failed_delete_not_retried_by_ready_loop(tmp_path):
     assert len(delete_failures) == 1  # one failure, not two
 
 
-def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
-    """Deleting a model that is exposed through LiteLLM must also remove
-    its model_list row — otherwise LiteLLM keeps routing requests to a
-    model whose file no longer exists (500s) and the stale row persists
-    forever, since sync doesn't own litellm_exposed."""
-    from modelman.litellm import load_litellm_config, save_litellm_config
-
+def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path, bridge_calls):
+    """Deleting a model that is exposed through LiteLLM must also queue its
+    un-expose — otherwise LiteLLM keeps routing requests to a model whose
+    file no longer exists (500s) and the stale row persists forever, since
+    sync doesn't own the exposed flag."""
     registry_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     litellm_path = tmp_path / "config.yaml"
@@ -451,7 +474,7 @@ def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True, exposed=True))
     save_state(state, state_path)
-    save_litellm_config(
+    write_litellm_config(
         {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}},
         litellm_path,
     )
@@ -467,8 +490,7 @@ def test_apply_delete_of_exposed_model_removes_litellm_entry(tmp_path):
     )
     pending.apply()
 
-    config = load_litellm_config(litellm_path)
-    assert config["model_list"] == []
+    assert bridge_calls == [("unexpose", ["ollama/a"])]
     # The model is gone from registry and state, with no failure recorded.
     assert pending.failures == []
     assert all(m.id != "ollama/a" for m in load_registry(registry_path).models)
@@ -584,11 +606,12 @@ def test_apply_delete_is_downloaded_exception_failure_recorded(tmp_path):
     assert "ollama/a" in load_state(state_path).models
 
 
-def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
+def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path, bridge_calls):
     """A queued delete wins over a queued expose toggle for the same
-    model: the expose is dropped and the config row is removed instead."""
-    from modelman.litellm import load_litellm_config, save_litellm_config
-
+    model: the expose is dropped, so wt is never asked to route a model
+    this apply just removed. (When the model WAS exposed, the delete step
+    also queues the un-expose — see
+    test_apply_delete_of_exposed_model_removes_litellm_entry.)"""
     registry_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     litellm_path = tmp_path / "config.yaml"
@@ -606,7 +629,7 @@ def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))
     save_state(state, state_path)
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
 
     pending = PendingChanges(
         registry=registry,
@@ -623,31 +646,13 @@ def test_apply_delete_overrides_queued_expose_for_same_model(tmp_path):
     pending.apply()
 
     assert pending.failures == []
-    config = load_litellm_config(litellm_path)
-    assert config["model_list"] == []
+    assert bridge_calls == []
 
 
-def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
-    """Applying N queued exposes must parse and rewrite config.yaml once,
-    not once per model — N full-file rewrites cost O(N) I/O and widen the
-    window for a crash leaving the config half-updated."""
-    import modelman.litellm as litellm_mod
-
-    real_load = litellm_mod.load_litellm_config
-    real_save = litellm_mod.save_litellm_config
-    calls = {"load": 0, "save": 0}
-
-    def counting_load(path):
-        calls["load"] += 1
-        return real_load(path)
-
-    def counting_save(config, path):
-        calls["save"] += 1
-        real_save(config, path)
-
-    monkeypatch.setattr(litellm_mod, "load_litellm_config", counting_load)
-    monkeypatch.setattr(litellm_mod, "save_litellm_config", counting_save)
-
+def test_apply_batches_litellm_route_calls(tmp_path, bridge_calls):
+    """Applying N queued exposes must reach wt ONCE for the whole batch,
+    not once per model — per-model calls would spawn wt, rewrite
+    config.yaml and bounce the proxy N times."""
     registry_path = tmp_path / "registry.toml"
     state_path = tmp_path / "modelman.toml"
     litellm_path = tmp_path / "config.yaml"
@@ -668,7 +673,7 @@ def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))
     state.set("ollama/b", ModelState(ready=True))
-    real_save({"model_list": [], "general_settings": {}}, litellm_path)
+    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
 
     pending = PendingChanges(
         registry=registry,
@@ -681,16 +686,12 @@ def test_apply_batches_litellm_config_writes(tmp_path, monkeypatch):
     )
     pending.apply()
 
-    # One parse + one atomic rewrite for the whole queue (plus the seed
-    # write above, which used real_save directly).
-    assert calls == {"load": 1, "save": 1}
-    config = real_load(litellm_path)
-    assert {r["model_name"] for r in config["model_list"]} == {"ollama/a", "ollama/b"}
+    assert bridge_calls == [("expose", ["ollama/a", "ollama/b"])]
     assert state.get("ollama/a").exposed is True
     assert state.get("ollama/b").exposed is True
 
 
-def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
+def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path, bridge_calls):
     """A per-model validation failure (not ready) must not block the
     other queued exposes, and must not prevent the config save."""
     registry_path = tmp_path / "registry.toml"
@@ -714,9 +715,7 @@ def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
     state.set("ollama/a", ModelState(ready=True))
     # ollama/b is NOT downloaded — its expose must fail per-item.
     state.set("ollama/b", ModelState(ready=False))
-    from modelman.litellm import save_litellm_config
-
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
 
     pending = PendingChanges(
         registry=registry,
@@ -729,14 +728,118 @@ def test_apply_expose_batch_keeps_valid_items_when_one_fails(tmp_path):
     )
     pending.apply()
 
-    from modelman.litellm import load_litellm_config
-
-    config = load_litellm_config(litellm_path)
-    assert [r["model_name"] for r in config["model_list"]] == ["ollama/a"]
+    # Only the valid id reaches wt; the rejected one never leaves modelman.
+    assert bridge_calls == [("expose", ["ollama/a"])]
     assert state.get("ollama/a").exposed is True
     # The failed item got no flag flip and is reported with its reason.
     assert state.get("ollama/b").exposed is False
     assert any("ollama/b" in f and "not ready" in f for f in pending.failures)
+
+
+def test_apply_saves_registry_before_delegating_exposes(tmp_path, monkeypatch):
+    """wt writes LiteLLM routes from registry.toml ON DISK, but apply()
+    saved the registry only in _persist() at the very end — after the
+    expose step. A model this apply() itself added or edited would reach
+    wt through a registry file that did not describe it yet and come back
+    "model not found in registry". Pins that the registry is persisted
+    before the bridge call, so an expose in the same batch can see it."""
+    from modelman import wt_bridge
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    # Added to the in-memory registry only — exactly the state apply() is in
+    # when the TUI queued an expose for a model it also created.
+    registry.models.append(
+        ModelEntry(id="ollama/new", family="f", provider_id="ollama", model_name="new")
+    )
+    state = StateStore()
+    state.set("ollama/new", ModelState(ready=True))
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_expose(ids, *, litellm_path=None, skip_ready_gate=True):
+        seen["on_disk"] = [m.id for m in load_registry(registry_path).models]
+        return wt_bridge.BridgeResult(
+            [wt_bridge.BridgeOutcome(i, "exposed", None) for i in ids], True, []
+        )
+
+    monkeypatch.setattr(wt_bridge, "expose", fake_expose)
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={},
+        exposes=[("ollama/new", True)],
+        litellm_path=tmp_path / "config.yaml",
+    )
+    pending.apply()
+
+    assert seen["on_disk"] == ["ollama/a", "ollama/new"]
+    assert pending.failures == []
+    assert state.get("ollama/new").exposed is True
+
+
+def test_apply_reports_expose_batch_failed_when_registry_save_fails(tmp_path, monkeypatch):
+    """If the pre-expose registry save fails, wt would act on a stale
+    registry — so the whole expose batch is reported failed (per-model
+    `expose:fail` events, same shape as a config-level failure) and the
+    bridge is never called."""
+    from modelman import queue as queue_mod
+    from modelman import wt_bridge
+
+    registry_path = tmp_path / "registry.toml"
+    state_path = tmp_path / "modelman.toml"
+    registry = Registry(
+        providers=[
+            ProviderEntry(
+                id="ollama",
+                name="Ollama",
+                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
+            )
+        ],
+        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
+    )
+    save_registry(registry, registry_path)
+    state = StateStore()
+    state.set("ollama/a", ModelState(ready=True))
+
+    called: list[str] = []
+    monkeypatch.setattr(wt_bridge, "expose", lambda ids, **kw: called.append("expose"))
+
+    def boom(reg, path=None):
+        raise OSError("read-only fs")
+
+    monkeypatch.setattr(queue_mod, "save_registry", boom)
+
+    pending = PendingChanges(
+        registry=registry,
+        state=state,
+        registry_path=registry_path,
+        state_path=state_path,
+        providers={},
+        exposes=[("ollama/a", True)],
+        litellm_path=tmp_path / "config.yaml",
+    )
+    events: list[str] = []
+    pending.apply(on_event=events.append)
+
+    assert called == []
+    assert any(e.startswith("expose:fail|ollama/a") for e in events)
+    assert any("expose batch" in f for f in pending.failures)
+    assert state.get("ollama/a").exposed is False
 
 
 def test_apply_asserts_ready_twin_keys_agree(tmp_path):
@@ -774,8 +877,9 @@ def test_apply_asserts_delete_twin_keys_agree(tmp_path):
         pending.apply()
 
 
-def test_apply_runs_expose_changes(tmp_path):
-    from modelman.litellm import load_litellm_config, save_litellm_config
+def test_apply_runs_expose_changes(tmp_path, bridge_calls):
+    """A queued expose reaches wt and flips the flag — the end-to-end pin
+    for apply()'s expose step (wt writes the row, modelman owns the flag)."""
     from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry, save_registry
     from modelman.state import ModelState, StateStore, save_state
 
@@ -796,7 +900,7 @@ def test_apply_runs_expose_changes(tmp_path):
     state = StateStore()
     state.set("ollama/a", ModelState(ready=True))
     save_state(state, state_path)
-    save_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
+    write_litellm_config({"model_list": [], "general_settings": {}}, litellm_path)
 
     pending = PendingChanges(
         registry=registry,
@@ -809,8 +913,7 @@ def test_apply_runs_expose_changes(tmp_path):
     )
     pending.apply()
     assert state.get("ollama/a").exposed is True
-    config = load_litellm_config(litellm_path)
-    assert config["model_list"][0]["model_name"] == "ollama/a"
+    assert bridge_calls == [("expose", ["ollama/a"])]
 
 
 def test_apply_cascade_ready_before_exposing(tmp_path):
@@ -844,47 +947,14 @@ def test_apply_cascade_ready_before_exposing(tmp_path):
     assert state.models["unmapped/a"].ready is True
 
 
-def test_apply_expose_queue_restarts_once_when_applied(tmp_path, monkeypatch):
-    from modelman.litellm import apply_expose_queue, save_litellm_config
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-    from modelman.state import ModelState, StateStore
-
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-    path = tmp_path / "config.yaml"
-    save_litellm_config({"model_list": [], "general_settings": {}}, path)
-
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
-    assert calls == ["restart"]
-    assert warnings == []
-
-
-def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypatch):
+def test_apply_expose_queue_rejects_native_before_reaching_wt(tmp_path, monkeypatch, bridge_calls):
     """Native ⇒ no LiteLLM policy invariant (#47), queue path: a native
-    model whose provider has a stale PROVIDER_POLICIES entry (hand-edited
-    registry) is rejected per item — the flag never flips, nothing is
-    written, and the proxy is not restarted. Shares _validated_entry with
+    model whose provider is (wrongly) mapped in wt's provider table is
+    rejected per item — the flag never flips and wt is never called, so no
+    unroutable row and no proxy bounce. Shares _validate_locally with
     expose_model, which is pinned in test_litellm.py."""
-    from modelman.litellm import (
-        PROVIDER_POLICIES,
-        ProviderPolicy,
-        apply_expose_queue,
-        save_litellm_config,
-    )
+    from modelman import wt_bridge
+    from modelman.litellm import apply_expose_queue
     from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
     from modelman.state import ModelState, StateStore
 
@@ -901,61 +971,21 @@ def test_apply_expose_queue_rejects_native_with_stale_policy(tmp_path, monkeypat
     )
     state = StateStore()
     state.set(model.id, ModelState(ready=True, exposed=False))
-    # provider_policy() stays a pure lookup — simulate the stale entry
-    # (a native provider must never actually have one) directly in the table.
-    monkeypatch.setitem(PROVIDER_POLICIES, "agy", ProviderPolicy(prefix="agy/"))
-    path = tmp_path / "config.yaml"
-    # Seed litellm_settings so ensure_litellm_settings is a no-op: a fully
-    # rejected queue must save nothing and restart nothing.
-    save_litellm_config(
-        {
-            "model_list": [],
-            "litellm_settings": dict(ENFORCED_LITELLM_SETTINGS),
-        },
-        path,
+    # A native provider must never actually be mapped; simulate the
+    # hand-edited/stale table so the native guard is the only thing left.
+    monkeypatch.setattr(wt_bridge, "provider_cloud_flags", lambda: {"agy": False})
+
+    outcomes, warnings = apply_expose_queue(
+        registry, state, [(model.id, True)], tmp_path / "config.yaml"
     )
 
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    outcomes, warnings = apply_expose_queue(registry, state, [(model.id, True)], path)
     assert warnings == []
-    assert calls == []
+    assert bridge_calls == []
     [(mid, target, error)] = outcomes
     assert (mid, target) == (model.id, True)
     assert error is not None and "native" in error
     # The rejected expose must not flip the flag.
     assert state.get(model.id).exposed is False
-
-
-def test_apply_expose_queue_no_restart_when_empty(tmp_path, monkeypatch):
-    from modelman.litellm import apply_expose_queue, save_litellm_config
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-    from modelman.state import StateStore
-
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    state = StateStore()
-    path = tmp_path / "config.yaml"
-    save_litellm_config({"model_list": [], "general_settings": {}}, path)
-
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    outcomes, warnings = apply_expose_queue(registry, state, [], path)
-    assert calls == []
-    assert outcomes == []
-    assert warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -1523,83 +1553,6 @@ def test_apply_ready_off_flag_only_artifact_removal_failure_does_not_abort(
     assert pending.failures[0].startswith("clear mlx/a:")
 
 
-def test_apply_expose_queue_ensures_settings_when_all_items_fail(tmp_path, monkeypatch):
-    # A fully-failed queue (model not ready) must still persist the
-    # owned-settings fix and bounce the proxy: the ensure is orthogonal
-    # to the queue's per-model outcomes (settings-persistence spec,
-    # Decision 4).
-    from modelman.litellm import apply_expose_queue, load_litellm_config, save_litellm_config
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-    from modelman.state import ModelState, StateStore
-
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=False))
-    path = tmp_path / "config.yaml"
-    save_litellm_config({"model_list": [], "general_settings": {}}, path)
-
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
-    assert outcomes[0][0] == "ollama/a"
-    assert "not ready" in outcomes[0][2]
-    config = load_litellm_config(path)
-    assert config["litellm_settings"]["drop_params"] is True
-    assert calls == ["restart"]
-
-
-def test_apply_expose_queue_identical_reexpose_does_not_restart(tmp_path, monkeypatch):
-    # Queueing an expose for a model whose entry and flag are already
-    # correct changes nothing: no save (bytes unchanged), no flag flip,
-    # no proxy bounce. The rebuilt entry temporarily drops the ensured
-    # `additional_drop_params`, but the post-loop ensure re-adds it, so
-    # the document compares equal and nothing is written.
-    from modelman.litellm import apply_expose_queue, save_litellm_config
-    from modelman.registry import AuthConfig, ModelEntry, ProviderEntry, Registry
-    from modelman.state import ModelState, StateStore
-
-    registry = Registry(
-        providers=[
-            ProviderEntry(
-                id="ollama",
-                name="Ollama",
-                auth=AuthConfig(type="none", base_url="http://localhost:11434"),
-            )
-        ],
-        models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
-    )
-    state = StateStore()
-    state.set("ollama/a", ModelState(ready=True))
-    path = tmp_path / "config.yaml"
-    save_litellm_config({"model_list": [], "general_settings": {}}, path)
-
-    calls = []
-    monkeypatch.setattr(
-        "modelman.litellm.restart_litellm_proxy", lambda: calls.append("restart") or []
-    )
-    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
-    assert calls == ["restart"]  # first apply: row added
-
-    before = path.read_bytes()
-    calls.clear()
-    outcomes, warnings = apply_expose_queue(registry, state, [("ollama/a", True)], path)
-    assert outcomes == [("ollama/a", True, None)]
-    assert warnings == []
-    assert calls == []
-    assert path.read_bytes() == before
-
-
 def test_reason_does_not_match_bare_numeric_substrings():
     """Regression: _reason used to substring-match "401"/"403"/"404" anywhere
     in the message, which false-positived on errno numbers like
@@ -1770,14 +1723,10 @@ def test_apply_ready_off_skips_artifact_shared_with_other_entry(tmp_path):
     save_registry(reg, reg_path)
     state = StateStore()
     state.set("omlx/a", ModelState(ready=True, exposed=True))
-    # The unexpose cascade routes through the LiteLLM config writer for
-    # reconcilable providers, so seed a config the unexpose can actually
-    # apply — without it the flag flip is unreachable and the cascade
-    # assertion below could never pass.
-    from modelman.litellm import save_litellm_config
-
+    # The unexpose cascade routes through wt (which owns the config.yaml
+    # write), so seed a config file for the path it is handed.
     litellm_path = tmp_path / "config.yaml"
-    save_litellm_config(
+    write_litellm_config(
         {"model_list": [{"model_name": "omlx/a"}], "general_settings": {}}, litellm_path
     )
 
@@ -1907,15 +1856,10 @@ def test_apply_ready_off_absent_artifact_clears_state_without_provider_call(tmp_
     reg, state, reg_path, state_path, providers, a, b = _setup_apply_test(tmp_path)
     state.set("ollama/a", ModelState(ready=True, exposed=True))
     providers["ollama"].is_downloaded.return_value = False  # artifact already gone
-    # The unexpose cascade routes through the LiteLLM config writer for
-    # reconcilable providers, so seed a config the unexpose can actually
-    # apply — without it the flag flip is unreachable and the cascade
-    # assertion below could never pass (same constraint as the Task 2
-    # shared-artifact test above).
-    from modelman.litellm import save_litellm_config
-
+    # The unexpose cascade routes through wt (which owns the config.yaml
+    # write), so seed a config file for the path it is handed.
     litellm_path = tmp_path / "config.yaml"
-    save_litellm_config(
+    write_litellm_config(
         {"model_list": [{"model_name": "ollama/a"}], "general_settings": {}}, litellm_path
     )
 

@@ -3,7 +3,7 @@
 Learnings from the 2026-08-31 matrix test that launched every wt agent with
 `ollama/glm-5.3-flash:cloud` through the LiteLLM proxy (LiteLLM routing on —
 at the time via wt's since-retired `[gateway]` block, today via
-`modelman litellm on`; proxy at `http://localhost:4000`, model list in
+`wt litellm on`; proxy at `http://localhost:4000`, model list in
 `~/.config/litellm/config.yaml`). Each real launch went through `wt` and had
 to answer a one-shot prompt on stdout.
 
@@ -31,7 +31,7 @@ Driver-level fixes shipped in wt: pi (`pi.go`, `pi_models.go`), codex
 (`env_key` + proxy env var), opencode (custom provider + models map), and
 copilot (`WIRE_API=completions`, below). Of the proxy-side fixes, only codex's
 `additional_drop_params` lives in the LiteLLM proxy config, not in wt — a
-setting modelman may clobber (see the modelman settings-persistence spec,
+setting that wt now enforces on every config write (it was originally enforced by modelman; see the historical settings-persistence spec,
 `2026-08-31-litellm-settings-persistence-design.md`); copilot's
 `drop_params` is proxy-side but its wire fix is now in wt (see the copilot
 section).
@@ -166,7 +166,7 @@ it.
    version). They extract `value.get("effort")` when the value is a dict.
    Once a release ships it, remove the `additional_drop_params` entries.
 
-3. **Alternative:** change modelman's proxy entries to route these models
+3. **Alternative:** change the proxy entries wt writes to route these models
    through the OpenAI-compatible passthrough
    (`openai/<model>` + `api_base: http://localhost:11434/v1`) instead of
    `ollama_chat/*`, which skips the broken mapping entirely.
@@ -191,8 +191,8 @@ litellm_settings:
 
 Applied 2026-08-31; copilot verified green with `ollama/glm-5.3-flash:cloud`
 after `drop_params`. Note: `~/.config/litellm/config.yaml` is written by
-modelman — if modelman reconciliation drops the block, re-add it or teach
-modelman the setting.
+wt (`wt litellm ...`) — wt preserves hand-written sections and comments, and
+re-enforces `drop_params` on every write.
 
 ### copilot — `responses` wire drops leading characters (fix in wt: WIRE_API=completions)
 
@@ -256,7 +256,7 @@ same underlying responses-bridge mechanism as the codex crash above, just a
 different failure mode (404 on a route the backend never implements, vs. a
 crash on a request the backend does receive).
 
-**Fix (shipped in modelman, applied & verified 2026-09-16):**
+**Fix (shipped in modelman, applied & verified 2026-09-16; since 2026-09-21 the equivalent enforcement lives in wt's `internal/litellm`):**
 `ensure_litellm_settings()` in `modelman/src/modelman/litellm.py`
 value-enforces `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`
 in `~/.config/litellm/config.yaml` on every write, alongside `drop_params`.
@@ -292,7 +292,7 @@ banner. Not real throttling — same masking behavior noted in the debugging
 playbook above (`ERROR: Reconnecting... 1/5` / `exceeded retry limit, last
 status: 429`).
 
-**Fix (shipped in modelman, applied & verified 2026-09-16):**
+**Fix (shipped in modelman, applied & verified 2026-09-16; since 2026-09-21 the equivalent enforcement lives in wt's `internal/litellm`):**
 `ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` adds
 `litellm_params.use_chat_completions_api: true` (presence-based, like
 `additional_drop_params`) to every model_list row whose `litellm_params.model`
@@ -304,8 +304,8 @@ into a chat/completions call before dispatch — unlike
 single deployment, not global, so it applies cleanly to mtplx/omlx/
 mlx_lm_server without touching a hypothetical future deployment that *does*
 serve `/v1/responses` natively (that row would just carry an explicit
-`use_chat_completions_api: false`, which `set_exposed`/`ensure_litellm_settings`
-both preserve on re-expose). Verified via a direct `/v1/responses` curl probe
+`use_chat_completions_api: false`, which wt's `internal/litellm` (formerly modelman's
+`set_exposed`/`ensure_litellm_settings`, removed 2026-09-21) preserves on re-expose). Verified via a direct `/v1/responses` curl probe
 against mtplx (200, was 404→429) and `wt smoke <model> --only codex` (green).
 
 ### agy / shell
@@ -319,12 +319,10 @@ wt.
 - The proxy loads `~/.config/litellm/config.yaml` **only at startup** — after
   editing it, restart the proxy (locally: `kill <pid>` +
   `nohup litellm --config ~/.config/litellm/config.yaml --port 4000
-  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. On machines managed by
-  modelman, restart via `MODELMAN_LITELLM_RESTART_CMD` — see
+  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm expose|unexpose|sync` restart the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
   [README · LiteLLM proxy lifecycle](README.md#litellm-proxy-lifecycle)).
 - The litellm key for probes lives in `[litellm].api_key`
-  (`~/.config/local-ai/modelman.toml`; `modelman litellm status` shows it
-  redacted) and is also in pi's models.json.
+  (wt's `~/.config/agent-wt/config.toml`; `wt litellm status --json` shows only `api_key_set`) and is also in pi's models.json.
 - Direct-mode ollama keeps working as before: the `ollama` provider block in
   pi's models.json must stay on `http://localhost:11434/v1` (wt reverts it if
   a stale litellm redirect is present); codex has no direct branch at all

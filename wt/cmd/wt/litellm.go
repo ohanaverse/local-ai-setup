@@ -34,6 +34,7 @@ type litellmResultJSON struct {
 	Outcomes []litellmOutcomeJSON `json:"outcomes"`
 	Changed  bool                 `json:"changed"`
 	Warnings []string             `json:"warnings"`
+	DryRun   bool                 `json:"dry_run,omitempty"`
 }
 
 var errLitellmIDFailed = errors.New("one or more models could not be applied")
@@ -41,9 +42,9 @@ var errLitellmIDFailed = errors.New("one or more models could not be applied")
 // reportLitellm prints a Result (text or JSON) and returns errLitellmIDFailed
 // when any id was rejected, so the process exits 1 while the per-id detail is
 // still printed for callers that parse it.
-func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON bool) error {
+func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun bool) error {
 	failed := false
-	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...)}
+	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...), DryRun: dryRun}
 	for _, o := range res.Outcomes {
 		j := litellmOutcomeJSON{ID: o.ID, Action: o.Action}
 		if o.Err != nil {
@@ -57,9 +58,12 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON bool) error
 		}
 	} else {
 		for _, j := range doc.Outcomes {
-			if j.Error != "" {
+			switch {
+			case j.Error != "":
 				fmt.Fprintf(errOut, "%s: %s\n", j.ID, j.Error)
-			} else {
+			case dryRun:
+				fmt.Fprintf(out, "%s: would %s\n", j.ID, j.Action)
+			default:
 				fmt.Fprintf(out, "%s: %s\n", j.ID, j.Action)
 			}
 		}
@@ -93,7 +97,7 @@ func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, id
 	if err != nil {
 		return err
 	}
-	return reportLitellm(out, errOut, res, fl.JSON)
+	return reportLitellm(out, errOut, res, fl.JSON, expose && fl.DryRun)
 }
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) error {
@@ -135,9 +139,16 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 	}
 	sort.Strings(fams)
 	for _, f := range fams {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
+		st := snap.Providers[f]
+		if st == localmodels.StatusUnsupported {
+			// Discovery is unsupported by design (mlx_lm_server); the probe
+			// did not fail, so "did not succeed" would misread as an error.
+			res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
+			continue
+		}
+		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
 	}
-	return reportLitellm(out, errOut, res, asJSON)
+	return reportLitellm(out, errOut, res, asJSON, false)
 }
 
 // runningIDs lists the registered model ids a probe found running.
@@ -257,8 +268,10 @@ func litellmCmd(a *app) *cobra.Command {
 		cc := &cobra.Command{
 			Use: use, Short: short, Args: cobra.MinimumNArgs(1), SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				if a.cfgErr != nil {
-					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				// Gate on a load failure only (cfg would be an empty default);
+				// registry validation gaps are reported per id by litellm.Apply.
+				if a.loadErr != nil {
+					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
 				}
 				return runLitellmChange(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, expose, args, fl)
 			},
@@ -274,8 +287,8 @@ func litellmCmd(a *app) *cobra.Command {
 	syncC := &cobra.Command{
 		Use: "sync", Short: "Make local-model routes match the running models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if a.cfgErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+			if a.loadErr != nil {
+				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
 			}
 			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON)
 		},

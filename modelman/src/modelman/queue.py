@@ -624,20 +624,28 @@ class PendingChanges:
                 return
 
             if self.exposes:
-                # One config load + one atomic save for the whole queue:
-                # per-model expose_model calls would reparse and re-rename
-                # config.yaml once per model, and a crash between them would
-                # leave it half-updated.
+                # One `wt litellm` call per direction for the whole queue:
+                # per-model expose_model calls would spawn wt (and bounce the
+                # proxy) once per model.
                 for model_id, exposed in self.exposes:
                     verb = "expose" if exposed else "unexpose"
                     emit(f"{verb}:start|{model_id}|{model_id}")
                 try:
+                    # wt owns the LiteLLM route write and reads registry.toml
+                    # from DISK, so anything this apply() added or edited must
+                    # be persisted BEFORE the bridge call — _persist() at the
+                    # end of apply() would be too late and wt would answer
+                    # "model not found in registry". _persist() still saves
+                    # again afterwards (a no-op for the registry, and it also
+                    # merges the state rows).
+                    save_registry(self.registry, self.registry_path)
                     outcomes, warnings = apply_expose_queue(
                         self.registry, self.state, self.exposes, self.litellm_path
                     )
                 except Exception as exc:  # noqa: BLE001
-                    # Config-level failure (missing/unwritable config.yaml):
-                    # nothing in the queue applied.
+                    # Registry-save failure (wt would act on a stale registry)
+                    # or a config-level failure (wt missing, unreadable
+                    # config.yaml): nothing in the queue applied.
                     reason = _reason(exc)
                     self.failures.append(f"expose batch: {exc}")
                     for model_id, exposed in self.exposes:

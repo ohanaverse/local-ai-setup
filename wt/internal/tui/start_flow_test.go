@@ -867,3 +867,55 @@ func TestRunArgsReachModel(t *testing.T) {
 		}
 	}
 }
+
+// TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching verifies the start
+// flow does not hand the model to an agent while the route hook's LiteLLM
+// proxy restart is still in flight. That restart runs asynchronously now, and
+// the agent launched here dials the model THROUGH the proxy: launching early
+// means a refused connection (proxy mid-restart) or the route table from
+// before this model existed. The launch is made to fail the way
+// TestSuccessfulStartThenFailedLaunchRefreshesTable does, with an agent no
+// driver is registered for, so the test can see exactly when the launch was
+// attempted without starting a real process. That lifecycle.WaitPendingRoutes
+// really blocks until the restart finishes is pinned in internal/lifecycle by
+// TestWaitPendingRoutesBlocksUntilTheRestartFinishes.
+func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
+	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	m.agent = "not-a-real-agent" // makes the launch that follows fail, observably
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	oldWait := waitPendingRoutes
+	waitPendingRoutes = func() { close(entered); <-release }
+	t.Cleanup(func() { waitPendingRoutes = oldWait })
+
+	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+	// A model value is far too large for a channel element, so the result is
+	// handed back through a pointer the goroutine fills before closing done.
+	var next model
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		next, _ = updateMsg(got, recvStart(t, got))
+	}()
+
+	<-entered
+	select {
+	case <-done:
+		t.Fatal("the start flow launched while the proxy restart was still pending")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+
+	select {
+	case <-done:
+		// The launch was attempted only after the wait returned: its failure
+		// is the proof it ran at all, and it could not have run earlier.
+		if !strings.Contains(next.status, "launch failed") {
+			t.Fatalf("status = %q, want the launch to have been attempted after the wait", next.status)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the start flow never proceeded after the routes settled")
+	}
+}

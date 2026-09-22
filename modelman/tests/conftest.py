@@ -8,14 +8,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# The full set of litellm_settings keys ensure_litellm_settings() value-enforces
-# (modelman/src/modelman/litellm.py). Shared so tests asserting the "already
-# correct, no-op" shape don't hand-roll the dict at every call site — a real
-# risk once a third enforced key is added and one copy gets missed.
-ENFORCED_LITELLM_SETTINGS = {
-    "drop_params": True,
-    "use_chat_completions_url_for_anthropic_messages": True,
-}
+
+def write_litellm_config(config: dict, path) -> None:
+    """Seed a LiteLLM config.yaml for tests.
+
+    modelman no longer writes this file — wt owns every route write since
+    2026-09-21 — but tests still need one on disk for the read-only helpers
+    (`modelman usage`) and for call sites that resolve a `litellm_path`.
+    Replaces the deleted `litellm.save_litellm_config` as a test fixture
+    writer only; nothing in src/ writes YAML any more.
+    """
+    from ruamel.yaml import YAML
+
+    with open(path, "w") as f:
+        YAML(typ="safe").dump(config, f)
 
 
 def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -33,17 +39,6 @@ def _fake_ollama_runner(args: list[str], **kwargs: Any) -> subprocess.CompletedP
         stdout="",
         stderr="Error: model not found",
     )
-
-
-@pytest.fixture(autouse=True)
-def _never_restart_live_proxy(monkeypatch):
-    """Tests that apply exposes must not bounce the user's live LiteLLM
-    proxy: restart_litellm_proxy() runs `launchctl kickstart -k
-    gui/$(id -u)/local.litellm.proxy` on macOS, which kills in-flight LLM
-    requests from agents (pi, Claude) that route through localhost:4000.
-    Point it at a no-op shell command; tests that specifically exercise
-    restart behavior (test_litellm.py) monkeypatch the env var themselves."""
-    monkeypatch.setenv("MODELMAN_LITELLM_RESTART_CMD", "true")
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +79,69 @@ def _never_call_real_ollama(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _never_call_real_wt(monkeypatch):
+    """The suite must never run the real `wt` binary: it would rewrite the
+    developer's real LiteLLM config.yaml and bounce their live proxy. Every
+    bridge call goes through wt_bridge._run; replace it with a fake that
+    applies exposes to nothing and reports the known provider table. The
+    provider cache is reset before and after so no test sees another's table.
+    Tests that assert on the bridge itself monkeypatch _run again.
+
+    Limits of this fake: expose/unexpose always succeed for every id (exit 0,
+    changed=True); `list` is a static empty routed set (not stateful across
+    expose calls); on/off/set succeed (bare `set` exits 1 like real wt); there is no partial-failure / exit-1 / file-level-failure
+    case. Tests exercising error paths must override wt_bridge._run."""
+    import json
+
+    from modelman import wt_bridge
+
+    def fake(args, env=None, timeout=120):
+        if args[:1] == ["providers"]:
+            out = {
+                "providers": {
+                    p: {"cloud": p == "openrouter"}
+                    for p in ("ollama", "omlx", "mlx_lm_server", "mtplx", "llamacpp", "openrouter")
+                }
+            }
+        elif args[:1] == ["list"]:
+            out = {"routed": []}
+        elif args[:1] == ["status"]:
+            if "--json" in args:
+                out = {"enabled": False, "url": "", "api_key_set": False}
+            else:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="litellm: off\n  url: (unset)\n  api_key: (unset)\n",
+                    stderr="",
+                )
+        elif args == ["set"]:
+            # Mirrors real wt: `set` with neither --url nor --api-key errors.
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr="Error: nothing to set: pass --url and/or --api-key\n",
+            )
+        elif args[:1] in (["on"], ["off"], ["set"]):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        else:
+            ids = [a for a in args[1:] if not a.startswith("--")]
+            act = "unexposed" if args[:1] == ["unexpose"] else "exposed"
+            out = {
+                "outcomes": [{"id": i, "action": act} for i in ids],
+                "changed": True,
+                "warnings": [],
+            }
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(out), stderr="")
+
+    wt_bridge._reset_provider_cache()
+    monkeypatch.setattr(wt_bridge, "_run", fake)
+    yield
+    wt_bridge._reset_provider_cache()
+
+
 _real_subprocess_run = subprocess.run
 
 # argv[0] basenames (plus the "mlx_lm.*" family) the suite must NEVER
@@ -92,7 +150,7 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "ollama"})
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "ollama", "wt"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 

@@ -1,6 +1,6 @@
 # wt-owned LiteLLM management
 
-Status: draft for review (brainstorming session 2026-09-21). Source of truth
+Status: Implemented (Phases 1-4). Originally a draft from the brainstorming session 2026-09-21; see Amendments at the end. Source of truth
 for the implementation plan; do not diverge without updating this doc.
 
 Next phase of the "migrate away from modelman" effort (sub-projects 4a-4c
@@ -166,3 +166,21 @@ Each phase is a mergeable PR. The reported bug is fixed after phase 2.
 None blocking. Decide during planning: exact JSON schema for `--json`
 outputs; whether `sync` should also run automatically at wt startup (default:
 no, explicit only).
+
+## Amendments (plan-time, implemented)
+
+Decisions made while planning and implementing that refine or override the text above:
+
+- **Whitespace on first write.** yaml.v3 preserves content and comments but normalizes sequence indentation and drops blank lines on the first wt write of a config.yaml. Permission bits are preserved.
+- **Exit codes.** Exit 1 also covers partial batches: when any id fails, the JSON is still printed but the process exits 1 (as it does when the config cannot be processed).
+- **`--json` schemas.** Change commands (`expose`/`unexpose`/`sync`): `{"outcomes":[{"id","action","error"}],"changed":bool,"warnings":[...]}`; `list`: `{"routed":[...]}`; `providers`: `{"providers":{"<id>":{"cloud":bool}}}`; `status`: `{"enabled":bool,"url":"...","api_key_set":bool}`. Cross-language fixture: `docs/contracts/litellm-cli.sample.json`.
+- **`wt litellm providers`** replaces modelman's Python provider policy table; modelman reads the cloud flags from it and degrades to "unmapped/non-cloud" when wt is missing.
+- **`--skip-ready-gate`** on `wt litellm expose`: modelman applies the ready/exposure gates against its in-memory state (wt reads registry/state from disk and cannot see queued changes) and tells wt not to re-check.
+- **Readiness wait.** The `wt litellm` commands restart the proxy when the config changed and return without waiting. Only the automatic route hook (`wt start`/`wt stop`/`wt smoke`/TUI start flow/stop picker, `internal/lifecycle/routes.go`) waits up to 30s for `/health/liveliness`, and only when a LiteLLM URL is configured and a 1.5s pre-probe before the restart was not refused (`litellm.Listening`); the wait honors Ctrl+C.
+- **`Options.Untouched` / sync.** `sync` leaves alone families whose provider probe status is not `ok` (with a warning) and models whose provider has no probe (retired llamacpp; no warning), because running state cannot be trusted there. The exception is a server that refused the connection (`Snapshot.Down`): nothing is listening, so its routes are stale and are removed.
+- **Gating.** Routing commands (`status`/`on`/`off`/`set`) and `expose`/`unexpose`/`sync` refuse only when wt's config failed to load; registry validation gaps do not block them (each requested id is validated and reported individually).
+- **Atomic write.** The config is written through a unique temp file (not a fixed name) plus rename, under an flock on `<config>.lock`.
+- **omlx-6bit** has a row in the policy table (the original port left it unmapped).
+- **modelman queue.** The TUI apply queue saves the registry before calling wt, because wt reads registry.toml from disk.
+- **state.py passthrough.** modelman round-trips modelman.toml's legacy `[litellm]` table verbatim and never invents, alters or blanks it.
+- **Known limitations (not fixed).** modelman's EXPOSED column for local models still reads the stale `exposed` flag (the planned switch to `wt litellm list` is deferred); a `wt config` editor session and `wt litellm on|off|set` overwrite each other's changes (config.toml is whole-file last-writer-wins, issue #143); a mixed modelman apply queue can cost up to two proxy restarts.
