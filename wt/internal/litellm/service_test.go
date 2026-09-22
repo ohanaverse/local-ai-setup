@@ -311,6 +311,25 @@ func TestSyncRecheckKeepsModelsThatStartedMeanwhile(t *testing.T) {
 	}
 }
 
+// TestSyncRecheckAlsoAppliesToAddSet pins the other half of the under-lock
+// re-probe: a model the outer probe saw running but that stopped before the
+// lock was acquired must not get a fresh route added for a backend that is
+// no longer there. Only Recheck's remove-side filtering was covered before;
+// this pins that add is filtered too.
+func TestSyncRecheckAlsoAppliesToAddSet(t *testing.T) {
+	o, _, p := opts(t, "model_list: []\n")
+	// Outer probe says both are running; Recheck (under the lock) finds only
+	// one still running.
+	o.Recheck = func() []string { return []string{"ollama/gemma:9b"} }
+	if _, err := Sync(testConfig(), []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"}, o); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := Open(p)
+	if got := strings.Join(f.RoutedIDs(), ","); got != "ollama/gemma:9b" {
+		t.Fatalf("routed = %s, want only the model Recheck still found running", got)
+	}
+}
+
 // TestApplyRejectsEmptyModelName pins that a model with an empty model_name is
 // rejected per id and no route is written: BuildEntry would otherwise emit a
 // bogus "ollama/" row now that wt commands no longer refuse on registry

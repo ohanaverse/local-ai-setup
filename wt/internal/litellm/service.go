@@ -240,9 +240,20 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 				remove = append(remove, m.ID)
 			}
 		}
-		if len(remove) > 0 && o.Recheck != nil {
+		// Recheck runs under the lock, right before add/remove are applied:
+		// a model the outer probe saw stopped but that started meanwhile
+		// must keep its route (remove-side), and one the outer probe saw
+		// running but that stopped meanwhile must not get a fresh route for
+		// a dead backend (add-side). Both sides are re-verified together so
+		// one live probe settles the whole plan.
+		if o.Recheck != nil && (len(add) > 0 || len(remove) > 0) {
 			fresh := o.Recheck()
-			remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
+			if len(remove) > 0 {
+				remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
+			}
+			if len(add) > 0 {
+				add = slices.DeleteFunc(add, func(id string) bool { return !slices.Contains(fresh, id) })
+			}
 		}
 		return add, remove
 	}, o)
