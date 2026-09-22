@@ -135,7 +135,14 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 	}
 	sort.Strings(fams)
 	for _, f := range fams {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f]))
+		st := snap.Providers[f]
+		if st == localmodels.StatusUnsupported {
+			// Discovery is unsupported by design (mlx_lm_server); the probe
+			// did not fail, so "did not succeed" would misread as an error.
+			res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
+			continue
+		}
+		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
 	}
 	return reportLitellm(out, errOut, res, asJSON)
 }
