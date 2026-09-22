@@ -2937,11 +2937,13 @@ async def test_toggle_litellm_runs_off_the_main_thread(tmp_path, monkeypatch):
     release_timeout = 5.0
     release = threading.Event()
     entered = threading.Event()
+    call_thread: list[threading.Thread] = []
 
     def status(timeout=None):
         return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
 
     def slow_set_enabled(on):
+        call_thread.append(threading.current_thread())
         entered.set()
         release.wait(timeout=release_timeout)
 
@@ -2962,6 +2964,23 @@ async def test_toggle_litellm_runs_off_the_main_thread(tmp_path, monkeypatch):
                 break
         elapsed = time.monotonic() - started
         assert entered.is_set(), "toggle never reached the (slow) bridge call"
+        # Primary, timing-independent proof: the bridge call must not have
+        # run on the same thread that's driving this coroutine/event loop
+        # (pytest-asyncio runs the test — and Textual's main loop — on the
+        # thread calling `run_test()`, i.e. the current thread here). This
+        # can't be fooled by a slow CI machine the way a wall-clock budget
+        # could.
+        assert call_thread, "slow_set_enabled was never called"
+        assert call_thread[0] is not threading.current_thread(), (
+            f"litellm_set_enabled ran on {call_thread[0]!r}, the same "
+            "thread driving the test's event loop — the 'l' toggle is "
+            "running inline on the main thread instead of a worker thread"
+        )
+        # Secondary, wall-clock corroboration: also assert entered.is_set()
+        # was observable well before slow_set_enabled's own release_timeout
+        # elapses (see the module-level note above for why this on its own
+        # would not be a sufficient regression guard, but it does catch a
+        # worker whose *dispatch* — not just the call itself — is slow).
         assert elapsed < release_timeout / 2, (
             f"observing the toggle reach its bridge call took {elapsed:.2f}s "
             "(close to slow_set_enabled's own release_timeout) — the 'l' "
