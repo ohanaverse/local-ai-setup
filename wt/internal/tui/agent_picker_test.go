@@ -361,10 +361,11 @@ func TestBuildAgentListShowsIssues(t *testing.T) {
 }
 
 // TestPhaseAgentEnterBlocksUnconfiguredAgent verifies that selecting an
-// agent that is registered but not configured (e.g. opencode missing
-// from config.toml) does not advance to the model screen; it stays on the
-// picker and surfaces a clear "not configured" status instead of the old
-// cryptic "agent not found" that looked like "nothing happens".
+// agent that is both unconfigured (missing from config.toml) and
+// uninstalled (e.g. opencode with no binary on PATH) does not advance to
+// the model screen; it stays on the picker and surfaces the "not
+// installed" status — the real blocker — rather than a "not configured"
+// message that would wrongly suggest adding a config.toml entry fixes it.
 func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
@@ -390,8 +391,8 @@ func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("expected no cmd, got %v", cmd)
 	}
-	if !strings.Contains(nm.status, "not configured") {
-		t.Errorf("status = %q, want to mention not configured", nm.status)
+	if !strings.Contains(nm.status, "not installed") {
+		t.Errorf("status = %q, want to mention not installed", nm.status)
 	}
 }
 
@@ -506,8 +507,8 @@ func TestBuildAgentListUninstalledStaysBlockedNotPassthrough(t *testing.T) {
 			if ai.passthrough {
 				t.Error("uninstalled opencode must not be marked passthrough")
 			}
-			if ai.issue == "" {
-				t.Error("uninstalled opencode should carry a non-empty issue")
+			if !strings.Contains(ai.issue, "not installed") {
+				t.Errorf("uninstalled opencode issue = %q, want it to mention \"not installed\"", ai.issue)
 			}
 			return
 		}

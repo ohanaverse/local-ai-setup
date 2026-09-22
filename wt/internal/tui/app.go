@@ -381,9 +381,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// by the picked driver's name, not a hardcoded "shell".
 					return m.launchCommand(item.name)
 				}
-				// An agent that is not configured or not installed cannot
-				// launch. Surface the reason inline instead of letting the
-				// user advance to a model screen that can never succeed.
+				// An agent that cannot launch at all (uninstalled) carries
+				// a non-empty issue. Surface it inline instead of letting
+				// the user advance to a model screen that can never
+				// succeed. (An installed-but-unconfigured agent takes the
+				// item.passthrough branch below, not this one.)
 				if item.issue != "" {
 					m.status = "cannot launch " + item.name + ": " + item.issue
 					return m, nil

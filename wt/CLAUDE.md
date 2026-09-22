@@ -223,8 +223,8 @@ rendered as per-token + subscription pricing columns in the model picker
 **Unconfigured-agent passthrough (issue #147).** A missing registry
 (`config.ErrRegistryMissing`) is tolerated by the launch-path gate for
 *every* agent, not just commands: `config.Load` still fails closed the same
-way (this paragraph is otherwise unchanged), but `cmd/wt`'s `rootCmd().RunE`
-now only re-raises the error when it is *not* `ErrRegistryMissing`. A
+way, but `cmd/wt`'s `rootCmd().RunE` now only re-raises the error when it is
+*not* `ErrRegistryMissing`. A
 model-driven agent with no `config.toml` entry — the missing-registry case
 included, since `a.cfg` falls back to an empty `Config` with no agents —
 reads as unconfigured via `agents.IsConfigured(cfg, name)` and launches its
