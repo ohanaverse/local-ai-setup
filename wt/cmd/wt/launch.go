@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
@@ -247,6 +248,10 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
+			// This os.Exit bypasses main's own wait, and the stop picker just
+			// above may have kicked off an async LiteLLM proxy restart (route
+			// removal). Exiting now would kill it mid-flight.
+			lifecycle.WaitPendingRoutes()
 			os.Exit(ee.ExitCode())
 		}
 		return err

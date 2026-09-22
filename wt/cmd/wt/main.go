@@ -10,6 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -81,7 +82,15 @@ func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinne
 }
 
 func main() {
-	if err := rootCmd().Execute(); err != nil {
+	err := rootCmd().Execute()
+	// Never exit while an async LiteLLM proxy restart a route write kicked off
+	// (internal/lifecycle/routes.go) is still in flight: goroutines do not
+	// survive main returning, so the restart would be killed mid-flight and
+	// the proxy would never pick up the route change. The other two process
+	// exits that bypass this one (runAgentCmd's exit-code propagation and
+	// wt smoke's failure exit) wait for the same thing themselves.
+	lifecycle.WaitPendingRoutes()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "wt:", err)
 		os.Exit(1)
 	}

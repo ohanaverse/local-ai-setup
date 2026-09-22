@@ -71,6 +71,11 @@ func swapBackend(t *testing.T, family string, b backend) {
 // config.yaml and a harmless restart command (the package TestMain hard-fails
 // applyRoutes by default). It returns the config path, a restart counter and
 // the captured warning stream.
+//
+// The restart runs asynchronously now (see applyAndReport), so every test
+// here calls WaitPendingRoutes after the wrapper it drives — standing in for
+// the wt process, which does the same before it exits. config.yaml itself is
+// still written synchronously, so routedIDs needs no wait.
 func realRoutes(t *testing.T, yaml string) (cfgPath string, restarts func() int, warn *strings.Builder) {
 	t.Helper()
 	dir := t.TempDir()
@@ -88,6 +93,9 @@ func realRoutes(t *testing.T, yaml string) (cfgPath string, restarts func() int,
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	routesWarn = &buf
 	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww })
+	// Registered last, so it runs FIRST: settle any in-flight restart before
+	// the seams, WT_LITELLM_* env and the temp dir are torn down under it.
+	t.Cleanup(WaitPendingRoutes)
 	return cfgPath, func() int {
 		b, _ := os.ReadFile(marks)
 		return len(b)
@@ -186,6 +194,7 @@ func TestStartWrapperAddsRouteOnSuccess(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	WaitPendingRoutes()
 	if !slices.Equal(calls, []string{"start:a:1"}) {
 		t.Fatalf("backend calls = %v, want one start", calls)
 	}
@@ -213,6 +222,7 @@ func TestStartWrapperFailedStartLeavesConfigUntouched(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
+	WaitPendingRoutes()
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +250,7 @@ func TestStartWrapperAlreadyRunningStillFixesStaleRoutes(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	WaitPendingRoutes()
 	if len(calls) != 0 {
 		t.Fatalf("backend calls = %v, want none (the model is already running)", calls)
 	}
@@ -278,6 +289,7 @@ func TestStopModelWrapperRemovesRoutes(t *testing.T) {
 	if err := StopModel(context.Background(), cfg, "ollama", "a:1"); err != nil {
 		t.Fatalf("StopModel(ollama): %v", err)
 	}
+	WaitPendingRoutes()
 	want := []string{"ollama/b:1", "mtplx/Y--Q35", "mtplx/Y--Q27", "openrouter/z"}
 	if got := routedIDs(t, path); !slices.Equal(got, want) {
 		t.Fatalf("after ollama stop routed = %v, want %v (warn %q)", got, want, warn.String())
@@ -286,6 +298,7 @@ func TestStopModelWrapperRemovesRoutes(t *testing.T) {
 	if err := StopModel(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil {
 		t.Fatalf("StopModel(mtplx): %v", err)
 	}
+	WaitPendingRoutes()
 	want = []string{"ollama/b:1", "openrouter/z"}
 	if got := routedIDs(t, path); !slices.Equal(got, want) {
 		t.Fatalf("after mtplx stop routed = %v, want %v (warn %q)", got, want, warn.String())
@@ -312,6 +325,7 @@ func TestStartWrapperIsIdempotent(t *testing.T) {
 		if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
 			t.Fatalf("Start #%d: %v", i+1, err)
 		}
+		WaitPendingRoutes() // settle each start's restart before the next one
 	}
 	if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
 		t.Fatalf("routed = %v (warn %q)", got, warn.String())
@@ -337,6 +351,7 @@ func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
+	WaitPendingRoutes()
 	if !slices.Equal(calls, []string{"stop", "start:Y/Q35"}) {
 		t.Fatalf("backend calls = %v, want the occupant stopped then a failed start", calls)
 	}
@@ -367,6 +382,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{Progress: report}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	WaitPendingRoutes()
 	if len(stages) == 0 || stages[len(stages)-1] != StageRouting {
 		t.Fatalf("stages = %v, want StageRouting last", stages)
 	}
@@ -382,6 +398,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "b:1"}, Options{Progress: report}); err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
+	WaitPendingRoutes()
 	if slices.Contains(stages, StageRouting) {
 		t.Errorf("stages = %v, want no routing stage after a failed start", stages)
 	}
@@ -392,7 +409,9 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 // already-cancelled context: the restart runs through /bin/sh on the CALLER's
 // ctx, so a user who pressed Ctrl+C must not keep paying for it. Before this,
 // Apply's restart ran on context.Background and a 3s command cost 3s after the
-// cancel.
+// cancel. The elapsed budget is measured across WaitPendingRoutes, not just
+// Start: the restart is asynchronous now, so timing Start alone would pass
+// even if the abandoned-on-cancel behavior regressed.
 func TestStartWrapperRestartHonorsCallerContext(t *testing.T) {
 	_, _, warn := realRoutes(t, "model_list: []\n")
 	t.Setenv("WT_LITELLM_RESTART_CMD", "sleep 5")
@@ -406,6 +425,7 @@ func TestStartWrapperRestartHonorsCallerContext(t *testing.T) {
 	if err := Start(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	WaitPendingRoutes()
 	if el := time.Since(began); el > 2*time.Second {
 		t.Fatalf("a cancelled start paid %v for the restart command, want it abandoned at once", el)
 	}
@@ -444,6 +464,7 @@ func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
 	if err := StopModel(context.Background(), cfg, "omlx", "Four"); err != nil {
 		t.Fatalf("StopModel: %v", err)
 	}
+	WaitPendingRoutes()
 	if got := routedIDs(t, path); len(got) != 0 {
 		t.Fatalf("routed = %v, want none: one oMLX server serves both variants (warn %q)", got, warn.String())
 	}
@@ -463,6 +484,7 @@ func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err != nil {
 		t.Fatal(err)
 	}
+	WaitPendingRoutes()
 	if got := routedIDs(t, path); !slices.Equal(got, []string{"mtplx/Y--Q35"}) {
 		t.Fatalf("routed = %v, want only the new model (warn %q)", got, warn.String())
 	}
@@ -485,6 +507,7 @@ func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
+	WaitPendingRoutes()
 	if restarts() != 1 {
 		t.Fatalf("restarts = %d after replace-then-fail, want 1", restarts())
 	}

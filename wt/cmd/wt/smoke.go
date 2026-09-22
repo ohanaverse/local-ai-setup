@@ -17,6 +17,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -62,6 +63,10 @@ func smokeCmd(a *app) *cobra.Command {
 				return err
 			}
 			if anyFail {
+				// The deferred stop flow has already run and may have kicked
+				// off an async LiteLLM proxy restart; smokeExit bypasses
+				// main's own wait, so settle it here first.
+				lifecycle.WaitPendingRoutes()
 				smokeExit(1) // after runSmoke's deferred stop flow has already run
 			}
 			return nil

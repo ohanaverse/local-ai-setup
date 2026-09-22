@@ -31,6 +31,12 @@ type routeCall struct{ add, remove []string }
 
 // stubRoutes replaces the litellm seams for one test and returns the recorded
 // calls and the warning buffer.
+//
+// applyAndReport restarts the proxy asynchronously, so a test that triggers a
+// restart must call WaitPendingRoutes before asserting on anything the async
+// phase sets (a counter, the warning buffer, a captured ctx). The cleanup
+// below is only a backstop against a leaked goroutine outliving the seam
+// restore and corrupting the NEXT test; it is not a substitute for that call.
 func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *bytes.Buffer) {
 	t.Helper()
 	var calls []routeCall
@@ -40,15 +46,13 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 		if !o.SkipReadyGate {
 			t.Error("lifecycle hook must skip the ready gate: the model is verifiably running")
 		}
-		if o.Restart == nil {
-			t.Error("lifecycle hook must pass a ctx-aware restart, not leave the package default")
+		if !o.NoRestart {
+			t.Error("applyAndReport must always defer Apply's restart and run it asynchronously itself")
+		}
+		if o.ForceRestart {
+			t.Error("ForceRestart would make Apply restart despite NoRestart, putting the bounce back on the caller's path")
 		}
 		calls = append(calls, routeCall{add, remove})
-		// Like the real Apply: the restart hook runs only when a restart
-		// happens (this is where the lazy proxy probe lives).
-		if err == nil && !o.NoRestart && (res.Changed || o.ForceRestart) {
-			o.Restart()
-		}
 		return res, err
 	}
 	restartProxy = func(context.Context) []string { return nil }
@@ -58,6 +62,9 @@ func stubRoutes(t *testing.T, res litellm.Result, err error) (*[]routeCall, *byt
 	probeProxy = func(context.Context, string, time.Duration) bool { return true }
 	routesWarn = &warn
 	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn, restartProxy = oa, ow, op, ww, or })
+	// Registered last, so it runs FIRST: settle any in-flight restart before
+	// the seams above are put back underneath it.
+	t.Cleanup(WaitPendingRoutes)
 	return &calls, &warn
 }
 
@@ -139,12 +146,14 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	waited := 0
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes() // the wait now runs asynchronously; observe it finish
 	if waited != 1 {
 		t.Fatalf("waited = %d, want 1", waited)
 	}
 	stubRoutes(t, litellm.Result{Changed: false}, nil)
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes()
 	if waited != 1 {
 		t.Fatal("waited despite no change")
 	}
@@ -155,6 +164,7 @@ func TestRouteWaitsForProxyOnlyWhenChanged(t *testing.T) {
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
 	waitProxy = func(context.Context, string, time.Duration) error { waited++; return nil }
 	routeAfterStart(context.Background(), noURL, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes()
 	if waited != 1 || probed != 0 {
 		t.Fatalf("no LiteLLM URL: waited=%d (want still 1) probed=%d (want 0)", waited, probed)
 	}
@@ -178,8 +188,13 @@ func TestRouteSkipsWaitWhenProxyWasNotRunning(t *testing.T) {
 		return errors.New("LiteLLM proxy not ready")
 	}
 	began := time.Now()
+	// WaitPendingRoutes between the two calls as well as after: each one's
+	// probe now runs on its own goroutine, and two overlapping goroutines
+	// would race on the counters this stub increments.
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes()
 	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
+	WaitPendingRoutes()
 	if probed != 2 || waited != 0 {
 		t.Fatalf("probed=%d (want 2) waited=%d (want 0)", probed, waited)
 	}
@@ -209,8 +224,12 @@ func TestRouteHonorsCallerContext(t *testing.T) {
 		return ctx.Err()
 	}
 	base, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "sentinel"))
+	// One WaitPendingRoutes per call: the wait runs asynchronously now, and
+	// two overlapping goroutines would race appending to captured.
 	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes()
 	routeAfterStop(base, cfg, "ollama", "a:1")
+	WaitPendingRoutes()
 	if len(captured) != 2 {
 		t.Fatalf("waitProxy calls = %d, want 2", len(captured))
 	}
@@ -233,7 +252,9 @@ func TestRouteHonorsCallerContext(t *testing.T) {
 		}
 	}
 	routeAfterStart(base, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes()
 	routeAfterStop(base, cfg, "ollama", "a:1")
+	WaitPendingRoutes()
 	if warn.Len() != 0 {
 		t.Fatalf("cancelled ctx must not warn, got %q", warn.String())
 	}
@@ -247,6 +268,7 @@ func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{Changed: true}, nil)
 	waitProxy = func(context.Context, string, time.Duration) error { return errors.New("proxy down") }
 	routeAfterStart(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, false)
+	WaitPendingRoutes() // the warning is written by the async restart goroutine
 	if !bytes.Contains(warn.Bytes(), []byte("proxy down")) {
 		t.Fatalf("expected warning, got %q", warn.String())
 	}
@@ -259,6 +281,9 @@ func TestRouteWarnsWhenProxyWaitFailsUncancelled(t *testing.T) {
 func TestRouteAfterStartUnregisteredSettlesOwedRestart(t *testing.T) {
 	calls, _ := stubRoutes(t, litellm.Result{}, nil)
 	routeAfterStart(context.Background(), routesCfg(), Target{ProviderID: "ollama", ModelName: "unregistered:9"}, true)
+	// The settling bounce restarts asynchronously: let it finish before the
+	// second stubRoutes below re-points the seams underneath it.
+	WaitPendingRoutes()
 	if len(*calls) != 1 || len((*calls)[0].add) != 0 || len((*calls)[0].remove) != 0 {
 		t.Fatalf("owed restart not settled: calls=%+v", *calls)
 	}
@@ -281,6 +306,7 @@ func TestBounceRoutesSurvivesCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	bounceRoutes(ctx, routesCfg())
+	WaitPendingRoutes() // bounceRoutes returns before its restart has run
 	if !restarted || restartErr != nil {
 		t.Fatalf("restarted=%v ctx.Err=%v, want a restart on a live ctx", restarted, restartErr)
 	}
@@ -296,10 +322,51 @@ func TestRouteProbesProxyOnlyWhenRestarting(t *testing.T) {
 	probed := 0
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
 	routeRemove(context.Background(), cfg, "ollama", "a:1", restartDeferred)
+	WaitPendingRoutes() // nothing should be pending — prove it before re-stubbing
 	stubRoutes(t, litellm.Result{Changed: false}, nil)
 	probeProxy = func(context.Context, string, time.Duration) bool { probed++; return true }
 	routeAfterStop(context.Background(), cfg, "ollama", "a:1")
+	WaitPendingRoutes()
 	if probed != 0 {
 		t.Fatalf("probed %d times without a restart", probed)
+	}
+}
+
+// TestApplyAndReportRestartsAsynchronously pins that the route write returns
+// as soon as config.yaml is saved, without waiting for the proxy restart or
+// readiness poll — that machinery is off the model-serving critical path, and
+// blocking on it made a plain wt start/stop pay up to ~60s of LiteLLM proxy
+// time after the backend was already confirmed up. WaitPendingRoutes must
+// still observe the restart finish before the caller (a wt process) exits, or
+// the restart would be killed mid-flight and the proxy never pick up the
+// route change.
+func TestApplyAndReportRestartsAsynchronously(t *testing.T) {
+	calls, _ := stubRoutes(t, litellm.Result{Changed: true}, nil)
+	restartStarted := make(chan struct{})
+	restartMayFinish := make(chan struct{})
+	restartProxy = func(context.Context) []string {
+		close(restartStarted)
+		<-restartMayFinish
+		return nil
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- applyAndReport(context.Background(), routesCfg(), []string{"ollama/a:1"}, nil, restartIfChanged)
+	}()
+
+	select {
+	case changed := <-done:
+		if !changed {
+			t.Fatal("applyAndReport returned false, want true (config.yaml changed)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("applyAndReport blocked on the async restart instead of returning first")
+	}
+	<-restartStarted // the restart did start...
+	close(restartMayFinish)
+	WaitPendingRoutes() // ...and WaitPendingRoutes must observe it finish
+	if len(*calls) != 1 {
+		t.Fatalf("route calls = %d, want 1", len(*calls))
 	}
 }
