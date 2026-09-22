@@ -178,13 +178,31 @@ func ListEntries(cfg *config.Config, installed func(string) bool) []AgentListEnt
 	return entries
 }
 
+// NotInstalledIssue is the shared "binary not found" message. IssueFor
+// returns it, and the TUI's agent picker (internal/tui/agent_picker.go)
+// reuses the same constant for its own not-installed row, since it must
+// decide that case itself (see the precedence note below) rather than
+// trusting IssueFor's string.
+const NotInstalledIssue = "not installed — install the binary"
+
 // IssueFor returns the launch blocker for a single agent, or "" if it can
 // launch. An agent must be both configured (so it has a model catalog) and
 // installed (so its binary can be exec'd). Commands (e.g. shell) are always
 // launchable. installed reports whether a binary is on PATH; callers pass
-// agents.Installed in production and a stub in tests. This is the single
-// source of truth for the issue strings that ListEntries and the TUI's
-// pinned-agent path both surface.
+// agents.Installed in production and a stub in tests.
+//
+// IssueFor is consulted by ListEntries only — it is NOT the source of truth
+// for the actual launch-blocking precedence used elsewhere. Both
+// cmd/wt/main.go's launch gate and the TUI's pinned-agent path
+// (proceedFromSelectedPath in internal/tui/app.go) re-implement this
+// precedence independently, checking installed BEFORE configured (a pinned
+// agent that is neither installed nor configured must report "not
+// installed", since there is no binary to launch bare or otherwise either
+// way) — the opposite order from the configured-first check below. The
+// TUI's agent+command picker (buildAgentList in
+// internal/tui/agent_picker.go) also branches on installed/configured
+// directly rather than reading this function's return value, for the same
+// reason. A change to this precedence must be mirrored in all three places.
 func IssueFor(cfg *config.Config, name string, installed func(string) bool) string {
 	if IsCommand(name) {
 		return ""
@@ -193,7 +211,7 @@ func IssueFor(cfg *config.Config, name string, installed func(string) bool) stri
 		return "not configured — add it to config.toml"
 	}
 	if !installed(name) {
-		return "not installed — install the binary"
+		return NotInstalledIssue
 	}
 	return ""
 }

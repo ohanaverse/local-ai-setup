@@ -71,7 +71,7 @@ func buildAgentList(cfg *config.Config) []list.Item {
 		case e.Command:
 			// No issue, no passthrough — commands always launch directly.
 		case !e.Installed:
-			it.issue = "not installed — install the binary"
+			it.issue = agents.NotInstalledIssue
 		case !e.Configured:
 			it.passthrough = true
 		default:

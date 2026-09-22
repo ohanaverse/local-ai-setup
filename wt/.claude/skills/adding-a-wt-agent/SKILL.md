@@ -36,3 +36,4 @@ reconcile which is current before relying on either.
 - If the agent's protocol is served by no local provider (empty intersection in `ResolveRoute`), it always routes through LiteLLM and wt prints the forced-LiteLLM stderr notice — codex is the current example
 - If implementing `Resumer`, add session path logic to `internal/session`
 - Test both routing modes (direct/litellm) if the agent will route through LiteLLM
+- **`Build` must start with `if m.Native { return <bare LaunchCmd> }`.** Every existing driver (claude, codex, copilot, pi, opencode) does this so the unconfigured-agent passthrough sentinel (`config.Model{Native: true, ModelName: "native"}`, issue #147) launches the bare binary with no `--model`/gateway env. Forgetting it emits provider env vars pointing at an empty base URL instead of a plain command — write a `Test<Name>NativeBypass` test (see `opencode_test.go`'s `TestOpenCodeNativeBypass`) to pin it.

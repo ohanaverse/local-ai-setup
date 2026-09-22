@@ -633,6 +633,45 @@ func TestMalformedRegistryStillFailsClosed(t *testing.T) {
 	}
 }
 
+// The malformed-registry fail-closed gate (main.go's
+// `!errors.Is(a.cfgErr, config.ErrRegistryMissing)` check) runs once before
+// any agent-type branching and does not distinguish command agents from
+// model-driven ones — unlike TestCommandAgentSkipsMissingRegistryGate's
+// tolerated ErrRegistryMissing case, a genuine parse error must still block
+// a command agent (e.g. shell) exactly as it blocks claude
+// (TestMalformedRegistryStillFailsClosed), since a future agent-type carve-
+// out for the malformed case could otherwise slip past this gate unnoticed.
+func TestMalformedRegistryStillFailsClosedForCommandAgent(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	regDir := filepath.Join(home, ".config", "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte("not valid toml [[["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"--agent", "shell"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected a config error for a malformed registry.toml")
+	}
+	if !strings.Contains(err.Error(), "wt config") {
+		t.Errorf("err = %v, want it to mention `wt config` as the repair path", err)
+	}
+}
+
 // A pinned agent whose binary is missing must fail before any worktree work
 // — creating a worktree for an agent that can never launch is wasted work
 // (and, for -W, a wasted `git worktree add`). Decision #3 of the passthrough
@@ -936,6 +975,70 @@ func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
 	}
 	if !strings.Contains(gotPath, filepath.Join(".worktrees", "my-feature")) {
 		t.Errorf("worktreePath = %q, want it to contain .worktrees/my-feature", gotPath)
+	}
+}
+
+// A genuinely configured agent (a real config.toml entry) must NOT read as
+// unconfigured just because registry.toml also happens to be missing — only
+// the true "no config.toml entry" case should fall back to the bare
+// passthrough launch. Before config.Load stopped discarding a
+// successfully-parsed config.toml on ErrRegistryMissing, pi here would have
+// silently launched via launchPassthrough (bypassing model routing) instead
+// of reaching the model picker like any other configured-but-unresolved
+// launch (see TestWorktreeWithAgentWithoutModelShowsModelPicker).
+func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	cfgDir := filepath.Join(home, ".config", "agent-wt")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// config.toml has a real pi entry, but no registry.toml is written at
+	// all — the ErrRegistryMissing case this test targets.
+	cfgToml := "default_tag = \"code\"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"ollama\"]\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var passthroughCalled bool
+	oldLaunchPassthrough := launchPassthrough
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+		passthroughCalled = true
+		return nil
+	}
+	defer func() { launchPassthrough = oldLaunchPassthrough }()
+
+	var gotAgent string
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+		gotAgent = agent
+		return nil
+	}
+	defer func() { tuiRun = oldTuiRun }()
+
+	oldStdinTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = oldStdinTTY }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-W", "my-feature", "-A", "pi"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if passthroughCalled {
+		t.Error("launchPassthrough was called, want pi to be treated as configured (registry-missing must not erase config.toml's agents)")
+	}
+	if gotAgent != "pi" {
+		t.Errorf("tuiRun agent = %q, want pi (configured agent with no resolvable model falls through to the picker)", gotAgent)
 	}
 }
 
