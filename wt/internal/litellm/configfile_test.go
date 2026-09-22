@@ -378,6 +378,31 @@ func TestIsLoopbackCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestIsLoopbackHandlesSchemelessHost pins that a schemeless api_base
+// ("localhost:11434", the shape migrate.go's legacy importer can produce)
+// is recognized as loopback. url.Parse alone treats "localhost:11434" as an
+// opaque scheme:opaque pair (Host==""), which silently skipped the
+// use_chat_completions_api fix-up for that row.
+func TestIsLoopbackHandlesSchemelessHost(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{"localhost:11434", true},
+		{"127.0.0.1:8000", true},
+		{"localhost", true},
+		{"http://localhost:11434", true},
+		{"example.com:1234", false},
+		{"http://example.com", false},
+	}
+	for _, c := range cases {
+		n := &yaml.Node{Kind: yaml.ScalarNode, Value: c.value}
+		if got := isLoopback(n); got != c.want {
+			t.Errorf("isLoopback(%q) = %v, want %v", c.value, got, c.want)
+		}
+	}
+}
+
 // TestWithLockHonorsContext pins that a caller with a bounded context is not
 // trapped by a contended lock: flock has no timeout, so without the
 // non-blocking retry the lifecycle route hook's settling bounce (15s) could

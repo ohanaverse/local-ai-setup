@@ -259,7 +259,20 @@ func isLoopback(n *yaml.Node) bool {
 		return false
 	}
 	u, err := url.Parse(n.Value)
-	return err == nil && loopbackHosts[strings.ToLower(u.Hostname())]
+	if err != nil || u.Host == "" {
+		// Schemeless input ("localhost:11434", "127.0.0.1:8000"): url.Parse
+		// either reads the part before the colon as a scheme and everything
+		// after as opaque (Host/Hostname() come back empty), or — when that
+		// prefix isn't a valid scheme, e.g. an IP literal — rejects the
+		// whole value outright ("first path segment in URL cannot contain
+		// colon"). Reparse with a "//" prefix so it resolves as a host
+		// instead.
+		u, err = url.Parse("//" + n.Value)
+		if err != nil {
+			return false
+		}
+	}
+	return loopbackHosts[strings.ToLower(u.Hostname())]
 }
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two
