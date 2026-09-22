@@ -143,6 +143,21 @@ func runLaunchPath(
 
 	pinnedSupplied := cmd.Flags().Changed("model")
 
+	// An unconfigured model-driven agent (no config.toml entry — including
+	// the extreme case of a wholly missing registry) has no model catalog
+	// to resolve a launch against; launch it bare instead of routing
+	// through the model layer. Guarded on agent != "" so an unpinned launch
+	// (-W with no -A) still falls through to needsModelPicker's
+	// agent-selection path below — cfg.AgentByName("") always fails too,
+	// and an empty agent name is not "unconfigured", it's "not chosen yet".
+	if agent != "" && !agents.IsCommand(agent) && !agents.IsConfigured(a.cfg, agent) {
+		if pinned != "" {
+			return fmt.Errorf("agent %q is not configured; cannot pin model %q", agent, pinned)
+		}
+		fmt.Fprintf(os.Stderr, "wt: %s is not configured — launching it directly without a model\n", agent)
+		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg)
+	}
+
 	if needsModelPicker(agent, pinned) {
 		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
 		if err == nil && resolved {

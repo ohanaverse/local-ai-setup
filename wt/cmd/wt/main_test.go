@@ -197,10 +197,10 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("MODELMAN_REGISTRY", "")
-	writeEmptyRegistry(t, home)
+	// pi must be CONFIGURED (a config.toml entry, zero eligible models) so
+	// this test still exercises "configured agent, unresolved model → TUI",
+	// not the new unconfigured-agent passthrough this task adds.
+	writeConfiguredAgent(t, home, "pi", "ollama")
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
@@ -253,10 +253,12 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 				t.Fatalf("chdir: %v", err)
 			}
 			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-			t.Setenv("MODELMAN_REGISTRY", "")
-			writeEmptyRegistry(t, home)
+			// pi must be CONFIGURED (a config.toml entry, zero eligible
+			// models) so this test still exercises "configured agent,
+			// unresolved model → TUI", not the new unconfigured-agent
+			// passthrough — an unconfigured pi would otherwise now launch
+			// directly instead of reaching tuiRun.
+			writeConfiguredAgent(t, home, "pi", "ollama")
 
 			// allowReplace is process-wide; restore it so this test cannot leak
 			// --replace into another test.
@@ -886,5 +888,129 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// A model-driven agent with no config.toml entry launches via the bare
+// passthrough path when registry.toml is missing entirely — the extreme
+// case of "no config.toml entry" (issue #147). Before this feature a
+// missing registry failed closed for every non-command agent (see the now-
+// deleted TestNonCommandAgentStillFailsWithoutRegistry); a genuinely
+// malformed config.toml/registry.toml still fails
+// (TestMalformedRegistryStillFailsClosed).
+func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	// No registry.toml written: config.Load fails closed with
+	// ErrRegistryMissing, a.cfg falls back to an empty Config with no
+	// agents, and claude reads as unconfigured.
+
+	var called bool
+	var gotAgent, gotPath string
+	oldLaunchPassthrough := launchPassthrough
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+		called, gotAgent, gotPath = true, agent, worktreePath
+		return nil
+	}
+	defer func() { launchPassthrough = oldLaunchPassthrough }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "claude", "-W", "my-feature"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected launchPassthrough to be called")
+	}
+	if gotAgent != "claude" {
+		t.Errorf("agent = %q, want claude", gotAgent)
+	}
+	if !strings.Contains(gotPath, filepath.Join(".worktrees", "my-feature")) {
+		t.Errorf("worktreePath = %q, want it to contain .worktrees/my-feature", gotPath)
+	}
+}
+
+// `-M` on an unconfigured agent must error, never silently pass through or
+// drop the pin — decision #5 of the passthrough design.
+func TestPinnedModelWithUnconfiguredAgentErrors(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	writeEmptyRegistry(t, home) // registry exists but claude has no config.toml entry
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-A", "claude", "-W", "my-feature", "-M", "ollama/foo"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected an error for -M against an unconfigured agent")
+	}
+	if !strings.Contains(err.Error(), "not configured") || !strings.Contains(err.Error(), "ollama/foo") {
+		t.Errorf("err = %v, want it to mention \"not configured\" and the pinned model", err)
+	}
+}
+
+// An unpinned launch (`-W` with no `-A`) must still route to the TUI's
+// agent/command picker, not be misread as an unconfigured-agent passthrough
+// for an empty agent name. Without the `agent != ""` guard on the new
+// branch, cfg.AgentByName("") always fails too, which would otherwise
+// short-circuit straight into agents.BuildPassthroughCmd("", ...).
+func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
+	dir := initTestRepo(t)
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	home := t.TempDir()
+	writeEmptyRegistry(t, home)
+
+	var tuiCalled bool
+	oldTuiRun := tuiRun
+	tuiRun = func(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) error {
+		tuiCalled = true
+		return nil
+	}
+	defer func() { tuiRun = oldTuiRun }()
+	oldStdinTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	defer func() { stdinTTY = oldStdinTTY }()
+
+	var passthroughCalled bool
+	oldLaunchPassthrough := launchPassthrough
+	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config) error {
+		passthroughCalled = true
+		return nil
+	}
+	defer func() { launchPassthrough = oldLaunchPassthrough }()
+
+	var buf bytes.Buffer
+	root := rootCmd()
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"-W", "my-feature"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !tuiCalled {
+		t.Error("expected tuiRun to be called for an unpinned -W launch")
+	}
+	if passthroughCalled {
+		t.Error("launchPassthrough must not be called when no agent is pinned")
 	}
 }
