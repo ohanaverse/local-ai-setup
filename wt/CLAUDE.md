@@ -224,13 +224,17 @@ rendered as per-token + subscription pricing columns in the model picker
 (`config.ErrRegistryMissing`) is tolerated by the launch-path gate for
 *every* agent, not just commands: `config.Load` still fails closed the same
 way, but `cmd/wt`'s `rootCmd().RunE` now only re-raises the error when it is
-*not* `ErrRegistryMissing`. A
-model-driven agent with no `config.toml` entry — the missing-registry case
-included, since `a.cfg` falls back to an empty `Config` with no agents —
+*not* `ErrRegistryMissing`. `config.Load` also stopped discarding an
+already-parsed `config.toml` on a missing registry: the returned `Config`
+still carries real `Agents`/`DefaultTag` (just an empty model catalog), so a
+genuinely configured agent is never misread as unconfigured just because the
+registry also went missing — only an agent truly absent from `config.toml`
 reads as unconfigured via `agents.IsConfigured(cfg, name)` and launches its
 installed binary directly with no model routing, through
-`agents.BuildPassthroughCmd`. `-M` against an unconfigured agent is still an
-error. A genuinely malformed `config.toml`/`registry.toml` (a real parse
+`agents.BuildPassthroughCmd`. A configured agent whose registry is missing
+instead fails on model resolution (no models to resolve against) rather
+than silently launching native. `-M` against an unconfigured agent is still
+an error. A genuinely malformed `config.toml`/`registry.toml` (a real parse
 error, not `ErrRegistryMissing`) still fails closed with the repair hint.
 See `docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md`.
 
