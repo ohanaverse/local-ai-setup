@@ -97,6 +97,35 @@ func TestLitellmExposeGateAndDryRun(t *testing.T) {
 	}
 }
 
+// TestLitellmDryRunJSONIsDistinguishableFromRealApply pins that --dry-run
+// --json output carries a "dry_run" marker: without it, a script previewing
+// a change with --dry-run cannot tell the output apart from a real apply
+// that happened to change nothing (both show changed:false, action:exposed).
+func TestLitellmDryRunJSONIsDistinguishableFromRealApply(t *testing.T) {
+	// Sandbox WT_LITELLM_CONFIG the same way every other test in this file
+	// does: without it, the real-apply sub-case below would target
+	// DefaultPath() (~/.config/litellm/config.yaml) and could write to a
+	// developer's live proxy config.
+	litellmEnv(t, "model_list: []\n")
+	var out, errOut bytes.Buffer
+	err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{JSON: true, DryRun: true, SkipReadyGate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"dry_run":true`) {
+		t.Fatalf("dry-run JSON = %s, want a dry_run:true marker", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if err := runLitellmChange(&out, &errOut, litellmTestConfig(), true, []string{"ollama/gemma:9b"}, litellmFlags{JSON: true, SkipReadyGate: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), `"dry_run"`) {
+		t.Fatalf("real-apply JSON = %s, want no dry_run key at all", out.String())
+	}
+}
+
 // TestLitellmSyncUsesLiveInventory pins that sync derives "running" from the
 // live inventory (never modelman's flag): a running registered model gets a
 // route and an unrouted-but-stopped one keeps none.
