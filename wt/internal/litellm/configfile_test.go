@@ -1,12 +1,15 @@
 package litellm
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"gopkg.in/yaml.v3"
@@ -253,7 +256,7 @@ func TestWithLockSerializes(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := string(rune('a'+i)) + "/m"
-			if err := WithLock(p, func() error {
+			if err := WithLock(context.Background(), p, func() error {
 				f, err := Open(p)
 				if err != nil {
 					return err
@@ -375,6 +378,35 @@ func TestIsLoopbackCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestWithLockHonorsContext pins that a caller with a bounded context is not
+// trapped by a contended lock: flock has no timeout, so without the
+// non-blocking retry the lifecycle route hook's settling bounce (15s) could
+// hang past its deadline on a lock held by another process. The holder here is
+// a raw flock on the same file, standing in for a concurrent wt.
+func TestWithLockHonorsContext(t *testing.T) {
+	p := writeConfig(t, "model_list: []\n")
+	holder, err := os.OpenFile(p+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(holder.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = WithLock(ctx, p, func() error { t.Fatal("fn must not run while the lock is held"); return nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("waited %v; the context must bound the wait", elapsed)
+	}
+}
+
 // TestWithLockMissingConfig pins that a missing config.yaml surfaces as
 // ErrMissing (the "LiteLLM not set up" message) even when its directory is
 // absent too, and that no stray .lock file is left behind. Without the check
@@ -382,7 +414,7 @@ func TestIsLoopbackCaseInsensitive(t *testing.T) {
 func TestWithLockMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	for _, p := range []string{filepath.Join(dir, "config.yaml"), filepath.Join(dir, "nodir", "config.yaml")} {
-		err := WithLock(p, func() error { t.Fatal("fn must not run"); return nil })
+		err := WithLock(context.Background(), p, func() error { t.Fatal("fn must not run"); return nil })
 		if !errors.Is(err, ErrMissing) {
 			t.Fatalf("WithLock(%s) err = %v, want ErrMissing", p, err)
 		}

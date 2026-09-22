@@ -150,6 +150,9 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 		SkipReadyGate: true,
 		NoRestart:     mode == restartDeferred,
 		ForceRestart:  mode == restartForced,
+		// The caller's ctx bounds the config.yaml lock wait too, so a
+		// contended lock cannot outlive this hook's own deadline.
+		Ctx: ctx,
 		// The caller's ctx, so Ctrl+C during a start/stop does not keep
 		// paying for the restart command's full run time.
 		Restart: func() []string {

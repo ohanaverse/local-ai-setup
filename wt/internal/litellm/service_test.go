@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -235,7 +236,7 @@ litellm_settings:
 func TestSyncDecidesUnderTheLock(t *testing.T) {
 	o, _, p := opts(t, "model_list: []\n")
 	done := make(chan error, 1)
-	err := WithLock(p, func() error {
+	err := WithLock(context.Background(), p, func() error {
 		go func() {
 			_, err := Sync(testConfig(), nil, o)
 			done <- err

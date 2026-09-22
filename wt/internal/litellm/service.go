@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,10 +17,16 @@ import (
 //     hook passes it: the model is verifiably running; modelman passes it
 //     because it applied the gate against its own in-memory state).
 //   - Restart       — proxy restart hook; nil means Restart. Tests inject.
+//   - Ctx           — bounds the config.yaml lock wait; nil means no bound.
 type Options struct {
 	Path          string
 	SkipReadyGate bool
 	Restart       func() []string
+	// Ctx bounds the wait for the config.yaml lock (nil = unbounded). The
+	// lifecycle route hook passes a bounded context so a contended lock cannot
+	// outlive the settling bounce's own deadline; the CLI leaves it nil, since
+	// an interactive command should wait rather than fail.
+	Ctx context.Context
 	// Untouched lists model ids Sync must neither add nor remove (their
 	// running state is unknown, e.g. the provider probe failed).
 	Untouched []string
@@ -122,7 +129,7 @@ func Apply(cfg *config.Config, add, remove []string, o Options) (Result, error) 
 func applyPlanned(cfg *config.Config, plan func(*File) (add, remove []string), o Options) (Result, error) {
 	path := o.path()
 	var res Result
-	err := WithLock(path, func() error {
+	err := WithLock(o.Ctx, path, func() error {
 		f, err := Open(path)
 		if err != nil {
 			return err

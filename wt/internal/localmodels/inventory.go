@@ -266,6 +266,11 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			s.loaded = loaded
 		} else {
 			s.status = StatusPartial
+			// /api/tags answered above, so a refused /api/ps means the daemon
+			// died between the two probes on the same origin: nothing is
+			// listening and its routes are stale. Without this, sync would
+			// treat ollama as merely untrustworthy and keep them.
+			s.down = refused(err)
 		}
 	case "omlx", "mtplx":
 		// A failed /v1/models must not read as "nothing is loaded": for a
