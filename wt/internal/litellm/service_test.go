@@ -370,3 +370,34 @@ func TestApplyRejectsEmptyModelName(t *testing.T) {
 		t.Fatalf("routed = %v restarts=%d", ids, *restarts)
 	}
 }
+
+// TestSyncRecheckTimesOutInsteadOfHoldingTheLock pins that a slow/hung
+// Recheck probe cannot hold the config.yaml lock indefinitely: past
+// recheckTimeout, Sync gives up on the recheck and applies the pre-recheck
+// plan, the same as if Recheck were unset. Without this a hung provider
+// probe could starve a concurrent bounded-context caller (the lifecycle
+// route hook's settling bounce) of the lock.
+func TestSyncRecheckTimesOutInsteadOfHoldingTheLock(t *testing.T) {
+	old := recheckTimeout
+	recheckTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { recheckTimeout = old })
+
+	o, _, p := opts(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+`)
+	block := make(chan []string) // never sent to: simulates a hung probe
+	o.Recheck = func() []string { return <-block }
+
+	start := time.Now()
+	if _, err := Sync(testConfig(), nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Sync took %s, want it to give up around recheckTimeout (%s)", elapsed, recheckTimeout)
+	}
+	f, _ := Open(p)
+	if ids := f.RoutedIDs(); len(ids) != 0 {
+		t.Fatalf("routed = %v, want the route removed (recheck timed out, pre-recheck plan applied)", ids)
+	}
+}

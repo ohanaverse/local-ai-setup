@@ -5,11 +5,33 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"gopkg.in/yaml.v3"
 )
+
+// recheckTimeout bounds Sync's live Recheck probe while the config.yaml
+// lock is held: a slow/unresponsive provider must not hold the lock
+// indefinitely and starve a concurrent bounded-context caller (e.g. the
+// lifecycle route hook's settling bounce). A timeout is treated the same
+// as "no Recheck": the pre-recheck plan proceeds unchanged. A var, not a
+// const, so tests can shrink it.
+var recheckTimeout = 5 * time.Second
+
+// runRecheck calls o.Recheck with recheckTimeout, reporting ok=false (fresh
+// left nil) when it does not return in time.
+func runRecheck(o Options) (fresh []string, ok bool) {
+	done := make(chan []string, 1)
+	go func() { done <- o.Recheck() }()
+	select {
+	case fresh = <-done:
+		return fresh, true
+	case <-time.After(recheckTimeout):
+		return nil, false
+	}
+}
 
 // Options tunes Apply/Sync.
 //   - Path          — config.yaml; "" means DefaultPath().
@@ -247,12 +269,13 @@ func Sync(cfg *config.Config, running []string, o Options) (Result, error) {
 		// a dead backend (add-side). Both sides are re-verified together so
 		// one live probe settles the whole plan.
 		if o.Recheck != nil && (len(add) > 0 || len(remove) > 0) {
-			fresh := o.Recheck()
-			if len(remove) > 0 {
-				remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
-			}
-			if len(add) > 0 {
-				add = slices.DeleteFunc(add, func(id string) bool { return !slices.Contains(fresh, id) })
+			if fresh, ok := runRecheck(o); ok {
+				if len(remove) > 0 {
+					remove = slices.DeleteFunc(remove, func(id string) bool { return slices.Contains(fresh, id) })
+				}
+				if len(add) > 0 {
+					add = slices.DeleteFunc(add, func(id string) bool { return !slices.Contains(fresh, id) })
+				}
 			}
 		}
 		return add, remove
