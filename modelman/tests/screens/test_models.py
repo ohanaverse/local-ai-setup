@@ -2856,7 +2856,10 @@ async def test_litellm_status_line_and_toggle_go_through_wt(tmp_path, monkeypatc
         await pilot.pause()
         assert len(reads) == n
         await pilot.press("l")
-        await pilot.pause()
+        for _ in range(200):
+            await pilot.pause()
+            if calls:
+                break
         assert calls == [False]
         assert "LiteLLM: off" in _status_text(screen)
     assert state_path.read_text() == before
@@ -2883,7 +2886,10 @@ async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, mo
         notes = []
         monkeypatch.setattr(app, "notify", lambda msg, *a, **k: notes.append(msg))
         await pilot.press("l")
-        await pilot.pause()
+        for _ in range(200):
+            await pilot.pause()
+            if notes:
+                break
         assert notes and "unavailable" in notes[-1]
         # Status becomes readable but the set fails: error is surfaced.
         monkeypatch.setattr(
@@ -2896,9 +2902,75 @@ async def test_litellm_status_unavailable_and_toggle_error_notifies(tmp_path, mo
             raise wt_bridge.WtBridgeError("wt exited 1")
 
         monkeypatch.setattr(wt_bridge, "litellm_set_enabled", fail)
+        base = len(notes)
         await pilot.press("l")
-        await pilot.pause()
+        for _ in range(200):
+            await pilot.pause()
+            if len(notes) > base:
+                break
         assert "wt exited 1" in notes[-1]
+
+
+@pytest.mark.asyncio
+async def test_toggle_litellm_runs_off_the_main_thread(tmp_path, monkeypatch):
+    # A slow wt litellm on/off (a proxy restart can take a while) must not
+    # freeze the TUI: the app must keep processing messages (here, a
+    # keystroke on an unrelated binding) while the toggle's subprocess call
+    # is still "in flight" on its worker thread.
+    #
+    # NOTE on this test's design: a plain "does it eventually finish"
+    # assertion is NOT enough here, because `slow_set_enabled` below times
+    # out its own `release.wait()` after `release_timeout` seconds. Against
+    # the old inline (main-thread) implementation, the whole test still
+    # passes — it just blocks for the full `release_timeout` before
+    # `entered.is_set()` can even be observed, then self-unblocks. So the
+    # only thing that actually distinguishes "ran on a worker thread" from
+    # "froze the event loop for release_timeout seconds" is wall-clock
+    # time: `entered.is_set()` must be observable almost immediately, well
+    # under `release_timeout`, not only after it.
+    import threading
+    import time
+
+    from modelman import wt_bridge
+
+    _seed_registry_and_state(tmp_path, monkeypatch)
+    release_timeout = 5.0
+    release = threading.Event()
+    entered = threading.Event()
+
+    def status(timeout=None):
+        return wt_bridge.LitellmStatus(True, "http://localhost:4000", True)
+
+    def slow_set_enabled(on):
+        entered.set()
+        release.wait(timeout=release_timeout)
+
+    monkeypatch.setattr(wt_bridge, "litellm_status", status)
+    monkeypatch.setattr(wt_bridge, "litellm_set_enabled", slow_set_enabled)
+
+    app = ModelmanApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_model_screen(pilot)
+        started = time.monotonic()
+        await pilot.press("l")
+        # The event loop must still be alive and processing keystrokes while
+        # the worker thread is blocked in slow_set_enabled.
+        for _ in range(200):
+            await pilot.pause()
+            if entered.is_set():
+                break
+        elapsed = time.monotonic() - started
+        assert entered.is_set(), "toggle never reached the (slow) bridge call"
+        assert elapsed < release_timeout / 2, (
+            f"observing the toggle reach its bridge call took {elapsed:.2f}s "
+            "(close to slow_set_enabled's own release_timeout) — the 'l' "
+            "toggle appears to be running inline on the main thread again, "
+            "blocking the event loop instead of a worker thread"
+        )
+        await pilot.press("j")  # an unrelated, harmless keystroke
+        await pilot.pause()
+    release.set()
 
 
 async def _expose_press_notes(tmp_path, monkeypatch, *, exposed, provider_flags):

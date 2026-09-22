@@ -430,24 +430,40 @@ class ModelScreen(Screen[None]):
             return
 
     def action_toggle_litellm(self) -> None:
-        """Flip the routing switch on `l` by asking wt (the state's owner).
-        Routing policy only — the proxy is never touched, modelman.toml is
-        never written and self.state is left alone. The cached status is
-        refreshed afterwards."""
+        """Flip the routing switch on `l` by asking wt (the state's owner),
+        off the main thread: `wt litellm on/off` can include a full proxy
+        restart and the bridge's default timeout is 120s, so running it
+        inline would freeze the whole TUI (no repaint, no keybindings, not
+        even quit) for up to that long. Routing policy only — the proxy is
+        never touched, modelman.toml is never written and self.state is
+        left alone."""
         status = self._litellm_status
         if status is None:
             # Unknown current state: re-read before deciding the direction.
+            # This one status read is still inline (bounded ~5s, not 120s).
             self._update_litellm_status()
             status = self._litellm_status
         if status is None:
             self.app.notify("LiteLLM: wt is unavailable — cannot toggle (install wt)")
             return
+        target = not status.enabled
+        self.run_worker(
+            lambda: self._do_toggle_litellm(target),
+            thread=True,
+            exclusive=True,
+            group="litellm-toggle",
+            name="litellm-toggle",
+            description="Toggling LiteLLM routing",
+        )
+
+    def _do_toggle_litellm(self, target: bool) -> None:
         try:
-            wt_bridge.litellm_set_enabled(not status.enabled)
+            wt_bridge.litellm_set_enabled(target)
         except wt_bridge.WtBridgeError as exc:
-            self.app.notify(f"LiteLLM toggle failed: {exc}")
+            self.app.call_from_thread(self.app.notify, f"LiteLLM toggle failed: {exc}")
             return
-        self._update_litellm_status()
+        self._fetch_litellm_status()
+        self.app.call_from_thread(self._render_litellm_status)
 
     def reload(self) -> None:
         self._load_models()
