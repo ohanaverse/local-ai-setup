@@ -115,6 +115,19 @@ func TestBuildEntryRejectsUnmappedProvider(t *testing.T) {
 	}
 }
 
+// TestBuildEntryUnencodableModelInfoReturnsError pins that a model_info value
+// yaml.Node.Encode cannot marshal (a hand-edited registry.toml decoded into a
+// weird shape) surfaces as a per-model error from BuildEntry instead of
+// panicking and crashing the whole wt process on expose/unexpose/sync/start.
+func TestBuildEntryUnencodableModelInfoReturnsError(t *testing.T) {
+	cfg := testConfig()
+	m := cfg.Models[2] // openrouter/x/y
+	m.ModelInfo = map[string]any{"bad": make(chan int)}
+	if _, err := BuildEntry(m, cfg.Providers[2]); err == nil {
+		t.Fatal("want an error, got nil (and no panic)")
+	}
+}
+
 // TestOmlx6bitHasAPolicy pins that the 6-bit oMLX provider is routable like
 // its 4-bit sibling: one oMLX server serves both quantizations, so a missing
 // policy meant a started omlx-6bit model never got a route (a stderr warning

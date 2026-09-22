@@ -150,7 +150,11 @@ func mapSet(m *yaml.Node, key string, val *yaml.Node) {
 	m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, val)
 }
 
-func boolNode(v bool) *yaml.Node { return toNode(v) }
+// boolNode encodes a literal bool, which always succeeds.
+func boolNode(v bool) *yaml.Node {
+	n, _ := toNode(v)
+	return n
+}
 
 func isTrue(n *yaml.Node) bool {
 	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!bool" && n.Value == "true"
@@ -266,7 +270,7 @@ func (f *File) EnsureSettings() {
 	root := f.root()
 	ls := mapGet(root, "litellm_settings")
 	if ls == nil || isNull(ls) {
-		ls = mapping(nil)
+		ls, _ = mapping(nil) // nil pairs never fail
 		mapSet(root, "litellm_settings", ls)
 	}
 	if ls.Kind == yaml.MappingNode {
@@ -291,7 +295,8 @@ func (f *File) EnsureSettings() {
 		}
 		switch {
 		case strings.HasPrefix(model.Value, "ollama_chat/") && mapGet(params, "additional_drop_params") == nil:
-			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{toNode("reasoning_effort")}}
+			reasoningNode, _ := toNode("reasoning_effort") // literal string always succeeds
+			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{reasoningNode}}
 			mapSet(params, "additional_drop_params", seq)
 		case strings.HasPrefix(model.Value, "openai/") && mapGet(params, "use_chat_completions_api") == nil && isLoopback(mapGet(params, "api_base")):
 			mapSet(params, "use_chat_completions_api", boolNode(true))
